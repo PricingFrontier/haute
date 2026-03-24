@@ -101,7 +101,7 @@ interface OptimiserPreviewProps {
   nodeId: string
 }
 
-type TabKey = "frontier" | "summary" | "convergence"
+type TabKey = "frontier" | "summary" | "convergence" | "export"
 
 export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps) {
   const { result, jobId, constraints } = data
@@ -169,12 +169,13 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
   // ── Save / Log actions ──
   const handleSave = useCallback(async () => {
-    if (selectedIdx == null || !frontier) return
     setSaving(true)
     setActionMsg(null)
     try {
-      // Ensure the point is selected on the backend first
-      await selectFrontierPointAPI({ job_id: jobId, point_index: selectedIdx })
+      // If a frontier point is selected, ensure it's applied on the backend first
+      if (selectedIdx != null && frontier) {
+        await selectFrontierPointAPI({ job_id: jobId, point_index: selectedIdx })
+      }
       const outputPath = `output/optimiser_${data.nodeLabel.toLowerCase().replace(/ /g, "_")}.json`
       const res = await saveOptimiser({ job_id: jobId, output_path: outputPath })
       setActionMsg(res.message ?? `Saved to ${res.path ?? outputPath}`)
@@ -186,11 +187,13 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   }, [selectedIdx, frontier, jobId, data.nodeLabel])
 
   const handleLogMlflow = useCallback(async () => {
-    if (selectedIdx == null || !frontier) return
     setLogging(true)
     setActionMsg(null)
     try {
-      await selectFrontierPointAPI({ job_id: jobId, point_index: selectedIdx })
+      // If a frontier point is selected, ensure it's applied on the backend first
+      if (selectedIdx != null && frontier) {
+        await selectFrontierPointAPI({ job_id: jobId, point_index: selectedIdx })
+      }
       const res = await logOptimiserToMlflow({ job_id: jobId, experiment_name: "/optimisation" })
       setActionMsg(res.run_url ? `Logged: ${res.run_url}` : `Logged (run ${res.run_id ?? "ok"})`)
     } catch (e) {
@@ -218,13 +221,16 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   }
 
   // ── Tabs available ──
-  const availableTabs: TabKey[] = ["frontier", "summary"]
+  const hasFrontier = frontier && frontier.points.length > 0
+  const availableTabs: TabKey[] = hasFrontier ? ["frontier", "summary"] : ["summary"]
   if (result.history && result.history.length > 0) availableTabs.push("convergence")
+  availableTabs.push("export")
 
   const TAB_LABELS: Record<TabKey, string> = {
     frontier: "Frontier",
     summary: "Summary",
     convergence: "Convergence",
+    export: "Export",
   }
 
   // ── Expanded ──
@@ -309,6 +315,19 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
         {/* ── Convergence Tab ── */}
         {tab === "convergence" && result.history && result.history.length > 0 && (
           <ConvergenceTab result={result} />
+        )}
+
+        {/* ── Export Tab ── */}
+        {tab === "export" && (
+          <ExportTab
+            result={result}
+            onSave={handleSave}
+            onLogMlflow={handleLogMlflow}
+            saving={saving}
+            logging={logging}
+            mlflowAvailable={mlflowAvailable}
+            actionMsg={actionMsg}
+          />
         )}
       </div>
     </div>
@@ -824,6 +843,7 @@ function SummaryTab({
             <span style={{ color: "#f59e0b" }}>{(result.clamp_rate * 100).toFixed(1)}%</span>
           </div>
         )}
+
       </div>
 
       {/* Middle column: histogram + stats */}
@@ -896,6 +916,106 @@ function SummaryTab({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Export Tab ──────────────────────────────────────────────────
+
+function ExportTab({
+  result,
+  onSave,
+  onLogMlflow,
+  saving,
+  logging,
+  mlflowAvailable,
+  actionMsg,
+}: {
+  result: SolveResult
+  onSave: () => void
+  onLogMlflow: () => void
+  saving: boolean
+  logging: boolean
+  mlflowAvailable: boolean
+  actionMsg: string | null
+}) {
+  return (
+    <div className="space-y-4 max-w-md">
+      <div className="space-y-1">
+        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+          Save to file
+        </label>
+        <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+          Save the optimisation result as a JSON artifact. This can be loaded by an Apply Optimisation node.
+        </p>
+        <button
+          onClick={onSave}
+          disabled={saving || logging}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
+          style={{
+            background: saving || logging ? "var(--chrome-hover)" : "rgba(245,158,11,.12)",
+            color: saving || logging ? "var(--text-muted)" : "#f59e0b",
+          }}
+        >
+          {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+          Save result
+        </button>
+      </div>
+
+      {mlflowAvailable && (
+        <div className="space-y-1">
+          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+            Log to MLflow
+          </label>
+          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+            Log the optimisation result, convergence history, and metadata to MLflow for tracking and comparison.
+          </p>
+          <button
+            onClick={onLogMlflow}
+            disabled={saving || logging}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
+            style={{
+              background: saving || logging ? "var(--chrome-hover)" : "rgba(168,85,247,.12)",
+              color: saving || logging ? "var(--text-muted)" : "#a855f7",
+            }}
+          >
+            {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+            Log to MLflow
+          </button>
+        </div>
+      )}
+
+      {actionMsg && (
+        <div className="text-xs px-2 py-1.5 rounded" style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}>
+          {actionMsg}
+        </div>
+      )}
+
+      {/* Quick summary for context */}
+      <div className="pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 text-xs font-mono">
+          <div className="flex justify-between">
+            <span style={{ color: "var(--text-muted)" }}>Objective</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatNumber(result.total_objective)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span style={{ color: "var(--text-muted)" }}>Baseline</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatNumber(result.baseline_objective)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span style={{ color: "var(--text-muted)" }}>Status</span>
+            <span style={{ color: result.converged ? "#22c55e" : "#f59e0b" }}>
+              {result.converged ? "Converged" : "Not converged"}
+            </span>
+          </div>
+          {result.n_quotes != null && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--text-muted)" }}>Quotes</span>
+              <span style={{ color: "var(--text-primary)" }}>{result.n_quotes.toLocaleString()}</span>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

@@ -124,32 +124,38 @@ class TestOptimiserSavePathTraversal:
 
     def test_valid_relative_path(self, client, clean_job_store, tmp_path):
         """A normal relative path within the project root should succeed."""
+        from unittest.mock import patch
+
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
         job_id = "save_ok"
         clean_job_store.jobs[job_id] = _make_completed_job(tmp_path)
 
-        resp = client.post(
-            "/api/optimiser/save",
-            json={"job_id": job_id, "output_path": "output/result.json"},
-        )
+        with patch("haute.routes._helpers.pipeline_dir", return_value=tmp_path):
+            resp = client.post(
+                "/api/optimiser/save",
+                json={"job_id": job_id, "output_path": "output/result.json"},
+            )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
         assert (tmp_path / "output" / "result.json").exists()
 
     def test_valid_nested_path(self, client, clean_job_store, tmp_path):
         """Deeply nested relative paths within the project root should succeed."""
+        from unittest.mock import patch
+
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
         job_id = "save_nested"
         clean_job_store.jobs[job_id] = _make_completed_job(tmp_path)
 
-        resp = client.post(
-            "/api/optimiser/save",
-            json={"job_id": job_id, "output_path": "a/b/c/result.json"},
-        )
+        with patch("haute.routes._helpers.pipeline_dir", return_value=tmp_path):
+            resp = client.post(
+                "/api/optimiser/save",
+                json={"job_id": job_id, "output_path": "a/b/c/result.json"},
+            )
         assert resp.status_code == 200
         assert (tmp_path / "a" / "b" / "c" / "result.json").exists()
 
@@ -228,6 +234,8 @@ class TestOptimiserSavePathTraversal:
 
     def test_dotdot_that_stays_within_root_allowed(self, client, clean_job_store, tmp_path):
         """A ../ that resolves back inside the root should be allowed."""
+        from unittest.mock import patch
+
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
@@ -235,10 +243,11 @@ class TestOptimiserSavePathTraversal:
         clean_job_store.jobs[job_id] = _make_completed_job(tmp_path)
 
         # sub/../result.json resolves to result.json — still within root
-        resp = client.post(
-            "/api/optimiser/save",
-            json={"job_id": job_id, "output_path": "sub/../result.json"},
-        )
+        with patch("haute.routes._helpers.pipeline_dir", return_value=tmp_path):
+            resp = client.post(
+                "/api/optimiser/save",
+                json={"job_id": job_id, "output_path": "sub/../result.json"},
+            )
         assert resp.status_code == 200
         assert (tmp_path / "result.json").exists()
 

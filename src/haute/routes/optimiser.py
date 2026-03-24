@@ -69,12 +69,16 @@ async def solve_status(job_id: str) -> OptimiserStatusResponse:
         if start and (time.monotonic() - start) > timeout:
             # P7: Atomic update — only if still running (avoids overwriting a
             # completed result with a timeout error).
-            _store.atomic_update(job_id, {
-                "status": "error",
-                "message": f"Solve timed out after {timeout}s. "
-                "Increase timeout or simplify the problem.",
-                "elapsed_seconds": time.monotonic() - start,
-            }, expected_status="running")
+            _store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Solve timed out after {timeout}s. "
+                    "Increase timeout or simplify the problem.",
+                    "elapsed_seconds": time.monotonic() - start,
+                },
+                expected_status="running",
+            )
             job = _store.require_job(job_id)
 
     frontier_resp = None
@@ -129,9 +133,7 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
 
     try:
         # Convert threshold ranges from lists to tuples for Rust binding
-        ranges = {
-            k: tuple(v) for k, v in body.threshold_ranges.items()
-        }
+        ranges = {k: tuple(v) for k, v in body.threshold_ranges.items()}
         frontier_result = solver.frontier(
             quote_grid,
             threshold_ranges=ranges,
@@ -200,15 +202,17 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
 
         # Swap the solve_result; preserve original for revert
         result_dict = dict(job.get("result", {}))
-        result_dict.update({
-            "total_objective": new_result.total_objective,
-            "baseline_objective": new_result.baseline_objective,
-            "constraints": new_result.total_constraints,
-            "baseline_constraints": new_result.baseline_constraints,
-            "lambdas": new_result.lambdas,
-            "converged": new_result.converged,
-            "selected_frontier_point": body.point_index,
-        })
+        result_dict.update(
+            {
+                "total_objective": new_result.total_objective,
+                "baseline_objective": new_result.baseline_objective,
+                "constraints": new_result.total_constraints,
+                "baseline_constraints": new_result.baseline_constraints,
+                "lambdas": new_result.lambdas,
+                "converged": new_result.converged,
+                "selected_frontier_point": body.point_index,
+            }
+        )
 
         # M1: Recompute scenario value stats for the new solve result
         scenario_stats, scenario_histogram = _compute_scenario_value_stats(new_result)
@@ -218,17 +222,19 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
         # M2: Update convergence warning for the new solve result
         if not new_result.converged:
             result_dict["warning"] = (
-                "Solver did not converge. "
-                "Consider increasing max_iter or relaxing tolerance."
+                "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
             )
         else:
             result_dict.pop("warning", None)
 
-        _store.atomic_update(body.job_id, {
-            "solve_result": new_result,
-            "selected_frontier_point": body.point_index,
-            "result": result_dict,
-        })
+        _store.atomic_update(
+            body.job_id,
+            {
+                "solve_result": new_result,
+                "selected_frontier_point": body.point_index,
+                "result": result_dict,
+            },
+        )
 
         return OptimiserFrontierSelectResponse(
             status="ok",
@@ -305,7 +311,16 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     if solve_result is None or solver is None:
         raise HTTPException(status_code=400, detail="Job has no solve result")
 
-    base = _get_project_root()
+    from haute.routes._helpers import pipeline_dir
+
+    # Absolute paths resolve against the project root (security boundary).
+    # Relative paths resolve against the pipeline directory (e.g. rating/)
+    # so outputs land next to the pipeline file, not at the project root.
+    user_path = Path(body.output_path)
+    if user_path.is_absolute():
+        base = _get_project_root()
+    else:
+        base = pipeline_dir()
     out = validate_safe_path(base, body.output_path)
 
     try:
@@ -376,6 +391,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
 
             # Log artifacts as JSON files
             import tempfile
+
             with tempfile.TemporaryDirectory() as tmpdir:
                 artifacts = summary.get("artifacts", {})
                 for name, data in artifacts.items():
@@ -415,6 +431,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             run_url = None
             if backend == "databricks":
                 import os
+
                 host = os.getenv("DATABRICKS_HOST", "")
                 try:
                     exp = mlflow.get_experiment_by_name(experiment_name)
