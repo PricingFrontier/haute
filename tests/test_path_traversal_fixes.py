@@ -268,7 +268,7 @@ class TestGetSubmodelPathTraversal:
         modules_dir = tmp_path / "modules"
         modules_dir.mkdir()
         sm_file = modules_dir / "pricing.py"
-        sm_file.write_text('''\
+        sm_file.write_text("""\
 import polars as pl
 import haute
 
@@ -277,7 +277,7 @@ submodel = haute.Submodel("pricing", description="Test submodel")
 @submodel.data_source
 def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
-''')
+""")
         resp = client.get("/api/submodel/pricing")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -333,7 +333,7 @@ def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
         modules_dir = tmp_path / "modules"
         modules_dir.mkdir()
         sm_file = modules_dir / "my_model_v2.py"
-        sm_file.write_text('''\
+        sm_file.write_text("""\
 import polars as pl
 import haute
 
@@ -342,7 +342,7 @@ submodel = haute.Submodel("my_model_v2", description="Test")
 @submodel.data_source
 def step(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
-''')
+""")
         resp = client.get("/api/submodel/my_model_v2")
         assert resp.status_code == 200
 
@@ -637,7 +637,8 @@ class TestCreateSubmodelPathTraversal:
     """
 
     def _minimal_create_body(
-        self, source_file: str = "pipeline.py",
+        self,
+        source_file: str = "pipeline.py",
     ) -> dict:
         """Build a minimal create_submodel request body."""
         return {

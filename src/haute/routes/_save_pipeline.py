@@ -186,7 +186,7 @@ class SavePipelineService:
         prev = getattr(self, "_prev_config_files", None)
         current = getattr(self, "_last_config_files", {})
 
-        protected = getattr(self, "_protected_config_files", set())
+        protected: set[str] = getattr(self, "_protected_config_files", set())
 
         if prev is None:
             # First save — fall back to full-scan cleanup so pre-existing

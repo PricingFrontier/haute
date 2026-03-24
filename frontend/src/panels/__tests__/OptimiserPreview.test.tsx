@@ -192,11 +192,9 @@ describe("OptimiserPreview", () => {
   })
 
   describe("tab switching", () => {
-    it("switches to Frontier tab on click", () => {
+    it("hides Frontier tab when no frontier data", () => {
       renderPreview()
-      fireEvent.click(screen.getByText("Frontier"))
-      // Frontier tab without data shows the "no data" message
-      expect(screen.getByText(/No frontier data available/)).toBeInTheDocument()
+      expect(screen.queryByText("Frontier")).not.toBeInTheDocument()
     })
 
     it("switches to Convergence tab on click", () => {
@@ -223,10 +221,9 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
     })
 
-    it("shows no-data message when frontier has empty points", () => {
+    it("hides Frontier tab when frontier has empty points", () => {
       renderPreview({ data: makeData({ frontier: { points: [], n_points: 0, constraint_names: [] } }) })
-      fireEvent.click(screen.getByText("Frontier"))
-      expect(screen.getByText(/No frontier data available/)).toBeInTheDocument()
+      expect(screen.queryByText("Frontier")).not.toBeInTheDocument()
     })
 
     it("shows detail card when a point is selected", () => {
