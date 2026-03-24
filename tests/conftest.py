@@ -11,6 +11,22 @@ from haute._sandbox import _get_project_root, set_project_root
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 
 
+@pytest.fixture(autouse=True)
+def _clear_pipeline_dir_cache():
+    """Prevent the lru_cache on pipeline_dir from leaking real paths into tests.
+
+    Without this, save tests that trigger ``_remove_stale_config_files`` will
+    scan and delete real config files from ``rating/config/`` because the
+    cached ``pipeline_dir()`` points at the real project, not the test's
+    ``tmp_path``.
+    """
+    from haute.routes._helpers import pipeline_dir
+
+    pipeline_dir.cache_clear()
+    yield
+    pipeline_dir.cache_clear()
+
+
 @pytest.fixture()
 def _widen_sandbox_root():
     """Allow tests to load files from temp directories.
@@ -74,11 +90,7 @@ def compile_node_code(code: str) -> None:
 
     Shared by test_codegen.py and test_codegen_builders.py.
     """
-    wrapper = (
-        "import polars as pl\nimport haute\n"
-        "pipeline = haute.Pipeline('test')\n\n"
-        f"{code}\n"
-    )
+    wrapper = f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
     compile(wrapper, "<test>", "exec")
 
 
