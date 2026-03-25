@@ -107,4 +107,6 @@ nav:
       - GitHub Actions: deployment/ci/github-actions.md
       - GitLab CI/CD: deployment/ci/gitlab.md
       - Azure DevOps: deployment/ci/azure-devops.md
-  - Building Models: building-models/index.md
+  - Building Models:
+    - building-models/index.md
+    - Preparing Your Data: building-models/preparing-your-data.md

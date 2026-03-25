@@ -7,9 +7,9 @@ import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore
 import { EditorView, placeholder as cmPlaceholder, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection } from "@codemirror/view"
 import { EditorState, Compartment } from "@codemirror/state"
 import { python } from "@codemirror/lang-python"
-import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from "@codemirror/language"
+import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit, syntaxTree } from "@codemirror/language"
 import { defaultKeymap, indentWithTab, history, historyKeymap } from "@codemirror/commands"
-import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from "@codemirror/autocomplete"
+import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete"
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search"
 import { lintGutter, setDiagnostics } from "@codemirror/lint"
 import { tags } from "@lezer/highlight"
@@ -459,22 +459,68 @@ const focusRingTheme = EditorView.theme({
   },
 })
 
+// ─── Column-aware autocomplete source ─────────────────────────────
+
+function columnCompletionSource(columns: string[]) {
+  return (context: CompletionContext): CompletionResult | null => {
+    if (columns.length === 0) return null
+
+    // Walk the syntax tree to check if cursor is inside a string literal
+    const node = syntaxTree(context.state).resolveInner(context.pos, -1)
+    const isString = node.name === "String" || node.name === "FormatString"
+
+    if (!isString) return null
+
+    // Find the opening quote and extract the partial text after it
+    const nodeText = context.state.sliceDoc(node.from, context.pos)
+    // Match opening quote(s): single, double, triple-single, triple-double, with optional f/r/b prefix
+    const quoteMatch = nodeText.match(/^[fFrRbBuU]{0,2}("""|'''|"|')/)
+    if (!quoteMatch) return null
+
+    const quoteLen = quoteMatch[0].length
+    const partialFrom = node.from + quoteLen
+    const partial = context.state.sliceDoc(partialFrom, context.pos)
+
+    // Filter columns by case-insensitive prefix match
+    const lower = partial.toLowerCase()
+    const options = columns
+      .filter((col) => col.toLowerCase().startsWith(lower))
+      .map((col) => ({ label: col, type: "variable" as const }))
+
+    if (options.length === 0) return null
+
+    return {
+      from: partialFrom,
+      to: context.pos,
+      options,
+      filter: false, // we already filtered
+    }
+  }
+}
+
 export function CodeEditor({
   defaultValue,
   onChange,
   placeholder,
   errorLine,
+  availableColumns,
+  onEditorView,
 }: {
   defaultValue: string
   onChange: (value: string) => void
   placeholder?: string
   errorLine?: number | null
+  /** Column names for in-string autocomplete */
+  availableColumns?: string[]
+  /** Callback to expose the EditorView for external operations (e.g. text insertion) */
+  onEditorView?: (view: EditorView | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const placeholderCompartment = useRef(new Compartment())
+  const columnCompartment = useRef(new Compartment())
   const isFocusedRef = useRef(false)
 
   // Keep onChange ref fresh without recreating the editor
@@ -519,7 +565,12 @@ export function CodeEditor({
         indentOnInput(),
         bracketMatching(),
         closeBrackets(),
-        autocompletion(),
+        // Column-aware completions (reconfigurable via compartment)
+        columnCompartment.current.of(
+          availableColumns?.length
+            ? autocompletion({ override: [columnCompletionSource(availableColumns)] })
+            : autocompletion(),
+        ),
         highlightActiveLine(),
         highlightActiveLineGutter(),
         highlightSelectionMatches(),
@@ -574,13 +625,27 @@ export function CodeEditor({
     })
 
     viewRef.current = view
+    onEditorView?.(view)
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
+      onEditorView?.(null)
       view.destroy()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once: defaultValue is initial content only, onChange is tracked via ref
   }, [])
+
+  // Update column completions when availableColumns changes
+  useEffect(() => {
+    if (!viewRef.current) return
+    viewRef.current.dispatch({
+      effects: columnCompartment.current.reconfigure(
+        availableColumns?.length
+          ? autocompletion({ override: [columnCompletionSource(availableColumns)] })
+          : autocompletion(),
+      ),
+    })
+  }, [availableColumns])
 
   // Push error diagnostics when errorLine changes
   useEffect(() => {

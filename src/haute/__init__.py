@@ -9,5 +9,6 @@ except PackageNotFoundError:
 
 from haute._types import HauteError
 from haute.pipeline import Pipeline, Submodel
+from haute.prepare import clean_columns
 
-__all__ = ["HauteError", "Pipeline", "Submodel"]
+__all__ = ["HauteError", "Pipeline", "Submodel", "clean_columns"]

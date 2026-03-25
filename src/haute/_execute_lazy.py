@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import polars as pl
 
@@ -162,9 +162,34 @@ def _checkpoint_decision(
 # ---------------------------------------------------------------------------
 
 
+def _apply_column_renames(
+    frame: pl.LazyFrame | pl.DataFrame,
+    config: dict[str, Any],
+) -> pl.LazyFrame | pl.DataFrame:
+    """Apply column renames from *config*'s ``column_renames``.
+
+    ``column_renames`` is a ``dict[str, str]`` mapping original column names
+    to new names.  Only renames for columns that actually exist in the frame
+    are applied.  A no-op when the dict is absent or empty.
+    """
+    renames: dict[str, str] | None = config.get("column_renames")
+    if not renames:
+        return frame
+
+    if isinstance(frame, pl.LazyFrame):
+        all_cols = set(frame.collect_schema().names())
+    else:
+        all_cols = set(frame.columns)
+
+    valid = {old: new for old, new in renames.items() if old in all_cols and old != new}
+    if valid:
+        return frame.rename(valid)
+    return frame
+
+
 def _apply_selected_columns(
     frame: pl.LazyFrame | pl.DataFrame,
-    config: dict,
+    config: dict[str, Any],
 ) -> pl.LazyFrame | pl.DataFrame:
     """Filter *frame* to only the columns listed in *config*'s ``selected_columns``.
 
@@ -379,8 +404,10 @@ def _execute_lazy(
         if isinstance(lf, pl.DataFrame):
             lf = lf.lazy()
 
-        # Apply selected_columns filter for downstream propagation
+        # Apply selected_columns filter first (uses pre-rename names),
+        # then column renames on the surviving columns.
         lf = _apply_selected_columns(lf, node_map[nid].data.config)
+        lf = _apply_column_renames(lf, node_map[nid].data.config)
 
         # Adaptive checkpoint to break Polars plan duplication and
         # chained-join memory accumulation (pola-rs/polars#24206).
@@ -633,9 +660,12 @@ def _execute_eager_core(
             # Capture full column set before selected_columns filtering
             available_columns[nid] = [(c, str(df[c].dtype)) for c in df.columns]
 
-            # Apply selected_columns filter for downstream propagation
+            # Apply selected_columns filter first (uses pre-rename names),
+            # then column renames on the surviving columns.
             filtered = _apply_selected_columns(df, node_map[nid].data.config)
             df = filtered if isinstance(filtered, pl.DataFrame) else filtered.collect()
+            renamed = _apply_column_renames(df, node_map[nid].data.config)
+            df = renamed if isinstance(renamed, pl.DataFrame) else renamed.collect()
 
             eager_outputs[nid] = df
             memory_bytes[nid] = int(df.estimated_size("b"))

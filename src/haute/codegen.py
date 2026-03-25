@@ -40,6 +40,16 @@ def _safe_str(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _safe_path(value: str) -> str:
+    """Produce a double-quoted Python path literal with forward slashes.
+
+    Normalises Windows backslashes to forward slashes before escaping,
+    so generated code is cross-platform.  Python and Polars handle
+    forward slashes on all operating systems.
+    """
+    return _safe_str(value.replace("\\", "/"))
+
+
 __all__ = [
     "graph_to_code",
     "graph_to_code_multi",
@@ -194,21 +204,21 @@ def _data_source_parts(config: dict) -> tuple[str, str, str]:
         imports = "    from haute._databricks_io import read_cached_table\n"
         load_expr = f"read_cached_table({_safe_str(table)})"
     elif path.lower().endswith(".csv"):
-        decorator = f"@pipeline.data_source(path={_safe_str(path)})"
+        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
         imports = ""
-        load_expr = f"pl.scan_csv({_safe_str(path)})"
+        load_expr = f"pl.scan_csv({_safe_path(path)})"
     elif path.lower().endswith(".jsonl"):
-        decorator = f"@pipeline.data_source(path={_safe_str(path)})"
+        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
         imports = ""
-        load_expr = f"pl.scan_ndjson({_safe_str(path)})"
+        load_expr = f"pl.scan_ndjson({_safe_path(path)})"
     elif path.lower().endswith(".json"):
-        decorator = f"@pipeline.data_source(path={_safe_str(path)})"
+        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
         imports = ""
-        load_expr = f"pl.read_json({_safe_str(path)}).lazy()"
+        load_expr = f"pl.read_json({_safe_path(path)}).lazy()"
     else:
-        decorator = f"@pipeline.data_source(path={_safe_str(path)})"
+        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
         imports = ""
-        load_expr = f"pl.scan_parquet({_safe_str(path)})"
+        load_expr = f"pl.scan_parquet({_safe_path(path)})"
 
     return decorator, imports, load_expr
 
@@ -357,7 +367,7 @@ def _node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str
         try:
             dec_name = NODE_TYPE_TO_DECORATOR.get(node_type, "polars")
             def_idx = code.index("\ndef ")
-            code = f"@pipeline.{dec_name}(config={_safe_str(cfg_path)})" + code[def_idx:]
+            code = f"@pipeline.{dec_name}(config={_safe_path(cfg_path)})" + code[def_idx:]
         except ValueError:
             logger.warning("no_def_in_generated_code", node=node.data.label)
     return code
@@ -400,10 +410,10 @@ def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
     return template.format(
         func_name=func_name,
         description=description,
-        path_repr=_safe_str(path),
+        path_repr=_safe_path(path),
         row_id_kw=row_id_kw,
         config_path=cfg_path,
-        config_path_repr=_safe_str(cfg_path),
+        config_path_repr=_safe_path(cfg_path),
     )
 
 
@@ -536,7 +546,7 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
             f"    from haute.graph_utils import score_from_config\n"
             f"    base = str(Path(__file__).parent)\n"
             f"    result = score_from_config(\n"
-            f"        {first_param}, config={_safe_str(cfg_path)},\n"
+            f"        {first_param}, config={_safe_path(cfg_path)},\n"
             f"        base_dir=base,\n"
             f"    )\n"
             f"{indented}\n"
@@ -549,7 +559,7 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
         params=params,
         first_param=first_param,
         decorator_kwargs=decorator_kwargs,
-        config_path_repr=_safe_str(cfg_path),
+        config_path_repr=_safe_path(cfg_path),
     )
 
 
@@ -725,7 +735,7 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     return _EXTERNAL.format(
         func_name=func_name,
         description=description,
-        path_repr=_safe_str(path),
+        path_repr=_safe_path(path),
         file_type_repr=_safe_str(file_type),
         params=params,
         body=body,
@@ -746,7 +756,7 @@ def _gen_data_sink(node: GraphNode, source_names: list[str]) -> str:
     return template.format(
         func_name=func_name,
         description=description,
-        path_repr=_safe_str(path),
+        path_repr=_safe_path(path),
         params=params,
         first=first,
     )

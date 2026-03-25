@@ -7,13 +7,18 @@ Provides utilities for:
 - Column rename mappings (dot-notation → clean snake_case)
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
+
 import polars as pl
 
-# ── Generic Polars helpers ────────────────────────────────────────────
+# ── Date helpers ──────────────────────────────────────────────────────
 
-def to_date(col_name: str) -> pl.Expr:
+
+def to_date(col_name: str, fmt: str = "%Y-%m-%d") -> pl.Expr:
     """Parse a string column to a date."""
-    return pl.col(col_name).str.to_date("%Y-%m-%d")
+    return pl.col(col_name).str.to_date(fmt)
 
 
 def years_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
@@ -21,7 +26,28 @@ def years_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
     return ((later - earlier).dt.total_days() / 365.25).floor().cast(pl.Int64)
 
 
-def cols_matching(all_cols: list[str], pattern_fn) -> list[str]:
+def months_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
+    """Calendar months between two date expressions."""
+    return (later.dt.year() - earlier.dt.year()) * 12 + (later.dt.month() - earlier.dt.month())
+
+
+def days_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
+    """Days between two date expressions."""
+    return (later - earlier).dt.total_days()
+
+
+# ── String helpers ────────────────────────────────────────────────────
+
+
+def postcode_area(col_name: str) -> pl.Expr:
+    """Extract the outward code (first part) from a UK postcode."""
+    return pl.col(col_name).str.split(" ").list.first()
+
+
+# ── Column matching ──────────────────────────────────────────────────
+
+
+def cols_matching(all_cols: list[str], pattern_fn: Callable[[str], bool]) -> list[str]:
     """Return columns from *all_cols* where pattern_fn(col) is True."""
     return [c for c in all_cols if pattern_fn(c)]
 

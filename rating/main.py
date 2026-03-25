@@ -1,5 +1,7 @@
 """Pipeline: my_pipeline"""
 
+from __future__ import annotations
+
 import polars as pl
 import haute
 
@@ -19,7 +21,7 @@ pipeline = haute.Pipeline("my_pipeline", description='')
 @pipeline.data_source(config="config/data_source/batch_quotes.json")
 def batch_quotes() -> pl.LazyFrame:
     """batch_quotes node"""
-    df = pl.scan_parquet("data\\competitor_premiums\\nb_batch.parquet")
+    df = pl.scan_parquet("data/competitor_premiums/nb_batch.parquet")
     df = df.limit(100000)
     return df
 
@@ -204,6 +206,13 @@ def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
     return optimiser_input
 
 
+@pipeline.polars
+def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    """processing node"""
+    df = haute.clean_columns(quotes)
+    return df
+
+
 @pipeline.instance(of="competitor_features")
 def competitor_features_scenarios(premium: pl.LazyFrame) -> pl.LazyFrame:
     """Instance of competitor_features"""
@@ -233,3 +242,4 @@ pipeline.connect("premium", "competitor_features_scenarios")
 pipeline.connect("competitor_features_scenarios", "conversion_scoring")
 pipeline.connect("conversion_scoring", "optimiser_input")
 pipeline.connect("optimiser_input", "online_optimiser")
+pipeline.connect("quotes", "processing")

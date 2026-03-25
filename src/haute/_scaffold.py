@@ -34,14 +34,16 @@ DATABRICKS_RATING_TOKEN=your_databricks_token_here
             "DATABRICKS_RATING_HOST",
             "DATABRICKS_RATING_TOKEN",
         ],
-        "toml_section": lambda name: f"""\
+        "toml_section": lambda name: (
+            f"""\
 [deploy.databricks]
 experiment_name = "/Shared/haute/{name}"
 catalog = "main"
 schema = "pricing"
 serving_workload_size = "Small"
 serving_scale_to_zero = true
-""",
+"""
+        ),
     },
     "container": {
         "label": "Container registry",
@@ -53,12 +55,14 @@ DOCKER_PASSWORD=
             "DOCKER_USERNAME",
             "DOCKER_PASSWORD",
         ],
-        "toml_section": lambda name: """\
+        "toml_section": lambda name: (
+            """\
 [deploy.container]
 registry = ""
 port = 8080
 base_image = "python:3.11-slim"
-""",
+"""
+        ),
     },
     "azure-container-apps": {
         "label": "Azure Container Apps",
@@ -78,7 +82,8 @@ AZURE_CLIENT_SECRET=
             "AZURE_CLIENT_ID",
             "AZURE_CLIENT_SECRET",
         ],
-        "toml_section": lambda name: f"""\
+        "toml_section": lambda name: (
+            f"""\
 [deploy.container]
 registry = ""
 port = 8080
@@ -88,7 +93,8 @@ base_image = "python:3.11-slim"
 resource_group = ""
 container_app_name = "{name}"
 environment_name = ""
-""",
+"""
+        ),
     },
     "aws-ecs": {
         "label": "AWS ECS",
@@ -106,7 +112,8 @@ AWS_DEFAULT_REGION=eu-west-1
             "AWS_SECRET_ACCESS_KEY",
             "AWS_DEFAULT_REGION",
         ],
-        "toml_section": lambda name: f"""\
+        "toml_section": lambda name: (
+            f"""\
 [deploy.container]
 registry = ""
 port = 8080
@@ -116,7 +123,8 @@ base_image = "python:3.11-slim"
 region = "eu-west-1"
 cluster = ""
 service = "{name}"
-""",
+"""
+        ),
     },
     "gcp-run": {
         "label": "GCP Cloud Run",
@@ -132,7 +140,8 @@ GCP_SERVICE_ACCOUNT_KEY=
             "GCP_PROJECT_ID",
             "GCP_SERVICE_ACCOUNT_KEY",
         ],
-        "toml_section": lambda name: f"""\
+        "toml_section": lambda name: (
+            f"""\
 [deploy.container]
 registry = ""
 port = 8080
@@ -142,7 +151,8 @@ base_image = "python:3.11-slim"
 project = ""
 region = "europe-west1"
 service = "{name}"
-""",
+"""
+        ),
     },
     "sagemaker": {
         "label": "AWS SageMaker",
@@ -158,12 +168,14 @@ SAGEMAKER_ROLE_ARN=arn:aws:iam::123456789012:role/SageMakerRole
             "AWS_DEFAULT_REGION",
             "SAGEMAKER_ROLE_ARN",
         ],
-        "toml_section": lambda name: """\
+        "toml_section": lambda name: (
+            """\
 [deploy.sagemaker]
 region = "eu-west-1"
 instance_type = "ml.m5.large"
 initial_instance_count = 1
-""",
+"""
+        ),
     },
     "azure-ml": {
         "label": "Azure ML",
@@ -179,13 +191,15 @@ AZURE_CLIENT_SECRET=
             "AZURE_CLIENT_ID",
             "AZURE_CLIENT_SECRET",
         ],
-        "toml_section": lambda name: """\
+        "toml_section": lambda name: (
+            """\
 [deploy.azure-ml]
 resource_group = ""
 workspace_name = ""
 instance_type = "Standard_DS3_v2"
 instance_count = 1
-""",
+"""
+        ),
     },
 }
 
@@ -914,7 +928,14 @@ def starter_pipeline(name: str) -> str:
 import polars as pl
 import haute
 
-from utility.features import to_date, years_between, cols_matching
+from utility.features import (
+    to_date,
+    years_between,
+    months_between,
+    days_between,
+    postcode_area,
+    cols_matching,
+)
 
 pipeline = haute.Pipeline("{name}", description="")
 '''
@@ -934,21 +955,84 @@ Add project-specific utility functions, constants, and column mappings here.
 These are imported into main.py so your pipeline nodes stay clean and readable.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
+
 import polars as pl
 
 
-def to_date(col_name: str) -> pl.Expr:
-    """Parse a string column to a date."""
-    return pl.col(col_name).str.to_date("%Y-%m-%d")
+# ── Date helpers ──────────────────────────────────────────────────────
+
+
+def to_date(col_name: str, fmt: str = "%Y-%m-%d") -> pl.Expr:
+    """Parse a string column to a date.
+
+    Example::
+
+        to_date("proposer.date_of_birth")
+    """
+    return pl.col(col_name).str.to_date(fmt)
 
 
 def years_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
-    """Whole years between two date expressions (floor)."""
+    """Whole years between two date expressions (floor).
+
+    Example::
+
+        years_between(to_date("date_of_birth"), to_date("cover_start_date")).alias("age")
+    """
     return ((later - earlier).dt.total_days() / 365.25).floor().cast(pl.Int64)
 
 
-def cols_matching(all_cols: list[str], pattern_fn) -> list[str]:
-    """Return columns from *all_cols* where pattern_fn(col) is True."""
+def months_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
+    """Calendar months between two date expressions.
+
+    Uses year/month subtraction so Jan 1 to Jul 1 = 6, not 5.
+
+    Example::
+
+        months_between(to_date("start_date"), to_date("end_date")).alias("tenure_months")
+    """
+    return (later.dt.year() - earlier.dt.year()) * 12 + (later.dt.month() - earlier.dt.month())
+
+
+def days_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
+    """Days between two date expressions.
+
+    Example::
+
+        days_between(to_date("order_date"), to_date("ship_date")).alias("fulfillment_days")
+    """
+    return (later - earlier).dt.total_days()
+
+
+# ── String helpers ────────────────────────────────────────────────────
+
+
+def postcode_area(col_name: str) -> pl.Expr:
+    """Extract the outward code (first part) from a UK postcode.
+
+    ``"SW1A 2AA"`` → ``"SW1A"``, ``"B1 1BB"`` → ``"B1"``
+
+    Example::
+
+        postcode_area("postcode").alias("postcode_area")
+    """
+    return pl.col(col_name).str.split(" ").list.first()
+
+
+# ── Column matching ──────────────────────────────────────────────────
+
+
+def cols_matching(all_cols: list[str], pattern_fn: Callable[[str], bool]) -> list[str]:
+    """Return columns from *all_cols* where pattern_fn(col) is True.
+
+    Example::
+
+        age_cols = cols_matching(df.collect_schema().names(),
+                                 lambda c: c.endswith("_age"))
+    """
     return [c for c in all_cols if pattern_fn(c)]
 '''
 

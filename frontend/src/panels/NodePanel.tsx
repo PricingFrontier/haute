@@ -23,6 +23,7 @@ import {
 } from "./editors"
 import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
 import ColumnsTab from "./editors/ColumnsTab"
+import GroupedColumnsTab from "./editors/GroupedColumnsTab"
 import PanelShell from "./PanelShell"
 
 // Re-export types (preserve public API for App.tsx)
@@ -219,6 +220,13 @@ function collectUpstreamColumns(nodeId: string, edges: SimpleEdge[], nodeMap: Re
   return cols
 }
 
+/** Check if any upstream node is an api_input type. */
+function hasUpstreamApiInput(nodeId: string, edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): boolean {
+  return edges
+    .filter(e => e.target === nodeId)
+    .some(e => nodeMap[e.source]?.data?.nodeType === NODE_TYPES.API_INPUT)
+}
+
 // ─── NodePanel ────────────────────────────────────────────────────
 
 export default function NodePanel({ node, edges, allNodes, submodels, preamble, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine }: NodePanelProps) {
@@ -381,7 +389,17 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         return <ConstantEditor config={config} onUpdate={handleConfigUpdate} />
 
       case NODE_TYPES.POLARS:
-        return <TransformEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} />
+        return (
+          <TransformEditor
+            config={config}
+            onUpdate={handleConfigUpdate}
+            inputSources={inputSources}
+            onDeleteInput={onDeleteEdge}
+            errorLine={errorLine}
+            upstreamColumns={collectUpstreamColumns(node.id, edges, nodeMap)}
+            hasApiInputUpstream={hasUpstreamApiInput(node.id, edges, nodeMap)}
+          />
+        )
 
       case NODE_TYPES.SUBMODEL:
         return <SubmodelEditor config={config} accentColor={accentColor} />
@@ -470,12 +488,21 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {activeTab === "columns" && showColumnsTab ? (
-          <ColumnsTab
-            config={config}
-            onUpdate={handleConfigUpdate}
-            availableColumns={availableColumns}
-            columns={currentColumns}
-          />
+          nodeType === NODE_TYPES.API_INPUT ? (
+            <GroupedColumnsTab
+              config={config}
+              onUpdate={handleConfigUpdate}
+              availableColumns={availableColumns}
+              columns={currentColumns}
+            />
+          ) : (
+            <ColumnsTab
+              config={config}
+              onUpdate={handleConfigUpdate}
+              availableColumns={availableColumns}
+              columns={currentColumns}
+            />
+          )
         ) : (
           renderEditor()
         )}

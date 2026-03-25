@@ -670,10 +670,14 @@ class TestStarterFiles:
         assert "utilit" in init_result.lower()
 
         features_result = starter_utility_features()
-        assert "def to_date(col_name: str)" in features_result
+        assert "def to_date(col_name: str, fmt: str" in features_result
         assert "def years_between(earlier: pl.Expr, later: pl.Expr)" in features_result
-        assert "def cols_matching(all_cols: list[str], pattern_fn)" in features_result
+        assert "def months_between(earlier: pl.Expr, later: pl.Expr)" in features_result
+        assert "def days_between(earlier: pl.Expr, later: pl.Expr)" in features_result
+        assert "def postcode_area(col_name: str)" in features_result
+        assert "def cols_matching(all_cols: list[str], pattern_fn: Callable" in features_result
         assert "import polars as pl" in features_result
+        assert "from __future__ import annotations" in features_result
 
     def test_test_quote_is_valid_json_array(self) -> None:
         import json
