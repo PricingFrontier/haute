@@ -95,6 +95,8 @@ nav:
     - getting-started/index.md
     - Setting Up Your Environment: getting-started/environment.md
     - Installing Haute: getting-started/installing-haute.md
+    - UI Overview: getting-started/ui-overview.md
+    - Polars: getting-started/polars.md
   - Deployment:
     - Overview: deployment/index.md
     - Before You Start: deployment/before-you-start.md
