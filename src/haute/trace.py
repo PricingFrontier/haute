@@ -10,12 +10,11 @@ Phase A - what's here now:
   • SchemaDiff       - classify columns as added/removed/modified/passed
   • TraceStep / TraceResult dataclasses
 
-TODO (future phases):
-  • Column provenance via Polars expression parsing
-  • Human-readable expression generation per node type
-  • JoinInfo / AggregationInfo for cardinality-changing nodes
-  • Compare-trace (two rows side-by-side)
-  • Row-identity tracking via __trace_row_id for filters/joins
+The trace is a pure observation layer — it never modifies the execution
+pipeline.  It uses the same DataFrames produced by the preview execution
+and correlates rows between parent and child nodes post-hoc using column
+value matching.  This guarantees that the trace always shows exactly the
+data the user sees in the preview table.
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ import math
 import time
 from dataclasses import dataclass
 from typing import Any
+
+import polars as pl
 
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
@@ -184,6 +185,185 @@ _cache = FingerprintCache(
 
 
 # ---------------------------------------------------------------------------
+# Post-hoc row correlation
+# ---------------------------------------------------------------------------
+
+
+def _build_value_mask(
+    cols: list[str],
+    vals: dict[str, Any],
+) -> pl.Expr:
+    """Build a Polars boolean mask matching *vals* on *cols*."""
+    mask = pl.lit(True)
+    for c in cols:
+        val = vals[c]
+        if val is None:
+            mask = mask & pl.col(c).is_null()
+        elif isinstance(val, float) and math.isnan(val):
+            mask = mask & pl.col(c).is_nan()
+        else:
+            mask = mask & (pl.col(c) == val)
+    return mask
+
+
+def _find_matching_row(
+    df: pl.DataFrame,
+    child_row: dict[str, Any],
+    fallback_index: int,
+) -> tuple[dict[str, Any], int]:
+    """Find the row in *df* that matches *child_row* on shared columns.
+
+    Returns ``(row_dict, positional_index)`` — the row dict is already
+    run through ``_jsonify_row``.
+
+    Strategy:
+      1. Try matching on ALL shared columns.
+      2. If no match, progressively remove the column that is blocking
+         the match (handles aggregated values like SUM that don't exist
+         in the source).
+      3. Final fallback: positional index.
+    """
+    df_cols = set(df.columns)
+    shared = [c for c in child_row if c in df_cols]
+
+    if shared:
+        # Add a temporary positional index so we can report *which* row matched.
+        indexed = df.with_row_index("__tmp_idx")
+        cols_to_try = list(shared)
+
+        while cols_to_try:
+            mask = _build_value_mask(cols_to_try, child_row)
+            matched = indexed.filter(mask)
+            if len(matched) > 0:
+                idx = int(matched[0, "__tmp_idx"])
+                return _jsonify_row(df.row(idx, named=True)), idx
+
+            # Progressively remove the column that blocks matching.
+            removed = False
+            for i in range(len(cols_to_try) - 1, -1, -1):
+                candidate = cols_to_try[:i] + cols_to_try[i + 1 :]
+                if not candidate:
+                    break
+                test_mask = _build_value_mask(candidate, child_row)
+                if len(indexed.filter(test_mask)) > 0:
+                    cols_to_try = candidate
+                    removed = True
+                    break
+            if not removed:
+                break
+
+    # Final fallback: positional index — this means column matching
+    # could not find the upstream row (e.g. aggregation dropped all
+    # shared values, or all rows are identical).  The trace step may
+    # show a different record than the one that contributed to the
+    # target row.
+    idx = min(fallback_index, len(df) - 1) if len(df) > 0 else 0
+    if len(df) > 0:
+        logger.debug(
+            "trace_row_match_fallback",
+            fallback_index=idx,
+            shared_cols_tried=len(shared) if shared else 0,
+        )
+        return _jsonify_row(df.row(idx, named=True)), idx
+    return {}, 0
+
+
+def _correlate_rows_posthoc(
+    eager_outputs: dict[str, pl.DataFrame],
+    order: list[str],
+    parents_of: dict[str, list[str]],
+    target_node_id: str,
+    row_index: int,
+) -> dict[str, dict[str, Any]]:
+    """Extract the correct row from each node using post-hoc correlation.
+
+    Uses the preview-cached DataFrames directly — no re-execution, no
+    injected columns.  Walks backward from the target node and matches
+    each parent's row by shared column values with the already-resolved
+    child row.
+
+    Returns a dict mapping node_id → row values (JSON-safe).
+    """
+    target_df = eager_outputs[target_node_id]
+    if row_index >= len(target_df):
+        return {nid: {} for nid in order}
+
+    # Step 1: extract the target row — this is exactly what the user clicked
+    target_row_raw = target_df.row(row_index, named=True)
+
+    result: dict[str, dict[str, Any]] = {}
+    row_indices: dict[str, int] = {}  # track positional index per node
+
+    result[target_node_id] = _jsonify_row(target_row_raw)
+    row_indices[target_node_id] = row_index
+
+    # Step 2: build children_of (reverse of parents_of)
+    children_of: dict[str, list[str]] = {nid: [] for nid in order}
+    for cid, pids in parents_of.items():
+        for pid in pids:
+            if pid in children_of:
+                children_of[pid].append(cid)
+
+    # Step 3: walk backward through topo order
+    for nid in reversed(order):
+        if nid in result:
+            continue
+
+        parent_df = eager_outputs.get(nid)
+        if parent_df is None or len(parent_df) == 0:
+            result[nid] = {}
+            row_indices[nid] = 0
+            continue
+
+        # Find a child of this node that's already resolved
+        resolved_child_id = None
+        for cid in children_of.get(nid, []):
+            if cid in result and result[cid]:
+                resolved_child_id = cid
+                break
+
+        if resolved_child_id is None:
+            # Node not on path to target — positional fallback
+            idx = min(row_index, len(parent_df) - 1)
+            result[nid] = _jsonify_row(parent_df.row(idx, named=True))
+            row_indices[nid] = idx
+            continue
+
+        child_row = result[resolved_child_id]
+        child_row_idx = row_indices.get(resolved_child_id, 0)
+        child_df = eager_outputs.get(resolved_child_id)
+        child_len = len(child_df) if child_df is not None else 0
+
+        # Fast path: same row count → likely 1:1 (with_columns, rename, select).
+        # Check if the row at the same position matches on shared columns.
+        if len(parent_df) == child_len:
+            candidate = _jsonify_row(parent_df.row(child_row_idx, named=True))
+            shared = [c for c in child_row if c in candidate]
+            if shared and all(
+                candidate.get(c) == child_row.get(c)
+                or (_is_nan_like(candidate.get(c)) and _is_nan_like(child_row.get(c)))
+                for c in shared
+            ):
+                result[nid] = candidate
+                row_indices[nid] = child_row_idx
+                continue
+
+        # Value matching: find the parent row that matches the child row
+        row_dict, idx = _find_matching_row(parent_df, child_row, child_row_idx)
+        result[nid] = row_dict
+        row_indices[nid] = idx
+
+    return result
+
+
+def _is_nan_like(v: Any) -> bool:
+    """Return True for None or float NaN (treated as equal in matching)."""
+    if v is None:
+        return True
+    return isinstance(v, float) and math.isnan(v)
+
+
+# ---------------------------------------------------------------------------
 # Main trace executor
 # ---------------------------------------------------------------------------
 
@@ -197,6 +377,10 @@ def execute_trace(
     source: str = "live",
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
+
+    The trace is a pure observation layer — it uses the same DataFrames
+    produced by the preview execution and correlates rows between parent
+    and child nodes post-hoc.  The execution pipeline is never modified.
 
     Args:
         graph: React Flow graph with "nodes" and "edges".
@@ -274,9 +458,17 @@ def execute_trace(
                     target_node_id,
                     source=source,
                 )
-                # Verify all nodes in the topo order have non-None outputs
-                if all(nid in prev_outputs and prev_outputs[nid] is not None for nid in order):
-                    eager_outputs = {nid: prev_outputs[nid] for nid in order}
+                # Use preview DataFrames for all nodes that have them.
+                # Some upstream nodes may have errored in preview
+                # (swallow_errors=True) — include only the ones that
+                # succeeded.  The post-hoc correlator handles missing
+                # nodes gracefully.
+                eager_outputs = {}
+                for nid in order:
+                    df = prev_outputs.get(nid)
+                    if df is not None:
+                        eager_outputs[nid] = df
+                if target_node_id in eager_outputs:
                     source_ids = {nid for nid in order if not parents_of.get(nid)}
                     reused_preview = True
                     logger.debug(
@@ -309,7 +501,22 @@ def execute_trace(
             node_map = result.node_map
             source_ids = {nid for nid in order if not parents_of.get(nid)}
 
-        # Populate cache
+            # Store in preview cache so that if the user's preview was
+            # generated by a different execution, subsequent preview
+            # refreshes and traces share these same DataFrames.  This
+            # prevents row-order divergence for non-deterministic joins.
+            _preview_cache.store(
+                preview_fp,
+                eager_outputs=eager_outputs,
+                errors={},
+                order=order,
+                timings={},
+                memory_bytes={},
+                error_lines={},
+                available_columns={},
+            )
+
+        # Populate cache — unmodified DataFrames from the single execution
         _cache.store(
             fp,
             eager_outputs=eager_outputs,
@@ -319,14 +526,14 @@ def execute_trace(
             source_ids=source_ids,
         )
 
-    # Extract single row from each node's cached DataFrame
-    cached_rows: dict[str, dict[str, Any]] = {}
-    for nid in order:
-        df = eager_outputs[nid]
-        if row_index < len(df):
-            cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
-        else:
-            cached_rows[nid] = {}
+    # Extract correct row from each node via post-hoc correlation
+    cached_rows = _correlate_rows_posthoc(
+        eager_outputs,
+        order,
+        parents_of,
+        target_node_id,
+        row_index,
+    )
 
     # ---------- Build trace steps from cached rows ----------
     steps: list[TraceStep] = []
@@ -366,9 +573,6 @@ def execute_trace(
                 output_values=output_row,
             )
         )
-
-    # Free full DataFrames — only cached single rows are needed from here
-    del eager_outputs
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
     #
