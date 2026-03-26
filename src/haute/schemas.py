@@ -661,7 +661,7 @@ class OptimiserSaveResponse(BaseModel):
 
 class OptimiserMlflowLogRequest(BaseModel):
     job_id: str
-    experiment_name: str = "/optimisation"
+    experiment_name: str | None = None
     model_name: str | None = None
 
 

@@ -175,9 +175,13 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
     config = job.get("config", {})
     node_label = job.get("node_label", "model")
 
-    # Build experiment name: user override > config > default
-    experiment_name = (
-        body.experiment_name or config.get("mlflow_experiment") or f"/Shared/haute/{node_label}"
+    # Build experiment name: user override > config > backend-aware default
+    from haute.modelling._mlflow_log import resolve_experiment_name
+
+    experiment_name = resolve_experiment_name(
+        explicit=body.experiment_name,
+        config_value=config.get("mlflow_experiment"),
+        node_label=node_label,
     )
     model_name = body.model_name or config.get("model_name") or None
 

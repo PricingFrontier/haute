@@ -80,6 +80,7 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
   const isStale = !!cachedResult && cachedResult.configHash !== currentConfigHash
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
+  const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
   const toggleAdvanced = useSettingsStore((s) => s.toggleSection)
 
   const mode = configField(config, "mode", "online")
@@ -534,6 +535,33 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
                 </div>
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      {/* MLflow (collapsible) */}
+      <div>
+        <button
+          onClick={() => toggleAdvanced("optimiser.mlflow")}
+          className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-[0.08em]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {mlflowOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          MLflow Logging
+        </button>
+        {mlflowOpen && (
+          <div className="mt-1.5 space-y-2">
+            <div>
+              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Experiment path</label>
+              <input
+                type="text"
+                placeholder="Leave blank for default"
+                value={configField(config, "mlflow_experiment", "")}
+                onChange={(e) => onUpdate("mlflow_experiment", e.target.value)}
+                className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
+                style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+              />
+            </div>
           </div>
         )}
       </div>

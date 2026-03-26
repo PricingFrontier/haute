@@ -4,14 +4,9 @@ import polars as pl
 import haute
 
 from utility.features import (
-    addon_features,
     clean_columns,
-    driver_features,
     to_date,
     years_between,
-    ADDON_NAMES,
-    DERIVED_COLS,
-    RENAME_MAP,
 )
 
 pipeline = haute.Pipeline("my_pipeline", description='')
@@ -188,15 +183,15 @@ def optimiser_input(conversion_scoring: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.optimiser(config="config/optimisation/online_optimiser.json")
-def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
-    """online_optimiser node"""
-    return optimiser_input
-
-
 @pipeline.optimiser_apply(config="config/apply_optimisation/apply_optimisation.json")
 def apply_optimisation(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
     """apply_optimisation node"""
+    return optimiser_input
+
+
+@pipeline.optimiser(config="config/optimisation/online_optimiser.json")
+def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
+    """online_optimiser node"""
     return optimiser_input
 
 

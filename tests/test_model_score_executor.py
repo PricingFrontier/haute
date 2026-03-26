@@ -224,7 +224,7 @@ class TestModelScorePassthrough:
 
 class TestModelScoreMissingFeatures:
     def test_partial_features(self, sample_data):
-        """Model features not in input are skipped; model gets available ones."""
+        """Missing model features produce a clear error with the missing feature names."""
         sm = _make_mock_model("regression", feature_names=["x1", "x2", "x_missing"])
         sm._model.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
 
@@ -232,15 +232,8 @@ class TestModelScoreMissingFeatures:
         with patch("haute._mlflow_io.load_mlflow_model", return_value=sm):
             results = execute_graph(graph, target_node_id="score", row_limit=100)
 
-        assert results["score"].status == "ok"
-        # Verify predict was called with only the available features
-        call_args = sm._model.predict.call_args
-        x_data = call_args[0][0]
-        # x_data may be a numpy array (pure numeric) or pandas DataFrame (has cats)
-        if hasattr(x_data, "columns"):
-            assert list(x_data.columns) == ["x1", "x2"]
-        else:
-            assert x_data.shape[1] == 2
+        assert results["score"].status == "error"
+        assert "x_missing" in results["score"].error
 
 
 # ---------------------------------------------------------------------------

@@ -194,8 +194,9 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
       if (selectedIdx != null && frontier) {
         await selectFrontierPointAPI({ job_id: jobId, point_index: selectedIdx })
       }
-      const res = await logOptimiserToMlflow({ job_id: jobId, experiment_name: "/optimisation" })
-      setActionMsg(res.run_url ? `Logged: ${res.run_url}` : `Logged (run ${res.run_id ?? "ok"})`)
+      const res = await logOptimiserToMlflow({ job_id: jobId })
+      const target = res.experiment_name ? ` to ${res.experiment_name}` : ""
+      setActionMsg(res.run_url ? `Logged${target}: ${res.run_url}` : `Logged${target} (run ${res.run_id ?? "ok"})`)
     } catch (e) {
       setActionMsg(`MLflow log failed: ${e}`)
     } finally {

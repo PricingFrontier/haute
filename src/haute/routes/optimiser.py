@@ -367,21 +367,24 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
         )
 
     try:
-        from haute.modelling._mlflow_log import resolve_tracking_backend
+        from haute.modelling._mlflow_log import (
+            build_run_url,
+            configure_mlflow_tracking,
+            resolve_experiment_name,
+        )
 
-        tracking_uri, backend = resolve_tracking_backend()
-        mlflow.set_tracking_uri(tracking_uri)
-        if backend == "databricks":
-            mlflow.set_registry_uri("databricks-uc")
+        tracking_uri, backend = configure_mlflow_tracking()
 
         summary = solver.summary(solve_result)
 
         node_label = job.get("node_label", "optimiser")
         job_config = job.get("config", {})
-        experiment_name = (
-            body.experiment_name
-            or job_config.get("mlflow_experiment")
-            or f"/Shared/haute/{node_label}"
+
+        experiment_name = resolve_experiment_name(
+            explicit=body.experiment_name,
+            config_value=job_config.get("mlflow_experiment"),
+            node_label=node_label,
+            backend=backend,
         )
         mlflow.set_experiment(experiment_name)
 
@@ -428,17 +431,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
                     mlflow.set_tag("frontier.selected_point_index", str(selected_idx))
 
             run_id = run.info.run_id
-            run_url = None
-            if backend == "databricks":
-                import os
-
-                host = os.getenv("DATABRICKS_HOST", "")
-                try:
-                    exp = mlflow.get_experiment_by_name(experiment_name)
-                    if exp and host:
-                        run_url = f"{host}/#mlflow/experiments/{exp.experiment_id}/runs/{run_id}"
-                except Exception:
-                    logger.debug("run_url_build_failed", exc_info=True)
+            run_url = build_run_url(backend, experiment_name, run_id)
 
         return OptimiserMlflowLogResponse(
             status="ok",

@@ -289,7 +289,6 @@ describe("OptimiserPreview", () => {
         expect(mockSelectFrontierPointAPI).toHaveBeenCalledWith({ job_id: "job_123", point_index: 0 })
         expect(mockLogOptimiserToMlflow).toHaveBeenCalledWith({
           job_id: "job_123",
-          experiment_name: "/optimisation",
         })
       })
     })

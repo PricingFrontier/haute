@@ -311,7 +311,7 @@ export function saveOptimiser(
 }
 
 export function logOptimiserToMlflow(
-  payload: { job_id: string; experiment_name?: string; model_name?: string | null },
+  payload: { job_id: string; experiment_name?: string | null; model_name?: string | null },
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
   return post("/api/optimiser/mlflow/log", payload, options)

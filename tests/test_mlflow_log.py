@@ -51,6 +51,122 @@ class TestResolveTrackingBackend:
         assert backend == "local"
 
 
+class TestResolveExperimentName:
+    def test_explicit_wins(self) -> None:
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert (
+            resolve_experiment_name(
+                explicit="/my/override",
+                config_value="/from/config",
+                node_label="freq",
+                backend="local",
+            )
+            == "/my/override"
+        )
+
+    def test_config_value_second(self) -> None:
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert (
+            resolve_experiment_name(
+                config_value="/from/config",
+                node_label="freq",
+                backend="local",
+            )
+            == "/from/config"
+        )
+
+    def test_databricks_default(self) -> None:
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert (
+            resolve_experiment_name(
+                node_label="frequency_model",
+                backend="databricks",
+            )
+            == "/Shared/haute/frequency_model"
+        )
+
+    def test_local_default(self) -> None:
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert (
+            resolve_experiment_name(
+                node_label="frequency_model",
+                backend="local",
+            )
+            == "frequency_model"
+        )
+
+    def test_auto_detects_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert resolve_experiment_name(node_label="freq") == "freq"
+
+    def test_empty_strings_are_falsy(self) -> None:
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert (
+            resolve_experiment_name(
+                explicit="",
+                config_value="",
+                node_label="freq",
+                backend="local",
+            )
+            == "freq"
+        )
+
+
+class TestBuildRunUrl:
+    def test_returns_none_for_local(self) -> None:
+        from haute.modelling._mlflow_log import build_run_url
+
+        assert build_run_url("local", "exp", "run123") is None
+
+    def test_returns_url_for_databricks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
+
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
+
+        with patch("mlflow.get_experiment_by_name", return_value=mock_experiment):
+            from haute.modelling._mlflow_log import build_run_url
+
+            url = build_run_url("databricks", "/Shared/haute/freq", "run123")
+            assert url == "https://myhost.databricks.com/#mlflow/experiments/42/runs/run123"
+
+    def test_returns_none_when_experiment_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
+
+        with patch("mlflow.get_experiment_by_name", return_value=None):
+            from haute.modelling._mlflow_log import build_run_url
+
+            assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
+
+    def test_returns_none_when_host_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+
+        from haute.modelling._mlflow_log import build_run_url
+
+        assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
+
+    def test_strips_trailing_slash_from_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com/")
+
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
+
+        with patch("mlflow.get_experiment_by_name", return_value=mock_experiment):
+            from haute.modelling._mlflow_log import build_run_url
+
+            url = build_run_url("databricks", "/Shared/haute/freq", "run123")
+            assert "databricks.com//" not in url  # no double slash
+
+
 class TestLogExperiment:
     def test_calls_mlflow_correctly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Mock mlflow and verify correct calls are made."""
@@ -102,6 +218,9 @@ class TestLogExperiment:
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
 
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
+
         with (
             patch("mlflow.set_tracking_uri") as m_tracking,
             patch("mlflow.set_registry_uri") as m_registry,
@@ -111,6 +230,7 @@ class TestLogExperiment:
             patch("mlflow.log_metrics"),
             patch("mlflow.log_artifact"),
             patch("mlflow.register_model"),
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -129,6 +249,7 @@ class TestLogExperiment:
             assert result.backend == "databricks"
             assert result.run_url is not None
             assert "myhost.databricks.com" in result.run_url
+            assert "/experiments/42/runs/abc123" in result.run_url
 
     def test_missing_model_file_no_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Non-existent model path should not crash."""
@@ -162,8 +283,9 @@ class TestLogExperiment:
 
             # model file doesn't exist — only model_card artifact should be logged
             assert result.run_id == "abc123"
-            artifact_dirs = [call.args[1] if len(call.args) > 1 else ""
-                            for call in m_artifact.call_args_list]
+            artifact_dirs = [
+                call.args[1] if len(call.args) > 1 else "" for call in m_artifact.call_args_list
+            ]
             assert "model_card" in artifact_dirs
             # No direct model artifact (only model_card)
             assert m_artifact.call_count == 1
@@ -225,7 +347,9 @@ class TestLogExperiment:
             # CV mean metric logged
             m_metric.assert_called_once_with("cv_mean_rmse", 0.45)
 
-    def test_databricks_registers_model(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_databricks_registers_model(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """When backend is databricks and model_name is set, model is registered."""
         monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test")
@@ -266,7 +390,9 @@ class TestLogExperiment:
             )
 
     def test_log_generates_model_card(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """With full data, model card artifact should be logged."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
@@ -315,8 +441,7 @@ class TestLogExperiment:
 
             # Check that model_card artifact was logged
             artifact_dirs = [
-                call.args[1] if len(call.args) > 1
-                else call.kwargs.get("artifact_path", "")
+                call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
                 for call in m_artifact.call_args_list
             ]
             assert "model_card" in artifact_dirs
@@ -353,8 +478,7 @@ class TestLogExperiment:
 
             # Model card should still be logged even with minimal data
             artifact_dirs = [
-                call.args[1] if len(call.args) > 1
-                else call.kwargs.get("artifact_path", "")
+                call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
                 for call in m_artifact.call_args_list
             ]
             assert "model_card" in artifact_dirs
@@ -391,7 +515,9 @@ class TestLogExperiment:
             )
             assert result.run_id == "abc123"
 
-    def test_local_does_not_register_model(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_local_does_not_register_model(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """When backend is local, model_name should be ignored (no UC registry)."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
