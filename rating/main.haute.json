@@ -2,7 +2,7 @@
   "positions": {
     "batch_quotes": {
       "x": 372.0,
-      "y": 132.0
+      "y": 260.3333333333333
     },
     "competitor_insights": {
       "x": 732.0,
@@ -18,11 +18,11 @@
     },
     "quotes": {
       "x": 12.0,
-      "y": 260.3333333333333
+      "y": 132.0
     },
-    "feature_processing": {
+    "processing": {
       "x": 372.0,
-      "y": 260.3333333333333
+      "y": 132.0
     },
     "policies": {
       "x": 732.0,
@@ -79,10 +79,6 @@
     "online_optimiser": {
       "x": 3972.0,
       "y": 283.66666666666663
-    },
-    "processing": {
-      "x": 381.56310679611653,
-      "y": 416.15453074433657
     },
     "competitor_features_scenarios": {
       "x": 2892.0,

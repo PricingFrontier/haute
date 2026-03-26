@@ -1,5 +1,5 @@
 {
-  "path": "data\\quotes\\sample_quote.json",
+  "path": "data\\quotes\\quotes_10m.jsonl",
   "flattenSchema": {
     "quote_metadata": {
       "quote_id": "str",

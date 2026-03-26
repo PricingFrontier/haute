@@ -53,6 +53,7 @@ function PipelineNode({ data, selected }: NodeProps) {
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
   const traceValue = nodeData._traceValue
+  const hasWarnings = (nodeData._schemaWarnings?.length ?? 0) > 0
   const zoomLevel = useStore(zoomSelector)
 
   const dimmed = traceDimmed || hoverDimmed
@@ -188,6 +189,14 @@ function PipelineNode({ data, selected }: NodeProps) {
             style={{ backgroundColor: statusColors[nodeData._status] }}
             role="status"
             aria-label={`Node ${nodeData._status}`}
+          />
+        )}
+        {hasWarnings && nodeData._status !== "error" && (
+          <span
+            className={`${!nodeData._status && !isDeployInput ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0`}
+            style={{ backgroundColor: "#f59e0b" }}
+            role="status"
+            aria-label="Node has schema warnings"
           />
         )}
       </div>

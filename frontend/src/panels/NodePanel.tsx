@@ -486,6 +486,34 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         </div>
       )}
 
+      {/* Schema warnings for non-instance nodes */}
+      {!isInstance && (() => {
+        const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
+        if (warnings.length === 0) return null
+        return (
+          <div className="px-4 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.2)' }}>
+              <div className="flex items-center gap-1.5">
+                <AlertTriangle size={11} style={{ color: '#f59e0b' }} className="shrink-0" />
+                <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: '#f59e0b' }}>
+                  Stale columns ({warnings.length})
+                </span>
+              </div>
+              <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                These columns are referenced in config but not found in the upstream schema:
+              </p>
+              <div className="flex flex-wrap gap-1 mt-0.5">
+                {warnings.map((w) => (
+                  <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'rgba(245,158,11,.12)', color: '#fbbf24' }}>
+                    {w.column}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       <div className="flex-1 min-h-0 overflow-y-auto">
         {activeTab === "columns" && showColumnsTab ? (
           nodeType === NODE_TYPES.API_INPUT ? (

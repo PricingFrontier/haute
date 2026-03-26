@@ -23,11 +23,22 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
   // Use available columns if we have them, else fall back to current columns
   const allColumns = availableColumns.length > 0 ? availableColumns : columns
 
+  // Detect stale columns: in selected_columns but not in allColumns
+  const allColumnNames = useMemo(() => new Set(allColumns.map((c) => c.name)), [allColumns])
+  const staleColumns = useMemo<ColumnInfo[]>(() => {
+    if (selectedColumns.length === 0) return []
+    return selectedColumns
+      .filter((name) => !allColumnNames.has(name))
+      .map((name) => ({ name, dtype: "unknown" }))
+  }, [selectedColumns, allColumnNames])
+
   const filtered = useMemo(() => {
-    if (!search) return allColumns
     const q = search.toLowerCase()
-    return allColumns.filter((c) => c.name.toLowerCase().includes(q))
-  }, [allColumns, search])
+    const base = search ? allColumns.filter((c) => c.name.toLowerCase().includes(q)) : allColumns
+    // Append stale ghost rows (filtered by search too)
+    const staleFiltered = search ? staleColumns.filter((c) => c.name.toLowerCase().includes(q)) : staleColumns
+    return [...base, ...staleFiltered]
+  }, [allColumns, staleColumns, search])
 
   // When selected_columns is empty, all columns are kept
   const isAllSelected = selectedColumns.length === 0
@@ -123,7 +134,8 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
           onToggle: toggleColumn,
         }}
         interactiveRows
-        nameColor={(name) => isSelected(name) ? "var(--text-primary)" : "var(--text-muted)"}
+        nameColor={(name) => !allColumnNames.has(name) ? "#f59e0b" : isSelected(name) ? "var(--text-primary)" : "var(--text-muted)"}
+        nameSuffix={(name) => !allColumnNames.has(name) ? "(not found)" : null}
       />
 
       {!isAllSelected && (

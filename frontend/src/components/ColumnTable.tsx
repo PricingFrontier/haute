@@ -24,6 +24,8 @@ interface ColumnTableProps {
   interactiveRows?: boolean
   /** Override text color for the column name cell. Receives the column name and returns a CSS color. */
   nameColor?: (columnName: string) => string
+  /** Optional suffix to append to column names. Receives the column name and returns a string or null. */
+  nameSuffix?: (columnName: string) => string | null
 }
 
 /**
@@ -37,6 +39,7 @@ export default function ColumnTable({
   checkbox,
   interactiveRows = false,
   nameColor,
+  nameSuffix,
 }: ColumnTableProps) {
   return (
     <div
@@ -95,6 +98,11 @@ export default function ColumnTable({
                 )}
                 <td className="px-2.5 py-1.5 font-mono" style={{ color }}>
                   {col.name}
+                  {nameSuffix?.(col.name) && (
+                    <span className="ml-1 text-[10px] font-sans italic" style={{ opacity: 0.7 }}>
+                      {nameSuffix(col.name)}
+                    </span>
+                  )}
                 </td>
                 <td className="px-2.5 py-1.5">
                   <span className={`text-[11px] font-medium ${getDtypeColor(col.dtype)}`}>

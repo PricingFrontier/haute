@@ -1,4 +1,5 @@
-import { Radio } from "lucide-react"
+import { useState } from "react"
+import { Radio, Check } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
@@ -63,6 +64,7 @@ export default function ApiInputEditor({
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, fetchForPath } = useSchemaFetch(currentPath)
   const showCacheButton = currentPath && (currentPath.endsWith(".json") || currentPath.endsWith(".jsonl"))
+  const [fileExpanded, setFileExpanded] = useState(false)
 
   return (
     <>
@@ -79,14 +81,33 @@ export default function ApiInputEditor({
             Preview Data
             <span className="ml-1.5 normal-case tracking-normal font-normal">.json or .jsonl</span>
           </label>
-          <FileBrowser
-            currentPath={currentPath}
-            onSelect={(path) => {
-              onUpdate("path", path)
-              fetchForPath(path)
-            }}
-            extensions=".json,.jsonl"
-          />
+          {currentPath && (
+            <div className="px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.2)' }}>
+              <Check size={14} style={{ color: '#22c55e' }} className="shrink-0" />
+              <span className="text-xs font-mono truncate flex-1" style={{ color: '#4ade80' }}>{currentPath}</span>
+              <button
+                data-testid="file-change-btn"
+                onClick={() => setFileExpanded(!fileExpanded)}
+                className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded transition-colors"
+                style={{ color: '#4ade80' }}
+              >
+                {fileExpanded ? "close" : "change"}
+              </button>
+            </div>
+          )}
+          {(!currentPath || fileExpanded) && (
+            <div className="mt-2">
+              <FileBrowser
+                currentPath={undefined}
+                onSelect={(path) => {
+                  onUpdate("path", path)
+                  fetchForPath(path)
+                  setFileExpanded(false)
+                }}
+                extensions=".json,.jsonl"
+              />
+            </div>
+          )}
         </div>
 
         {showCacheButton && (

@@ -22,7 +22,7 @@ pipeline = haute.Pipeline("my_pipeline", description='')
 @pipeline.data_source(config="config/data_source/batch_quotes.json")
 def batch_quotes() -> pl.LazyFrame:
     """batch_quotes node"""
-    df = pl.scan_parquet("data/competitor_premiums/nb_batch.parquet")
+    df = pl.scan_parquet("data/quotes/nb_batch.parquet")
     df = df.limit(100000)
     return df
 
@@ -49,59 +49,48 @@ def quoted_premiums() -> pl.LazyFrame:
 def quotes() -> pl.LazyFrame:
     """quotes node"""
     from haute._json_flatten import read_json_flat
-    return read_json_flat("data/quotes/sample_quote.json", config_path="config/quote_input/quotes.json")
+    return read_json_flat("data/quotes/quotes_10m.jsonl", config_path="config/quote_input/quotes.json")
 
 
 @pipeline.polars
-def feature_processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
-    """Feature engineering for insurance pricing"""
-    cols = quotes.collect_schema().names()
-    cover_start = to_date("policy_details.cover_start_date")
+def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    """processing node"""
+    df = clean_columns(quotes)
+    cover_start = to_date("cover_start_date")
     
-    # Helpers build the dynamic driver + addon expressions
-    ad_derived, ad_age_cols, ad_renames, ad_keep = driver_features(cols, cover_start)
-    addon_derived, addon_renames, addon_keep = addon_features(cols, ADDON_NAMES)
-    
-    # Step 1 — Add calculated columns
-    df = quotes.with_columns(
-        # Proposer
-        years_between(to_date("proposer.date_of_birth"), cover_start).alias("proposer_age"),
-        years_between(to_date("proposer.licence.licence_date"), cover_start).alias(
-            "proposer_licence_length_years"
-        ),
-        # Vehicle
-        (cover_start.dt.year() - pl.col("vehicle.year_of_manufacture")).alias("vehicle_age"),
-        # Policy
-        (
-            pl.col("policy_details.voluntary_excess") + pl.col("policy_details.compulsory_excess")
-        ).alias("total_excess"),
-        # Address
-        (pl.col("address.years_at_address") * 12 + pl.col("address.months_at_address")).alias(
-            "address_total_months"
-        ),
-        pl.col("address.postcode").str.split(" ").list.first().alias("postcode_area"),
-        # Additional drivers + counts + addons
-        *ad_derived,
-        *addon_derived,
+    # Core derived features
+    df = df.with_columns(
+        years_between(to_date("proposer_date_of_birth"), cover_start).alias("proposer_age"),
+        (cover_start.dt.year() - pl.col("year_of_manufacture")).alias("vehicle_age"),
+        pl.col("postcode").str.split(" ").list.first().alias("postcode_area"),
     )
     
-    # Step 2 — Youngest driver across proposer + any additional drivers
+    # Additional driver ages + licence years
+    cols = df.collect_schema().names()
+    ad_age_cols = []
+    for i in range(1, 5):
+        dob = f"additional_drivers_{i}_date_of_birth"
+        lic = f"additional_drivers_{i}_licence_licence_date"
+        if dob in cols:
+            name = f"additional_driver_{i}_age"
+            df = df.with_columns(years_between(to_date(dob), cover_start).alias(name))
+            ad_age_cols.append(name)
+        if lic in cols:
+            df = df.with_columns(
+                years_between(to_date(lic), cover_start).alias(f"additional_driver_{i}_licence_years")
+            )
+    
+    # Youngest driver across proposer + additional drivers
     df = df.with_columns(
         pl.min_horizontal("proposer_age", *ad_age_cols).alias("youngest_driver_age"),
     )
-    
-    # Step 3 — Rename dot-notation columns to clean names
-    df = df.rename({**RENAME_MAP, **ad_renames, **addon_renames})
-    
-    # Step 4 — Keep only the columns we need
-    df = df.select(list(RENAME_MAP.values()) + DERIVED_COLS + ad_keep + addon_keep)
     return df
 
 
 @pipeline.live_switch(config="config/source_switch/policies.json")
-def policies(feature_processing: pl.LazyFrame, batch_quotes: pl.LazyFrame) -> pl.LazyFrame:
+def policies(batch_quotes: pl.LazyFrame, processing: pl.LazyFrame) -> pl.LazyFrame:
     """policies node"""
-    return feature_processing
+    return processing
 
 
 @pipeline.polars
@@ -207,41 +196,6 @@ def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
     return optimiser_input
 
 
-@pipeline.polars
-def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
-    """processing node"""
-    df = clean_columns(quotes)
-    cover_start = to_date("cover_start_date")
-    
-    # Core derived features
-    df = df.with_columns(
-        years_between(to_date("proposer_date_of_birth"), cover_start).alias("proposer_age"),
-        (cover_start.dt.year() - pl.col("year_of_manufacture")).alias("vehicle_age"),
-        pl.col("postcode").str.split(" ").list.first().alias("postcode_area"),
-    )
-    
-    # Additional driver ages + licence years
-    cols = df.collect_schema().names()
-    ad_age_cols = []
-    for i in range(1, 5):
-        dob = f"additional_drivers_{i}_date_of_birth"
-        lic = f"additional_drivers_{i}_licence_licence_date"
-        if dob in cols:
-            name = f"additional_driver_{i}_age"
-            df = df.with_columns(years_between(to_date(dob), cover_start).alias(name))
-            ad_age_cols.append(name)
-        if lic in cols:
-            df = df.with_columns(
-                years_between(to_date(lic), cover_start).alias(f"additional_driver_{i}_licence_years")
-            )
-    
-    # Youngest driver across proposer + additional drivers
-    df = df.with_columns(
-        pl.min_horizontal("proposer_age", *ad_age_cols).alias("youngest_driver_age"),
-    )
-    return df
-
-
 @pipeline.instance(of="competitor_features")
 def competitor_features_scenarios(premium: pl.LazyFrame) -> pl.LazyFrame:
     """Instance of competitor_features"""
@@ -250,13 +204,11 @@ def competitor_features_scenarios(premium: pl.LazyFrame) -> pl.LazyFrame:
 
 
 # Wire nodes together - edges define data flow
-pipeline.connect("feature_processing", "policies")
 pipeline.connect("batch_quotes", "policies")
 pipeline.connect("policies", "competitor_join")
 pipeline.connect("competitor_insights", "competitor_join")
 pipeline.connect("competitor_join", "avg_top_5")
 pipeline.connect("policies", "competitor_scoring")
-pipeline.connect("quotes", "feature_processing")
 pipeline.connect("policies", "join_scoring")
 pipeline.connect("competitor_scoring", "join_scoring")
 pipeline.connect("join_scoring", "join_policy_data")
@@ -272,3 +224,4 @@ pipeline.connect("competitor_features_scenarios", "conversion_scoring")
 pipeline.connect("conversion_scoring", "optimiser_input")
 pipeline.connect("optimiser_input", "online_optimiser")
 pipeline.connect("quotes", "processing")
+pipeline.connect("processing", "policies")

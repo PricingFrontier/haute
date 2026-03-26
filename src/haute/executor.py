@@ -338,6 +338,51 @@ _preview_cache = FingerprintCache(
 )
 
 
+def _extract_column_refs(config: dict[str, Any]) -> set[str]:
+    """Extract column names referenced in a node's config.
+
+    Only includes columns that are READ from upstream (not created/output columns).
+    Returns an empty set for configs with no column references.
+    """
+    refs: set[str] = set()
+
+    # selected_columns: list[str] — on any node type
+    for col in config.get("selected_columns", []) or []:
+        if isinstance(col, str) and col:
+            refs.add(col)
+
+    # target, weight, offset: str — on modelling nodes
+    for key in ("target", "weight", "offset"):
+        val = config.get(key, "")
+        if isinstance(val, str) and val:
+            refs.add(val)
+
+    # exclude: list[str] — on modelling nodes
+    for col in config.get("exclude", []) or []:
+        if isinstance(col, str) and col:
+            refs.add(col)
+
+    # banding: factors is a list of dicts, each with a 'column' key
+    for factor in config.get("factors", []) or []:
+        col = factor.get("column", "") if isinstance(factor, dict) else ""
+        if isinstance(col, str) and col:
+            refs.add(col)
+
+    # rating steps: tables is a list of dicts, each with a 'factors' key (list of str)
+    for table in config.get("tables", []) or []:
+        if not isinstance(table, dict):
+            continue
+        for col in table.get("factors", []) or []:
+            if isinstance(col, str) and col:
+                refs.add(col)
+
+    # Exclude output columns — they are created, not read
+    refs.discard(config.get("output_column", ""))
+    refs.discard(config.get("outputColumn", ""))
+
+    return refs
+
+
 def execute_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,
@@ -514,6 +559,20 @@ def execute_graph(
         # available_columns = full column set before selected_columns filtering
         avail = avail_cols.get(nid)
         avail_col_infos = [ColumnInfo(name=n, dtype=d) for n, d in avail] if avail else columns
+
+        # Stale column detection: columns referenced in config but not
+        # present in the upstream available columns.
+        node_data = node_map[nid].data
+        config_refs = _extract_column_refs(node_data.config)
+        node_warnings = list(schema_warnings.get(nid, []))
+        if config_refs and avail_col_infos:
+            available_names = {c.name for c in avail_col_infos}
+            stale = config_refs - available_names
+            if stale:
+                node_warnings.extend(
+                    SchemaWarning(column=c, status="stale") for c in sorted(stale)
+                )
+
         results[nid] = NodeResult(
             status="ok",
             row_count=len(df),
@@ -523,7 +582,7 @@ def execute_graph(
             preview=df.head(max_preview_rows).to_dicts(),
             timing_ms=timings.get(nid, 0),
             memory_bytes=memory_bytes.get(nid, 0),
-            schema_warnings=schema_warnings.get(nid, []),
+            schema_warnings=node_warnings,
         )
 
     error_count = sum(1 for r in results.values() if r.status == "error")

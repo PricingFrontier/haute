@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { ChevronDown, ChevronRight } from "lucide-react"
+import { useState, useMemo } from "react"
+import { ChevronDown, ChevronRight, X } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
 
 type Column = { name: string; dtype: string }
@@ -76,6 +76,17 @@ export function FeatureAndAlgorithmConfig({
     }
   }
 
+  // Stale excludes: entries in the exclude list that don't match any upstream column
+  const upstreamNames = useMemo(() => new Set(columns.map(c => c.name)), [columns])
+  const staleExcludes = useMemo(
+    () => exclude.filter(e => !upstreamNames.has(e)),
+    [exclude, upstreamNames],
+  )
+
+  const removeExclude = (name: string) => {
+    onUpdate("exclude", exclude.filter(e => e !== name))
+  }
+
   return (
     <>
       {/* Feature Selection */}
@@ -114,22 +125,50 @@ export function FeatureAndAlgorithmConfig({
                 </button>
               </div>
             </div>
-            {columns
-              .filter(c => c.name !== target && c.name !== weight)
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map(c => {
-                const excluded = exclude.includes(c.name)
+            {/* Combined list: upstream columns + stale excludes, sorted together */}
+            {(() => {
+              const featureCols = columns
+                .filter(c => c.name !== target && c.name !== weight)
+                .map(c => c.name)
+              const staleSet = new Set(staleExcludes)
+              const allNames = [...new Set([...featureCols, ...staleExcludes])].sort()
+
+              return allNames.map(name => {
+                const isStale = staleSet.has(name)
+                const excluded = exclude.includes(name)
+
+                if (isStale) {
+                  // Stale entry: orange name + X button
+                  return (
+                    <div key={name} className="flex items-center gap-2">
+                      <span className="text-[11px] font-mono flex-1 truncate" style={{ color: "#f59e0b" }}>{name}</span>
+                      <span className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>not found</span>
+                      <button
+                        onClick={() => removeExclude(name)}
+                        className="p-0.5 rounded transition-colors shrink-0"
+                        style={{ color: "var(--text-muted)" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444" }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)" }}
+                        title={`Remove "${name}" from exclude list`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )
+                }
+
+                // Normal upstream column: include/exclude buttons
                 return (
-                  <div key={c.name} className="flex items-center gap-2">
-                    <span className="text-[11px] font-mono flex-1 truncate" style={{ color: "var(--text-secondary)" }}>{c.name}</span>
+                  <div key={name} className="flex items-center gap-2">
+                    <span className="text-[11px] font-mono flex-1 truncate" style={{ color: "var(--text-secondary)" }}>{name}</span>
                     {([false, true] as const).map(isExclude => (
                       <button
                         key={isExclude ? "exclude" : "include"}
                         onClick={() => {
                           if (isExclude && !excluded) {
-                            onUpdate("exclude", [...exclude, c.name])
+                            onUpdate("exclude", [...exclude, name])
                           } else if (!isExclude && excluded) {
-                            onUpdate("exclude", exclude.filter(e => e !== c.name))
+                            removeExclude(name)
                           }
                         }}
                         className="px-1.5 py-0.5 rounded text-[10px] font-mono"
@@ -150,7 +189,21 @@ export function FeatureAndAlgorithmConfig({
                     ))}
                   </div>
                 )
-              })}
+              })
+            })()}
+
+            {/* Remove all stale button */}
+            {staleExcludes.length > 0 && (
+              <div className="mt-1.5 flex justify-end">
+                <button
+                  onClick={() => onUpdate("exclude", exclude.filter(e => upstreamNames.has(e)))}
+                  className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                  style={{ background: "rgba(245,158,11,.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,.2)" }}
+                >
+                  Remove all stale ({staleExcludes.length})
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
