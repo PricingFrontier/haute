@@ -113,6 +113,17 @@ class TestGenerateTrainingScript:
         assert "cv_folds=5" in script
         compile(script, "<test>", "exec")
 
+    def test_default_output_dir_is_outputs(self):
+        """When no output_dir in config, the generated script defaults to 'outputs'."""
+        config = {"name": "test", "target": "y"}
+        script = generate_training_script(config, "data.parquet")
+        assert "output_dir='outputs'" in script
+
+    def test_explicit_output_dir_is_preserved(self):
+        config = {"name": "test", "target": "y", "output_dir": "custom/path"}
+        script = generate_training_script(config, "data.parquet")
+        assert "output_dir='custom/path'" in script
+
     def test_excludes_new_params_when_not_set(self):
         config = {"name": "test", "target": "y"}
         script = generate_training_script(config, "data.parquet")

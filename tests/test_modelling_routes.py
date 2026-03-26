@@ -364,6 +364,42 @@ class TestClampRowLimit:
         assert _clamp_row_limit(None, None) is None
 
 
+class TestOutputDirDefault:
+    """The default output_dir for training should be <pipeline_dir>/outputs."""
+
+    def test_default_output_dir_uses_pipeline_dir(self):
+        from haute.executor import _pipeline_dir
+        from tests.conftest import make_graph
+
+        graph = make_graph({
+            "nodes": [],
+            "edges": [],
+            "source_file": "/projects/rating/main.py",
+        })
+        p_dir = _pipeline_dir(graph)
+        assert p_dir is not None
+        assert str(p_dir / "outputs").replace("\\", "/").endswith("rating/outputs")
+
+    def test_default_output_dir_without_source_file(self):
+        from haute.executor import _pipeline_dir
+        from tests.conftest import make_graph
+
+        graph = make_graph({"nodes": [], "edges": []})
+        p_dir = _pipeline_dir(graph)
+        assert p_dir is None
+
+    def test_training_job_default_is_outputs(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob.__init__.__defaults__  # noqa: B009
+        # output_dir parameter default (7th keyword-only param after name...model_name)
+        # Verify via signature instead
+        import inspect
+
+        sig = inspect.signature(TrainingJob.__init__)
+        assert sig.parameters["output_dir"].default == "outputs"
+
+
 # ---------------------------------------------------------------------------
 # Phase 1A: Endpoint validation gaps
 # ---------------------------------------------------------------------------

@@ -290,6 +290,13 @@ class TrainService:
             self._store.update_job(job_id, status="error", error=str(exc))
             raise
 
+        # Default output_dir to <pipeline_dir>/outputs when not explicitly set.
+        if "output_dir" not in config:
+            from haute.executor import _pipeline_dir
+
+            p_dir = _pipeline_dir(body.graph)
+            config = {**config, "output_dir": str(p_dir / "outputs") if p_dir else "outputs"}
+
         self._launch_background(
             job_id,
             body.node_id,
@@ -592,7 +599,7 @@ class TrainService:
             metrics=config.get("metrics", ["gini", "rmse"]),
             mlflow_experiment=config.get("mlflow_experiment") or None,
             model_name=config.get("model_name") or None,
-            output_dir=config.get("output_dir", "models"),
+            output_dir=config.get("output_dir", "outputs"),
             loss_function=config.get("loss_function") or None,
             variance_power=(
                 config.get("variance_power")

@@ -40,7 +40,7 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     metrics = config.get("metrics", ["gini", "rmse"])
     mlflow_experiment = config.get("mlflow_experiment")
     model_name = config.get("model_name")
-    output_dir = config.get("output_dir", "models")
+    output_dir = config.get("output_dir", "outputs")
     loss_function = config.get("loss_function")
     variance_power = config.get("variance_power")
     offset = config.get("offset")

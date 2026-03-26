@@ -174,7 +174,7 @@ class TrainingJob:
         metrics: list[str] | None = None,
         mlflow_experiment: str | None = None,
         model_name: str | None = None,
-        output_dir: str = "models",
+        output_dir: str = "outputs",
         loss_function: str | None = None,
         variance_power: float | None = None,
         offset: str | None = None,
