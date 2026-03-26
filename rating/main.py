@@ -1,7 +1,5 @@
 """Pipeline: my_pipeline"""
 
-from __future__ import annotations
-
 import polars as pl
 import haute
 
@@ -196,6 +194,12 @@ def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
     return optimiser_input
 
 
+@pipeline.optimiser_apply(config="config/apply_optimisation/apply_optimisation.json")
+def apply_optimisation(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
+    """apply_optimisation node"""
+    return optimiser_input
+
+
 @pipeline.instance(of="competitor_features")
 def competitor_features_scenarios(premium: pl.LazyFrame) -> pl.LazyFrame:
     """Instance of competitor_features"""
@@ -225,3 +229,4 @@ pipeline.connect("conversion_scoring", "optimiser_input")
 pipeline.connect("optimiser_input", "online_optimiser")
 pipeline.connect("quotes", "processing")
 pipeline.connect("processing", "policies")
+pipeline.connect("optimiser_input", "apply_optimisation")

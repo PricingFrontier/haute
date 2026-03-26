@@ -26,6 +26,7 @@ import polars as pl
 
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
+    FeatureMismatchError,
     ModelScorer,
     _batch_score_to_parquet,
     _sink_to_temp,
@@ -171,32 +172,48 @@ class TestModelScorerScore:
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
-    def test_feature_intersection(self, mock_load, mock_score_eager):
-        """Only features present in both model and input are used."""
+    def test_feature_intersection_raises_on_missing(self, mock_load, mock_score_eager):
+        """Missing features raise FeatureMismatchError with clear diagnostics."""
         sm = _make_scoring_model(feature_names=["a", "b", "missing_col"])
+        mock_load.return_value = sm
+
+        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
+        with pytest.raises(FeatureMismatchError, match="missing_col") as exc_info:
+            scorer.score(lf)
+
+        err = exc_info.value
+        assert err.missing == ["missing_col"]
+        assert "a" in err.available
+        assert "b" in err.available
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_all_features_present_scores_successfully(self, mock_load, mock_score_eager):
+        """When all features are present, scoring proceeds normally."""
+        sm = _make_scoring_model(feature_names=["a", "b"])
         mock_load.return_value = sm
         mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
 
         scorer = ModelScorer(source_type="run", run_id="abc", source="live")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        scorer.score(lf)
+        result = scorer.score(lf)
 
-        # Features passed should be ["a", "b"] (intersection)
+        mock_score_eager.assert_called_once()
         call_args = mock_score_eager.call_args
         features = call_args[0][2]
         assert "a" in features
         assert "b" in features
-        assert "missing_col" not in features
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
     def test_empty_input_raises_when_features_missing(self, mock_load, mock_score_eager):
-        """score() with no dfs raises ValueError when model expects features."""
+        """score() with no dfs raises FeatureMismatchError when model expects features."""
         sm = _make_scoring_model()
         mock_load.return_value = sm
 
         scorer = ModelScorer(source_type="run", run_id="abc", source="live")
-        with pytest.raises(ValueError, match="All model features are missing"):
+        with pytest.raises(FeatureMismatchError, match="Missing feature"):
             scorer.score()  # no dfs passed -- empty LazyFrame has no feature columns
 
     @patch("haute.executor._exec_user_code")

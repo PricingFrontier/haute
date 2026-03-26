@@ -13,9 +13,123 @@ from typing import Any
 import polars as pl
 
 from haute._logging import get_logger
-from haute._types import _Frame
+from haute._types import HauteError, _Frame
 
 logger = get_logger(component="model_scorer")
+
+
+# ---------------------------------------------------------------------------
+# Feature mismatch error
+# ---------------------------------------------------------------------------
+
+
+class FeatureMismatchError(HauteError):
+    """Raised when input columns don't match model feature expectations.
+
+    Provides a human-readable message listing missing features, type
+    mismatches, and actionable guidance — replacing cryptic library-internal
+    errors like CatBoost's ``"Invalid cat_features[2] = 10 value: index
+    must be < 9"``.
+    """
+
+    def __init__(
+        self,
+        *,
+        expected: list[str],
+        available: list[str],
+        missing: list[str],
+        type_mismatches: list[tuple[str, str, str]] | None = None,
+    ) -> None:
+        self.expected = expected
+        self.available = available
+        self.missing = missing
+        self.type_mismatches = type_mismatches or []
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        n_expected = len(self.expected)
+        n_available = len(self.available)
+        n_missing = len(self.missing)
+
+        lines: list[str] = [
+            f"Feature mismatch: model expects {n_expected} feature(s) "
+            f"but the input data has {n_available} column(s).",
+            "",
+        ]
+
+        if self.missing:
+            lines.append(f"Missing feature(s) ({n_missing}):")
+            for name in self.missing[:20]:
+                lines.append(f"  - {name}")
+            if n_missing > 20:
+                lines.append(f"  ... and {n_missing - 20} more")
+            lines.append("")
+
+        if self.type_mismatches:
+            lines.append("Type mismatch(es):")
+            for col, expected_type, actual_type in self.type_mismatches[:10]:
+                lines.append(
+                    f"  - '{col}': model expects {expected_type}, got {actual_type}"
+                )
+            lines.append("")
+
+        lines.append(
+            "These features were expected by the model but are not in the "
+            "current input data."
+        )
+        return "\n".join(lines)
+
+
+def _validate_features(
+    scoring_model: Any,
+    schema: pl.Schema,
+) -> tuple[list[str], list[str]]:
+    """Compare model features against available schema columns.
+
+    Returns ``(usable_features, missing_features)``.
+    Raises :class:`FeatureMismatchError` when any features are missing.
+
+    Cost: O(n) set operations on column names — no data materialisation.
+    """
+    available = set(schema.names())
+    expected = scoring_model.feature_names
+
+    missing = [f for f in expected if f not in available]
+    usable = [f for f in expected if f in available]
+
+    # Cheap dtype checks for categorical expectations
+    type_mismatches: list[tuple[str, str, str]] = []
+    if scoring_model.cat_feature_names:
+        for col in usable:
+            if col in scoring_model.cat_feature_names:
+                actual_dtype = schema[col]
+                if actual_dtype.is_numeric():
+                    type_mismatches.append((col, "categorical (String)", str(actual_dtype)))
+
+    if not usable:
+        raise FeatureMismatchError(
+            expected=expected,
+            available=sorted(available),
+            missing=missing,
+            type_mismatches=type_mismatches,
+        )
+
+    if missing:
+        raise FeatureMismatchError(
+            expected=expected,
+            available=sorted(available),
+            missing=missing,
+            type_mismatches=type_mismatches,
+        )
+
+    if type_mismatches:
+        logger.warning(
+            "Feature type mismatch(es) detected — scoring will proceed but "
+            "results may be affected: %s",
+            type_mismatches,
+        )
+
+    return usable, missing
 
 # Runtime scenario context — set by Pipeline.run() / Pipeline.score()
 # so that score_from_config (codegen path) can pick the right strategy.
@@ -84,25 +198,22 @@ def _run_score_pipeline(
     """
     from haute._mlflow_io import _score_eager as score_eager_
 
-    available_cols = set(lf.collect_schema().names())
-    features = [f for f in scoring_model.feature_names if f in available_cols]
-    missing = [f for f in scoring_model.feature_names if f not in available_cols]
-    if missing and not features:
-        raise ValueError(
-            "All model features are missing from the input DataFrame. "
-            f"Expected features: {scoring_model.feature_names}"
-        )
-    if missing:
-        logger.warning(
-            "Missing %d model feature(s) — scoring will proceed without them: %s",
-            len(missing),
-            missing,
-        )
+    schema = lf.collect_schema()
+    features, _missing = _validate_features(scoring_model, schema)
 
-    if source == "live" or row_limit:
-        result_lf = score_eager_(scoring_model, lf, features, output_col, task)
-    else:
-        result_lf = _score_batched_standalone(scoring_model, lf, features, output_col, task)
+    try:
+        if source == "live" or row_limit:
+            result_lf = score_eager_(scoring_model, lf, features, output_col, task)
+        else:
+            result_lf = _score_batched_standalone(scoring_model, lf, features, output_col, task)
+    except FeatureMismatchError:
+        raise
+    except Exception as exc:
+        raise FeatureMismatchError(
+            expected=scoring_model.feature_names,
+            available=sorted(schema.names()),
+            missing=[f for f in scoring_model.feature_names if f not in set(schema.names())],
+        ) from exc
 
     if code:
         from haute.executor import _exec_user_code
