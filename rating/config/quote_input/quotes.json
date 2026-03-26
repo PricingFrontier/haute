@@ -1,5 +1,5 @@
 {
-  "path": "data/quotes/quotes_10m.jsonl",
+  "path": "data\\quotes\\sample_quote.json",
   "flattenSchema": {
     "quote_metadata": {
       "quote_id": "str",
@@ -329,6 +329,34 @@
     "policy_details.business_mileage": "business_mileage",
     "policy_details.is_renewal": "is_renewal",
     "policy_details.previous_insurer": "previous_insurer",
-    "proposer.licence.licence_held_years": "proposer.licence_held_years"
+    "proposer.licence.licence_held_years": "proposer.licence_held_years",
+    "vehicle.registration_number": "registration_number",
+    "vehicle.make": "make",
+    "vehicle.model": "model",
+    "vehicle.variant": "variant",
+    "vehicle.year_of_manufacture": "year_of_manufacture",
+    "vehicle.year_of_registration": "year_of_registration",
+    "vehicle.body_type": "body_type",
+    "vehicle.fuel_type": "fuel_type",
+    "vehicle.transmission": "transmission",
+    "vehicle.engine_size_cc": "engine_size_cc",
+    "vehicle.engine_power_bhp": "engine_power_bhp",
+    "vehicle.number_of_doors": "number_of_doors",
+    "vehicle.number_of_seats": "number_of_seats",
+    "vehicle.insurance_group": "insurance_group",
+    "vehicle.abi_code": "abi_code",
+    "vehicle.estimated_value": "estimated_value",
+    "vehicle.is_imported": "is_imported",
+    "vehicle.is_right_hand_drive": "is_right_hand_drive",
+    "vehicle.has_been_modified": "has_been_modified",
+    "vehicle.security.alarm": "security.alarm",
+    "vehicle.security.immobiliser": "security.immobiliser",
+    "vehicle.security.tracker": "security.tracker",
+    "vehicle.overnight_location": "overnight_location",
+    "vehicle.daytime_location": "daytime_location",
+    "vehicle.owner": "owner",
+    "vehicle.registered_keeper": "registered_keeper",
+    "vehicle.purchase_date": "purchase_date",
+    "vehicle.current_mileage": "current_mileage"
   }
 }

@@ -408,51 +408,53 @@ export default function GroupedColumnsTab({ config, onUpdate, availableColumns, 
             <div key={group.prefix}>
               {/* Group header */}
               <div
-                className="flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer select-none transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 select-none transition-colors"
                 style={{ background: "var(--bg-elevated)", borderBottom: "1px solid var(--border)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)" }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-elevated)" }}
-                onClick={() => toggleCollapse(group.prefix)}
               >
                 <input
                   type="checkbox"
                   checked={allGroupSelected}
                   ref={(el) => { if (el) el.indeterminate = someGroupSelected }}
                   onChange={() => toggleGroup(group)}
-                  onClick={(e) => e.stopPropagation()}
                   className="accent-blue-500 rounded"
                   aria-label={`Select all ${group.prefix} columns`}
                 />
-                {isCollapsed
-                  ? <ChevronRight size={12} style={{ color: "var(--text-muted)" }} />
-                  : <ChevronDown size={12} style={{ color: "var(--text-muted)" }} />
-                }
-                {/* Group prefix name -- red line overlay when stripped */}
-                <span className="text-xs font-semibold" style={{
-                  position: "relative",
-                  color: stripped ? "var(--text-muted)" : "var(--text-primary)",
-                }}>
-                  {group.prefix}
-                  {stripped && (
-                    <span style={{ position: "absolute", left: 0, right: 0, top: "50%", height: "1px", background: "#ef4444", pointerEvents: "none" }} />
-                  )}
+                <span
+                  className="cursor-pointer"
+                  onClick={() => toggleCollapse(group.prefix)}
+                  title={isCollapsed ? "Expand group" : "Collapse group"}
+                >
+                  {isCollapsed
+                    ? <ChevronRight size={12} style={{ color: "var(--text-muted)" }} />
+                    : <ChevronDown size={12} style={{ color: "var(--text-muted)" }} />
+                  }
                 </span>
-                {/* Strip / restore button */}
-                {group.rows.some((r) => r.concreteColumns.some((c) => c.includes("."))) && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
+                {/* Group prefix name -- clickable to strip/restore */}
+                {group.rows.some((r) => r.concreteColumns.some((c) => c.includes("."))) ? (
+                  <span
+                    className="text-xs font-semibold cursor-pointer"
+                    style={{
+                      position: "relative",
+                      color: stripped ? "var(--text-muted)" : "var(--text-primary)",
+                      borderBottom: stripped ? "none" : "1px dashed var(--border)",
+                    }}
+                    onClick={() => {
                       if (stripped) restoreGroupPrefix(group)
                       else stripGroupPrefix(group)
                     }}
-                    className="text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors"
-                    style={{ color: "var(--text-muted)" }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)" }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)" }}
-                    title={stripped ? "Restore prefix" : `Strip "${group.prefix}" prefix`}
+                    title={stripped ? `Restore "${group.prefix}" prefix` : `Strip "${group.prefix}" prefix from column names`}
                   >
-                    {stripped ? "restore" : "strip"}
-                  </button>
+                    {group.prefix}
+                    {stripped && (
+                      <span style={{ position: "absolute", left: 0, right: 0, top: "50%", height: "1px", background: "#ef4444", pointerEvents: "none" }} />
+                    )}
+                  </span>
+                ) : (
+                  <span className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+                    {group.prefix}
+                  </span>
                 )}
                 <span className="text-[10px] ml-auto" style={{ color: "var(--text-muted)" }}>
                   {groupSelectedCount}/{group.allConcreteNames.length}

@@ -1,7 +1,5 @@
 """Pipeline: my_pipeline"""
 
-from __future__ import annotations
-
 import polars as pl
 import haute
 
@@ -48,7 +46,7 @@ def quoted_premiums() -> pl.LazyFrame:
 def quotes() -> pl.LazyFrame:
     """quotes node"""
     from haute._json_flatten import read_json_flat
-    return read_json_flat("data/quotes/quotes_10m.jsonl", config_path="config/quote_input/quotes.json")
+    return read_json_flat("data/quotes/sample_quote.json", config_path="config/quote_input/quotes.json")
 
 
 @pipeline.polars
