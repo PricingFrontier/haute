@@ -9,12 +9,11 @@ import type { EditorView } from "@codemirror/view"
 
 const API_INPUT_PLACEHOLDER = `# Clean up dot-notation columns:
 #
-# df = haute.clean_columns(quotes)
+# df = clean_columns(quotes)
 #
 # Then add derived columns with Polars:
 # df = df.with_columns(
-#     ((cover_start - pl.col("dob").str.to_date("%Y-%m-%d")).dt.total_days() / 365.25)
-#         .floor().cast(pl.Int64).alias("age"),
+#     years_between(to_date("date_of_birth"), to_date("cover_start_date")).alias("age"),
 # )`
 
 export default function TransformEditor({

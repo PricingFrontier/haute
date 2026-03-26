@@ -44,6 +44,19 @@ def postcode_area(col_name: str) -> pl.Expr:
     return pl.col(col_name).str.split(" ").list.first()
 
 
+# ── Column cleaning ──────────────────────────────────────────────────
+
+
+def clean_columns(df: pl.LazyFrame) -> pl.LazyFrame:
+    """Replace every ``.`` with ``_`` in column names.
+
+    Example::
+        df = clean_columns(quotes)
+    """
+    rename = {c: c.replace(".", "_") for c in df.collect_schema().names() if "." in c}
+    return df.rename(rename) if rename else df
+
+
 # ── Column matching ──────────────────────────────────────────────────
 
 

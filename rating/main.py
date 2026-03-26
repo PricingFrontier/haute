@@ -1,10 +1,13 @@
 """Pipeline: my_pipeline"""
 
+from __future__ import annotations
+
 import polars as pl
 import haute
 
 from utility.features import (
     addon_features,
+    clean_columns,
     driver_features,
     to_date,
     years_between,
@@ -207,7 +210,35 @@ def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
 @pipeline.polars
 def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
     """processing node"""
-    df = haute.clean_columns(quotes)
+    df = clean_columns(quotes)
+    cover_start = to_date("cover_start_date")
+    
+    # Core derived features
+    df = df.with_columns(
+        years_between(to_date("proposer_date_of_birth"), cover_start).alias("proposer_age"),
+        (cover_start.dt.year() - pl.col("year_of_manufacture")).alias("vehicle_age"),
+        pl.col("postcode").str.split(" ").list.first().alias("postcode_area"),
+    )
+    
+    # Additional driver ages + licence years
+    cols = df.collect_schema().names()
+    ad_age_cols = []
+    for i in range(1, 5):
+        dob = f"additional_drivers_{i}_date_of_birth"
+        lic = f"additional_drivers_{i}_licence_licence_date"
+        if dob in cols:
+            name = f"additional_driver_{i}_age"
+            df = df.with_columns(years_between(to_date(dob), cover_start).alias(name))
+            ad_age_cols.append(name)
+        if lic in cols:
+            df = df.with_columns(
+                years_between(to_date(lic), cover_start).alias(f"additional_driver_{i}_licence_years")
+            )
+    
+    # Youngest driver across proposer + additional drivers
+    df = df.with_columns(
+        pl.min_horizontal("proposer_age", *ad_age_cols).alias("youngest_driver_age"),
+    )
     return df
 
 

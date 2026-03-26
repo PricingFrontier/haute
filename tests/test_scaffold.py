@@ -655,6 +655,7 @@ class TestStarterFiles:
     def test_pipeline_imports_from_utility(self) -> None:
         result = starter_pipeline("my_project")
         assert "from utility.features import" in result
+        assert "clean_columns" in result
         assert "to_date" in result
         assert "years_between" in result
         assert "cols_matching" in result
@@ -670,6 +671,7 @@ class TestStarterFiles:
         assert "utilit" in init_result.lower()
 
         features_result = starter_utility_features()
+        assert "def clean_columns(df: pl.LazyFrame)" in features_result
         assert "def to_date(col_name: str, fmt: str" in features_result
         assert "def years_between(earlier: pl.Expr, later: pl.Expr)" in features_result
         assert "def months_between(earlier: pl.Expr, later: pl.Expr)" in features_result

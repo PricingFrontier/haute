@@ -240,9 +240,7 @@ def _exec_user_code(
     - Handles the ``.chain`` / bare-expression wrapping and adjusts line
       numbers in error messages so they match the editor.
     """
-    import haute as _haute_module
-
-    local_ns: dict[str, Any] = {"pl": pl, "haute": _haute_module}
+    local_ns: dict[str, Any] = {"pl": pl}
     for i, d in enumerate(dfs):
         if i < len(src_names):
             local_ns[src_names[i]] = d
