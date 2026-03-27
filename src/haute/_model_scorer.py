@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import threading
 from typing import Any
 
 import polars as pl
@@ -68,14 +69,11 @@ class FeatureMismatchError(HauteError):
         if self.type_mismatches:
             lines.append("Type mismatch(es):")
             for col, expected_type, actual_type in self.type_mismatches[:10]:
-                lines.append(
-                    f"  - '{col}': model expects {expected_type}, got {actual_type}"
-                )
+                lines.append(f"  - '{col}': model expects {expected_type}, got {actual_type}")
             lines.append("")
 
         lines.append(
-            "These features were expected by the model but are not in the "
-            "current input data."
+            "These features were expected by the model but are not in the current input data."
         )
         return "\n".join(lines)
 
@@ -131,6 +129,7 @@ def _validate_features(
 
     return usable, missing
 
+
 # Runtime scenario context — set by Pipeline.run() / Pipeline.score()
 # so that score_from_config (codegen path) can pick the right strategy.
 # "live" = eager in-memory scoring, anything else = disk-batched.
@@ -144,23 +143,25 @@ _SCORE_BATCH_SIZE = 500_000
 # Module-level temp file cleanup — avoids accumulating atexit handlers
 _temp_files_to_clean: set[str] = set()
 _atexit_registered = False
+_temp_cleanup_lock = threading.Lock()
 
 
 def _register_temp_cleanup(path: str) -> None:
     global _atexit_registered
-    _temp_files_to_clean.add(path)
-    if not _atexit_registered:
-        import atexit
+    with _temp_cleanup_lock:
+        _temp_files_to_clean.add(path)
+        if not _atexit_registered:
+            import atexit
 
-        def _cleanup_all() -> None:
-            for p in _temp_files_to_clean:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+            def _cleanup_all() -> None:
+                for p in _temp_files_to_clean:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
 
-        atexit.register(_cleanup_all)
-        _atexit_registered = True
+            atexit.register(_cleanup_all)
+            _atexit_registered = True
 
 
 def _run_score_pipeline(
@@ -533,8 +534,6 @@ def _batch_score_to_parquet(
                 {c: pl.Series([], dtype=input_schema.get(c, pl.Float64)) for c in features}
             ).with_columns(pl.Series(output_col, [], dtype=pl.Float64))
             if want_proba:
-                empty = empty.with_columns(
-                    pl.Series(f"{output_col}_proba", [], dtype=pl.Float64)
-                )
+                empty = empty.with_columns(pl.Series(f"{output_col}_proba", [], dtype=pl.Float64))
             pq.write_table(empty.to_arrow(), out_path)
     return out_path

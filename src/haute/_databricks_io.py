@@ -273,6 +273,7 @@ def fetch_and_cache(
             http_path=resolved_http_path,
             access_token=token,
         ) as conn:
+            cursor_description = None
             with conn.cursor() as cursor:
                 cursor.execute(sql_query)
                 batch_count = 0
@@ -283,6 +284,10 @@ def fetch_and_cache(
                         try:
                             batch = cursor.fetchmany_arrow(batch_size)
                             break
+                        except (KeyboardInterrupt, SystemExit):
+                            raise
+                        except (TypeError, KeyError, AttributeError):
+                            raise
                         except Exception:
                             if attempt == _FETCH_MAX_RETRIES - 1:
                                 raise
@@ -306,13 +311,14 @@ def fetch_and_cache(
                             "batches": batch_count,
                             "elapsed": round(time.monotonic() - t0, 1),
                         }
+                cursor_description = cursor.description
         if writer is not None:
             writer.close()
             writer = None
         else:
             # Zero rows returned -- write an empty parquet preserving schema
-            if cursor.description:
-                schema = pa.schema([(desc[0], pa.string()) for desc in cursor.description])
+            if cursor_description:
+                schema = pa.schema([(desc[0], pa.string()) for desc in cursor_description])
                 empty_table = pa.table(
                     {f.name: pa.array([], type=f.type) for f in schema},
                     schema=schema,

@@ -83,7 +83,7 @@ describe("BandingEditor", () => {
 
     // Find the X button for the first factor (age_band tab)
     const ageBandTab = screen.getByText("age_band").closest("button")!
-    const removeBtn = ageBandTab.querySelector("span[class*='cursor-pointer']")
+    const removeBtn = ageBandTab.querySelector("button[aria-label='Remove factor']")
     expect(removeBtn).toBeTruthy()
     fireEvent.click(removeBtn!)
 

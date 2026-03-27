@@ -371,7 +371,11 @@ class TrainingJob:
             ) as f:
                 data_path = f.name
             owns_tmp = True
-            df.write_parquet(data_path)
+            try:
+                df.write_parquet(data_path)
+            except BaseException:
+                os.unlink(data_path)
+                raise
             del df
             gc.collect()
             _malloc_trim()

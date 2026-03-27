@@ -327,8 +327,8 @@ class TestLargePayloads:
             "row_limit": 2**31 - 1,
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        # Should not hang or OOM; actual status depends on whether file exists
-        assert resp.status_code in (200, 400, 404, 500)
+        # Should not hang or OOM; 422 if validation rejects the large limit
+        assert resp.status_code in (200, 400, 404, 422, 500)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -402,7 +402,7 @@ class TestUnicodeEdgeCases:
         """Non-ASCII module name should be rejected (Python import limitation)."""
         body = {"name": "m\u00f6dule", "content": "x = 1"}
         resp = client.post("/api/utility", json=body)
-        assert resp.status_code == 400
+        assert resp.status_code in (400, 422)
 
     def test_sanitize_strips_all_non_ascii(self):
         """_sanitize_func_name must produce a valid Python identifier for any input."""
@@ -496,17 +496,14 @@ class TestIntegerOverflow:
     """Boundary integer values should not cause crashes."""
 
     def test_row_limit_max_int64(self):
-        """row_limit=2^63 should be accepted by Pydantic (Python int).
-
-        Real failure: this value is passed to polars .head(row_limit)
-        which may attempt to allocate 2^63 rows.
-        """
-        req = PreviewNodeRequest(
-            graph=Graph(),
-            node_id="x",
-            row_limit=2**63,
-        )
-        assert req.row_limit == 2**63
+        """row_limit=2^63 should be rejected by Pydantic (le=10000 constraint)."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            PreviewNodeRequest(
+                graph=Graph(),
+                node_id="x",
+                row_limit=2**63,
+            )
 
     def test_row_limit_overflow_via_api(self, client):
         """Extremely large row_limit over HTTP should not crash.
@@ -533,13 +530,14 @@ class TestIntegerOverflow:
         assert req.row_index == 2**32
 
     def test_frontier_points_large(self):
-        """n_points_per_dim=2^31 should not cause allocation of 2^31 grid points."""
-        req = OptimiserFrontierRequest(
-            job_id="fake",
-            threshold_ranges={"vol": [0.9, 1.1]},
-            n_points_per_dim=2**31,
-        )
-        assert req.n_points_per_dim == 2**31
+        """n_points_per_dim=2^31 should be rejected by Pydantic (le=100 constraint)."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            OptimiserFrontierRequest(
+                job_id="fake",
+                threshold_ranges={"vol": [0.9, 1.1]},
+                n_points_per_dim=2**31,
+            )
 
     def test_scenario_expander_steps_overflow(self):
         """steps=2^32 in scenarioExpander config should parse fine in Pydantic."""
@@ -622,7 +620,7 @@ class TestNegativeValues:
             "row_limit": 0,
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        assert resp.status_code in (200, 400, 500)
+        assert resp.status_code in (200, 400, 422, 500)
 
 
 # ═══════════════════════════════════════════════════════════════════════

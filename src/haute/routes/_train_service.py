@@ -353,10 +353,13 @@ class TrainService:
     def _compile_preamble(graph: PipelineGraph) -> dict[str, Any] | None:
         from haute.executor import _compile_preamble, _pipeline_dir
 
-        return _compile_preamble(
-            graph.preamble or "",
-            pipeline_dir=_pipeline_dir(graph),
-        ) or None
+        return (
+            _compile_preamble(
+                graph.preamble or "",
+                pipeline_dir=_pipeline_dir(graph),
+            )
+            or None
+        )
 
     def _estimate_ram(
         self,
@@ -567,23 +570,27 @@ class TrainService:
         split_raw = config.get("split", DEFAULT_SPLIT_DICT)
 
         start_time = time.monotonic()
-        self._store.update_job(job_id, start_time=start_time)
+        self._store.atomic_update(job_id, {"start_time": start_time})
 
         def _progress(msg: str, frac: float) -> None:
-            self._store.update_job(
+            self._store.atomic_update(
                 job_id,
-                progress=frac,
-                message=msg,
-                elapsed_seconds=time.monotonic() - start_time,
+                {
+                    "progress": frac,
+                    "message": msg,
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
             )
 
         def _on_iteration(iteration: int, total: int, metrics: dict[str, float]) -> None:
-            self._store.update_job(
+            self._store.atomic_update(
                 job_id,
-                iteration=iteration,
-                total_iterations=total,
-                train_loss=metrics,
-                elapsed_seconds=time.monotonic() - start_time,
+                {
+                    "iteration": iteration,
+                    "total_iterations": total,
+                    "train_loss": metrics,
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
             )
 
         job = TrainingJob(
@@ -641,20 +648,22 @@ class TrainService:
                     warning=ram_warning,
                     total_source_rows=total_source_rows,
                 )
-                self._store.update_job(
+                self._store.atomic_update(
                     job_id,
-                    status="completed",
-                    result=response,
-                    elapsed_seconds=time.monotonic() - start_time,
+                    {
+                        "status": "completed",
+                        "result": response,
+                        "elapsed_seconds": time.monotonic() - start_time,
+                    },
                 )
             except ValueError as exc:
                 error_msg = str(exc)
                 logger.warning("training_validation_error", error=error_msg, node_id=node_id)
-                self._store.update_job(job_id, status="error", message=error_msg)
+                self._store.atomic_update(job_id, {"status": "error", "message": error_msg})
             except Exception as exc:
                 error_msg = _friendly_error(exc)
                 logger.error("training_failed", error=str(exc), node_id=node_id)
-                self._store.update_job(job_id, status="error", message=error_msg)
+                self._store.atomic_update(job_id, {"status": "error", "message": error_msg})
             finally:
                 if os.path.exists(tmp_parquet):
                     os.unlink(tmp_parquet)

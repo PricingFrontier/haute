@@ -124,20 +124,20 @@ describe("formatNumber", () => {
     expect(formatNumber(3.14159)).toBe("3.1416")
   })
 
-  it("formats zero with 4 decimal places", () => {
-    expect(formatNumber(0)).toBe("0.0000")
+  it("formats zero as integer", () => {
+    expect(formatNumber(0)).toBe("0")
   })
 
-  it("formats small negative numbers with 4 decimal places", () => {
-    expect(formatNumber(-42)).toBe("-42.0000")
+  it("formats small negative integers without decimals", () => {
+    expect(formatNumber(-42)).toBe("-42")
   })
 
-  it("formats 999 as small number (below K threshold)", () => {
-    expect(formatNumber(999)).toBe("999.0000")
+  it("formats 999 as integer (below K threshold)", () => {
+    expect(formatNumber(999)).toBe("999")
   })
 
-  it("formats -999 as small number (above -K threshold)", () => {
-    expect(formatNumber(-999)).toBe("-999.0000")
+  it("formats -999 as integer (above -K threshold)", () => {
+    expect(formatNumber(-999)).toBe("-999")
   })
 })
 

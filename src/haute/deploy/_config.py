@@ -94,12 +94,17 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
     "deploy": {
         "_self": {"target", "model_name", "endpoint_name", "output_fields"},
         "databricks": {
-            "experiment_name", "catalog", "schema",
-            "serving_workload_size", "serving_scale_to_zero",
+            "experiment_name",
+            "catalog",
+            "schema",
+            "serving_workload_size",
+            "serving_scale_to_zero",
         },
         "container": {"registry", "port", "base_image"},
         "azure-container-apps": {
-            "resource_group", "container_app_name", "environment_name",
+            "resource_group",
+            "container_app_name",
+            "environment_name",
         },
         "aws-ecs": {"region", "cluster", "service"},
         "gcp-run": {"project", "region", "service"},
@@ -152,7 +157,8 @@ def _validate_toml_keys(data: dict[str, Any], path: Path) -> None:
 
     if errors:
         raise ValueError(
-            f"Invalid haute.toml ({path}):\n" + "\n".join(errors)
+            f"Invalid haute.toml ({path}):\n"
+            + "\n".join(errors)
             + "\n\nCheck for typos in your configuration keys."
         )
 
@@ -201,6 +207,8 @@ class DeployConfig:
         ``ValueError`` with a clear message listing the offending keys.
         """
         import tomllib
+
+        _load_env(path.resolve().parent)
 
         text = path.read_text()
         data = tomllib.loads(text)
@@ -390,8 +398,8 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     from haute.deploy._schema import infer_input_schema, infer_output_schema
     from haute.parser import parse_pipeline_file
 
-    # Load .env for Databricks credentials
-    # .env lives at the project root (haute.toml directory), not the pipeline subdir
+    # Ensure .env is loaded (idempotent — also called in from_toml, but
+    # needed here for programmatic DeployConfig construction).
     project_root = (
         config.project_dir.resolve()
         if config.project_dir is not None

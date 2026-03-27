@@ -78,7 +78,7 @@ beforeEach(() => {
     solveResults: {},
   })
   useSettingsStore.setState({
-    collapsedSections: {},
+    openSections: {},
   })
   mockSolveOptimiser.mockReset()
   mockHandleAddConstraint.mockReset()
@@ -332,21 +332,21 @@ describe("OptimiserConfig", () => {
 
     it("toggles open on click", () => {
       // Pre-set section as open since toggleSection flips the boolean
-      useSettingsStore.setState({ collapsedSections: { "optimiser.advanced": true } })
+      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
       render(<OptimiserConfig {...makeProps()} />)
       expect(screen.getByText("Chunk size")).toBeInTheDocument()
       expect(screen.getByText("Record history")).toBeInTheDocument()
     })
 
     it("shows chunk_size and record_history in advanced", () => {
-      useSettingsStore.setState({ collapsedSections: { "optimiser.advanced": true } })
+      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
       render(<OptimiserConfig {...makeProps()} />)
       expect(screen.getByDisplayValue("500000")).toBeInTheDocument()
       expect(screen.getByText("Off")).toBeInTheDocument()
     })
 
     it("ratebook mode shows CD iterations and CD tolerance in advanced", () => {
-      useSettingsStore.setState({ collapsedSections: { "optimiser.advanced": true } })
+      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
       render(
         <OptimiserConfig
           {...makeProps({ config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} } })}

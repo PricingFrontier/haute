@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -16,14 +17,32 @@ from haute.deploy._utils import build_manifest
 
 logger = get_logger(component="deploy.container")
 
+_VALID_BASE_IMAGE_RE = re.compile(r"^[a-zA-Z0-9._:/@-]+$")
+_VALID_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _validate_base_image(base_image: str) -> None:
+    """Validate base_image to prevent command injection."""
+    if not _VALID_BASE_IMAGE_RE.match(base_image):
+        raise ValueError(f"Invalid base_image: {base_image!r}")
+
+
+def _validate_model_name(model_name: str) -> None:
+    """Validate model_name to prevent path traversal / injection."""
+    if not _VALID_MODEL_NAME_RE.match(model_name):
+        raise ValueError(f"Invalid model_name: {model_name!r}")
+
+
 # ── Targets that share container build+push ────────────────────────
 
-_CONTAINER_BASED_TARGETS = frozenset({
-    "container",
-    "azure-container-apps",
-    "aws-ecs",
-    "gcp-run",
-})
+_CONTAINER_BASED_TARGETS = frozenset(
+    {
+        "container",
+        "azure-container-apps",
+        "aws-ecs",
+        "gcp-run",
+    }
+)
 
 
 @dataclass
@@ -67,73 +86,81 @@ def build_and_push_image(
     model_name = config.model_name
     ct = config.container
 
+    _validate_base_image(ct.base_image)
+    _validate_model_name(model_name)
+
     # 1. Create build directory
     build_dir = Path.cwd() / ".haute_build"
     build_dir.mkdir(exist_ok=True)
-    artifacts_dir = build_dir / "artifacts"
-    artifacts_dir.mkdir(exist_ok=True)
 
-    # 2. Build deployment manifest
-    _log("Building deployment manifest...")
-    manifest = build_manifest(resolved)
+    try:
+        artifacts_dir = build_dir / "artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
 
-    # Remap artifact paths to container-relative paths
-    container_artifacts: dict[str, str] = {}
-    for artifact_name, artifact_path in resolved.artifacts.items():
-        container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
+        # 2. Build deployment manifest
+        _log("Building deployment manifest...")
+        manifest = build_manifest(resolved)
 
-    manifest["artifacts"] = container_artifacts
+        # Remap artifact paths to container-relative paths
+        container_artifacts: dict[str, str] = {}
+        for artifact_name, artifact_path in resolved.artifacts.items():
+            container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
 
-    manifest_path = build_dir / "deploy_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    _log(f"  Manifest: {manifest_path}")
+        manifest["artifacts"] = container_artifacts
 
-    # 3. Copy artifacts
-    _log(f"Copying {len(resolved.artifacts)} artifacts...")
-    for artifact_name, artifact_path in resolved.artifacts.items():
-        dest = artifacts_dir / artifact_name
-        shutil.copy2(artifact_path, dest)
-        _log(f"  {artifact_name} → {dest}")
+        manifest_path = build_dir / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        _log(f"  Manifest: {manifest_path}")
 
-    # 4. Generate FastAPI app
-    _log("Generating FastAPI app...")
-    app_source = _generate_app_source(config.model_name, ct.port)
-    (build_dir / "app.py").write_text(app_source)
+        # 3. Copy artifacts
+        _log(f"Copying {len(resolved.artifacts)} artifacts...")
+        for artifact_name, artifact_path in resolved.artifacts.items():
+            dest = artifacts_dir / artifact_name
+            shutil.copy2(artifact_path, dest)
+            _log(f"  {artifact_name} → {dest}")
 
-    # 5. Generate Dockerfile
-    _log("Generating Dockerfile...")
-    dockerfile = _generate_dockerfile(ct.base_image, ct.port, resolved)
-    (build_dir / "Dockerfile").write_text(dockerfile)
+        # 4. Generate FastAPI app
+        _log("Generating FastAPI app...")
+        app_source = _generate_app_source(config.model_name, ct.port)
+        (build_dir / "app.py").write_text(app_source)
 
-    # 6. Determine image tag
-    git_sha = _git_sha_short()
-    version = _next_version()
-    if ct.registry:
-        image_tag = f"{ct.registry.rstrip('/')}/{model_name}:{git_sha}"
-    else:
-        image_tag = f"{model_name}:{git_sha}"
+        # 5. Generate Dockerfile
+        _log("Generating Dockerfile...")
+        dockerfile = _generate_dockerfile(ct.base_image, ct.port, resolved)
+        (build_dir / "Dockerfile").write_text(dockerfile)
 
-    # 7. Build Docker image
-    _log(f"Building Docker image: {image_tag}")
-    _check_docker_available()
-    _docker_build(build_dir, image_tag)
-    _log(f"  ✓ Image built: {image_tag}")
+        # 6. Determine image tag
+        git_sha = _git_sha_short()
+        version = _next_version()
+        if ct.registry:
+            image_tag = f"{ct.registry.rstrip('/')}/{model_name}:{git_sha}"
+        else:
+            image_tag = f"{model_name}:{git_sha}"
 
-    # 8. Push if registry is configured
-    if ct.registry:
-        _log(f"Pushing to registry: {ct.registry}")
-        _docker_push(image_tag)
-        _log(f"  ✓ Image pushed: {image_tag}")
-    else:
-        _log("  No registry configured - image is local only.")
+        # 7. Build Docker image
+        _log(f"Building Docker image: {image_tag}")
+        _check_docker_available()
+        _docker_build(build_dir, image_tag)
+        _log(f"  ✓ Image built: {image_tag}")
 
-    return ContainerBuildResult(
-        image_tag=image_tag,
-        manifest_path=manifest_path,
-        build_dir=build_dir,
-        model_name=model_name,
-        model_version=version,
-    )
+        # 8. Push if registry is configured
+        if ct.registry:
+            _log(f"Pushing to registry: {ct.registry}")
+            _docker_push(image_tag)
+            _log(f"  ✓ Image pushed: {image_tag}")
+        else:
+            _log("  No registry configured - image is local only.")
+
+        return ContainerBuildResult(
+            image_tag=image_tag,
+            manifest_path=manifest_path,
+            build_dir=build_dir,
+            model_name=model_name,
+            model_version=version,
+        )
+    except BaseException:
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise
 
 
 def deploy_to_container(
@@ -187,7 +214,9 @@ def deploy_to_platform_container(
 
 
 def _update_service(
-    target: str, image_tag: str, resolved: ResolvedDeploy,
+    target: str,
+    image_tag: str,
+    resolved: ResolvedDeploy,
 ) -> str | None:
     """Call the platform SDK to update the running service with the new image.
 
@@ -284,7 +313,7 @@ async def quote(request: Request) -> JSONResponse:
     except Exception as exc:
         return JSONResponse(
             status_code=422,
-            content={{"error": str(exc)}},
+            content={{"error": "Validation error"}},
         )
 '''
 
@@ -293,7 +322,9 @@ async def quote(request: Request) -> JSONResponse:
 
 
 def _generate_dockerfile(
-    base_image: str, port: int, resolved: ResolvedDeploy,
+    base_image: str,
+    port: int,
+    resolved: ResolvedDeploy,
 ) -> str:
     """Generate a Dockerfile for the scoring container."""
     # Detect model-specific dependencies from artifacts

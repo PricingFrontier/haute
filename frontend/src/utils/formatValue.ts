@@ -16,6 +16,7 @@ export function formatValueCompact(v: unknown): string {
 export function formatNumber(n: number): string {
   if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M"
   if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + "K"
+  if (Number.isInteger(n)) return String(n)
   return n.toFixed(4)
 }
 

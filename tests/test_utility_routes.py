@@ -142,11 +142,11 @@ class TestCreateUtilityFile:
 
     def test_rejects_invalid_name(self, client: TestClient) -> None:
         res = client.post("/api/utility", json={"name": "123bad"})
-        assert res.status_code == 400
+        assert res.status_code == 422
 
     def test_rejects_path_traversal(self, client: TestClient) -> None:
         res = client.post("/api/utility", json={"name": "../../etc/passwd"})
-        assert res.status_code == 400
+        assert res.status_code == 422
 
     def test_creates_utility_directory(self, client: TestClient, tmp_path: Path) -> None:
         """utility/ dir is created on first file create."""
@@ -256,17 +256,17 @@ class TestAutoImportIntegration:
 
 
 class TestPathTraversalSecurity:
-    @pytest.mark.parametrize("name", [
-        "__init__",
-        "__main__",
-        "123starts_with_digit",
-        "has-dashes",
-        "has spaces",
-        "has.dots",
+    @pytest.mark.parametrize("name,expected_status", [
+        ("__init__", 400),
+        ("__main__", 400),
+        ("123starts_with_digit", 422),
+        ("has-dashes", 422),
+        ("has spaces", 422),
+        ("has.dots", 422),
     ])
-    def test_create_blocked(self, client: TestClient, name: str) -> None:
+    def test_create_blocked(self, client: TestClient, name: str, expected_status: int) -> None:
         res = client.post("/api/utility", json={"name": name})
-        assert res.status_code == 400
+        assert res.status_code == expected_status
 
     @pytest.mark.parametrize("module", [
         "__init__",

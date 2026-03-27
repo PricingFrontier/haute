@@ -518,7 +518,12 @@ class CatBoostAlgorithm(BaseAlgorithm):
             flavor="catboost",
         )
         del selected
-        preds: np.ndarray = model.predict(x_data).flatten()
+        from catboost import CatBoostClassifier
+
+        if isinstance(model, CatBoostClassifier):
+            preds: np.ndarray = model.predict_proba(x_data)[:, 1]
+        else:
+            preds = model.predict(x_data).flatten()
         del x_data
         return preds
 
@@ -569,7 +574,9 @@ class CatBoostAlgorithm(BaseAlgorithm):
         # CatBoost ShapValues returns shape (n_samples, n_features + 1), last col is base value
         shap_values = model.get_feature_importance(data=pool, type="ShapValues")
         del pool
-        # Drop the base value column
+        # Ensure 2D and drop the base value column
+        if shap_values.ndim == 1:
+            shap_values = shap_values.reshape(1, -1)
         shap_values = shap_values[:, :-1]
 
         mean_abs = np.abs(shap_values).mean(axis=0)

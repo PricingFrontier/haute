@@ -50,7 +50,7 @@ def resolve_tracking_backend() -> tuple[str, str]:
         return "databricks", "databricks"
 
     mlruns_dir = Path.cwd() / "mlruns"
-    return f"file://{mlruns_dir}", "local"
+    return mlruns_dir.as_uri(), "local"
 
 
 def resolve_experiment_name(
@@ -190,7 +190,11 @@ def log_experiment(
         enhanced_params["best_iteration"] = meta.best_iteration
 
     with mlflow.start_run(run_name=run_name) as run:
-        mlflow.log_params(enhanced_params)
+        # Truncate params to 500 chars (MLflow limit) and batch in groups of 100
+        truncated_params = {k: str(v)[:500] for k, v in enhanced_params.items()}
+        param_items = list(truncated_params.items())
+        for i in range(0, len(param_items), 100):
+            mlflow.log_params(dict(param_items[i : i + 100]))
         mlflow.log_metrics(metrics)
 
         # Log model file as artifact

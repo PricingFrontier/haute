@@ -630,7 +630,7 @@ def _execute_eager_core(
         try:
             if is_source:
                 result = fn()
-                if row_limit and isinstance(result, pl.LazyFrame):
+                if row_limit and isinstance(result, (pl.LazyFrame, pl.DataFrame)):
                     result = result.head(row_limit)
             else:
                 input_ids = parents_of.get(nid, [])

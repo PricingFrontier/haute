@@ -489,14 +489,8 @@ class TestStripDocstringMixedQuotes:
         )
 
     def test_multiline_mixed_quote_docstring(self):
-        """BUG DOCUMENTATION: _strip_docstring terminates early on inner triple quotes.
-
-        When a multi-line \"\"\" docstring contains ''' on an interior line,
-        the check `if "'''" in stripped` fires prematurely, ending the
-        docstring scan. The real closing \"\"\" then leaks into the output.
-
-        This test documents the current (buggy) behavior. If _strip_docstring
-        is fixed, update the assertions to the correct behavior below.
+        """_strip_docstring now tracks opening_quote style, so inner ''' no longer
+        causes early termination of a \"\"\" docstring.
         """
         from haute._parser_helpers import _strip_docstring
 
@@ -508,18 +502,9 @@ class TestStripDocstringMixedQuotes:
         ]
         result = _strip_docstring(lines)
 
-        # CORRECT behavior (if bug is fixed):
-        #   assert len(result) == 1
-        #   assert "return df" in result[0]
-        #
-        # CURRENT behavior (bug): closing \"\"\" leaks through
-        assert len(result) == 2, (
-            "Known bug: inner ''' causes early docstring termination. "
-            "If this assertion fails, the bug may have been fixed -- "
-            "update to the correct assertions above."
-        )
-        assert '\"\"\"' in result[0]  # leaked closing quote
-        assert "return df" in result[1]
+        # Bug is fixed: docstring only closes with matching quote style
+        assert len(result) == 1
+        assert "return df" in result[0]
 
 
 class TestPreambleExtractionEdgeCases:

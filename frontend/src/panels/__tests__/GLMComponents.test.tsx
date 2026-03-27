@@ -87,7 +87,7 @@ beforeEach(() => {
   useNodeResultsStore.setState({ trainJobs: {}, trainResults: {} })
   useSettingsStore.setState({
     mlflow: { status: "pending", backend: "", host: "" },
-    collapsedSections: {},
+    openSections: {},
   })
 })
 

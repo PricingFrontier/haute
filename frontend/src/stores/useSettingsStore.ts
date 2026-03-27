@@ -12,13 +12,15 @@
 import { create } from "zustand"
 import { checkMlflow } from "../api/client"
 
+let _mlflowFetchingGuard = false
+
 interface SettingsState {
   // Row limit
   rowLimit: number
   setRowLimit: (limit: number) => void
 
-  // Collapsible section states (keyed by section ID, e.g. "optimiser.advanced")
-  collapsedSections: Record<string, boolean>
+  // Open/closed section states (keyed by section ID, e.g. "optimiser.advanced")
+  openSections: Record<string, boolean>
   toggleSection: (key: string) => void
   isSectionOpen: (key: string, defaultOpen?: boolean) => boolean
 
@@ -47,13 +49,13 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   rowLimit: 100,
   setRowLimit: (limit) => set({ rowLimit: limit }),
 
-  // Collapsible sections
-  collapsedSections: {},
+  // Open/closed sections
+  openSections: {},
   toggleSection: (key) => set((s) => ({
-    collapsedSections: { ...s.collapsedSections, [key]: !s.collapsedSections[key] },
+    openSections: { ...s.openSections, [key]: !s.openSections[key] },
   })),
   isSectionOpen: (key, defaultOpen = false) => {
-    const val = get().collapsedSections[key]
+    const val = get().openSections[key]
     // undefined means use default; stored value is "isOpen"
     return val === undefined ? defaultOpen : val
   },
@@ -68,12 +70,14 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     const canRetry =
       state.mlflow.status === "error" &&
       Date.now() - state._mlflowLastAttempt >= 10_000
-    if (state._mlflowFetching) return
+    if (_mlflowFetchingGuard) return
     if (state.mlflow.status !== "pending" && !canRetry) return
+    _mlflowFetchingGuard = true
     set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("MLflow check timed out after 5s")), 5_000),
-    )
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("MLflow check timed out after 5s")), 5_000)
+    })
     Promise.race([checkMlflow(), timeout])
       .then((data) => {
         if (data.mlflow_installed) {
@@ -87,6 +91,8 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
         set({ mlflow: { status: "error", backend: "", host: "" } })
       })
       .finally(() => {
+        clearTimeout(timeoutId)
+        _mlflowFetchingGuard = false
         set({ _mlflowFetching: false })
       })
   },

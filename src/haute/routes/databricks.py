@@ -49,9 +49,8 @@ def _get_databricks_client() -> Any:
         from databricks.sdk import WorkspaceClient
     except ImportError:
         raise HTTPException(
-            status_code=400,
-            detail="databricks-sdk is not installed. "
-            "Install with: pip install haute[databricks]",
+            status_code=503,
+            detail="databricks-sdk is not installed. Install with: pip install haute[databricks]",
         )
 
     host = os.getenv("DATABRICKS_HOST", "")
@@ -59,7 +58,7 @@ def _get_databricks_client() -> Any:
 
     if not host or not token:
         raise HTTPException(
-            status_code=400,
+            status_code=503,
             detail="DATABRICKS_HOST and DATABRICKS_TOKEN must be set in .env",
         )
 
@@ -96,9 +95,7 @@ def list_databricks_catalogs() -> CatalogListResponse:
     try:
         w = _get_databricks_client()
         catalogs = [
-            CatalogItem(name=c.name, comment=c.comment or "")
-            for c in w.catalogs.list()
-            if c.name
+            CatalogItem(name=c.name, comment=c.comment or "") for c in w.catalogs.list() if c.name
         ]
         return CatalogListResponse(catalogs=catalogs)
     except HTTPException:

@@ -37,6 +37,8 @@ import threading
 from collections import OrderedDict
 from typing import Any
 
+_MISSING = object()
+
 
 class FingerprintCache:
     """Thread-safe multi-entry LRU cache keyed by fingerprint strings.
@@ -87,7 +89,7 @@ class FingerprintCache:
             if entry is None:
                 return None
             first_slot = self._slots[0]
-            if not entry.get(first_slot):
+            if entry.get(first_slot, _MISSING) is _MISSING:
                 return None
             # Promote to MRU
             self._entries.move_to_end(fingerprint)

@@ -112,6 +112,11 @@ export default function ScenarioExpanderEditor({
           <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1.5" style={{ color: 'var(--text-muted)' }}>
             Value Range
           </label>
+          {minValue !== "" && maxValue !== "" && Number(minValue) >= Number(maxValue) && (
+            <div className="mb-1.5 px-2 py-1 rounded text-[10px]" style={{ background: 'rgba(245,158,11,.1)', color: '#f59e0b', border: '1px solid rgba(245,158,11,.2)' }}>
+              Warning: min value should be less than max value
+            </div>
+          )}
           <div className="grid grid-cols-4 gap-2">
             <div>
               <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Min</label>
@@ -153,7 +158,7 @@ export default function ScenarioExpanderEditor({
                 style={{ ...INPUT_STYLE, opacity: 0.7 }}
                 data-testid="step-size"
               >
-                {steps && Number(steps) > 1 && minValue !== "" && maxValue !== "" ? +((Number(maxValue) - Number(minValue)) / (Number(steps) - 1)).toFixed(4) : "—"}
+                {steps && Number(steps) > 1 && minValue !== "" && maxValue !== "" ? +((Number(maxValue) - Number(minValue)) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "—"}
               </div>
             </div>
           </div>

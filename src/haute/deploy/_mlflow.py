@@ -96,73 +96,80 @@ def deploy_to_mlflow(
     # 2. Write manifest to a persistent location (not a temp dir that gets deleted)
     build_dir = config.pipeline_file.resolve().parent / ".haute_build"
     build_dir.mkdir(exist_ok=True)
-    manifest_path = build_dir / "deploy_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    # 3. Build artifact dict for mlflow.pyfunc.log_model
-    artifacts: dict[str, str] = {
-        "deploy_manifest": str(manifest_path),
-    }
-    for artifact_name, artifact_path in resolved.artifacts.items():
-        artifacts[artifact_name] = str(artifact_path)
+    try:
+        manifest_path = build_dir / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    # 4. Build MLflow model signature
-    signature = _build_signature(resolved)
+        # 3. Build artifact dict for mlflow.pyfunc.log_model
+        artifacts: dict[str, str] = {
+            "deploy_manifest": str(manifest_path),
+        }
+        for artifact_name, artifact_path in resolved.artifacts.items():
+            artifacts[artifact_name] = str(artifact_path)
 
-    # 5. Set experiment - append endpoint suffix for staging isolation
-    experiment_name = build_experiment_name(config)
-    _log(f"Setting experiment: {experiment_name}")
-    mlflow.set_experiment(experiment_name)
+        # 4. Build MLflow model signature
+        signature = _build_signature(resolved)
 
-    # 6. Log the model
-    _log("Logging model to MLflow (this may take a minute)...")
-    with mlflow.start_run(run_name=f"deploy-{model_name}"):
-        mlflow.log_dict(manifest, "deploy_manifest.json")
+        # 5. Set experiment - append endpoint suffix for staging isolation
+        experiment_name = build_experiment_name(config)
+        _log(f"Setting experiment: {experiment_name}")
+        mlflow.set_experiment(experiment_name)
 
-        mlflow.pyfunc.log_model(
-            name="model",
-            python_model=_MODEL_CODE_PATH,
-            artifacts=artifacts,
-            signature=signature,
-            conda_env=_conda_env(resolved),
-            registered_model_name=uc_model_name,
+        # 6. Log the model
+        _log("Logging model to MLflow (this may take a minute)...")
+        with mlflow.start_run(run_name=f"deploy-{model_name}"):
+            mlflow.log_dict(manifest, "deploy_manifest.json")
+
+            mlflow.pyfunc.log_model(
+                name="model",
+                python_model=_MODEL_CODE_PATH,
+                artifacts=artifacts,
+                signature=signature,
+                conda_env=_conda_env(resolved),
+                registered_model_name=uc_model_name,
+            )
+
+        _log(f"Model logged. Fetching registered version for {uc_model_name}...")
+        # 7. Get the registered model version
+        client = mlflow.tracking.MlflowClient()
+        versions = search_versions(client, uc_model_name)
+        if versions:
+            latest_version = max(versions, key=lambda v: int(v.version)).version
+        else:
+            latest_version = "1"
+
+        model_uri = f"models:/{uc_model_name}/{latest_version}"
+
+        _log(f"Model URI: {model_uri}")
+
+        # 8. Create or update the serving endpoint
+        _log(f"Creating/updating serving endpoint: {config.effective_endpoint_name}...")
+        endpoint_url = _create_or_update_serving_endpoint(
+            config=config,
+            uc_model_name=uc_model_name,
+            model_version=int(latest_version),
         )
 
-    _log(f"Model logged. Fetching registered version for {uc_model_name}...")
-    # 7. Get the registered model version
-    client = mlflow.tracking.MlflowClient()
-    versions = search_versions(client, uc_model_name)
-    if versions:
-        latest_version = max(versions, key=lambda v: int(v.version)).version
-    else:
-        latest_version = "1"
+        logger.info(
+            "deploy_completed",
+            model_name=model_name,
+            model_uri=model_uri,
+            version=int(latest_version),
+            endpoint=config.effective_endpoint_name,
+        )
+        return DeployResult(
+            model_name=model_name,
+            model_version=int(latest_version),
+            model_uri=model_uri,
+            endpoint_url=endpoint_url,
+            manifest_path=manifest_path,
+        )
+    except BaseException:
+        import shutil
 
-    model_uri = f"models:/{uc_model_name}/{latest_version}"
-
-    _log(f"Model URI: {model_uri}")
-
-    # 8. Create or update the serving endpoint
-    _log(f"Creating/updating serving endpoint: {config.effective_endpoint_name}...")
-    endpoint_url = _create_or_update_serving_endpoint(
-        config=config,
-        uc_model_name=uc_model_name,
-        model_version=int(latest_version),
-    )
-
-    logger.info(
-        "deploy_completed",
-        model_name=model_name,
-        model_uri=model_uri,
-        version=int(latest_version),
-        endpoint=config.effective_endpoint_name,
-    )
-    return DeployResult(
-        model_name=model_name,
-        model_version=int(latest_version),
-        model_uri=model_uri,
-        endpoint_url=endpoint_url,
-        manifest_path=manifest_path,
-    )
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise
 
 
 def get_deploy_status(

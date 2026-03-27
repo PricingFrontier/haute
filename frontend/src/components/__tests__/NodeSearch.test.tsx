@@ -24,9 +24,9 @@ vi.mock("@xyflow/react", async () => {
   return {
     ...actual,
     useReactFlow: () => ({
-      getNodes: () => mockNodes,
       setCenter: mockSetCenter,
     }),
+    useNodes: () => mockNodes,
   }
 })
 

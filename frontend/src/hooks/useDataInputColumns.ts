@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { previewNode } from "../api/client"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -41,6 +41,19 @@ export function useDataInputColumns(
 
   const addToast = useToastStore((s) => s.addToast)
 
+  // Derive a fingerprint from node IDs + edge connections to avoid array-reference deps
+  const graphFingerprint = useMemo(() => {
+    const nodeIds = allNodes.map(n => n.id).sort().join(",")
+    const edgeIds = edges.map(e => `${e.source}-${e.target}`).sort().join(",")
+    return `${nodeIds}|${edgeIds}`
+  }, [allNodes, edges])
+
+  // Keep fresh refs for allNodes/edges so the effect body reads current data
+  const allNodesRef = useRef(allNodes)
+  const edgesRef = useRef(edges)
+  useEffect(() => { allNodesRef.current = allNodes }, [allNodes])
+  useEffect(() => { edgesRef.current = edges }, [edges])
+
   const [dataInputColumns, setDataInputColumns] = useState<{ name: string; dtype: string }[]>(
     cachedColumns ?? [],
   )
@@ -59,7 +72,7 @@ export function useDataInputColumns(
     // Abort in-flight request when deps change (prevents stale responses overwriting fresh data)
     const controller = new AbortController()
     // Fetch fresh columns (cached value shown meanwhile)
-    const graph = buildGraph(allNodes, edges, submodels, preamble)
+    const graph = buildGraph(allNodesRef.current, edgesRef.current, submodels, preamble)
     previewNode(graph, dataInput, 1, activeSource, { signal: controller.signal })
       .then((result) => {
         if (result.columns) {
@@ -76,7 +89,7 @@ export function useDataInputColumns(
         if (!cachedColumns) setDataInputColumns([])
       })
     return () => controller.abort()
-  }, [dataInput, allNodes, edges, submodels, preamble, activeSource, setColumnsCache, cachedColumns, isCacheFresh, addToast])
+  }, [dataInput, graphFingerprint, submodels, preamble, activeSource, setColumnsCache, cachedColumns, isCacheFresh, addToast])
 
   return dataInputColumns
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Loader2, HardDriveDownload, Trash2, XCircle } from "lucide-react"
 import { ApiError } from "../api/client"
 import { formatBytes } from "../utils/formatBytes"
@@ -68,13 +68,17 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   const [progress, setProgress] = useState<{ rows: number; elapsed: number; phase: string } | null>(null)
   const [error, setError] = useState("")
 
+  // Keep a ref for onCacheReady to avoid stale closure in useEffect
+  const onCacheReadyRef = useRef(onCacheReady)
+  onCacheReadyRef.current = onCacheReady
+
   // Load initial status
   useEffect(() => {
     if (!resourceKey) return
     getStatus(resourceKey)
       .then((data) => {
         setCache(data)
-        if (data.cached) onCacheReady?.(data)
+        if (data.cached) onCacheReadyRef.current?.(data)
       })
       .catch((e) => { console.warn("cache status fetch failed", e); setCache(null) })
   // eslint-disable-next-line react-hooks/exhaustive-deps -- stable callback props, including would restart polling

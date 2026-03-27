@@ -83,11 +83,17 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
 
     if transport.kind == "databricks":
         staging_preds, prod_preds, prod_exists = _impact_databricks(
-            staging_name, prod_name, records, batch_size,
+            staging_name,
+            prod_name,
+            records,
+            batch_size,
         )
     elif transport.kind == "http":
         staging_preds, prod_preds, prod_exists = _impact_http(
-            transport.staging_url, transport.prod_url, records, batch_size,
+            transport.staging_url,
+            transport.prod_url,
+            records,
+            batch_size,
         )
     else:
         click.echo(
@@ -167,15 +173,11 @@ def _impact_databricks(
     try:
         ws.serving_endpoints.get(prod_name)
     except Exception as exc:
-        exc_name = type(exc).__name__
-        if exc_name in ("NotFound", "ResourceDoesNotExist"):
-            click.echo(
-                f"  First deployment - production endpoint '{prod_name}' not found"
-            )
+        not_found_names = ("NotFound", "ResourceDoesNotExist")
+        if type(exc).__name__ in not_found_names:
+            click.echo(f"  First deployment - production endpoint '{prod_name}' not found")
         else:
-            click.echo(
-                f"  \u26a0 Could not reach production endpoint '{prod_name}': {exc}"
-            )
+            click.echo(f"  \u26a0 Could not reach production endpoint '{prod_name}': {exc}")
         prod_exists = False
 
     # Score staging
@@ -203,7 +205,10 @@ def _impact_http(
     # Score staging
     click.echo(f"  Scoring through staging ({staging_url})...")
     staging_preds = score_http_endpoint_batched(
-        staging_url, records, batch_size, click.echo,
+        staging_url,
+        records,
+        batch_size,
+        click.echo,
     )
 
     # Score production (if URL is configured)
@@ -213,7 +218,10 @@ def _impact_http(
         click.echo(f"  Scoring through production ({prod_url})...")
         try:
             prod_preds = score_http_endpoint_batched(
-                prod_url, records, batch_size, click.echo,
+                prod_url,
+                records,
+                batch_size,
+                click.echo,
             )
         except Exception as exc:
             click.echo(f"  First deployment - production endpoint not reachable: {exc}")

@@ -57,7 +57,7 @@ extra_css:
 
 dev_addr: 127.0.0.1:8001
 
-copyright: Copyright &copy; 2025 Pricing Frontier LTD. Licensed under AGPL-3.0.
+copyright: Copyright &copy; 2025-2026 Pricing Frontier LTD. Licensed under AGPL-3.0.
 
 markdown_extensions:
   - admonition

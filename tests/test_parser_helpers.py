@@ -257,7 +257,7 @@ class TestExtractFunctionBodies:
         source = "def outer():\n    def inner():\n        return 1\n    return inner"
         bodies = _extract_function_bodies(source)
         assert "outer" in bodies
-        assert "inner" in bodies
+        assert "inner" not in bodies  # ast.iter_child_nodes extracts top-level only
 
     def test_empty_source(self):
         assert _extract_function_bodies("") == {}

@@ -4,6 +4,7 @@ import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
+import { readJson } from "../../api/client"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 
 type ArtifactMeta = {
@@ -45,19 +46,9 @@ export default function OptimiserApplyEditor({
       if (sourceType === "file") { setMeta(null); setLoadError("") }
       return
     }
-    fetch("/api/pipeline/read-json", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: artifactPath }),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          setLoadError(`Could not read artifact: ${res.statusText}`)
-          setMeta(null)
-          return
-        }
-        const data = await res.json()
-        setMeta(data as ArtifactMeta)
+    readJson<ArtifactMeta>(artifactPath)
+      .then((data) => {
+        setMeta(data)
         setLoadError("")
       })
       .catch((e: unknown) => {

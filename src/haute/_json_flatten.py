@@ -58,6 +58,7 @@ _cancel_events: dict[str, threading.Event] = {}
 
 # -- Test helpers for flatten progress state ---------------------------------
 
+
 class JsonCacheCancelledError(HauteError):
     """Raised when a JSON cache build is cancelled by the user."""
 
@@ -91,7 +92,10 @@ def _clear_flatten_progress() -> None:
 
 
 def _update_progress(
-    key: str | None, t0: float | None, rows: int, phase: str = "",
+    key: str | None,
+    t0: float | None,
+    rows: int,
+    phase: str = "",
 ) -> None:
     """Thread-safe update of the flatten progress dict for *key*."""
     if key is None or t0 is None:
@@ -110,6 +114,7 @@ def _clear_cancel_events() -> None:
     """Clear all cancel events (test helper)."""
     with _flatten_lock:
         _cancel_events.clear()
+
 
 def _adaptive_chunk_size(flatten_schema: dict[str, Any]) -> int:
     """Choose chunk size based on schema width to bound memory per chunk.
@@ -193,7 +198,8 @@ def _merge_schema_nodes(
             return {
                 "$max": max(a["$max"], b["$max"]),
                 "$items": _merge_schema_nodes(
-                    a.get("$items", {}), b.get("$items", {}),
+                    a.get("$items", {}),
+                    b.get("$items", {}),
                 ),
             }
         if not a_is_array and not b_is_array:
@@ -410,10 +416,12 @@ def _arrow_schema_from_flatten(flatten_schema: dict[str, Any]) -> pa.Schema:
         "float": pa.float64(),
         "str": pa.string(),
     }
-    return pa.schema([
-        pa.field(name, _dtype_map.get(dtype, pa.string()), nullable=True)
-        for name, dtype in _schema_leaf_types(flatten_schema)
-    ])
+    return pa.schema(
+        [
+            pa.field(name, _dtype_map.get(dtype, pa.string()), nullable=True)
+            for name, dtype in _schema_leaf_types(flatten_schema)
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -446,8 +454,7 @@ def _coerce_to_arrow(values: list[Any], target_type: pa.DataType) -> pa.Array:
 
     try:
         return pa.array(values, type=target_type)
-    except (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError,
-            TypeError, ValueError):
+    except (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError, TypeError, ValueError):
         pass
 
     if target_type == pa.float64():
@@ -496,6 +503,7 @@ def _rows_to_batch(
 
 # -- Core streaming writer (fallback) ----------------------------------------
 
+
 def _flatten_and_write_streaming(
     records_iter: Iterator[dict[str, Any]],
     flatten_schema: dict[str, Any],
@@ -539,15 +547,14 @@ def _flatten_and_write_streaming(
         nonlocal writer, total_rows, columns, rows_in_chunk
         if rows_in_chunk == 0:
             return
-        arrays = [
-            _coerce_to_arrow(columns[i], arrow_schema.field(i).type)
-            for i in range(n_cols)
-        ]
+        arrays = [_coerce_to_arrow(columns[i], arrow_schema.field(i).type) for i in range(n_cols)]
         batch = pa.record_batch(arrays, schema=arrow_schema)
         del arrays
         if writer is None:
             writer = pq.ParquetWriter(
-                str(tmp_path), arrow_schema, compression="zstd",
+                str(tmp_path),
+                arrow_schema,
+                compression="zstd",
             )
         writer.write_batch(batch)
         del batch
@@ -596,7 +603,6 @@ def _flatten_and_write_streaming(
         raise
 
 
-
 # ---------------------------------------------------------------------------
 # Polars-native flatten: expression-based (fast path)
 # ---------------------------------------------------------------------------
@@ -637,13 +643,13 @@ def _build_flatten_exprs(
                 else:
                     exprs.extend(
                         _build_flatten_exprs(
-                            items_schema, _base=elem, _prefix=idx_key,
+                            items_schema,
+                            _base=elem,
+                            _prefix=idx_key,
                         )
                     )
         else:
-            exprs.extend(
-                _build_flatten_exprs(spec, _base=expr, _prefix=full_key)
-            )
+            exprs.extend(_build_flatten_exprs(spec, _base=expr, _prefix=full_key))
     return exprs
 
 
@@ -748,7 +754,8 @@ def _jsonl_to_raw_parquet(
     # parquet and return immediately.
     try:
         ndjson_schema = pl.scan_ndjson(
-            path, infer_schema_length=_SCHEMA_SAMPLE_SIZE,
+            path,
+            infer_schema_length=_SCHEMA_SAMPLE_SIZE,
         ).collect_schema()
     except pl.exceptions.ComputeError:
         import pyarrow as pa
@@ -824,7 +831,7 @@ def _flatten_raw_parquet(
 
     if n_groups == 0 or not exprs:
         cols = schema_columns(flatten_schema)
-        empty = pl.DataFrame({c: pl.Series([], dtype=pl.Utf8) for c in cols})
+        empty = pl.DataFrame({c: pl.Series([], dtype=pl.String) for c in cols})
         empty.write_parquet(str(tmp), compression="zstd")
         tmp.replace(dest)
         return 0
@@ -939,9 +946,9 @@ def _polars_flatten_to_parquet(
     if chunk_lines is None:
         chunk_lines = _adaptive_chunk_size(flatten_schema)
 
+    writer: pq.ParquetWriter | None = None
     try:
         if path.suffix == ".jsonl":
-            writer: pq.ParquetWriter | None = None
             total_rows = 0
 
             for chunk_bytes in _iter_line_chunks(path, chunk_lines):
@@ -955,7 +962,8 @@ def _polars_flatten_to_parquet(
 
                 if writer is None:
                     writer = pq.ParquetWriter(
-                        str(tmp_path), arrow_table.schema,
+                        str(tmp_path),
+                        arrow_table.schema,
                         compression="zstd",
                     )
                 writer.write_table(arrow_table)
@@ -971,9 +979,7 @@ def _polars_flatten_to_parquet(
             else:
                 # Empty file — write empty parquet with correct columns
                 cols = schema_columns(flatten_schema)
-                empty = pl.DataFrame(
-                    {c: pl.Series([], dtype=pl.Utf8) for c in cols}
-                )
+                empty = pl.DataFrame({c: pl.Series([], dtype=pl.String) for c in cols})
                 empty.write_parquet(str(tmp_path), compression="zstd")
         else:
             # .json: must be fully loaded (JSON format constraint)
@@ -995,7 +1001,7 @@ def _polars_flatten_to_parquet(
         return total_rows
 
     except BaseException:
-        if path.suffix == ".jsonl" and writer is not None:
+        if writer is not None:
             writer.close()
         tmp_path.unlink(missing_ok=True)
         raise
@@ -1087,7 +1093,7 @@ def _json_cache_path(data_path: str | Path) -> Path:
     """
     import hashlib
 
-    path_hash = hashlib.sha256(str(data_path).encode()).hexdigest()[:16]
+    path_hash = hashlib.sha256(str(data_path).encode()).hexdigest()[:32]
     return Path.cwd() / _CACHE_DIR / f"json_{path_hash}.parquet"
 
 
@@ -1148,7 +1154,8 @@ def _resolve_flatten_schema(
 
     inferred = _infer_schema_streaming(data_path)
     logger.info(
-        "schema_inferred", path=str(data_path),
+        "schema_inferred",
+        path=str(data_path),
         columns=len(schema_columns(inferred)),
     )
     return inferred
@@ -1298,12 +1305,19 @@ def build_json_cache(
             raw_path = cache_path.with_suffix(".raw.parquet")
             try:
                 _jsonl_to_raw_parquet(
-                    p, raw_path,
-                    progress_key=data_path_str, t0=t0, cancel_event=event,
+                    p,
+                    raw_path,
+                    progress_key=data_path_str,
+                    t0=t0,
+                    cancel_event=event,
                 )
                 _flatten_raw_parquet(
-                    raw_path, resolved, cache_path,
-                    progress_key=data_path_str, t0=t0, cancel_event=event,
+                    raw_path,
+                    resolved,
+                    cache_path,
+                    progress_key=data_path_str,
+                    t0=t0,
+                    cancel_event=event,
                 )
             finally:
                 raw_path.unlink(missing_ok=True)

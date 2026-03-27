@@ -17,7 +17,7 @@ import { checkMlflow } from "../../api/client.ts"
 function resetStore() {
   useSettingsStore.setState({
     rowLimit: 100,  // store default is 100, not 1000
-    collapsedSections: {},
+    openSections: {},
     mlflow: { status: "pending", backend: "", host: "" },
     _mlflowFetching: false,
     _mlflowLastAttempt: 0,
@@ -197,10 +197,10 @@ describe("useSettingsStore", () => {
 
       // Initially undefined (uses default)
       s.toggleSection("advanced")
-      expect(useSettingsStore.getState().collapsedSections["advanced"]).toBe(true)
+      expect(useSettingsStore.getState().openSections["advanced"]).toBe(true)
 
       useSettingsStore.getState().toggleSection("advanced")
-      expect(useSettingsStore.getState().collapsedSections["advanced"]).toBe(false)
+      expect(useSettingsStore.getState().openSections["advanced"]).toBe(false)
     })
 
     it("isSectionOpen returns defaultOpen when section has no stored value", () => {
@@ -224,12 +224,12 @@ describe("useSettingsStore", () => {
       s.toggleSection("a")
       s.toggleSection("b")
 
-      expect(useSettingsStore.getState().collapsedSections["a"]).toBe(true)
-      expect(useSettingsStore.getState().collapsedSections["b"]).toBe(true)
+      expect(useSettingsStore.getState().openSections["a"]).toBe(true)
+      expect(useSettingsStore.getState().openSections["b"]).toBe(true)
 
       useSettingsStore.getState().toggleSection("a")
-      expect(useSettingsStore.getState().collapsedSections["a"]).toBe(false)
-      expect(useSettingsStore.getState().collapsedSections["b"]).toBe(true)
+      expect(useSettingsStore.getState().openSections["a"]).toBe(false)
+      expect(useSettingsStore.getState().openSections["b"]).toBe(true)
     })
   })
 

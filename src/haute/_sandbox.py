@@ -67,8 +67,7 @@ def validate_project_path(path: str | Path) -> Path:
     root = _get_project_root()
     if not resolved.is_relative_to(root):
         raise ValueError(
-            f"Path '{path}' resolves to '{resolved}' which is outside "
-            f"the project root '{root}'"
+            f"Path '{path}' resolves to '{resolved}' which is outside the project root '{root}'"
         )
     return resolved
 
@@ -78,25 +77,27 @@ def validate_project_path(path: str | Path) -> Path:
 # ---------------------------------------------------------------------------
 
 # Builtins that allow arbitrary code execution or system access.
-_BLOCKED_BUILTINS = frozenset({
-    "__import__",
-    "breakpoint",
-    "compile",
-    "eval",
-    "exec",
-    "getattr",
-    "setattr",
-    "delattr",
-    "globals",
-    "locals",
-    "open",
-    "input",
-    "memoryview",
-    "vars",
-    "dir",
-    "type",
-    "hasattr",
-})
+_BLOCKED_BUILTINS = frozenset(
+    {
+        "__import__",
+        "breakpoint",
+        "compile",
+        "eval",
+        "exec",
+        "getattr",
+        "setattr",
+        "delattr",
+        "globals",
+        "locals",
+        "open",
+        "input",
+        "memoryview",
+        "vars",
+        "dir",
+        "type",
+        "hasattr",
+    }
+)
 
 _SAFE_BUILTINS: dict[str, Any] = {
     name: getattr(builtins, name)
@@ -131,73 +132,79 @@ def safe_globals(*, allow_imports: bool = False, **extra: Any) -> dict[str, Any]
 # ---------------------------------------------------------------------------
 
 # Attribute names that enable sandbox escapes via the Python type system.
-_BLOCKED_ATTRS = frozenset({
-    "__subclasses__",
-    "__bases__",
-    "__mro__",
-    "__class__",
-    "__globals__",
-    "__code__",
-    "__func__",
-    "__self__",
-    "__module__",
-    "__dict__",
-    "__init_subclass__",
-    "__set_name__",
-    "__reduce__",
-    "__reduce_ex__",
-    "__getattr__",
-    "__setattr__",
-    "__delattr__",
-    "__import__",
-    "__builtins__",
-    "__loader__",
-    "__spec__",
-    "__closure__",
-})
+_BLOCKED_ATTRS = frozenset(
+    {
+        "__subclasses__",
+        "__bases__",
+        "__mro__",
+        "__class__",
+        "__globals__",
+        "__code__",
+        "__func__",
+        "__self__",
+        "__module__",
+        "__dict__",
+        "__init_subclass__",
+        "__set_name__",
+        "__reduce__",
+        "__reduce_ex__",
+        "__getattr__",
+        "__setattr__",
+        "__delattr__",
+        "__import__",
+        "__builtins__",
+        "__loader__",
+        "__spec__",
+        "__closure__",
+    }
+)
 
 # Non-dunder attribute names that enable frame/traceback inspection escapes.
-_BLOCKED_FRAME_ATTRS = frozenset({
-    "__traceback__",
-    "tb_frame",
-    "tb_next",
-    "f_globals",
-    "f_locals",
-    "f_builtins",
-    "f_code",
-    "gi_frame",
-    "gi_code",
-    "cr_frame",
-    "cr_code",
-    "ag_frame",
-    "ag_code",
-})
+_BLOCKED_FRAME_ATTRS = frozenset(
+    {
+        "__traceback__",
+        "tb_frame",
+        "tb_next",
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+        "f_code",
+        "gi_frame",
+        "gi_code",
+        "cr_frame",
+        "cr_code",
+        "ag_frame",
+        "ag_code",
+    }
+)
 
 # Built-in function names that can be used to bypass attribute restrictions.
-_BLOCKED_CALLS = frozenset({
-    "getattr",
-    "setattr",
-    "delattr",
-    "type",
-    "vars",
-    "dir",
-    "hasattr",
-    "classmethod",
-    "staticmethod",
-    "super",
-    "__import__",
-    "eval",
-    "exec",
-    "compile",
-    "open",
-    "breakpoint",
-    "globals",
-    "locals",
-    "input",
-    "exit",
-    "quit",
-    "help",
-})
+_BLOCKED_CALLS = frozenset(
+    {
+        "getattr",
+        "setattr",
+        "delattr",
+        "type",
+        "vars",
+        "dir",
+        "hasattr",
+        "classmethod",
+        "staticmethod",
+        "super",
+        "__import__",
+        "eval",
+        "exec",
+        "compile",
+        "open",
+        "breakpoint",
+        "globals",
+        "locals",
+        "input",
+        "exit",
+        "quit",
+        "help",
+    }
+)
 
 
 class UnsafeCodeError(HauteError):
@@ -222,32 +229,24 @@ class _ASTValidator(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr.startswith("__") and node.attr.endswith("__"):
             if node.attr in _BLOCKED_ATTRS:
-                raise UnsafeCodeError(
-                    f"Access to '{node.attr}' is blocked in pipeline code"
-                )
+                raise UnsafeCodeError(f"Access to '{node.attr}' is blocked in pipeline code")
         # Block traceback frame access — prevents sandbox escape via
         # exception handler: e.__traceback__.tb_frame.f_globals
         if node.attr in _BLOCKED_FRAME_ATTRS:
-            raise UnsafeCodeError(
-                f"Access to '{node.attr}' is blocked in pipeline code"
-            )
+            raise UnsafeCodeError(f"Access to '{node.attr}' is blocked in pipeline code")
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         # Block calls to dangerous built-in names
         if isinstance(node.func, ast.Name) and node.func.id in _BLOCKED_CALLS:
-            raise UnsafeCodeError(
-                f"Call to '{node.func.id}()' is blocked in pipeline code"
-            )
+            raise UnsafeCodeError(f"Call to '{node.func.id}()' is blocked in pipeline code")
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         # Block __builtins__["getattr"] style access — prevents retrieving
         # blocked callables via dict subscription on the builtins namespace.
         if isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
-            raise UnsafeCodeError(
-                "Subscript access to '__builtins__' is blocked in pipeline code"
-            )
+            raise UnsafeCodeError("Subscript access to '__builtins__' is blocked in pipeline code")
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -262,21 +261,17 @@ class _ASTValidator(ast.NodeVisitor):
         raise UnsafeCodeError("class definitions are blocked in pipeline code")
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        raise UnsafeCodeError(
-            "async function definitions are blocked in pipeline code"
-        )
+        raise UnsafeCodeError("async function definitions are blocked in pipeline code")
 
     def visit_Global(self, node: ast.Global) -> None:
         raise UnsafeCodeError("global statements are blocked in pipeline code")
 
     def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        raise UnsafeCodeError(
-            "nonlocal statements are blocked in pipeline code"
-        )
+        raise UnsafeCodeError("nonlocal statements are blocked in pipeline code")
 
 
-_validator = _ASTValidator()
-_preamble_validator = _ASTValidator(allow_imports=True)
+_validation_cache: dict[tuple[str, bool], bool] = {}
+_validation_cache_lock = threading.Lock()
 
 
 def validate_user_code(code: str, *, allow_imports: bool = False) -> None:
@@ -302,11 +297,10 @@ def _validate_user_code_cached(
     code: str,
     *,
     allow_imports: bool = False,
-    _cache: dict[tuple[str, bool], bool] = {},  # noqa: B006
 ) -> None:
     """Inner validation with per-code-string caching.
 
-    Uses a mutable default dict as a simple cache.  Safe-code results
+    Uses a module-level dict as a simple cache.  Safe-code results
     (``True``) are cached; unsafe code always raises before caching.
 
     Code that cannot be parsed as standalone Python (e.g. chain syntax
@@ -315,16 +309,18 @@ def _validate_user_code_cached(
     wraps user code fragments.
     """
     cache_key = (code, allow_imports)
-    if cache_key in _cache:
-        return
+    with _validation_cache_lock:
+        if cache_key in _validation_cache:
+            return
 
     # _try_parse_code raises UnsafeCodeError (wrapping the SyntaxError)
     # if neither the raw code nor a wrapped version can be parsed.
     tree = _try_parse_code(code)
 
-    v = _preamble_validator if allow_imports else _validator
+    v = _ASTValidator(allow_imports=allow_imports)
     v.visit(tree)
-    _cache[cache_key] = True
+    with _validation_cache_lock:
+        _validation_cache[cache_key] = True
 
 
 def _try_parse_code(code: str) -> ast.Module:
@@ -350,8 +346,7 @@ def _try_parse_code(code: str) -> ast.Module:
         return ast.parse(wrapped)
     except SyntaxError:
         raise UnsafeCodeError(
-            f"Cannot validate code with syntax errors "
-            f"(line {first_exc.lineno}): {first_exc.msg}"
+            f"Cannot validate code with syntax errors (line {first_exc.lineno}): {first_exc.msg}"
         ) from first_exc
 
 

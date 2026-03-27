@@ -119,9 +119,22 @@ async def get_schema(path: str) -> SchemaResponse:
         )
 
 
+def _validate_table_param(table: str) -> None:
+    """Reject table names that don't match catalog.schema.table format."""
+    from haute._databricks_io import _TABLE_NAME_RE
+
+    if not _TABLE_NAME_RE.match(table):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid table name: {table!r}. "
+            "Expected fully-qualified name like 'catalog.schema.table'.",
+        )
+
+
 @router.get("/schema/databricks", response_model=SchemaResponse)
 async def get_databricks_schema(table: str) -> SchemaResponse:
     """Return schema + preview from the local parquet cache of a Databricks table."""
+    _validate_table_param(table)
     import polars as pl
 
     from haute._databricks_io import cached_path

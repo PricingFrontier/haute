@@ -254,21 +254,24 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
     [config, node?.id]
   )
 
+  // Compute input sources (must be before early return to satisfy hook ordering rules)
+  const nodeMap = useMemo(() => Object.fromEntries(allNodes.map((n) => [n.id, n])), [allNodes])
+  const inputSources: InputSource[] = useMemo(() => {
+    if (!node) return []
+    return edges
+      .filter((e) => e.target === node.id)
+      .map((e) => ({
+        varName: sanitizeName(nodeMap[e.source]?.data.label || e.source),
+        sourceLabel: nodeMap[e.source]?.data.label || e.source,
+        edgeId: e.id,
+      }))
+  }, [edges, node, nodeMap])
+
   if (!node) return null
 
   const isInstance = !!config.instanceOf
   const nodeType = node.data.nodeType
   const showColumnsTab = !isInstance && !NO_COLUMNS_TAB.has(nodeType)
-
-  // Compute input sources
-  const nodeMap = Object.fromEntries(allNodes.map((n) => [n.id, n]))
-  const inputSources: InputSource[] = edges
-    .filter((e) => e.target === node.id)
-    .map((e) => ({
-      varName: sanitizeName(nodeMap[e.source]?.data.label || e.source),
-      sourceLabel: nodeMap[e.source]?.data.label || e.source,
-      edgeId: e.id,
-    }))
 
   // ── Render the right editor based on nodeType ──
 

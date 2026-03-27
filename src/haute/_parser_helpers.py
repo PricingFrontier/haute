@@ -188,19 +188,20 @@ def _strip_docstring(lines: list[str]) -> list[str]:
     cleaned: list[str] = []
     in_docstring = False
     docstring_done = False
+    opening_quote = '"""'
 
     for line in lines:
         stripped = line.strip()
 
         if not docstring_done:
             if in_docstring:
-                if '"""' in stripped or "'''" in stripped:
+                if opening_quote in stripped:
                     in_docstring = False
                     docstring_done = True
                 continue
             if not cleaned and (stripped.startswith('"""') or stripped.startswith("'''")):
-                quote = stripped[:3]
-                if stripped.count(quote) >= 2 and stripped.endswith(quote):
+                opening_quote = stripped[:3]
+                if stripped.count(opening_quote) >= 2 and stripped.endswith(opening_quote):
                     docstring_done = True
                     continue
                 else:
@@ -539,7 +540,7 @@ def _extract_function_bodies(
     source_lines = source.splitlines()
     bodies: dict[str, str] = {}
 
-    for node in ast.walk(tree):
+    for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.FunctionDef):
             if node.body:
                 start = node.body[0].lineno - 1
@@ -867,7 +868,8 @@ def _extract_preamble(source: str) -> str:
     pipeline_start_idx = len(lines)
     for i in range(last_standard_idx + 1, len(lines)):
         stripped = lines[i].strip()
-        is_pipeline_def = stripped.startswith("pipeline") and (
+        starts_pipeline = stripped.startswith("pipeline =") or stripped.startswith("pipeline=")
+        is_pipeline_def = starts_pipeline and (
             "haute.Pipeline" in stripped or "= haute.Pipeline" in stripped
         )
         if is_pipeline_def:

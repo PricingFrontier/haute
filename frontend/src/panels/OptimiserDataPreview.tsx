@@ -427,8 +427,7 @@ export default function OptimiserDataPreview({
   )
   const goNext = useCallback(
     () => setCurrentIndex((i) => Math.min(quoteIds.length - 1, i + 1)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- quoteIds.length changes with data; updater fn handles bounds
-    [],
+    [quoteIds.length],
   )
   const handleSearchSubmit = useCallback(() => {
     const idx = quoteIds.indexOf(searchValue.trim())

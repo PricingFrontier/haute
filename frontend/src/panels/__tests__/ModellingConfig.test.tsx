@@ -75,7 +75,7 @@ beforeEach(() => {
   })
   useSettingsStore.setState({
     mlflow: { status: "pending", backend: "", host: "" },
-    collapsedSections: {},
+    openSections: {},
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
   mockTrainModel.mockReset()

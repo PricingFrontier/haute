@@ -31,7 +31,7 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
     const num = val === "" ? safeDefault : (Number.isNaN(parsed) ? safeDefault : parsed)
     const next = entries.map(e => String(e[factor]) === level ? { ...e, value: num } : e)
     if (!next.some(e => String(e[factor]) === level)) {
-      next.push({ [factor]: level, value: isNaN(num) ? 0 : num })
+      next.push({ [factor]: level, value: Number.isNaN(num) ? 0 : num })
     }
     onUpdateEntries(next)
   }

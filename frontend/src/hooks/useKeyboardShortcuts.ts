@@ -25,7 +25,7 @@ export default function useKeyboardShortcuts({
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setPreviewData, clearTrace, closePanel,
 }: KeyboardShortcutsParams) {
-  const { addToast } = useToastStore()
+  const addToast = useToastStore((s) => s.addToast)
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

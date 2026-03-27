@@ -112,7 +112,8 @@ class TestPipeline:
         def read_data() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
-        assert p.nodes[0].config == {"path": "data.parquet"}
+        from haute._types import NodeType
+        assert p.nodes[0].config == {"path": "data.parquet", "_node_type": NodeType.DATA_SOURCE}
         assert p.nodes[0].is_source is True
 
     def test_empty_pipeline_raises(self):
@@ -209,7 +210,7 @@ class TestPipeline:
         # Verify node types
         node_map = {n["id"]: n for n in g["nodes"]}
         assert node_map["source"]["data"]["nodeType"] == "dataSource"
-        assert node_map["transform"]["data"]["nodeType"] == "output"  # last node
+        assert node_map["transform"]["data"]["nodeType"] == "polars"
 
     def test_to_graph_inferred_linear_chain(self):
         """Without explicit edges, to_graph() infers a linear chain."""

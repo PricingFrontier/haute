@@ -58,7 +58,8 @@ DEFAULT_SPLIT_DICT: dict[str, Any] = {
 
 
 def split_data(
-    df: pl.DataFrame, config: SplitConfig,
+    df: pl.DataFrame,
+    config: SplitConfig,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Split a DataFrame into train and test (validation) sets.
 
@@ -88,7 +89,9 @@ PARTITION_HOLDOUT = 2
 
 
 def split_mask(
-    n_rows: int, config: SplitConfig, df: pl.DataFrame | None = None,
+    n_rows: int,
+    config: SplitConfig,
+    df: pl.DataFrame | None = None,
 ) -> pl.Series:
     """Return an Int8 Series with partition labels.
 
@@ -106,26 +109,32 @@ def split_mask(
         return _random_mask(n_rows, config.validation_size, config.holdout_size, config.seed)
     elif config.strategy == "temporal":
         if df is None or config.date_column is None or config.cutoff_date is None:
-            raise ValueError(
-                "Temporal split requires df, date_column, and cutoff_date"
-            )
+            raise ValueError("Temporal split requires df, date_column, and cutoff_date")
         return _temporal_mask(
-            df, config.date_column, config.cutoff_date,
-            config.validation_size, config.holdout_size,
+            df,
+            config.date_column,
+            config.cutoff_date,
+            config.validation_size,
+            config.holdout_size,
         )
     elif config.strategy == "group":
         if df is None or config.group_column is None:
             raise ValueError("Group split requires df and group_column")
         return _group_mask(
-            df, config.group_column,
-            config.validation_size, config.holdout_size, config.seed,
+            df,
+            config.group_column,
+            config.validation_size,
+            config.holdout_size,
+            config.seed,
         )
     else:
         raise ValueError(f"Unknown split strategy: {config.strategy}")
 
 
 def _random_split(
-    df: pl.DataFrame, test_size: float, seed: int,
+    df: pl.DataFrame,
+    test_size: float,
+    seed: int,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Split by random sampling with seed for reproducibility."""
     n = len(df)
@@ -134,15 +143,16 @@ def _random_split(
     # Add row index, sample train indices, derive test via anti-join
     indexed = df.with_row_index("__split_idx__")
     train = indexed.sample(n=train_n, seed=seed).sort("__split_idx__")
-    test = (
-        indexed.join(train.select("__split_idx__"), on="__split_idx__", how="anti")
-        .sort("__split_idx__")
+    test = indexed.join(train.select("__split_idx__"), on="__split_idx__", how="anti").sort(
+        "__split_idx__"
     )
     return train.drop("__split_idx__"), test.drop("__split_idx__")
 
 
 def _temporal_split(
-    df: pl.DataFrame, date_column: str, cutoff_date: str,
+    df: pl.DataFrame,
+    date_column: str,
+    cutoff_date: str,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Split by date column: train before cutoff, test on or after."""
     if date_column not in df.columns:
@@ -161,7 +171,9 @@ def _temporal_split(
 
 
 def _assign_group_split(
-    unique_groups: list, test_size: float, seed: int,
+    unique_groups: list,
+    test_size: float,
+    seed: int,
 ) -> set[str]:
     """Deterministically assign groups to the test set via MD5 hashing.
 
@@ -171,7 +183,7 @@ def _assign_group_split(
     for g in sorted(str(v) for v in unique_groups):
         h = hashlib.md5(f"{seed}:{g}".encode()).hexdigest()
         # Use first 8 hex chars as a fraction
-        frac = int(h[:8], 16) / 0xFFFFFFFF
+        frac = int(h[:8], 16) / 0x100000000
         if frac < test_size:
             test_groups.add(g)
 
@@ -207,7 +219,10 @@ def _group_split(
 
 
 def _random_mask(
-    n_rows: int, validation_size: float, holdout_size: float, seed: int,
+    n_rows: int,
+    validation_size: float,
+    holdout_size: float,
+    seed: int,
 ) -> pl.Series:
     """Int8 partition mask via random shuffle."""
     import numpy as np
@@ -303,7 +318,7 @@ def _group_mask(
     group_partition: dict[str, int] = {}
     for g in unique_groups:
         h = hashlib.md5(f"{seed}:{g}".encode()).hexdigest()
-        frac = int(h[:8], 16) / 0xFFFFFFFF
+        frac = int(h[:8], 16) / 0x100000000
         if holdout_size > 0 and frac < holdout_size:
             group_partition[g] = PARTITION_HOLDOUT
         elif total_frac > 0 and frac < total_frac:

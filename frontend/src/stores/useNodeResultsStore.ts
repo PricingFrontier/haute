@@ -83,6 +83,7 @@ interface CachedPreview {
 interface CachedSolveResult {
   result: SolveResult
   originalResult: SolveResult
+  error?: string
   jobId: string
   configHash: string
   /** Constraint config snapshot for OptimiserPreview */
@@ -273,14 +274,29 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  failSolveJob: (nodeId, _error) =>
+  failSolveJob: (nodeId, error) =>
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       return {
         solveJobs: remainingJobs,
+        solveResults: {
+          ...s.solveResults,
+          [nodeId]: {
+            ...(s.solveResults[nodeId] ?? {
+              result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
+              originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
+            }),
+            jobId: job.jobId,
+            configHash: job.configHash,
+            constraints: job.constraints,
+            nodeLabel: job.nodeLabel,
+            frontier: null,
+            selectedPointIndex: null,
+            error,
+          },
+        },
       }
     }),
 
@@ -363,14 +379,21 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  failTrainJob: (nodeId, _error) =>
+  failTrainJob: (nodeId, error) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       return {
         trainJobs: remainingJobs,
+        trainResults: {
+          ...s.trainResults,
+          [nodeId]: {
+            result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, test_rows: 0 } as TrainResult,
+            jobId: job.jobId,
+            configHash: job.configHash,
+          },
+        },
       }
     }),
 

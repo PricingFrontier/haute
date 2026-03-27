@@ -13,7 +13,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, NoReturn, TypeVar
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from haute._git import (
@@ -192,7 +192,7 @@ def git_submit() -> GitSubmitResponse:
 
 
 @router.get("/history", response_model=GitHistoryResponse)
-def git_history(limit: int = 20) -> GitHistoryResponse:
+def git_history(limit: int = Query(20, ge=1, le=500)) -> GitHistoryResponse:
     """Commit history for the current branch."""
     try:
         entries = get_history(limit=limit)

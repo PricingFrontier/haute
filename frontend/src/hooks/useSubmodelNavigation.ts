@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
 import { NODE_TYPES } from "../utils/nodeTypes"
@@ -38,9 +38,11 @@ export default function useSubmodelNavigation({
   preambleRef, sourceFileRef, pipelineNameRef,
   fitView,
 }: SubmodelNavParams): SubmodelNavReturn {
-  const { addToast } = useToastStore()
-  const { setDirty } = useUIStore()
+  const addToast = useToastStore((s) => s.addToast)
+  const setDirty = useUIStore((s) => s.setDirty)
   const [viewStack, setViewStack] = useState<ViewLevel[]>([{ type: "pipeline", name: "main", file: "" }])
+  const viewStackRef = useRef(viewStack)
+  useEffect(() => { viewStackRef.current = viewStack }, [viewStack])
 
   const handleCreateSubmodel = useCallback(async (name: string, nodeIds: string[]) => {
     try {
@@ -171,19 +173,18 @@ export default function useSubmodelNavigation({
   }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, fitView, addToast])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
-    setViewStack((prev) => {
-      if (depth >= prev.length - 1) return prev
-      const target = prev[depth]
-      if (target._savedNodes && target._savedEdges) {
-        setNodesRaw(target._savedNodes)
-        setEdgesRaw(normalizeEdges(target._savedEdges))
-        setSelectedNode(null)
-        setPreviewData(null)
-        setTimeout(() => fitView({ padding: 0.8 }), 100)
-      }
-      if (depth === 0) parentGraphRef.current = null
-      return prev.slice(0, depth + 1)
-    })
+    const prev = viewStackRef.current
+    if (depth >= prev.length - 1) return
+    const target = prev[depth]
+    if (target._savedNodes && target._savedEdges) {
+      setNodesRaw(target._savedNodes)
+      setEdgesRaw(normalizeEdges(target._savedEdges))
+      setSelectedNode(null)
+      setPreviewData(null)
+      setTimeout(() => fitView({ padding: 0.8 }), 100)
+    }
+    if (depth === 0) parentGraphRef.current = null
+    setViewStack(prev.slice(0, depth + 1))
   }, [parentGraphRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, fitView])
 
   const handleDissolveSubmodel = useCallback(async (smName: string) => {

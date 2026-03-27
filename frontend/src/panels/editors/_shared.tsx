@@ -103,6 +103,7 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
   const setFileListCache = useSettingsStore((s) => s.setFileListCache)
 
   useEffect(() => {
+    let cancelled = false
     const cacheKey = `${dir}|${extensions || ""}`
     const cached = getFileListCache(cacheKey)
     if (cached) {
@@ -114,16 +115,19 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
     setError(null)
     listFiles(dir, extensions)
       .then((data) => {
+        if (cancelled) return
         const fileItems = data.items || []
         setItems(fileItems)
         setFileListCache(cacheKey, fileItems)
         setLoading(false)
       })
       .catch((e: unknown) => {
+        if (cancelled) return
         setError(e instanceof Error ? e.message : "Failed to load files")
         setItems([])
         setLoading(false)
       })
+    return () => { cancelled = true }
   }, [dir, extensions, getFileListCache, setFileListCache])
 
   const goUp = () => {

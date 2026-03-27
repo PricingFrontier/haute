@@ -142,9 +142,6 @@ def _compile_preamble(
 
     cache_key = hashlib.md5(preamble.encode()).hexdigest()
 
-    if not force_refresh and cache_key in _preamble_cache:
-        return _preamble_cache[cache_key]
-
     # Preamble may contain imports (e.g. from utility.features import …)
     # which are legitimate, but still validate against other dangerous
     # patterns (dunder access, eval, exec, etc.).
@@ -171,6 +168,9 @@ def _compile_preamble(
     ns = safe_globals(pl=pl, allow_imports=True)
     base_keys = set(ns.keys())
     with _preamble_lock:
+        if not force_refresh and cache_key in _preamble_cache:
+            return _preamble_cache[cache_key]
+
         for mod_name in [k for k in sys.modules if k == "utility" or k.startswith("utility.")]:
             del sys.modules[mod_name]
         try:
@@ -212,16 +212,16 @@ def _compile_preamble(
 
             raise PreambleError(msg, source_line=source_line) from exc
 
-    result = {
-        k: v
-        for k, v in ns.items()
-        if k not in base_keys
-        and not (hasattr(v, "__name__") and getattr(v, "__name__", "") in _DANGEROUS_MODULES)
-    }
-    _preamble_cache[cache_key] = result
-    if len(_preamble_cache) > _PREAMBLE_CACHE_MAX:
-        _preamble_cache.popitem(last=False)
-    return result
+        result = {
+            k: v
+            for k, v in ns.items()
+            if k not in base_keys
+            and not (hasattr(v, "__name__") and getattr(v, "__name__", "") in _DANGEROUS_MODULES)
+        }
+        _preamble_cache[cache_key] = result
+        if len(_preamble_cache) > _PREAMBLE_CACHE_MAX:
+            _preamble_cache.popitem(last=False)
+        return result
 
 
 def _exec_user_code(
@@ -569,9 +569,7 @@ def execute_graph(
             available_names = {c.name for c in avail_col_infos}
             stale = config_refs - available_names
             if stale:
-                node_warnings.extend(
-                    SchemaWarning(column=c, status="stale") for c in sorted(stale)
-                )
+                node_warnings.extend(SchemaWarning(column=c, status="stale") for c in sorted(stale))
 
         results[nid] = NodeResult(
             status="ok",

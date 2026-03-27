@@ -53,6 +53,22 @@ import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
+// Module-level constants (no dynamic values — avoids re-creating each render)
+// ---------------------------------------------------------------------------
+
+const defaultEdgeOptions = {
+  type: "default" as const,
+  animated: false,
+  style: { stroke: 'rgba(255,255,255,.25)', strokeWidth: 1.5 },
+}
+
+const connectionLineStyle = { stroke: 'var(--accent)', strokeWidth: 2, strokeDasharray: '6 3' }
+
+const fitViewOptions = { padding: 0.15 }
+
+const proOptions = { hideAttribution: true }
+
+// ---------------------------------------------------------------------------
 // ReactFlow node type → component registry
 // ---------------------------------------------------------------------------
 
@@ -372,14 +388,10 @@ function FlowEditor() {
                 selectionKeyCode={null}
                 minZoom={0.1}
                 fitView
-                fitViewOptions={{ padding: 0.15 }}
-                proOptions={{ hideAttribution: true }}
-                defaultEdgeOptions={{
-                  type: "default",
-                  animated: false,
-                  style: { stroke: 'rgba(255,255,255,.25)', strokeWidth: 1.5 },
-                }}
-                connectionLineStyle={{ stroke: 'var(--accent)', strokeWidth: 2, strokeDasharray: '6 3' }}
+                fitViewOptions={fitViewOptions}
+                proOptions={proOptions}
+                defaultEdgeOptions={defaultEdgeOptions}
+                connectionLineStyle={connectionLineStyle}
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
               </ReactFlow>

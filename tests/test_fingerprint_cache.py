@@ -99,11 +99,14 @@ class TestCacheMiss:
         cache.store("fp1", x={"a": 1})
         assert cache.try_get("wrong_fp") is None
 
-    def test_empty_first_slot_treated_as_miss(self) -> None:
-        """Even with matching fingerprint, empty primary slot = miss."""
+    def test_empty_first_slot_treated_as_hit(self) -> None:
+        """Empty dict is a valid stored value (not a miss) thanks to _MISSING sentinel."""
         cache = FingerprintCache(slots=("primary", "secondary"))
         cache.store("fp1", primary={}, secondary={"ok": True})
-        assert cache.try_get("fp1") is None
+        data = cache.try_get("fp1")
+        assert data is not None
+        assert data["primary"] == {}
+        assert data["secondary"] == {"ok": True}
 
     def test_never_stored_returns_none(self) -> None:
         cache = FingerprintCache(slots=("x",))

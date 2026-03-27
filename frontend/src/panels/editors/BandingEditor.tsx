@@ -98,7 +98,9 @@ export default function BandingEditor({
             >
               <span className="font-mono truncate max-w-[100px]">{tabLabel(f, i)}</span>
               {factors.length > 1 && (
-                <span
+                <button
+                  type="button"
+                  aria-label="Remove factor"
                   onClick={(e) => { e.stopPropagation(); removeFactor(i) }}
                   className="ml-0.5 p-0.5 rounded transition-colors cursor-pointer"
                   style={{ color: 'var(--text-muted)' }}
@@ -106,7 +108,7 @@ export default function BandingEditor({
                   onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)' }}
                 >
                   <X size={9} />
-                </span>
+                </button>
               )}
             </button>
           ))}

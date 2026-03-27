@@ -116,7 +116,7 @@ def load_node_config(
         root = base_dir.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"Config path {config_path!r} resolves outside project root")
-    return dict(json.loads(resolved.read_text()))
+    return dict(json.loads(resolved.read_text(encoding="utf-8")))
 
 
 def save_node_config(
@@ -134,7 +134,7 @@ def save_node_config(
     abs_path = base_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
-    abs_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False) + "\n")
+    abs_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     logger.info("config_saved", path=str(rel_path), node_type=node_type.value)
     return rel_path
 
@@ -178,7 +178,7 @@ def find_config_by_func_name(
         candidate = base_dir / "config" / folder / f"{func_name}.json"
         if candidate.is_file():
             try:
-                config = dict(json.loads(candidate.read_text()))
+                config = dict(json.loads(candidate.read_text(encoding="utf-8")))
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning(
                     "config_recovery_failed",

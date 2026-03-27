@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,10 +34,11 @@ _ARCHIVE_PREFIX = "archive"
 # Minimum seconds between `git fetch` calls in get_status.
 _FETCH_COOLDOWN_SECONDS: float = 30.0
 _last_fetch_time: float = 0.0
+_fetch_time_lock = threading.Lock()
 
 # Characters that have no business in a branch name or SHA — used by
 # ``_validate_ref_name`` to block argument injection.
-_BAD_REF_CHARS = re.compile(r'[\x00-\x1f\x7f~^:?*\[\]\\]')
+_BAD_REF_CHARS = re.compile(r"[\x00-\x1f\x7f~^:?*\[\]\\]")
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +173,10 @@ def _get_default_branch_cached(cwd_str: str) -> str:
     """
     cwd = Path(cwd_str) if cwd_str else None
     ok, ref = _run_git_ok(
-        "symbolic-ref", "refs/remotes/origin/HEAD", "--short", cwd=cwd,
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "--short",
+        cwd=cwd,
     )
     if ok and "/" in ref:
         return ref.split("/", 1)[1]
@@ -232,8 +237,7 @@ def _is_protected(branch: str) -> bool:
 def _assert_not_protected(branch: str) -> None:
     if _is_protected(branch):
         raise GitGuardrailError(
-            f"Cannot modify protected branch '{branch}'. "
-            "Create a new branch to make changes."
+            f"Cannot modify protected branch '{branch}'. Create a new branch to make changes."
         )
 
 
@@ -334,9 +338,7 @@ def get_status(cwd: Path | None = None) -> GitStatus:
     is_main = _is_protected(branch)
 
     # Read-only if on protected branch OR on someone else's branch
-    is_read_only = is_main or (
-        not _is_own_branch(branch, user_slug) and branch != "HEAD"
-    )
+    is_read_only = is_main or (not _is_own_branch(branch, user_slug) and branch != "HEAD")
 
     # Changed files (both staged and unstaged)
     ok, diff_output = _run_git_ok("status", "--porcelain", cwd=cwd)
@@ -355,19 +357,30 @@ def get_status(cwd: Path | None = None) -> GitStatus:
         # when the frontend polls frequently.
         global _last_fetch_time  # noqa: PLW0603
         now = time.monotonic()
-        if now - _last_fetch_time >= _FETCH_COOLDOWN_SECONDS:
+        should_fetch = False
+        with _fetch_time_lock:
+            if now - _last_fetch_time >= _FETCH_COOLDOWN_SECONDS:
+                _last_fetch_time = now
+                should_fetch = True
+        if should_fetch:
             _run_git_ok("fetch", "origin", default, "--quiet", cwd=cwd)
-            _last_fetch_time = now
 
         ok_count, count_str = _run_git_ok(
-            "rev-list", "--count", f"HEAD..origin/{default}", cwd=cwd,
+            "rev-list",
+            "--count",
+            f"HEAD..origin/{default}",
+            cwd=cwd,
         )
         if ok_count and count_str.isdigit():
             main_ahead_by = int(count_str)
 
         if main_ahead_by > 0:
             ok_time, timestamp = _run_git_ok(
-                "log", "-1", "--format=%aI", f"origin/{default}", cwd=cwd,
+                "log",
+                "-1",
+                "--format=%aI",
+                f"origin/{default}",
+                cwd=cwd,
             )
             if ok_time:
                 main_last_updated = timestamp
@@ -463,19 +476,24 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
             else:
                 # Slow fallback: one subprocess per branch
                 ok_count, count_str = _run_git_ok(
-                    "rev-list", "--count", f"{default}..{name}", cwd=cwd,
+                    "rev-list",
+                    "--count",
+                    f"{default}..{name}",
+                    cwd=cwd,
                 )
                 if ok_count and count_str.isdigit():
                     commit_count = int(count_str)
 
-            branches.append(BranchInfo(
-                name=name,
-                is_yours=_is_own_branch(name, user_slug),
-                is_current=name == current,
-                is_archived=name.startswith(f"{_ARCHIVE_PREFIX}/"),
-                last_commit_time=commit_time,
-                commit_count=commit_count,
-            ))
+            branches.append(
+                BranchInfo(
+                    name=name,
+                    is_yours=_is_own_branch(name, user_slug),
+                    is_current=name == current,
+                    is_archived=name.startswith(f"{_ARCHIVE_PREFIX}/"),
+                    last_commit_time=commit_time,
+                    commit_count=commit_count,
+                )
+            )
 
     # Sort: yours first, then others, archived last
     def sort_key(b: BranchInfo) -> tuple[int, str]:
@@ -582,7 +600,9 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
     # We use a unique separator so we can split on it reliably.
     _sep = "---commit-sep---"
     ok, raw = _run_git_ok(
-        "log", range_spec, f"--max-count={limit}",
+        "log",
+        range_spec,
+        f"--max-count={limit}",
         f"--format={_sep}%n%H\t%h\t%s\t%aI",
         "--name-only",
         cwd=cwd,
@@ -606,13 +626,15 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
             # Remaining non-empty lines are changed file paths
             files_changed = [f for f in lines[1:] if f.strip()]
 
-            entries.append(HistoryEntry(
-                sha=sha,
-                short_sha=short_sha,
-                message=message,
-                timestamp=timestamp,
-                files_changed=files_changed,
-            ))
+            entries.append(
+                HistoryEntry(
+                    sha=sha,
+                    short_sha=short_sha,
+                    message=message,
+                    timestamp=timestamp,
+                    files_changed=files_changed,
+                )
+            )
 
     return entries
 
@@ -673,19 +695,27 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
 
     # Count how many commits we're pulling
     ok_count, count_str = _run_git_ok(
-        "rev-list", "--count", f"HEAD..origin/{default}", cwd=cwd,
+        "rev-list",
+        "--count",
+        f"HEAD..origin/{default}",
+        cwd=cwd,
     )
     commits_to_pull = int(count_str) if ok_count and count_str.isdigit() else 0
 
     if commits_to_pull == 0:
         return PullResult(
-            success=True, conflict=False,
-            conflict_message=None, commits_pulled=0,
+            success=True,
+            conflict=False,
+            conflict_message=None,
+            commits_pulled=0,
         )
 
     # Attempt merge
     ok_merge, merge_output = _run_git_ok(
-        "merge", f"origin/{default}", "--no-edit", cwd=cwd,
+        "merge",
+        f"origin/{default}",
+        "--no-edit",
+        cwd=cwd,
     )
 
     if not ok_merge:
@@ -709,8 +739,10 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
 
     logger.info("pull_complete", commits=commits_to_pull)
     return PullResult(
-        success=True, conflict=False,
-        conflict_message=None, commits_pulled=commits_to_pull,
+        success=True,
+        conflict=False,
+        conflict_message=None,
+        commits_pulled=commits_to_pull,
     )
 
 

@@ -39,14 +39,21 @@ export function PdpTab({ result }: PdpTabProps) {
     }))
   }, [pdpData, result.feature_importance])
 
+  const featureKey = useMemo(() => featureItems.map(f => f.feature).join(","), [featureItems])
+
   const [selectedFeature, setSelectedFeature] = useState<string | null>(
     featureItems.length > 0 ? featureItems[0].feature : null,
   )
 
   /* eslint-disable react-hooks/set-state-in-effect -- reset selection on new data */
   useEffect(() => {
-    if (featureItems.length > 0) setSelectedFeature(featureItems[0].feature)
-  }, [featureItems])
+    if (featureItems.length > 0) {
+      const names = featureKey.split(",")
+      if (!selectedFeature || !names.includes(selectedFeature)) {
+        setSelectedFeature(names[0])
+      }
+    }
+  }, [featureKey, selectedFeature])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleSelect = useCallback((feature: string) => {

@@ -253,7 +253,7 @@ describe("OptimiserApplyEditor", () => {
     props.config = { artifact_path: "missing.json" }
     render(<OptimiserApplyEditor {...props} />)
     await waitFor(() => {
-      expect(screen.getByText("Could not read artifact: Not Found")).toBeInTheDocument()
+      expect(screen.getByText("Could not load artifact file")).toBeInTheDocument()
     })
   })
 

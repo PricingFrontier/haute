@@ -769,11 +769,9 @@ class TestUnboundedValidationCache:
 
     def test_cache_grows_with_unique_code(self):
         """Each unique code string adds an entry to the validation cache."""
-        from haute._sandbox import _validate_user_code_cached
+        import haute._sandbox
 
-        # The _cache is a keyword-only arg with a mutable default dict,
-        # stored in __kwdefaults__.
-        cache = _validate_user_code_cached.__kwdefaults__["_cache"]  # type: ignore[index]
+        cache = haute._sandbox._validation_cache
 
         initial_size = len(cache)
 
@@ -790,12 +788,9 @@ class TestUnboundedValidationCache:
 
     def test_cache_has_no_max_size(self):
         """The cache dict has no max-size or eviction policy."""
-        from haute._sandbox import _validate_user_code_cached
+        import haute._sandbox
 
-        import inspect
-
-        sig = inspect.signature(_validate_user_code_cached)
-        cache = sig.parameters["_cache"].default
+        cache = haute._sandbox._validation_cache
 
         # Verify it's a plain dict (no LRU, no maxsize)
         assert type(cache) is dict, (

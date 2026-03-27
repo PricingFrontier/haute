@@ -1674,20 +1674,7 @@ class TestFrontierSelect:
         assert "out of range" in resp.json()["detail"].lower()
 
     def test_select_negative_index(self, client, clean_job_store):
-        """Negative point index returns 400."""
-        clean_job_store.jobs["sel_neg"] = {
-            "status": "completed",
-            "solver": MagicMock(),
-            "quote_grid": MagicMock(),
-            "frontier_data": {
-                "status": "ok",
-                "points": [{"total_objective": 1.0}],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {},
-            "created_at": time.time(),
-        }
+        """Negative point index returns 422 (Pydantic validation via Field(ge=0))."""
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={
@@ -1695,7 +1682,7 @@ class TestFrontierSelect:
                 "point_index": -1,
             },
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_select_no_frontier_data(self, client, clean_job_store):
         """Select when no frontier data returns 400."""

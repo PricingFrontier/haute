@@ -32,9 +32,10 @@ logger = get_logger(component="parser.regex")
 # ---------------------------------------------------------------------------
 
 _RE_DECORATOR = re.compile(
-    r"^(@pipeline\.(\w+)(?:\([^)]*\))?)\s*\n"
+    r"^(@pipeline\.(\w+)(?:\([^)]*?\))?)\s*\n"
+    r"(?:\s*(?:#[^\n]*)?\n)*"
     r"def\s+(\w+)\s*\(([^)]*)\)",
-    re.MULTILINE,
+    re.MULTILINE | re.DOTALL,
 )
 
 _RE_PIPELINE_META = re.compile(
@@ -211,8 +212,15 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
             has_syntax_error = True
 
         body = block["body_text"] if not has_syntax_error else ""
-        config = loaded_config if loaded_config is not None else _build_node_config(
-            node_type, decorator_kwargs, body, param_names,
+        config = (
+            loaded_config
+            if loaded_config is not None
+            else _build_node_config(
+                node_type,
+                decorator_kwargs,
+                body,
+                param_names,
+            )
         )
 
         raw_nodes.append(

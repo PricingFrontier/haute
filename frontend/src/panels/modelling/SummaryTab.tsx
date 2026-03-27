@@ -15,6 +15,7 @@ interface SummaryTabProps {
 }
 
 export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabProps) {
+  const fmt = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v.toFixed(4) : 'N/A'
   const featuresCount = result.features?.length ?? result.feature_importance.length
   const catFeaturesCount = result.cat_features?.length ?? 0
   const diagSet = result.diagnostics_set ?? "validation"
@@ -64,7 +65,7 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
             {Object.entries(result.metrics).map(([k, v]) => (
               <div key={k} className="flex justify-between text-xs font-mono gap-4">
                 <span style={{ color: "var(--text-secondary)" }}>{k}</span>
-                <span style={{ color: "var(--text-primary)" }}>{v.toFixed(4)}</span>
+                <span style={{ color: "var(--text-primary)" }}>{fmt(v)}</span>
               </div>
             ))}
           </div>
@@ -81,7 +82,7 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
             {Object.entries(result.holdout_metrics).map(([k, v]) => (
               <div key={k} className="flex justify-between text-xs font-mono gap-4">
                 <span style={{ color: "var(--text-secondary)" }}>{k}</span>
-                <span style={{ color: "var(--text-primary)" }}>{v.toFixed(4)}</span>
+                <span style={{ color: "var(--text-primary)" }}>{fmt(v)}</span>
               </div>
             ))}
           </div>
@@ -99,10 +100,10 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
               <div key={k} className="flex justify-between text-xs font-mono gap-4">
                 <span style={{ color: "var(--text-secondary)" }}>{k}</span>
                 <span style={{ color: "var(--text-primary)" }}>
-                  {v.toFixed(4)}
+                  {fmt(v)}
                   {result.cv_results?.std_metrics[k] != null && (
                     <span style={{ color: "var(--text-muted)" }}>
-                      {" "}&plusmn; {result.cv_results.std_metrics[k].toFixed(4)}
+                      {" "}&plusmn; {fmt(result.cv_results.std_metrics[k])}
                     </span>
                   )}
                 </span>
@@ -122,7 +123,7 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
             {Object.entries(result.glm_fit_statistics).map(([k, v]) => (
               <div key={k} className="flex justify-between text-xs font-mono gap-4">
                 <span style={{ color: "var(--text-secondary)" }}>{k}</span>
-                <span style={{ color: "var(--text-primary)" }}>{typeof v === "number" ? v.toFixed(4) : String(v)}</span>
+                <span style={{ color: "var(--text-primary)" }}>{fmt(v)}</span>
               </div>
             ))}
           </div>
@@ -139,7 +140,7 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
             {result.glm_regularization_path.selected_alpha != null && (
               <div className="flex justify-between text-xs font-mono gap-4">
                 <span style={{ color: "var(--text-secondary)" }}>Alpha</span>
-                <span style={{ color: "var(--text-primary)" }}>{result.glm_regularization_path.selected_alpha.toFixed(6)}</span>
+                <span style={{ color: "var(--text-primary)" }}>{typeof result.glm_regularization_path.selected_alpha === 'number' && Number.isFinite(result.glm_regularization_path.selected_alpha) ? result.glm_regularization_path.selected_alpha.toFixed(6) : 'N/A'}</span>
               </div>
             )}
             {result.glm_regularization_path.n_nonzero != null && (

@@ -37,8 +37,9 @@ export function LossChart({ lossHistory, bestIteration }: LossChartProps) {
 
   const makePath = (key: string) => {
     const points = lossHistory
-      .map((e, i) => e[key] != null ? `${i === 0 ? "M" : "L"}${xScale(i).toFixed(1)},${yScale(e[key]).toFixed(1)}` : null)
-      .filter(Boolean)
+      .map((e, i) => e[key] != null ? `L${xScale(i).toFixed(1)},${yScale(e[key]).toFixed(1)}` : null)
+      .filter(Boolean) as string[]
+    if (points.length > 0) points[0] = "M" + points[0].slice(1)
     return points.join(" ")
   }
 

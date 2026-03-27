@@ -222,7 +222,7 @@ src/haute/static/
 # Haute container build directory
 .haute_build/
 
-# datat
+# data
 /data
 
 # Internal docs - not for public repos

@@ -117,7 +117,7 @@ class TestListWarehouses:
 
         c = TestClient(app)
         resp = c.get("/api/databricks/warehouses")
-        assert resp.status_code == 400
+        assert resp.status_code == 503
         assert "DATABRICKS_HOST" in resp.json()["detail"]
 
 

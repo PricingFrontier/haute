@@ -23,6 +23,7 @@ function SubmodelNode({ data, selected }: NodeProps) {
   const childCount = (config.childNodeIds || []).length
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
+  const hoverDimmed = !!nodeData._hoverDimmed
 
   return (
     <div
@@ -39,7 +40,7 @@ function SubmodelNode({ data, selected }: NodeProps) {
         boxShadow: traceActive
           ? `0 0 12px ${accent}40, var(--node-shadow)`
           : "var(--node-shadow)",
-        opacity: traceDimmed ? 0.3 : 1,
+        opacity: traceDimmed || hoverDimmed ? 0.3 : 1,
         transition: "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
       }}
     >

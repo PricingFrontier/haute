@@ -179,8 +179,10 @@ describe("useNodeResultsStore", () => {
 
       // Job is removed from solveJobs
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
-      // NOT moved to solveResults
-      expect(useNodeResultsStore.getState().solveResults["n1"]).toBeUndefined()
+      // Error is stored in solveResults
+      const failedResult = useNodeResultsStore.getState().solveResults["n1"]
+      expect(failedResult).toBeDefined()
+      expect(failedResult.error).toBe("Solver diverged")
     })
 
     it("is a no-op for unknown node", () => {
@@ -306,6 +308,11 @@ describe("useNodeResultsStore", () => {
 
       // Job is removed from the map (prevents infinite poll-restart loop)
       expect(useNodeResultsStore.getState().trainJobs["t1"]).toBeUndefined()
+      // Error is stored in trainResults
+      const failedResult = useNodeResultsStore.getState().trainResults["t1"]
+      expect(failedResult).toBeDefined()
+      expect(failedResult.result.error).toBe("Out of memory")
+      expect(failedResult.result.status).toBe("error")
     })
 
     it("is a no-op for unknown node", () => {

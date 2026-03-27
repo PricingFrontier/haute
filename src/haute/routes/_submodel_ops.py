@@ -52,18 +52,10 @@ def create_submodel_graph(
         raise ValueError("A submodel must contain at least 2 nodes.")
 
     # Classify edges
-    internal_edges = [
-        e for e in edges
-        if e.source in child_node_ids and e.target in child_node_ids
-    ]
-    cross_edges = [
-        e for e in edges
-        if (e.source in child_node_ids) != (e.target in child_node_ids)
-    ]
+    internal_edges = [e for e in edges if e.source in child_node_ids and e.target in child_node_ids]
+    cross_edges = [e for e in edges if (e.source in child_node_ids) != (e.target in child_node_ids)]
     external_edges = [
-        e for e in edges
-        if e.source not in child_node_ids
-        and e.target not in child_node_ids
+        e for e in edges if e.source not in child_node_ids and e.target not in child_node_ids
     ]
 
     # Determine input/output ports from cross-boundary edges
@@ -81,8 +73,11 @@ def create_submodel_graph(
 
     # Build submodel placeholder node
     sm_node = build_submodel_placeholder(
-        sm_name, sm_file, list(child_node_ids),
-        input_ports, output_ports,
+        sm_name,
+        sm_file,
+        list(child_node_ids),
+        input_ports,
+        output_ports,
     )
     sm_node_id = sm_node.id
 
@@ -98,11 +93,13 @@ def create_submodel_graph(
         "outputPorts": output_ports,
         "graph": sm_graph,
     }
-    new_graph = graph.model_copy(update={
-        "nodes": parent_nodes + [sm_node],
-        "edges": external_edges + rewired_cross,
-        "submodels": existing_submodels,
-    })
+    new_graph = graph.model_copy(
+        update={
+            "nodes": parent_nodes + [sm_node],
+            "edges": external_edges + rewired_cross,
+            "submodels": existing_submodels,
+        }
+    )
 
     return SubmodelGraphResult(
         graph=new_graph,

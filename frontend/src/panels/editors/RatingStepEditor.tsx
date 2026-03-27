@@ -166,9 +166,9 @@ export default function RatingStepEditor({
                 </span>
               )}
               {tables.length > 1 && (
-                <span onClick={(e) => { e.stopPropagation(); removeTable(i) }}
+                <button type="button" aria-label="Remove table" onClick={(e) => { e.stopPropagation(); removeTable(i) }}
                   className="ml-0.5 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                  style={{ color: 'var(--text-muted)' }}><X size={10} /></span>
+                  style={{ color: 'var(--text-muted)' }}><X size={10} /></button>
               )}
             </button>
           )

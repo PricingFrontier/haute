@@ -110,7 +110,9 @@ def _load_external_object_uncached(
         class_to_task = {"regressor": "regression", "classifier": "classification"}
         task = class_to_task.get(model_class, "regression")
         return _load_catboost_model(path, task)
-    else:  # pickle
+    elif file_type == "pickle":
         from haute._sandbox import safe_unpickle
 
         return safe_unpickle(path)
+    else:
+        raise ValueError(f"Unsupported file_type: {file_type!r}")

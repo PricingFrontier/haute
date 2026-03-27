@@ -524,6 +524,13 @@ export function listFiles(
   return request(`/api/files?${params.toString()}`, options)
 }
 
+export function readJson<T = unknown>(
+  path: string,
+  options?: { signal?: AbortSignal; timeout?: number },
+): Promise<T> {
+  return post<T>("/api/pipeline/read-json", { path }, options)
+}
+
 // ---------------------------------------------------------------------------
 // Git endpoints
 // ---------------------------------------------------------------------------

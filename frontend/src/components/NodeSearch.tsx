@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { useReactFlow } from "@xyflow/react"
+import { useReactFlow, useNodes } from "@xyflow/react"
 import { Search } from "lucide-react"
 import { NODE_TYPE_META, type NodeTypeValue } from "../utils/nodeTypes"
 import { nodeData } from "../types/node"
@@ -15,10 +15,11 @@ export default function NodeSearch({ onClose, onSelectNode }: NodeSearchProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const { getNodes, setCenter } = useReactFlow()
+  const { setCenter } = useReactFlow()
+  const allNodes = useNodes()
 
   const results = useMemo(() => {
-    const nodes = getNodes()
+    const nodes = allNodes
     if (!query.trim()) {
       return nodes.map((n) => {
         const d = nodeData(n)
@@ -44,7 +45,7 @@ export default function NodeSearch({ onClose, onSelectNode }: NodeSearchProps) {
         return null
       })
       .filter(Boolean) as { id: string; label: string; nodeType: string; meta: typeof NODE_TYPE_META[NodeTypeValue]; x: number; y: number }[]
-  }, [query, getNodes])
+  }, [query, allNodes])
 
   // Reset active index when results change
   // eslint-disable-next-line react-hooks/set-state-in-effect -- derived state reset: active index must restart when filtered results change

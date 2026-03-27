@@ -107,73 +107,81 @@ class NodeRegistry:
 
     def api_input(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for API-input nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.API_INPUT, **config)
 
     def data_source(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for data-source nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.DATA_SOURCE, **config)
 
     def polars(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for polars nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.POLARS, **config)
 
     def model_score(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for model-score nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.MODEL_SCORE, **config)
 
     def banding(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for banding nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.BANDING, **config)
 
     def rating_step(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for rating-step nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.RATING_STEP, **config)
 
     def output(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for output nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.OUTPUT, **config)
 
     def data_sink(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for data-sink nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.DATA_SINK, **config)
 
     def external_file(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for external-file nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.EXTERNAL_FILE, **config)
 
     def live_switch(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for live-switch nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.LIVE_SWITCH, **config)
 
     def modelling(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for modelling (training) nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.MODELLING, **config)
 
     def optimiser(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for optimiser nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.OPTIMISER, **config)
 
     def scenario_expander(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for scenario-expander nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.SCENARIO_EXPANDER, **config)
 
     def optimiser_apply(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for optimiser-apply nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.OPTIMISER_APPLY, **config)
 
     def constant(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for constant nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.CONSTANT, **config)
 
     def instance(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for instance nodes."""
-        return self._register_node(fn, **config)
+        return self._register_node(fn, _node_type=NodeType.POLARS, **config)
 
     def connect(self, source: str, target: str) -> Self:
         """Declare an edge: source node's output feeds into target node.
 
         Can be chained: ``registry.connect("a", "b").connect("b", "c")``
         """
+        if source not in self._node_map:
+            raise ValueError(
+                f"Source node '{source}' not found in pipeline. Known nodes: {list(self._node_map)}"
+            )
+        if target not in self._node_map:
+            raise ValueError(
+                f"Target node '{target}' not found in pipeline. Known nodes: {list(self._node_map)}"
+            )
         self._edges.append((source, target))
         return self
 
@@ -319,7 +327,9 @@ class Pipeline(NodeRegistry):
 
         for i, n in enumerate(self._nodes):
             is_last = i == len(self._nodes) - 1
-            if n.is_source:
+            if n.config.get("_node_type"):
+                rf_type = n.config["_node_type"]
+            elif n.is_source:
                 rf_type = NodeType.DATA_SOURCE
             elif is_last:
                 rf_type = NodeType.OUTPUT
@@ -335,7 +345,7 @@ class Pipeline(NodeRegistry):
                         "label": n.name.replace("_", " ").title(),
                         "description": n.description,
                         "nodeType": rf_type,
-                        "config": n.config,
+                        "config": {k: v for k, v in n.config.items() if not k.startswith("_")},
                     },
                 }
             )

@@ -9,7 +9,7 @@
  * reconciles active jobs with running pollers. Consumers pass a `UseJobPollingConfig`
  * describing how to poll, interpret results, and report outcomes.
  */
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, type MutableRefObject } from "react"
 
 // ── Poller configuration ──
 
@@ -70,25 +70,10 @@ export interface UseJobPollingConfig<TJob, TStatus> {
  * Uses `setTimeout` with exponential backoff instead of `setInterval`.
  */
 function reconcilePollers<TJob, TStatus>(
-  config: UseJobPollingConfig<TJob, TStatus>,
+  configRef: MutableRefObject<UseJobPollingConfig<TJob, TStatus>>,
   stateRef: React.MutableRefObject<Record<string, JobPollerState>>,
 ): void {
-  const {
-    jobs,
-    pollFn,
-    onProgress,
-    onComplete,
-    onFail,
-    labelFn,
-    jobIdFn,
-    isComplete,
-    isError,
-    getResult,
-    getErrorMessage,
-    addToast,
-    successLabel,
-    failLabel,
-  } = config
+  const { jobs } = configRef.current
 
   const activeNodeIds = Object.keys(jobs)
   const pollingNodeIds = Object.keys(stateRef.current)
@@ -97,10 +82,12 @@ function reconcilePollers<TJob, TStatus>(
   for (const nodeId of activeNodeIds) {
     if (stateRef.current[nodeId]) continue // already polling
 
-    const job = jobs[nodeId]
     const now = Date.now()
 
     function schedulePoll(state: JobPollerState): void {
+      const { pollFn, jobIdFn, isComplete, isError, getResult, getErrorMessage, onProgress, onComplete, onFail, labelFn, addToast, successLabel, failLabel } = configRef.current
+      const job = configRef.current.jobs[nodeId]
+      if (!job) return
       const elapsed = Date.now() - state.startedAt
 
       // ── Max lifetime check ──
@@ -118,13 +105,15 @@ function reconcilePollers<TJob, TStatus>(
           : Math.min(BASE_INTERVAL_MS * Math.pow(2, state.consecutiveErrors), MAX_INTERVAL_MS)
 
       state.timeoutId = setTimeout(async () => {
+        let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
         try {
           const status = await Promise.race([
             pollFn(jobIdFn(job)),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("Poll request timed out")), POLL_TIMEOUT_MS),
-            ),
+            new Promise<never>((_, reject) => {
+              pollTimeoutId = setTimeout(() => reject(new Error("Poll request timed out")), POLL_TIMEOUT_MS)
+            }),
           ])
+          clearTimeout(pollTimeoutId)
 
           // Reset backoff on successful network call
           state.consecutiveErrors = 0
@@ -147,6 +136,7 @@ function reconcilePollers<TJob, TStatus>(
           // Still in progress
           onProgress(nodeId, status)
         } catch (e) {
+          clearTimeout(pollTimeoutId)
           state.consecutiveErrors += 1
           console.warn(`${failLabel} poll failed (attempt ${state.consecutiveErrors}, will retry):`, e)
 
@@ -198,10 +188,11 @@ export default function useJobPolling<TJob, TStatus>(
   config: UseJobPollingConfig<TJob, TStatus>,
 ): void {
   const pollerState = useRef<Record<string, JobPollerState>>({})
+  const configRef = useRef(config)
+  useEffect(() => { configRef.current = config })
 
   useEffect(() => {
-    reconcilePollers(config, pollerState)
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- config object is new every render, deps are its stable fields
+    reconcilePollers(configRef, pollerState)
   }, [
     config.jobs,
     config.pollFn,

@@ -30,7 +30,7 @@ def status(model_name: str | None, version_only: bool) -> None:
         )
     except ImportError:
         click.echo(
-            "Error: mlflow is not installed. Install with: pip install haute[databricks]",
+            "Error: mlflow is not installed. Install with: uv pip install haute[databricks]",
             err=True,
         )
         raise SystemExit(1)

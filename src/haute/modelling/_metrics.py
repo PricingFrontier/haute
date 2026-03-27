@@ -30,6 +30,22 @@ def compute_metrics(
     if metric_names is None:
         metric_names = ["gini", "rmse"]
 
+    # Guard against NaN/Inf values that would produce misleading metrics
+    finite_mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if not finite_mask.all():
+        from haute._logging import get_logger
+
+        _logger = get_logger(component="modelling.metrics")
+        n_dropped = int((~finite_mask).sum())
+        _logger.warning("non_finite_values_filtered", count=n_dropped, total=len(finite_mask))
+        y_true = y_true[finite_mask]
+        y_pred = y_pred[finite_mask]
+        if weight is not None:
+            weight = weight[finite_mask]
+        if len(y_true) == 0:
+            _logger.error("all_values_non_finite", original_count=len(finite_mask))
+            return {name: float("nan") for name in metric_names}
+
     results: dict[str, float] = {}
     for name in metric_names:
         fn = _METRIC_REGISTRY.get(name.lower())

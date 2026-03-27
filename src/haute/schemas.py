@@ -7,7 +7,7 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -31,7 +31,7 @@ class SavePipelineRequest(BaseModel):
     name: str = "main"
     description: str = ""
     graph: Graph = Field(default_factory=Graph)
-    preamble: str | None = ""
+    preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
     source_file: str = ""
     sources: list[str] = Field(default_factory=lambda: ["live"])
@@ -47,6 +47,11 @@ class SavePipelineResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Shared result models
 # ---------------------------------------------------------------------------
+
+
+class SchemaWarning(BaseModel):
+    column: str
+    status: str
 
 
 class NodeResult(BaseModel):
@@ -71,7 +76,7 @@ class NodeResult(BaseModel):
 class PreviewNodeRequest(BaseModel):
     graph: Graph
     node_id: str
-    row_limit: int = 100
+    row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
 
 
@@ -85,11 +90,6 @@ class NodeMemoryInfo(BaseModel):
     node_id: str
     label: str
     memory_bytes: int
-
-
-class SchemaWarning(BaseModel):
-    column: str
-    status: str
 
 
 class PreviewNodeResponse(NodeResult):
@@ -113,10 +113,10 @@ class PreviewNodeResponse(NodeResult):
 
 class TraceRequest(BaseModel):
     graph: Graph
-    row_index: int = 0
+    row_index: int = Field(default=0, ge=0)
     target_node_id: str | None = None
     column: str | None = None
-    row_limit: int = 100
+    row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
 
 
@@ -369,7 +369,7 @@ class UtilityWriteRequest(BaseModel):
 
 
 class UtilityCreateRequest(BaseModel):
-    name: str  # filename without .py extension
+    name: str = Field(..., pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")  # filename without .py extension
     content: str = ""
 
 
@@ -434,7 +434,7 @@ class TrainRequest(BaseModel):
 
 
 class TrainResponse(BaseModel):
-    status: str  # "started" | "completed" | "error"
+    status: Literal["started", "completed", "error"]
     job_id: str | None = None
     metrics: dict[str, float] = Field(default_factory=dict)
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
@@ -465,7 +465,7 @@ class TrainResponse(BaseModel):
 
 
 class TrainStatusResponse(BaseModel):
-    status: str  # "running" | "completed" | "error"
+    status: Literal["running", "completed", "error"]
     progress: float = 0.0
     message: str = ""
     iteration: int = 0
@@ -522,7 +522,7 @@ class MlflowLogResponse(BaseModel):
     seven fields.
     """
 
-    status: str  # "ok" | "error"
+    status: Literal["ok", "error"]
     backend: str = ""
     experiment_name: str = ""
     run_id: str | None = None
@@ -591,7 +591,7 @@ class OptimiserSolveRequest(BaseModel):
 
 
 class OptimiserSolveResponse(BaseModel):
-    status: str  # "started" | "error"
+    status: Literal["started", "error"]
     job_id: str | None = None
     error: str | None = None
 
@@ -599,7 +599,7 @@ class OptimiserSolveResponse(BaseModel):
 class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]]
-    n_points_per_dim: int = 5
+    n_points_per_dim: int = Field(default=5, ge=1, le=100)
 
 
 class OptimiserFrontierResponse(BaseModel):
@@ -610,7 +610,7 @@ class OptimiserFrontierResponse(BaseModel):
 
 
 class OptimiserStatusResponse(BaseModel):
-    status: str  # "running" | "completed" | "error"
+    status: Literal["running", "completed", "error"]
     progress: float = 0.0
     message: str = ""
     elapsed_seconds: float = 0.0
@@ -633,7 +633,7 @@ class OptimiserApplyResponse(BaseModel):
 
 class OptimiserFrontierSelectRequest(BaseModel):
     job_id: str
-    point_index: int
+    point_index: int = Field(..., ge=0)
 
 
 class OptimiserFrontierSelectResponse(BaseModel):

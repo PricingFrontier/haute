@@ -188,9 +188,9 @@ describe("RatingStepEditor", () => {
 
     // Find the remove button (X icon) inside Table A tab
     const tableATab = screen.getByText("Table A").closest("button")!
-    const removeSpan = tableATab.querySelector("span[class*='cursor-pointer']")
-    expect(removeSpan).toBeTruthy()
-    fireEvent.click(removeSpan!)
+    const removeBtn = tableATab.querySelector("button[aria-label='Remove table']")
+    expect(removeBtn).toBeTruthy()
+    fireEvent.click(removeBtn!)
 
     // Should call onUpdate with only Table B remaining
     expect(onUpdate).toHaveBeenCalledWith("tables", [

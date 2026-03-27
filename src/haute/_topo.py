@@ -37,7 +37,7 @@ def topo_sort_ids(node_ids: list[str], edges: list[GraphEdge]) -> list[str]:
         in_degree[tgt] += 1
         children[src].append(tgt)
 
-    heap = sorted(nid for nid, deg in in_degree.items() if deg == 0)
+    heap = [nid for nid, deg in in_degree.items() if deg == 0]
     heapq.heapify(heap)
     result: list[str] = []
 

@@ -1024,7 +1024,8 @@ function ExportTab({
 // ─── Convergence Tab (inline, unchanged) ─────────────────────────
 
 function ConvergenceTab({ result }: { result: SolveResult }) {
-  const hist = result.history!
+  const hist = result.history ?? []
+  if (!hist.length) return null
   const w = 400, h = 140, px = 6, py = 6
   const chartW = w - px * 2, chartH = h - py * 2
 

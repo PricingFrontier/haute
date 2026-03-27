@@ -78,6 +78,7 @@ export function FeatureAndAlgorithmConfig({
 
   // Stale excludes: entries in the exclude list that don't match any upstream column
   const upstreamNames = useMemo(() => new Set(columns.map(c => c.name)), [columns])
+  const excludeSet = useMemo(() => new Set(exclude), [exclude])
   const staleExcludes = useMemo(
     () => exclude.filter(e => !upstreamNames.has(e)),
     [exclude, upstreamNames],
@@ -135,7 +136,7 @@ export function FeatureAndAlgorithmConfig({
 
               return allNames.map(name => {
                 const isStale = staleSet.has(name)
-                const excluded = exclude.includes(name)
+                const excluded = excludeSet.has(name)
 
                 if (isStale) {
                   // Stale entry: orange name + X button
