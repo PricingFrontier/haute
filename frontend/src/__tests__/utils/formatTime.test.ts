@@ -2,13 +2,15 @@ import { describe, it, expect } from "vitest"
 import { formatTime } from "../../utils/formatTime"
 
 describe("formatTime", () => {
-  it("returns empty string for 0", () => {
-    expect(formatTime(0)).toBe("")
+  it("formats epoch timestamp (0) as a valid time", () => {
+    // 0 is a valid Unix timestamp (Jan 1 1970 00:00 UTC)
+    const result = formatTime(0)
+    expect(result).toBeTruthy()
+    expect(result).toMatch(/\d{1,2}:\d{2}/)
   })
 
-  it("returns empty string for NaN-like falsy values", () => {
-    // The function checks `if (!ts)` so any falsy number returns ""
-    expect(formatTime(0)).toBe("")
+  it("returns empty string for NaN", () => {
+    expect(formatTime(NaN)).toBe("")
   })
 
   it("formats a unix timestamp into HH:MM", () => {
