@@ -22,8 +22,7 @@ from haute.modelling._split import (
     split_data,
     split_mask,
 )
-from haute.modelling._training_job import TrainResult, TrainingJob
-
+from haute.modelling._training_job import TrainingJob, TrainResult
 
 # ---------------------------------------------------------------------------
 # SplitConfig validation
@@ -448,9 +447,9 @@ class TestCatBoostAlgorithm:
 
         loaded = CatBoostRegressor()
         loaded.load_model(str(model_path))
-        X = train_data.select(["x1", "x2"]).to_pandas()
-        preds_orig = model.predict(X)
-        preds_loaded = loaded.predict(X)
+        x_data = train_data.select(["x1", "x2"]).to_pandas()
+        preds_orig = model.predict(x_data)
+        preds_loaded = loaded.predict(x_data)
         np.testing.assert_array_almost_equal(preds_orig, preds_loaded)
 
     def test_classification(self, train_data):
@@ -998,12 +997,73 @@ class TestSHAP:
         from catboost import Pool
 
         algo, model, df = trained_model
-        X = df.select(["x1", "x2"]).to_pandas()
+        x_data = df.select(["x1", "x2"]).to_pandas()
         y = df["y"].to_numpy()
-        pool = Pool(data=X, label=y)
+        pool = Pool(data=x_data, label=y)
         loss_imp = algo.feature_importance_typed(model, pool, "LossFunctionChange")
         assert len(loss_imp) == 2
         assert all("feature" in fi and "importance" in fi for fi in loss_imp)
+
+    def test_shap_summary_with_categorical_features(self):
+        """SHAP must work when the model was trained with categorical features.
+
+        Regression: shap_summary previously called _build_pool without
+        cat_features, so CatBoost tried to cast string columns to float
+        and raised a Polars casting error.
+        """
+        rng = np.random.RandomState(42)
+        n = 200
+        categories = rng.choice(["comprehensive", "third_party", "fire_theft"], n)
+        x_num = rng.randn(n)
+        target = np.where(categories == "comprehensive", 2.0, 1.0) + x_num + rng.randn(n) * 0.1
+        df = pl.DataFrame(
+            {
+                "cover_type": categories,
+                "x_num": x_num,
+                "y": target,
+            }
+        )
+        algo = CatBoostAlgorithm()
+        fit_result = algo.fit(
+            df,
+            features=["cover_type", "x_num"],
+            cat_features=["cover_type"],
+            target="y",
+            weight=None,
+            params={"iterations": 30, "depth": 4},
+            task="regression",
+        )
+
+        summary = algo.shap_summary(
+            fit_result.model, df, ["cover_type", "x_num"], cat_features=["cover_type"]
+        )
+        assert len(summary) == 2
+        shap_features = {s["feature"] for s in summary}
+        assert shap_features == {"cover_type", "x_num"}
+        assert all(s["mean_abs_shap"] >= 0 for s in summary)
+
+    def test_training_job_shap_with_categorical_features(self, tmp_path):
+        """End-to-end: TrainingJob produces SHAP values when data has string columns."""
+        rng = np.random.RandomState(42)
+        n = 200
+        df = pl.DataFrame(
+            {
+                "cat_col": rng.choice(["a", "b", "c"], n),
+                "num_col": rng.randn(n),
+                "y": rng.randn(n),
+            }
+        )
+        job = TrainingJob(
+            name="shap_cat_test",
+            data=df,
+            target="y",
+            params={"iterations": 10},
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert len(result.shap_summary) == 2
+        shap_features = {s["feature"] for s in result.shap_summary}
+        assert shap_features == {"cat_col", "num_col"}
 
     def test_training_job_includes_shap(self, tmp_path):
         rng = np.random.RandomState(42)

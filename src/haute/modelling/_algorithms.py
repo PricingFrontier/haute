@@ -561,6 +561,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         model: Any,
         df: pl.DataFrame,
         features: list[str],
+        cat_features: list[str] | None = None,
         max_rows: int = 1000,
     ) -> list[dict[str, Any]]:
         """Compute mean |SHAP| per feature using CatBoost's native SHAP.
@@ -569,7 +570,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         [{feature, mean_abs_shap}, ...] sorted by importance desc.
         """
         sample = df.sample(min(len(df), max_rows), seed=42) if len(df) > max_rows else df
-        pool = _build_pool(sample, features)
+        pool = _build_pool(sample, features, cat_features)
 
         # CatBoost ShapValues returns shape (n_samples, n_features + 1), last col is base value
         shap_values = model.get_feature_importance(data=pool, type="ShapValues")

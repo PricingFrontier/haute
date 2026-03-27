@@ -796,7 +796,7 @@ class TrainingJob:
         feature_importance_loss: list[dict[str, Any]] = []
         if hasattr(algo, "shap_summary"):
             try:
-                shap_summary = algo.shap_summary(model, diag_df, features)
+                shap_summary = algo.shap_summary(model, diag_df, features, cat_features)
             except Exception as exc:
                 logger.warning("shap_summary_failed", error=str(exc))
         if hasattr(algo, "feature_importance_typed"):
@@ -954,12 +954,12 @@ class TrainingJob:
             non_feature_cols.add(self.weight)
         if self.offset:
             non_feature_cols.add(self.offset)
-        for col in self.exclude:
-            if col not in available and col not in non_feature_cols:
-                # Column is neither in the data nor a known non-feature —
-                # it may be a stale exclude entry.  Log and skip rather
-                # than failing training.
-                logger.info("exclude_column_already_dropped", column=col)
+        dropped = [
+            col for col in self.exclude
+            if col not in available and col not in non_feature_cols
+        ]
+        if dropped:
+            logger.debug("exclude_columns_already_dropped", count=len(dropped))
 
     def _derive_features(self, df: pl.DataFrame) -> tuple[list[str], list[str]]:
         """Derive feature list: all columns minus {target, weight, *exclude}.
