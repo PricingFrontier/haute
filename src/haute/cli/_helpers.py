@@ -115,8 +115,7 @@ def _npm() -> str:
         if candidate.exists():
             return str(candidate)
     msg = (
-        "npm not found on PATH. Install Node.js from https://nodejs.org "
-        "and restart your terminal."
+        "npm not found on PATH. Install Node.js from https://nodejs.org and restart your terminal."
     )
     raise click.ClickException(msg)
 

@@ -55,8 +55,9 @@ def pipeline_dir() -> Path:
     """
     toml_path = Path.cwd() / "haute.toml"
     if not toml_path.exists():
-        logger.error("haute_toml_missing", cwd=str(Path.cwd()),
-                      hint="Run 'haute init' to create a project")
+        logger.error(
+            "haute_toml_missing", cwd=str(Path.cwd()), hint="Run 'haute init' to create a project"
+        )
         return Path.cwd().resolve()
     try:
         import tomllib
@@ -66,8 +67,11 @@ def pipeline_dir() -> Path:
         configured: str | None = data.get("project", {}).get("pipeline")
         if configured:
             return (Path.cwd() / configured).resolve().parent
-        logger.warning("haute_toml_missing_pipeline", path=str(toml_path),
-                        hint="Add [project].pipeline to haute.toml")
+        logger.warning(
+            "haute_toml_missing_pipeline",
+            path=str(toml_path),
+            hint="Add [project].pipeline to haute.toml",
+        )
     except Exception:
         logger.error("haute_toml_read_failed", path=str(toml_path), exc_info=True)
     return Path.cwd().resolve()

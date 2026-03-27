@@ -78,7 +78,10 @@ def parse_submodel_source(
 
     func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
-        tree, _is_submodel_node_decorator, func_bodies, _base_dir,
+        tree,
+        _is_submodel_node_decorator,
+        func_bodies,
+        _base_dir,
     )
 
     edges = _build_edges(raw_nodes, _extract_connect_calls(tree, receiver="submodel"))
@@ -151,15 +154,20 @@ def merge_submodels(
 
         # Build the submodel placeholder node
         sm_node = build_submodel_placeholder(
-            sm_name, sm_file, child_node_ids,
-            input_ports, output_ports,
+            sm_name,
+            sm_file,
+            child_node_ids,
+            input_ports,
+            output_ports,
             description=sm_graph.pipeline_description or "",
         )
         parent_nodes.append(sm_node)
 
         # Rewire edges via shared helper
         parent_edge_list = rewire_edges(
-            parent_edge_list, sm_node.id, child_node_names,
+            parent_edge_list,
+            sm_node.id,
+            child_node_names,
         )
 
         submodels_meta[sm_name] = {

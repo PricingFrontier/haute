@@ -77,7 +77,8 @@ def collect_artifacts(
                     )
                     continue
                 run_id, artifact_path = _resolve_registered_model(
-                    registered_model, version,
+                    registered_model,
+                    version,
                 )
             else:
                 # source_type == "run" (default)
@@ -87,7 +88,9 @@ def collect_artifacts(
             # Download from MLflow at deploy time so the artifact is
             # bundled into the container / MLflow model package.
             local_path = _download_model_artifact(
-                run_id, artifact_path, pipeline_dir,
+                run_id,
+                artifact_path,
+                pipeline_dir,
             )
             # Patch config so the scorer can build a matching artifact key
             config["artifact_path"] = local_path.name
@@ -128,7 +131,8 @@ def _artifact_name(node_id: str, path: Path) -> str:
 
 
 def _resolve_registered_model(
-    registered_model: str, version: str,
+    registered_model: str,
+    version: str,
 ) -> tuple[str, str]:
     """Resolve a registered model name + version to (run_id, artifact_path).
 
@@ -177,7 +181,9 @@ def _resolve_registered_model(
 
 
 def _download_model_artifact(
-    run_id: str, artifact_path: str, pipeline_dir: Path,
+    run_id: str,
+    artifact_path: str,
+    pipeline_dir: Path,
 ) -> Path:
     """Download a MODEL_SCORE .cbm artifact from MLflow, with local caching.
 
@@ -202,9 +208,7 @@ def _download_model_artifact(
     local_path = _resolve_artifact_local(mlflow, run_id, artifact_path)
     resolved = Path(local_path)
     if not resolved.is_file():
-        raise FileNotFoundError(
-            f"MODEL_SCORE artifact not found after download: {local_path}"
-        )
+        raise FileNotFoundError(f"MODEL_SCORE artifact not found after download: {local_path}")
     return resolved
 
 

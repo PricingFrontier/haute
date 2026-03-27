@@ -136,9 +136,7 @@ def _apply_rating_table(
     lookup = lookup.with_columns(pl.col("value").cast(pl.Float64))
 
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently
-    _bad_count = lookup.filter(
-        pl.col("value").is_nan() | pl.col("value").is_infinite()
-    ).height
+    _bad_count = lookup.filter(pl.col("value").is_nan() | pl.col("value").is_infinite()).height
     if _bad_count:
         raise ValueError(
             f"Rating table for '{output_col}' contains {_bad_count} NaN or Inf entries"

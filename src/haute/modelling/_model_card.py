@@ -39,7 +39,7 @@ def _html_table(
     """Render a simple HTML table. *align* defaults to left for all columns."""
     if align is None:
         align = ["left"] * len(headers)
-    parts = ['<table>']
+    parts = ["<table>"]
     parts.append("<thead><tr>")
     for h, a in zip(headers, align):
         parts.append(f'<th style="text-align:{a}">{html.escape(str(h))}</th>')
@@ -83,9 +83,7 @@ def generate_model_card(
     )
 
     # --- Training summary ---
-    split_desc = (
-        meta.split_config.get("strategy", "random") if meta.split_config else "random"
-    )
+    split_desc = meta.split_config.get("strategy", "random") if meta.split_config else "random"
     summary_rows = [
         ["Train rows", f"{meta.train_rows:,}"],
         ["Validation rows", f"{meta.test_rows:,}"],
@@ -100,29 +98,22 @@ def generate_model_card(
     if meta.best_iteration is not None:
         summary_rows.append(["Best iteration", str(meta.best_iteration)])
     sections.append("<h2>Training Summary</h2>")
-    sections.append(
-        _html_table(["Property", "Value"], summary_rows, ["left", "right"])
-    )
+    sections.append(_html_table(["Property", "Value"], summary_rows, ["left", "right"]))
 
     # --- Primary metrics (from diagnostics set) ---
     if metrics:
         metric_rows = [[k, f"{v:.4f}" if math.isfinite(v) else "N/A"] for k, v in metrics.items()]
         header = f"Metrics ({diag.diagnostics_set.title()} set)"
         sections.append(f"<h2>{html.escape(header)}</h2>")
-        sections.append(
-            _html_table(["Metric", "Value"], metric_rows, ["left", "right"])
-        )
+        sections.append(_html_table(["Metric", "Value"], metric_rows, ["left", "right"]))
 
     # --- Holdout metrics (when holdout exists but isn't the diagnostics set) ---
     if diag.holdout_metrics and diag.diagnostics_set != "holdout":
         ho_rows = [
-            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"]
-            for k, v in diag.holdout_metrics.items()
+            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"] for k, v in diag.holdout_metrics.items()
         ]
         sections.append("<h2>Holdout Metrics</h2>")
-        sections.append(
-            _html_table(["Metric", "Value"], ho_rows, ["left", "right"])
-        )
+        sections.append(_html_table(["Metric", "Value"], ho_rows, ["left", "right"]))
 
     # --- CV results ---
     if diag.cv_results and diag.cv_results.get("mean_metrics"):
@@ -158,14 +149,12 @@ def generate_model_card(
     # --- Double Lift ---
     if diag.double_lift:
         sections.append("<h2>Double Lift</h2>")
-        sections.append(
-            f'<div class="chart">{render_double_lift_svg(diag.double_lift)}</div>'
-        )
+        sections.append(f'<div class="chart">{render_double_lift_svg(diag.double_lift)}</div>')
         dl_rows = [
             [
                 str(d["decile"]),
-                f'{d["actual"]:.4f}',
-                f'{d["predicted"]:.4f}',
+                f"{d['actual']:.4f}",
+                f"{d['predicted']:.4f}",
                 str(d["count"]),
             ]
             for d in diag.double_lift
@@ -190,11 +179,7 @@ def generate_model_card(
     # --- Actual vs Predicted ---
     if diag.actual_vs_predicted:
         sections.append("<h2>Actual vs Predicted</h2>")
-        sections.append(
-            f'<div class="chart">'
-            f"{render_scatter_svg(diag.actual_vs_predicted)}"
-            f"</div>"
-        )
+        sections.append(f'<div class="chart">{render_scatter_svg(diag.actual_vs_predicted)}</div>')
 
     # --- Residuals ---
     if diag.residuals_histogram:
@@ -205,19 +190,18 @@ def generate_model_card(
             f"</div>"
         )
         if diag.residuals_stats:
-            stat_rows = [
-                [k.title(), f"{v:.6f}"] for k, v in diag.residuals_stats.items()
-            ]
-            sections.append(
-                _html_table(["Statistic", "Value"], stat_rows, ["left", "right"])
-            )
+            stat_rows = [[k.title(), f"{v:.6f}"] for k, v in diag.residuals_stats.items()]
+            sections.append(_html_table(["Statistic", "Value"], stat_rows, ["left", "right"]))
 
     # --- Feature Importance (PredictionValuesChange) ---
     if diag.feature_importance:
         sections.append("<h2>Feature Importance (PredictionValuesChange)</h2>")
         svg = render_horizontal_bars_svg(
-            diag.feature_importance, "feature", "importance",
-            title="PredictionValuesChange", color=COLOR_IMPORTANCE,
+            diag.feature_importance,
+            "feature",
+            "importance",
+            title="PredictionValuesChange",
+            color=COLOR_IMPORTANCE,
         )
         sections.append(f'<div class="chart">{svg}</div>')
 
@@ -225,8 +209,11 @@ def generate_model_card(
     if diag.shap_summary:
         sections.append("<h2>SHAP Summary</h2>")
         svg = render_horizontal_bars_svg(
-            diag.shap_summary, "feature", "mean_abs_shap",
-            title="SHAP (mean |SHAP|)", color=COLOR_SHAP,
+            diag.shap_summary,
+            "feature",
+            "mean_abs_shap",
+            title="SHAP (mean |SHAP|)",
+            color=COLOR_SHAP,
         )
         sections.append(f'<div class="chart">{svg}</div>')
 
@@ -234,8 +221,11 @@ def generate_model_card(
     if diag.feature_importance_loss:
         sections.append("<h2>Feature Importance (LossFunctionChange)</h2>")
         svg = render_horizontal_bars_svg(
-            diag.feature_importance_loss, "feature", "importance",
-            title="LossFunctionChange", color=COLOR_IMPORTANCE,
+            diag.feature_importance_loss,
+            "feature",
+            "importance",
+            title="LossFunctionChange",
+            color=COLOR_IMPORTANCE,
         )
         sections.append(f'<div class="chart">{svg}</div>')
 
@@ -245,7 +235,9 @@ def generate_model_card(
         for feat_data in diag.ave_per_feature:
             is_cat = feat_data.get("type") == "categorical"
             svg = render_ave_feature_svg(
-                feat_data["feature"], feat_data["bins"], is_cat,
+                feat_data["feature"],
+                feat_data["bins"],
+                is_cat,
             )
             sections.append(f'<div class="chart">{svg}</div>')
 

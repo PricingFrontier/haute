@@ -15,8 +15,9 @@ def _configured_pipeline(root: Path) -> Path | None:
     """Read ``haute.toml`` and return the configured pipeline path, if any."""
     toml_path = root / "haute.toml"
     if not toml_path.exists():
-        logger.error("haute_toml_missing", root=str(root),
-                      hint="Run 'haute init' to create a project")
+        logger.error(
+            "haute_toml_missing", root=str(root), hint="Run 'haute init' to create a project"
+        )
         return None
     try:
         import tomllib

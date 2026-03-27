@@ -56,6 +56,7 @@ def train(training_script: str) -> None:
         raise SystemExit(1)
 
     try:
+
         def _progress(msg: str, frac: float) -> None:
             bar = "=" * int(frac * 30)
             click.echo(f"\r  [{bar:<30}] {frac:.0%} {msg}", nl=False)

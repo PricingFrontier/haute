@@ -157,9 +157,7 @@ def score_http_endpoint_batched(
                 result = _json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"HTTP {exc.code} from {quote_url}: {error_body}"
-            ) from exc
+            raise RuntimeError(f"HTTP {exc.code} from {quote_url}: {error_body}") from exc
         return result
 
     return _run_batched(records, _score, batch_size, progress)

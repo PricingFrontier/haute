@@ -165,6 +165,7 @@ def estimate_gpu_vram_bytes(
 # Source metadata — source-aware
 # ---------------------------------------------------------------------------
 
+
 # Bytes per column for the analytical estimate.  Training features are
 # cast to Float32 (4 bytes) in _build_pool, but the Polars DataFrame
 def _parquet_metadata(path: str) -> tuple[int, int]:

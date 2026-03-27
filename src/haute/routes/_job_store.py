@@ -35,9 +35,9 @@ class JobStore:
         """Remove jobs older than TTL to bound memory usage."""
         cutoff = time.time() - self._ttl_seconds
         stale = [
-            jid for jid, j in self._jobs.items()
-            if j.get("created_at", 0) < cutoff
-            and j.get("status") not in ("running",)
+            jid
+            for jid, j in self._jobs.items()
+            if j.get("created_at", 0) < cutoff and j.get("status") not in ("running",)
         ]
         for jid in stale:
             del self._jobs[jid]

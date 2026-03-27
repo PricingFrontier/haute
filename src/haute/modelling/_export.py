@@ -55,44 +55,44 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
         "",
         "",
         "job = TrainingJob(",
-        f'    name={name!r},',
-        f'    data={data_path!r},',
-        f'    target={target!r},',
+        f"    name={name!r},",
+        f"    data={data_path!r},",
+        f"    target={target!r},",
     ]
 
     if weight:
-        parts.append(f'    weight={weight!r},')
+        parts.append(f"    weight={weight!r},")
     if exclude:
-        parts.append(f'    exclude={exclude!r},')
+        parts.append(f"    exclude={exclude!r},")
 
-    parts.append(f'    algorithm={algorithm!r},')
-    parts.append(f'    task={task!r},')
+    parts.append(f"    algorithm={algorithm!r},")
+    parts.append(f"    task={task!r},")
 
     if params:
-        parts.append(f'    params={params!r},')
+        parts.append(f"    params={params!r},")
 
-    parts.append(f'    split={split!r},')
-    parts.append(f'    metrics={metrics!r},')
+    parts.append(f"    split={split!r},")
+    parts.append(f"    metrics={metrics!r},")
 
     if loss_function:
-        parts.append(f'    loss_function={loss_function!r},')
+        parts.append(f"    loss_function={loss_function!r},")
     if variance_power is not None and loss_function == "Tweedie":
-        parts.append(f'    variance_power={variance_power!r},')
+        parts.append(f"    variance_power={variance_power!r},")
     if offset:
-        parts.append(f'    offset={offset!r},')
+        parts.append(f"    offset={offset!r},")
     if monotone_constraints:
-        parts.append(f'    monotone_constraints={monotone_constraints!r},')
+        parts.append(f"    monotone_constraints={monotone_constraints!r},")
     if feature_weights:
-        parts.append(f'    feature_weights={feature_weights!r},')
+        parts.append(f"    feature_weights={feature_weights!r},")
     if cv_folds:
-        parts.append(f'    cv_folds={cv_folds!r},')
+        parts.append(f"    cv_folds={cv_folds!r},")
 
     if mlflow_experiment:
-        parts.append(f'    mlflow_experiment={mlflow_experiment!r},')
+        parts.append(f"    mlflow_experiment={mlflow_experiment!r},")
     if model_name:
-        parts.append(f'    model_name={model_name!r},')
+        parts.append(f"    model_name={model_name!r},")
 
-    parts.append(f'    output_dir={output_dir!r},')
+    parts.append(f"    output_dir={output_dir!r},")
     parts.append(")")
     parts.append("")
     parts.append("")

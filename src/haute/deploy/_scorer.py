@@ -232,10 +232,13 @@ def score_graph(
     # Compile preamble so utility imports are available in transform nodes.
     from haute.executor import _compile_preamble, _pipeline_dir
 
-    preamble_ns = _compile_preamble(
-        graph.preamble or "",
-        pipeline_dir=_pipeline_dir(graph),
-    ) or None
+    preamble_ns = (
+        _compile_preamble(
+            graph.preamble or "",
+            pipeline_dir=_pipeline_dir(graph),
+        )
+        or None
+    )
 
     # Deployed API always runs in "live" source — eager scoring, live
     # switch routes to the live input.

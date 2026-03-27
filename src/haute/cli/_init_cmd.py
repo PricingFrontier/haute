@@ -63,11 +63,17 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
 @click.command()
 @click.option(
     "--target",
-    type=click.Choice([
-        "databricks", "container",
-        "azure-container-apps", "aws-ecs", "gcp-run",
-        "sagemaker", "azure-ml",
-    ]),
+    type=click.Choice(
+        [
+            "databricks",
+            "container",
+            "azure-container-apps",
+            "aws-ecs",
+            "gcp-run",
+            "sagemaker",
+            "azure-ml",
+        ]
+    ),
     default="databricks",
     help="Deploy target (default: databricks).",
 )

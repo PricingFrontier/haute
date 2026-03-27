@@ -108,7 +108,4 @@ class LRUCache(Generic[K, V]):
             return len(self._data)
 
     def __repr__(self) -> str:
-        return (
-            f"LRUCache(max_size={self._max_size}, ttl={self._ttl}, "
-            f"entries={len(self)})"
-        )
+        return f"LRUCache(max_size={self._max_size}, ttl={self._ttl}, entries={len(self)})"

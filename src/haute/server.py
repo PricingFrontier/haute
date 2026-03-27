@@ -61,6 +61,7 @@ _watcher_task: asyncio.Task | None = None
 def _clear_bytecache() -> None:
     """Remove all .pyc files so stale bytecode never masks code changes."""
     import shutil
+
     src_dir = Path(__file__).resolve().parent
     for pycache in src_dir.rglob("__pycache__"):
         shutil.rmtree(pycache, ignore_errors=True)
@@ -260,8 +261,7 @@ async def _file_watcher() -> None:
         # If config JSON changed, re-parse all discovered pipelines
         if config_changed and not changed_files:
             changed_files.extend(
-                p for p in discover_pipelines()
-                if p.suffix == ".py" and not p.name.startswith("__")
+                p for p in discover_pipelines() if p.suffix == ".py" and not p.name.startswith("__")
             )
 
         # Deduplicate and parse

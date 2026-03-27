@@ -59,10 +59,7 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
     stat = path.stat()
     meta = pq.read_metadata(str(path))
     arrow_schema = pq.read_schema(str(path))
-    columns = {
-        name: str(arrow_schema.field(name).type)
-        for name in arrow_schema.names
-    }
+    columns = {name: str(arrow_schema.field(name).type) for name in arrow_schema.names}
     return {
         "row_count": meta.num_rows,
         "column_count": meta.num_columns,

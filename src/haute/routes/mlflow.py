@@ -127,15 +127,17 @@ def list_runs(
             logger.warning("artifact_list_failed", run_id=run_id, error=str(exc))
             continue
 
-        results.append(MlflowRunSummary(
-            run_id=run_id,
-            run_name=run.info.run_name or "",
-            status=run.info.status,
-            start_time=run.info.start_time,
-            metrics=run.data.metrics or {},
-            params=run.data.params or {},
-            artifacts=matched,
-        ))
+        results.append(
+            MlflowRunSummary(
+                run_id=run_id,
+                run_name=run.info.run_name or "",
+                status=run.info.status,
+                start_time=run.info.start_time,
+                metrics=run.data.metrics or {},
+                params=run.data.params or {},
+                artifacts=matched,
+            )
+        )
 
     return results
 

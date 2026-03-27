@@ -23,9 +23,7 @@ def flatten_graph(
     if not submodels:
         return graph
 
-    names_to_flatten = (
-        {target_name} & set(submodels) if target_name is not None else set(submodels)
-    )
+    names_to_flatten = {target_name} & set(submodels) if target_name is not None else set(submodels)
     if not names_to_flatten:
         return graph
 
@@ -98,9 +96,7 @@ def flatten_graph(
         node_count=len(nodes),
         edge_count=len(deduped),
     )
-    remaining_submodels = {
-        k: v for k, v in submodels.items() if k not in names_to_flatten
-    } or None
+    remaining_submodels = {k: v for k, v in submodels.items() if k not in names_to_flatten} or None
     return graph.model_copy(
         update={"nodes": nodes, "edges": deduped, "submodels": remaining_submodels},
     )

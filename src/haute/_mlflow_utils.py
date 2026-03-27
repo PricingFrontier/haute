@@ -41,9 +41,7 @@ def resolve_version(
 
     versions = search_versions(client, model_name)
     if not versions:
-        raise ValueError(
-            f"No versions found for registered model '{model_name}'."
-        )
+        raise ValueError(f"No versions found for registered model '{model_name}'.")
     sorted_versions = sorted(versions, key=lambda v: int(v.version), reverse=True)
     return sorted_versions[0].version
 
@@ -88,9 +86,7 @@ def resolve_mlflow_source(
     try:
         import mlflow
     except ImportError:
-        raise ImportError(
-            "mlflow is not installed. Install it with: pip install mlflow"
-        ) from None
+        raise ImportError("mlflow is not installed. Install it with: pip install mlflow") from None
 
     from mlflow.tracking import MlflowClient
 
@@ -106,9 +102,7 @@ def resolve_mlflow_source(
 
     if source_type == "registered":
         if not registered_model:
-            raise ValueError(
-                "registered_model is required when sourceType is 'registered'"
-            )
+            raise ValueError("registered_model is required when sourceType is 'registered'")
         resolved_version = resolve_version(client, registered_model, version)
         mv = client.get_model_version(registered_model, resolved_version)
         resolved_run_id = mv.run_id or ""
@@ -116,8 +110,6 @@ def resolve_mlflow_source(
         if not resolved_run_id:
             raise ValueError("run_id is required when sourceType is 'run'")
     else:
-        raise ValueError(
-            f"Invalid sourceType: {source_type!r}. Expected 'run' or 'registered'."
-        )
+        raise ValueError(f"Invalid sourceType: {source_type!r}. Expected 'run' or 'registered'.")
 
     return resolved_run_id, resolved_version, mlflow, client
