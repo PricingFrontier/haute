@@ -113,19 +113,25 @@ class TestCreateUtilityFile:
         assert init.exists()
 
     def test_creates_with_custom_content(self, client: TestClient, tmp_path: Path) -> None:
-        res = client.post("/api/utility", json={
-            "name": "custom",
-            "content": "import numpy as np\n\ndef helper(): pass\n",
-        })
+        res = client.post(
+            "/api/utility",
+            json={
+                "name": "custom",
+                "content": "import numpy as np\n\ndef helper(): pass\n",
+            },
+        )
         assert res.json()["status"] == "ok"
         content = (tmp_path / "utility" / "custom.py").read_text()
         assert "import numpy" in content
 
     def test_rejects_syntax_error(self, client: TestClient) -> None:
-        res = client.post("/api/utility", json={
-            "name": "bad",
-            "content": "def foo(\n",
-        })
+        res = client.post(
+            "/api/utility",
+            json={
+                "name": "bad",
+                "content": "def foo(\n",
+            },
+        )
         assert res.status_code == 400
         detail = res.json()["detail"]
         assert detail["error_line"] is not None
@@ -256,23 +262,29 @@ class TestAutoImportIntegration:
 
 
 class TestPathTraversalSecurity:
-    @pytest.mark.parametrize("name,expected_status", [
-        ("__init__", 400),
-        ("__main__", 400),
-        ("123starts_with_digit", 422),
-        ("has-dashes", 422),
-        ("has spaces", 422),
-        ("has.dots", 422),
-    ])
+    @pytest.mark.parametrize(
+        "name,expected_status",
+        [
+            ("__init__", 400),
+            ("__main__", 400),
+            ("123starts_with_digit", 422),
+            ("has-dashes", 422),
+            ("has spaces", 422),
+            ("has.dots", 422),
+        ],
+    )
     def test_create_blocked(self, client: TestClient, name: str, expected_status: int) -> None:
         res = client.post("/api/utility", json={"name": name})
         assert res.status_code == expected_status
 
-    @pytest.mark.parametrize("module", [
-        "__init__",
-        "__main__",
-        "has-dashes",
-    ])
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "__init__",
+            "__main__",
+            "has-dashes",
+        ],
+    )
     def test_read_blocked(self, client: TestClient, module: str) -> None:
         res = client.get(f"/api/utility/{module}")
         assert res.status_code == 400
@@ -287,10 +299,13 @@ class TestSyntaxErrorReturns400:
     """Verify syntax errors produce HTTP 400 with structured error detail."""
 
     def test_create_syntax_error_returns_400(self, client: TestClient, tmp_path: Path) -> None:
-        res = client.post("/api/utility", json={
-            "name": "broken",
-            "content": "def foo(\n",
-        })
+        res = client.post(
+            "/api/utility",
+            json={
+                "name": "broken",
+                "content": "def foo(\n",
+            },
+        )
         assert res.status_code == 400
         detail = res.json()["detail"]
         assert "error" in detail
@@ -313,9 +328,12 @@ class TestSyntaxErrorReturns400:
         assert (d / "mymod.py").read_text() == "x = 1\n"
 
     def test_create_valid_content_still_returns_200(self, client: TestClient) -> None:
-        res = client.post("/api/utility", json={
-            "name": "good",
-            "content": "x = 1\n",
-        })
+        res = client.post(
+            "/api/utility",
+            json={
+                "name": "good",
+                "content": "x = 1\n",
+            },
+        )
         assert res.status_code == 200
         assert res.json()["status"] == "ok"

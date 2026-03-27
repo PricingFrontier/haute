@@ -155,7 +155,8 @@ class TestPollCompletedJob:
         _store.jobs.update(self._snapshot)
 
     def test_completed_job_returns_same_status_on_repeated_polls(
-        self, client: "TestClient",
+        self,
+        client: "TestClient",
     ) -> None:
         job_id = _inject_job(
             self._store,

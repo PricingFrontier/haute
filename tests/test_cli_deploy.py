@@ -38,7 +38,10 @@ def _mock_resolved() -> MagicMock:
 
 class TestDeploy:
     def test_non_ci_non_dry_run_blocked(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Deploys must go through CI/CD unless --dry-run is used."""
         monkeypatch.chdir(tmp_path)
@@ -52,23 +55,31 @@ class TestDeploy:
         assert "ci/cd" in result.output.lower() or "dry-run" in result.output.lower()
 
     def test_dry_run_skips_actual_deploy(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
 
-        with patch("haute.deploy._config.resolve_config", return_value=resolved), \
-             patch("haute.deploy._validators.validate_deploy", return_value=[]), \
-             patch("haute.deploy._validators.score_test_quotes", return_value=[]):
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+        ):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
         assert result.exit_code == 0, result.output
         assert "dry run" in result.output.lower()
 
     def test_resolution_failure(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
@@ -80,22 +91,30 @@ class TestDeploy:
         assert "resolution failed" in result.output.lower() or "no output" in result.output.lower()
 
     def test_validation_failure(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
 
-        with patch("haute.deploy._config.resolve_config", return_value=resolved), \
-             patch("haute.deploy._validators.validate_deploy", return_value=["Missing artifact"]):
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=["Missing artifact"]),
+        ):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
         assert result.exit_code == 1
         assert "validation failed" in result.output.lower()
 
     def test_test_quote_failure_blocks_deploy(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
@@ -104,21 +123,29 @@ class TestDeploy:
         tq_results = [
             {"file": "ok.json", "rows": 5, "status": "ok", "time_ms": 10, "error": None},
             {
-                "file": "bad.json", "rows": 0, "status": "error",
-                "time_ms": 5, "error": "schema mismatch",
+                "file": "bad.json",
+                "rows": 0,
+                "status": "error",
+                "time_ms": 5,
+                "error": "schema mismatch",
             },
         ]
 
-        with patch("haute.deploy._config.resolve_config", return_value=resolved), \
-             patch("haute.deploy._validators.validate_deploy", return_value=[]), \
-             patch("haute.deploy._validators.score_test_quotes", return_value=tq_results):
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=tq_results),
+        ):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
         assert result.exit_code == 1
         assert "bad.json" in result.output
 
     def test_deploy_success_in_ci(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
@@ -131,10 +158,12 @@ class TestDeploy:
         deploy_result.endpoint_url = "https://host/serving-endpoints/test-ep/invocations"
         deploy_result.model_uri = None
 
-        with patch("haute.deploy._config.resolve_config", return_value=resolved), \
-             patch("haute.deploy._validators.validate_deploy", return_value=[]), \
-             patch("haute.deploy._validators.score_test_quotes", return_value=[]), \
-             patch("haute.deploy.deploy", return_value=deploy_result):
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+            patch("haute.deploy.deploy", return_value=deploy_result),
+        ):
             result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0, result.output
@@ -142,7 +171,10 @@ class TestDeploy:
         assert "invocations" in result.output
 
     def test_deploy_import_error(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
@@ -150,17 +182,22 @@ class TestDeploy:
 
         resolved = _mock_resolved()
 
-        with patch("haute.deploy._config.resolve_config", return_value=resolved), \
-             patch("haute.deploy._validators.validate_deploy", return_value=[]), \
-             patch("haute.deploy._validators.score_test_quotes", return_value=[]), \
-             patch("haute.deploy.deploy", side_effect=ImportError("No module named 'mlflow'")):
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+            patch("haute.deploy.deploy", side_effect=ImportError("No module named 'mlflow'")),
+        ):
             result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 1
         assert "missing dependency" in result.output.lower() or "mlflow" in result.output.lower()
 
     def test_deploy_not_implemented(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
@@ -168,25 +205,32 @@ class TestDeploy:
 
         resolved = _mock_resolved()
 
-        with patch("haute.deploy._config.resolve_config", return_value=resolved), \
-             patch("haute.deploy._validators.validate_deploy", return_value=[]), \
-             patch("haute.deploy._validators.score_test_quotes", return_value=[]), \
-             patch("haute.deploy.deploy", side_effect=NotImplementedError("sagemaker planned")):
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+            patch("haute.deploy.deploy", side_effect=NotImplementedError("sagemaker planned")),
+        ):
             result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 1
 
     def test_endpoint_suffix_override(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
 
-        with patch("haute.deploy._config.resolve_config", return_value=resolved), \
-             patch("haute.deploy._validators.validate_deploy", return_value=[]), \
-             patch("haute.deploy._validators.score_test_quotes", return_value=[]):
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+        ):
             result = runner.invoke(cli, ["deploy", "--dry-run", "--endpoint-suffix", "-staging"])
 
         assert result.exit_code == 0, result.output

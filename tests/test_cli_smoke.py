@@ -39,10 +39,14 @@ def _setup_smoke_project(
     quotes_dir = tmp_path / "tests" / "quotes"
     quotes_dir.mkdir(parents=True)
     (quotes_dir / "basic.json").write_text(json.dumps([{"VehPower": 5, "Area": "A"}]))
-    (quotes_dir / "multi.json").write_text(json.dumps([
-        {"VehPower": 5, "Area": "A"},
-        {"VehPower": 10, "Area": "B"},
-    ]))
+    (quotes_dir / "multi.json").write_text(
+        json.dumps(
+            [
+                {"VehPower": 5, "Area": "A"},
+                {"VehPower": 10, "Area": "B"},
+            ]
+        )
+    )
     return quotes_dir
 
 
@@ -68,7 +72,10 @@ class TestSmokeDatabricks:
     """
 
     def test_databricks_success(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _setup_smoke_project(tmp_path, monkeypatch)
 
@@ -79,15 +86,17 @@ class TestSmokeDatabricks:
         mock_response.predictions = [{"premium": 100.0}]
         mock_ws.serving_endpoints.query.return_value = mock_response
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
-             patch("time.sleep"):
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke"])
 
         assert result.exit_code == 0, result.output
         assert "passed" in result.output.lower()
 
     def test_databricks_endpoint_not_ready_polls(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Should poll until endpoint is ready."""
         _setup_smoke_project(tmp_path, monkeypatch)
@@ -106,8 +115,7 @@ class TestSmokeDatabricks:
         mock_response.predictions = [{"premium": 100.0}]
         mock_ws.serving_endpoints.query.return_value = mock_response
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
-             patch("time.sleep"):
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke"])
 
         assert result.exit_code == 0, result.output
@@ -115,7 +123,10 @@ class TestSmokeDatabricks:
         assert mock_ws.serving_endpoints.get.call_count == 2
 
     def test_databricks_query_failure(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Endpoint query failure should fail smoke test."""
         _setup_smoke_project(tmp_path, monkeypatch)
@@ -124,15 +135,17 @@ class TestSmokeDatabricks:
         mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
         mock_ws.serving_endpoints.query.side_effect = RuntimeError("500 Internal Server Error")
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
-             patch("time.sleep"):
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke"])
 
         assert result.exit_code == 1
         assert "failed" in result.output.lower()
 
     def test_databricks_null_predictions(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Endpoint returns no predictions -> failure."""
         _setup_smoke_project(tmp_path, monkeypatch)
@@ -144,14 +157,16 @@ class TestSmokeDatabricks:
         mock_response.predictions = None
         mock_ws.serving_endpoints.query.return_value = mock_response
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
-             patch("time.sleep"):
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke"])
 
         assert result.exit_code == 1
 
     def test_endpoint_suffix_override(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _setup_smoke_project(tmp_path, monkeypatch)
 
@@ -162,8 +177,7 @@ class TestSmokeDatabricks:
         mock_response.predictions = [{"premium": 100.0}]
         mock_ws.serving_endpoints.query.return_value = mock_response
 
-        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), \
-             patch("time.sleep"):
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
             result = runner.invoke(cli, ["smoke", "--endpoint-suffix", "-canary"])
 
         assert result.exit_code == 0, result.output
@@ -174,9 +188,14 @@ class TestSmokeDatabricks:
 
 class TestSmokeHttp:
     def test_http_success(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _setup_smoke_project(tmp_path, monkeypatch, target="container", staging_url="http://localhost:8080/quote")
+        _setup_smoke_project(
+            tmp_path, monkeypatch, target="container", staging_url="http://localhost:8080/quote"
+        )
 
         with patch("haute.cli._smoke._smoke_http", return_value=True):
             result = runner.invoke(cli, ["smoke"])
@@ -185,9 +204,14 @@ class TestSmokeHttp:
         assert "passed" in result.output.lower()
 
     def test_http_health_failure(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _setup_smoke_project(tmp_path, monkeypatch, target="container", staging_url="http://localhost:8080/quote")
+        _setup_smoke_project(
+            tmp_path, monkeypatch, target="container", staging_url="http://localhost:8080/quote"
+        )
 
         with patch("haute.cli._smoke._smoke_http", return_value=False):
             result = runner.invoke(cli, ["smoke"])
@@ -196,7 +220,10 @@ class TestSmokeHttp:
         assert "failed" in result.output.lower()
 
     def test_http_no_staging_url_fails(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _setup_smoke_project(tmp_path, monkeypatch, target="container", staging_url="")
         result = runner.invoke(cli, ["smoke"])
@@ -206,7 +233,10 @@ class TestSmokeHttp:
 
 class TestSmokeUnsupportedTarget:
     def test_unsupported_target_warns(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "haute.toml").write_text(

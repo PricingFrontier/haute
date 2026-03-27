@@ -272,6 +272,7 @@ class TestFormatTerminal:
         text = format_terminal(report)
         assert "First deployment" in text
 
+
 class TestFormatMarkdown:
     """Markdown report formatting (GitHub Step Summary)."""
 

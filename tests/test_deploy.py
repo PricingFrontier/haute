@@ -90,7 +90,6 @@ def mock_mlflow_deploy():
         )
 
 
-
 # ---------------------------------------------------------------------------
 # Pruner tests
 # ---------------------------------------------------------------------------
@@ -137,48 +136,50 @@ class TestPruner:
         """liveSwitch nodes should only keep the live (first) input branch."""
         from haute.deploy._pruner import prune_for_deploy
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "live_src",
-                    "data": {
-                        "label": "live_src",
-                        "nodeType": "apiInput",
-                        "config": {"path": "d.json"},
-                    },
-                },
-                {
-                    "id": "batch_src",
-                    "data": {
-                        "label": "batch_src",
-                        "nodeType": "dataSource",
-                        "config": {"path": "d.parquet"},
-                    },
-                },
-                {
-                    "id": "switch",
-                    "data": {
-                        "label": "switch",
-                        "nodeType": "liveSwitch",
-                        "config": {
-                            "input_scenario_map": {
-                                "live_src": "live",
-                                "batch_src": "test_batch",
-                            },
-                            "inputs": ["live_src", "batch_src"],
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "live_src",
+                        "data": {
+                            "label": "live_src",
+                            "nodeType": "apiInput",
+                            "config": {"path": "d.json"},
                         },
                     },
-                },
-                {"id": "score", "data": {"label": "score", "nodeType": "polars", "config": {}}},
-                {"id": "out", "data": {"label": "out", "nodeType": "output", "config": {}}},
-            ],
-            "edges": [
-                {"id": "e1", "source": "live_src", "target": "switch"},
-                {"id": "e2", "source": "batch_src", "target": "switch"},
-                {"id": "e3", "source": "switch", "target": "score"},
-                {"id": "e4", "source": "score", "target": "out"},
-            ],
-        })
+                    {
+                        "id": "batch_src",
+                        "data": {
+                            "label": "batch_src",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    },
+                    {
+                        "id": "switch",
+                        "data": {
+                            "label": "switch",
+                            "nodeType": "liveSwitch",
+                            "config": {
+                                "input_scenario_map": {
+                                    "live_src": "live",
+                                    "batch_src": "test_batch",
+                                },
+                                "inputs": ["live_src", "batch_src"],
+                            },
+                        },
+                    },
+                    {"id": "score", "data": {"label": "score", "nodeType": "polars", "config": {}}},
+                    {"id": "out", "data": {"label": "out", "nodeType": "output", "config": {}}},
+                ],
+                "edges": [
+                    {"id": "e1", "source": "live_src", "target": "switch"},
+                    {"id": "e2", "source": "batch_src", "target": "switch"},
+                    {"id": "e3", "source": "switch", "target": "score"},
+                    {"id": "e4", "source": "score", "target": "out"},
+                ],
+            }
+        )
         pruned, kept, removed = prune_for_deploy(graph, "out")
         kept_set = set(kept)
         assert "live_src" in kept_set
@@ -196,11 +197,13 @@ class TestPruner:
     def test_find_output_no_output_raises(self) -> None:
         from haute.deploy._pruner import find_output_node
 
-        graph = _g({
-            "nodes": [
-                {"id": "a", "data": {"nodeType": "dataSource", "config": {}}},
-            ]
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    {"id": "a", "data": {"nodeType": "dataSource", "config": {}}},
+                ]
+            }
+        )
         with pytest.raises(ValueError, match="[Nn]o output node"):
             find_output_node(graph)
 
@@ -227,17 +230,19 @@ class TestBundler:
     def test_missing_artifact_raises(self) -> None:
         from haute.deploy._bundler import collect_artifacts
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ext1",
-                    "data": {
-                        "nodeType": "externalFile",
-                        "config": {"path": "nonexistent/model.pkl"},
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ext1",
+                        "data": {
+                            "nodeType": "externalFile",
+                            "config": {"path": "nonexistent/model.pkl"},
+                        },
                     },
-                },
-            ]
-        })
+                ]
+            }
+        )
 
         with pytest.raises(FileNotFoundError, match="[Aa]rtifact.*not found"):
             collect_artifacts(graph, [], Path("."))
@@ -254,21 +259,23 @@ class TestBundler:
         cbm_file = cache_dir / "model.cbm"
         cbm_file.write_bytes(b"fake model")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms1",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "run_abc",
-                            "artifact_path": "model.cbm",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms1",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run_abc",
+                                "artifact_path": "model.cbm",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
         assert len(artifacts) == 1
@@ -280,17 +287,19 @@ class TestBundler:
         """MODEL_SCORE nodes without run_id are silently skipped."""
         from haute.deploy._bundler import collect_artifacts
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms1",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {"sourceType": "run"},
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms1",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {"sourceType": "run"},
+                        },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         artifacts = collect_artifacts(graph, [], Path("."))
         assert len(artifacts) == 0
@@ -299,17 +308,19 @@ class TestBundler:
         """externalFile node with no path should be silently skipped."""
         from haute.deploy._bundler import collect_artifacts
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ext_no_path",
-                    "data": {
-                        "nodeType": "externalFile",
-                        "config": {},
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ext_no_path",
+                        "data": {
+                            "nodeType": "externalFile",
+                            "config": {},
+                        },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         artifacts = collect_artifacts(graph, [], Path("."))
         assert len(artifacts) == 0
@@ -321,17 +332,19 @@ class TestBundler:
         data_file = tmp_path / "lookup.csv"
         data_file.write_text("a,b\n1,2\n")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "static_ds",
-                    "data": {
-                        "nodeType": "dataSource",
-                        "config": {"path": str(data_file)},
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "static_ds",
+                        "data": {
+                            "nodeType": "dataSource",
+                            "config": {"path": str(data_file)},
+                        },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         # input_node_ids=[] means static_ds is NOT a deploy input
         artifacts = collect_artifacts(graph, [], tmp_path)
@@ -354,21 +367,23 @@ class TestBundler:
         cbm_file = cache_dir / "model.cbm"
         cbm_file.write_bytes(b"fake registered model")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_reg",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "registered",
-                            "registered_model": "my-prod-model",
-                            "version": "3",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_reg",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "registered",
+                                "registered_model": "my-prod-model",
+                                "version": "3",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
@@ -392,21 +407,23 @@ class TestBundler:
         cache_dir.mkdir(parents=True)
         (cache_dir / "model.cbm").write_bytes(b"latest model")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_latest",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "registered",
-                            "registered_model": "my-model",
-                            "version": "latest",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_latest",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "registered",
+                                "registered_model": "my-model",
+                                "version": "latest",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
@@ -427,21 +444,23 @@ class TestBundler:
         cache_dir.mkdir(parents=True)
         (cache_dir / "model.cbm").write_bytes(b"model data")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_empty_ver",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "registered",
-                            "registered_model": "my-model",
-                            "version": "",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_empty_ver",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "registered",
+                                "registered_model": "my-model",
+                                "version": "",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
@@ -456,21 +475,23 @@ class TestBundler:
         """sourceType='registered' with no registered_model is silently skipped."""
         from haute.deploy._bundler import collect_artifacts
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_no_name",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "registered",
-                            "registered_model": "",
-                            "version": "1",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_no_name",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "registered",
+                                "registered_model": "",
+                                "version": "1",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         artifacts = collect_artifacts(graph, [], Path("."))
         assert len(artifacts) == 0
@@ -479,21 +500,23 @@ class TestBundler:
         """Errors from _resolve_registered_model propagate to caller."""
         from haute.deploy._bundler import collect_artifacts
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_err",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "registered",
-                            "registered_model": "nonexistent-model",
-                            "version": "1",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_err",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "registered",
+                                "registered_model": "nonexistent-model",
+                                "version": "1",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
@@ -518,32 +541,34 @@ class TestBundler:
         cache_reg.mkdir(parents=True)
         (cache_reg / "registered.cbm").write_bytes(b"registered model")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_run",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "run_direct",
-                            "artifact_path": "direct.cbm",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_run",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run_direct",
+                                "artifact_path": "direct.cbm",
+                            },
                         },
                     },
-                },
-                {
-                    "id": "ms_reg",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "registered",
-                            "registered_model": "prod-model",
-                            "version": "2",
+                    {
+                        "id": "ms_reg",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "registered",
+                                "registered_model": "prod-model",
+                                "version": "2",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
@@ -567,21 +592,23 @@ class TestBundler:
         cache_dir.mkdir(parents=True)
         (cache_dir / "model.cbm").write_bytes(b"explicit run model")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_explicit_run",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "run_explicit",
-                            "artifact_path": "model.cbm",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_explicit_run",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run_explicit",
+                                "artifact_path": "model.cbm",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
         assert len(artifacts) == 1
@@ -597,20 +624,22 @@ class TestBundler:
         cache_dir.mkdir(parents=True)
         (cache_dir / "model.cbm").write_bytes(b"default model")
 
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "ms_default",
-                    "data": {
-                        "nodeType": "modelScore",
-                        "config": {
-                            "run_id": "run_default",
-                            "artifact_path": "model.cbm",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "ms_default",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "run_id": "run_default",
+                                "artifact_path": "model.cbm",
+                            },
                         },
                     },
-                },
-            ],
-        })
+                ],
+            }
+        )
 
         artifacts = collect_artifacts(graph, [], tmp_path)
         assert len(artifacts) == 1
@@ -626,20 +655,29 @@ class TestResolveRegisteredModel:
         mv.run_id = run_id
         return mv
 
-    def _mock_context(self, mock_client, resolve_version_rv=None, resolve_version_se=None,
-                      find_artifact_rv=("model.cbm", "catboost"), find_artifact_se=None):
+    def _mock_context(
+        self,
+        mock_client,
+        resolve_version_rv=None,
+        resolve_version_se=None,
+        find_artifact_rv=("model.cbm", "catboost"),
+        find_artifact_se=None,
+    ):
         """Build a combined patch context for _resolve_registered_model tests.
 
         Mocks: mlflow.set_tracking_uri, mlflow.tracking.MlflowClient,
         resolve_tracking_backend, resolve_version, _find_model_artifact.
         """
         from contextlib import ExitStack
+
         stack = ExitStack()
         patches = [
             patch("mlflow.set_tracking_uri"),
             patch("mlflow.tracking.MlflowClient", return_value=mock_client),
-            patch("haute.modelling._mlflow_log.resolve_tracking_backend",
-                  return_value=("http://tracking", "local")),
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("http://tracking", "local"),
+            ),
         ]
         if resolve_version_se is not None:
             patches.append(
@@ -864,25 +902,33 @@ class TestScorer:
         mock_model.feature_names_ = ["x1"]
         mock_model.predict.return_value = np.array([42.0, 43.0])
 
-        graph = _g({
-            "nodes": [
-                {"id": "src", "data": {
-                    "nodeType": "apiInput",
-                    "config": {"path": ""},
-                }},
-                {"id": "ms", "data": {
-                    "nodeType": "modelScore",
-                    "config": {
-                        "sourceType": "run",
-                        "run_id": "r1",
-                        "artifact_path": "model.cbm",
-                        "task": "regression",
-                        "output_column": "pred",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
                     },
-                }},
-            ],
-            "edges": [{"id": "e1", "source": "src", "target": "ms"}],
-        })
+                    {
+                        "id": "ms",
+                        "data": {
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "r1",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "ms"}],
+            }
+        )
 
         input_df = pl.DataFrame({"x1": [1.0, 2.0]})
         remap = {"ms__model.cbm": str(cbm_path)}
@@ -1218,8 +1264,7 @@ class TestDatabricksTracking:
             # Model must also be registered with the suffix
             log_call = mocks.log_model.call_args
             assert (
-                log_call.kwargs["registered_model_name"]
-                == "workspace.default.test-model-staging"
+                log_call.kwargs["registered_model_name"] == "workspace.default.test-model-staging"
             )
 
 
@@ -1287,10 +1332,13 @@ class TestServingEndpoint:
 
         with (
             patch("databricks.sdk.WorkspaceClient") as mock_ws_cls,
-            patch.dict("os.environ", {
-                "DATABRICKS_RATING_HOST": "https://myhost",
-                "DATABRICKS_RATING_TOKEN": "test-token",
-            }),
+            patch.dict(
+                "os.environ",
+                {
+                    "DATABRICKS_RATING_HOST": "https://myhost",
+                    "DATABRICKS_RATING_TOKEN": "test-token",
+                },
+            ),
         ):
             mock_ws = mock_ws_cls.return_value
             from databricks.sdk.errors import NotFound
@@ -1325,10 +1373,13 @@ class TestServingEndpoint:
 
         with (
             patch("databricks.sdk.WorkspaceClient") as mock_ws_cls,
-            patch.dict("os.environ", {
-                "DATABRICKS_RATING_HOST": "https://myhost",
-                "DATABRICKS_RATING_TOKEN": "test-token",
-            }),
+            patch.dict(
+                "os.environ",
+                {
+                    "DATABRICKS_RATING_HOST": "https://myhost",
+                    "DATABRICKS_RATING_TOKEN": "test-token",
+                },
+            ),
         ):
             mock_ws = mock_ws_cls.return_value
             mock_ws.serving_endpoints.get.return_value = MagicMock()

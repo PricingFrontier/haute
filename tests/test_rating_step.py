@@ -15,6 +15,7 @@ from tests.conftest import make_source_node as _source_node
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _rating_node(
     nid: str,
     tables: list[dict] | None = None,
@@ -40,21 +41,24 @@ def _rating_node(
 # Executor: _apply_rating_table via _build_node_fn
 # ---------------------------------------------------------------------------
 
+
 class TestRatingStepExecutor:
     """Rating step executor applies lookup joins correctly."""
 
     def test_one_way_lookup(self):
         """Single-factor table: join on one column."""
-        tables = [{
-            "name": "Age Factor",
-            "factors": ["age_band"],
-            "outputColumn": "age_factor",
-            "defaultValue": "1.0",
-            "entries": [
-                {"age_band": "young", "value": 1.3},
-                {"age_band": "older", "value": 0.9},
-            ],
-        }]
+        tables = [
+            {
+                "name": "Age Factor",
+                "factors": ["age_band"],
+                "outputColumn": "age_factor",
+                "defaultValue": "1.0",
+                "entries": [
+                    {"age_band": "young", "value": 1.3},
+                    {"age_band": "older", "value": 0.9},
+                ],
+            }
+        ]
         node = _rating_node("r1", tables)
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"age_band": ["young", "older", "unknown"]}).lazy()
@@ -63,44 +67,52 @@ class TestRatingStepExecutor:
 
     def test_two_way_lookup(self):
         """Two-factor table: join on two columns."""
-        tables = [{
-            "name": "Age × Prop",
-            "factors": ["age_band", "prop_band"],
-            "outputColumn": "factor",
-            "defaultValue": None,
-            "entries": [
-                {"age_band": "young", "prop_band": "House", "value": 1.2},
-                {"age_band": "young", "prop_band": "Flat", "value": 1.5},
-                {"age_band": "older", "prop_band": "House", "value": 0.9},
-            ],
-        }]
+        tables = [
+            {
+                "name": "Age × Prop",
+                "factors": ["age_band", "prop_band"],
+                "outputColumn": "factor",
+                "defaultValue": None,
+                "entries": [
+                    {"age_band": "young", "prop_band": "House", "value": 1.2},
+                    {"age_band": "young", "prop_band": "Flat", "value": 1.5},
+                    {"age_band": "older", "prop_band": "House", "value": 0.9},
+                ],
+            }
+        ]
         node = _rating_node("r2", tables)
         _, fn, _ = _build_node_fn(node)
-        lf = pl.DataFrame({
-            "age_band": ["young", "young", "older", "older"],
-            "prop_band": ["House", "Flat", "House", "Flat"],
-        }).lazy()
+        lf = pl.DataFrame(
+            {
+                "age_band": ["young", "young", "older", "older"],
+                "prop_band": ["House", "Flat", "House", "Flat"],
+            }
+        ).lazy()
         result = fn(lf).collect()
         assert result["factor"].to_list() == [1.2, 1.5, 0.9, None]
 
     def test_three_way_lookup(self):
         """Three-factor table: join on three columns."""
-        tables = [{
-            "name": "3-way",
-            "factors": ["a", "b", "c"],
-            "outputColumn": "val",
-            "defaultValue": "0.0",
-            "entries": [
-                {"a": "x", "b": "y", "c": "z", "value": 2.5},
-            ],
-        }]
+        tables = [
+            {
+                "name": "3-way",
+                "factors": ["a", "b", "c"],
+                "outputColumn": "val",
+                "defaultValue": "0.0",
+                "entries": [
+                    {"a": "x", "b": "y", "c": "z", "value": 2.5},
+                ],
+            }
+        ]
         node = _rating_node("r3", tables)
         _, fn, _ = _build_node_fn(node)
-        lf = pl.DataFrame({
-            "a": ["x", "x"],
-            "b": ["y", "y"],
-            "c": ["z", "w"],
-        }).lazy()
+        lf = pl.DataFrame(
+            {
+                "a": ["x", "x"],
+                "b": ["y", "y"],
+                "c": ["z", "w"],
+            }
+        ).lazy()
         result = fn(lf).collect()
         assert result["val"].to_list() == [2.5, 0.0]
 
@@ -140,8 +152,13 @@ class TestRatingStepExecutor:
     def test_incomplete_table_skipped(self):
         """Table with missing factors/entries/outputColumn is skipped."""
         tables = [
-            {"name": "bad", "factors": [], "outputColumn": "out",
-             "defaultValue": None, "entries": [{"value": 1.0}]},
+            {
+                "name": "bad",
+                "factors": [],
+                "outputColumn": "out",
+                "defaultValue": None,
+                "entries": [{"value": 1.0}],
+            },
         ]
         node = _rating_node("r6", tables)
         _, fn, _ = _build_node_fn(node)
@@ -162,14 +179,26 @@ class TestRatingStepExecutor:
     def test_combine_operations(self, operation, col_name, expected):
         """Two tables combined via the given operation."""
         tables = [
-            {"name": "T1", "factors": ["band"], "outputColumn": "f1",
-             "defaultValue": "1.0", "entries": [{"band": "A", "value": 2.0}]},
-            {"name": "T2", "factors": ["band"], "outputColumn": "f2",
-             "defaultValue": "1.0", "entries": [{"band": "A", "value": 3.0}]},
+            {
+                "name": "T1",
+                "factors": ["band"],
+                "outputColumn": "f1",
+                "defaultValue": "1.0",
+                "entries": [{"band": "A", "value": 2.0}],
+            },
+            {
+                "name": "T2",
+                "factors": ["band"],
+                "outputColumn": "f2",
+                "defaultValue": "1.0",
+                "entries": [{"band": "A", "value": 3.0}],
+            },
         ]
         node = _rating_node(
-            f"rc_{operation}", tables,
-            operation=operation, combined_column=col_name,
+            f"rc_{operation}",
+            tables,
+            operation=operation,
+            combined_column=col_name,
         )
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"band": ["A", "B"]}).lazy()
@@ -179,10 +208,20 @@ class TestRatingStepExecutor:
     def test_no_combined_column_skips_combine(self):
         """Without combinedColumn, no combination column is created."""
         tables = [
-            {"name": "T1", "factors": ["band"], "outputColumn": "f1",
-             "defaultValue": "1.0", "entries": [{"band": "A", "value": 2.0}]},
-            {"name": "T2", "factors": ["band"], "outputColumn": "f2",
-             "defaultValue": "1.0", "entries": [{"band": "A", "value": 3.0}]},
+            {
+                "name": "T1",
+                "factors": ["band"],
+                "outputColumn": "f1",
+                "defaultValue": "1.0",
+                "entries": [{"band": "A", "value": 2.0}],
+            },
+            {
+                "name": "T2",
+                "factors": ["band"],
+                "outputColumn": "f2",
+                "defaultValue": "1.0",
+                "entries": [{"band": "A", "value": 3.0}],
+            },
         ]
         node = _rating_node("rc5", tables)
         _, fn, _ = _build_node_fn(node)
@@ -193,13 +232,15 @@ class TestRatingStepExecutor:
 
     def test_string_factor_values_match(self):
         """Factor values are cast to Utf8 so string bands match."""
-        tables = [{
-            "name": "T",
-            "factors": ["band"],
-            "outputColumn": "out",
-            "defaultValue": None,
-            "entries": [{"band": "1", "value": 9.9}],
-        }]
+        tables = [
+            {
+                "name": "T",
+                "factors": ["band"],
+                "outputColumn": "out",
+                "defaultValue": None,
+                "entries": [{"band": "1", "value": 9.9}],
+            }
+        ]
         node = _rating_node("r7", tables)
         _, fn, _ = _build_node_fn(node)
         # Source has integer column — should still match via Utf8 cast
@@ -211,6 +252,7 @@ class TestRatingStepExecutor:
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
 
 class TestRatingStepParser:
     """Parser extracts tables config from decorated functions."""
@@ -279,17 +321,20 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
 # Codegen
 # ---------------------------------------------------------------------------
 
+
 class TestRatingStepCodegen:
     """Codegen produces valid rating step decorators."""
 
     def test_codegen_rating_step(self):
-        tables = [{
-            "name": "T1",
-            "factors": ["band"],
-            "outputColumn": "factor",
-            "defaultValue": 1.0,
-            "entries": [{"band": "A", "value": 2.0}],
-        }]
+        tables = [
+            {
+                "name": "T1",
+                "factors": ["band"],
+                "outputColumn": "factor",
+                "defaultValue": 1.0,
+                "entries": [{"band": "A", "value": 2.0}],
+            }
+        ]
         node = _rating_node("rating", tables)
         src = _source_node("src")
         graph = PipelineGraph(
@@ -303,16 +348,18 @@ class TestRatingStepCodegen:
         """Code generated from a graph can be parsed back."""
         from haute._config_io import collect_node_configs
 
-        tables = [{
-            "name": "Age Factor",
-            "factors": ["age_band"],
-            "outputColumn": "age_factor",
-            "defaultValue": 1.0,
-            "entries": [
-                {"age_band": "young", "value": 1.3},
-                {"age_band": "older", "value": 0.9},
-            ],
-        }]
+        tables = [
+            {
+                "name": "Age Factor",
+                "factors": ["age_band"],
+                "outputColumn": "age_factor",
+                "defaultValue": 1.0,
+                "entries": [
+                    {"age_band": "young", "value": 1.3},
+                    {"age_band": "older", "value": 0.9},
+                ],
+            }
+        ]
         node = _rating_node("rating", tables)
         src = _source_node("src")
         graph = PipelineGraph(
@@ -328,9 +375,7 @@ class TestRatingStepCodegen:
             cfg_file.write_text(content)
 
         parsed = parse_pipeline_source(code, _base_dir=tmp_path)
-        rating_nodes = [
-            n for n in parsed.nodes if n.data.nodeType == "ratingStep"
-        ]
+        rating_nodes = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"]
         assert len(rating_nodes) == 1
         rt = rating_nodes[0].data.config["tables"]
         assert len(rt) == 1
@@ -343,10 +388,20 @@ class TestRatingStepCodegen:
         from haute._config_io import collect_node_configs
 
         tables = [
-            {"name": "T1", "factors": ["b"], "outputColumn": "f1",
-             "defaultValue": 1.0, "entries": [{"b": "A", "value": 2.0}]},
-            {"name": "T2", "factors": ["b"], "outputColumn": "f2",
-             "defaultValue": 1.0, "entries": [{"b": "A", "value": 3.0}]},
+            {
+                "name": "T1",
+                "factors": ["b"],
+                "outputColumn": "f1",
+                "defaultValue": 1.0,
+                "entries": [{"b": "A", "value": 2.0}],
+            },
+            {
+                "name": "T2",
+                "factors": ["b"],
+                "outputColumn": "f2",
+                "defaultValue": 1.0,
+                "entries": [{"b": "A", "value": 3.0}],
+            },
         ]
         node = _rating_node("rating", tables, operation="add", combined_column="total")
         src = _source_node("src")
@@ -376,8 +431,12 @@ class TestRatingStepCodegen:
         from haute._config_io import collect_node_configs
 
         tables = [
-            {"name": "T1", "factors": ["b"], "outputColumn": "f1",
-             "entries": [{"b": "A", "value": 2.0}]},
+            {
+                "name": "T1",
+                "factors": ["b"],
+                "outputColumn": "f1",
+                "entries": [{"b": "A", "value": 2.0}],
+            },
         ]
         node = _rating_node("rating", tables, combined_column="c")
         src = _source_node("src")

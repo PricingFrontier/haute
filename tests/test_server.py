@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def pipeline_dir(tmp_path: Path) -> Path:
     """Create a temporary project with a root-level pipeline and sample data."""
@@ -55,12 +56,14 @@ def client(pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.chdir(pipeline_dir)
     # Re-import to pick up cwd change
     from haute.server import app
+
     return TestClient(app)
 
 
 # ---------------------------------------------------------------------------
 # GET /api/pipelines
 # ---------------------------------------------------------------------------
+
 
 class TestListPipelines:
     def test_returns_discovered_pipelines(self, client: TestClient):
@@ -83,6 +86,7 @@ class TestListPipelines:
 # GET /api/pipeline
 # ---------------------------------------------------------------------------
 
+
 class TestGetFirstPipeline:
     def test_returns_graph(self, client: TestClient):
         resp = client.get("/api/pipeline")
@@ -94,10 +98,13 @@ class TestGetFirstPipeline:
         assert graph["pipeline_name"] == "test_pipeline"
 
     def test_empty_project_returns_empty_graph(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         from haute.server import app
+
         c = TestClient(app)
         resp = c.get("/api/pipeline")
         assert resp.status_code == 200
@@ -105,7 +112,9 @@ class TestGetFirstPipeline:
         assert graph["nodes"] == []
 
     def test_pipeline_with_no_nodes_returns_source_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """A starter pipeline with no nodes should still return source_file and metadata."""
         (tmp_path / "main.py").write_text(
@@ -113,6 +122,7 @@ class TestGetFirstPipeline:
         )
         monkeypatch.chdir(tmp_path)
         from haute.server import app
+
         c = TestClient(app)
         resp = c.get("/api/pipeline")
         assert resp.status_code == 200
@@ -125,6 +135,7 @@ class TestGetFirstPipeline:
 # ---------------------------------------------------------------------------
 # GET /api/pipeline/{name}
 # ---------------------------------------------------------------------------
+
 
 class TestGetPipelineByName:
     def test_found(self, client: TestClient):
@@ -142,15 +153,22 @@ class TestGetPipelineByName:
 # POST /api/pipeline/preview
 # ---------------------------------------------------------------------------
 
+
 class TestPreviewNode:
     def test_preview_returns_node_data(self, client: TestClient, pipeline_dir: Path):
         from haute.parser import parse_pipeline_file
+
         graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
         node_id = graph.nodes[0].id
 
-        resp = client.post("/api/pipeline/preview", json={
-            "graph": graph.model_dump(), "node_id": node_id, "row_limit": 10,
-        })
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(),
+                "node_id": node_id,
+                "row_limit": 10,
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["node_id"] == node_id
@@ -162,9 +180,13 @@ class TestPreviewNode:
         assert data["node_statuses"][node_id] == "ok"
 
     def test_preview_empty_graph_returns_400(self, client: TestClient):
-        resp = client.post("/api/pipeline/preview", json={
-            "graph": {"nodes": [], "edges": []}, "node_id": "x",
-        })
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": {"nodes": [], "edges": []},
+                "node_id": "x",
+            },
+        )
         assert resp.status_code == 400
 
 
@@ -172,14 +194,20 @@ class TestPreviewNode:
 # POST /api/pipeline/trace
 # ---------------------------------------------------------------------------
 
+
 class TestTraceRow:
     def test_trace_returns_steps(self, client: TestClient, pipeline_dir: Path):
         from haute.parser import parse_pipeline_file
+
         graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
 
-        resp = client.post("/api/pipeline/trace", json={
-            "graph": graph.model_dump(), "row_index": 0,
-        })
+        resp = client.post(
+            "/api/pipeline/trace",
+            json={
+                "graph": graph.model_dump(),
+                "row_index": 0,
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -187,9 +215,12 @@ class TestTraceRow:
         assert len(data["trace"]["steps"]) >= 2
 
     def test_trace_empty_graph_returns_400(self, client: TestClient):
-        resp = client.post("/api/pipeline/trace", json={
-            "graph": {"nodes": [], "edges": []},
-        })
+        resp = client.post(
+            "/api/pipeline/trace",
+            json={
+                "graph": {"nodes": [], "edges": []},
+            },
+        )
         assert resp.status_code == 400
 
 
@@ -197,22 +228,33 @@ class TestTraceRow:
 # POST /api/pipeline/save
 # ---------------------------------------------------------------------------
 
+
 class TestSavePipeline:
     def test_save_creates_files(self, client: TestClient, pipeline_dir: Path):
         graph = {
             "nodes": [
-                {"id": "s", "type": "pipelineNode", "position": {"x": 0, "y": 0},
-                 "data": {"label": "Source", "nodeType": "dataSource",
-                          "config": {"path": "d.parquet"}}},
+                {
+                    "id": "s",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "d.parquet"},
+                    },
+                },
             ],
             "edges": [],
         }
-        resp = client.post("/api/pipeline/save", json={
-            "name": "saved_pipe",
-            "description": "Test save",
-            "graph": graph,
-            "source_file": "saved_pipe.py",
-        })
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "saved_pipe",
+                "description": "Test save",
+                "graph": graph,
+                "source_file": "saved_pipe.py",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "saved"
@@ -234,6 +276,7 @@ class TestSavePipeline:
 # POST /api/pipeline/sink
 # ---------------------------------------------------------------------------
 
+
 class TestExecuteSinkEndpoint:
     def test_sink_writes_output(self, client: TestClient, pipeline_dir: Path):
         out_path = pipeline_dir / "output" / "result.parquet"
@@ -241,18 +284,36 @@ class TestExecuteSinkEndpoint:
 
         graph = {
             "nodes": [
-                {"id": "src", "type": "pipelineNode", "position": {"x": 0, "y": 0},
-                 "data": {"label": "src", "nodeType": "dataSource",
-                          "config": {"path": str(data_path)}}},
-                {"id": "sink", "type": "pipelineNode", "position": {"x": 300, "y": 0},
-                 "data": {"label": "sink", "nodeType": "dataSink",
-                          "config": {"path": str(out_path), "format": "parquet"}}},
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "src",
+                        "nodeType": "dataSource",
+                        "config": {"path": str(data_path)},
+                    },
+                },
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 300, "y": 0},
+                    "data": {
+                        "label": "sink",
+                        "nodeType": "dataSink",
+                        "config": {"path": str(out_path), "format": "parquet"},
+                    },
+                },
             ],
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
-        resp = client.post("/api/pipeline/sink", json={
-            "graph": graph, "node_id": "sink",
-        })
+        resp = client.post(
+            "/api/pipeline/sink",
+            json={
+                "graph": graph,
+                "node_id": "sink",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -263,6 +324,7 @@ class TestExecuteSinkEndpoint:
 # ---------------------------------------------------------------------------
 # GET /api/files
 # ---------------------------------------------------------------------------
+
 
 class TestBrowseFiles:
     def test_browse_project_root(self, client: TestClient, pipeline_dir: Path):
@@ -295,6 +357,7 @@ class TestBrowseFiles:
 # ---------------------------------------------------------------------------
 # GET /api/schema
 # ---------------------------------------------------------------------------
+
 
 class TestGetSchema:
     def test_parquet_schema(self, client: TestClient, pipeline_dir: Path):
@@ -336,6 +399,7 @@ class TestGetSchema:
 #                   POST /api/submodel/dissolve
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def three_node_graph(pipeline_dir: Path) -> dict:
     """Parse the test pipeline and return its graph as a dict payload."""
@@ -356,7 +420,10 @@ class TestCreateSubmodel:
         }
 
     def test_create_submodel_success(
-        self, client: TestClient, pipeline_dir: Path, three_node_graph: dict,
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        three_node_graph: dict,
     ):
         # Select the two nodes (source + transform) for grouping
         node_ids = [n["id"] for n in three_node_graph["nodes"]]
@@ -384,7 +451,9 @@ class TestCreateSubmodel:
         assert (pipeline_dir / "test_pipeline.py").exists()
 
     def test_create_submodel_too_few_nodes_returns_400(
-        self, client: TestClient, three_node_graph: dict,
+        self,
+        client: TestClient,
+        three_node_graph: dict,
     ):
         # Only 1 node — must be at least 2
         node_ids = [three_node_graph["nodes"][0]["id"]]
@@ -394,7 +463,9 @@ class TestCreateSubmodel:
         assert "at least 2" in resp.json()["detail"]
 
     def test_create_submodel_missing_source_file_returns_400(
-        self, client: TestClient, three_node_graph: dict,
+        self,
+        client: TestClient,
+        three_node_graph: dict,
     ):
         node_ids = [n["id"] for n in three_node_graph["nodes"][:2]]
         payload = {
@@ -411,17 +482,23 @@ class TestCreateSubmodel:
 
 class TestGetSubmodel:
     def test_get_submodel_success(
-        self, client: TestClient, pipeline_dir: Path, three_node_graph: dict,
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        three_node_graph: dict,
     ):
         # First, create a submodel
         node_ids = [n["id"] for n in three_node_graph["nodes"][:2]]
-        create_resp = client.post("/api/submodel/create", json={
-            "name": "lookup",
-            "node_ids": node_ids,
-            "graph": three_node_graph,
-            "source_file": "test_pipeline.py",
-            "pipeline_name": "test_pipeline",
-        })
+        create_resp = client.post(
+            "/api/submodel/create",
+            json={
+                "name": "lookup",
+                "node_ids": node_ids,
+                "graph": three_node_graph,
+                "source_file": "test_pipeline.py",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert create_resp.status_code == 200
 
         # Now fetch it
@@ -444,27 +521,36 @@ class TestGetSubmodel:
 
 class TestDissolveSubmodel:
     def test_dissolve_submodel_success(
-        self, client: TestClient, pipeline_dir: Path, three_node_graph: dict,
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        three_node_graph: dict,
     ):
         # Create a submodel first
         node_ids = [n["id"] for n in three_node_graph["nodes"][:2]]
-        create_resp = client.post("/api/submodel/create", json={
-            "name": "temp_group",
-            "node_ids": node_ids,
-            "graph": three_node_graph,
-            "source_file": "test_pipeline.py",
-            "pipeline_name": "test_pipeline",
-        })
+        create_resp = client.post(
+            "/api/submodel/create",
+            json={
+                "name": "temp_group",
+                "node_ids": node_ids,
+                "graph": three_node_graph,
+                "source_file": "test_pipeline.py",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert create_resp.status_code == 200
         updated_graph = create_resp.json()["graph"]
 
         # Dissolve it
-        resp = client.post("/api/submodel/dissolve", json={
-            "submodel_name": "temp_group",
-            "graph": updated_graph,
-            "source_file": "test_pipeline.py",
-            "pipeline_name": "test_pipeline",
-        })
+        resp = client.post(
+            "/api/submodel/dissolve",
+            json={
+                "submodel_name": "temp_group",
+                "graph": updated_graph,
+                "source_file": "test_pipeline.py",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -479,14 +565,19 @@ class TestDissolveSubmodel:
         assert not (pipeline_dir / "modules" / "temp_group.py").exists()
 
     def test_dissolve_nonexistent_submodel_returns_404(
-        self, client: TestClient, three_node_graph: dict,
+        self,
+        client: TestClient,
+        three_node_graph: dict,
     ):
-        resp = client.post("/api/submodel/dissolve", json={
-            "submodel_name": "ghost",
-            "graph": three_node_graph,
-            "source_file": "test_pipeline.py",
-            "pipeline_name": "test_pipeline",
-        })
+        resp = client.post(
+            "/api/submodel/dissolve",
+            json={
+                "submodel_name": "ghost",
+                "graph": three_node_graph,
+                "source_file": "test_pipeline.py",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
@@ -504,7 +595,9 @@ class TestWebSocket:
         # No error means connect + clean disconnect succeeded
 
     def test_broadcast_reaches_connected_client(
-        self, client: TestClient, pipeline_dir: Path,
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
     ):
         """Save endpoint writes files and triggers sidecar — verify the
         full HTTP flow still works with an active WebSocket connection."""
@@ -516,19 +609,28 @@ class TestWebSocket:
             # Use a save call to exercise the full stack (which calls mark_self_write)
             graph = {
                 "nodes": [
-                    {"id": "s", "type": "pipelineNode",
-                     "position": {"x": 0, "y": 0},
-                     "data": {"label": "S", "nodeType": "dataSource",
-                              "config": {"path": "d.parquet"}}},
+                    {
+                        "id": "s",
+                        "type": "pipelineNode",
+                        "position": {"x": 0, "y": 0},
+                        "data": {
+                            "label": "S",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    },
                 ],
                 "edges": [],
             }
-            resp = client.post("/api/pipeline/save", json={
-                "name": "ws_test",
-                "description": "",
-                "graph": graph,
-                "source_file": "ws_test.py",
-            })
+            resp = client.post(
+                "/api/pipeline/save",
+                json={
+                    "name": "ws_test",
+                    "description": "",
+                    "graph": graph,
+                    "source_file": "ws_test.py",
+                },
+            )
             assert resp.status_code == 200
 
         # After disconnect, client should be removed
@@ -618,7 +720,9 @@ class TestSelfWriteTracking:
 
 class TestFileWatcher:
     def test_py_change_triggers_broadcast(
-        self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """A .py file change should parse and broadcast a graph_update."""
         import asyncio
@@ -759,9 +863,13 @@ class TestPipelineTimeouts:
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):
-            resp = client.post("/api/pipeline/trace", json={
-                "graph": graph.model_dump(), "row_index": 0,
-            })
+            resp = client.post(
+                "/api/pipeline/trace",
+                json={
+                    "graph": graph.model_dump(),
+                    "row_index": 0,
+                },
+            )
         assert resp.status_code == 504
 
     def test_preview_timeout(self, client: TestClient, pipeline_dir: Path):
@@ -777,9 +885,13 @@ class TestPipelineTimeouts:
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):
-            resp = client.post("/api/pipeline/preview", json={
-                "graph": graph.model_dump(), "node_id": node_id,
-            })
+            resp = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": graph.model_dump(),
+                    "node_id": node_id,
+                },
+            )
         assert resp.status_code == 504
 
     def test_sink_timeout(self, client: TestClient, pipeline_dir: Path):
@@ -788,12 +900,26 @@ class TestPipelineTimeouts:
         data_path = pipeline_dir / "data" / "input.parquet"
         graph = {
             "nodes": [
-                {"id": "src", "type": "pipelineNode", "position": {"x": 0, "y": 0},
-                 "data": {"label": "src", "nodeType": "dataSource",
-                          "config": {"path": str(data_path)}}},
-                {"id": "sink", "type": "pipelineNode", "position": {"x": 300, "y": 0},
-                 "data": {"label": "sink", "nodeType": "dataSink",
-                          "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"}}},
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "src",
+                        "nodeType": "dataSource",
+                        "config": {"path": str(data_path)},
+                    },
+                },
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 300, "y": 0},
+                    "data": {
+                        "label": "sink",
+                        "nodeType": "dataSink",
+                        "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                    },
+                },
             ],
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
@@ -820,9 +946,13 @@ class TestPipelineExceptions:
             "haute.trace.execute_trace",
             side_effect=RuntimeError("trace error"),
         ):
-            resp = client.post("/api/pipeline/trace", json={
-                "graph": graph.model_dump(), "row_index": 0,
-            })
+            resp = client.post(
+                "/api/pipeline/trace",
+                json={
+                    "graph": graph.model_dump(),
+                    "row_index": 0,
+                },
+            )
         assert resp.status_code == 500
         assert "trace error" not in resp.json()["detail"]
         assert "Check the server logs" in resp.json()["detail"]
@@ -839,9 +969,13 @@ class TestPipelineExceptions:
             "haute.executor.execute_graph",
             side_effect=RuntimeError("preview error"),
         ):
-            resp = client.post("/api/pipeline/preview", json={
-                "graph": graph.model_dump(), "node_id": node_id,
-            })
+            resp = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": graph.model_dump(),
+                    "node_id": node_id,
+                },
+            )
         assert resp.status_code == 500
         assert "preview error" not in resp.json()["detail"]
         assert "Check the server logs" in resp.json()["detail"]
@@ -852,12 +986,26 @@ class TestPipelineExceptions:
         data_path = pipeline_dir / "data" / "input.parquet"
         graph = {
             "nodes": [
-                {"id": "src", "type": "pipelineNode", "position": {"x": 0, "y": 0},
-                 "data": {"label": "src", "nodeType": "dataSource",
-                          "config": {"path": str(data_path)}}},
-                {"id": "sink", "type": "pipelineNode", "position": {"x": 300, "y": 0},
-                 "data": {"label": "sink", "nodeType": "dataSink",
-                          "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"}}},
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "src",
+                        "nodeType": "dataSource",
+                        "config": {"path": str(data_path)},
+                    },
+                },
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 300, "y": 0},
+                    "data": {
+                        "label": "sink",
+                        "nodeType": "dataSink",
+                        "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                    },
+                },
             ],
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
@@ -887,9 +1035,13 @@ class TestPreviewEdgeCases:
             "haute.executor.execute_graph",
             return_value={},  # empty results
         ):
-            resp = client.post("/api/pipeline/preview", json={
-                "graph": graph.model_dump(), "node_id": "nonexistent_node",
-            })
+            resp = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": graph.model_dump(),
+                    "node_id": "nonexistent_node",
+                },
+            )
         assert resp.status_code == 404
         assert "not found in results" in resp.json()["detail"]
 
@@ -972,9 +1124,13 @@ class TestSinkEmptyGraph:
     """Sink with empty graph returns 400."""
 
     def test_sink_empty_graph(self, client: TestClient):
-        resp = client.post("/api/pipeline/sink", json={
-            "graph": {"nodes": [], "edges": []}, "node_id": "x",
-        })
+        resp = client.post(
+            "/api/pipeline/sink",
+            json={
+                "graph": {"nodes": [], "edges": []},
+                "node_id": "x",
+            },
+        )
         assert resp.status_code == 400
 
 
@@ -1043,6 +1199,7 @@ class TestMiddleware500:
 
         assert resp.status_code == 500
         import json
+
         body = json.loads(resp.body)
         assert body == {"detail": "Internal server error"}
 
@@ -1062,7 +1219,9 @@ class TestFileWatcherJsonConfig:
     """JSON config changes in config/ re-parse all pipelines."""
 
     def test_json_config_change_triggers_full_reparse(
-        self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         import asyncio
         from unittest.mock import patch
@@ -1074,7 +1233,7 @@ class TestFileWatcherJsonConfig:
         # Create a config directory with a JSON file
         config_dir = pipeline_dir / "config"
         config_dir.mkdir()
-        (config_dir / "factors" ).mkdir(parents=True)
+        (config_dir / "factors").mkdir(parents=True)
         (config_dir / "factors" / "test.json").write_text('{"key": "value"}')
 
         json_file = str(config_dir / "factors" / "test.json")
@@ -1111,7 +1270,9 @@ class TestFileWatcherJsonConfig:
         assert broadcast_calls[0]["type"] == "graph_update"
 
     def test_json_config_without_pipeline_no_broadcast(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """If config JSON changes but there are no pipelines, no broadcast."""
         import asyncio
@@ -1160,7 +1321,9 @@ class TestFileWatcherModuleChange:
     """Module .py changes in modules/ only re-parse importing pipelines."""
 
     def test_module_change_triggers_importing_pipeline(
-        self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         import asyncio
         from unittest.mock import patch
@@ -1213,7 +1376,9 @@ class TestFileWatcherParseError:
     """Parse error broadcasts a parse_error message."""
 
     def test_parse_error_broadcasts_error(
-        self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         import asyncio
         from unittest.mock import patch
@@ -1263,7 +1428,9 @@ class TestFileWatcherFingerprintDedup:
     """Unchanged graph fingerprint skips re-broadcast."""
 
     def test_same_fingerprint_skips_second_broadcast(
-        self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         import asyncio
         from unittest.mock import patch
@@ -1287,6 +1454,7 @@ class TestFileWatcherFingerprintDedup:
 
         # Pre-clear the fingerprint cache
         from haute.server import _last_broadcast_fp
+
         _last_broadcast_fp.clear()
 
         with (
@@ -1320,7 +1488,9 @@ class TestSubmodelOutputPorts:
     """Cross-edge detection: output_ports from outgoing edges."""
 
     def test_create_with_outgoing_cross_edges(
-        self, client: TestClient, pipeline_dir: Path,
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
     ):
         """When a selected node has edges going OUT to unselected nodes,
         those should become output ports on the submodel."""
@@ -1337,21 +1507,21 @@ class TestSubmodelOutputPorts:
         # Select the first two nodes (source + transform)
         selected = [n["id"] for n in nodes[:2]]
 
-        resp = client.post("/api/submodel/create", json={
-            "name": "output_test",
-            "node_ids": selected,
-            "graph": graph_dict,
-            "source_file": "test_pipeline.py",
-            "pipeline_name": "test_pipeline",
-        })
+        resp = client.post(
+            "/api/submodel/create",
+            json={
+                "name": "output_test",
+                "node_ids": selected,
+                "graph": graph_dict,
+                "source_file": "test_pipeline.py",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
 
         # Verify the submodel node was created
-        sm_node = next(
-            n for n in data["graph"]["nodes"]
-            if n["id"] == "submodel__output_test"
-        )
+        sm_node = next(n for n in data["graph"]["nodes"] if n["id"] == "submodel__output_test")
         config = sm_node["data"]["config"]
         # childNodeIds should match selected
         assert set(config["childNodeIds"]) == set(selected)
@@ -1362,11 +1532,13 @@ class TestSubmodelEdgeRewiring:
     are rewired through the submodel node."""
 
     def test_cross_edges_rewired(
-        self, client: TestClient, pipeline_dir: Path,
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
     ):
         """Add a third transform node so we can test outgoing edge rewiring."""
         # Create a 3-node pipeline: source -> transform -> transform2
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -1386,22 +1558,26 @@ def final(middle: pl.LazyFrame) -> pl.LazyFrame:
 
 pipeline.connect("source", "middle")
 pipeline.connect("middle", "final")
-'''
+"""
         (pipeline_dir / "rewire_test.py").write_text(code)
         from haute.parser import parse_pipeline_file
+
         graph = parse_pipeline_file(pipeline_dir / "rewire_test.py")
         graph_dict = graph.model_dump()
 
         # Select only "middle" and "source" (2 nodes) — "final" stays outside
         selected = ["source", "middle"]
 
-        resp = client.post("/api/submodel/create", json={
-            "name": "inner",
-            "node_ids": selected,
-            "graph": graph_dict,
-            "source_file": "rewire_test.py",
-            "pipeline_name": "rewire_test",
-        })
+        resp = client.post(
+            "/api/submodel/create",
+            json={
+                "name": "inner",
+                "node_ids": selected,
+                "graph": graph_dict,
+                "source_file": "rewire_test.py",
+                "pipeline_name": "rewire_test",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
 
@@ -1425,28 +1601,38 @@ class TestGetSubmodelSidecarPositions:
     """GET /api/submodel/{name} merges sidecar positions."""
 
     def test_sidecar_positions_applied(
-        self, client: TestClient, pipeline_dir: Path, three_node_graph: dict,
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        three_node_graph: dict,
     ):
         # Create submodel first
         node_ids = [n["id"] for n in three_node_graph["nodes"][:2]]
-        create_resp = client.post("/api/submodel/create", json={
-            "name": "positioned",
-            "node_ids": node_ids,
-            "graph": three_node_graph,
-            "source_file": "test_pipeline.py",
-            "pipeline_name": "test_pipeline",
-        })
+        create_resp = client.post(
+            "/api/submodel/create",
+            json={
+                "name": "positioned",
+                "node_ids": node_ids,
+                "graph": three_node_graph,
+                "source_file": "test_pipeline.py",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert create_resp.status_code == 200
 
         # Write a sidecar with custom positions
         sm_path = pipeline_dir / "modules" / "positioned.py"
         sidecar = sm_path.with_suffix(".haute.json")
-        sidecar.write_text(json.dumps({
-            "positions": {
-                node_ids[0]: {"x": 100, "y": 200},
-                node_ids[1]: {"x": 300, "y": 400},
-            },
-        }))
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "positions": {
+                        node_ids[0]: {"x": 100, "y": 200},
+                        node_ids[1]: {"x": 300, "y": 400},
+                    },
+                }
+            )
+        )
 
         # Fetch the submodel
         resp = client.get("/api/submodel/positioned")
@@ -1467,26 +1653,34 @@ class TestDissolveEdgeCases:
     """Dissolve submodel edge cases."""
 
     def test_dissolve_missing_source_file_returns_400(
-        self, client: TestClient, three_node_graph: dict,
+        self,
+        client: TestClient,
+        three_node_graph: dict,
     ):
         """Dissolve with empty source_file returns 400."""
         # First create a submodel to get a valid graph with submodels
         node_ids = [n["id"] for n in three_node_graph["nodes"][:2]]
-        create_resp = client.post("/api/submodel/create", json={
-            "name": "will_dissolve",
-            "node_ids": node_ids,
-            "graph": three_node_graph,
-            "source_file": "test_pipeline.py",
-            "pipeline_name": "test_pipeline",
-        })
+        create_resp = client.post(
+            "/api/submodel/create",
+            json={
+                "name": "will_dissolve",
+                "node_ids": node_ids,
+                "graph": three_node_graph,
+                "source_file": "test_pipeline.py",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert create_resp.status_code == 200
         updated_graph = create_resp.json()["graph"]
 
-        resp = client.post("/api/submodel/dissolve", json={
-            "submodel_name": "will_dissolve",
-            "graph": updated_graph,
-            "source_file": "",
-            "pipeline_name": "test_pipeline",
-        })
+        resp = client.post(
+            "/api/submodel/dissolve",
+            json={
+                "submodel_name": "will_dissolve",
+                "graph": updated_graph,
+                "source_file": "",
+                "pipeline_name": "test_pipeline",
+            },
+        )
         assert resp.status_code == 400
         assert "source_file" in resp.json()["detail"]

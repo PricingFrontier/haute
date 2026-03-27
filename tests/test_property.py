@@ -70,6 +70,7 @@ class TestSanitizeFuncNameProperties:
     def test_preserves_valid_identifiers(self, label: str):
         """Input that is already a valid non-keyword identifier is preserved."""
         import keyword
+
         assume(label.isidentifier() and not keyword.iskeyword(label))
         result = _sanitize_func_name(label)
         assert result == label
@@ -79,12 +80,14 @@ class TestSanitizeFuncNameProperties:
 # topo_sort_ids properties
 # ---------------------------------------------------------------------------
 
+
 def dag_strategy():
     """Generate a random DAG as (node_ids, edges).
 
     Creates N nodes and a random subset of forward edges (i→j where i<j)
     to ensure acyclicity.
     """
+
     @st.composite
     def make_dag(draw):
         n = draw(st.integers(min_value=0, max_value=8))
@@ -95,6 +98,7 @@ def dag_strategy():
                 if draw(st.booleans()):
                     edges.append(make_edge(ids[i], ids[j]))
         return ids, edges
+
     return make_dag()
 
 
@@ -108,9 +112,7 @@ class TestTopoSortProperties:
         idx = {nid: i for i, nid in enumerate(result)}
         for e in edges:
             if e.source in idx and e.target in idx:
-                assert idx[e.source] < idx[e.target], (
-                    f"{e.source} should come before {e.target}"
-                )
+                assert idx[e.source] < idx[e.target], f"{e.source} should come before {e.target}"
 
     @given(data=dag_strategy())
     @settings(max_examples=200)
@@ -137,14 +139,19 @@ class TestTopoSortProperties:
 # _apply_banding properties
 # ---------------------------------------------------------------------------
 
+
 class TestBandingProperties:
     @given(
         values=st.lists(
             st.floats(allow_nan=False, allow_infinity=False, min_value=-1e6, max_value=1e6),
-            min_size=1, max_size=50,
+            min_size=1,
+            max_size=50,
         ),
         threshold=st.floats(
-            allow_nan=False, allow_infinity=False, min_value=-1e6, max_value=1e6,
+            allow_nan=False,
+            allow_infinity=False,
+            min_value=-1e6,
+            max_value=1e6,
         ),
     )
     @settings(max_examples=100)
@@ -179,7 +186,8 @@ class TestBandingProperties:
     @given(
         values=st.lists(
             st.floats(allow_nan=False, allow_infinity=False, min_value=-1e6, max_value=1e6),
-            min_size=1, max_size=20,
+            min_size=1,
+            max_size=20,
         ),
     )
     @settings(max_examples=100)
@@ -202,6 +210,7 @@ def _pipeline_graph_strategy():
     Builds a chain: dataSource → N transforms → output.
     Uses valid Python identifiers as labels to survive codegen roundtrip.
     """
+
     @st.composite
     def make_pipeline(draw):
         # 0..4 intermediate transform nodes
@@ -221,36 +230,42 @@ def _pipeline_graph_strategy():
         edges: list[GraphEdge] = []
 
         # Source node
-        nodes.append(GraphNode(
-            id="source",
-            data=NodeData(
-                label="Source",
-                nodeType=NodeType.DATA_SOURCE,
-                config={"path": "data/input.parquet"},
-            ),
-        ))
+        nodes.append(
+            GraphNode(
+                id="source",
+                data=NodeData(
+                    label="Source",
+                    nodeType=NodeType.DATA_SOURCE,
+                    config={"path": "data/input.parquet"},
+                ),
+            )
+        )
 
         # Transform nodes
         for i in range(n_transforms):
             nid = f"step{i}"
-            nodes.append(GraphNode(
-                id=nid,
-                data=NodeData(
-                    label=f"Step{i}",
-                    nodeType=NodeType.POLARS,
-                    config={"code": ""},
-                ),
-            ))
+            nodes.append(
+                GraphNode(
+                    id=nid,
+                    data=NodeData(
+                        label=f"Step{i}",
+                        nodeType=NodeType.POLARS,
+                        config={"code": ""},
+                    ),
+                )
+            )
 
         # Output node
-        nodes.append(GraphNode(
-            id="output",
-            data=NodeData(
-                label="Output",
-                nodeType=NodeType.OUTPUT,
-                config={"fields": []},
-            ),
-        ))
+        nodes.append(
+            GraphNode(
+                id="output",
+                data=NodeData(
+                    label="Output",
+                    nodeType=NodeType.OUTPUT,
+                    config={"fields": []},
+                ),
+            )
+        )
 
         # Chain edges: source → step0 → step1 → ... → output
         prev_id = "source"
@@ -336,7 +351,9 @@ class TestCodegenRoundtripProperties:
         id_to_label = {n.id: n.data.label for n in graph.nodes}
         orig_edges = {(id_to_label[e.source], id_to_label[e.target]) for e in graph.edges}
         parsed_id_to_label = {n.id: n.data.label for n in parsed.nodes}
-        parsed_edges = {(parsed_id_to_label[e.source], parsed_id_to_label[e.target]) for e in parsed.edges}
+        parsed_edges = {
+            (parsed_id_to_label[e.source], parsed_id_to_label[e.target]) for e in parsed.edges
+        }
         assert orig_edges == parsed_edges
 
 
@@ -347,6 +364,7 @@ class TestCodegenRoundtripProperties:
 
 def _valid_pipeline_source_strategy():
     """Generate valid Python pipeline source code with random node names."""
+
     @st.composite
     def make_source(draw):
         n_transforms = draw(st.integers(min_value=0, max_value=3))
@@ -364,24 +382,28 @@ def _valid_pipeline_source_strategy():
         prev = "source"
         for i in range(n_transforms):
             name = f"step_{i}"
-            lines.extend([
-                "@pipeline.polars",
-                f"def {name}({prev}: pl.LazyFrame) -> pl.LazyFrame:",
-                f"    return {prev}",
-                "",
-            ])
+            lines.extend(
+                [
+                    "@pipeline.polars",
+                    f"def {name}({prev}: pl.LazyFrame) -> pl.LazyFrame:",
+                    f"    return {prev}",
+                    "",
+                ]
+            )
             lines.append(f'pipeline.connect("{prev}", "{name}")')
             prev = name
 
         # Output node
-        lines.extend([
-            "",
-            "@pipeline.output()",
-            f"def output({prev}: pl.LazyFrame) -> pl.LazyFrame:",
-            f"    return {prev}",
-            "",
-            f'pipeline.connect("{prev}", "output")',
-        ])
+        lines.extend(
+            [
+                "",
+                "@pipeline.output()",
+                f"def output({prev}: pl.LazyFrame) -> pl.LazyFrame:",
+                f"    return {prev}",
+                "",
+                f'pipeline.connect("{prev}", "output")',
+            ]
+        )
         return "\n".join(lines)
 
     return make_source()
@@ -516,9 +538,7 @@ class TestRatingTableRowCount:
             "entries": entries,
         }
         result = _apply_rating_table(lf, table).collect()
-        assert len(result) == n_rows, (
-            f"Row count changed: {n_rows} → {len(result)}"
-        )
+        assert len(result) == n_rows, f"Row count changed: {n_rows} → {len(result)}"
 
 
 # ---------------------------------------------------------------------------
@@ -528,16 +548,19 @@ class TestRatingTableRowCount:
 
 class TestConfigRoundtrip:
     @given(
-        config=st.fixed_dictionaries({
-            "key_str": st.text(
-                alphabet=string.ascii_letters + string.digits + " _-",
-                min_size=0, max_size=20,
-            ),
-            "key_int": st.integers(min_value=-1000, max_value=1000),
-            "key_float": st.floats(allow_nan=False, allow_infinity=False),
-            "key_bool": st.booleans(),
-            "key_list": st.lists(st.integers(), max_size=5),
-        }),
+        config=st.fixed_dictionaries(
+            {
+                "key_str": st.text(
+                    alphabet=string.ascii_letters + string.digits + " _-",
+                    min_size=0,
+                    max_size=20,
+                ),
+                "key_int": st.integers(min_value=-1000, max_value=1000),
+                "key_float": st.floats(allow_nan=False, allow_infinity=False),
+                "key_bool": st.booleans(),
+                "key_list": st.lists(st.integers(), max_size=5),
+            }
+        ),
     )
     @settings(max_examples=80)
     def test_config_roundtrip_preserves_data(self, config, tmp_path_factory):
@@ -547,7 +570,10 @@ class TestConfigRoundtrip:
 
         base_dir = tmp_path_factory.mktemp("cfg")
         rel = save_node_config(
-            NodeType.BANDING, "test_node", config, base_dir,
+            NodeType.BANDING,
+            "test_node",
+            config,
+            base_dir,
         )
         loaded = load_node_config(rel, base_dir=base_dir)
         # JSON roundtrip: int keys stay int, float may lose precision
@@ -617,9 +643,7 @@ class TestTopoSortValidity:
             parents[e.target].add(e.source)
         for nid in result:
             for parent in parents[nid]:
-                assert pos[parent] < pos[nid], (
-                    f"Dependency {parent} should appear before {nid}"
-                )
+                assert pos[parent] < pos[nid], f"Dependency {parent} should appear before {nid}"
 
     @given(data=dag_strategy())
     @settings(max_examples=100)
@@ -638,13 +662,15 @@ class TestTopoSortValidity:
 
 class TestCodeValidationConsistency:
     @given(
-        code=st.sampled_from([
-            "x = 1 + 2",
-            "result = [i for i in range(10)]",
-            "df = df.filter(pl.col('a') > 0)",
-            ".filter(pl.col('x') > 0)",
-            "y = {'a': 1, 'b': 2}",
-        ]),
+        code=st.sampled_from(
+            [
+                "x = 1 + 2",
+                "result = [i for i in range(10)]",
+                "df = df.filter(pl.col('a') > 0)",
+                ".filter(pl.col('x') > 0)",
+                "y = {'a': 1, 'b': 2}",
+            ]
+        ),
     )
     @settings(max_examples=30)
     def test_validate_same_result_multiple_calls(self, code: str):
@@ -658,18 +684,18 @@ class TestCodeValidationConsistency:
                 results.append("ok")
             except UnsafeCodeError as exc:
                 results.append(f"err:{exc}")
-        assert results[0] == results[1] == results[2], (
-            f"Inconsistent validation results: {results}"
-        )
+        assert results[0] == results[1] == results[2], f"Inconsistent validation results: {results}"
 
     @given(
-        code=st.sampled_from([
-            "getattr(obj, 'x')",
-            "import os",
-            "class Foo: pass",
-            "obj.__class__",
-            "eval('1+1')",
-        ]),
+        code=st.sampled_from(
+            [
+                "getattr(obj, 'x')",
+                "import os",
+                "class Foo: pass",
+                "obj.__class__",
+                "eval('1+1')",
+            ]
+        ),
     )
     @settings(max_examples=30)
     def test_unsafe_code_always_rejected(self, code: str):
@@ -724,7 +750,7 @@ class TestPathValidation:
         nested = root / "a" / "b" / "c"
         nested.mkdir(parents=True, exist_ok=True)
         set_project_root(nested)
-        escaping = nested / Path(*([".." ] * (n_dotdots + 3)))  # enough to escape
+        escaping = nested / Path(*([".."] * (n_dotdots + 3)))  # enough to escape
         resolved = escaping.resolve()
         if not resolved.is_relative_to(nested.resolve()):
             with pytest.raises(ValueError, match="outside"):

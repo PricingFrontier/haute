@@ -85,9 +85,7 @@ class TestDatabricksRoutesSafeDetail:
 
     def test_tables_500_no_leak(self, client: TestClient) -> None:
         mock_ws = MagicMock()
-        mock_ws.tables.list.side_effect = RuntimeError(
-            "Connection to host 10.0.0.5:443 refused"
-        )
+        mock_ws.tables.list.side_effect = RuntimeError("Connection to host 10.0.0.5:443 refused")
         with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
             resp = client.get(
                 "/api/databricks/tables",
@@ -238,9 +236,7 @@ def source(config):
             "haute.executor.execute_sink",
             side_effect=RuntimeError("PermissionError: /secure/dir/output.parquet"),
         ):
-            resp = client.post(
-                "/api/pipeline/sink", json={"graph": graph, "node_id": "sink"}
-            )
+            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "/secure/dir/" not in detail
@@ -335,9 +331,7 @@ def source(config):
             ),
             patch("haute.routes.pipeline.logger", mock_logger),
         ):
-            resp = client.post(
-                "/api/pipeline/sink", json={"graph": graph, "node_id": "src"}
-            )
+            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "src"})
         assert resp.status_code == 500
         mock_logger.error.assert_called()
         assert "real-sink-error" in str(mock_logger.error.call_args)
@@ -400,9 +394,7 @@ class TestOptimiserRoutesSafeDetail:
             "solve_result": mock_solve_result,
             "created_at": time.time(),
         }
-        resp = client.post(
-            "/api/optimiser/apply", json={"job_id": "test_apply_err"}
-        )
+        resp = client.post("/api/optimiser/apply", json={"job_id": "test_apply_err"})
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "segfault" not in detail
@@ -434,7 +426,9 @@ class TestOptimiserRoutesSafeDetail:
         assert "lib.rs:42" not in detail
         assert detail == _SAFE_DETAIL
 
-    def test_save_oserror_no_path_leak(self, client: TestClient, clean_job_store, tmp_path, monkeypatch) -> None:
+    def test_save_oserror_no_path_leak(
+        self, client: TestClient, clean_job_store, tmp_path, monkeypatch
+    ) -> None:
         """save_result OSError must not leak filesystem paths."""
         from haute._sandbox import set_project_root
 
@@ -453,9 +447,10 @@ class TestOptimiserRoutesSafeDetail:
             "config": {},
             "created_at": time.time(),
         }
-        with patch("pathlib.Path.write_text", side_effect=OSError(
-            "Permission denied: '/secure/results/output.json'"
-        )):
+        with patch(
+            "pathlib.Path.write_text",
+            side_effect=OSError("Permission denied: '/secure/results/output.json'"),
+        ):
             resp = client.post(
                 "/api/optimiser/save",
                 json={
@@ -484,7 +479,9 @@ class TestOptimiserRoutesSafeDetail:
         with patch.dict("sys.modules", {"mlflow": MagicMock()}):
             with patch(
                 "haute.modelling._mlflow_log.resolve_tracking_backend",
-                side_effect=RuntimeError("ConnectionError: https://internal-mlflow.corp:5000 refused"),
+                side_effect=RuntimeError(
+                    "ConnectionError: https://internal-mlflow.corp:5000 refused"
+                ),
             ):
                 resp = client.post(
                     "/api/optimiser/mlflow/log",
@@ -596,15 +593,18 @@ class TestDomainErrorsStillExposed:
 class TestInternalErrorDetailConstant:
     """Verify that each route module defines the safe error constant."""
 
-    @pytest.mark.parametrize("module_path", [
-        "haute.routes.databricks",
-        "haute.routes.pipeline",
-        "haute.routes.json_cache",
-        "haute.routes.optimiser",
-        "haute.routes.modelling",
-        "haute.routes.git",
-        "haute.routes.mlflow",
-    ])
+    @pytest.mark.parametrize(
+        "module_path",
+        [
+            "haute.routes.databricks",
+            "haute.routes.pipeline",
+            "haute.routes.json_cache",
+            "haute.routes.optimiser",
+            "haute.routes.modelling",
+            "haute.routes.git",
+            "haute.routes.mlflow",
+        ],
+    )
     def test_module_has_internal_error_detail(self, module_path: str) -> None:
         import importlib
 
@@ -740,9 +740,10 @@ class TestMlflowRoutesSafeDetail:
         )
         with (
             patch("haute.routes.mlflow._ensure_tracking", return_value=(MagicMock(), mock_client)),
-            patch("haute.routes.mlflow.search_versions", side_effect=RuntimeError(
-                "Databricks API error: workspace /Users/admin/secret"
-            )),
+            patch(
+                "haute.routes.mlflow.search_versions",
+                side_effect=RuntimeError("Databricks API error: workspace /Users/admin/secret"),
+            ),
         ):
             resp = client.get("/api/mlflow/model-versions", params={"model_name": "test"})
         assert resp.status_code == 502
@@ -794,7 +795,8 @@ class TestMlflowMissingStatusInconsistency:
     """
 
     def test_optimiser_mlflow_log_returns_400_when_mlflow_missing(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """optimiser.py: ImportError -> 400."""
         from haute.routes.optimiser import _store
@@ -826,7 +828,8 @@ class TestMlflowMissingStatusInconsistency:
             _store.jobs.update(snapshot)
 
     def test_mlflow_routes_return_503_when_mlflow_missing(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """mlflow.py: ImportError -> 503."""
         with patch.dict("sys.modules", {"mlflow": None}):
@@ -838,7 +841,6 @@ class TestMlflowMissingStatusInconsistency:
             "update this test AND harmonise with routes/optimiser.py"
         )
         assert "not installed" in resp.json()["detail"].lower()
-
 
 
 # =====================================================================
@@ -855,7 +857,9 @@ class TestFilePathLeakage:
     structure to the frontend.
     """
 
-    def test_schema_read_oserror_no_internal_path_leak(self, client: TestClient, tmp_path: Path) -> None:
+    def test_schema_read_oserror_no_internal_path_leak(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
         """GET /api/schema -- OSError with internal server path must not leak.
 
         The user sends path='data.csv' but the OSError contains the resolved
@@ -866,9 +870,7 @@ class TestFilePathLeakage:
         target.write_text("a,b\n1,2\n")
         with patch(
             "haute.graph_utils.read_source",
-            side_effect=OSError(
-                "ArrowInvalid: /srv/app/data/cache/data.csv: invalid magic bytes"
-            ),
+            side_effect=OSError("ArrowInvalid: /srv/app/data/cache/data.csv: invalid magic bytes"),
         ):
             resp = client.get("/api/schema", params={"path": "data.csv"})
         assert resp.status_code == 500
@@ -903,7 +905,10 @@ class TestFilePathLeakage:
         strict=True,
     )
     def test_list_pipelines_parse_error_no_absolute_path(
-        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """GET /api/pipelines -- parse errors expose raw str(e) in the error field.
 
@@ -951,7 +956,9 @@ class TestStackTraceLeakage:
     """
 
     def test_trace_deep_exception_no_traceback_frames(
-        self, client: TestClient, tmp_path: Path,
+        self,
+        client: TestClient,
+        tmp_path: Path,
     ) -> None:
         """POST /api/pipeline/trace -- deep exception must not leak stack frames."""
         from haute.parser import parse_pipeline_file
@@ -995,7 +1002,9 @@ class TestStackTraceLeakage:
         assert detail == _SAFE_DETAIL
 
     def test_preview_traceback_string_no_leak(
-        self, client: TestClient, tmp_path: Path,
+        self,
+        client: TestClient,
+        tmp_path: Path,
     ) -> None:
         """POST /api/pipeline/preview -- traceback-containing error must not leak."""
         from haute.parser import parse_pipeline_file
@@ -1121,8 +1130,7 @@ class TestDatabaseConnectionStringLeakage:
         """GET /api/mlflow/experiments -- tracking URI must not leak."""
         mock_mlflow = MagicMock()
         mock_mlflow.search_experiments.side_effect = RuntimeError(
-            "OperationalError: unable to open database file: "
-            "sqlite:////home/user/mlruns/mlflow.db"
+            "OperationalError: unable to open database file: sqlite:////home/user/mlruns/mlflow.db"
         )
         with patch(
             "haute.routes.mlflow._ensure_tracking",
@@ -1137,7 +1145,8 @@ class TestDatabaseConnectionStringLeakage:
         assert "Check the server logs" in detail
 
     def test_optimiser_mlflow_log_tracking_uri_no_leak(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """POST /api/optimiser/mlflow/log -- databricks:// URI must not leak."""
         from haute.routes.optimiser import _store
@@ -1174,7 +1183,8 @@ class TestDatabaseConnectionStringLeakage:
             _store.jobs.update(snapshot)
 
     def test_modelling_mlflow_log_postgres_uri_no_leak(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """POST /api/modelling/mlflow/log -- postgres connection string must not leak."""
         from haute.routes.modelling import _store
@@ -1247,7 +1257,9 @@ class TestPlatformInfoLeakage:
     """
 
     def test_schema_read_platform_info_no_leak(
-        self, client: TestClient, tmp_path: Path,
+        self,
+        client: TestClient,
+        tmp_path: Path,
     ) -> None:
         """GET /api/schema -- C-extension error with platform info must not leak."""
         target = tmp_path / "data.csv"
@@ -1268,7 +1280,9 @@ class TestPlatformInfoLeakage:
         assert "Check the server logs" in detail
 
     def test_sink_cpython_error_no_leak(
-        self, client: TestClient, tmp_path: Path,
+        self,
+        client: TestClient,
+        tmp_path: Path,
     ) -> None:
         """POST /api/pipeline/sink -- CPython info in error must not leak."""
         graph = {
@@ -1293,9 +1307,7 @@ class TestPlatformInfoLeakage:
                 "[GCC 12.2.0] on linux: frame object is garbage collected"
             ),
         ):
-            resp = client.post(
-                "/api/pipeline/sink", json={"graph": graph, "node_id": "src"}
-            )
+            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "src"})
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "CPython" not in detail
@@ -1354,7 +1366,8 @@ class TestUserCodeErrorSanitization:
         assert "safe_globals" not in error_msg
 
     def test_preview_node_error_shows_user_msg_not_internals(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """POST /api/pipeline/preview -- per-node error should show user-facing
         message, not executor internals.
@@ -1486,7 +1499,9 @@ class TestPreambleErrorSanitization:
                 del sys.modules[mod_name]
 
     def test_preamble_error_in_preview_no_exec_frame(
-        self, client: TestClient, tmp_path: Path,
+        self,
+        client: TestClient,
+        tmp_path: Path,
     ) -> None:
         """POST /api/pipeline/preview -- preamble error propagated to transform
         nodes must not contain exec() traceback.
@@ -1572,7 +1587,11 @@ class TestGitRoutesPlatformLeakage:
         ids=["branches", "save", "submit", "history", "pull"],
     )
     def test_git_route_no_platform_leak(
-        self, client: TestClient, method: str, path: str, kwargs: dict,
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        kwargs: dict,
     ) -> None:
         """Each git route must not leak platform info in 500 errors."""
         fn_map = {

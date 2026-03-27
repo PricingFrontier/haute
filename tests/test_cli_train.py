@@ -53,8 +53,10 @@ class TestTrain:
     def test_spec_returns_none(self, runner: CliRunner, tmp_path: Path) -> None:
         script = _write_training_script(tmp_path)
 
-        with patch("haute._sandbox.validate_user_code"), \
-             patch("importlib.util.spec_from_file_location", return_value=None):
+        with (
+            patch("haute._sandbox.validate_user_code"),
+            patch("importlib.util.spec_from_file_location", return_value=None),
+        ):
             result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
         assert "cannot load" in result.output.lower()

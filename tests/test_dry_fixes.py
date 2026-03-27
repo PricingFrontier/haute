@@ -147,28 +147,43 @@ class TestFinalizeOnline:
             def __init__(self, **kw: Any) -> None:
                 super().__init__(**kw)
                 # Minimal duck-type of a column
-                self.dataframe = type("DF", (), {
-                    "columns": ["optimal_scenario_value"],
-                    "__getitem__": lambda self, key: type("Col", (), {
-                        "mean": lambda s: 1.05,
-                        "std": lambda s: 0.1,
-                        "min": lambda s: 0.9,
-                        "max": lambda s: 1.2,
-                        "quantile": lambda s, q: 1.0 + q * 0.1,
-                        "sum": lambda s: 5,
-                        "__gt__": lambda s, v: type("Mask", (), {"sum": lambda s: 3})(),
-                        "__lt__": lambda s, v: type("Mask", (), {"sum": lambda s: 2})(),
-                        "__len__": lambda s: 10,
-                        "to_numpy": lambda s: np.array([1.0, 1.05, 0.95, 1.1, 0.98, 1.02, 1.03, 0.97, 1.01, 1.04]),
-                    })(),
-                })()
+                self.dataframe = type(
+                    "DF",
+                    (),
+                    {
+                        "columns": ["optimal_scenario_value"],
+                        "__getitem__": lambda self, key: type(
+                            "Col",
+                            (),
+                            {
+                                "mean": lambda s: 1.05,
+                                "std": lambda s: 0.1,
+                                "min": lambda s: 0.9,
+                                "max": lambda s: 1.2,
+                                "quantile": lambda s, q: 1.0 + q * 0.1,
+                                "sum": lambda s: 5,
+                                "__gt__": lambda s, v: type("Mask", (), {"sum": lambda s: 3})(),
+                                "__lt__": lambda s, v: type("Mask", (), {"sum": lambda s: 2})(),
+                                "__len__": lambda s: 10,
+                                "to_numpy": lambda s: np.array(
+                                    [1.0, 1.05, 0.95, 1.1, 0.98, 1.02, 1.03, 0.97, 1.01, 1.04]
+                                ),
+                            },
+                        )(),
+                    },
+                )()
 
         result = ResultWithDF()
         store = JobStore()
         job_id = store.create_job({"status": "running"})
         _finalize_solve_result(
-            result, mode="online", solver="s", quote_grid="g",
-            store=store, job_id=job_id, elapsed=0.1,
+            result,
+            mode="online",
+            solver="s",
+            quote_grid="g",
+            store=store,
+            job_id=job_id,
+            elapsed=0.1,
         )
         job = store.get_job(job_id)
         rd = job["result"]
@@ -218,7 +233,9 @@ class TestFinalizeRatebook:
             elapsed=5.0,
             extra_fields={
                 "cd_iterations": 7,
-                "factor_tables": {"age": [{"__factor_group__": "young", "optimal_scenario_value": 1.1}]},
+                "factor_tables": {
+                    "age": [{"__factor_group__": "young", "optimal_scenario_value": 1.1}]
+                },
                 "clamp_rate": 0.05,
                 "history": None,
             },
@@ -250,13 +267,15 @@ class TestFinalizeFrontier:
             baseline_constraints={"loss": 0.9},
         )
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {
-                "mode": "online",
-                "constraints": {"loss": {"max": 1.05}},
-            },
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "mode": "online",
+                    "constraints": {"loss": {"max": 1.05}},
+                },
+            }
+        )
 
         # Mock solver with a frontier() method that returns a FrontierResult
         mock_solver = MagicMock()
@@ -295,13 +314,15 @@ class TestFinalizeFrontier:
 
         result = _FakeSolveResult(converged=True)
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {
-                "mode": "ratebook",
-                "constraints": {"loss": {"max": 1.05}},
-            },
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "mode": "ratebook",
+                    "constraints": {"loss": {"max": 1.05}},
+                },
+            }
+        )
 
         _finalize_solve_result(
             result,
@@ -323,13 +344,15 @@ class TestFinalizeFrontier:
 
         result = _FakeSolveResult(converged=True)
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {
-                "mode": "online",
-                "constraints": {},
-            },
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "mode": "online",
+                    "constraints": {},
+                },
+            }
+        )
 
         _finalize_solve_result(
             result,
@@ -354,13 +377,15 @@ class TestFinalizeFrontier:
             baseline_constraints={"loss": 0.9},
         )
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {
-                "mode": "online",
-                "constraints": {"loss": {"max": 1.05}},
-            },
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "mode": "online",
+                    "constraints": {"loss": {"max": 1.05}},
+                },
+            }
+        )
 
         mock_solver = MagicMock()
         mock_solver.frontier.side_effect = RuntimeError("Frontier blew up")
@@ -390,16 +415,18 @@ class TestFinalizeFrontier:
             baseline_constraints={"loss": 0.9, "zero_cstr": 0.0},
         )
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {
-                "mode": "online",
-                "constraints": {
-                    "loss": {"max": 1.05},
-                    "zero_cstr": {"max": 1.0},
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "mode": "online",
+                    "constraints": {
+                        "loss": {"max": 1.05},
+                        "zero_cstr": {"max": 1.0},
+                    },
                 },
-            },
-        })
+            }
+        )
 
         mock_solver = MagicMock()
         mock_points = MagicMock()
@@ -528,7 +555,9 @@ class TestDcToPydantic:
         from haute.routes.git import _dc_to_pydantic
         from haute.schemas import GitRevertResponse
 
-        dc = RevertResult(backup_tag="backup/pricing-alice-feat/2026-03-14T12-00-00", reverted_to="abc1234")
+        dc = RevertResult(
+            backup_tag="backup/pricing-alice-feat/2026-03-14T12-00-00", reverted_to="abc1234"
+        )
         model = _dc_to_pydantic(dc, GitRevertResponse)
         assert model.backup_tag.startswith("backup/")
         assert model.reverted_to == "abc1234"

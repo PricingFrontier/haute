@@ -1154,7 +1154,10 @@ class TestPullLatestMergeConflict:
         assert result.success is False
         assert result.conflict is True
         assert result.conflict_message is not None
-        assert "overlap" in result.conflict_message.lower() or "conflict" in result.conflict_message.lower()
+        assert (
+            "overlap" in result.conflict_message.lower()
+            or "conflict" in result.conflict_message.lower()
+        )
         assert result.commits_pulled == 0
 
     def test_repo_clean_after_conflict_abort(self, tmp_path: Path) -> None:

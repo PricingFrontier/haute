@@ -22,7 +22,10 @@ from typing import TypedDict
 
 import polars as pl
 
+from haute._logging import get_logger
 from haute._types import HauteError
+
+logger = get_logger(component="databricks_io")
 
 # Fully-qualified Databricks table names: catalog.schema.table (each part is
 # alphanumeric + underscores/hyphens, optionally backtick-quoted).
@@ -123,7 +126,8 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
     elif host.startswith("http://"):
         host = host[len("http://") :]
 
-    assert resolved_http_path is not None
+    if resolved_http_path is None:
+        raise RuntimeError("resolved_http_path must not be None after credential resolution")
     return host, token, resolved_http_path
 
 
@@ -292,8 +296,10 @@ def fetch_and_cache(
                             if attempt == _FETCH_MAX_RETRIES - 1:
                                 raise
                             backoff = _FETCH_INITIAL_BACKOFF * (2**attempt)
+                            logger.warning("fetch_retry", attempt=attempt, backoff=backoff)
                             time.sleep(backoff)
-                    assert batch is not None
+                    if batch is None:
+                        raise RuntimeError("fetchmany_arrow returned None after all retries")
                     if batch.num_rows == 0:
                         break
                     if writer is None:

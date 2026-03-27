@@ -277,10 +277,7 @@ class TestLargePayloads:
             {"id": f"n{i}", "data": {"label": f"N{i}", "nodeType": "polars", "config": {}}}
             for i in range(10_000)
         ]
-        edges = [
-            {"id": f"e{i}", "source": f"n{i}", "target": f"n{i+1}"}
-            for i in range(9_999)
-        ]
+        edges = [{"id": f"e{i}", "source": f"n{i}", "target": f"n{i + 1}"} for i in range(9_999)]
         graph = PipelineGraph.model_validate({"nodes": nodes, "edges": edges})
         assert len(graph.nodes) == 10_000
 
@@ -305,14 +302,10 @@ class TestLargePayloads:
     def test_graph_with_many_edges_parses(self):
         """Dense graph (fan-in) should not blow up edge processing."""
         nodes = [
-            {"id": f"n{i}", "data": {"label": f"N{i}", "nodeType": "polars"}}
-            for i in range(100)
+            {"id": f"n{i}", "data": {"label": f"N{i}", "nodeType": "polars"}} for i in range(100)
         ]
         # Every node connects to the last node — 99 edges
-        edges = [
-            {"id": f"e{i}", "source": f"n{i}", "target": "n99"}
-            for i in range(99)
-        ]
+        edges = [{"id": f"e{i}", "source": f"n{i}", "target": "n99"} for i in range(99)]
         graph = PipelineGraph.model_validate({"nodes": nodes, "edges": edges})
         assert len(graph.edges) == 99
 
@@ -355,6 +348,7 @@ class TestUnicodeEdgeCases:
         )
         # _sanitize_func_name should strip non-ASCII
         from haute._types import _sanitize_func_name
+
         sanitized = _sanitize_func_name(node.data.label)
         assert "\u202e" not in sanitized
         assert sanitized.isidentifier()
@@ -409,12 +403,12 @@ class TestUnicodeEdgeCases:
         from haute._types import _sanitize_func_name
 
         cases = [
-            "\u200b",           # zero-width space only
-            "\u202e",           # RTL override only
-            "\U0001f680",       # emoji only
-            "a\u0301",          # combining character
-            "\u0000",           # null byte
-            "",                 # empty string
+            "\u200b",  # zero-width space only
+            "\u202e",  # RTL override only
+            "\U0001f680",  # emoji only
+            "a\u0301",  # combining character
+            "\u0000",  # null byte
+            "",  # empty string
         ]
         for case in cases:
             result = _sanitize_func_name(case)
@@ -498,6 +492,7 @@ class TestIntegerOverflow:
     def test_row_limit_max_int64(self):
         """row_limit=2^63 should be rejected by Pydantic (le=10000 constraint)."""
         import pydantic
+
         with pytest.raises(pydantic.ValidationError):
             PreviewNodeRequest(
                 graph=Graph(),
@@ -532,6 +527,7 @@ class TestIntegerOverflow:
     def test_frontier_points_large(self):
         """n_points_per_dim=2^31 should be rejected by Pydantic (le=100 constraint)."""
         import pydantic
+
         with pytest.raises(pydantic.ValidationError):
             OptimiserFrontierRequest(
                 job_id="fake",
@@ -683,10 +679,12 @@ class TestTypeConfusion:
         iteration yields strings instead of GraphNode objects.
         """
         with pytest.raises(ValidationError):
-            PipelineGraph.model_validate({
-                "nodes": {"not": "a list"},
-                "edges": [],
-            })
+            PipelineGraph.model_validate(
+                {
+                    "nodes": {"not": "a list"},
+                    "edges": [],
+                }
+            )
 
     def test_string_where_graph_expected(self, client):
         """Raw string for graph field should fail Pydantic validation."""
@@ -755,10 +753,7 @@ class TestDuplicateKeys:
         server silently saves under 'test'.
         """
         # Manually construct JSON with duplicate keys
-        raw = (
-            '{"name": "first", "name": "second", '
-            '"graph": {"nodes": [], "edges": []}}'
-        )
+        raw = '{"name": "first", "name": "second", "graph": {"nodes": [], "edges": []}}'
         resp = client.post(
             "/api/pipeline/save",
             content=raw,

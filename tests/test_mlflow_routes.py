@@ -56,6 +56,7 @@ def _make_run(
 class TestListExperiments:
     def test_list_experiments(self, client):
         """Returns list of experiments from MLflow."""
+
         class FakeExp:
             experiment_id = "1"
             name = "test-exp"
@@ -106,6 +107,7 @@ class TestListExperiments:
 
     def test_multiple_experiments(self, client):
         """Returns multiple experiments in correct structure."""
+
         class Exp1:
             experiment_id = "1"
             name = "pricing"
@@ -425,8 +427,12 @@ class TestListModels:
 class TestListModelVersions:
     def test_list_model_versions(self, client):
         """Returns sorted versions of a model."""
-        v1 = MagicMock(version="1", run_id="r1", status="READY", creation_timestamp=100, description="first")
-        v2 = MagicMock(version="2", run_id="r2", status="READY", creation_timestamp=200, description="second")
+        v1 = MagicMock(
+            version="1", run_id="r1", status="READY", creation_timestamp=100, description="first"
+        )
+        v2 = MagicMock(
+            version="2", run_id="r2", status="READY", creation_timestamp=200, description="second"
+        )
 
         mock_client = MagicMock()
         mock_client.search_model_versions.return_value = [v1, v2]
@@ -444,8 +450,13 @@ class TestListModelVersions:
     def test_sorting_with_many_versions(self, client):
         """Versions 1, 3, 2, 10 should sort as 10, 3, 2, 1."""
         versions = [
-            MagicMock(version=str(n), run_id=f"r{n}", status="READY",
-                      creation_timestamp=n * 100, description="")
+            MagicMock(
+                version=str(n),
+                run_id=f"r{n}",
+                status="READY",
+                creation_timestamp=n * 100,
+                description="",
+            )
             for n in [1, 3, 2, 10]
         ]
 
@@ -522,5 +533,6 @@ class TestListModelVersions:
 
         assert resp.status_code == 200
         mock_client.search_registered_models.assert_called_once_with(
-            max_results=10, page_token="abc123",
+            max_results=10,
+            page_token="abc123",
         )

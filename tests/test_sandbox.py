@@ -84,8 +84,16 @@ class TestSafeGlobals:
         """All dangerous builtins must be absent from safe namespace."""
         ns = safe_globals()
         blocked = {
-            "__import__", "breakpoint", "compile", "eval",
-            "exec", "globals", "locals", "open", "input", "memoryview",
+            "__import__",
+            "breakpoint",
+            "compile",
+            "eval",
+            "exec",
+            "globals",
+            "locals",
+            "open",
+            "input",
+            "memoryview",
         }
         builtins_ns = ns.get("__builtins__", ns)
         if isinstance(builtins_ns, dict):
@@ -189,6 +197,7 @@ class TestSafeJoblibLoad:
         class _Evil:
             def __reduce__(self):
                 import os
+
                 return (os.system, ("echo pwned",))
 
         joblib.dump(_Evil(), str(f))
@@ -205,6 +214,7 @@ class TestSafeJoblibLoad:
         class _Evil:
             def __reduce__(self):
                 import subprocess
+
                 return (subprocess.call, (["echo", "pwned"],))
 
         joblib.dump(_Evil(), str(f))
@@ -245,6 +255,7 @@ class TestSafeJoblibLoad:
         class _Evil:
             def __reduce__(self):
                 import os
+
                 return (os.system, ("echo pwned",))
 
         joblib.dump(_Evil(), str(evil_f))
@@ -265,17 +276,11 @@ class TestValidateUserCode:
 
     def test_polars_with_columns_passes(self):
         """with_columns expression is allowed."""
-        validate_user_code(
-            'df.with_columns(\n'
-            '    premium=pl.col("base") * pl.col("factor")\n'
-            ')'
-        )
+        validate_user_code('df.with_columns(\n    premium=pl.col("base") * pl.col("factor")\n)')
 
     def test_polars_join_passes(self):
         """join expression is allowed."""
-        validate_user_code(
-            'claims.join(exposure, on="IDpol", how="left")'
-        )
+        validate_user_code('claims.join(exposure, on="IDpol", how="left")')
 
     def test_assignment_passes(self):
         """Variable assignment is allowed."""
@@ -329,7 +334,7 @@ class TestValidateUserCode:
     def test_chain_syntax_with_dangerous_pattern_blocked(self):
         """Chain syntax that contains a dangerous pattern should still be blocked."""
         with pytest.raises(UnsafeCodeError, match="__class__"):
-            validate_user_code('.filter(x.__class__)')
+            validate_user_code(".filter(x.__class__)")
 
     def test_empty_code_passes(self):
         """Empty string should pass."""
@@ -497,16 +502,12 @@ class TestValidateUserCode:
     def test_getattr_based_escape(self):
         """getattr-based escape route is blocked."""
         with pytest.raises(UnsafeCodeError):
-            validate_user_code(
-                'getattr(getattr("", "__class__"), "__bases__")'
-            )
+            validate_user_code('getattr(getattr("", "__class__"), "__bases__")')
 
     def test_type_metaclass_escape(self):
         """type() dynamic class creation is blocked."""
         with pytest.raises(UnsafeCodeError):
-            validate_user_code(
-                'type("X", (object,), {"__init__": lambda s: None})'
-            )
+            validate_user_code('type("X", (object,), {"__init__": lambda s: None})')
 
 
 # ===================================================================
@@ -663,9 +664,7 @@ class TestJoblibMonkeyPatchThreadSafety:
             barrier.wait()
             safe_joblib_load(str(tmp_path / f"data_{idx}.joblib"))
 
-        threads = [
-            threading.Thread(target=load_with_barrier, args=(i,)) for i in range(4)
-        ]
+        threads = [threading.Thread(target=load_with_barrier, args=(i,)) for i in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -823,7 +822,7 @@ class TestChainSyntaxDetectionFragility:
         This documents the fragility — float literals starting with '.'
         would be incorrectly wrapped as method chains.
         """
-        code = '.5 * 100'
+        code = ".5 * 100"
         assert code.startswith("."), "This code starts with '.' like chain syntax"
 
         # Wrapping it as chain syntax produces broken code
@@ -871,11 +870,9 @@ class TestAssignmentDetectionFalsePositive:
 
     def test_comment_containing_df_equals_triggers_detection(self):
         """A comment with 'df =' fools the assignment detection."""
-        code = '# df = old value\nresult = 42'
+        code = "# df = old value\nresult = 42"
         # The executor checks "df =" in code — this matches the comment
-        assert "df =" in code, (
-            "Substring check matches 'df =' inside a comment"
-        )
+        assert "df =" in code, "Substring check matches 'df =' inside a comment"
         # But the code doesn't actually assign to df
         local = {}
         exec(code, {}, local)
@@ -946,9 +943,7 @@ class TestNonBlockedDunders:
             "leaked = fn.__closure__[0].cell_contents"
         )
         exec(code, ns, local)
-        assert local["leaked"] == 42, (
-            "__closure__ allows extracting values from closure cells"
-        )
+        assert local["leaked"] == 42, "__closure__ allows extracting values from closure cells"
 
     def test_doc_not_blocked(self):
         """__doc__ is not in _BLOCKED_ATTRS — generally harmless but
@@ -980,9 +975,7 @@ class TestTypeBypass:
     def test_type_three_arg_blocked_ast(self):
         """type() with 3 args (metaclass use) is blocked at AST level."""
         with pytest.raises(UnsafeCodeError, match="type"):
-            validate_user_code(
-                "Evil = type('Evil', (object,), {'__init__': lambda self: None})"
-            )
+            validate_user_code("Evil = type('Evil', (object,), {'__init__': lambda self: None})")
 
     def test_type_one_arg_blocked_ast(self):
         """type(x) -- even the 1-arg introspection form is blocked."""
@@ -999,8 +992,7 @@ class TestTypeBypass:
         else:
             has_type = "type" in dir(builtins_ns)
         assert not has_type, (
-            "type should NOT be in runtime builtins -- "
-            "it is now in _BLOCKED_BUILTINS"
+            "type should NOT be in runtime builtins -- it is now in _BLOCKED_BUILTINS"
         )
 
     def test_type_via_alias_blocked_at_runtime(self):
@@ -1028,9 +1020,7 @@ class TestSubclassWalking:
     def test_full_chain_blocked(self):
         """The complete subclass-walking chain is blocked."""
         with pytest.raises(UnsafeCodeError):
-            validate_user_code(
-                "().__class__.__bases__[0].__subclasses__()"
-            )
+            validate_user_code("().__class__.__bases__[0].__subclasses__()")
 
     def test_class_step_blocked(self):
         """First step: ().__class__ is blocked."""
@@ -1093,7 +1083,7 @@ class TestFormatStringExploitation:
     def test_fstring_with_getattr_blocked(self):
         """f-string containing getattr() call is blocked."""
         with pytest.raises(UnsafeCodeError, match="getattr"):
-            validate_user_code('x = f"{getattr(obj, \'secret\')}"')
+            validate_user_code("x = f\"{getattr(obj, 'secret')}\"")
 
     def test_safe_fstring_passes(self):
         """Normal f-strings without dunders should pass."""
@@ -1112,12 +1102,7 @@ class TestExceptionTracebackExploit:
     def test_traceback_via_dunder_blocked(self):
         """FIX: __traceback__ is now in _BLOCKED_FRAME_ATTRS, so accessing
         it is blocked at the AST level."""
-        code = (
-            "try:\n"
-            "    1/0\n"
-            "except Exception as e:\n"
-            "    tb = e.__traceback__"
-        )
+        code = "try:\n    1/0\nexcept Exception as e:\n    tb = e.__traceback__"
         with pytest.raises(UnsafeCodeError, match="__traceback__"):
             validate_user_code(code)
 
@@ -1155,10 +1140,7 @@ class TestGeneratorFrameAccess:
     def test_generator_frame_builtins_blocked_ast(self):
         """FIX: gi_frame and f_builtins are both in _BLOCKED_FRAME_ATTRS,
         so the full chain is blocked at AST level."""
-        code = (
-            "g = (x for x in [1])\n"
-            "builtins_dict = g.gi_frame.f_builtins\n"
-        )
+        code = "g = (x for x in [1])\nbuiltins_dict = g.gi_frame.f_builtins\n"
         with pytest.raises(UnsafeCodeError):
             validate_user_code(code)
 
@@ -1179,34 +1161,18 @@ class TestDecoratorFrameCapture:
 
     def test_decorator_syntax_allowed(self):
         """Function decorators are allowed (they're normal function defs)."""
-        code = (
-            "def decorator(fn):\n"
-            "    return fn\n"
-            "\n"
-            "@decorator\n"
-            "def my_func():\n"
-            "    return 42\n"
-        )
+        code = "def decorator(fn):\n    return fn\n\n@decorator\ndef my_func():\n    return 42\n"
         validate_user_code(code)
 
     def test_decorator_cannot_import_sys(self):
         """A decorator trying to import sys is blocked."""
-        code = (
-            "import sys\n"
-            "def decorator(fn):\n"
-            "    frame = sys._getframe()\n"
-            "    return fn\n"
-        )
+        code = "import sys\ndef decorator(fn):\n    frame = sys._getframe()\n    return fn\n"
         with pytest.raises(UnsafeCodeError, match="import"):
             validate_user_code(code)
 
     def test_decorator_cannot_call_globals(self):
         """A decorator calling globals() is blocked."""
-        code = (
-            "def decorator(fn):\n"
-            "    g = globals()\n"
-            "    return fn\n"
-        )
+        code = "def decorator(fn):\n    g = globals()\n    return fn\n"
         with pytest.raises(UnsafeCodeError, match="globals"):
             validate_user_code(code)
 
@@ -1242,17 +1208,12 @@ class TestListComprehensionScopeLeaking:
     def test_comprehension_with_subclasses_blocked(self):
         """__subclasses__() inside a list comprehension is blocked."""
         with pytest.raises(UnsafeCodeError, match="__subclasses__"):
-            validate_user_code(
-                "[c for c in object.__subclasses__()]"
-            )
+            validate_user_code("[c for c in object.__subclasses__()]")
 
     def test_nested_comprehension_with_dunder_blocked(self):
         """Nested comprehensions with dunders are also blocked."""
         with pytest.raises(UnsafeCodeError):
-            validate_user_code(
-                "[[a for a in b.__subclasses__()] "
-                "for b in ().__class__.__bases__]"
-            )
+            validate_user_code("[[a for a in b.__subclasses__()] for b in ().__class__.__bases__]")
 
     def test_generator_expr_with_dunder_blocked(self):
         """Generator expressions with dunders are also caught."""
@@ -1262,7 +1223,7 @@ class TestListComprehensionScopeLeaking:
     def test_dict_comprehension_with_dunder_blocked(self):
         """Dict comprehensions with dunders are also caught."""
         with pytest.raises(UnsafeCodeError):
-            validate_user_code('{k: v for k, v in ().__class__.__dict__.items()}')
+            validate_user_code("{k: v for k, v in ().__class__.__dict__.items()}")
 
     def test_safe_comprehension_passes(self):
         """Normal list comprehension without dunders passes."""
@@ -1303,8 +1264,7 @@ class TestLambdaGetattr:
         else:
             has_getattr = "getattr" in dir(builtins_ns)
         assert not has_getattr, (
-            "getattr should NOT be present in runtime builtins -- "
-            "it is now in _BLOCKED_BUILTINS"
+            "getattr should NOT be present in runtime builtins -- it is now in _BLOCKED_BUILTINS"
         )
 
     def test_lambda_returning_getattr_ref_blocked(self):
@@ -1370,9 +1330,7 @@ class TestImportViaBuiltinsDict:
         builtins_ns = ns.get("__builtins__")
         assert builtins_ns is not None, "__builtins__ must be in namespace"
         if isinstance(builtins_ns, dict):
-            assert "__import__" not in builtins_ns, (
-                "__builtins__ dict must not contain __import__"
-            )
+            assert "__import__" not in builtins_ns, "__builtins__ dict must not contain __import__"
             assert "eval" not in builtins_ns
             assert "exec" not in builtins_ns
             assert "open" not in builtins_ns
@@ -1399,9 +1357,7 @@ class TestImportViaBuiltinsDict:
         ns = safe_globals(allow_imports=True)
         builtins_ns = ns.get("__builtins__", {})
         if isinstance(builtins_ns, dict):
-            assert "__import__" in builtins_ns, (
-                "allow_imports=True should restore __import__"
-            )
+            assert "__import__" in builtins_ns, "allow_imports=True should restore __import__"
 
 
 class TestIndirectReflectionEvasion:
@@ -1437,9 +1393,7 @@ class TestIndirectReflectionEvasion:
         ns = safe_globals()
         builtins_ns = ns.get("__builtins__", {})
         if isinstance(builtins_ns, dict):
-            assert "type" not in builtins_ns, (
-                "type should not be in runtime builtins"
-            )
+            assert "type" not in builtins_ns, "type should not be in runtime builtins"
 
 
 class TestStringManipulationEvasion:
@@ -1455,10 +1409,6 @@ class TestStringManipulationEvasion:
     def test_constructed_string_cannot_access_dunder_at_runtime(self):
         """FIX: __builtins__[...] subscript is now blocked at AST level,
         so the exploit chain cannot even pass validation."""
-        code = (
-            'ga = __builtins__["getattr"]\n'
-            'attr = "__" + "class" + "__"\n'
-            'result = ga((), attr)\n'
-        )
+        code = 'ga = __builtins__["getattr"]\nattr = "__" + "class" + "__"\nresult = ga((), attr)\n'
         with pytest.raises(UnsafeCodeError, match="__builtins__"):
             validate_user_code(code)

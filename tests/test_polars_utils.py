@@ -97,23 +97,17 @@ def _run_parquet_fallback(tmp_path: Path, error: Exception) -> None:
 
 def test_safe_sink_fallback_on_compute_error(tmp_path: Path):
     """ComputeError in sink_parquet triggers collect+write_parquet fallback."""
-    _run_parquet_fallback(
-        tmp_path, pl.exceptions.ComputeError("streaming not supported")
-    )
+    _run_parquet_fallback(tmp_path, pl.exceptions.ComputeError("streaming not supported"))
 
 
 def test_safe_sink_fallback_on_invalid_operation_error(tmp_path: Path):
     """InvalidOperationError in sink_parquet triggers fallback."""
-    _run_parquet_fallback(
-        tmp_path, pl.exceptions.InvalidOperationError("bad op")
-    )
+    _run_parquet_fallback(tmp_path, pl.exceptions.InvalidOperationError("bad op"))
 
 
 def test_safe_sink_fallback_on_schema_error(tmp_path: Path):
     """SchemaError in sink_parquet triggers fallback."""
-    _run_parquet_fallback(
-        tmp_path, pl.exceptions.SchemaError("schema mismatch")
-    )
+    _run_parquet_fallback(tmp_path, pl.exceptions.SchemaError("schema mismatch"))
 
 
 # ---------------------------------------------------------------------------

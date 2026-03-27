@@ -11,18 +11,27 @@ from tests.conftest import make_edge, make_graph, make_source_node, make_transfo
 
 def _simple_graph():
     """Build a 3-node linear graph: src → t1 → t2."""
-    return make_graph({
-        "pipeline_name": "test",
-        "nodes": [
-            {"id": "src", "data": {"label": "src", "nodeType": "dataSource", "config": {"path": "x.parquet"}}},
-            {"id": "t1", "data": {"label": "t1", "nodeType": "polars", "config": {}}},
-            {"id": "t2", "data": {"label": "t2", "nodeType": "polars", "config": {}}},
-        ],
-        "edges": [
-            {"id": "e1", "source": "src", "target": "t1"},
-            {"id": "e2", "source": "t1", "target": "t2"},
-        ],
-    })
+    return make_graph(
+        {
+            "pipeline_name": "test",
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {
+                        "label": "src",
+                        "nodeType": "dataSource",
+                        "config": {"path": "x.parquet"},
+                    },
+                },
+                {"id": "t1", "data": {"label": "t1", "nodeType": "polars", "config": {}}},
+                {"id": "t2", "data": {"label": "t2", "nodeType": "polars", "config": {}}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "src", "target": "t1"},
+                {"id": "e2", "source": "t1", "target": "t2"},
+            ],
+        }
+    )
 
 
 class TestCreateSubmodelGraph:
@@ -64,18 +73,27 @@ class TestCreateSubmodelGraph:
 
     def test_output_port_rewiring(self):
         """Output edge from child node to external node rewires correctly."""
-        graph = make_graph({
-            "pipeline_name": "test",
-            "nodes": [
-                {"id": "src", "data": {"label": "src", "nodeType": "dataSource", "config": {"path": "x.parquet"}}},
-                {"id": "t1", "data": {"label": "t1", "nodeType": "polars", "config": {}}},
-                {"id": "out", "data": {"label": "out", "nodeType": "output", "config": {}}},
-            ],
-            "edges": [
-                {"id": "e1", "source": "src", "target": "t1"},
-                {"id": "e2", "source": "t1", "target": "out"},
-            ],
-        })
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "dataSource",
+                            "config": {"path": "x.parquet"},
+                        },
+                    },
+                    {"id": "t1", "data": {"label": "t1", "nodeType": "polars", "config": {}}},
+                    {"id": "out", "data": {"label": "out", "nodeType": "output", "config": {}}},
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "t1"},
+                    {"id": "e2", "source": "t1", "target": "out"},
+                ],
+            }
+        )
         # Group src + t1, leaving 'out' outside
         result = create_submodel_graph(graph, ["src", "t1"], "inner")
 
@@ -101,15 +119,17 @@ class TestCreateSubmodelGraph:
 
     def test_preserves_existing_submodels(self):
         """Existing submodel metadata is preserved when adding a new one."""
-        graph = make_graph({
-            "pipeline_name": "test",
-            "nodes": [
-                {"id": "a", "data": {"label": "a", "nodeType": "polars", "config": {}}},
-                {"id": "b", "data": {"label": "b", "nodeType": "polars", "config": {}}},
-            ],
-            "edges": [{"id": "e1", "source": "a", "target": "b"}],
-            "submodels": {"existing": {"file": "modules/existing.py", "childNodeIds": []}},
-        })
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {"id": "a", "data": {"label": "a", "nodeType": "polars", "config": {}}},
+                    {"id": "b", "data": {"label": "b", "nodeType": "polars", "config": {}}},
+                ],
+                "edges": [{"id": "e1", "source": "a", "target": "b"}],
+                "submodels": {"existing": {"file": "modules/existing.py", "childNodeIds": []}},
+            }
+        )
         result = create_submodel_graph(graph, ["a", "b"], "new_one")
 
         assert "existing" in result.graph.submodels
@@ -117,23 +137,27 @@ class TestCreateSubmodelGraph:
 
     def test_external_edges_preserved(self):
         """Edges between two non-selected nodes are preserved unchanged."""
-        graph = make_graph({
-            "pipeline_name": "test",
-            "nodes": [
-                {"id": "a", "data": {"label": "a", "nodeType": "polars", "config": {}}},
-                {"id": "b", "data": {"label": "b", "nodeType": "polars", "config": {}}},
-                {"id": "c", "data": {"label": "c", "nodeType": "polars", "config": {}}},
-                {"id": "d", "data": {"label": "d", "nodeType": "polars", "config": {}}},
-            ],
-            "edges": [
-                {"id": "e1", "source": "a", "target": "b"},
-                {"id": "e2", "source": "b", "target": "c"},
-                {"id": "e3", "source": "c", "target": "d"},
-            ],
-        })
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {"id": "a", "data": {"label": "a", "nodeType": "polars", "config": {}}},
+                    {"id": "b", "data": {"label": "b", "nodeType": "polars", "config": {}}},
+                    {"id": "c", "data": {"label": "c", "nodeType": "polars", "config": {}}},
+                    {"id": "d", "data": {"label": "d", "nodeType": "polars", "config": {}}},
+                ],
+                "edges": [
+                    {"id": "e1", "source": "a", "target": "b"},
+                    {"id": "e2", "source": "b", "target": "c"},
+                    {"id": "e3", "source": "c", "target": "d"},
+                ],
+            }
+        )
         # Group b + c
         result = create_submodel_graph(graph, ["b", "c"], "mid")
-        edge_ids_original = {e.id for e in graph.edges if e.source not in {"b", "c"} and e.target not in {"b", "c"}}
+        edge_ids_original = {
+            e.id for e in graph.edges if e.source not in {"b", "c"} and e.target not in {"b", "c"}
+        }
         # No fully-external edges in this case, but rewired ones are present
         assert len(result.graph.edges) == 2  # a→sm, sm→d
 

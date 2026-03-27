@@ -36,16 +36,13 @@ from tests.conftest import make_node as _n
 
 def _ast_parse_node_code(code: str) -> None:
     """Verify generated node code parses as valid Python via ast.parse."""
-    wrapper = (
-        "import polars as pl\nimport haute\n"
-        "pipeline = haute.Pipeline('test')\n\n"
-        f"{code}\n"
-    )
+    wrapper = f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
     ast.parse(wrapper)
 
 
-def _make_node(node_type: str, config: dict, label: str = "TestNode",
-               description: str | None = None):
+def _make_node(
+    node_type: str, config: dict, label: str = "TestNode", description: str | None = None
+):
     """Build a GraphNode for codegen testing."""
     data: dict = {"label": label, "nodeType": node_type, "config": config}
     if description is not None:
@@ -167,8 +164,20 @@ class TestSanitizeDescription:
 
     def test_result_safe_in_docstring(self):
         """Sanitized text must produce a valid Python docstring."""
-        for desc in ['"""', '""""""', 'a """b""" c', 'end"""', '"""start',
-                      'end"', 'end""', 'end""""', '"', '""', '\\"', '\\\\"']:
+        for desc in [
+            '"""',
+            '""""""',
+            'a """b""" c',
+            'end"""',
+            '"""start',
+            'end"',
+            'end""',
+            'end""""',
+            '"',
+            '""',
+            '\\"',
+            '\\\\"',
+        ]:
             sanitized = _sanitize_description(desc)
             code = f'def f():\n    """{sanitized}"""\n    pass'
             ast.parse(code)
@@ -182,27 +191,41 @@ class TestSanitizeDescription:
 class TestTripleQuoteInjection:
     """Descriptions containing triple quotes must produce valid Python."""
 
-    @pytest.mark.parametrize("node_type,config", [
-        ("dataSource", {"path": "data.parquet"}),
-        ("polars", {"code": ".drop_nulls()"}),
-        ("dataSink", {"path": "out.parquet", "format": "parquet"}),
-        ("banding", {"factors": [{"banding": "continuous", "column": "x",
-                                   "outputColumn": "x_f", "rules": []}]}),
-        ("ratingStep", {"tables": [{"name": "T", "factors": ["x"],
-                                     "outputColumn": "f", "entries": []}]}),
-        ("constant", {"values": [{"name": "v", "value": "1"}]}),
-        ("output", {"fields": ["a"]}),
-        ("scenarioExpander", {}),
-        ("optimiser", {}),
-        ("optimiserApply", {}),
-        ("modelling", {}),
-        ("externalFile", {"path": "model.pkl", "fileType": "pickle", "code": ""}),
-        ("liveSwitch", {"input_scenario_map": {"live": "live"}}),
-    ], ids=lambda x: x if isinstance(x, str) else "")
+    @pytest.mark.parametrize(
+        "node_type,config",
+        [
+            ("dataSource", {"path": "data.parquet"}),
+            ("polars", {"code": ".drop_nulls()"}),
+            ("dataSink", {"path": "out.parquet", "format": "parquet"}),
+            (
+                "banding",
+                {
+                    "factors": [
+                        {"banding": "continuous", "column": "x", "outputColumn": "x_f", "rules": []}
+                    ]
+                },
+            ),
+            (
+                "ratingStep",
+                {"tables": [{"name": "T", "factors": ["x"], "outputColumn": "f", "entries": []}]},
+            ),
+            ("constant", {"values": [{"name": "v", "value": "1"}]}),
+            ("output", {"fields": ["a"]}),
+            ("scenarioExpander", {}),
+            ("optimiser", {}),
+            ("optimiserApply", {}),
+            ("modelling", {}),
+            ("externalFile", {"path": "model.pkl", "fileType": "pickle", "code": ""}),
+            ("liveSwitch", {"input_scenario_map": {"live": "live"}}),
+        ],
+        ids=lambda x: x if isinstance(x, str) else "",
+    )
     def test_triple_quote_in_description_all_types(self, node_type, config):
         """Every node type handles triple-quote in description safely."""
         node = _make_node(
-            node_type, config, label="TestNode",
+            node_type,
+            config,
+            label="TestNode",
             description='Has """triple""" quotes',
         )
         code = _node_to_code(node, source_names=["upstream"])
@@ -235,7 +258,8 @@ class TestTripleQuoteInjection:
     def test_triple_quote_only_description(self):
         """Description that is nothing but triple quotes."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='"""',
         )
         code = _node_to_code(node)
@@ -244,7 +268,8 @@ class TestTripleQuoteInjection:
     def test_six_quotes_description(self):
         """Description with six consecutive double quotes (two triple-quotes)."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='""""""',
         )
         code = _node_to_code(node)
@@ -253,7 +278,8 @@ class TestTripleQuoteInjection:
     def test_triple_quote_at_start(self):
         """Triple quote at the very start of description."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='"""Starts with quotes',
         )
         code = _node_to_code(node)
@@ -262,7 +288,8 @@ class TestTripleQuoteInjection:
     def test_triple_quote_at_end(self):
         """Triple quote at the very end of description."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='Ends with quotes"""',
         )
         code = _node_to_code(node)
@@ -283,7 +310,8 @@ class TestTripleQuoteInjection:
     def test_instance_node_triple_quote_description(self):
         """Instance nodes also handle triple-quote descriptions."""
         node = _make_node(
-            "polars", {"code": "", "instanceOf": "original"},
+            "polars",
+            {"code": "", "instanceOf": "original"},
             label="Instance1",
             description='Instance """special"""',
         )
@@ -339,18 +367,22 @@ class TestTripleQuoteInjection:
 
     def test_graph_level_triple_quote_node_description(self):
         """Full graph with a node whose description has triple quotes."""
-        graph = _g({
-            "nodes": [{
-                "id": "a",
-                "data": {
-                    "label": "A",
-                    "nodeType": "dataSource",
-                    "config": {"path": "d.parquet"},
-                    "description": 'Load """raw""" data',
-                },
-            }],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "a",
+                        "data": {
+                            "label": "A",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                            "description": 'Load """raw""" data',
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
         ast.parse(code)
@@ -358,7 +390,8 @@ class TestTripleQuoteInjection:
     def test_backslash_before_closing_triple_quote(self):
         """Description ending with backslash would escape the closing triple-quote."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description="ends with backslash\\",
         )
         code = _node_to_code(node)
@@ -368,7 +401,8 @@ class TestTripleQuoteInjection:
     def test_mixed_triple_and_single_quotes(self):
         """Description with both triple double-quotes and single quotes."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description="""Has ''' and \"\"\", both""",
         )
         code = _node_to_code(node)
@@ -378,7 +412,8 @@ class TestTripleQuoteInjection:
     def test_trailing_double_quote_in_description(self):
         """Description ending with a double-quote must not break docstring."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='ends with a quote"',
         )
         code = _node_to_code(node)
@@ -399,24 +434,31 @@ class TestTripleQuoteInjection:
     def test_trailing_backslash_then_quote_in_description(self):
         r"""Description ending with ``\"`` (backslash then quote)."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='path is C:\\"',
         )
         code = _node_to_code(node)
         _compile_node_code(code)
         _ast_parse_node_code(code)
 
-    @pytest.mark.parametrize("node_type,config", [
-        ("dataSource", {"path": "data.parquet"}),
-        ("polars", {"code": ""}),
-        ("dataSink", {"path": "out.parquet", "format": "parquet"}),
-        ("output", {"fields": ["a"]}),
-        ("constant", {"values": [{"name": "v", "value": "1"}]}),
-    ], ids=lambda x: x if isinstance(x, str) else "")
+    @pytest.mark.parametrize(
+        "node_type,config",
+        [
+            ("dataSource", {"path": "data.parquet"}),
+            ("polars", {"code": ""}),
+            ("dataSink", {"path": "out.parquet", "format": "parquet"}),
+            ("output", {"fields": ["a"]}),
+            ("constant", {"values": [{"name": "v", "value": "1"}]}),
+        ],
+        ids=lambda x: x if isinstance(x, str) else "",
+    )
     def test_trailing_quote_all_node_types(self, node_type, config):
         """Trailing double-quote in description across multiple node types."""
         node = _make_node(
-            node_type, config, label="TestNode",
+            node_type,
+            config,
+            label="TestNode",
             description='field is "premium"',
         )
         code = _node_to_code(node, source_names=["upstream"])
@@ -590,17 +632,21 @@ class TestCurlyBracesInValues:
 
     def test_graph_with_braces_in_path(self):
         """Full graph with braces in source path."""
-        graph = _g({
-            "nodes": [{
-                "id": "a",
-                "data": {
-                    "label": "A",
-                    "nodeType": "dataSource",
-                    "config": {"path": "data/{env}/input.parquet"},
-                },
-            }],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "a",
+                        "data": {
+                            "label": "A",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data/{env}/input.parquet"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
         assert "{env}" in code
@@ -651,41 +697,43 @@ class TestCombinedInjection:
 
     def test_all_injection_vectors_at_once(self):
         """Full pipeline graph with multiple injection vectors."""
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "src",
-                    "data": {
-                        "label": "Source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "data/{env}/input.parquet"},
-                        "description": 'Load """raw""" {env} data',
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data/{env}/input.parquet"},
+                            "description": 'Load """raw""" {env} data',
+                        },
                     },
-                },
-                {
-                    "id": "t",
-                    "data": {
-                        "label": "Clean",
-                        "nodeType": "polars",
-                        "config": {"code": ".drop_nulls()"},
-                        "description": 'Clean """dirty""" records',
+                    {
+                        "id": "t",
+                        "data": {
+                            "label": "Clean",
+                            "nodeType": "polars",
+                            "config": {"code": ".drop_nulls()"},
+                            "description": 'Clean """dirty""" records',
+                        },
                     },
-                },
-                {
-                    "id": "sink",
-                    "data": {
-                        "label": "Write",
-                        "nodeType": "dataSink",
-                        "config": {"path": "output/{date}/out.parquet", "format": "parquet"},
-                        "description": 'Write to """storage"""',
+                    {
+                        "id": "sink",
+                        "data": {
+                            "label": "Write",
+                            "nodeType": "dataSink",
+                            "config": {"path": "output/{date}/out.parquet", "format": "parquet"},
+                            "description": 'Write to """storage"""',
+                        },
                     },
-                },
-            ],
-            "edges": [
-                {"id": "e1", "source": "src", "target": "t"},
-                {"id": "e2", "source": "t", "target": "sink"},
-            ],
-        })
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "t"},
+                    {"id": "e2", "source": "t", "target": "sink"},
+                ],
+            }
+        )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
         ast.parse(code)
@@ -701,7 +749,8 @@ class TestDescriptionRegression:
 
     def test_normal_description_unchanged(self):
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description="Normal description text",
         )
         code = _node_to_code(node)
@@ -717,7 +766,8 @@ class TestDescriptionRegression:
     def test_description_with_newlines(self):
         """Newlines in descriptions are OK inside triple-quoted docstrings."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description="Line 1\nLine 2",
         )
         code = _node_to_code(node)
@@ -726,7 +776,8 @@ class TestDescriptionRegression:
     def test_description_with_single_double_quote(self):
         """A single double-quote in description is fine."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='Has a "quoted" word',
         )
         code = _node_to_code(node)
@@ -736,7 +787,8 @@ class TestDescriptionRegression:
     def test_description_with_two_double_quotes(self):
         """Two consecutive double-quotes in description is fine."""
         node = _make_node(
-            "polars", {"code": ""},
+            "polars",
+            {"code": ""},
             description='Has "" empty quotes',
         )
         code = _node_to_code(node)

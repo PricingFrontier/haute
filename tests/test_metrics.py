@@ -42,7 +42,12 @@ class TestAveMaxFeaturesDefault:
         y_pred = y_true
 
         result = compute_ave_per_feature(
-            df, [f"f{i}" for i in range(10)], [], y_true, y_pred, max_features=3,
+            df,
+            [f"f{i}" for i in range(10)],
+            [],
+            y_true,
+            y_pred,
+            max_features=3,
         )
         assert len(result) == 3
 
@@ -388,10 +393,12 @@ class TestPdp:
     def test_feature_failure_skipped(self):
         """If a feature raises during prediction, it should be skipped."""
         n = 30
-        df = pl.DataFrame({
-            "good": np.arange(n, dtype=float),
-            "bad": np.arange(n, dtype=float),
-        })
+        df = pl.DataFrame(
+            {
+                "good": np.arange(n, dtype=float),
+                "bad": np.arange(n, dtype=float),
+            }
+        )
 
         class FailOnBadAlgo:
             def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
@@ -432,11 +439,13 @@ class TestPdp:
     def test_preserves_feature_order(self):
         """Output order should match input features order."""
         n = 30
-        df = pl.DataFrame({
-            "z": np.arange(n, dtype=float),
-            "a": np.arange(n, dtype=float),
-            "m": np.arange(n, dtype=float),
-        })
+        df = pl.DataFrame(
+            {
+                "z": np.arange(n, dtype=float),
+                "a": np.arange(n, dtype=float),
+                "m": np.arange(n, dtype=float),
+            }
+        )
 
         class SimpleAlgo:
             def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:

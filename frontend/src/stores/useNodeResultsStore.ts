@@ -134,7 +134,13 @@ export function hashConfig(config: Record<string, unknown>): string {
   // Strip internal keys that don't affect computation
   const { _nodeId, _columns, _schemaWarnings, _availableColumns, ...rest } = config
   void _nodeId; void _columns; void _schemaWarnings; void _availableColumns
-  return djb2(JSON.stringify(rest))
+  const sortKeys = (o: unknown): unknown => {
+    if (o === null || typeof o !== "object") return o
+    if (Array.isArray(o)) return o.map(sortKeys)
+    const sorted = Object.keys(o as Record<string, unknown>).sort()
+    return Object.fromEntries(sorted.map(k => [k, sortKeys((o as Record<string, unknown>)[k])]))
+  }
+  return djb2(JSON.stringify(sortKeys(rest)))
 }
 
 // ─── Store ───────────────────────────────────────────────────────

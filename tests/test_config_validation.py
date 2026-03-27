@@ -192,103 +192,120 @@ class TestBuildNodeConfigProducesValidKeys:
             pytest.param(
                 NodeType.API_INPUT,
                 {"path": "d.json", "api_input": True, "row_id_column": "id"},
-                "", [],
+                "",
+                [],
                 id="api_input",
             ),
             pytest.param(
                 NodeType.DATA_SOURCE,
                 {"path": "d.parquet"},
-                "", [],
+                "",
+                [],
                 id="datasource_flat",
             ),
             pytest.param(
                 NodeType.DATA_SOURCE,
                 {"table": "cat.sch.tbl"},
-                "", [],
+                "",
+                [],
                 id="datasource_databricks",
             ),
             pytest.param(
                 NodeType.MODEL_SCORE,
                 {"model_score": True, "source_type": "run", "run_id": "abc"},
-                "", ["df"],
+                "",
+                ["df"],
                 id="model_score",
             ),
             pytest.param(
                 NodeType.BANDING,
                 {"factors": [{"banding": "continuous", "column": "x", "rules": []}]},
-                "", ["df"],
+                "",
+                ["df"],
                 id="banding_multi",
             ),
             pytest.param(
                 NodeType.BANDING,
                 {"banding": "continuous", "column": "x", "rules": []},
-                "", ["df"],
+                "",
+                ["df"],
                 id="banding_single",
             ),
             pytest.param(
                 NodeType.RATING_STEP,
                 {"tables": [{"name": "T", "factors": ["x"], "entries": []}]},
-                "", ["df"],
+                "",
+                ["df"],
                 id="rating_step",
             ),
             pytest.param(
                 NodeType.OUTPUT,
                 {"fields": ["a", "b"]},
-                "", ["df"],
+                "",
+                ["df"],
                 id="output",
             ),
             pytest.param(
                 NodeType.DATA_SINK,
                 {"sink": "out.csv", "format": "csv"},
-                "", ["df"],
+                "",
+                ["df"],
                 id="data_sink",
             ),
             pytest.param(
                 NodeType.EXTERNAL_FILE,
                 {"external": "m.pkl", "file_type": "pickle"},
-                "", ["df"],
+                "",
+                ["df"],
                 id="external_file",
             ),
             pytest.param(
                 NodeType.EXTERNAL_FILE,
                 {"external": "m.cbm", "file_type": "catboost", "model_class": "regressor"},
-                "", ["df"],
+                "",
+                ["df"],
                 id="external_file_catboost",
             ),
             pytest.param(
                 NodeType.LIVE_SWITCH,
                 {"live_switch": True, "input_scenario_map": {}},
-                "", ["a", "b"],
+                "",
+                ["a", "b"],
                 id="live_switch",
             ),
             pytest.param(
                 NodeType.OPTIMISER,
                 {"optimiser": True, "mode": "online", "quote_id": "qid"},
-                "", ["df"],
+                "",
+                ["df"],
                 id="optimiser",
             ),
             pytest.param(
                 NodeType.OPTIMISER_APPLY,
                 {"optimiser_apply": True, "artifact_path": "opt.json"},
-                "", ["df"],
+                "",
+                ["df"],
                 id="optimiser_apply",
             ),
             pytest.param(
                 NodeType.SCENARIO_EXPANDER,
                 {"scenario_expander": True, "quote_id": "qid", "steps": 10},
-                "", ["df"],
+                "",
+                ["df"],
                 id="scenario_expander",
             ),
             pytest.param(
                 NodeType.MODELLING,
                 {"modelling": True, "name": "m", "target": "y", "algorithm": "catboost"},
-                "", ["df"],
+                "",
+                ["df"],
                 id="modelling",
             ),
             pytest.param(
                 NodeType.CONSTANT,
                 {"constant": True, "values": [{"name": "x", "value": "1"}]},
-                "", [],
+                "",
+                [],
                 id="constant",
             ),
             pytest.param(
@@ -301,7 +318,11 @@ class TestBuildNodeConfigProducesValidKeys:
         ],
     )
     def test_built_config_has_no_unrecognized_keys(
-        self, node_type, kwargs, body, params,
+        self,
+        node_type,
+        kwargs,
+        body,
+        params,
     ):
         from haute._parser_helpers import _build_node_config
 
@@ -329,7 +350,12 @@ class TestBuildNodeConfigProducesValidKeys:
 
         config = _build_node_config(
             NodeType.MODEL_SCORE,
-            {"model_score": True, "source_type": "registered", "registered_model": "m", "version": "1"},
+            {
+                "model_score": True,
+                "source_type": "registered",
+                "registered_model": "m",
+                "version": "1",
+            },
             "",
             ["df"],
         )
@@ -405,9 +431,7 @@ class TestSelectedColumnsUniversal:
             node_type,
             {"selected_columns": ["a", "b"]},
         )
-        assert bad == [], (
-            f"selected_columns flagged as unrecognized for {node_type}"
-        )
+        assert bad == [], f"selected_columns flagged as unrecognized for {node_type}"
 
     def test_selected_columns_in_transform_typed_dict(self):
         """TransformConfig TypedDict should declare selected_columns."""
@@ -439,9 +463,7 @@ class TestConfigKeyTupleAlignment:
         """Every key in OPTIMISER_CONFIG_KEYS should exist in OptimiserConfig."""
         td_keys = set(OptimiserConfig.__annotations__)
         for key in OPTIMISER_CONFIG_KEYS:
-            assert key in td_keys, (
-                f"OPTIMISER_CONFIG_KEYS has '{key}' but OptimiserConfig does not"
-            )
+            assert key in td_keys, f"OPTIMISER_CONFIG_KEYS has '{key}' but OptimiserConfig does not"
 
     def test_optimiser_apply_keys_match_typed_dict(self):
         """Every key in OPTIMISER_APPLY_CONFIG_KEYS should exist in OptimiserApplyConfig."""
@@ -470,15 +492,15 @@ class TestConfigKeyTupleAlignment:
     def test_modelling_keys_match_typed_dict(self):
         """Every key in MODELLING_CONFIG_KEYS should exist in ModellingConfig."""
         from haute._types import ModellingConfig
+
         td_keys = set(ModellingConfig.__annotations__)
         for key in MODELLING_CONFIG_KEYS:
-            assert key in td_keys, (
-                f"MODELLING_CONFIG_KEYS has '{key}' but ModellingConfig does not"
-            )
+            assert key in td_keys, f"MODELLING_CONFIG_KEYS has '{key}' but ModellingConfig does not"
 
     def test_scenario_expander_keys_match_typed_dict(self):
         """Every key in SCENARIO_EXPANDER_CONFIG_KEYS should exist in ScenarioExpanderConfig."""
         from haute._types import ScenarioExpanderConfig
+
         td_keys = set(ScenarioExpanderConfig.__annotations__)
         for key in SCENARIO_EXPANDER_CONFIG_KEYS:
             assert key in td_keys, (

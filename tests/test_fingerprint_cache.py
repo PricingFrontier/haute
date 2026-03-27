@@ -153,7 +153,7 @@ class TestUpdateSlot:
     def test_update_single_slot(self) -> None:
         cache = FingerprintCache(slots=("a", "b"))
         cache.store("fp1", a={"x": 1}, b={"y": 2})
-        cache.update_slot("a", {"x": 99})
+        cache.update_slot("a", {"x": 99}, fingerprint="fp1")
         data = cache.try_get("fp1")
         assert data is not None
         assert data["a"] == {"x": 99}
@@ -162,7 +162,7 @@ class TestUpdateSlot:
     def test_update_unknown_slot_raises(self) -> None:
         cache = FingerprintCache(slots=("a",))
         with pytest.raises(ValueError, match="Unknown slot"):
-            cache.update_slot("nonexistent", {})
+            cache.update_slot("nonexistent", {}, fingerprint="fp1")
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +201,8 @@ class TestThreadSafety:
                 if result is not None and not isinstance(result, dict):
                     errors.append(f"Bad type: {type(result)}")
 
-        threads = [
-            threading.Thread(target=writer, args=("fp1", {"a": i}))
-            for i in range(2)
-        ] + [
-            threading.Thread(target=reader)
-            for _ in range(2)
+        threads = [threading.Thread(target=writer, args=("fp1", {"a": i})) for i in range(2)] + [
+            threading.Thread(target=reader) for _ in range(2)
         ]
         for t in threads:
             t.start()

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def project_dir(tmp_path: Path) -> Path:
     """Temp project with a root-level pipeline and data/."""
@@ -32,10 +33,10 @@ import haute
 pipeline = haute.Pipeline("test_cli", description="CLI test pipeline")
 
 
-@pipeline.data_source(path="{data / 'input.parquet'}")
+@pipeline.data_source(path="{data / "input.parquet"}")
 def source() -> pl.DataFrame:
     """Read data."""
-    return pl.scan_parquet("{data / 'input.parquet'}")
+    return pl.scan_parquet("{data / "input.parquet"}")
 
 
 @pipeline.polars
@@ -54,6 +55,7 @@ pipeline.connect("source", "transform")
 # haute --version
 # ---------------------------------------------------------------------------
 
+
 class TestVersion:
     def test_version_flag(self, runner: CliRunner):
         result = runner.invoke(cli, ["--version"])
@@ -65,8 +67,11 @@ class TestVersion:
 # haute init
 # ---------------------------------------------------------------------------
 
+
 class TestInit:
-    def test_creates_project_structure(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_creates_project_structure(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
@@ -118,7 +123,10 @@ class TestInit:
         assert hook.stat().st_mode & 0o755
 
     def test_pre_commit_hook_installed_in_git_repo(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """If .git/hooks exists, the pre-commit hook is installed there too."""
         monkeypatch.chdir(tmp_path)
@@ -130,7 +138,9 @@ class TestInit:
         assert "ruff format" in installed.read_text()
         assert installed.stat().st_mode & 0o755
 
-    def test_works_alongside_uv_init(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_works_alongside_uv_init(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """haute init should layer on top of an existing pyproject.toml from uv init."""
         monkeypatch.chdir(tmp_path)
         # Simulate uv init output
@@ -164,7 +174,9 @@ class TestInit:
         py_content = (tmp_path / "rating" / "main.py").read_text()
         assert "haute.Pipeline" in py_content
 
-    def test_skips_haute_dep_if_already_present(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_skips_haute_dep_if_already_present(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """If pyproject.toml already lists haute, don't duplicate it."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
@@ -181,7 +193,10 @@ class TestInit:
         assert '"ruff' in content
 
     def test_skips_dev_deps_if_already_present(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """If pyproject.toml already has [dependency-groups], don't duplicate it."""
         monkeypatch.chdir(tmp_path)
@@ -195,7 +210,9 @@ class TestInit:
         content = (tmp_path / "pyproject.toml").read_text()
         assert content.count("[dependency-groups]") == 1
 
-    def test_appends_to_existing_gitignore(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_appends_to_existing_gitignore(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """If .gitignore exists (from uv init), append haute entries."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitignore").write_text("__pycache__/\n.venv/\n")
@@ -206,15 +223,20 @@ class TestInit:
         assert ".env" in content
         assert "*.haute.json" in content
 
-    def test_already_initialised_fails(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_already_initialised_fails(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "haute.toml").write_text("[project]\nname = \"x\"\n")
+        (tmp_path / "haute.toml").write_text('[project]\nname = "x"\n')
         result = runner.invoke(cli, ["init"])
         assert result.exit_code == 1
         assert "already" in result.output.lower()
 
     def test_target_flag_docker(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init", "--target", "container"], catch_exceptions=False)
@@ -228,7 +250,10 @@ class TestInit:
         assert "DATABRICKS_" not in env_content
 
     def test_ci_github_generates_workflows(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
@@ -238,7 +263,10 @@ class TestInit:
         assert (tmp_path / ".github" / "workflows" / "deploy-production.yml").exists()
 
     def test_ci_azure_devops_generates_pipeline(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init", "--ci", "azure-devops"], catch_exceptions=False)
@@ -257,11 +285,15 @@ class TestInit:
         assert not (tmp_path / ".gitlab-ci.yml").exists()
 
     def test_ci_azure_devops_with_docker_target(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(
-            cli, ["init", "--target", "container", "--ci", "azure-devops"],
+            cli,
+            ["init", "--target", "container", "--ci", "azure-devops"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
@@ -272,7 +304,10 @@ class TestInit:
         assert 'provider = "azure-devops"' in toml_content
 
     def test_ci_none_skips_workflows(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init", "--ci", "none"], catch_exceptions=False)
@@ -280,7 +315,10 @@ class TestInit:
         assert not (tmp_path / ".github").exists()
 
     def test_safety_and_ci_sections_generated(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
@@ -295,11 +333,14 @@ class TestInit:
 # haute run
 # ---------------------------------------------------------------------------
 
+
 class TestRun:
     def test_run_explicit_file(self, runner: CliRunner, project_dir: Path):
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(
-            cli, ["run", pipeline_file], catch_exceptions=False,
+            cli,
+            ["run", pipeline_file],
+            catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
         assert "test_cli" in result.output
@@ -309,13 +350,17 @@ class TestRun:
         assert "transform" in result.output
         assert "rows" in result.output
 
-    def test_run_auto_discover(self, runner: CliRunner, project_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_run_auto_discover(
+        self, runner: CliRunner, project_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         monkeypatch.chdir(project_dir)
         result = runner.invoke(cli, ["run"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert "test_cli" in result.output
 
-    def test_run_no_pipeline_found(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_run_no_pipeline_found(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["run"])
         assert result.exit_code == 1
@@ -351,9 +396,9 @@ import haute
 pipeline = haute.Pipeline("broken")
 
 
-@pipeline.data_source(path="{data / 'd.parquet'}")
+@pipeline.data_source(path="{data / "d.parquet"}")
 def source() -> pl.DataFrame:
-    return pl.scan_parquet("{data / 'd.parquet'}")
+    return pl.scan_parquet("{data / "d.parquet"}")
 
 
 @pipeline.polars
@@ -378,9 +423,12 @@ pipeline.connect("source", "bad")
 # haute lint
 # ---------------------------------------------------------------------------
 
+
 class TestLint:
     def test_lint_valid_pipeline(
-        self, runner: CliRunner, project_dir: Path,
+        self,
+        runner: CliRunner,
+        project_dir: Path,
     ):
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(cli, ["lint", pipeline_file], catch_exceptions=False)
@@ -388,7 +436,10 @@ class TestLint:
         assert "No structural issues" in result.output
 
     def test_lint_auto_discover(
-        self, runner: CliRunner, project_dir: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        project_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(project_dir)
         # Create a haute.toml pointing to main.py
@@ -399,13 +450,17 @@ class TestLint:
         assert result.exit_code == 0, result.output
 
     def test_lint_no_pipeline_fails(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ):
         result = runner.invoke(cli, ["lint", str(tmp_path / "nonexistent.py")])
         assert result.exit_code == 1
 
     def test_lint_empty_pipeline_fails(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ):
         empty = tmp_path / "empty.py"
         empty.write_text(
@@ -420,9 +475,13 @@ class TestLint:
 # haute smoke (offline error paths only - live endpoint tests require network)
 # ---------------------------------------------------------------------------
 
+
 class TestSmoke:
     def test_smoke_no_toml_fails(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["smoke"])
@@ -430,7 +489,10 @@ class TestSmoke:
         assert "haute.toml" in result.output.lower()
 
     def test_smoke_no_test_quotes_dir_fails(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "haute.toml").write_text(
@@ -442,7 +504,10 @@ class TestSmoke:
         assert "test quotes" in result.output.lower()
 
     def test_smoke_empty_test_quotes_fails(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "haute.toml").write_text(
@@ -457,7 +522,9 @@ class TestSmoke:
 
 
 class TestServe:
-    def test_serve_no_frontend_no_static_fails(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_serve_no_frontend_no_static_fails(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """Without frontend/ or built static, serve should fail with a clear message."""
         monkeypatch.chdir(tmp_path)
         # Mock STATIC_DIR to a non-existent path so we hit the error branch

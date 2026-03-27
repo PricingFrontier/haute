@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -21,7 +22,7 @@ logger = get_logger(component="server.json_cache")
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
 # ── Timeout constant (seconds) ───────────────────────────────────
-_BUILD_TIMEOUT = 1800.0  # 30 minutes — JSON flatten + parquet write for large files
+_BUILD_TIMEOUT = float(os.environ.get("HAUTE_BUILD_TIMEOUT", "1800"))
 
 
 @router.post("/build", response_model=JsonCacheBuildResponse)

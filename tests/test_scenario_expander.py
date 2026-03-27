@@ -109,4 +109,3 @@ class TestExecutor:
         result = fn(input_df).collect()
         assert result.shape[0] == 21
         assert "scenario_index" in result.columns
-

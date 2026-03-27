@@ -27,10 +27,7 @@ class TestExtractSubmodelCalls:
         assert paths == ["modules/pricing.py"]
 
     def test_multiple_submodel_calls(self) -> None:
-        source = (
-            'pipeline.submodel("modules/a.py")\n'
-            'pipeline.submodel("modules/b.py")\n'
-        )
+        source = 'pipeline.submodel("modules/a.py")\npipeline.submodel("modules/b.py")\n'
         tree = ast.parse(source)
         paths = extract_submodel_calls(tree)
         assert paths == ["modules/a.py", "modules/b.py"]
@@ -134,7 +131,7 @@ class TestParseSubmodelSource:
         assert graph.edges == []
 
     def test_submodel_without_meta(self) -> None:
-        source = '''\
+        source = """\
 import polars as pl
 import haute
 
@@ -143,7 +140,7 @@ submodel = haute.Submodel("unnamed")
 @submodel.polars
 def only_node(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
-'''
+"""
         graph = parse_submodel_source(source, "test.py")
         assert len(graph.nodes) == 1
 
@@ -151,6 +148,7 @@ def only_node(df: pl.LazyFrame) -> pl.LazyFrame:
 # ---------------------------------------------------------------------------
 # merge_submodels
 # ---------------------------------------------------------------------------
+
 
 def _make_parent_graph() -> PipelineGraph:
     """Build a simple parent graph with 2 nodes."""

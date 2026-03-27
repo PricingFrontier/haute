@@ -18,29 +18,35 @@ from tests.conftest import make_edge, make_graph
 class TestModelScoreCodegen:
     def test_codegen_run_based(self):
         """Generates thin delegation code for run-based model scoring."""
-        graph = make_graph({
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {"label": "source", "nodeType": "dataSource", "config": {"path": "data.parquet"}},
-                },
-                {
-                    "id": "score",
-                    "data": {
-                        "label": "scorer",
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "abc123",
-                            "artifact_path": "model.cbm",
-                            "task": "regression",
-                            "output_column": "prediction",
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [make_edge("source", "score").model_dump()],
-        })
+                    {
+                        "id": "score",
+                        "data": {
+                            "label": "scorer",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "abc123",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "prediction",
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "score").model_dump()],
+            }
+        )
         code = graph_to_code(graph)
 
         # Decorator post-processed to config= path
@@ -59,29 +65,35 @@ class TestModelScoreCodegen:
 
     def test_codegen_registered(self):
         """Generates thin delegation code for registered model scoring."""
-        graph = make_graph({
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {"label": "source", "nodeType": "dataSource", "config": {"path": "data.parquet"}},
-                },
-                {
-                    "id": "score",
-                    "data": {
-                        "label": "scorer",
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "registered",
-                            "registered_model": "my-model",
-                            "version": "3",
-                            "task": "regression",
-                            "output_column": "pred",
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [make_edge("source", "score").model_dump()],
-        })
+                    {
+                        "id": "score",
+                        "data": {
+                            "label": "scorer",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "registered",
+                                "registered_model": "my-model",
+                                "version": "3",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "score").model_dump()],
+            }
+        )
         code = graph_to_code(graph)
 
         assert "score_from_config" in code
@@ -90,29 +102,35 @@ class TestModelScoreCodegen:
 
     def test_codegen_classification_same_template(self):
         """Classification task uses the same thin delegation (no inline proba)."""
-        graph = make_graph({
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {"label": "source", "nodeType": "dataSource", "config": {"path": "data.parquet"}},
-                },
-                {
-                    "id": "score",
-                    "data": {
-                        "label": "scorer",
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "abc",
-                            "artifact_path": "model.cbm",
-                            "task": "classification",
-                            "output_column": "prediction",
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [make_edge("source", "score").model_dump()],
-        })
+                    {
+                        "id": "score",
+                        "data": {
+                            "label": "scorer",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "abc",
+                                "artifact_path": "model.cbm",
+                                "task": "classification",
+                                "output_column": "prediction",
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "score").model_dump()],
+            }
+        )
         code = graph_to_code(graph)
 
         # Classification uses same thin template — proba handled by library
@@ -122,29 +140,35 @@ class TestModelScoreCodegen:
 
     def test_codegen_regression_no_proba(self):
         """Regression task uses thin delegation with no proba code."""
-        graph = make_graph({
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {"label": "source", "nodeType": "dataSource", "config": {"path": "data.parquet"}},
-                },
-                {
-                    "id": "score",
-                    "data": {
-                        "label": "scorer",
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "abc",
-                            "artifact_path": "model.cbm",
-                            "task": "regression",
-                            "output_column": "prediction",
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [make_edge("source", "score").model_dump()],
-        })
+                    {
+                        "id": "score",
+                        "data": {
+                            "label": "scorer",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "abc",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "prediction",
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "score").model_dump()],
+            }
+        )
         code = graph_to_code(graph)
 
         assert "predict_proba" not in code
@@ -152,30 +176,36 @@ class TestModelScoreCodegen:
 
     def test_codegen_with_user_code(self):
         """User post-processing code appears after sentinel in thin body."""
-        graph = make_graph({
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {"label": "source", "nodeType": "dataSource", "config": {"path": "data.parquet"}},
-                },
-                {
-                    "id": "score",
-                    "data": {
-                        "label": "scorer",
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "abc",
-                            "artifact_path": "model.cbm",
-                            "task": "regression",
-                            "output_column": "prediction",
-                            "code": 'result = result.with_columns(doubled=pl.col("prediction") * 2)',
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [make_edge("source", "score").model_dump()],
-        })
+                    {
+                        "id": "score",
+                        "data": {
+                            "label": "scorer",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "abc",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "prediction",
+                                "code": 'result = result.with_columns(doubled=pl.col("prediction") * 2)',
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "score").model_dump()],
+            }
+        )
         code = graph_to_code(graph)
 
         assert "score_from_config" in code
@@ -238,29 +268,35 @@ class TestParserRoundTrip:
         from haute._config_io import collect_node_configs
         from haute.parser import parse_pipeline_source
 
-        graph = make_graph({
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {"label": "source", "nodeType": "dataSource", "config": {"path": "data.parquet"}},
-                },
-                {
-                    "id": "scorer",
-                    "data": {
-                        "label": "scorer",
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "run123",
-                            "artifact_path": "model.cbm",
-                            "task": "regression",
-                            "output_column": "prediction",
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [make_edge("source", "scorer").model_dump()],
-        })
+                    {
+                        "id": "scorer",
+                        "data": {
+                            "label": "scorer",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run123",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "prediction",
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "scorer").model_dump()],
+            }
+        )
         code = graph_to_code(graph)
 
         # Write config files so the parser can resolve them
@@ -285,33 +321,39 @@ class TestParserRoundTrip:
         """User post-processing code survives codegen → parse round-trip."""
         from haute.parser import parse_pipeline_source
 
-        graph = make_graph({
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {"label": "source", "nodeType": "dataSource", "config": {"path": "data.parquet"}},
-                },
-                {
-                    "id": "scorer",
-                    "data": {
-                        "label": "scorer",
-                        "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "run123",
-                            "artifact_path": "model.cbm",
-                            "task": "regression",
-                            "output_column": "prediction",
-                            "code": 'df = df.with_columns(doubled=pl.col("prediction") * 2)',
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [make_edge("source", "scorer").model_dump()],
-        })
+                    {
+                        "id": "scorer",
+                        "data": {
+                            "label": "scorer",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run123",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "prediction",
+                                "code": 'df = df.with_columns(doubled=pl.col("prediction") * 2)',
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "scorer").model_dump()],
+            }
+        )
         code = graph_to_code(graph)
 
         parsed = parse_pipeline_source(code)
         node_map = {n.data.label: n for n in parsed.nodes}
         scorer = node_map["scorer"]
-        assert 'doubled' in scorer.data.config.get("code", "")
+        assert "doubled" in scorer.data.config.get("code", "")

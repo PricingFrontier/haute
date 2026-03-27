@@ -168,25 +168,33 @@ def _unique_labels(draw: st.DrawFn, n: int) -> list[str]:
 
 def _data_source_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for dataSource config dicts."""
-    return st.fixed_dictionaries({
-        "path": st.sampled_from([
-            "data/input.parquet",
-            "data/source.parquet",
-            "files/quotes.parquet",
-        ]),
-        "sourceType": st.just("flat_file"),
-    })
+    return st.fixed_dictionaries(
+        {
+            "path": st.sampled_from(
+                [
+                    "data/input.parquet",
+                    "data/source.parquet",
+                    "files/quotes.parquet",
+                ]
+            ),
+            "sourceType": st.just("flat_file"),
+        }
+    )
 
 
 def _api_input_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for apiInput config dicts."""
-    return st.fixed_dictionaries({
-        "path": st.sampled_from([
-            "data/api.parquet",
-            "data/request.parquet",
-            "inputs/quotes.parquet",
-        ]),
-    })
+    return st.fixed_dictionaries(
+        {
+            "path": st.sampled_from(
+                [
+                    "data/api.parquet",
+                    "data/request.parquet",
+                    "inputs/quotes.parquet",
+                ]
+            ),
+        }
+    )
 
 
 def _transform_config() -> st.SearchStrategy[dict[str, Any]]:
@@ -195,78 +203,110 @@ def _transform_config() -> st.SearchStrategy[dict[str, Any]]:
     Uses simple chain-style code that round-trips cleanly.
     The code starts with '.' so codegen wraps it as a chain expression.
     """
-    return st.fixed_dictionaries({
-        "code": st.sampled_from([
-            '.filter(pl.col("a") > 0)',
-            '.select(pl.all())',
-            '.with_columns(pl.col("x").alias("y"))',
-        ]),
-    })
+    return st.fixed_dictionaries(
+        {
+            "code": st.sampled_from(
+                [
+                    '.filter(pl.col("a") > 0)',
+                    ".select(pl.all())",
+                    '.with_columns(pl.col("x").alias("y"))',
+                ]
+            ),
+        }
+    )
 
 
 def _output_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for output config dicts."""
-    return st.fixed_dictionaries({
-        "fields": st.lists(
-            st.sampled_from(["col_a", "col_b", "col_c", "col_d"]),
-            min_size=1,
-            max_size=3,
-            unique=True,
-        ),
-    })
+    return st.fixed_dictionaries(
+        {
+            "fields": st.lists(
+                st.sampled_from(["col_a", "col_b", "col_c", "col_d"]),
+                min_size=1,
+                max_size=3,
+                unique=True,
+            ),
+        }
+    )
 
 
 def _constant_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for constant config dicts."""
-    return st.fixed_dictionaries({
-        "values": st.lists(
-            st.fixed_dictionaries({
-                "name": st.sampled_from(["rate", "factor", "threshold", "limit"]),
-                "value": st.sampled_from(["1.0", "0.5", "100", "0.95"]),
-            }),
-            min_size=1,
-            max_size=3,
-        ),
-    })
+    return st.fixed_dictionaries(
+        {
+            "values": st.lists(
+                st.fixed_dictionaries(
+                    {
+                        "name": st.sampled_from(["rate", "factor", "threshold", "limit"]),
+                        "value": st.sampled_from(["1.0", "0.5", "100", "0.95"]),
+                    }
+                ),
+                min_size=1,
+                max_size=3,
+            ),
+        }
+    )
 
 
 def _data_sink_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for dataSink config dicts."""
-    return st.fixed_dictionaries({
-        "path": st.sampled_from([
-            "output/result.parquet",
-            "output/scored.parquet",
-        ]),
-        "format": st.sampled_from(["parquet", "csv"]),
-    })
+    return st.fixed_dictionaries(
+        {
+            "path": st.sampled_from(
+                [
+                    "output/result.parquet",
+                    "output/scored.parquet",
+                ]
+            ),
+            "format": st.sampled_from(["parquet", "csv"]),
+        }
+    )
 
 
 def _banding_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for banding config dicts (single factor)."""
-    return st.fixed_dictionaries({
-        "factors": st.just([{
-            "banding": "continuous",
-            "column": "age",
-            "outputColumn": "age_band",
-            "rules": [
-                {"op1": ">", "val1": "25", "op2": "<=", "val2": "35", "assignment": "young"},
-            ],
-            "default": None,
-        }]),
-    })
+    return st.fixed_dictionaries(
+        {
+            "factors": st.just(
+                [
+                    {
+                        "banding": "continuous",
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "rules": [
+                            {
+                                "op1": ">",
+                                "val1": "25",
+                                "op2": "<=",
+                                "val2": "35",
+                                "assignment": "young",
+                            },
+                        ],
+                        "default": None,
+                    }
+                ]
+            ),
+        }
+    )
 
 
 def _rating_step_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for ratingStep config dicts."""
-    return st.fixed_dictionaries({
-        "tables": st.just([{
-            "name": "T1",
-            "factors": ["age_band"],
-            "outputColumn": "age_factor",
-            "defaultValue": "1.0",
-            "entries": [{"age_band": "young", "value": 1.1}],
-        }]),
-    })
+    return st.fixed_dictionaries(
+        {
+            "tables": st.just(
+                [
+                    {
+                        "name": "T1",
+                        "factors": ["age_band"],
+                        "outputColumn": "age_factor",
+                        "defaultValue": "1.0",
+                        "entries": [{"age_band": "young", "value": 1.1}],
+                    }
+                ]
+            ),
+        }
+    )
 
 
 _CONFIG_STRATEGY: dict[NodeType, st.SearchStrategy[dict[str, Any]]] = {
@@ -459,12 +499,8 @@ def _assert_config_equivalence(
             )
 
     elif node_type == NodeType.DATA_SINK:
-        assert parsed.get("path") == orig.get("path"), (
-            f"[{node_id}] sink path mismatch"
-        )
-        assert parsed.get("format") == orig.get("format"), (
-            f"[{node_id}] sink format mismatch"
-        )
+        assert parsed.get("path") == orig.get("path"), f"[{node_id}] sink path mismatch"
+        assert parsed.get("format") == orig.get("format"), f"[{node_id}] sink format mismatch"
 
     elif node_type == NodeType.BANDING:
         orig_factors = orig.get("factors", [])
@@ -473,18 +509,12 @@ def _assert_config_equivalence(
             f"[{node_id}] banding factors count mismatch"
         )
         for of, pf in zip(orig_factors, parsed_factors):
-            assert pf.get("banding") == of.get("banding"), (
-                f"[{node_id}] banding type mismatch"
-            )
-            assert pf.get("column") == of.get("column"), (
-                f"[{node_id}] banding column mismatch"
-            )
+            assert pf.get("banding") == of.get("banding"), f"[{node_id}] banding type mismatch"
+            assert pf.get("column") == of.get("column"), f"[{node_id}] banding column mismatch"
             assert pf.get("outputColumn") == of.get("outputColumn"), (
                 f"[{node_id}] banding outputColumn mismatch"
             )
-            assert pf.get("rules") == of.get("rules"), (
-                f"[{node_id}] banding rules mismatch"
-            )
+            assert pf.get("rules") == of.get("rules"), f"[{node_id}] banding rules mismatch"
 
     elif node_type == NodeType.RATING_STEP:
         orig_tables = orig.get("tables", [])
@@ -493,23 +523,15 @@ def _assert_config_equivalence(
             f"[{node_id}] ratingStep tables count mismatch"
         )
         for ot, pt in zip(orig_tables, parsed_tables):
-            assert pt.get("name") == ot.get("name"), (
-                f"[{node_id}] table name mismatch"
-            )
-            assert pt.get("factors") == ot.get("factors"), (
-                f"[{node_id}] table factors mismatch"
-            )
+            assert pt.get("name") == ot.get("name"), f"[{node_id}] table name mismatch"
+            assert pt.get("factors") == ot.get("factors"), f"[{node_id}] table factors mismatch"
             assert pt.get("outputColumn") == ot.get("outputColumn"), (
                 f"[{node_id}] table outputColumn mismatch"
             )
-            assert pt.get("entries") == ot.get("entries"), (
-                f"[{node_id}] table entries mismatch"
-            )
+            assert pt.get("entries") == ot.get("entries"), f"[{node_id}] table entries mismatch"
 
     elif node_type == NodeType.EXTERNAL_FILE:
-        assert parsed.get("path") == orig.get("path"), (
-            f"[{node_id}] externalFile path mismatch"
-        )
+        assert parsed.get("path") == orig.get("path"), f"[{node_id}] externalFile path mismatch"
         assert parsed.get("fileType") == orig.get("fileType"), (
             f"[{node_id}] externalFile fileType mismatch"
         )
@@ -521,23 +543,17 @@ def _assert_config_equivalence(
 
     elif node_type == NodeType.MODEL_SCORE:
         for key in ("sourceType", "task", "output_column"):
-            assert parsed.get(key) == orig.get(key), (
-                f"[{node_id}] modelScore {key} mismatch"
-            )
+            assert parsed.get(key) == orig.get(key), f"[{node_id}] modelScore {key} mismatch"
 
     elif node_type == NodeType.MODELLING:
         for key in ("name", "target", "algorithm", "task"):
             if orig.get(key):
-                assert parsed.get(key) == orig.get(key), (
-                    f"[{node_id}] modelling {key} mismatch"
-                )
+                assert parsed.get(key) == orig.get(key), f"[{node_id}] modelling {key} mismatch"
 
     elif node_type == NodeType.OPTIMISER:
         for key in ("mode", "objective"):
             if orig.get(key):
-                assert parsed.get(key) == orig.get(key), (
-                    f"[{node_id}] optimiser {key} mismatch"
-                )
+                assert parsed.get(key) == orig.get(key), f"[{node_id}] optimiser {key} mismatch"
 
     elif node_type == NodeType.OPTIMISER_APPLY:
         for key in ("artifact_path", "version_column"):
@@ -725,10 +741,12 @@ class TestEdgeCases:
                     data=NodeData(
                         label="params",
                         nodeType=NodeType.CONSTANT,
-                        config={"values": [
-                            {"name": "rate", "value": "0.05"},
-                            {"name": "cap", "value": "1000"},
-                        ]},
+                        config={
+                            "values": [
+                                {"name": "rate", "value": "0.05"},
+                                {"name": "cap", "value": "1000"},
+                            ]
+                        },
                     ),
                 ),
                 GraphNode(
@@ -736,7 +754,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="calc",
                         nodeType=NodeType.POLARS,
-                        config={"code": '.select(pl.all())'},
+                        config={"code": ".select(pl.all())"},
                     ),
                 ),
             ],
@@ -817,22 +835,32 @@ class TestEdgeCases:
                     data=NodeData(
                         label="band_age",
                         nodeType=NodeType.BANDING,
-                        config={"factors": [{
-                            "banding": "continuous",
-                            "column": "age",
-                            "outputColumn": "age_band",
-                            "rules": [
+                        config={
+                            "factors": [
                                 {
-                                    "op1": ">", "val1": "18", "op2": "<=",
-                                    "val2": "30", "assignment": "young",
-                                },
-                                {
-                                    "op1": ">", "val1": "30", "op2": "<=",
-                                    "val2": "60", "assignment": "middle",
-                                },
-                            ],
-                            "default": None,
-                        }]},
+                                    "banding": "continuous",
+                                    "column": "age",
+                                    "outputColumn": "age_band",
+                                    "rules": [
+                                        {
+                                            "op1": ">",
+                                            "val1": "18",
+                                            "op2": "<=",
+                                            "val2": "30",
+                                            "assignment": "young",
+                                        },
+                                        {
+                                            "op1": ">",
+                                            "val1": "30",
+                                            "op2": "<=",
+                                            "val2": "60",
+                                            "assignment": "middle",
+                                        },
+                                    ],
+                                    "default": None,
+                                }
+                            ]
+                        },
                     ),
                 ),
             ],
@@ -859,18 +887,25 @@ class TestEdgeCases:
                     data=NodeData(
                         label="band_score",
                         nodeType=NodeType.BANDING,
-                        config={"factors": [{
-                            "banding": "continuous",
-                            "column": "score",
-                            "outputColumn": "score_band",
-                            "rules": [
+                        config={
+                            "factors": [
                                 {
-                                    "op1": ">=", "val1": "0", "op2": "<",
-                                    "val2": "50", "assignment": "low",
-                                },
-                            ],
-                            "default": "high",
-                        }]},
+                                    "banding": "continuous",
+                                    "column": "score",
+                                    "outputColumn": "score_band",
+                                    "rules": [
+                                        {
+                                            "op1": ">=",
+                                            "val1": "0",
+                                            "op2": "<",
+                                            "val2": "50",
+                                            "assignment": "low",
+                                        },
+                                    ],
+                                    "default": "high",
+                                }
+                            ]
+                        },
                     ),
                 ),
             ],
@@ -897,17 +932,21 @@ class TestEdgeCases:
                     data=NodeData(
                         label="rating",
                         nodeType=NodeType.RATING_STEP,
-                        config={"tables": [{
-                            "name": "age_table",
-                            "factors": ["age_band"],
-                            "outputColumn": "age_factor",
-                            "defaultValue": "1.0",
-                            "entries": [
-                                {"age_band": "young", "value": 0.9},
-                                {"age_band": "middle", "value": 1.0},
-                                {"age_band": "old", "value": 1.2},
-                            ],
-                        }]},
+                        config={
+                            "tables": [
+                                {
+                                    "name": "age_table",
+                                    "factors": ["age_band"],
+                                    "outputColumn": "age_factor",
+                                    "defaultValue": "1.0",
+                                    "entries": [
+                                        {"age_band": "young", "value": 0.9},
+                                        {"age_band": "middle", "value": 1.0},
+                                        {"age_band": "old", "value": 1.2},
+                                    ],
+                                }
+                            ]
+                        },
                     ),
                 ),
             ],
@@ -934,7 +973,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="process",
                         nodeType=NodeType.POLARS,
-                        config={"code": '.select(pl.all())'},
+                        config={"code": ".select(pl.all())"},
                     ),
                 ),
             ],
@@ -969,16 +1008,25 @@ class TestEdgeCases:
                     data=NodeData(
                         label="band",
                         nodeType=NodeType.BANDING,
-                        config={"factors": [{
-                            "banding": "continuous",
-                            "column": "age",
-                            "outputColumn": "age_band",
-                            "rules": [{
-                                "op1": ">", "val1": "0", "op2": "<=",
-                                "val2": "99", "assignment": "all",
-                            }],
-                            "default": None,
-                        }]},
+                        config={
+                            "factors": [
+                                {
+                                    "banding": "continuous",
+                                    "column": "age",
+                                    "outputColumn": "age_band",
+                                    "rules": [
+                                        {
+                                            "op1": ">",
+                                            "val1": "0",
+                                            "op2": "<=",
+                                            "val2": "99",
+                                            "assignment": "all",
+                                        }
+                                    ],
+                                    "default": None,
+                                }
+                            ]
+                        },
                     ),
                 ),
                 GraphNode(
@@ -986,13 +1034,17 @@ class TestEdgeCases:
                     data=NodeData(
                         label="rate",
                         nodeType=NodeType.RATING_STEP,
-                        config={"tables": [{
-                            "name": "T1",
-                            "factors": ["age_band"],
-                            "outputColumn": "factor",
-                            "defaultValue": "1.0",
-                            "entries": [{"age_band": "all", "value": 1.05}],
-                        }]},
+                        config={
+                            "tables": [
+                                {
+                                    "name": "T1",
+                                    "factors": ["age_band"],
+                                    "outputColumn": "factor",
+                                    "defaultValue": "1.0",
+                                    "entries": [{"age_band": "all", "value": 1.05}],
+                                }
+                            ]
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1104,7 +1156,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="clean up",
                         nodeType=NodeType.POLARS,
-                        config={"code": '.select(pl.all())'},
+                        config={"code": ".select(pl.all())"},
                     ),
                 ),
             ],
@@ -1220,11 +1272,13 @@ class TestEdgeCases:
                     data=NodeData(
                         label="consts",
                         nodeType=NodeType.CONSTANT,
-                        config={"values": [
-                            {"name": "pi", "value": "3.14159"},
-                            {"name": "greeting", "value": "hello"},
-                            {"name": "count", "value": "42"},
-                        ]},
+                        config={
+                            "values": [
+                                {"name": "pi", "value": "3.14159"},
+                                {"name": "greeting", "value": "hello"},
+                                {"name": "count", "value": "42"},
+                            ]
+                        },
                     ),
                 ),
                 GraphNode(
@@ -1259,16 +1313,20 @@ class TestEdgeCases:
                     data=NodeData(
                         label="rating",
                         nodeType=NodeType.RATING_STEP,
-                        config={"tables": [{
-                            "name": "T1",
-                            "factors": ["region"],
-                            "outputColumn": "region_factor",
-                            "defaultValue": "1.0",
-                            "entries": [
-                                {"region": "north", "value": 1.1},
-                                {"region": "south", "value": 0.9},
-                            ],
-                        }]},
+                        config={
+                            "tables": [
+                                {
+                                    "name": "T1",
+                                    "factors": ["region"],
+                                    "outputColumn": "region_factor",
+                                    "defaultValue": "1.0",
+                                    "entries": [
+                                        {"region": "north", "value": 1.1},
+                                        {"region": "south", "value": 0.9},
+                                    ],
+                                }
+                            ]
+                        },
                     ),
                 ),
             ],
@@ -1354,10 +1412,12 @@ class TestExcludedTypeRoundTrips:
                     data=NodeData(
                         label="switch",
                         nodeType=NodeType.LIVE_SWITCH,
-                        config={"input_scenario_map": {
-                            "live_src": "live",
-                            "batch_src": "batch",
-                        }},
+                        config={
+                            "input_scenario_map": {
+                                "live_src": "live",
+                                "batch_src": "batch",
+                            }
+                        },
                     ),
                 ),
             ],
@@ -1527,22 +1587,26 @@ class TestExcludedTypeRoundTrips:
 class TestSanitizeFuncName:
     """Test _sanitize_func_name edge cases relevant to round-trip."""
 
-    @given(label=st.text(
-        alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz _-0123456789"),
-        min_size=1,
-        max_size=20,
-    ))
+    @given(
+        label=st.text(
+            alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz _-0123456789"),
+            min_size=1,
+            max_size=20,
+        )
+    )
     @settings(max_examples=100, deadline=5_000)
     def test_sanitize_is_valid_identifier(self, label: str) -> None:
         """Sanitized name is always a valid Python identifier."""
         name = _sanitize_func_name(label)
         assert name.isidentifier(), f"{name!r} is not a valid identifier (from {label!r})"
 
-    @given(label=st.text(
-        alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz _-0123456789"),
-        min_size=1,
-        max_size=20,
-    ))
+    @given(
+        label=st.text(
+            alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz _-0123456789"),
+            min_size=1,
+            max_size=20,
+        )
+    )
     @settings(max_examples=100, deadline=5_000)
     def test_sanitize_is_idempotent(self, label: str) -> None:
         """Sanitizing twice gives the same result as once."""

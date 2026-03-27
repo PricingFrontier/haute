@@ -54,7 +54,8 @@ class TestLintEdgeCases:
                 GraphNode(
                     id="a",
                     data=NodeData(
-                        label="a", nodeType="dataSource",
+                        label="a",
+                        nodeType="dataSource",
                         config={"parseError": "bad syntax"},
                     ),
                 ),
@@ -90,7 +91,10 @@ class TestLintEdgeCases:
         assert "missing" in result.output.lower()
 
     def test_auto_discover_no_toml_defaults_to_main(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without haute.toml, lint should default to main.py."""
         monkeypatch.chdir(tmp_path)

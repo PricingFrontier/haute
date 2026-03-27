@@ -35,22 +35,25 @@ def _make_modelling_graph(
     if weight:
         config["weight"] = weight
 
-    graph = make_graph({
-        "nodes": [
-            {
-                "id": "source",
-                "data": {
-                    "label": "source", "nodeType": "dataSource",
-                    "config": {"path": data_path},
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": data_path},
+                    },
                 },
-            },
-            {
-                "id": "train",
-                "data": {"label": "train", "nodeType": "modelling", "config": config},
-            },
-        ],
-        "edges": [make_edge("source", "train").model_dump()],
-    })
+                {
+                    "id": "train",
+                    "data": {"label": "train", "nodeType": "modelling", "config": config},
+                },
+            ],
+            "edges": [make_edge("source", "train").model_dump()],
+        }
+    )
     return graph.model_dump()
 
 
@@ -59,11 +62,13 @@ def training_data(tmp_path) -> str:
     """Create a small parquet file for training tests."""
     rng = np.random.RandomState(42)
     n = 100
-    df = pl.DataFrame({
-        "x1": rng.randn(n),
-        "x2": rng.randn(n),
-        "y": (rng.randn(n) * 2 + 1).clip(0),
-    })
+    df = pl.DataFrame(
+        {
+            "x1": rng.randn(n),
+            "x2": rng.randn(n),
+            "y": (rng.randn(n) * 2 + 1).clip(0),
+        }
+    )
     path = tmp_path / "train_data.parquet"
     df.write_parquet(path)
     return str(path)
@@ -142,7 +147,6 @@ class TestTrainEndpoint:
         # (though fast training might complete before we poll — check final state too)
         assert saw_iteration or status.get("result", {}).get("train_rows", 0) > 0
 
-
     def test_train_result_includes_ave(self, client, training_data):
         """After successful training, ave_per_feature should be in the result."""
         graph = _make_modelling_graph(training_data)
@@ -159,7 +163,6 @@ class TestTrainEndpoint:
             assert "feature" in entry
             assert "type" in entry
             assert "bins" in entry
-
 
     def test_train_rejects_concurrent(self, client, training_data):
         """A second training request while one is running returns 409."""
@@ -181,7 +184,6 @@ class TestTrainEndpoint:
             assert "already running" in resp.json()["detail"]
         finally:
             _store.jobs.pop("fake_running", None)
-
 
     def test_train_gpu_falls_back_to_cpu_on_vram_limit(self, client, training_data):
         """When GPU VRAM is insufficient, training should fall back to CPU."""
@@ -214,11 +216,14 @@ class TestTrainEndpoint:
 class TestExportEndpoint:
     def test_export_generates_script(self, client, training_data):
         graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/export", json={
-            "graph": graph,
-            "node_id": "train",
-            "data_path": "output/data.parquet",
-        })
+        resp = client.post(
+            "/api/modelling/export",
+            json={
+                "graph": graph,
+                "node_id": "train",
+                "data_path": "output/data.parquet",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "script" in data
@@ -228,10 +233,13 @@ class TestExportEndpoint:
 
     def test_export_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/export", json={
-            "graph": graph,
-            "node_id": "nonexistent",
-        })
+        resp = client.post(
+            "/api/modelling/export",
+            json={
+                "graph": graph,
+                "node_id": "nonexistent",
+            },
+        )
         assert resp.status_code == 404
 
 
@@ -255,9 +263,12 @@ class TestMlflowCheckEndpoint:
 
 class TestMlflowLogEndpoint:
     def test_mlflow_log_job_not_found(self, client):
-        resp = client.post("/api/modelling/mlflow/log", json={
-            "job_id": "nonexistent",
-        })
+        resp = client.post(
+            "/api/modelling/mlflow/log",
+            json={
+                "job_id": "nonexistent",
+            },
+        )
         assert resp.status_code == 404
 
     def test_mlflow_log_job_not_completed(self, client, training_data):
@@ -265,11 +276,19 @@ class TestMlflowLogEndpoint:
         from haute.routes.modelling import _store
 
         # Inject a fake running job
-        _store.jobs["fake_running"] = {"status": "running", "progress": 0.5, "message": "Training...", "created_at": time.time()}
+        _store.jobs["fake_running"] = {
+            "status": "running",
+            "progress": 0.5,
+            "message": "Training...",
+            "created_at": time.time(),
+        }
         try:
-            resp = client.post("/api/modelling/mlflow/log", json={
-                "job_id": "fake_running",
-            })
+            resp = client.post(
+                "/api/modelling/mlflow/log",
+                json={
+                    "job_id": "fake_running",
+                },
+            )
             assert resp.status_code == 400
             assert "not completed" in resp.json()["detail"]
         finally:
@@ -371,11 +390,13 @@ class TestOutputDirDefault:
         from haute.executor import _pipeline_dir
         from tests.conftest import make_graph
 
-        graph = make_graph({
-            "nodes": [],
-            "edges": [],
-            "source_file": "/projects/rating/main.py",
-        })
+        graph = make_graph(
+            {
+                "nodes": [],
+                "edges": [],
+                "source_file": "/projects/rating/main.py",
+            }
+        )
         p_dir = _pipeline_dir(graph)
         assert p_dir is not None
         assert str(p_dir / "outputs").replace("\\", "/").endswith("rating/outputs")
@@ -456,7 +477,9 @@ class TestEstimateEndpoint:
 
     def test_estimate_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "nonexistent"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "node_id": "nonexistent"}
+        )
         assert resp.status_code == 404
 
     def test_estimate_exception_returns_empty(self, client, training_data):
@@ -750,10 +773,21 @@ class TestExecuteAndSinkCheckpointCleanup:
         store = JobStore()
         service = TrainService(store)
 
-        graph = make_graph({
-            "nodes": [{"id": "n", "data": {"label": "n", "nodeType": "dataSource", "config": {"path": "x.parquet"}}}],
-            "edges": [],
-        })
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "n",
+                        "data": {
+                            "label": "n",
+                            "nodeType": "dataSource",
+                            "config": {"path": "x.parquet"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
         body = TrainRequest(graph=graph, node_id="n")
         job_id = store.create_job({"status": "running"})
 

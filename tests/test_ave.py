@@ -19,7 +19,12 @@ class TestAveNumericBins:
         y_pred = y_true + rng.randn(n) * 0.1
 
         result = compute_ave_per_feature(
-            df, ["feat"], [], y_true, y_pred, n_bins=10,
+            df,
+            ["feat"],
+            [],
+            y_true,
+            y_pred,
+            n_bins=10,
         )
         assert len(result) == 1
         assert result[0]["feature"] == "feat"
@@ -52,7 +57,11 @@ class TestAveCategoricalBins:
         y_pred = y_true + 0.1
 
         result = compute_ave_per_feature(
-            df, ["cat"], ["cat"], y_true, y_pred,
+            df,
+            ["cat"],
+            ["cat"],
+            y_true,
+            y_pred,
         )
         assert len(result) == 1
         assert result[0]["type"] == "categorical"
@@ -141,7 +150,12 @@ class TestAveManyCategories:
         y_pred = y_true
 
         result = compute_ave_per_feature(
-            df, ["c"], ["c"], y_true, y_pred, max_categories=15,
+            df,
+            ["c"],
+            ["c"],
+            y_true,
+            y_pred,
+            max_categories=15,
         )
         labels = [b["label"] for b in result[0]["bins"]]
         assert len(labels) <= 16  # 15 + "Other"
@@ -157,7 +171,12 @@ class TestAveMaxFeatures:
         y_pred = y_true
 
         result = compute_ave_per_feature(
-            df, [f"f{i}" for i in range(10)], [], y_true, y_pred, max_features=3,
+            df,
+            [f"f{i}" for i in range(10)],
+            [],
+            y_true,
+            y_pred,
+            max_features=3,
         )
         assert len(result) == 3
 
@@ -242,7 +261,11 @@ class TestAveMissingFeature:
         y_pred = np.array([1.1, 2.1, 3.1])
 
         result = compute_ave_per_feature(
-            df, ["x", "nonexistent"], [], y_true, y_pred,
+            df,
+            ["x", "nonexistent"],
+            [],
+            y_true,
+            y_pred,
         )
         assert len(result) == 1
         assert result[0]["feature"] == "x"
@@ -251,13 +274,20 @@ class TestAveMissingFeature:
 class TestAveEmpty:
     def test_empty_features(self):
         result = compute_ave_per_feature(
-            pl.DataFrame({"x": [1.0]}), [], [], np.array([1.0]), np.array([1.0]),
+            pl.DataFrame({"x": [1.0]}),
+            [],
+            [],
+            np.array([1.0]),
+            np.array([1.0]),
         )
         assert result == []
 
     def test_empty_arrays(self):
         result = compute_ave_per_feature(
             pl.DataFrame({"x": pl.Series([], dtype=pl.Float64)}),
-            ["x"], [], np.array([]), np.array([]),
+            ["x"],
+            [],
+            np.array([]),
+            np.array([]),
         )
         assert result == []

@@ -18,10 +18,12 @@ from tests.conftest import make_node as _n
 
 def _make_codegen_node(node_type: str, config: dict, label: str = "TestNode"):
     """Build a GraphNode for codegen testing."""
-    return _n({
-        "id": "test_id",
-        "data": {"label": label, "nodeType": node_type, "config": config},
-    })
+    return _n(
+        {
+            "id": "test_id",
+            "data": {"label": label, "nodeType": node_type, "config": config},
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,15 +167,23 @@ class TestGenBanding:
         node = _make_codegen_node(
             "banding",
             {
-                "factors": [{
-                    "column": "age",
-                    "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [
-                        {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                        {"op1": ">=", "val1": 25, "op2": "<=", "val2": 100, "assignment": "adult"},
-                    ],
-                }],
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "rules": [
+                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
+                            {
+                                "op1": ">=",
+                                "val1": 25,
+                                "op2": "<=",
+                                "val2": 100,
+                                "assignment": "adult",
+                            },
+                        ],
+                    }
+                ],
             },
             label="AgeBanding",
         )
@@ -187,15 +197,17 @@ class TestGenBanding:
         node = _make_codegen_node(
             "banding",
             {
-                "factors": [{
-                    "column": "age",
-                    "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "default": "unknown",
-                    "rules": [
-                        {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                    ],
-                }],
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "default": "unknown",
+                        "rules": [
+                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
+                        ],
+                    }
+                ],
             },
             label="WithDefault",
         )
@@ -239,12 +251,14 @@ class TestGenBanding:
         node = _make_codegen_node(
             "banding",
             {
-                "factors": [{
-                    "column": "vehicle",
-                    "outputColumn": "vehicle_group",
-                    "banding": "categorical",
-                    "rules": [{"value": "car", "assignment": "auto"}],
-                }],
+                "factors": [
+                    {
+                        "column": "vehicle",
+                        "outputColumn": "vehicle_group",
+                        "banding": "categorical",
+                        "rules": [{"value": "car", "assignment": "auto"}],
+                    }
+                ],
             },
             label="CatBand",
         )
@@ -264,14 +278,16 @@ class TestGenBanding:
         node = _make_codegen_node(
             "banding",
             {
-                "factors": [{
-                    "column": "x",
-                    "outputColumn": "x_band",
-                    "banding": "continuous",
-                    "rules": [
-                        {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"},
-                    ],
-                }],
+                "factors": [
+                    {
+                        "column": "x",
+                        "outputColumn": "x_band",
+                        "banding": "continuous",
+                        "rules": [
+                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"},
+                        ],
+                    }
+                ],
             },
             label="NoSrc",
         )
@@ -389,7 +405,7 @@ class TestGenScenarioExpander:
         )
         code = _node_to_code(node, source_names=["data"])
         assert "df = data" in code
-        assert 'df = df.with_columns' in code
+        assert "df = df.with_columns" in code
         _compile_node_code(code)
 
     def test_empty_code_uses_passthrough(self) -> None:
@@ -490,37 +506,46 @@ class TestGraphToCodeWithBuilders:
     """Integration tests: graph_to_code with specific builder node types."""
 
     def test_pipeline_with_banding_compiles(self) -> None:
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "src",
-                    "data": {
-                        "label": "Source",
-                        "nodeType": "dataSource",
-                        "config": {"path": "data.parquet"},
-                    },
-                },
-                {
-                    "id": "band",
-                    "data": {
-                        "label": "Banding",
-                        "nodeType": "banding",
-                        "config": {
-                            "factors": [{
-                                "column": "age",
-                                "outputColumn": "age_band",
-                                "banding": "continuous",
-                                "rules": [{
-                                    "op1": ">=", "val1": 0, "op2": "<",
-                                    "val2": 50, "assignment": "u50",
-                                }],
-                            }],
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [{"id": "e1", "source": "src", "target": "band"}],
-        })
+                    {
+                        "id": "band",
+                        "data": {
+                            "label": "Banding",
+                            "nodeType": "banding",
+                            "config": {
+                                "factors": [
+                                    {
+                                        "column": "age",
+                                        "outputColumn": "age_band",
+                                        "banding": "continuous",
+                                        "rules": [
+                                            {
+                                                "op1": ">=",
+                                                "val1": 0,
+                                                "op2": "<",
+                                                "val2": 50,
+                                                "assignment": "u50",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "band"}],
+            }
+        )
         code = graph_to_code(graph)
         assert "def Source()" in code
         assert "def Banding(Source: pl.LazyFrame)" in code
@@ -528,89 +553,95 @@ class TestGraphToCodeWithBuilders:
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_scenario_expander_compiles(self) -> None:
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "src",
-                    "data": {
-                        "label": "Data",
-                        "nodeType": "dataSource",
-                        "config": {"path": "data.parquet"},
-                    },
-                },
-                {
-                    "id": "exp",
-                    "data": {
-                        "label": "Expand",
-                        "nodeType": "scenarioExpander",
-                        "config": {
-                            "column_name": "sv",
-                            "min_value": 0.8,
-                            "max_value": 1.2,
-                            "steps": 5,
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Data",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [{"id": "e1", "source": "src", "target": "exp"}],
-        })
+                    {
+                        "id": "exp",
+                        "data": {
+                            "label": "Expand",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "column_name": "sv",
+                                "min_value": 0.8,
+                                "max_value": 1.2,
+                                "steps": 5,
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "exp"}],
+            }
+        )
         code = graph_to_code(graph)
         assert "def Expand(Data: pl.LazyFrame)" in code
         assert 'pipeline.connect("Data", "Expand")' in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_optimiser_compiles(self) -> None:
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "src",
-                    "data": {
-                        "label": "Data",
-                        "nodeType": "dataSource",
-                        "config": {"path": "data.parquet"},
-                    },
-                },
-                {
-                    "id": "opt",
-                    "data": {
-                        "label": "Optimise",
-                        "nodeType": "optimiser",
-                        "config": {
-                            "mode": "online",
-                            "objective": "profit",
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Data",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
                         },
                     },
-                },
-            ],
-            "edges": [{"id": "e1", "source": "src", "target": "opt"}],
-        })
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "Optimise",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "profit",
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "opt"}],
+            }
+        )
         code = graph_to_code(graph)
         assert "def Optimise(Data: pl.LazyFrame)" in code
         assert 'pipeline.connect("Data", "Optimise")' in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_api_input_compiles(self) -> None:
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "api",
-                    "data": {
-                        "label": "API",
-                        "nodeType": "apiInput",
-                        "config": {"path": "data/input.parquet"},
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "api",
+                        "data": {
+                            "label": "API",
+                            "nodeType": "apiInput",
+                            "config": {"path": "data/input.parquet"},
+                        },
                     },
-                },
-                {
-                    "id": "t",
-                    "data": {
-                        "label": "Process",
-                        "nodeType": "polars",
-                        "config": {"code": ".with_columns(y=pl.lit(1))"},
+                    {
+                        "id": "t",
+                        "data": {
+                            "label": "Process",
+                            "nodeType": "polars",
+                            "config": {"code": ".with_columns(y=pl.lit(1))"},
+                        },
                     },
-                },
-            ],
-            "edges": [{"id": "e1", "source": "api", "target": "t"}],
-        })
+                ],
+                "edges": [{"id": "e1", "source": "api", "target": "t"}],
+            }
+        )
         code = graph_to_code(graph)
         assert "def API()" in code
         assert "def Process(API: pl.LazyFrame)" in code
@@ -618,24 +649,26 @@ class TestGraphToCodeWithBuilders:
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_constant_compiles(self) -> None:
-        graph = _g({
-            "nodes": [
-                {
-                    "id": "c",
-                    "data": {
-                        "label": "Params",
-                        "nodeType": "constant",
-                        "config": {
-                            "values": [
-                                {"name": "rate", "value": "0.05"},
-                                {"name": "cap", "value": "1000"},
-                            ],
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "c",
+                        "data": {
+                            "label": "Params",
+                            "nodeType": "constant",
+                            "config": {
+                                "values": [
+                                    {"name": "rate", "value": "0.05"},
+                                    {"name": "cap", "value": "1000"},
+                                ],
+                            },
                         },
                     },
-                },
-            ],
-            "edges": [],
-        })
+                ],
+                "edges": [],
+            }
+        )
         code = graph_to_code(graph)
         assert "def Params()" in code
         # Constant nodes keep the inline decorator (no config folder)
@@ -646,44 +679,75 @@ class TestGraphToCodeWithBuilders:
 
     def test_full_pricing_pipeline_compiles(self) -> None:
         """A realistic multi-node pipeline: source -> banding -> expander -> optimiser -> output."""
-        graph = _g({
-            "nodes": [
-                {"id": "s", "data": {
-                    "label": "Source", "nodeType": "dataSource",
-                    "config": {"path": "d.parquet"},
-                }},
-                {"id": "b", "data": {
-                    "label": "Band", "nodeType": "banding", "config": {
-                        "factors": [{
-                            "column": "age", "outputColumn": "age_band",
-                            "banding": "continuous",
-                            "rules": [{
-                                "op1": ">=", "val1": 0, "op2": "<",
-                                "val2": 50, "assignment": "u50",
-                            }],
-                        }],
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "s",
+                        "data": {
+                            "label": "Source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
                     },
-                }},
-                {"id": "e", "data": {
-                    "label": "Expand", "nodeType": "scenarioExpander",
-                    "config": {"column_name": "sv", "steps": 5},
-                }},
-                {"id": "o", "data": {
-                    "label": "Opt", "nodeType": "optimiser",
-                    "config": {"mode": "online", "objective": "profit"},
-                }},
-                {"id": "out", "data": {
-                    "label": "Result", "nodeType": "output",
-                    "config": {"fields": ["age", "sv"]},
-                }},
-            ],
-            "edges": [
-                {"id": "e1", "source": "s", "target": "b"},
-                {"id": "e2", "source": "b", "target": "e"},
-                {"id": "e3", "source": "e", "target": "o"},
-                {"id": "e4", "source": "o", "target": "out"},
-            ],
-        })
+                    {
+                        "id": "b",
+                        "data": {
+                            "label": "Band",
+                            "nodeType": "banding",
+                            "config": {
+                                "factors": [
+                                    {
+                                        "column": "age",
+                                        "outputColumn": "age_band",
+                                        "banding": "continuous",
+                                        "rules": [
+                                            {
+                                                "op1": ">=",
+                                                "val1": 0,
+                                                "op2": "<",
+                                                "val2": 50,
+                                                "assignment": "u50",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "id": "e",
+                        "data": {
+                            "label": "Expand",
+                            "nodeType": "scenarioExpander",
+                            "config": {"column_name": "sv", "steps": 5},
+                        },
+                    },
+                    {
+                        "id": "o",
+                        "data": {
+                            "label": "Opt",
+                            "nodeType": "optimiser",
+                            "config": {"mode": "online", "objective": "profit"},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "Result",
+                            "nodeType": "output",
+                            "config": {"fields": ["age", "sv"]},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "s", "target": "b"},
+                    {"id": "e2", "source": "b", "target": "e"},
+                    {"id": "e3", "source": "e", "target": "o"},
+                    {"id": "e4", "source": "o", "target": "out"},
+                ],
+            }
+        )
         code = graph_to_code(graph, pipeline_name="pricing")
         compile(code, "<test>", "exec")
         # Verify correct edges
@@ -720,9 +784,15 @@ class TestCodegenExecValidation:
         )
         # Find all functions defined via @pipeline.<type> decorators
         func_names = [
-            name for name, obj in ns.items()
-            if callable(obj) and not name.startswith("_") and name not in (
-                "pl", "haute", "pipeline",
+            name
+            for name, obj in ns.items()
+            if callable(obj)
+            and not name.startswith("_")
+            and name
+            not in (
+                "pl",
+                "haute",
+                "pipeline",
             )
         ]
         assert func_names, "No functions found in generated code"
@@ -771,9 +841,13 @@ class TestCodegenExecValidation:
             label="result",
         )
         code = _node_to_code(node, source_names=["upstream"])
-        input_lf = pl.DataFrame({
-            "premium": [1.0], "Area": ["A"], "extra": [99],
-        }).lazy()
+        input_lf = pl.DataFrame(
+            {
+                "premium": [1.0],
+                "Area": ["A"],
+                "extra": [99],
+            }
+        ).lazy()
         result = self._exec_generated(code, input_df=input_lf)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
@@ -791,14 +865,16 @@ class TestCodegenExecValidation:
         node = _make_codegen_node(
             "banding",
             {
-                "factors": [{
-                    "column": "age",
-                    "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [
-                        {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
-                    ],
-                }],
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "rules": [
+                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
+                        ],
+                    }
+                ],
             },
             label="band_age",
         )

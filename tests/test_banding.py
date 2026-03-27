@@ -101,7 +101,6 @@ class TestApplyBandingContinuous:
         result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
         assert result["band"].to_list() == ["low", "high"]
 
-
     def test_all_rows_matched(self):
         """When every row matches a rule, no default values appear."""
         lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
@@ -145,7 +144,9 @@ class TestApplyBandingContinuous:
 
 class TestApplyBandingCategorical:
     def test_basic_grouping(self):
-        lf = pl.DataFrame({"prop": ["Semi-detached House", "Detached House", "Mid terrace", "Flat"]}).lazy()
+        lf = pl.DataFrame(
+            {"prop": ["Semi-detached House", "Detached House", "Mid terrace", "Flat"]}
+        ).lazy()
         rules = [
             {"value": "Semi-detached House", "assignment": "House"},
             {"value": "Detached House", "assignment": "House"},
@@ -338,26 +339,29 @@ class TestBandingCodegen:
 
 class TestMultiFactor:
     def test_executor_applies_all_factors(self):
-        node = _multi_banding_node("multi", [
-            {
-                "banding": "continuous",
-                "column": "age",
-                "outputColumn": "age_band",
-                "rules": [
-                    {"op1": "<=", "val1": 25, "assignment": "young"},
-                    {"op1": ">", "val1": 25, "assignment": "older"},
-                ],
-            },
-            {
-                "banding": "categorical",
-                "column": "prop",
-                "outputColumn": "prop_band",
-                "rules": [
-                    {"value": "House", "assignment": "Residential"},
-                    {"value": "Flat", "assignment": "Residential"},
-                ],
-            },
-        ])
+        node = _multi_banding_node(
+            "multi",
+            [
+                {
+                    "banding": "continuous",
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "rules": [
+                        {"op1": "<=", "val1": 25, "assignment": "young"},
+                        {"op1": ">", "val1": 25, "assignment": "older"},
+                    ],
+                },
+                {
+                    "banding": "categorical",
+                    "column": "prop",
+                    "outputColumn": "prop_band",
+                    "rules": [
+                        {"value": "House", "assignment": "Residential"},
+                        {"value": "Flat", "assignment": "Residential"},
+                    ],
+                },
+            ],
+        )
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"age": [20, 40], "prop": ["House", "Office"]}).lazy()
         result = fn(lf).collect()
@@ -366,20 +370,23 @@ class TestMultiFactor:
 
     def test_executor_skips_incomplete_factors(self):
         """Factors with missing column/output are silently skipped."""
-        node = _multi_banding_node("partial", [
-            {
-                "banding": "continuous",
-                "column": "x",
-                "outputColumn": "x_band",
-                "rules": [{"op1": "<=", "val1": 10, "assignment": "low"}],
-            },
-            {
-                "banding": "continuous",
-                "column": "",
-                "outputColumn": "",
-                "rules": [],
-            },
-        ])
+        node = _multi_banding_node(
+            "partial",
+            [
+                {
+                    "banding": "continuous",
+                    "column": "x",
+                    "outputColumn": "x_band",
+                    "rules": [{"op1": "<=", "val1": 10, "assignment": "low"}],
+                },
+                {
+                    "banding": "continuous",
+                    "column": "",
+                    "outputColumn": "",
+                    "rules": [],
+                },
+            ],
+        )
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"x": [5]}).lazy()
         result = fn(lf).collect()
@@ -389,10 +396,23 @@ class TestMultiFactor:
     def test_codegen_multi_factor_uses_factors_kwarg(self):
         from haute.codegen import graph_to_code
 
-        node = _multi_banding_node("multi", [
-            {"banding": "continuous", "column": "a", "outputColumn": "a_band", "rules": [{"op1": "<=", "val1": 5, "assignment": "low"}]},
-            {"banding": "categorical", "column": "b", "outputColumn": "b_band", "rules": [{"value": "X", "assignment": "Y"}]},
-        ])
+        node = _multi_banding_node(
+            "multi",
+            [
+                {
+                    "banding": "continuous",
+                    "column": "a",
+                    "outputColumn": "a_band",
+                    "rules": [{"op1": "<=", "val1": 5, "assignment": "low"}],
+                },
+                {
+                    "banding": "categorical",
+                    "column": "b",
+                    "outputColumn": "b_band",
+                    "rules": [{"value": "X", "assignment": "Y"}],
+                },
+            ],
+        )
         graph = PipelineGraph(nodes=[node], edges=[])
         code = graph_to_code(graph, "test")
         assert 'config="config/banding/multi.json"' in code
@@ -402,10 +422,23 @@ class TestMultiFactor:
         from haute.codegen import graph_to_code
         from haute.parser import parse_pipeline_source
 
-        node = _multi_banding_node("multi", [
-            {"banding": "continuous", "column": "a", "outputColumn": "a_band", "rules": [{"op1": "<=", "val1": 5, "assignment": "low"}]},
-            {"banding": "categorical", "column": "b", "outputColumn": "b_band", "rules": [{"value": "X", "assignment": "Y"}]},
-        ])
+        node = _multi_banding_node(
+            "multi",
+            [
+                {
+                    "banding": "continuous",
+                    "column": "a",
+                    "outputColumn": "a_band",
+                    "rules": [{"op1": "<=", "val1": 5, "assignment": "low"}],
+                },
+                {
+                    "banding": "categorical",
+                    "column": "b",
+                    "outputColumn": "b_band",
+                    "rules": [{"value": "X", "assignment": "Y"}],
+                },
+            ],
+        )
         graph = PipelineGraph(nodes=[node], edges=[])
         code = graph_to_code(graph, "test")
 

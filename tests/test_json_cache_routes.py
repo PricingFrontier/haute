@@ -46,9 +46,12 @@ class TestBuildJsonCache:
         }
 
         with patch("haute._json_flatten.build_json_cache", return_value=fake_result):
-            resp = client.post("/api/json-cache/build", json={
-                "path": "data.jsonl",
-            })
+            resp = client.post(
+                "/api/json-cache/build",
+                json={
+                    "path": "data.jsonl",
+                },
+            )
 
         assert resp.status_code == 200
         data = resp.json()
@@ -72,10 +75,13 @@ class TestBuildJsonCache:
         }
 
         with patch("haute._json_flatten.build_json_cache", return_value=fake_result) as mock_build:
-            resp = client.post("/api/json-cache/build", json={
-                "path": "data.jsonl",
-                "config_path": "config/quote_input/my_api.json",
-            })
+            resp = client.post(
+                "/api/json-cache/build",
+                json={
+                    "path": "data.jsonl",
+                    "config_path": "config/quote_input/my_api.json",
+                },
+            )
 
         assert resp.status_code == 200
         mock_build.assert_called_once_with(

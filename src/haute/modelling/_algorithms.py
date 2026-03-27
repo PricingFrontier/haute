@@ -18,7 +18,7 @@ import polars as pl
 from haute._polars_utils import _malloc_trim  # noqa: F401 — re-exported for backward compat
 from haute._ram_estimate import available_ram_bytes
 
-_MEM_LOG = Path.home() / "training_mem.log"
+_MEM_LOG = Path(os.environ.get("HAUTE_MEM_LOG", str(Path.home() / "training_mem.log")))
 
 
 def _get_rss_mb() -> float:

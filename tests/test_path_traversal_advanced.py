@@ -28,6 +28,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_json(path: Path, data: dict) -> None:
     """Write a dict as JSON to the given path, creating parents."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,9 +98,7 @@ class TestConfigIOLoadTraversal:
         secret.write_text(json.dumps({"leaked": True}))
 
         with pytest.raises(ValueError, match="outside project root"):
-            load_node_config(
-                "config/banding/../../../secret.json", base_dir=project
-            )
+            load_node_config("config/banding/../../../secret.json", base_dir=project)
 
 
 # =========================================================================
@@ -194,13 +193,17 @@ class TestModelScorerConfigTraversal:
         project = tmp_path / "org" / "project"
         project.mkdir(parents=True)
         secret = tmp_path / "secret.json"
-        secret.write_text(json.dumps({
-            "sourceType": "run",
-            "run_id": "abc123",
-            "artifact_path": "model",
-            "task": "regression",
-            "output_column": "pred",
-        }))
+        secret.write_text(
+            json.dumps(
+                {
+                    "sourceType": "run",
+                    "run_id": "abc123",
+                    "artifact_path": "model",
+                    "task": "regression",
+                    "output_column": "pred",
+                }
+            )
+        )
 
         with pytest.raises(ValueError, match="outside project root"):
             score_from_config(config="../../secret.json", base_dir=str(project))
@@ -210,13 +213,17 @@ class TestModelScorerConfigTraversal:
         from haute._model_scorer import score_from_config
 
         config_file = tmp_path / "stolen_config.json"
-        config_file.write_text(json.dumps({
-            "sourceType": "registered",
-            "registered_model": "evil_model",
-            "version": "1",
-            "task": "classification",
-            "output_column": "pred",
-        }))
+        config_file.write_text(
+            json.dumps(
+                {
+                    "sourceType": "registered",
+                    "registered_model": "evil_model",
+                    "version": "1",
+                    "task": "classification",
+                    "output_column": "pred",
+                }
+            )
+        )
 
         with pytest.raises(ValueError, match="outside project root"):
             score_from_config(
@@ -358,6 +365,7 @@ class TestWindowsMixedSeparatorTraversal:
 
         if sys.platform == "win32":
             from fastapi import HTTPException
+
             with pytest.raises(HTTPException) as exc_info:
                 validate_safe_path(tmp_path, "..\\..\\Windows\\System32\\config\\SAM")
             assert exc_info.value.status_code == 403
@@ -373,6 +381,7 @@ class TestWindowsMixedSeparatorTraversal:
 
         if sys.platform == "win32":
             from fastapi import HTTPException
+
             with pytest.raises(HTTPException) as exc_info:
                 validate_safe_path(tmp_path, "sub/..\\..\\..\\Windows\\win.ini")
             assert exc_info.value.status_code == 403
@@ -603,9 +612,7 @@ class TestFindConfigByFuncNameTraversal:
         target.write_text(json.dumps({"cross_folder": True}))
 
         # func_name that crosses into model_scoring from banding
-        result = find_config_by_func_name(
-            "../model_scoring/victim", base_dir=tmp_path
-        )
+        result = find_config_by_func_name("../model_scoring/victim", base_dir=tmp_path)
         if result is not None:
             config_data, _ = result
             assert config_data.get("cross_folder") is True

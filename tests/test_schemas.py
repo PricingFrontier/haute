@@ -74,7 +74,8 @@ class TestModelDumpRoundtrip:
                 GraphNode(
                     id="src",
                     data=GraphNodeData(
-                        label="Source", nodeType="dataSource",
+                        label="Source",
+                        nodeType="dataSource",
                         config={"path": "d.parquet"},
                     ),
                 ),

@@ -34,13 +34,15 @@ def sample_df() -> pl.DataFrame:
     """Small DataFrame for testing GLM fits."""
     np.random.seed(42)
     n = 500
-    return pl.DataFrame({
-        "driver_age": np.random.randint(18, 70, n),
-        "vehicle_age": np.random.randint(0, 20, n),
-        "area": np.random.choice(["A", "B", "C", "D"], n),
-        "exposure": np.random.uniform(0.5, 1.0, n),
-        "claim_count": np.random.poisson(0.1, n),
-    })
+    return pl.DataFrame(
+        {
+            "driver_age": np.random.randint(18, 70, n),
+            "vehicle_age": np.random.randint(0, 20, n),
+            "area": np.random.choice(["A", "B", "C", "D"], n),
+            "exposure": np.random.uniform(0.5, 1.0, n),
+            "claim_count": np.random.poisson(0.1, n),
+        }
+    )
 
 
 @pytest.fixture()
@@ -196,12 +198,14 @@ class TestGLMFit:
         vehicle_age = np.random.randint(0, 15, n).astype(float)
         rate = np.exp(-2.0 + 0.01 * driver_age - 0.02 * vehicle_age)
         claim_count = np.random.poisson(rate)
-        df = pl.DataFrame({
-            "driver_age": driver_age,
-            "vehicle_age": vehicle_age,
-            "exposure": np.ones(n),
-            "claim_count": claim_count,
-        })
+        df = pl.DataFrame(
+            {
+                "driver_age": driver_age,
+                "vehicle_age": vehicle_age,
+                "exposure": np.ones(n),
+                "claim_count": claim_count,
+            }
+        )
         result = algo.fit(
             train_df=df,
             features=["driver_age", "vehicle_age"],
@@ -240,7 +244,13 @@ class TestGLMFit:
         """fit() should raise if train_df is None."""
         with pytest.raises(ValueError, match="requires train_df"):
             algo.fit(
-                None, [], [], "target", None, {}, "regression",
+                None,
+                [],
+                [],
+                "target",
+                None,
+                {},
+                "regression",
             )
 
     def test_fit_calls_on_iteration(self, algo, sample_df):
@@ -357,7 +367,9 @@ class TestGLMSaveLoad:
             task="regression",
         )
         preds_original = algo.predict(
-            fit_result.model, sample_df, ["driver_age", "vehicle_age"],
+            fit_result.model,
+            sample_df,
+            ["driver_age", "vehicle_age"],
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:

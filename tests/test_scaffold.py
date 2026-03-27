@@ -631,8 +631,7 @@ class TestDockerfileStructure:
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
         lines = df.strip().splitlines()
         instructions = [
-            line.split()[0] for line in lines
-            if line.strip() and not line.startswith("#")
+            line.split()[0] for line in lines if line.strip() and not line.startswith("#")
         ]
         assert "FROM" in instructions
         assert "COPY" in instructions

@@ -18,15 +18,16 @@ if TYPE_CHECKING:
 def toml_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "haute.toml").write_text(
-        '[project]\nname = "t"\npipeline = "main.py"\n'
-        '[deploy]\nmodel_name = "motor-pricing"\n',
+        '[project]\nname = "t"\npipeline = "main.py"\n[deploy]\nmodel_name = "motor-pricing"\n',
     )
     return tmp_path
 
 
 class TestStatus:
     def test_no_model_name_loads_from_toml(
-        self, runner: CliRunner, toml_project: Path,
+        self,
+        runner: CliRunner,
+        toml_project: Path,
     ) -> None:
         mock_info = {
             "model_name": "motor-pricing",
@@ -54,7 +55,9 @@ class TestStatus:
         assert "custom-model" in result.output
 
     def test_version_only_flag(
-        self, runner: CliRunner, toml_project: Path,
+        self,
+        runner: CliRunner,
+        toml_project: Path,
     ) -> None:
         mock_info = {"latest_version": 5}
         with patch("haute.deploy._mlflow.get_deploy_status", return_value=mock_info):
@@ -64,7 +67,9 @@ class TestStatus:
         assert "5" in result.output.strip().splitlines()[-1]
 
     def test_model_not_found(
-        self, runner: CliRunner, toml_project: Path,
+        self,
+        runner: CliRunner,
+        toml_project: Path,
     ) -> None:
         mock_info = {"status": "not_found"}
         with patch("haute.deploy._mlflow.get_deploy_status", return_value=mock_info):
@@ -73,7 +78,9 @@ class TestStatus:
         assert "not found" in result.output.lower()
 
     def test_mlflow_import_error(
-        self, runner: CliRunner, toml_project: Path,
+        self,
+        runner: CliRunner,
+        toml_project: Path,
     ) -> None:
         """Simulated ImportError when mlflow is missing."""
         with patch(
@@ -85,7 +92,9 @@ class TestStatus:
         assert "mlflow" in result.output.lower()
 
     def test_missing_optional_fields(
-        self, runner: CliRunner, toml_project: Path,
+        self,
+        runner: CliRunner,
+        toml_project: Path,
     ) -> None:
         """Status display should handle missing optional keys gracefully."""
         mock_info = {
@@ -109,7 +118,9 @@ class TestStatusPassesCatalogSchema:
     """Verify the CLI loads catalog/schema from haute.toml and forwards them."""
 
     def test_default_catalog_schema_from_toml(
-        self, runner: CliRunner, toml_project: Path,
+        self,
+        runner: CliRunner,
+        toml_project: Path,
     ) -> None:
         """Default DatabricksConfig uses catalog='main', schema='pricing'."""
         mock_info = {
@@ -122,11 +133,16 @@ class TestStatusPassesCatalogSchema:
             result = runner.invoke(cli, ["status"])
         assert result.exit_code == 0, result.output
         mock_fn.assert_called_once_with(
-            "motor-pricing", catalog="main", schema="pricing",
+            "motor-pricing",
+            catalog="main",
+            schema="pricing",
         )
 
     def test_custom_catalog_schema_from_toml(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Custom catalog/schema from haute.toml are forwarded correctly."""
         monkeypatch.chdir(tmp_path)
@@ -145,11 +161,16 @@ class TestStatusPassesCatalogSchema:
             result = runner.invoke(cli, ["status"])
         assert result.exit_code == 0, result.output
         mock_fn.assert_called_once_with(
-            "home-pricing", catalog="prod_catalog", schema="actuarial",
+            "home-pricing",
+            catalog="prod_catalog",
+            schema="actuarial",
         )
 
     def test_explicit_model_name_still_uses_toml_catalog_schema(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Even with an explicit model_name arg, catalog/schema come from config."""
         monkeypatch.chdir(tmp_path)
@@ -168,11 +189,16 @@ class TestStatusPassesCatalogSchema:
             result = runner.invoke(cli, ["status", "override-model"])
         assert result.exit_code == 0, result.output
         mock_fn.assert_called_once_with(
-            "override-model", catalog="uc_cat", schema="uc_sch",
+            "override-model",
+            catalog="uc_cat",
+            schema="uc_sch",
         )
 
     def test_no_toml_explicit_model_uses_defaults(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without haute.toml, explicit model_name should use default catalog/schema."""
         monkeypatch.chdir(tmp_path)
@@ -189,5 +215,7 @@ class TestStatusPassesCatalogSchema:
         assert result.exit_code == 0, result.output
         # Defaults from DatabricksConfig: catalog="main", schema="pricing"
         mock_fn.assert_called_once_with(
-            "my-model", catalog="main", schema="pricing",
+            "my-model",
+            catalog="main",
+            schema="pricing",
         )

@@ -279,7 +279,7 @@ async def _file_watcher() -> None:
                 # statements) which hides real edits from a graph-only
                 # fingerprint.  Checking before parse skips the expensive
                 # AST walk when the file is byte-identical.
-                fp = hashlib.md5(p.read_bytes()).hexdigest()
+                fp = hashlib.sha256(p.read_bytes()).hexdigest()
                 fp_key = str(p.resolve())
                 if _last_broadcast_fp.get(fp_key) == fp:
                     logger.info("graph_unchanged", file=p.name)

@@ -35,10 +35,10 @@ from haute.routes._helpers import find_typed_node
 from haute.routes._job_store import JobStore
 from haute.schemas import OptimiserSolveRequest, OptimiserSolveResponse
 
-logger = get_logger(component="server.optimiser")
+logger = get_logger(component="server.optimiser.solve")
 
 # ── Default constants ─────────────────────────────────────────────
-_DEFAULT_TIMEOUT = 300  # seconds — max wall-clock time for a solve job
+_DEFAULT_TIMEOUT = int(os.environ.get("HAUTE_SOLVER_TIMEOUT", "300"))
 _HISTOGRAM_BINS = 20  # bin count for scenario-value distribution histogram
 _DEFAULT_MAX_ITER = 50  # max solver iterations (online & ratebook)
 _DEFAULT_CHUNK_SIZE = 500_000  # rows per chunk for solver processing

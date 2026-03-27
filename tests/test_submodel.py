@@ -17,6 +17,7 @@ from tests.conftest import make_graph as _g
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _write(tmp_path: Path, name: str, code: str) -> Path:
     p = tmp_path / name
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -28,69 +29,131 @@ def _write(tmp_path: Path, name: str, code: str) -> Path:
 # Fixtures — minimal graphs
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def flat_graph() -> PipelineGraph:
     """A simple 3-node flat graph (no submodels)."""
-    return _g({
-        "nodes": [
-            {"id": "src", "type": "dataSource", "position": {"x": 0, "y": 0},
-             "data": {"label": "Source", "nodeType": "dataSource", "config": {"path": "data/in.parquet"}}},
-            {"id": "tx", "type": "polars", "position": {"x": 200, "y": 0},
-             "data": {"label": "Transform", "nodeType": "polars", "config": {"code": ".select('x')"}}},
-            {"id": "out", "type": "output", "position": {"x": 400, "y": 0},
-             "data": {"label": "Output", "nodeType": "output", "config": {"fields": ["x"]}}},
-        ],
-        "edges": [
-            {"id": "e1", "source": "src", "target": "tx"},
-            {"id": "e2", "source": "tx", "target": "out"},
-        ],
-    })
+    return _g(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "type": "dataSource",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data/in.parquet"},
+                    },
+                },
+                {
+                    "id": "tx",
+                    "type": "polars",
+                    "position": {"x": 200, "y": 0},
+                    "data": {
+                        "label": "Transform",
+                        "nodeType": "polars",
+                        "config": {"code": ".select('x')"},
+                    },
+                },
+                {
+                    "id": "out",
+                    "type": "output",
+                    "position": {"x": 400, "y": 0},
+                    "data": {"label": "Output", "nodeType": "output", "config": {"fields": ["x"]}},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "src", "target": "tx"},
+                {"id": "e2", "source": "tx", "target": "out"},
+            ],
+        }
+    )
 
 
 @pytest.fixture()
 def submodel_graph() -> PipelineGraph:
     """A graph with a submodel node wrapping tx+out."""
-    return _g({
-        "nodes": [
-            {"id": "src", "type": "dataSource", "position": {"x": 0, "y": 0},
-             "data": {"label": "Source", "nodeType": "dataSource", "config": {"path": "data/in.parquet"}}},
-            {"id": "submodel__scoring", "type": "submodel", "position": {"x": 200, "y": 0},
-             "data": {"label": "scoring", "nodeType": "submodel", "config": {
-                 "file": "modules/scoring.py",
-                 "childNodeIds": ["tx", "out"],
-                 "inputPorts": ["tx"],
-                 "outputPorts": ["out"],
-             }}},
-        ],
-        "edges": [
-            {"id": "e_src_submodel__scoring__tx", "source": "src", "target": "submodel__scoring",
-             "targetHandle": "in__tx"},
-        ],
-        "submodels": {
-            "scoring": {
-                "file": "modules/scoring.py",
-                "childNodeIds": ["tx", "out"],
-                "inputPorts": ["tx"],
-                "outputPorts": ["out"],
-                "graph": {
-                    "nodes": [
-                        {"id": "tx", "type": "polars", "position": {"x": 0, "y": 0},
-                         "data": {"label": "Transform", "nodeType": "polars", "config": {"code": ".select('x')"}}},
-                        {"id": "out", "type": "output", "position": {"x": 200, "y": 0},
-                         "data": {"label": "Output", "nodeType": "output", "config": {"fields": ["x"]}}},
-                    ],
-                    "edges": [
-                        {"id": "e_tx_out", "source": "tx", "target": "out"},
-                    ],
+    return _g(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "type": "dataSource",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data/in.parquet"},
+                    },
+                },
+                {
+                    "id": "submodel__scoring",
+                    "type": "submodel",
+                    "position": {"x": 200, "y": 0},
+                    "data": {
+                        "label": "scoring",
+                        "nodeType": "submodel",
+                        "config": {
+                            "file": "modules/scoring.py",
+                            "childNodeIds": ["tx", "out"],
+                            "inputPorts": ["tx"],
+                            "outputPorts": ["out"],
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_src_submodel__scoring__tx",
+                    "source": "src",
+                    "target": "submodel__scoring",
+                    "targetHandle": "in__tx",
+                },
+            ],
+            "submodels": {
+                "scoring": {
+                    "file": "modules/scoring.py",
+                    "childNodeIds": ["tx", "out"],
+                    "inputPorts": ["tx"],
+                    "outputPorts": ["out"],
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "tx",
+                                "type": "polars",
+                                "position": {"x": 0, "y": 0},
+                                "data": {
+                                    "label": "Transform",
+                                    "nodeType": "polars",
+                                    "config": {"code": ".select('x')"},
+                                },
+                            },
+                            {
+                                "id": "out",
+                                "type": "output",
+                                "position": {"x": 200, "y": 0},
+                                "data": {
+                                    "label": "Output",
+                                    "nodeType": "output",
+                                    "config": {"fields": ["x"]},
+                                },
+                            },
+                        ],
+                        "edges": [
+                            {"id": "e_tx_out", "source": "tx", "target": "out"},
+                        ],
+                    },
                 },
             },
-        },
-    })
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # flatten_graph tests
 # ---------------------------------------------------------------------------
+
 
 class TestFlattenGraph:
     def test_flat_graph_unchanged(self, flat_graph):
@@ -132,6 +195,7 @@ class TestFlattenGraph:
 # Codegen multi-file tests
 # ---------------------------------------------------------------------------
 
+
 class TestCodegenMultiFile:
     def test_graph_to_code_multi_returns_files(self, submodel_graph):
         """graph_to_code_multi should return a dict with main + submodel files."""
@@ -170,10 +234,14 @@ class TestCodegenMultiFile:
 # Parser tests — submodel detection
 # ---------------------------------------------------------------------------
 
+
 class TestParserSubmodel:
     def test_parse_main_with_submodel(self, tmp_path):
         """Parser should detect pipeline.submodel() calls."""
-        _write(tmp_path, "modules/scoring.py", """\
+        _write(
+            tmp_path,
+            "modules/scoring.py",
+            """\
             import polars as pl
             import haute
 
@@ -182,9 +250,13 @@ class TestParserSubmodel:
             @submodel.polars
             def Transform(Source: pl.LazyFrame) -> pl.LazyFrame:
                 return Source.select("x")
-        """)
+        """,
+        )
 
-        _write(tmp_path, "main.py", f"""\
+        _write(
+            tmp_path,
+            "main.py",
+            f"""\
             import polars as pl
             import haute
 
@@ -197,16 +269,22 @@ class TestParserSubmodel:
             pipeline.submodel("modules/scoring.py")
 
             pipeline.connect("Source", "Transform")
-        """)
+        """,
+        )
 
         graph = parse_pipeline_file(tmp_path / "main.py")
         assert graph.nodes is not None
         node_ids = {n.id for n in graph.nodes}
-        assert "Source" in node_ids or "source" in node_ids.union({n.id.lower() for n in graph.nodes})
+        assert "Source" in node_ids or "source" in node_ids.union(
+            {n.id.lower() for n in graph.nodes}
+        )
 
     def test_parse_flat_pipeline(self, tmp_path):
         """A pipeline without submodels should parse normally."""
-        _write(tmp_path, "main.py", """\
+        _write(
+            tmp_path,
+            "main.py",
+            """\
             import polars as pl
             import haute
 
@@ -221,7 +299,8 @@ class TestParserSubmodel:
                 return Source.select("x")
 
             pipeline.connect("Source", "Transform")
-        """)
+        """,
+        )
 
         graph = parse_pipeline_file(tmp_path / "main.py")
         assert len(graph.nodes) == 2
@@ -232,9 +311,11 @@ class TestParserSubmodel:
 # Schema tests
 # ---------------------------------------------------------------------------
 
+
 class TestSchemas:
     def test_create_submodel_request(self):
         from haute.schemas import CreateSubmodelRequest
+
         req = CreateSubmodelRequest(
             name="scoring",
             node_ids=["tx", "out"],
@@ -245,6 +326,7 @@ class TestSchemas:
 
     def test_create_submodel_response(self):
         from haute.schemas import CreateSubmodelResponse
+
         resp = CreateSubmodelResponse(
             status="ok",
             submodel_file="modules/scoring.py",
@@ -256,6 +338,7 @@ class TestSchemas:
 
     def test_dissolve_submodel_request(self):
         from haute.schemas import DissolveSubmodelRequest
+
         req = DissolveSubmodelRequest(
             submodel_name="scoring",
             graph={"nodes": [], "edges": []},
@@ -264,6 +347,7 @@ class TestSchemas:
 
     def test_submodel_graph_response(self):
         from haute.schemas import SubmodelGraphResponse
+
         resp = SubmodelGraphResponse(
             status="ok",
             submodel_name="scoring",

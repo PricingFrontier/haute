@@ -277,6 +277,8 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 mapped_scenarios=list(input_scenario_map.values()),
                 falling_back_to=input_names[0] if input_names else "<none>",
             )
+        if not dfs:
+            raise ValueError("live_switch received no input DataFrames")
         return dfs[0]
 
     return ctx.func_name, switch_fn, False
@@ -348,7 +350,7 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     factors = _normalise_banding_factors(config)
 
-    def banding_fn(*dfs: _Frame, _factors: list = list(factors)) -> _Frame:
+    def banding_fn(*dfs: _Frame, _factors: tuple = tuple(dict(f) for f in factors)) -> _Frame:
         lf = dfs[0] if dfs else pl.LazyFrame()
         for f in _factors:
             col = f.get("column", "")
@@ -596,7 +598,7 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
         if scoring_model.feature_names:
             return produced, set(scoring_model.feature_names)
     except Exception:
-        pass
+        logger.debug("model_score_column_detection_failed", exc_info=True)
     return produced, None
 
 

@@ -127,8 +127,14 @@ class TestGenerateTrainingScript:
     def test_excludes_new_params_when_not_set(self):
         config = {"name": "test", "target": "y"}
         script = generate_training_script(config, "data.parquet")
-        for param in ["loss_function", "variance_power", "offset",
-                       "monotone_constraints", "feature_weights", "cv_folds"]:
+        for param in [
+            "loss_function",
+            "variance_power",
+            "offset",
+            "monotone_constraints",
+            "feature_weights",
+            "cv_folds",
+        ]:
             assert param not in script
 
     def test_reconstructs_full_config(self):
@@ -233,7 +239,9 @@ class TestModellingNodeToCode:
 
         source_node = GraphNode(
             id="data",
-            data=NodeData(label="data", nodeType=NodeType.DATA_SOURCE, config={"path": "data.parquet"}),
+            data=NodeData(
+                label="data", nodeType=NodeType.DATA_SOURCE, config={"path": "data.parquet"}
+            ),
         )
         modelling_node = GraphNode(
             id="train",
@@ -243,11 +251,13 @@ class TestModellingNodeToCode:
                 config={"target": "y", "algorithm": "catboost", "task": "regression"},
             ),
         )
-        graph = make_graph({
-            "nodes": [source_node.model_dump(), modelling_node.model_dump()],
-            "edges": [make_edge("data", "train").model_dump()],
-            "pipeline_name": "test",
-        })
+        graph = make_graph(
+            {
+                "nodes": [source_node.model_dump(), modelling_node.model_dump()],
+                "edges": [make_edge("data", "train").model_dump()],
+                "pipeline_name": "test",
+            }
+        )
         code = graph_to_code(graph, pipeline_name="test")
 
         # Write config files so the parser can resolve them

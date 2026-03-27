@@ -13,6 +13,7 @@ from haute.pipeline import Node, Pipeline
 # Node
 # ---------------------------------------------------------------------------
 
+
 class TestNode:
     def test_source_node_call(self):
         def src() -> pl.DataFrame:
@@ -50,6 +51,7 @@ class TestNode:
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
+
 
 class TestPipeline:
     def _simple_pipeline(self) -> Pipeline:
@@ -113,6 +115,7 @@ class TestPipeline:
             return pl.DataFrame({"x": [1]})
 
         from haute._types import NodeType
+
         assert p.nodes[0].config == {"path": "data.parquet", "_node_type": NodeType.DATA_SOURCE}
         assert p.nodes[0].is_source is True
 

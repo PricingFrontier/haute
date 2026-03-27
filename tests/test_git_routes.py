@@ -288,7 +288,9 @@ class TestGitDeleteBranch:
         _git(tmp_path, "checkout", "-b", "pricing/test-user/old")
         _git(tmp_path, "checkout", "main")
 
-        res = client.request("DELETE", "/api/git/branches", json={"branch": "pricing/test-user/old"})
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": "pricing/test-user/old"}
+        )
         assert res.status_code == 200
         branches = _git(tmp_path, "branch")
         assert "old" not in branches
@@ -320,9 +322,7 @@ class TestHandlersAreSync:
             assert not asyncio.iscoroutinefunction(endpoint), (
                 f"{endpoint.__name__} should be def, not async def"
             )
-            assert not inspect.isawaitable(endpoint), (
-                f"{endpoint.__name__} should not be awaitable"
-            )
+            assert not inspect.isawaitable(endpoint), f"{endpoint.__name__} should not be awaitable"
 
 
 # ---------------------------------------------------------------------------

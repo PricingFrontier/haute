@@ -26,7 +26,7 @@ from haute.routes._helpers import find_typed_node
 from haute.routes._job_store import JobStore
 from haute.schemas import TrainRequest, TrainResponse
 
-logger = get_logger(component="server.modelling")
+logger = get_logger(component="server.modelling.train")
 
 # ── Default constants ─────────────────────────────────────────────
 _DEFAULT_BORDER_COUNT = 128  # CatBoost border count for VRAM estimation

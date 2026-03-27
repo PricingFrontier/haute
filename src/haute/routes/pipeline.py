@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -35,9 +36,9 @@ logger = get_logger(component="server.pipeline")
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
 # ── Timeout constants (seconds) ──────────────────────────────────
-_TRACE_TIMEOUT = 120.0  # single-row trace
-_PREVIEW_TIMEOUT = 120.0  # node preview execution
-_SINK_TIMEOUT = 300.0  # sink (write-to-disk) execution
+_TRACE_TIMEOUT = float(os.environ.get("HAUTE_TRACE_TIMEOUT", "120"))
+_PREVIEW_TIMEOUT = float(os.environ.get("HAUTE_PREVIEW_TIMEOUT", "120"))
+_SINK_TIMEOUT = float(os.environ.get("HAUTE_SINK_TIMEOUT", "300"))
 
 
 def _ensure_source_file(graph: PipelineGraph) -> None:
@@ -202,7 +203,7 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
 async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     """Run pipeline up to a specific node and return its output.
 
-    Accepts an optional ``row_limit`` (default 1000) that is pushed into
+    Accepts an optional ``row_limit`` (default 100) that is pushed into
     the Polars lazy query plan so only that many rows are scanned.
     """
     from haute._topo import ancestors

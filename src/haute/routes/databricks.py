@@ -30,7 +30,7 @@ logger = get_logger(component="server.databricks")
 router = APIRouter(prefix="/api/databricks", tags=["databricks"])
 
 # ── Timeout constant (seconds) ───────────────────────────────────
-_FETCH_TIMEOUT = 600.0  # Databricks table fetch — large tables can be slow
+_FETCH_TIMEOUT = float(os.environ.get("HAUTE_FETCH_TIMEOUT", "600"))
 
 
 def _validate_table_param(table: str) -> None:

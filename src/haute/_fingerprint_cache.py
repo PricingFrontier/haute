@@ -37,6 +37,10 @@ import threading
 from collections import OrderedDict
 from typing import Any
 
+from haute._logging import get_logger
+
+logger = get_logger(component="fingerprint_cache")
+
 _MISSING = object()
 
 
@@ -66,7 +70,7 @@ class FingerprintCache:
         self._slots = slots
         self._max_entries = max(max_entries, 1)
         self._entries: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     # -- public API --------------------------------------------------------
 
@@ -115,18 +119,21 @@ class FingerprintCache:
             while len(self._entries) > self._max_entries:
                 self._entries.popitem(last=False)
 
-    def update_slot(self, slot: str, value: Any) -> None:
-        """Replace a single slot's value on the most-recent entry.
+    def update_slot(self, slot: str, value: Any, *, fingerprint: str) -> None:
+        """Replace a single slot's value on the entry matching *fingerprint*.
 
         Useful for the preview cache's "extend" path where only some
-        slots are merged.
+        slots are merged.  If *fingerprint* is not found, a warning is
+        logged and the call is a no-op.
         """
         if slot not in self._slots:
             raise ValueError(f"Unknown slot: {slot!r}. Declared slots: {sorted(self._slots)}")
         with self._lock:
-            if self._entries:
-                last_key = next(reversed(self._entries))
-                self._entries[last_key][slot] = value
+            entry = self._entries.get(fingerprint)
+            if entry is None:
+                logger.warning("update_slot_unknown_fingerprint", fingerprint=fingerprint[:8])
+                return
+            entry[slot] = value
 
     def invalidate(self) -> None:
         """Clear all entries."""
@@ -134,7 +141,7 @@ class FingerprintCache:
             self._entries.clear()
 
     @property
-    def lock(self) -> threading.Lock:
+    def lock(self) -> threading.RLock:
         """Expose the lock for callers that need atomic read-modify-write."""
         return self._lock
 

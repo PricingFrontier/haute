@@ -38,7 +38,6 @@ class TestModelCardValidHtml:
         html = generate_model_card(**_minimal_kwargs())
         assert "test-model" in html
 
-
     def test_xss_in_name_escaped(self):
         """Malicious model names should be escaped in HTML output."""
         kwargs = _minimal_kwargs()
@@ -118,9 +117,7 @@ class TestModelCardAllSections:
         """When all data is provided, all section headers should appear."""
         kwargs = _minimal_kwargs()
         kwargs["diagnostics"] = ModelDiagnostics(
-            loss_history=[
-                {"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)
-            ],
+            loss_history=[{"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)],
             double_lift=[
                 {"decile": i + 1, "actual": 0.1 * i, "predicted": 0.11 * i, "count": 100}
                 for i in range(10)
@@ -167,10 +164,14 @@ class TestModelCardAllSections:
                 {"cum_weight_frac": 1.0, "cum_actual_frac": 1.0},
             ],
             pdp_data=[
-                {"feature": "x1", "type": "numeric", "grid": [
-                    {"value": 1, "avg_prediction": 0.5},
-                    {"value": 2, "avg_prediction": 0.6},
-                ]},
+                {
+                    "feature": "x1",
+                    "type": "numeric",
+                    "grid": [
+                        {"value": 1, "avg_prediction": 0.5},
+                        {"value": 2, "avg_prediction": 0.6},
+                    ],
+                },
             ],
             holdout_metrics={"rmse": 0.15, "gini": 0.55},
             diagnostics_set="validation",
@@ -213,8 +214,11 @@ class TestModelCardHoldoutAndDiagnostics:
     def test_holdout_rows_shown(self):
         kwargs = _minimal_kwargs()
         kwargs["metadata"] = ModelCardMetadata(
-            algorithm="catboost", task="regression",
-            train_rows=800, test_rows=200, holdout_rows=1000,
+            algorithm="catboost",
+            task="regression",
+            train_rows=800,
+            test_rows=200,
+            holdout_rows=1000,
             features=["x1", "x2"],
             split_config={"strategy": "random"},
         )

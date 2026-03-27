@@ -169,10 +169,7 @@ class TestJobStoreConcurrency:
             barrier.wait()
             store.update_job(job_id, status="done", counter=value)
 
-        threads = [
-            threading.Thread(target=update_one, args=(ids[i], i + 1))
-            for i in range(n_jobs)
-        ]
+        threads = [threading.Thread(target=update_one, args=(ids[i], i + 1)) for i in range(n_jobs)]
         for t in threads:
             t.start()
         for t in threads:
@@ -199,10 +196,7 @@ class TestJobStoreConcurrency:
             barrier.wait()
             store.update_job(job_id, **{f"field_{idx}": idx})
 
-        threads = [
-            threading.Thread(target=update_field, args=(i,))
-            for i in range(n_threads)
-        ]
+        threads = [threading.Thread(target=update_field, args=(i,)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -236,10 +230,7 @@ class TestJobStoreConcurrency:
                 with lock:
                     read_results.append(result is not None or target == "nonexistent")
 
-        threads = [
-            threading.Thread(target=create_and_read, args=(i,))
-            for i in range(n_ops)
-        ]
+        threads = [threading.Thread(target=create_and_read, args=(i,)) for i in range(n_ops)]
         for t in threads:
             t.start()
         for t in threads:
@@ -268,8 +259,7 @@ class TestJobStoreConcurrency:
                 new_ids.append(jid)
 
         threads = [
-            threading.Thread(target=create_with_eviction, args=(i,))
-            for i in range(n_threads)
+            threading.Thread(target=create_with_eviction, args=(i,)) for i in range(n_threads)
         ]
         for t in threads:
             t.start()
@@ -475,10 +465,7 @@ class TestAtomicUpdate:
             barrier.wait()
             store.atomic_update(job_id, {f"field_{idx}": idx})
 
-        threads = [
-            threading.Thread(target=update_field, args=(i,))
-            for i in range(n_threads)
-        ]
+        threads = [threading.Thread(target=update_field, args=(i,)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -521,14 +508,20 @@ class TestAtomicUpdate:
 
         def writer() -> None:
             for _ in range(100):
-                store.atomic_update(job_id, {
-                    "status": "completed",
-                    "progress": 1.0,
-                })
-                store.atomic_update(job_id, {
-                    "status": "running",
-                    "progress": 0.0,
-                })
+                store.atomic_update(
+                    job_id,
+                    {
+                        "status": "completed",
+                        "progress": 1.0,
+                    },
+                )
+                store.atomic_update(
+                    job_id,
+                    {
+                        "status": "running",
+                        "progress": 0.0,
+                    },
+                )
 
         reader_thread = threading.Thread(target=reader, daemon=True)
         writer_thread = threading.Thread(target=writer)
@@ -551,14 +544,16 @@ class TestClearResultData:
 
     def test_clears_default_heavy_keys(self) -> None:
         store = JobStore()
-        job_id = store.create_job({
-            "status": "completed",
-            "solver": "heavy_solver_object",
-            "solve_result": "heavy_result_object",
-            "quote_grid": "heavy_grid_object",
-            "config": {"objective": "income"},
-            "result": {"converged": True},
-        })
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": "heavy_solver_object",
+                "solve_result": "heavy_result_object",
+                "quote_grid": "heavy_grid_object",
+                "config": {"objective": "income"},
+                "result": {"converged": True},
+            }
+        )
         store.clear_result_data(job_id)
         job = store.get_job(job_id)
         assert job is not None
@@ -573,12 +568,14 @@ class TestClearResultData:
 
     def test_clears_custom_keys(self) -> None:
         store = JobStore()
-        job_id = store.create_job({
-            "status": "completed",
-            "big_thing": "data",
-            "another": "thing",
-            "keep": "this",
-        })
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "big_thing": "data",
+                "another": "thing",
+                "keep": "this",
+            }
+        )
         store.clear_result_data(job_id, keys=("big_thing", "another"))
         job = store.get_job(job_id)
         assert job is not None
@@ -604,11 +601,13 @@ class TestClearResultData:
     def test_idempotent(self) -> None:
         """Calling clear_result_data twice should not error or change state."""
         store = JobStore()
-        job_id = store.create_job({
-            "status": "completed",
-            "solver": "heavy",
-            "solve_result": "heavy",
-        })
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": "heavy",
+                "solve_result": "heavy",
+            }
+        )
         store.clear_result_data(job_id)
         store.clear_result_data(job_id)  # second call
         job = store.get_job(job_id)
@@ -619,10 +618,12 @@ class TestClearResultData:
     def test_clear_uses_atomic_replacement(self) -> None:
         """The old dict reference should not be mutated."""
         store = JobStore()
-        job_id = store.create_job({
-            "status": "completed",
-            "solver": "heavy",
-        })
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": "heavy",
+            }
+        )
         old_dict = store.get_job(job_id)
         store.clear_result_data(job_id)
         new_dict = store.get_job(job_id)
@@ -753,11 +754,13 @@ class TestLongRunningJobEviction:
         """A running job older than TTL is NOT evicted."""
         store = JobStore(ttl_seconds=10)
 
-        job_id = store.create_job({
-            "status": "running",
-            "progress": 0.5,
-            "created_at": time.time() - 25 * 3600,
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "progress": 0.5,
+                "created_at": time.time() - 25 * 3600,
+            }
+        )
 
         assert store.jobs.get(job_id) is not None
 
@@ -773,10 +776,12 @@ class TestLongRunningJobEviction:
     def test_completed_job_evicted_after_ttl(self) -> None:
         """A completed job older than TTL IS evicted normally."""
         store = JobStore(ttl_seconds=1)
-        job_id = store.create_job({
-            "status": "completed",
-            "created_at": time.time() - 100,
-        })
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 100,
+            }
+        )
         store.create_job({"status": "trigger"})
         assert store.get_job(job_id) is None
 
@@ -784,11 +789,13 @@ class TestLongRunningJobEviction:
         """Running job survives even when concurrent eviction triggers."""
         store = JobStore(ttl_seconds=2)
 
-        job_id = store.create_job({
-            "status": "running",
-            "progress": 0.0,
-            "created_at": time.time() - 5,
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "progress": 0.0,
+                "created_at": time.time() - 5,
+            }
+        )
 
         barrier = threading.Barrier(2)
 
@@ -832,6 +839,7 @@ class TestOptimiserNoConcurrencyGuard:
     def test_train_service_has_start_lock(self) -> None:
         """Verify TrainService has the _start_lock attribute."""
         from haute.routes._train_service import TrainService
+
         store = JobStore()
         svc = TrainService(store)
         assert hasattr(svc, "_start_lock")
@@ -843,6 +851,7 @@ class TestOptimiserNoConcurrencyGuard:
         This documents the gap: nothing prevents concurrent solves.
         """
         from haute.routes._optimiser_service import OptimiserSolveService
+
         store = JobStore()
         svc = OptimiserSolveService(store)
         assert not hasattr(svc, "_start_lock"), (
@@ -862,10 +871,7 @@ class TestOptimiserNoConcurrencyGuard:
         id1 = store.create_job({"status": "running", "type": "optimiser"})
         id2 = store.create_job({"status": "running", "type": "optimiser"})
 
-        running = [
-            jid for jid, j in store.jobs.items()
-            if j.get("status") == "running"
-        ]
+        running = [jid for jid, j in store.jobs.items() if j.get("status") == "running"]
         # Both are running — no guard rejected the second one
         assert len(running) == 2
         assert id1 in running
@@ -883,11 +889,13 @@ class TestOptimiserNoConcurrencyGuard:
 
         def start_optimiser(idx: int) -> None:
             barrier.wait()
-            jid = store.create_job({
-                "status": "running",
-                "type": "optimiser",
-                "idx": idx,
-            })
+            jid = store.create_job(
+                {
+                    "status": "running",
+                    "type": "optimiser",
+                    "idx": idx,
+                }
+            )
             with lock:
                 ids.append(jid)
 
@@ -941,11 +949,13 @@ class TestClearResultDataDeadCode:
         route_modules = []
         try:
             from haute.routes import _train_service
+
             route_modules.append(_train_service)
         except ImportError:
             pass
         try:
             from haute.routes import _optimiser_service
+
             route_modules.append(_optimiser_service)
         except ImportError:
             pass
@@ -961,23 +971,25 @@ class TestClearResultDataDeadCode:
         optimiser completed job — the use case it was designed for.
         """
         store = JobStore()
-        job_id = store.create_job({
-            "status": "completed",
-            "progress": 1.0,
-            "message": "Completed",
-            "config": {"objective": "income", "constraints": {"loss_ratio": 1.0}},
-            "solver": object(),         # heavy: OnlineOptimiser instance
-            "solve_result": object(),   # heavy: solve result with full DataFrame
-            "quote_grid": object(),     # heavy: QuoteGrid
-            "result": {
-                "mode": "online",
-                "total_objective": 1.05,
-                "converged": True,
-                "frontier": None,
-            },
-            "frontier_data": None,
-            "elapsed_seconds": 42.0,
-        })
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "progress": 1.0,
+                "message": "Completed",
+                "config": {"objective": "income", "constraints": {"loss_ratio": 1.0}},
+                "solver": object(),  # heavy: OnlineOptimiser instance
+                "solve_result": object(),  # heavy: solve result with full DataFrame
+                "quote_grid": object(),  # heavy: QuoteGrid
+                "result": {
+                    "mode": "online",
+                    "total_objective": 1.05,
+                    "converged": True,
+                    "frontier": None,
+                },
+                "frontier_data": None,
+                "elapsed_seconds": 42.0,
+            }
+        )
 
         # Before clear: heavy objects present
         job = store.get_job(job_id)
@@ -1000,13 +1012,15 @@ class TestClearResultDataDeadCode:
     def test_clear_after_clear_is_safe(self) -> None:
         """Double-clear should not raise or corrupt."""
         store = JobStore()
-        job_id = store.create_job({
-            "status": "completed",
-            "solver": "big",
-            "solve_result": "big",
-            "quote_grid": "big",
-            "result": {"ok": True},
-        })
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": "big",
+                "solve_result": "big",
+                "quote_grid": "big",
+                "result": {"ok": True},
+            }
+        )
         store.clear_result_data(job_id)
         store.clear_result_data(job_id)
         job = store.get_job(job_id)
@@ -1043,11 +1057,13 @@ class TestEvictionDuringIteration:
 
         # Pre-populate with 50 stale jobs to maximize eviction work
         for i in range(50):
-            store.create_job({
-                "status": "stale",
-                "idx": i,
-                "created_at": time.time() - 100 - i,
-            })
+            store.create_job(
+                {
+                    "status": "stale",
+                    "idx": i,
+                    "created_at": time.time() - 100 - i,
+                }
+            )
 
         n_threads = 20
         barrier = threading.Barrier(n_threads)
@@ -1090,10 +1106,7 @@ class TestEvictionDuringIteration:
             store.create_job({"status": "old", "created_at": time.time() - 50})
 
         # Create fresh jobs that should survive
-        fresh_ids = [
-            store.create_job({"status": "running", "counter": 0})
-            for _ in range(5)
-        ]
+        fresh_ids = [store.create_job({"status": "running", "counter": 0}) for _ in range(5)]
 
         n_rounds = 50
         errors: list[Exception] = []
@@ -1144,10 +1157,7 @@ class TestEvictionDuringIteration:
             """Mimic _check_no_concurrent_jobs — iterate .jobs.items()."""
             for _ in range(100):
                 try:
-                    running = [
-                        jid for jid, j in store.jobs.items()
-                        if j.get("status") == "running"
-                    ]
+                    running = [jid for jid, j in store.jobs.items() if j.get("status") == "running"]
                 except Exception as exc:
                     errors.append(exc)
 
@@ -1155,10 +1165,12 @@ class TestEvictionDuringIteration:
             """Create new jobs, each triggering _evict_stale."""
             for _ in range(100):
                 try:
-                    store.create_job({
-                        "status": "stale",
-                        "created_at": time.time() - 50,
-                    })
+                    store.create_job(
+                        {
+                            "status": "stale",
+                            "created_at": time.time() - 50,
+                        }
+                    )
                 except Exception as exc:
                     errors.append(exc)
 

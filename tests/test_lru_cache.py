@@ -244,7 +244,7 @@ class TestConcurrency:
         for key in range(500):
             val = cache.get(key)
             if val is not None:
-                assert val == key * 2, f"key={key} expected {key*2}, got {val}"
+                assert val == key * 2, f"key={key} expected {key * 2}, got {val}"
 
     def test_concurrent_get_put(self) -> None:
         """Mixed get/put from multiple threads should not raise."""
@@ -259,7 +259,7 @@ class TestConcurrency:
                     # Value may be evicted by another thread, but if present it must be correct
                     if val is not None and val != i:
                         errors.append(
-                            Exception(f"tid={tid} key={tid*50+i}: expected {i}, got {val}")
+                            Exception(f"tid={tid} key={tid * 50 + i}: expected {i}, got {val}")
                         )
             except Exception as exc:
                 errors.append(exc)

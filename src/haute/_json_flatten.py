@@ -324,17 +324,23 @@ def _iter_json_records(path: Path) -> Iterator[dict[str, Any]]:
     processing can still be chunked.
     """
     if path.suffix == ".jsonl":
+        skipped = 0
+        total = 0
         with open(path, "rb") as fh:
             for line in fh:
                 stripped = line.strip()
                 if not stripped:
                     continue
+                total += 1
                 try:
                     obj = orjson.loads(stripped)
                 except orjson.JSONDecodeError:
+                    skipped += 1
                     continue
                 if isinstance(obj, dict):
                     yield obj
+        if skipped:
+            logger.warning("jsonl_lines_skipped", count=skipped, total=total)
     else:
         data = orjson.loads(path.read_bytes())
         if isinstance(data, list):

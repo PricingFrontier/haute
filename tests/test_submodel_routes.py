@@ -76,7 +76,11 @@ def _graph_with_submodel() -> dict:
                     "nodes": [
                         {
                             "id": "base_rate",
-                            "data": {"label": "base_rate", "nodeType": "polars", "config": {"code": "return df"}},
+                            "data": {
+                                "label": "base_rate",
+                                "nodeType": "polars",
+                                "config": {"code": "return df"},
+                            },
                         },
                     ],
                     "edges": [],
@@ -154,7 +158,7 @@ class TestGetSubmodel:
         modules_dir = tmp_path / "modules"
         modules_dir.mkdir()
         sm_file = modules_dir / "pricing.py"
-        sm_file.write_text('''\
+        sm_file.write_text("""\
 import polars as pl
 import haute
 
@@ -163,7 +167,7 @@ submodel = haute.Submodel("pricing", description="Test submodel")
 @submodel.polars
 def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
-''')
+""")
         resp = client.get("/api/submodel/pricing")
         assert resp.status_code == 200
         data = resp.json()

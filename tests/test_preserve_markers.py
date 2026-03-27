@@ -47,8 +47,8 @@ def _make_pipeline(
 ) -> str:
     """Build a minimal pipeline source string with optional preserved blocks."""
     lines = [
-        'import polars as pl',
-        'import haute',
+        "import polars as pl",
+        "import haute",
     ]
     if preamble:
         lines.append("")
@@ -80,11 +80,7 @@ def _make_pipeline(
 class TestExtractPreservedBlocks:
     def test_single_block_extracted(self):
         source = _make_pipeline(
-            preserved=(
-                "# haute:preserve-start\n"
-                "CUSTOM_CONSTANT = 42\n"
-                "# haute:preserve-end"
-            ),
+            preserved=("# haute:preserve-start\nCUSTOM_CONSTANT = 42\n# haute:preserve-end"),
         )
         graph = parse_pipeline_source(source)
         assert len(graph.preserved_blocks) == 1
@@ -115,10 +111,7 @@ class TestExtractPreservedBlocks:
     def test_function_in_preserved_block(self):
         source = _make_pipeline(
             preserved=(
-                "# haute:preserve-start\n"
-                "def my_helper(x):\n"
-                "    return x * 2\n"
-                "# haute:preserve-end"
+                "# haute:preserve-start\ndef my_helper(x):\n    return x * 2\n# haute:preserve-end"
             ),
         )
         graph = parse_pipeline_source(source)
@@ -143,8 +136,7 @@ class TestExtractPreservedBlocks:
     def test_unmatched_start_marker_ignored(self):
         source = _make_pipeline(
             preserved=(
-                "# haute:preserve-start\n"
-                "ORPHAN = True"
+                "# haute:preserve-start\nORPHAN = True"
                 # No end marker
             ),
         )
@@ -154,10 +146,7 @@ class TestExtractPreservedBlocks:
 
     def test_empty_preserved_block(self):
         source = _make_pipeline(
-            preserved=(
-                "# haute:preserve-start\n"
-                "# haute:preserve-end"
-            ),
+            preserved=("# haute:preserve-start\n# haute:preserve-end"),
         )
         graph = parse_pipeline_source(source)
         # Empty blocks (only whitespace) are stored as empty strings
@@ -190,13 +179,9 @@ class TestCodegenEmitsPreservedBlocks:
         # Each block gets its own markers
         code_lines = code.splitlines()
         starts = [
-            i for i, line in enumerate(code_lines)
-            if line.strip() == "# haute:preserve-start"
+            i for i, line in enumerate(code_lines) if line.strip() == "# haute:preserve-start"
         ]
-        ends = [
-            i for i, line in enumerate(code_lines)
-            if line.strip() == "# haute:preserve-end"
-        ]
+        ends = [i for i, line in enumerate(code_lines) if line.strip() == "# haute:preserve-end"]
         assert len(starts) == 2
         assert len(ends) == 2
         compile(code, "<test>", "exec")
@@ -213,7 +198,7 @@ class TestCodegenEmitsPreservedBlocks:
         graph = parse_pipeline_source(_make_pipeline())
         graph.preserved_blocks = ["AFTER_PIPELINE = True"]
         code = graph_to_code(graph, pipeline_name="test")
-        pipeline_idx = code.index('haute.Pipeline(')
+        pipeline_idx = code.index("haute.Pipeline(")
         preserve_idx = code.index("AFTER_PIPELINE = True")
         assert pipeline_idx < preserve_idx
 
@@ -244,11 +229,7 @@ class TestCodegenEmitsPreservedBlocks:
 class TestPreservedBlocksRoundTrip:
     def test_single_block_survives_roundtrip(self):
         source = _make_pipeline(
-            preserved=(
-                "# haute:preserve-start\n"
-                "CUSTOM_CONSTANT = 42\n"
-                "# haute:preserve-end"
-            ),
+            preserved=("# haute:preserve-start\nCUSTOM_CONSTANT = 42\n# haute:preserve-end"),
         )
         code = _roundtrip(source)
         graph2 = parse_pipeline_source(code)
@@ -315,11 +296,7 @@ class TestPreservedBlocksRoundTrip:
     def test_preamble_and_preserved_blocks_coexist(self):
         source = _make_pipeline(
             preamble="import numpy as np",
-            preserved=(
-                "# haute:preserve-start\n"
-                "CUSTOM = True\n"
-                "# haute:preserve-end"
-            ),
+            preserved=("# haute:preserve-start\nCUSTOM = True\n# haute:preserve-end"),
         )
         graph = parse_pipeline_source(source)
         assert "numpy" in (graph.preamble or "")
@@ -334,11 +311,7 @@ class TestPreservedBlocksRoundTrip:
     def test_generated_code_compiles(self):
         source = _make_pipeline(
             preamble="import math",
-            preserved=(
-                "# haute:preserve-start\n"
-                "TAU = math.pi * 2\n"
-                "# haute:preserve-end"
-            ),
+            preserved=("# haute:preserve-start\nTAU = math.pi * 2\n# haute:preserve-end"),
         )
         code = _roundtrip(source)
         compile(code, "<test>", "exec")

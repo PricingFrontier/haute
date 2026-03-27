@@ -456,17 +456,14 @@ class TrainingJob:
         )
 
         # Write split parquet: original data + _partition column.
-        # Read eagerly (data already fits after RAM-based downsampling),
-        # add partition mask, write back.
+        # Lazy scan avoids doubling peak memory; collect + write is a single pass.
         with tempfile.NamedTemporaryFile(
             suffix=".parquet",
             prefix="haute_split_",
             delete=False,
         ) as f:
             split_path = f.name
-        df_data = pl.read_parquet(data_path)
-        df_data.with_columns(mask).write_parquet(split_path)
-        del df_data
+        pl.scan_parquet(data_path).with_columns(mask).collect().write_parquet(split_path)
         del mask
         gc.collect()
         _malloc_trim()

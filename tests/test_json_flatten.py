@@ -110,12 +110,16 @@ class TestInferSchema:
         assert schema == {"address": {"city": "str", "postcode": "str"}}
 
     def test_array_of_objects(self):
-        schema = infer_schema([{
-            "drivers": [
-                {"name": "Alice", "age": 30},
-                {"name": "Bob", "age": 25},
-            ],
-        }])
+        schema = infer_schema(
+            [
+                {
+                    "drivers": [
+                        {"name": "Alice", "age": 30},
+                        {"name": "Bob", "age": 25},
+                    ],
+                }
+            ]
+        )
         assert schema == {
             "drivers": {
                 "$max": 2,
@@ -136,52 +140,70 @@ class TestInferSchema:
         assert schema == {"field": "str"}
 
     def test_null_then_object_resolves_to_object(self):
-        schema = infer_schema([
-            {"addr": None},
-            {"addr": {"city": "Paris"}},
-        ])
+        schema = infer_schema(
+            [
+                {"addr": None},
+                {"addr": {"city": "Paris"}},
+            ]
+        )
         assert schema == {"addr": {"city": "str"}}
 
     def test_multiple_samples_union_fields(self):
-        schema = infer_schema([
-            {"a": 1},
-            {"a": 2, "b": "x"},
-        ])
+        schema = infer_schema(
+            [
+                {"a": 1},
+                {"a": 2, "b": "x"},
+            ]
+        )
         assert schema == {"a": "int", "b": "str"}
 
     def test_multiple_samples_max_array_length(self):
-        schema = infer_schema([
-            {"items": [{"x": 1}]},
-            {"items": [{"x": 2}, {"x": 3}, {"x": 4}]},
-        ])
+        schema = infer_schema(
+            [
+                {"items": [{"x": 1}]},
+                {"items": [{"x": 2}, {"x": 3}, {"x": 4}]},
+            ]
+        )
         assert schema["items"]["$max"] == 3
 
     def test_multiple_samples_union_array_fields(self):
-        schema = infer_schema([
-            {"items": [{"a": 1}]},
-            {"items": [{"b": "x"}]},
-        ])
+        schema = infer_schema(
+            [
+                {"items": [{"a": 1}]},
+                {"items": [{"b": "x"}]},
+            ]
+        )
         assert schema["items"]["$items"] == {"a": "int", "b": "str"}
 
     def test_type_widening_int_to_float(self):
-        schema = infer_schema([
-            {"value": 10},
-            {"value": 3.14},
-        ])
+        schema = infer_schema(
+            [
+                {"value": 10},
+                {"value": 3.14},
+            ]
+        )
         assert schema == {"value": "float"}
 
     def test_deeply_nested(self):
-        schema = infer_schema([{
-            "a": {"b": {"c": {"d": 42}}},
-        }])
+        schema = infer_schema(
+            [
+                {
+                    "a": {"b": {"c": {"d": 42}}},
+                }
+            ]
+        )
         assert schema == {"a": {"b": {"c": {"d": "int"}}}}
 
     def test_nested_arrays(self):
-        schema = infer_schema([{
-            "drivers": [
-                {"name": "Alice", "claims": [{"amount": 500}]},
-            ],
-        }])
+        schema = infer_schema(
+            [
+                {
+                    "drivers": [
+                        {"name": "Alice", "claims": [{"amount": 500}]},
+                    ],
+                }
+            ]
+        )
         expected = {
             "drivers": {
                 "$max": 1,
@@ -475,9 +497,14 @@ class TestSampleQuote:
 
     def test_top_level_keys(self, schema: dict):
         expected = {
-            "quote_metadata", "policy_details", "proposer",
-            "additional_drivers", "vehicle", "address",
-            "previous_address", "add_ons",
+            "quote_metadata",
+            "policy_details",
+            "proposer",
+            "additional_drivers",
+            "vehicle",
+            "address",
+            "previous_address",
+            "add_ons",
         }
         assert expected == set(schema.keys())
 
@@ -551,6 +578,7 @@ class TestJsonCache:
         cache.write_bytes(b"fake")
         # Ensure cache is newer by touching it
         import os
+
         os.utime(cache, (cache.stat().st_mtime + 10, cache.stat().st_mtime + 10))
         assert _is_cache_valid(cache, source)
 
@@ -561,6 +589,7 @@ class TestJsonCache:
         source.write_text("[]")
         # Ensure source is newer
         import os
+
         os.utime(source, (source.stat().st_mtime + 10, source.stat().st_mtime + 10))
         assert not _is_cache_valid(cache, source)
 
@@ -1084,7 +1113,10 @@ class TestFlattenAndWriteStreaming:
         cache_path = tmp_path / "chunked.parquet"
 
         total = _flatten_and_write_streaming(
-            iter(records), schema, cache_path, chunk_size=1,
+            iter(records),
+            schema,
+            cache_path,
+            chunk_size=1,
         )
 
         assert total == 5
@@ -1105,6 +1137,7 @@ class TestFlattenAndWriteStreaming:
 
     def test_atomic_cleanup_on_failure(self, tmp_path):
         """If flatten raises mid-stream, temp file is cleaned up."""
+
         def _bad_iter():
             yield {"x": 1}
             raise ValueError("boom")
@@ -1126,13 +1159,18 @@ class TestFlattenAndWriteStreaming:
         key = "test_progress_path"
 
         _flatten_and_write_streaming(
-            iter(records), schema, cache_path,
-            chunk_size=5, progress_key=key, t0=time.monotonic(),
+            iter(records),
+            schema,
+            cache_path,
+            chunk_size=5,
+            progress_key=key,
+            t0=time.monotonic(),
         )
         # After completion, progress should be cleared by the caller (build_json_cache)
         # but the streaming function itself doesn't clear it — that's the caller's job.
         # Here we just verify the file was written correctly.
         assert pl.read_parquet(cache_path).shape[0] == 10
+
 
 class TestRowsToBatch:
     def test_builds_valid_batch(self):
@@ -1162,9 +1200,11 @@ class TestBuildFlattenExprs:
     def test_nested_object(self):
         schema = {"address": {"city": "str", "postcode": "str"}}
         exprs = _build_flatten_exprs(schema)
-        df = pl.DataFrame({
-            "address": [{"city": "London", "postcode": "SW1"}],
-        })
+        df = pl.DataFrame(
+            {
+                "address": [{"city": "London", "postcode": "SW1"}],
+            }
+        )
         result = df.select(exprs)
         assert result.columns == ["address.city", "address.postcode"]
         assert result["address.city"][0] == "London"
@@ -1173,9 +1213,11 @@ class TestBuildFlattenExprs:
     def test_array_of_objects(self):
         schema = {"drivers": {"$max": 2, "$items": {"name": "str"}}}
         exprs = _build_flatten_exprs(schema)
-        df = pl.DataFrame({
-            "drivers": [[{"name": "Alice"}]],
-        })
+        df = pl.DataFrame(
+            {
+                "drivers": [[{"name": "Alice"}]],
+            }
+        )
         result = df.select(exprs)
         assert result.columns == ["drivers.1.name", "drivers.2.name"]
         assert result["drivers.1.name"][0] == "Alice"
@@ -1205,11 +1247,13 @@ class TestBuildFlattenExprs:
             "d": {"$max": 2, "$items": {"e": "str"}},
         }
         exprs = _build_flatten_exprs(schema)
-        df = pl.DataFrame({
-            "a": ["x"],
-            "b": [{"c": 1}],
-            "d": [[{"e": "y"}, {"e": "z"}]],
-        })
+        df = pl.DataFrame(
+            {
+                "a": ["x"],
+                "b": [{"c": 1}],
+                "d": [[{"e": "y"}, {"e": "z"}]],
+            }
+        )
         result = df.select(exprs)
         assert result.columns == schema_columns(schema)
 
@@ -1231,11 +1275,15 @@ class TestBuildFlattenExprs:
             },
         }
         exprs = _build_flatten_exprs(schema)
-        df = pl.DataFrame({
-            "drivers": [[
-                {"name": "Alice", "claims": [{"amount": 500}]},
-            ]],
-        })
+        df = pl.DataFrame(
+            {
+                "drivers": [
+                    [
+                        {"name": "Alice", "claims": [{"amount": 500}]},
+                    ]
+                ],
+            }
+        )
         result = df.select(exprs)
         assert result["drivers.1.name"][0] == "Alice"
         assert result["drivers.1.claims.1.amount"][0] == 500
@@ -1296,10 +1344,7 @@ class TestIterLineChunks:
 class TestPolarsFlattenToParquet:
     def test_jsonl_produces_correct_parquet(self, tmp_path):
         data_file = tmp_path / "data.jsonl"
-        data_file.write_text(
-            '{"name": "Alice", "age": 30}\n'
-            '{"name": "Bob", "age": 25}\n'
-        )
+        data_file.write_text('{"name": "Alice", "age": 30}\n{"name": "Bob", "age": 25}\n')
         schema = {"name": "str", "age": "int"}
         cache_path = tmp_path / "cache.parquet"
 
@@ -1312,9 +1357,7 @@ class TestPolarsFlattenToParquet:
 
     def test_jsonl_nested(self, tmp_path):
         data_file = tmp_path / "nested.jsonl"
-        data_file.write_text(
-            '{"addr": {"city": "London"}, "tags": ["a", "b"]}\n'
-        )
+        data_file.write_text('{"addr": {"city": "London"}, "tags": ["a", "b"]}\n')
         schema = {
             "addr": {"city": "str"},
             "tags": {"$max": 3, "$items": "str"},
@@ -1361,8 +1404,11 @@ class TestPolarsFlattenToParquet:
         cache_path = tmp_path / "cache.parquet"
 
         _polars_flatten_to_parquet(
-            data_file, schema, cache_path,
-            progress_key="test_polars_key", t0=time.monotonic(),
+            data_file,
+            schema,
+            cache_path,
+            progress_key="test_polars_key",
+            t0=time.monotonic(),
         )
 
         progress = flatten_progress("test_polars_key")
@@ -1379,7 +1425,10 @@ class TestPolarsFlattenToParquet:
         cache_path = tmp_path / "cache.parquet"
 
         count = _polars_flatten_to_parquet(
-            data_file, schema, cache_path, chunk_lines=3,
+            data_file,
+            schema,
+            cache_path,
+            chunk_lines=3,
         )
 
         assert count == 10
@@ -1534,5 +1583,3 @@ class TestReadJsonFlatJSONL:
         lf = read_json_flat(str(data_file))
         df = lf.collect()
         assert len(df) == 0
-
-

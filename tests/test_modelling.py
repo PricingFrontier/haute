@@ -6,9 +6,22 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute.modelling._algorithms import ALGORITHM_REGISTRY, CatBoostAlgorithm, FitResult, resolve_loss_function
+from haute.modelling._algorithms import (
+    ALGORITHM_REGISTRY,
+    CatBoostAlgorithm,
+    FitResult,
+    resolve_loss_function,
+)
 from haute.modelling._metrics import compute_double_lift, compute_metrics
-from haute.modelling._split import PARTITION_HOLDOUT, PARTITION_TRAIN, PARTITION_VALIDATION, SplitConfig, _assign_group_split, split_data, split_mask
+from haute.modelling._split import (
+    PARTITION_HOLDOUT,
+    PARTITION_TRAIN,
+    PARTITION_VALIDATION,
+    SplitConfig,
+    _assign_group_split,
+    split_data,
+    split_mask,
+)
 from haute.modelling._training_job import TrainResult, TrainingJob
 
 
@@ -50,12 +63,14 @@ class TestSplitConfig:
 class TestSplitData:
     @pytest.fixture()
     def sample_df(self) -> pl.DataFrame:
-        return pl.DataFrame({
-            "x": list(range(100)),
-            "y": [float(i % 3) for i in range(100)],
-            "group": [f"g{i % 5}" for i in range(100)],
-            "date": [f"2024-{(i % 12) + 1:02d}-15" for i in range(100)],
-        })
+        return pl.DataFrame(
+            {
+                "x": list(range(100)),
+                "y": [float(i % 3) for i in range(100)],
+                "group": [f"g{i % 5}" for i in range(100)],
+                "date": [f"2024-{(i % 12) + 1:02d}-15" for i in range(100)],
+            }
+        )
 
     def test_empty_dataframe_raises(self):
         df = pl.DataFrame({"x": pl.Series([], dtype=pl.Int64)})
@@ -163,7 +178,9 @@ class TestSplitMask:
     def test_temporal_mask_splits_by_date(self):
         df = pl.DataFrame({"date": ["2024-01-01", "2024-06-15", "2024-12-31"]})
         cfg = SplitConfig(
-            strategy="temporal", date_column="date", cutoff_date="2024-07-01",
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
         )
         mask = split_mask(len(df), cfg, df=df)
         # Before cutoff = train (0), on/after cutoff = validation (1)
@@ -171,15 +188,19 @@ class TestSplitMask:
 
     def test_temporal_mask_missing_df_raises(self):
         cfg = SplitConfig(
-            strategy="temporal", date_column="date", cutoff_date="2024-07-01",
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
         )
         with pytest.raises(ValueError, match="requires df"):
             split_mask(10, cfg, df=None)
 
     def test_group_mask_keeps_groups_intact(self):
-        df = pl.DataFrame({
-            "group": [f"g{i % 5}" for i in range(100)],
-        })
+        df = pl.DataFrame(
+            {
+                "group": [f"g{i % 5}" for i in range(100)],
+            }
+        )
         cfg = SplitConfig(strategy="group", group_column="group", test_size=0.3, seed=42)
         mask = split_mask(len(df), cfg, df=df)
         # Each group should be entirely in one partition
@@ -251,24 +272,44 @@ class TestComputeMetrics:
         "metric, y_true, y_pred, sklearn_fn, sklearn_kwargs",
         [
             pytest.param(
-                "rmse", [1.0, 2.0, 3.0], [1.0, 2.0, 3.0],
-                "root_mean_squared_error", {}, id="rmse_perfect",
+                "rmse",
+                [1.0, 2.0, 3.0],
+                [1.0, 2.0, 3.0],
+                "root_mean_squared_error",
+                {},
+                id="rmse_perfect",
             ),
             pytest.param(
-                "rmse", [1.0, 2.0, 3.0, 4.0, 5.0], [1.1, 2.3, 2.8, 4.2, 5.5],
-                "root_mean_squared_error", {}, id="rmse_known",
+                "rmse",
+                [1.0, 2.0, 3.0, 4.0, 5.0],
+                [1.1, 2.3, 2.8, 4.2, 5.5],
+                "root_mean_squared_error",
+                {},
+                id="rmse_known",
             ),
             pytest.param(
-                "mae", [1.0, 2.0, 3.0], [1.5, 2.5, 3.5],
-                "mean_absolute_error", {}, id="mae_known",
+                "mae",
+                [1.0, 2.0, 3.0],
+                [1.5, 2.5, 3.5],
+                "mean_absolute_error",
+                {},
+                id="mae_known",
             ),
             pytest.param(
-                "mse", [1.0, 2.0, 3.0], [2.0, 2.0, 2.0],
-                "mean_squared_error", {}, id="mse_known",
+                "mse",
+                [1.0, 2.0, 3.0],
+                [2.0, 2.0, 2.0],
+                "mean_squared_error",
+                {},
+                id="mse_known",
             ),
             pytest.param(
-                "r2", [1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0],
-                "r2_score", {}, id="r2_perfect",
+                "r2",
+                [1.0, 2.0, 3.0, 4.0],
+                [1.0, 2.0, 3.0, 4.0],
+                "r2_score",
+                {},
+                id="r2_perfect",
             ),
         ],
     )
@@ -341,13 +382,15 @@ class TestCatBoostAlgorithm:
     def train_data(self) -> pl.DataFrame:
         rng = np.random.RandomState(42)
         n = 200
-        return pl.DataFrame({
-            "x1": rng.randn(n),
-            "x2": rng.randn(n),
-            "cat1": rng.choice(["a", "b", "c"], n),
-            "target": rng.randn(n),
-            "weight": np.ones(n),
-        })
+        return pl.DataFrame(
+            {
+                "x1": rng.randn(n),
+                "x2": rng.randn(n),
+                "cat1": rng.choice(["a", "b", "c"], n),
+                "target": rng.randn(n),
+                "weight": np.ones(n),
+            }
+        )
 
     def test_algorithm_registry(self):
         assert "catboost" in ALGORITHM_REGISTRY
@@ -497,13 +540,15 @@ class TestTrainingJob:
         n = 100
         x1 = rng.randn(n)
         x2 = rng.randn(n)
-        return pl.DataFrame({
-            "IDpol": list(range(n)),
-            "x1": x1,
-            "x2": x2,
-            "Exposure": np.ones(n),
-            "ClaimCount": (x1 + x2 + rng.randn(n) * 0.5).clip(0),
-        })
+        return pl.DataFrame(
+            {
+                "IDpol": list(range(n)),
+                "x1": x1,
+                "x2": x2,
+                "Exposure": np.ones(n),
+                "ClaimCount": (x1 + x2 + rng.randn(n) * 0.5).clip(0),
+            }
+        )
 
     def test_basic_training(self, synth_data, tmp_path):
         job = TrainingJob(
@@ -548,10 +593,12 @@ class TestTrainingJob:
             job.run()
 
     def test_empty_dataframe_raises(self, tmp_path):
-        df = pl.DataFrame({
-            "x": pl.Series([], dtype=pl.Float64),
-            "y": pl.Series([], dtype=pl.Float64),
-        })
+        df = pl.DataFrame(
+            {
+                "x": pl.Series([], dtype=pl.Float64),
+                "y": pl.Series([], dtype=pl.Float64),
+            }
+        )
         job = TrainingJob(
             name="empty",
             data=df,
@@ -579,11 +626,13 @@ class TestTrainingJob:
     def test_classification_task(self, tmp_path):
         rng = np.random.RandomState(42)
         n = 100
-        df = pl.DataFrame({
-            "x1": rng.randn(n),
-            "x2": rng.randn(n),
-            "label": rng.choice([0, 1], n),
-        })
+        df = pl.DataFrame(
+            {
+                "x1": rng.randn(n),
+                "x2": rng.randn(n),
+                "label": rng.choice([0, 1], n),
+            }
+        )
         job = TrainingJob(
             name="cls",
             data=df,
@@ -819,11 +868,13 @@ class TestMonotonicConstraints:
         rng = np.random.RandomState(42)
         n = 200
         x1 = rng.randn(n)
-        df = pl.DataFrame({
-            "x1": x1,
-            "x2": rng.randn(n),
-            "y": x1 + rng.randn(n) * 0.1,
-        })
+        df = pl.DataFrame(
+            {
+                "x1": x1,
+                "x2": rng.randn(n),
+                "y": x1 + rng.randn(n) * 0.1,
+            }
+        )
         job = TrainingJob(
             name="mono",
             data=df,
@@ -842,15 +893,22 @@ class TestMonotonicConstraints:
         rng = np.random.RandomState(42)
         n = 500
         x1 = rng.randn(n)
-        df = pl.DataFrame({
-            "x1": x1,
-            "x2": rng.randn(n),
-            "y": -x1 * 2 + rng.randn(n) * 0.1,
-        })
+        df = pl.DataFrame(
+            {
+                "x1": x1,
+                "x2": rng.randn(n),
+                "y": -x1 * 2 + rng.randn(n) * 0.1,
+            }
+        )
         algo = CatBoostAlgorithm()
         fit_result = algo.fit(
-            df, features=["x1", "x2"], cat_features=[], target="y", weight=None,
-            params={"iterations": 50, "depth": 4}, task="regression",
+            df,
+            features=["x1", "x2"],
+            cat_features=[],
+            target="y",
+            weight=None,
+            params={"iterations": 50, "depth": 4},
+            task="regression",
             monotone_constraints={"x1": -1},
         )
         test_df = pl.DataFrame({"x1": np.linspace(-3, 3, 20), "x2": np.zeros(20)})
@@ -863,15 +921,22 @@ class TestMonotonicConstraints:
         rng = np.random.RandomState(42)
         n = 500
         x1 = rng.randn(n)
-        df = pl.DataFrame({
-            "x1": x1,
-            "x2": rng.randn(n),
-            "y": x1 * 2 + rng.randn(n) * 0.1,
-        })
+        df = pl.DataFrame(
+            {
+                "x1": x1,
+                "x2": rng.randn(n),
+                "y": x1 * 2 + rng.randn(n) * 0.1,
+            }
+        )
         algo = CatBoostAlgorithm()
         fit_result = algo.fit(
-            df, features=["x1", "x2"], cat_features=[], target="y", weight=None,
-            params={"iterations": 50, "depth": 4}, task="regression",
+            df,
+            features=["x1", "x2"],
+            cat_features=[],
+            target="y",
+            weight=None,
+            params={"iterations": 50, "depth": 4},
+            task="regression",
             monotone_constraints={"x1": 1},
         )
         # Predict on a grid varying x1 with x2 fixed
@@ -894,15 +959,22 @@ class TestSHAP:
         n = 200
         x1 = rng.randn(n)
         x2 = rng.randn(n)
-        df = pl.DataFrame({
-            "x1": x1,
-            "x2": x2,
-            "y": x1 * 2 + x2 + rng.randn(n) * 0.1,
-        })
+        df = pl.DataFrame(
+            {
+                "x1": x1,
+                "x2": x2,
+                "y": x1 * 2 + x2 + rng.randn(n) * 0.1,
+            }
+        )
         algo = CatBoostAlgorithm()
         fit_result = algo.fit(
-            df, features=["x1", "x2"], cat_features=[], target="y", weight=None,
-            params={"iterations": 30, "depth": 4}, task="regression",
+            df,
+            features=["x1", "x2"],
+            cat_features=[],
+            target="y",
+            weight=None,
+            params={"iterations": 30, "depth": 4},
+            task="regression",
         )
         return algo, fit_result.model, df
 
@@ -924,6 +996,7 @@ class TestSHAP:
 
     def test_feature_importance_typed(self, trained_model):
         from catboost import Pool
+
         algo, model, df = trained_model
         X = df.select(["x1", "x2"]).to_pandas()
         y = df["y"].to_numpy()
@@ -935,11 +1008,13 @@ class TestSHAP:
     def test_training_job_includes_shap(self, tmp_path):
         rng = np.random.RandomState(42)
         n = 200
-        df = pl.DataFrame({
-            "x1": rng.randn(n),
-            "x2": rng.randn(n),
-            "y": rng.randn(n),
-        })
+        df = pl.DataFrame(
+            {
+                "x1": rng.randn(n),
+                "x2": rng.randn(n),
+                "y": rng.randn(n),
+            }
+        )
         job = TrainingJob(
             name="shap_test",
             data=df,
@@ -963,15 +1038,23 @@ class TestCrossValidation:
     def test_cv_returns_results(self):
         rng = np.random.RandomState(42)
         n = 200
-        df = pl.DataFrame({
-            "x1": rng.randn(n),
-            "x2": rng.randn(n),
-            "y": rng.randn(n),
-        })
+        df = pl.DataFrame(
+            {
+                "x1": rng.randn(n),
+                "x2": rng.randn(n),
+                "y": rng.randn(n),
+            }
+        )
         algo = CatBoostAlgorithm()
         cv_results = algo.cross_validate(
-            df, features=["x1", "x2"], cat_features=[], target="y", weight=None,
-            params={"iterations": 10, "depth": 3}, task="regression", n_folds=3,
+            df,
+            features=["x1", "x2"],
+            cat_features=[],
+            target="y",
+            weight=None,
+            params={"iterations": 10, "depth": 3},
+            task="regression",
+            n_folds=3,
         )
         assert "mean_metrics" in cv_results
         assert "std_metrics" in cv_results
@@ -981,11 +1064,13 @@ class TestCrossValidation:
     def test_training_job_with_cv(self, tmp_path):
         rng = np.random.RandomState(42)
         n = 200
-        df = pl.DataFrame({
-            "x1": rng.randn(n),
-            "x2": rng.randn(n),
-            "y": rng.randn(n),
-        })
+        df = pl.DataFrame(
+            {
+                "x1": rng.randn(n),
+                "x2": rng.randn(n),
+                "y": rng.randn(n),
+            }
+        )
         job = TrainingJob(
             name="cv_test",
             data=df,

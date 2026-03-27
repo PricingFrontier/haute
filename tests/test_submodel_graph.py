@@ -42,7 +42,11 @@ class TestBuildSubmodelPlaceholder:
     def test_with_description(self):
         """Description is passed through."""
         node = build_submodel_placeholder(
-            "sub", "modules/sub.py", ["x"], ["x"], [],
+            "sub",
+            "modules/sub.py",
+            ["x"],
+            ["x"],
+            [],
             description="My submodel",
         )
         assert node.data.description == "My submodel"
@@ -50,7 +54,11 @@ class TestBuildSubmodelPlaceholder:
     def test_empty_ports(self):
         """Works with empty input/output port lists."""
         node = build_submodel_placeholder(
-            "isolated", "modules/isolated.py", ["a", "b"], [], [],
+            "isolated",
+            "modules/isolated.py",
+            ["a", "b"],
+            [],
+            [],
         )
         assert node.data.config["inputPorts"] == []
         assert node.data.config["outputPorts"] == []
@@ -165,10 +173,10 @@ class TestRewireEdges:
     def test_mixed_edges(self):
         """Mix of internal, external, inbound, and outbound edges."""
         edges = [
-            self._edge("x", "y"),      # external
-            self._edge("a", "b"),      # internal
-            self._edge("ext", "a"),    # inbound
-            self._edge("b", "out"),    # outbound
+            self._edge("x", "y"),  # external
+            self._edge("a", "b"),  # internal
+            self._edge("ext", "a"),  # inbound
+            self._edge("b", "out"),  # outbound
         ]
         result = rewire_edges(edges, "submodel__grp", {"a", "b"})
         # internal dropped, so 3 results

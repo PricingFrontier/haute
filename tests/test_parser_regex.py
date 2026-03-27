@@ -21,11 +21,7 @@ from haute._parser_regex import (
 
 class TestFindFunctionBlocks:
     def test_single_decorated_function(self) -> None:
-        source = (
-            "@pipeline.polars()\n"
-            "def my_func(df):\n"
-            "    return df\n"
-        )
+        source = "@pipeline.polars()\ndef my_func(df):\n    return df\n"
         blocks = _find_function_blocks(source)
         assert len(blocks) == 1
         assert blocks[0]["func_name"] == "my_func"
@@ -48,40 +44,24 @@ class TestFindFunctionBlocks:
         assert blocks[1]["func_name"] == "beta"
 
     def test_multiple_params(self) -> None:
-        source = (
-            "@pipeline.polars()\n"
-            "def join(left, right):\n"
-            "    return left\n"
-        )
+        source = "@pipeline.polars()\ndef join(left, right):\n    return left\n"
         blocks = _find_function_blocks(source)
         assert blocks[0]["param_names"] == ["left", "right"]
 
     def test_typed_params_strips_annotations(self) -> None:
         source = (
-            "@pipeline.polars()\n"
-            "def transform(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            "    return df\n"
+            "@pipeline.polars()\ndef transform(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n"
         )
         blocks = _find_function_blocks(source)
         assert blocks[0]["param_names"] == ["df"]
 
     def test_no_params(self) -> None:
-        source = (
-            "@pipeline.data_source(path='input.csv')\n"
-            "def api_input():\n"
-            "    pass\n"
-        )
+        source = "@pipeline.data_source(path='input.csv')\ndef api_input():\n    pass\n"
         blocks = _find_function_blocks(source)
         assert blocks[0]["param_names"] == []
 
     def test_body_with_multiple_lines(self) -> None:
-        source = (
-            "@pipeline.polars()\n"
-            "def calc(df):\n"
-            "    x = 1\n"
-            "    y = 2\n"
-            "    return df\n"
-        )
+        source = "@pipeline.polars()\ndef calc(df):\n    x = 1\n    y = 2\n    return df\n"
         blocks = _find_function_blocks(source)
         assert "x = 1" in blocks[0]["body_text"]
         assert "y = 2" in blocks[0]["body_text"]
@@ -95,43 +75,27 @@ class TestFindFunctionBlocks:
         assert _find_function_blocks(source) == []
 
     def test_decorator_with_kwargs(self) -> None:
-        source = (
-            '@pipeline.data_source(path="data.csv")\n'
-            "def load(df):\n"
-            "    return df\n"
-        )
+        source = '@pipeline.data_source(path="data.csv")\ndef load(df):\n    return df\n'
         blocks = _find_function_blocks(source)
         assert len(blocks) == 1
         assert 'path="data.csv"' in blocks[0]["decorator_text"]
 
     def test_unrecognised_method_skipped(self) -> None:
         """@pipeline.connect(...) should not be matched as a node decorator."""
-        source = (
-            '@pipeline.connect("a", "b")\n'
-            "def not_a_node(df):\n"
-            "    return df\n"
-        )
+        source = '@pipeline.connect("a", "b")\ndef not_a_node(df):\n    return df\n'
         blocks = _find_function_blocks(source)
         assert blocks == []
 
     def test_bare_decorator(self) -> None:
         """@pipeline.polars (no parens) should be matched."""
-        source = (
-            "@pipeline.polars\n"
-            "def my_func(df):\n"
-            "    return df\n"
-        )
+        source = "@pipeline.polars\ndef my_func(df):\n    return df\n"
         blocks = _find_function_blocks(source)
         assert len(blocks) == 1
         assert blocks[0]["func_name"] == "my_func"
 
     def test_explicit_node_type_set(self) -> None:
         """Each block should carry the explicit NodeType from the decorator."""
-        source = (
-            "@pipeline.banding()\n"
-            "def band(df):\n"
-            "    return df\n"
-        )
+        source = "@pipeline.banding()\ndef band(df):\n    return df\n"
         blocks = _find_function_blocks(source)
         assert len(blocks) == 1
         assert blocks[0]["explicit_node_type"] == "banding"
@@ -233,7 +197,7 @@ class TestRegexPatterns:
 
 class TestFallbackParse:
     def test_basic_pipeline_with_syntax_error(self) -> None:
-        source = '''\
+        source = """\
 import polars as pl
 import haute
 
@@ -251,7 +215,7 @@ pipeline.connect("transform", "output_node")
 
 # Syntax error below — fallback_parse should still work above
 x = {unclosed
-'''
+"""
         err = SyntaxError("invalid syntax")
         err.lineno = 17
         graph = fallback_parse(source, "test.py", err)
@@ -277,7 +241,7 @@ x = {unclosed
         assert graph.pipeline_name == "main"  # default when no Pipeline() found
 
     def test_edges_extracted(self) -> None:
-        source = '''\
+        source = """\
 import haute
 pipeline = haute.Pipeline("p")
 
@@ -290,7 +254,7 @@ def b(a):
     return a
 
 pipeline.connect("a", "b")
-'''
+"""
         err = SyntaxError("test")
         err.lineno = 99
         graph = fallback_parse(source, "f.py", err)
@@ -305,7 +269,7 @@ pipeline.connect("a", "b")
 
     def test_node_with_syntax_error_in_body(self) -> None:
         """A function whose body has a syntax error should still produce a node."""
-        source = '''\
+        source = """\
 import haute
 pipeline = haute.Pipeline("p")
 
@@ -316,7 +280,7 @@ def good(df):
 @pipeline.polars()
 def bad(df):
     x = {unclosed
-'''
+"""
         err = SyntaxError("bad body")
         err.lineno = 10
         graph = fallback_parse(source, "f.py", err)

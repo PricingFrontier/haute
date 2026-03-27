@@ -24,7 +24,7 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
         )
     for e in sorted(graph.edges, key=lambda e: (e.source, e.target)):
         parts.append(f"{e.source}->{e.target}")
-    return hashlib.md5("\n".join(parts).encode()).hexdigest()
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 def graph_fingerprint(graph: PipelineGraph, *extra_keys: str) -> str:
@@ -43,6 +43,6 @@ def graph_fingerprint(graph: PipelineGraph, *extra_keys: str) -> str:
         logger.debug("graph_fingerprint_computed", fingerprint=base[:8], extra_keys=())
         return base
     combined = "\n".join(extra_keys) + "\n" + base
-    fp = hashlib.md5(combined.encode()).hexdigest()
+    fp = hashlib.sha256(combined.encode()).hexdigest()
     logger.debug("graph_fingerprint_computed", fingerprint=fp[:8], extra_keys=extra_keys)
     return fp

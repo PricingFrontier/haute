@@ -165,7 +165,6 @@ class TestBuildManifest:
         manifest = build_manifest(resolved)
         assert set(manifest.keys()) == _EXPECTED_KEYS
 
-
     def test_pipeline_name_from_pruned_graph(self) -> None:
         resolved = _make_resolved(pipeline_name="graph_pipeline")
         manifest = build_manifest(resolved)

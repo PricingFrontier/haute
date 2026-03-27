@@ -951,13 +951,13 @@ def _generate_pipeline_lines(
     # ── Header ────────────────────────────────────────────────────────
     if kind == "submodel":
         lines = [
-            f'"""Submodel: {name}"""',
+            f'"""Submodel: {name.replace(chr(34), "")}"""',
             "",
             "import polars as pl",
             "import haute",
             "",
             "",
-            f'{obj_name} = haute.Submodel("{name}")',
+            f"{obj_name} = haute.Submodel({_safe_str(name)})",
             "",
             "",
         ]
@@ -973,7 +973,7 @@ def _generate_pipeline_lines(
             lines.append(preamble.rstrip())
         lines += [
             "",
-            f'{obj_name} = haute.Pipeline("{name}", description={description!r})',
+            f"{obj_name} = haute.Pipeline({_safe_str(name)}, description={description!r})",
             "",
             "",
         ]

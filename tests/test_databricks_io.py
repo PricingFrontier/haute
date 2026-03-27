@@ -142,10 +142,12 @@ class TestGetCredentials:
 
 def _make_arrow_batch(rows: int = 10) -> pa.Table:
     """Create a small PyArrow table to simulate a Databricks fetch batch."""
-    return pa.table({
-        "id": list(range(rows)),
-        "value": [float(i) * 1.5 for i in range(rows)],
-    })
+    return pa.table(
+        {
+            "id": list(range(rows)),
+            "value": [float(i) * 1.5 for i in range(rows)],
+        }
+    )
 
 
 def _empty_batch_like(batch: pa.Table) -> pa.Table:
@@ -198,7 +200,9 @@ class TestFetchAndCache:
         _clear_fetch_progress()
 
     def test_writes_parquet_and_returns_metadata(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -225,7 +229,9 @@ class TestFetchAndCache:
         assert expected_path.exists()
 
     def test_rejects_invalid_table_name(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -238,7 +244,9 @@ class TestFetchAndCache:
             )
 
     def test_rejects_single_part_table_name(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -251,7 +259,9 @@ class TestFetchAndCache:
             )
 
     def test_clears_progress_after_fetch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -270,7 +280,9 @@ class TestFetchAndCache:
         assert fetch_progress("cat.sch.tbl") is None
 
     def test_progress_cleared_on_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -299,7 +311,9 @@ class TestFetchAndCache:
         assert fetch_progress("cat.sch.tbl") is None
 
     def test_no_temp_file_on_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -330,7 +344,9 @@ class TestFetchAndCache:
         )
 
     def test_uses_custom_query(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -352,7 +368,9 @@ class TestFetchAndCache:
         assert "SELECT id, value FROM cat.sch.tbl" == executed_sql
 
     def test_multiple_batches(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
@@ -515,7 +533,9 @@ class TestValidateSelectClause:
             _validate_select_clause("SELECT 1 WHERE REVOKE ALL")
 
     def test_fetch_rejects_dangerous_query(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """fetch_and_cache validates query before executing SQL."""
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
@@ -530,7 +550,9 @@ class TestValidateSelectClause:
             )
 
     def test_fetch_rejects_non_select_query(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """fetch_and_cache rejects queries that don't start with SELECT."""
         monkeypatch.setenv("DATABRICKS_HOST", "host.com")
@@ -621,9 +643,7 @@ class TestExecuteImmediateBypass:
         # When the fix lands (adding EXECUTE to _DANGEROUS_SQL_RE), flip
         # this test to assert it raises.
         try:
-            _validate_select_clause(
-                "SELECT 1 WHERE 1=1 EXECUTE IMMEDIATE 'SELECT 2'"
-            )
+            _validate_select_clause("SELECT 1 WHERE 1=1 EXECUTE IMMEDIATE 'SELECT 2'")
             # If we get here, the gap is still open
             pytest.xfail(
                 "EXECUTE IMMEDIATE is not blocked by _validate_select_clause — "
@@ -774,13 +794,8 @@ class TestAdvancedSQLConstructsBypass:
         from haute._databricks_io import _validate_select_clause
 
         try:
-            _validate_select_clause(
-                "SELECT col1 LATERAL VIEW EXPLODE(array(1,2,3)) t AS val"
-            )
-            pytest.xfail(
-                "LATERAL VIEW is not blocked — consider adding it to "
-                "_DANGEROUS_SQL_RE"
-            )
+            _validate_select_clause("SELECT col1 LATERAL VIEW EXPLODE(array(1,2,3)) t AS val")
+            pytest.xfail("LATERAL VIEW is not blocked — consider adding it to _DANGEROUS_SQL_RE")
         except ValueError:
             pass  # Fixed
 
@@ -836,9 +851,7 @@ class TestUnicodeTableNames:
 
         # Zero-width space (U+200B) is NOT a \\w char, so this should fail
         result = _TABLE_NAME_RE.match("cat\u200b.sch.tbl")
-        assert result is None, (
-            "Table name with zero-width space should be rejected"
-        )
+        assert result is None, "Table name with zero-width space should be rejected"
 
     def test_homoglyph_table_names_produce_distinct_cache(self, tmp_path: Path) -> None:
         """Two table names using confusable chars (e.g. Latin 'a' vs Cyrillic 'а')
@@ -853,9 +866,7 @@ class TestUnicodeTableNames:
         # Cyrillic 'а' (U+0430) looks like Latin 'a' (U+0061)
         p_cyrillic = _cache_path_for("c\u0430t.sch.d\u0430ta", project_root=tmp_path)
 
-        assert p_latin != p_cyrillic, (
-            "Homoglyph table names must map to distinct cache paths"
-        )
+        assert p_latin != p_cyrillic, "Homoglyph table names must map to distinct cache paths"
 
 
 # ---------------------------------------------------------------------------
@@ -875,7 +886,9 @@ class TestNetworkTimeoutDuringFetch:
         _clear_fetch_progress()
 
     def test_transient_error_retried_then_succeeds(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """fetchmany_arrow fails twice then succeeds — retry logic recovers.
 
@@ -892,6 +905,7 @@ class TestNetworkTimeoutDuringFetch:
 
         # First two calls fail, third succeeds, fourth returns empty
         call_count = 0
+
         def fetch_with_failures(size: int) -> pa.Table:
             nonlocal call_count
             call_count += 1
@@ -925,7 +939,9 @@ class TestNetworkTimeoutDuringFetch:
         assert call_count == 4
 
     def test_all_retries_exhausted_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """All retry attempts fail — error is raised and cleanup happens.
 
@@ -937,9 +953,7 @@ class TestNetworkTimeoutDuringFetch:
         monkeypatch.setattr("time.sleep", lambda _: None)
 
         cursor = MagicMock()
-        cursor.fetchmany_arrow = MagicMock(
-            side_effect=ConnectionError("persistent timeout")
-        )
+        cursor.fetchmany_arrow = MagicMock(side_effect=ConnectionError("persistent timeout"))
 
         conn = MagicMock()
         conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
@@ -1004,6 +1018,7 @@ class TestCacheFileCorruption:
 
         # Write a valid parquet file, then truncate it
         import polars as pl
+
         pl.DataFrame({"a": list(range(1000))}).write_parquet(p)
         full_size = p.stat().st_size
 
@@ -1049,7 +1064,9 @@ class TestAtomicRenameOnWindows:
         _clear_fetch_progress()
 
     def test_refetch_overwrites_existing_cache(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Fetching a table twice should succeed — the second fetch must
         overwrite the first cache file.
@@ -1097,7 +1114,9 @@ class TestAtomicRenameOnWindows:
                     raise
 
     def test_rename_failure_simulated(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Simulate Path.rename() raising FileExistsError to verify the
         code handles it (or document that it doesn't).
@@ -1114,13 +1133,12 @@ class TestAtomicRenameOnWindows:
         original_rename = Path.rename
 
         call_count = 0
+
         def failing_rename(self_path: Path, target: Path) -> Path:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise FileExistsError(
-                    f"Cannot rename: target exists: {target}"
-                )
+                raise FileExistsError(f"Cannot rename: target exists: {target}")
             return original_rename(self_path, target)
 
         with patch.dict("sys.modules", {"databricks": mock_db, "databricks.sql": mock_sql}):
@@ -1161,7 +1179,9 @@ class TestLargeFetchBatchProgress:
         _clear_fetch_progress()
 
     def test_multi_batch_progress_updates(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Verify progress dict updates correctly across 5 batches.
 
@@ -1223,7 +1243,7 @@ class TestLargeFetchBatchProgress:
 
         # Progress should be monotonically increasing
         for i, snap in enumerate(progress_snapshots):
-            assert snap is not None, f"Progress was None at batch {i+1}"
+            assert snap is not None, f"Progress was None at batch {i + 1}"
             assert snap["rows"] == (i + 1) * rows_per_batch
             assert snap["batches"] == i + 1
             assert isinstance(snap["elapsed"], float)

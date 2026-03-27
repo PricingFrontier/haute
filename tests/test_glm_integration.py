@@ -99,9 +99,17 @@ class TestGLMConfigKeyMerge:
         from haute.routes._train_service import _GLM_CONFIG_KEYS
 
         expected = {
-            "terms", "family", "link", "interactions",
-            "regularization", "alpha", "l1_ratio", "intercept",
-            "var_power", "offset", "cv_folds",
+            "terms",
+            "family",
+            "link",
+            "interactions",
+            "regularization",
+            "alpha",
+            "l1_ratio",
+            "intercept",
+            "var_power",
+            "offset",
+            "cv_folds",
         }
         assert set(_GLM_CONFIG_KEYS) == expected
 
@@ -119,10 +127,12 @@ class TestGLMTermsValidation:
         """GLM raises clear error when terms reference non-existent columns."""
         from haute.modelling._training_job import TrainingJob
 
-        df = pl.DataFrame({
-            "age": [25, 30, 35, 40, 45],
-            "target": [1.0, 2.0, 3.0, 4.0, 5.0],
-        })
+        df = pl.DataFrame(
+            {
+                "age": [25, 30, 35, 40, 45],
+                "target": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
 
         job = TrainingJob(
             name="test_missing_cols",
@@ -143,10 +153,12 @@ class TestGLMTermsValidation:
         """One valid, one invalid term — error lists only the missing one."""
         from haute.modelling._training_job import TrainingJob
 
-        df = pl.DataFrame({
-            "age": [25, 30, 35, 40, 45],
-            "target": [1.0, 2.0, 3.0, 4.0, 5.0],
-        })
+        df = pl.DataFrame(
+            {
+                "age": [25, 30, 35, 40, 45],
+                "target": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
 
         job = TrainingJob(
             name="test_partial_missing",
@@ -252,6 +264,7 @@ class TestGLMSelectColumns:
 # ---------------------------------------------------------------------------
 # Gap 4: Diagnostic fallback — coefficients_table
 # ---------------------------------------------------------------------------
+
 
 class TestCoefficientsTableFallback:
     """When model.coef_table() raises, the fallback path must build the
@@ -362,7 +375,9 @@ class TestGLMDiagnostics:
         model.diagnostics.return_value = diag_mock
 
         data = pl.DataFrame({"age": [25, 30], "region": ["A", "B"], "y": [1.0, 2.0]})
-        result = algo.glm_diagnostics(model, data, cat_features=["region"], features=["age", "region"])
+        result = algo.glm_diagnostics(
+            model, data, cat_features=["region"], features=["age", "region"]
+        )
 
         assert result == {"ae_by_feature": {"age": [1.0, 1.1]}}
         model.diagnostics.assert_called_once()
@@ -454,10 +469,12 @@ class TestNullTargetCleaning:
     def test_null_targets_are_dropped_before_training(self, tmp_path):
         from haute.modelling._training_job import TrainingJob
 
-        df = pl.DataFrame({
-            "feature": [1, 2, 3, 4, 5],
-            "target": [1.0, None, 3.0, None, 5.0],
-        })
+        df = pl.DataFrame(
+            {
+                "feature": [1, 2, 3, 4, 5],
+                "target": [1.0, None, 3.0, None, 5.0],
+            }
+        )
 
         job = TrainingJob(
             name="test_null_clean",
@@ -479,4 +496,5 @@ class TestNullTargetCleaning:
         finally:
             if prepared.owns_tmp:
                 import os
+
                 os.unlink(prepared.data_path)

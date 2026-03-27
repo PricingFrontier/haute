@@ -131,28 +131,36 @@ class TestEffectiveEndpointName:
 
 class TestEnvOverrides:
     def test_haute_model_name_override(
-        self, toml_file: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_MODEL_NAME", "overridden-name")
         config = DeployConfig.from_toml(toml_file)
         assert config.model_name == "overridden-name"
 
     def test_haute_target_override(
-        self, toml_file: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_TARGET", "container")
         config = DeployConfig.from_toml(toml_file)
         assert config.target == "container"
 
     def test_haute_nested_override(
-        self, toml_file: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_SERVING_WORKLOAD_SIZE", "Large")
         config = DeployConfig.from_toml(toml_file)
         assert config.databricks.serving_workload_size == "Large"
 
     def test_haute_bool_override(
-        self, toml_file: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "false")
         config = DeployConfig.from_toml(toml_file)

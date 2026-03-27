@@ -22,6 +22,7 @@ from tests.conftest import make_edge as _e
 # _sanitize_func_name
 # ---------------------------------------------------------------------------
 
+
 class TestSanitizeFuncName:
     def test_simple_label(self):
         assert _sanitize_func_name("Load Data") == "Load_Data"
@@ -72,6 +73,7 @@ class TestSanitizeFuncName:
 # _resolve_sink_path
 # ---------------------------------------------------------------------------
 
+
 class TestResolveSinkPath:
     def test_bare_name_gets_outputs_dir_and_extension(self):
         assert _resolve_sink_path("modelling-data", "parquet") == "outputs/modelling-data.parquet"
@@ -83,7 +85,10 @@ class TestResolveSinkPath:
         assert _resolve_sink_path("my-dir/data", "parquet") == "my-dir/data.parquet"
 
     def test_already_has_extension_no_append(self):
-        assert _resolve_sink_path("modelling-data.parquet", "parquet") == "outputs/modelling-data.parquet"
+        assert (
+            _resolve_sink_path("modelling-data.parquet", "parquet")
+            == "outputs/modelling-data.parquet"
+        )
 
     def test_full_path_unchanged(self):
         assert _resolve_sink_path("my-dir/data.parquet", "parquet") == "my-dir/data.parquet"
@@ -95,6 +100,7 @@ class TestResolveSinkPath:
 # ---------------------------------------------------------------------------
 # topo_sort_ids
 # ---------------------------------------------------------------------------
+
 
 class TestTopoSort:
     def test_linear_chain(self):
@@ -130,9 +136,7 @@ class TestTopoSort:
         # Verify topological invariant: every parent before its child
         idx = {nid: i for i, nid in enumerate(result)}
         for e in edges:
-            assert idx[e.source] < idx[e.target], (
-                f"{e.source} should come before {e.target}"
-            )
+            assert idx[e.source] < idx[e.target], f"{e.source} should come before {e.target}"
 
     def test_cycle_raises_error(self):
         """Cycle nodes raise CycleError instead of being silently dropped."""
@@ -158,6 +162,7 @@ class TestTopoSort:
 # ancestors
 # ---------------------------------------------------------------------------
 
+
 class TestAncestors:
     def test_includes_self(self):
         result = ancestors("a", [], {"a", "b"})
@@ -178,7 +183,10 @@ class TestAncestors:
 # _prepare_graph
 # ---------------------------------------------------------------------------
 
-def _make_graph(nodes_data: list[tuple[str, str]], edges_data: list[tuple[str, str]]) -> PipelineGraph:
+
+def _make_graph(
+    nodes_data: list[tuple[str, str]], edges_data: list[tuple[str, str]]
+) -> PipelineGraph:
     """Helper to build a minimal PipelineGraph."""
     nodes = [
         GraphNode(id=nid, data=NodeData(label=label, nodeType="polars"))
@@ -217,6 +225,7 @@ class TestPrepareGraph:
 # _execute_lazy
 # ---------------------------------------------------------------------------
 
+
 class TestExecuteLazy:
     @staticmethod
     def _simple_build_fn(node, source_names=None, **kwargs):
@@ -226,12 +235,16 @@ class TestExecuteLazy:
         name = node.data.label or nid
 
         if nt == "dataSource":
+
             def fn() -> pl.LazyFrame:
                 return pl.DataFrame({"x": [1, 2, 3]}).lazy()
+
             return name, fn, True
         else:
+
             def fn(*dfs: pl.LazyFrame) -> pl.LazyFrame:
                 return dfs[0].with_columns(y=pl.col("x") * 2)
+
             return name, fn, False
 
     def test_basic_execution(self):
@@ -240,8 +253,10 @@ class TestExecuteLazy:
             [("src", "t")],
         )
         g = PipelineGraph(
-            nodes=[GraphNode(id="src", data=NodeData(label="Source", nodeType="dataSource")),
-                   GraphNode(id="t", data=NodeData(label="Transform", nodeType="polars"))],
+            nodes=[
+                GraphNode(id="src", data=NodeData(label="Source", nodeType="dataSource")),
+                GraphNode(id="t", data=NodeData(label="Transform", nodeType="polars")),
+            ],
             edges=g.edges,
         )
 
@@ -258,9 +273,11 @@ class TestExecuteLazy:
             [("a", "b"), ("b", "c")],
         )
         g = PipelineGraph(
-            nodes=[GraphNode(id="a", data=NodeData(label="A", nodeType="dataSource")),
-                   GraphNode(id="b", data=NodeData(label="B", nodeType="polars")),
-                   GraphNode(id="c", data=NodeData(label="C", nodeType="polars"))],
+            nodes=[
+                GraphNode(id="a", data=NodeData(label="A", nodeType="dataSource")),
+                GraphNode(id="b", data=NodeData(label="B", nodeType="polars")),
+                GraphNode(id="c", data=NodeData(label="C", nodeType="polars")),
+            ],
             edges=g.edges,
         )
 
@@ -270,14 +287,17 @@ class TestExecuteLazy:
 
     def test_dataframe_converted_to_lazy(self):
         """If a node fn returns a DataFrame, it should be auto-converted to LazyFrame."""
+
         def build_fn(node, source_names=None, **kwargs):
             if node.id == "src":
                 return "src", lambda: pl.DataFrame({"x": [1]}), True
             return "t", lambda *dfs: dfs[0], False
 
         g = PipelineGraph(
-            nodes=[GraphNode(id="src", data=NodeData(label="Src", nodeType="dataSource")),
-                   GraphNode(id="t", data=NodeData(label="T", nodeType="polars"))],
+            nodes=[
+                GraphNode(id="src", data=NodeData(label="Src", nodeType="dataSource")),
+                GraphNode(id="t", data=NodeData(label="T", nodeType="polars")),
+            ],
             edges=[_e("src", "t")],
         )
 
@@ -286,6 +306,7 @@ class TestExecuteLazy:
 
     def test_non_source_no_input_raises(self):
         """A non-source node with no parents and no prior outputs raises ValueError."""
+
         def build_fn(node, source_names=None, **kwargs):
             return node.id, lambda *dfs: dfs[0], False
 
@@ -295,6 +316,7 @@ class TestExecuteLazy:
 
     def test_no_edge_non_source_raises(self):
         """A non-source with no edges raises even when prior outputs exist."""
+
         def build_fn(node, source_names=None, **kwargs):
             nid = node.id
             if nid == "src":
@@ -303,13 +325,16 @@ class TestExecuteLazy:
 
         # Two nodes, no edge — "t" must not silently grab src's output
         g = PipelineGraph(
-            nodes=[GraphNode(id="src", data=NodeData(label="Src", nodeType="dataSource")),
-                   GraphNode(id="t", data=NodeData(label="T", nodeType="polars"))],
+            nodes=[
+                GraphNode(id="src", data=NodeData(label="Src", nodeType="dataSource")),
+                GraphNode(id="t", data=NodeData(label="T", nodeType="polars")),
+            ],
             edges=[],
         )
 
         with pytest.raises(ValueError, match="No input data available"):
             _execute_lazy(g, build_fn)
+
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestLoadExternalObjectCache:
@@ -363,20 +388,25 @@ class TestLoadExternalObjectCache:
 class TestExecuteLazyMultiInput:
     def test_multi_input_node(self):
         """A node with two parents receives both LazyFrames."""
+
         def build_fn(node, source_names=None, **kwargs):
             nid = node.id
             if nid in ("a", "b"):
                 data = {"x": [1]} if nid == "a" else {"y": [2]}
                 return nid, lambda d=data: pl.DataFrame(d).lazy(), True
             else:
+
                 def fn(*dfs):
                     return dfs[0].join(dfs[1], how="cross")
+
                 return nid, fn, False
 
         g = PipelineGraph(
-            nodes=[GraphNode(id="a", data=NodeData(label="A", nodeType="dataSource")),
-                   GraphNode(id="b", data=NodeData(label="B", nodeType="dataSource")),
-                   GraphNode(id="c", data=NodeData(label="C", nodeType="polars"))],
+            nodes=[
+                GraphNode(id="a", data=NodeData(label="A", nodeType="dataSource")),
+                GraphNode(id="b", data=NodeData(label="B", nodeType="dataSource")),
+                GraphNode(id="c", data=NodeData(label="C", nodeType="polars")),
+            ],
             edges=[_e("a", "c"), _e("b", "c")],
         )
 
@@ -389,14 +419,17 @@ class TestExecuteLazyMultiInput:
 # build_instance_mapping
 # ---------------------------------------------------------------------------
 
+
 class TestBuildInstanceMapping:
     def test_exact_match(self):
         from haute.graph_utils import build_instance_mapping
+
         result = build_instance_mapping(["a", "b"], ["b", "a"])
         assert result == {"a": "a", "b": "b"}
 
     def test_substring_match(self):
         from haute.graph_utils import build_instance_mapping
+
         result = build_instance_mapping(
             ["claims_aggregate"],
             ["claims_aggregate_instance"],
@@ -407,6 +440,7 @@ class TestBuildInstanceMapping:
         """Regression: instance input named 'instance' must map to 'claims_aggregate'
         via positional fallback when no exact or substring match exists."""
         from haute.graph_utils import build_instance_mapping
+
         result = build_instance_mapping(
             ["policies", "exposure", "claims_aggregate"],
             ["exposure", "policies", "instance"],
@@ -417,6 +451,7 @@ class TestBuildInstanceMapping:
 
     def test_explicit_mapping_overrides_heuristic(self):
         from haute.graph_utils import build_instance_mapping
+
         result = build_instance_mapping(
             ["a", "b"],
             ["x", "y"],
@@ -426,6 +461,7 @@ class TestBuildInstanceMapping:
 
     def test_explicit_mapping_filters_empty_values(self):
         from haute.graph_utils import build_instance_mapping
+
         result = build_instance_mapping(
             ["a", "b"],
             ["a", "b"],
@@ -439,9 +475,11 @@ class TestBuildInstanceMapping:
 # resolve_orig_source_names
 # ---------------------------------------------------------------------------
 
+
 class TestResolveOrigSourceNames:
     def test_non_instance_returns_none(self):
         from haute.graph_utils import resolve_orig_source_names
+
         node = GraphNode(id="x", data=NodeData(label="x"))
         assert resolve_orig_source_names(node, {}, {}, {}) is None
 
@@ -449,11 +487,14 @@ class TestResolveOrigSourceNames:
         """Regression: original's parents must be resolved even when they
         are outside the execution subgraph (target_node_id filtering)."""
         from haute.graph_utils import resolve_orig_source_names
+
         node_map = {
             "freq_set": GraphNode(id="freq_set", data=NodeData(label="freq_set")),
             "policies": GraphNode(id="policies", data=NodeData(label="policies")),
             "claims_agg": GraphNode(id="claims_agg", data=NodeData(label="claims_agg")),
-            "inst": GraphNode(id="inst", data=NodeData(label="inst", config={"instanceOf": "freq_set"})),
+            "inst": GraphNode(
+                id="inst", data=NodeData(label="inst", config={"instanceOf": "freq_set"})
+            ),
         }
         all_parents = {"freq_set": ["policies", "claims_agg"]}
         # id_to_name only has nodes in the execution subgraph (inst's ancestors)

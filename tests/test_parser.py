@@ -13,6 +13,7 @@ from haute.parser import parse_pipeline_file
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_pipeline(tmp_path: Path, code: str) -> Path:
     """Write a pipeline .py file and return its path."""
     p = tmp_path / "test_pipeline.py"
@@ -23,6 +24,7 @@ def _write_pipeline(tmp_path: Path, code: str) -> Path:
 # ---------------------------------------------------------------------------
 # Basic parsing
 # ---------------------------------------------------------------------------
+
 
 class TestParsePipelineFile:
     def test_simple_pipeline(self, tmp_path):
@@ -60,18 +62,18 @@ pipeline.connect("load_data", "transform")
         assert node_map["transform"].data.nodeType == "polars"
 
     def test_pipeline_name_extracted(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("my_pricing", description="Motor pricing")
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
         assert graph.pipeline_name == "my_pricing"
 
     def test_edges_from_connect_calls(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -89,14 +91,14 @@ def b(a: pl.DataFrame) -> pl.DataFrame:
 
 
 pipeline.connect("a", "b")
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
         edge_pairs = [(e.source, e.target) for e in graph.edges]
         assert ("a", "b") in edge_pairs
 
     def test_implicit_edges_from_param_names(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -111,7 +113,7 @@ def source() -> pl.DataFrame:
 @pipeline.polars
 def transform(source: pl.DataFrame) -> pl.DataFrame:
     return source
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
         edge_pairs = [(e.source, e.target) for e in graph.edges]
@@ -158,7 +160,7 @@ def my_node() -> pl.DataFrame:
         assert graph.nodes == []
 
     def test_preamble_extracted(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -172,7 +174,7 @@ pipeline = haute.Pipeline("preamble_test")
 @pipeline.polars
 def src() -> pl.DataFrame:
     return pl.DataFrame()
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
         preamble = graph.preamble or ""
@@ -223,7 +225,7 @@ def transform(load_data: pl.DataFrame) -> pl.DataFrame:
 
     def test_regex_fallback_extracts_connect_calls(self, tmp_path):
         """Regex fallback should still wire edges from pipeline.connect()."""
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -244,7 +246,7 @@ pipeline.connect("a", "b")
 
 # syntax bomb below
 x = {
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
 
@@ -300,7 +302,7 @@ class TestFlattenParameter:
 
     def test_flatten_true_accepted(self, tmp_path):
         """parse_pipeline_file(flatten=True) must not raise."""
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -310,7 +312,7 @@ pipeline = haute.Pipeline("flat_test")
 @pipeline.data_source(path="d.parquet")
 def src() -> pl.DataFrame:
     return pl.DataFrame()
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p, flatten=True)
         assert graph.pipeline_name == "flat_test"
@@ -318,7 +320,7 @@ def src() -> pl.DataFrame:
 
     def test_flatten_default_is_false(self, tmp_path):
         """Default flatten=False should not alter simple pipeline."""
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -328,7 +330,7 @@ pipeline = haute.Pipeline("noflat")
 @pipeline.polars
 def node_a() -> pl.DataFrame:
     return pl.DataFrame()
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
         assert len(graph.nodes) == 1
@@ -480,13 +482,11 @@ class TestStripDocstringMixedQuotes:
         from haute._parser_helpers import _strip_docstring
 
         lines = [
-            '    \"\"\"It\'s a \'\'\'test\'\'\'\"\"\"',
+            "    \"\"\"It's a '''test'''\"\"\"",
         ]
         result = _strip_docstring(lines)
         # The single-line docstring should be fully consumed.
-        assert result == [], (
-            "Single-line docstring with mixed quotes should be fully stripped"
-        )
+        assert result == [], "Single-line docstring with mixed quotes should be fully stripped"
 
     def test_multiline_mixed_quote_docstring(self):
         """_strip_docstring now tracks opening_quote style, so inner ''' no longer
@@ -495,10 +495,10 @@ class TestStripDocstringMixedQuotes:
         from haute._parser_helpers import _strip_docstring
 
         lines = [
-            '    \"\"\"',
+            '    """',
             "    It's a '''test''' inside.",
-            '    \"\"\"',
-            '    return df',
+            '    """',
+            "    return df",
         ]
         result = _strip_docstring(lines)
 
@@ -517,7 +517,7 @@ class TestPreambleExtractionEdgeCases:
     """
 
     def test_preamble_stops_at_real_decorator_not_comment(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -530,7 +530,7 @@ pipeline = haute.Pipeline("preamble_edge")
 @pipeline.polars
 def node() -> pl.DataFrame:
     return pl.DataFrame()
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
         preamble = graph.preamble or ""
@@ -540,7 +540,7 @@ def node() -> pl.DataFrame:
 
     def test_preamble_with_unknown_decorator_attr(self, tmp_path):
         """@pipeline.custom_thing is not a known type, preamble continues."""
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -556,7 +556,7 @@ pipeline = haute.Pipeline("unknown_dec")
 @pipeline.polars
 def node() -> pl.DataFrame:
     return pl.DataFrame()
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
         preamble = graph.preamble or ""
@@ -574,7 +574,7 @@ class TestPreservedBlockUnmatchedMarker:
     """
 
     def test_unmatched_preserve_start_is_ignored(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -589,7 +589,7 @@ def node() -> pl.DataFrame:
 # haute:preserve-start
 LEAKED_CONSTANT = 42
 # no matching end marker!
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
 
@@ -597,7 +597,7 @@ LEAKED_CONSTANT = 42
         assert graph.preserved_blocks == []
 
     def test_matched_preserve_block_extracted(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -612,7 +612,7 @@ def node() -> pl.DataFrame:
 # haute:preserve-start
 KEEP_ME = True
 # haute:preserve-end
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
 

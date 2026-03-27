@@ -24,6 +24,7 @@ from haute.parser import parse_pipeline_file, parse_pipeline_source
 # _strip_docstring
 # ---------------------------------------------------------------------------
 
+
 class TestStripDocstring:
     def test_single_line_docstring(self):
         lines = ['    """This is a docstring."""', "    return df"]
@@ -64,6 +65,7 @@ class TestStripDocstring:
 # _dedent
 # ---------------------------------------------------------------------------
 
+
 class TestDedent:
     def test_removes_common_indent(self):
         code = "    x = 1\n    y = 2"
@@ -83,6 +85,7 @@ class TestDedent:
 # ---------------------------------------------------------------------------
 # _extract_user_code
 # ---------------------------------------------------------------------------
+
 
 class TestExtractUserCode:
     def test_codegen_style_df_assignment(self):
@@ -118,6 +121,7 @@ class TestExtractUserCode:
 # ---------------------------------------------------------------------------
 # _extract_external_user_code
 # ---------------------------------------------------------------------------
+
 
 class TestExtractExternalUserCode:
     def test_strips_import_and_with_block(self):
@@ -179,6 +183,7 @@ class TestExtractExternalUserCode:
 # _extract_model_score_user_code
 # ---------------------------------------------------------------------------
 
+
 class TestExtractModelScoreUserCode:
     def test_no_sentinel_returns_empty(self):
         """Body without sentinel is entirely auto-generated → empty string."""
@@ -208,11 +213,7 @@ class TestExtractModelScoreUserCode:
 
     def test_sentinel_but_only_return(self):
         """Sentinel present but only 'return result' after → empty string."""
-        body = (
-            "    result = df_eager.lazy()\n"
-            "    # -- user code --\n"
-            "    return result"
-        )
+        body = "    result = df_eager.lazy()\n    # -- user code --\n    return result"
         assert _extract_model_score_user_code(body) == ""
 
     def test_empty_body(self):
@@ -225,7 +226,7 @@ class TestExtractModelScoreUserCode:
             "    # -- user code --\n"
             "    x = 1\n"
             "    y = x + 2\n"
-            '    df = df.with_columns(z=pl.lit(y))\n'
+            "    df = df.with_columns(z=pl.lit(y))\n"
             "    return result"
         )
         result = _extract_model_score_user_code(body)
@@ -239,6 +240,7 @@ class TestExtractModelScoreUserCode:
 # _build_node_config
 # ---------------------------------------------------------------------------
 
+
 class TestBuildNodeConfig:
     def test_data_source_flat_file(self):
         config = _build_node_config("dataSource", {"path": "d.parquet"}, "", [])
@@ -249,7 +251,8 @@ class TestBuildNodeConfig:
         config = _build_node_config(
             "apiInput",
             {"path": "d.parquet", "api_input": True, "row_id_column": "policy_id"},
-            "", [],
+            "",
+            [],
         )
         assert config["row_id_column"] == "policy_id"
         assert config["path"] == "d.parquet"
@@ -258,14 +261,18 @@ class TestBuildNodeConfig:
         config = _build_node_config(
             "liveSwitch",
             {"live_switch": True, "input_scenario_map": {"live": "live", "nb": "test_batch"}},
-            "", ["live", "nb", "rn"],
+            "",
+            ["live", "nb", "rn"],
         )
         assert config["input_scenario_map"] == {"live": "live", "nb": "test_batch"}
         assert config["inputs"] == ["live", "nb", "rn"]
 
     def test_data_source_databricks(self):
         config = _build_node_config(
-            "dataSource", {"table": "catalog.schema.tbl"}, "", [],
+            "dataSource",
+            {"table": "catalog.schema.tbl"},
+            "",
+            [],
         )
         assert config["sourceType"] == "databricks"
         assert config["table"] == "catalog.schema.tbl"
@@ -273,9 +280,16 @@ class TestBuildNodeConfig:
     def test_model_score(self):
         config = _build_node_config(
             "modelScore",
-            {"model_score": True, "source_type": "run", "run_id": "abc123",
-             "artifact_path": "model.cbm", "task": "regression", "output_column": "prediction"},
-            "", ["df"],
+            {
+                "model_score": True,
+                "source_type": "run",
+                "run_id": "abc123",
+                "artifact_path": "model.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+            },
+            "",
+            ["df"],
         )
         assert config["sourceType"] == "run"
         assert config["run_id"] == "abc123"
@@ -284,9 +298,18 @@ class TestBuildNodeConfig:
     def test_rating_step(self):
         config = _build_node_config(
             "ratingStep",
-            {"tables": [{"name": "T", "factors": ["x"], "output_column": "out",
-                         "entries": [{"x": "a", "value": 1.0}]}]},
-            "", ["df"],
+            {
+                "tables": [
+                    {
+                        "name": "T",
+                        "factors": ["x"],
+                        "output_column": "out",
+                        "entries": [{"x": "a", "value": 1.0}],
+                    }
+                ]
+            },
+            "",
+            ["df"],
         )
         assert len(config["tables"]) == 1
         assert config["tables"][0]["factors"] == ["x"]
@@ -345,6 +368,7 @@ class TestBuildNodeConfig:
 # _extract_preamble
 # ---------------------------------------------------------------------------
 
+
 class TestExtractPreamble:
     def test_extracts_between_imports_and_pipeline(self):
         source = (
@@ -363,12 +387,7 @@ class TestExtractPreamble:
         assert "Pipeline" not in preamble
 
     def test_no_preamble(self):
-        source = (
-            "import polars as pl\n"
-            "import haute\n"
-            "\n"
-            'pipeline = haute.Pipeline("test")\n'
-        )
+        source = 'import polars as pl\nimport haute\n\npipeline = haute.Pipeline("test")\n'
         preamble = _extract_preamble(source)
         assert preamble == ""
 
@@ -380,6 +399,7 @@ class TestExtractPreamble:
 # ---------------------------------------------------------------------------
 # _fallback_parse (syntax error path)
 # ---------------------------------------------------------------------------
+
 
 class TestFallbackParse:
     def test_parses_despite_syntax_error(self, tmp_path):
@@ -422,7 +442,7 @@ def good_node(df: pl.DataFrame) -> pl.DataFrame:
 
     def test_fallback_extracts_edges(self, tmp_path):
         """Regex fallback should find pipeline.connect() calls."""
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -438,7 +458,7 @@ def b(a: pl.DataFrame) -> pl.DataFrame:
     return a
 
 pipeline.connect("a", "b")
-'''
+"""
         p = tmp_path / "edges.py"
         p.write_text(code)
         graph = parse_pipeline_file(p)
@@ -449,6 +469,7 @@ pipeline.connect("a", "b")
 # ---------------------------------------------------------------------------
 # Roundtrip: parse → codegen → parse (deep comparison)
 # ---------------------------------------------------------------------------
+
 
 class TestDeepRoundtrip:
     def test_roundtrip_preserves_node_types_and_configs(self, tmp_path):
@@ -570,7 +591,9 @@ pipeline.connect("source", "features")
 
         feat1 = next(n for n in graph1.nodes if n.id == "features")
         assert feat1.data.config.get("selected_columns") == [
-            "quote_id", "premium", "sale_flag",
+            "quote_id",
+            "premium",
+            "sale_flag",
         ]
 
         # Generate code from the parsed graph, then re-parse
@@ -586,7 +609,9 @@ pipeline.connect("source", "features")
 
         feat2 = next(n for n in graph2.nodes if n.id == "features")
         assert feat2.data.config.get("selected_columns") == [
-            "quote_id", "premium", "sale_flag",
+            "quote_id",
+            "premium",
+            "sale_flag",
         ]
 
     def test_roundtrip_transform_without_selected_columns(self, tmp_path):

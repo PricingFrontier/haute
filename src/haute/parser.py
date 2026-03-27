@@ -178,6 +178,8 @@ def parse_pipeline_source(
                 continue
             sm_graph = parse_submodel_file(sm_filepath, _base_dir=_base_dir)
             sm_name = sm_graph.pipeline_name or sm_filepath.stem
+            if sm_name in submodel_graphs:
+                logger.warning("submodel_name_collision", name=sm_name)
             submodel_graphs[sm_name] = sm_graph
             submodel_files[sm_name] = rel_path
 

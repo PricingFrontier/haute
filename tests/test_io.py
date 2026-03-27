@@ -27,7 +27,6 @@ class TestReadSourceParquet:
         assert result["a"].to_list() == [1, 2, 3]
 
 
-
 class TestReadSourceCSV:
     def test_reads_csv_file(self, tmp_path: Path) -> None:
         path = tmp_path / "data.csv"
@@ -116,7 +115,6 @@ def _clear_cache():
     _object_cache.clear()
     yield
     _object_cache.clear()
-
 
 
 class TestLoadExternalObjectJSON:

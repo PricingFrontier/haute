@@ -140,7 +140,7 @@ def _compile_preamble(
 
     import hashlib
 
-    cache_key = hashlib.md5(preamble.encode()).hexdigest()
+    cache_key = hashlib.sha256(preamble.encode()).hexdigest()
 
     # Preamble may contain imports (e.g. from utility.features import …)
     # which are legitimate, but still validate against other dangerous

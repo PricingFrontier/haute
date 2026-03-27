@@ -153,11 +153,13 @@ class TestDetectExtraDeps:
         assert _detect_extra_deps(resolved) == []
 
     def test_multiple_artifacts_deduped_and_sorted(self) -> None:
-        resolved = _make_resolved(artifacts={
-            "freq.cbm": Path("freq.cbm"),
-            "sev.cbm": Path("sev.cbm"),
-            "scaler.pkl": Path("scaler.pkl"),
-        })
+        resolved = _make_resolved(
+            artifacts={
+                "freq.cbm": Path("freq.cbm"),
+                "sev.cbm": Path("sev.cbm"),
+                "scaler.pkl": Path("scaler.pkl"),
+            }
+        )
         assert _detect_extra_deps(resolved) == ["catboost", "scikit-learn"]
 
     def test_case_insensitive(self) -> None:
@@ -175,10 +177,19 @@ class TestBuildManifest:
         resolved = _make_resolved()
         m = _build_manifest(resolved)
         required = {
-            "haute_version", "pipeline_name", "target", "created_at",
-            "created_by", "input_node_ids", "output_node_id",
-            "input_schema", "output_schema", "artifacts",
-            "pruned_graph", "nodes_deployed", "nodes_skipped",
+            "haute_version",
+            "pipeline_name",
+            "target",
+            "created_at",
+            "created_by",
+            "input_node_ids",
+            "output_node_id",
+            "input_schema",
+            "output_schema",
+            "artifacts",
+            "pruned_graph",
+            "nodes_deployed",
+            "nodes_skipped",
         }
         assert required.issubset(m.keys())
 
