@@ -456,7 +456,11 @@ def execute_graph(
                 )
             )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-            merged = {**prev_outputs, **eager_outputs}
+            # Keep cached DataFrames for nodes that were already computed.
+            # Overriding them with fresh outputs from a different execution
+            # would introduce non-deterministic row ordering from Polars
+            # joins, breaking trace row identity.
+            merged = {**eager_outputs, **prev_outputs}
             merged_errors = {**cached["errors"], **errors}
             merged_timings = {**cached["timings"], **timings}
             merged_memory = {**cached["memory_bytes"], **memory_bytes}
@@ -473,6 +477,7 @@ def execute_graph(
                 error_lines=merged_error_lines,
                 available_columns=merged_avail,
             )
+            _preview_cache.pin(fp)
             eager_outputs = merged
             errors = merged_errors
             timings = merged_timings
@@ -505,6 +510,9 @@ def execute_graph(
             error_lines=error_lines,
             available_columns=avail_cols,
         )
+        # Pin this entry so the trace can always reuse the exact same
+        # DataFrames.  Prevents LRU eviction between preview and trace.
+        _preview_cache.pin(fp)
 
     # Pre-compute schema warnings for instance nodes by comparing the
     # columns available at the instance's inputs vs the original's inputs.

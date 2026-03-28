@@ -24,7 +24,7 @@ interface TracingParams {
 export interface TracingReturn {
   traceResult: TraceResult | null
   tracedCell: { rowIndex: number; column: string } | null
-  handleCellClick: (rowIndex: number, column: string) => void
+  handleCellClick: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   clearTrace: () => void
   nodesWithStatus: Node[]
   edgesWithTrace: Edge[]
@@ -50,11 +50,11 @@ export default function useTracing({
     setTracedCell(null)
   }, [])
 
-  const handleCellClick = useCallback((rowIndex: number, column: string) => {
+  const handleCellClick = useCallback((rowIndex: number, column: string, rowValues?: Record<string, unknown>) => {
     if (!selectedNode) return
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
     setTracedCell({ rowIndex, column })
-    traceCell({ graph, row_index: rowIndex, target_node_id: selectedNode.id, column, row_limit: rowLimit, source: activeSource })
+    traceCell({ graph, row_index: rowIndex, target_node_id: selectedNode.id, column, row_limit: rowLimit, source: activeSource, row_values: rowValues })
       .then((data) => {
         if (data.status === "ok" && data.trace) {
           setTraceResult(data.trace as unknown as TraceResult)

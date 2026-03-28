@@ -19,6 +19,7 @@ data the user sees in the preview table.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import time
 from dataclasses import dataclass
@@ -75,6 +76,12 @@ class TraceStep:
 
     # Execution time for this node (ms)
     execution_ms: float = 0.0
+
+    # Expression parsing & enrichment (Phase B — populated by _enrich_steps)
+    expression: dict[str, Any] | None = None
+    calculation: dict[str, Any] | None = None
+    node_detail: dict[str, Any] | None = None
+    row_lineage_type: str | None = None
 
 
 @dataclass
@@ -201,6 +208,9 @@ def _build_value_mask(
             mask = mask & pl.col(c).is_null()
         elif isinstance(val, float) and math.isnan(val):
             mask = mask & pl.col(c).is_nan()
+        elif isinstance(val, str):
+            # Cast column to Utf8 so stringified dates/datetimes match
+            mask = mask & (pl.col(c).cast(pl.Utf8) == val)
         else:
             mask = mask & (pl.col(c) == val)
     return mask
@@ -210,18 +220,20 @@ def _find_matching_row(
     df: pl.DataFrame,
     child_row: dict[str, Any],
     fallback_index: int,
-) -> tuple[dict[str, Any], int]:
+) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
     Returns ``(row_dict, positional_index)`` — the row dict is already
-    run through ``_jsonify_row``.
+    run through ``_jsonify_row``.  Returns ``(None, -1)`` when no match
+    can be found — callers must handle the unresolved case rather than
+    silently showing incorrect data.
 
     Strategy:
       1. Try matching on ALL shared columns.
       2. If no match, progressively remove the column that is blocking
          the match (handles aggregated values like SUM that don't exist
          in the source).
-      3. Final fallback: positional index.
+      3. If still no match, return None (fail loudly).
     """
     df_cols = set(df.columns)
     shared = [c for c in child_row if c in df_cols]
@@ -252,20 +264,14 @@ def _find_matching_row(
             if not removed:
                 break
 
-    # Final fallback: positional index — this means column matching
-    # could not find the upstream row (e.g. aggregation dropped all
-    # shared values, or all rows are identical).  The trace step may
-    # show a different record than the one that contributed to the
-    # target row.
-    idx = min(fallback_index, len(df) - 1) if len(df) > 0 else 0
-    if len(df) > 0:
-        logger.debug(
-            "trace_row_match_fallback",
-            fallback_index=idx,
-            shared_cols_tried=len(shared) if shared else 0,
-        )
-        return _jsonify_row(df.row(idx, named=True)), idx
-    return {}, 0
+    # No match found — return None so the caller can mark the step
+    # as unresolved rather than silently showing wrong data.
+    logger.warning(
+        "trace_row_match_failed",
+        shared_cols_tried=len(shared) if shared else 0,
+        df_rows=len(df),
+    )
+    return None, -1
 
 
 def _correlate_rows_posthoc(
@@ -274,7 +280,7 @@ def _correlate_rows_posthoc(
     parents_of: dict[str, list[str]],
     target_node_id: str,
     row_index: int,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
     Uses the preview-cached DataFrames directly — no re-execution, no
@@ -282,7 +288,8 @@ def _correlate_rows_posthoc(
     each parent's row by shared column values with the already-resolved
     child row.
 
-    Returns a dict mapping node_id → row values (JSON-safe).
+    Returns a dict mapping node_id → row values (JSON-safe), or None
+    for nodes where row correlation failed.
     """
     target_df = eager_outputs[target_node_id]
     if row_index >= len(target_df):
@@ -291,7 +298,7 @@ def _correlate_rows_posthoc(
     # Step 1: extract the target row — this is exactly what the user clicked
     target_row_raw = target_df.row(row_index, named=True)
 
-    result: dict[str, dict[str, Any]] = {}
+    result: dict[str, dict[str, Any] | None] = {}
     row_indices: dict[str, int] = {}  # track positional index per node
 
     result[target_node_id] = _jsonify_row(target_row_raw)
@@ -315,18 +322,17 @@ def _correlate_rows_posthoc(
             row_indices[nid] = 0
             continue
 
-        # Find a child of this node that's already resolved
+        # Find a child of this node that's already resolved (with actual data)
         resolved_child_id = None
         for cid in children_of.get(nid, []):
-            if cid in result and result[cid]:
+            if cid in result and result[cid] is not None and result[cid]:
                 resolved_child_id = cid
                 break
 
         if resolved_child_id is None:
-            # Node not on path to target — positional fallback
-            idx = min(row_index, len(parent_df) - 1)
-            result[nid] = _jsonify_row(parent_df.row(idx, named=True))
-            row_indices[nid] = idx
+            # Node not on path to target — cannot correlate
+            result[nid] = None
+            row_indices[nid] = -1
             continue
 
         child_row = result[resolved_child_id]
@@ -334,23 +340,37 @@ def _correlate_rows_posthoc(
         child_df = eager_outputs.get(resolved_child_id)
         child_len = len(child_df) if child_df is not None else 0
 
+        # Build a filtered child_row for matching: only include columns
+        # that exist in this parent's DataFrame.  This prevents columns
+        # brought in by a *different* parent (via a join) from confusing
+        # the value matcher.
+        parent_cols = set(parent_df.columns)
+        if child_row is None:
+            result[nid] = None
+            row_indices[nid] = -1
+            continue
+        match_row = {c: v for c, v in child_row.items() if c in parent_cols}
+
         # Fast path: same row count → likely 1:1 (with_columns, rename, select).
         # Check if the row at the same position matches on shared columns.
-        if len(parent_df) == child_len:
+        if len(parent_df) == child_len and child_row_idx < len(parent_df):
             candidate = _jsonify_row(parent_df.row(child_row_idx, named=True))
-            shared = [c for c in child_row if c in candidate]
-            if shared and all(
-                candidate.get(c) == child_row.get(c)
-                or (_is_nan_like(candidate.get(c)) and _is_nan_like(child_row.get(c)))
-                for c in shared
-            ):
+            shared = [c for c in match_row if c in candidate]
+            if not shared:
+                # No shared columns (e.g., full rename or select) but same
+                # row count → positional match is the best we can do and is
+                # correct for 1:1 transforms.
+                result[nid] = candidate
+                row_indices[nid] = child_row_idx
+                continue
+            if all(_trace_values_match(candidate.get(c), match_row.get(c)) for c in shared):
                 result[nid] = candidate
                 row_indices[nid] = child_row_idx
                 continue
 
         # Value matching: find the parent row that matches the child row
-        row_dict, idx = _find_matching_row(parent_df, child_row, child_row_idx)
-        result[nid] = row_dict
+        row_dict, idx = _find_matching_row(parent_df, match_row, child_row_idx)
+        result[nid] = row_dict  # may be None if no match found
         row_indices[nid] = idx
 
     return result
@@ -361,6 +381,30 @@ def _is_nan_like(v: Any) -> bool:
     if v is None:
         return True
     return isinstance(v, float) and math.isnan(v)
+
+
+def _trace_values_match(actual: Any, expected: Any) -> bool:
+    """Compare a DataFrame cell value against a JSON-serialized value from the frontend.
+
+    Handles type coercion (JSON ints ↔ Python floats, date strings, etc.)
+    and floating-point tolerance.
+    """
+    if actual == expected:
+        return True
+    if actual is None and expected is None:
+        return True
+    if _is_nan_like(actual) and _is_nan_like(expected):
+        return True
+    if isinstance(actual, float) and isinstance(expected, (int, float)):
+        if math.isnan(actual):
+            return expected is None or (isinstance(expected, float) and math.isnan(expected))
+        return math.isclose(actual, float(expected), rel_tol=1e-9)
+    if isinstance(actual, int) and isinstance(expected, float):
+        return math.isclose(float(actual), expected, rel_tol=1e-9)
+    # String coercion for dates/datetimes
+    if str(actual) == str(expected):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +419,7 @@ def execute_trace(
     column: str | None = None,
     row_limit: int = 1000,
     source: str = "live",
+    row_values: dict[str, Any] | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -390,6 +435,9 @@ def execute_trace(
         row_limit: Max rows to process per source node (matches the preview limit
                    so the trace operates on the same data the user sees).
         source: Active execution source (``"live"`` = API path).
+        row_values: Optional dict of the clicked row's values from the frontend.
+                    Used to verify the trace is operating on the same data the
+                    user sees.  If the values don't match, a ValueError is raised.
 
     Returns:
         TraceResult with per-node steps showing how the row was produced.
@@ -480,7 +528,18 @@ def execute_trace(
                     )
 
         if not reused_preview:
-            # Cache miss — execute eagerly via shared core (raises on error)
+            if row_values is not None:
+                # Frontend sent row values for verification, meaning the
+                # user clicked a cell in a live preview.  Re-executing
+                # would produce DataFrames with potentially different row
+                # ordering (Polars joins are non-deterministic), so refuse
+                # rather than show wrong data.
+                raise ValueError(
+                    "Preview data is not available. "
+                    "Please click the node to refresh its data, then retry the trace."
+                )
+
+            # No row_values — cold start or unit test.  Execute fresh.
             preamble_ns = _compile_preamble(
                 graph.preamble or "",
                 pipeline_dir=_pipeline_dir(graph),
@@ -494,27 +553,11 @@ def execute_trace(
                 preamble_ns=preamble_ns or None,
                 source=source,
             )
-            # Trace never swallows errors so all values are DataFrames here.
             eager_outputs = {nid: df for nid, df in result.outputs.items() if df is not None}
             order = result.order
             parents_of = result.parents_of
             node_map = result.node_map
             source_ids = {nid for nid in order if not parents_of.get(nid)}
-
-            # Store in preview cache so that if the user's preview was
-            # generated by a different execution, subsequent preview
-            # refreshes and traces share these same DataFrames.  This
-            # prevents row-order divergence for non-deterministic joins.
-            _preview_cache.store(
-                preview_fp,
-                eager_outputs=eager_outputs,
-                errors={},
-                order=order,
-                timings={},
-                memory_bytes={},
-                error_lines={},
-                available_columns={},
-            )
 
         # Populate cache — unmodified DataFrames from the single execution
         _cache.store(
@@ -525,6 +568,29 @@ def execute_trace(
             node_map=node_map,
             source_ids=source_ids,
         )
+
+    # ---------- Verify row identity ----------
+    # If the frontend sent the clicked row's values, verify that the
+    # DataFrame at the target node has the same values at row_index.
+    # A mismatch means the preview and trace are using different
+    # DataFrames (e.g., due to non-deterministic Polars join ordering
+    # after a cache miss).
+    if row_values is not None:
+        target_df = eager_outputs[target_node_id]
+        if row_index < len(target_df):
+            actual_row = target_df.row(row_index, named=True)
+            mismatched = []
+            for col, expected in row_values.items():
+                actual = actual_row.get(col)
+                if not _trace_values_match(actual, expected):
+                    mismatched.append(col)
+            if mismatched:
+                raise ValueError(
+                    f"Trace data does not match the preview row "
+                    f"(mismatched columns: {mismatched[:5]}). "
+                    f"The preview data may have changed. "
+                    f"Please click the node to refresh, then retry."
+                )
 
     # Extract correct row from each node via post-hoc correlation
     cached_rows = _correlate_rows_posthoc(
@@ -546,6 +612,11 @@ def execute_trace(
 
         output_row = cached_rows[nid]
 
+        # Skip nodes where row correlation failed — better to show
+        # nothing than to show incorrect data from a wrong row.
+        if output_row is None:
+            continue
+
         input_row: dict[str, Any] | None
         if is_source:
             input_row = None
@@ -554,7 +625,11 @@ def execute_trace(
             if input_ids:
                 input_row = {}
                 for pid in input_ids:
-                    for k, v in cached_rows[pid].items():
+                    parent_row = cached_rows.get(pid)
+                    if parent_row is None:
+                        # Parent row correlation failed — skip this parent
+                        continue
+                    for k, v in parent_row.items():
                         # Namespace-prefix on collision to avoid overwriting
                         key = f"{pid}.{k}" if k in input_row else k
                         input_row[key] = v
@@ -573,6 +648,9 @@ def execute_trace(
                 output_values=output_row,
             )
         )
+
+    # ---------- Enrich steps with expression/detail data ----------
+    _enrich_steps(steps, node_map, eager_outputs, parents_of, column, source)
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
     #
@@ -605,7 +683,7 @@ def execute_trace(
         steps = [s for s in steps if s.column_relevant or s.node_id in ancestor_ids]
 
     # ---------- Output value (already in cache from batch collect) ----------
-    target_row = cached_rows[target_node_id]
+    target_row = cached_rows[target_node_id] or {}
     output_value = target_row.get(column) if column else target_row
 
     # ---------- Row identity from apiInput node ----------
@@ -641,6 +719,142 @@ def execute_trace(
         nodes_in_trace=len(steps),
         execution_ms=total_ms,
     )
+
+
+# ---------------------------------------------------------------------------
+# Step enrichment (expression parsing + node details)
+# ---------------------------------------------------------------------------
+
+# Lazy imports — these modules may not exist yet; enrichment is non-breaking.
+try:
+    from haute._expression_parser import evaluate_expression, parse_expression
+
+    _HAS_EXPRESSION_PARSER = True
+except ImportError:
+    _HAS_EXPRESSION_PARSER = False
+
+try:
+    from haute._trace_enrichment import (
+        detect_row_lineage_type,
+        enrich_banding,
+        enrich_live_switch,
+        enrich_model_score,
+        enrich_rating_step,
+        enrich_scenario_expansion,
+    )
+
+    _HAS_TRACE_ENRICHMENT = True
+except ImportError:
+    _HAS_TRACE_ENRICHMENT = False
+
+
+def _enrich_steps(
+    steps: list[TraceStep],
+    node_map: dict[str, Any],
+    eager_outputs: dict[str, pl.DataFrame],
+    parents_of: dict[str, list[str]],
+    column: str | None,
+    source: str,
+) -> None:
+    """Enrich trace steps in-place with expression/calculation/detail data.
+
+    This is a best-effort pass — if the enrichment modules are unavailable
+    or a per-step enrichment fails, the fields stay ``None``.
+    """
+    for step in steps:
+        try:
+            node_data = node_map[step.node_id].data
+            cfg = node_data.config if isinstance(node_data.config, dict) else {}
+            code = cfg.get("code", "") or ""
+            node_type = step.node_type
+
+            # --- Expression parsing ---
+            if (
+                _HAS_EXPRESSION_PARSER
+                and column
+                and (
+                    column in step.schema_diff.columns_added
+                    or column in step.schema_diff.columns_modified
+                )
+            ):
+                try:
+                    parsed = parse_expression(code, column)
+                    if parsed is not None:
+                        step.expression = dataclasses.asdict(parsed)
+                except Exception:
+                    logger.debug("expression_parse_failed", node_id=step.node_id)
+                try:
+                    evaluated = evaluate_expression(
+                        code, column, {**step.input_values, **step.output_values}
+                    )
+                    if evaluated is not None:
+                        step.calculation = dataclasses.asdict(evaluated)
+                except Exception:
+                    logger.debug("expression_eval_failed", node_id=step.node_id)
+
+            # --- Node-type enrichment ---
+            if _HAS_TRACE_ENRICHMENT:
+                # cfg already extracted above from node_data.config
+                try:
+                    detail: dict[str, Any] | None = None
+                    if node_type == "ratingStep":
+                        detail = enrich_rating_step(cfg, step.input_values, step.output_values)
+                    elif node_type == "banding":
+                        detail = enrich_banding(cfg, step.input_values, step.output_values)
+                    elif node_type == "modelScore":
+                        detail = enrich_model_score(cfg, step.input_values, step.output_values)
+                    elif node_type == "scenarioExpander":
+                        detail = enrich_scenario_expansion(
+                            cfg,
+                            step.input_values,
+                            step.output_values,
+                        )
+                    elif node_type == "liveSwitch":
+                        detail = enrich_live_switch(cfg, source)
+                    if detail is not None:
+                        step.node_detail = detail
+                except Exception:
+                    logger.debug("node_enrichment_failed", node_id=step.node_id)
+
+                # --- Row lineage type ---
+                try:
+                    parent_ids = parents_of.get(step.node_id, [])
+                    parent_row_count = 0
+                    for pid in parent_ids:
+                        df = eager_outputs.get(pid)
+                        if df is not None:
+                            parent_row_count = max(parent_row_count, len(df))
+                    child_df = eager_outputs.get(step.node_id)
+                    child_row_count = len(child_df) if child_df is not None else 0
+
+                    # Sniff operation type from code string
+                    operation_type = ""
+                    if code:
+                        code_lower = code.lower()
+                        if ".group_by(" in code_lower or ".groupby(" in code_lower:
+                            operation_type = "group_by"
+                        elif ".cross_join(" in code_lower:
+                            operation_type = "cross_join"
+                        elif ".join(" in code_lower:
+                            operation_type = "join"
+                        elif ".filter(" in code_lower:
+                            operation_type = "filter"
+                        elif ".sort(" in code_lower or ".sort_by(" in code_lower:
+                            operation_type = "sort"
+                        elif ".explode(" in code_lower:
+                            operation_type = "explode"
+
+                    step.row_lineage_type = detect_row_lineage_type(
+                        input_row_count=parent_row_count,
+                        output_row_count=child_row_count,
+                        node_type=node_type,
+                        operation_type=operation_type,
+                    )
+                except Exception:
+                    logger.debug("row_lineage_detection_failed", node_id=step.node_id)
+        except Exception:
+            logger.debug("trace_enrichment_step_failed", node_id=step.node_id)
+            continue
 
 
 # ---------------------------------------------------------------------------
@@ -691,6 +905,10 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                 "output_values": s.output_values,
                 "column_relevant": s.column_relevant,
                 "execution_ms": s.execution_ms,
+                "expression": s.expression,
+                "calculation": s.calculation,
+                "node_detail": s.node_detail,
+                "row_lineage_type": s.row_lineage_type,
             }
             for s in result.steps
         ],

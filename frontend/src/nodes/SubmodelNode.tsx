@@ -29,7 +29,7 @@ function SubmodelNode({ data, selected }: NodeProps) {
     <div
       aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${traceActive ? ", trace active" : ""}`}
       role="button"
-      className="relative rounded-xl min-w-[200px] max-w-[280px] cursor-pointer"
+      className="relative rounded-xl w-[240px] cursor-pointer"
       style={{
         background: "var(--bg-elevated)",
         border: traceActive

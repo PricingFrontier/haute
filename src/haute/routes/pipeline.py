@@ -180,6 +180,7 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
                 column=body.column,
                 row_limit=body.row_limit,
                 source=body.source,
+                row_values=body.row_values,
             ),
             timeout=_TRACE_TIMEOUT,
         )

@@ -58,7 +58,7 @@ class FingerprintCache:
         allows caching ~4 sources × 2 row-limits without thrashing.
     """
 
-    __slots__ = ("_slots", "_entries", "_max_entries", "_lock")
+    __slots__ = ("_slots", "_entries", "_max_entries", "_lock", "_pinned")
 
     def __init__(
         self,
@@ -71,6 +71,7 @@ class FingerprintCache:
         self._max_entries = max(max_entries, 1)
         self._entries: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._lock = threading.RLock()
+        self._pinned: set[str] = set()
 
     # -- public API --------------------------------------------------------
 
@@ -115,9 +116,16 @@ class FingerprintCache:
             entry = {name: slot_data.get(name, {}) for name in self._slots}
             self._entries[fingerprint] = entry
             self._entries.move_to_end(fingerprint)
-            # Evict LRU entries if over capacity
+            # Evict LRU entries if over capacity, skipping pinned entries
             while len(self._entries) > self._max_entries:
-                self._entries.popitem(last=False)
+                evicted = False
+                for key in list(self._entries.keys()):
+                    if key not in self._pinned:
+                        del self._entries[key]
+                        evicted = True
+                        break
+                if not evicted:
+                    break  # all entries pinned — allow over-capacity
 
     def update_slot(self, slot: str, value: Any, *, fingerprint: str) -> None:
         """Replace a single slot's value on the entry matching *fingerprint*.
@@ -135,10 +143,26 @@ class FingerprintCache:
                 return
             entry[slot] = value
 
+    def pin(self, fingerprint: str) -> None:
+        """Exempt an entry from LRU eviction.
+
+        Pinned entries survive eviction pressure so the trace can always
+        reuse the exact DataFrames from the most recent preview execution.
+        """
+        with self._lock:
+            if fingerprint in self._entries:
+                self._pinned.add(fingerprint)
+
+    def unpin(self, fingerprint: str) -> None:
+        """Remove eviction exemption."""
+        with self._lock:
+            self._pinned.discard(fingerprint)
+
     def invalidate(self) -> None:
-        """Clear all entries."""
+        """Clear all entries and pins."""
         with self._lock:
             self._entries.clear()
+            self._pinned.clear()
 
     @property
     def lock(self) -> threading.RLock:

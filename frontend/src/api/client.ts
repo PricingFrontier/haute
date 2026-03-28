@@ -165,6 +165,7 @@ export function traceCell(
     column?: string | null
     row_limit?: number
     source?: string
+    row_values?: Record<string, unknown>
   },
   options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<TraceResponse> {

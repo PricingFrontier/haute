@@ -69,7 +69,7 @@ function PipelineNode({ data, selected }: NodeProps) {
       <div
         aria-label={ariaLabel}
         role="button"
-        className={`relative min-w-[120px] max-w-[160px] cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
+        className={`relative w-[160px] cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
         style={{
           background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
           border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
@@ -116,7 +116,7 @@ function PipelineNode({ data, selected }: NodeProps) {
       <div
         aria-label={ariaLabel}
         role="button"
-        className={`relative min-w-[180px] max-w-[260px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
+        className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
         style={containerStyle}
       >
         {!isSourceOnly && <Handle type="target" position={Position.Left} />}
@@ -146,7 +146,7 @@ function PipelineNode({ data, selected }: NodeProps) {
     <div
       aria-label={ariaLabel}
       role="button"
-      className={`relative min-w-[180px] max-w-[260px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
+      className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
       style={containerStyle}
     >
       {!isSourceOnly && <Handle type="target" position={Position.Left} />}

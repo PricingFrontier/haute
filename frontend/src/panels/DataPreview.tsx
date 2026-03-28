@@ -25,7 +25,7 @@ export interface PreviewData {
 
 interface DataPreviewProps {
   data: PreviewData | null
-  onCellClick?: (rowIndex: number, column: string) => void
+  onCellClick?: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   tracedCell?: { rowIndex: number; column: string } | null
 }
 
@@ -241,7 +241,7 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
                                 boxShadow: isTraced ? 'inset 0 0 0 1.5px var(--accent)' : undefined,
                                 borderRadius: isTraced ? '3px' : undefined,
                               }}
-                              onClick={() => onCellClick?.(i, col.name)}
+                              onClick={() => onCellClick?.(i, col.name, row as Record<string, unknown>)}
                             >
                               <span style={row[col.name] === null ? { color: 'var(--text-muted)', fontStyle: 'italic' } : undefined}>
                                 {formatValue(row[col.name])}

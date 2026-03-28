@@ -85,7 +85,7 @@ describe("DataPreview", () => {
     render(<DataPreview data={makePreview()} onCellClick={onCellClick} />)
     // Click on the first data cell (age = 25)
     fireEvent.click(screen.getByText("25"))
-    expect(onCellClick).toHaveBeenCalledWith(0, "age")
+    expect(onCellClick).toHaveBeenCalledWith(0, "age", { age: 25, premium: 100.5 })
   })
 
   it("renders null values with italic styling", () => {

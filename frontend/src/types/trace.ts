@@ -16,6 +16,18 @@ export interface TraceStep {
   output_values: Record<string, unknown>
   column_relevant: boolean
   execution_ms: number
+  expression?: {
+    expression_text: string
+    expression_type: string
+    referenced_columns: string[]
+  } | null
+  calculation?: {
+    substituted_text: string
+    result_value: unknown
+    input_values: Record<string, unknown>
+  } | null
+  node_detail?: Record<string, unknown> | null
+  row_lineage_type?: string | null
 }
 
 export interface TraceResult {

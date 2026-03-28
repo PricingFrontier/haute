@@ -118,6 +118,7 @@ class TraceRequest(BaseModel):
     column: str | None = None
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
+    row_values: dict[str, Any] | None = None
 
 
 class SchemaDiffResponse(BaseModel):
@@ -136,6 +137,10 @@ class TraceStepResponse(BaseModel):
     output_values: dict[str, Any] = Field(default_factory=dict)
     column_relevant: bool = True
     execution_ms: float = 0.0
+    expression: dict[str, Any] | None = None
+    calculation: dict[str, Any] | None = None
+    node_detail: dict[str, Any] | None = None
+    row_lineage_type: str | None = None
 
 
 class TraceResultResponse(BaseModel):

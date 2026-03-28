@@ -3,9 +3,113 @@ import { X, ChevronDown, ChevronRight, Clock, Layers, Scan } from "lucide-react"
 import type { TraceResult, TraceStep } from "../types/trace"
 import { nodeTypeLabels, nodeTypeColors } from "../utils/nodeTypes"
 import { formatValue as _formatValue } from "../utils/formatValue"
+import { formatExpression } from "../utils/formatTrace"
 import PanelShell from "./PanelShell"
 
 const formatValue = (v: unknown) => _formatValue(v, 6)
+
+function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
+  const detailType = detail.detail_type as string | undefined
+
+  const labelStyle = { color: "var(--text-muted)", fontSize: "10px" }
+  const valueStyle = { color: "var(--text-secondary)", fontSize: "11px", fontFamily: "var(--font-mono, monospace)" }
+
+  if (detailType === "rate_table_lookup" || detailType === "rating_step") {
+    const keys = detail.lookup_keys as Record<string, unknown> | undefined
+    const matched = detail.matched_row
+    const defaultUsed = detail.default_used as boolean | undefined
+    return (
+      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div style={labelStyle}>Rate Table Lookup</div>
+        {keys && (
+          <div className="flex flex-wrap gap-1">
+            {Object.entries(keys).map(([k, v]) => (
+              <span key={k} className="px-1 py-0.5 rounded font-mono" style={{ background: "rgba(255,255,255,.06)" }}>
+                {k}: {String(v)}
+              </span>
+            ))}
+          </div>
+        )}
+        {matched != null && <div style={valueStyle}>Matched row: {String(matched)}</div>}
+        {defaultUsed && (
+          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: "rgba(251,191,36,.15)", color: "#fbbf24" }}>
+            default used
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  if (detailType === "banding") {
+    return (
+      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div style={labelStyle}>Banding</div>
+        <div style={valueStyle}>Input: {String(detail.input_value)}</div>
+        <div style={valueStyle}>Matched band: {String(detail.matched_band)}</div>
+        {detail.lower_bound != null && detail.upper_bound != null && (
+          <div style={valueStyle}>Range: [{String(detail.lower_bound)}, {String(detail.upper_bound)}]</div>
+        )}
+      </div>
+    )
+  }
+
+  if (detailType === "model_score") {
+    const features = detail.features_used as string[] | undefined
+    const shapValues = detail.shap_values as Array<{ feature: string; value: number }> | undefined
+    return (
+      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div style={labelStyle}>Model: {String(detail.model_type)}</div>
+        <div style={valueStyle}>Prediction: {String(detail.prediction)}</div>
+        {features && features.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {features.map((f) => (
+              <span key={f} className="px-1 py-0.5 rounded font-mono text-[10px]" style={{ background: "rgba(255,255,255,.06)" }}>
+                {f}
+              </span>
+            ))}
+          </div>
+        )}
+        {shapValues && shapValues.length > 0 && (
+          <div className="mt-1 space-y-0.5">
+            <div style={labelStyle}>SHAP values</div>
+            {shapValues.map((s) => (
+              <div key={s.feature} className="flex gap-2 font-mono text-[10px]">
+                <span>{s.feature}</span>
+                <span style={{ color: s.value >= 0 ? "#4ade80" : "#f87171" }}>{s.value >= 0 ? "+" : ""}{s.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  if (detailType === "scenario_expander") {
+    return (
+      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div style={labelStyle}>Scenario Expander</div>
+        <div style={valueStyle}>Step: {String(detail.step)}</div>
+        <div style={valueStyle}>Multiplier: {String(detail.multiplier)}</div>
+      </div>
+    )
+  }
+
+  if (detailType === "live_switch") {
+    return (
+      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div style={labelStyle}>Branch Selection</div>
+        <div style={valueStyle}>Selected: {String(detail.selected_branch)}</div>
+      </div>
+    )
+  }
+
+  // Default: render as JSON
+  return (
+    <div className="my-2 text-[10px] font-mono" style={{ color: "var(--text-muted)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+      <pre>{JSON.stringify(detail, null, 2)}</pre>
+    </div>
+  )
+}
 
 function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: number; tracedColumn: string | null }) {
   const [expanded, setExpanded] = useState(false)
@@ -79,6 +183,14 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
         >
           {typeLabel}
         </span>
+        {step.row_lineage_type && (
+          <span
+            className="text-[9px] font-medium shrink-0 px-1 py-0.5 rounded"
+            style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.06)" }}
+          >
+            {step.row_lineage_type}
+          </span>
+        )}
         <span className="ml-auto text-[10px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
           {step.execution_ms.toFixed(1)}ms
         </span>
@@ -100,12 +212,50 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
               </span>
             )
           })}
+          {step.calculation && (
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono"
+              style={{ background: "rgba(255,255,255,.06)", color: "var(--text-secondary)" }}
+            >
+              {step.calculation.substituted_text}
+            </span>
+          )}
         </div>
       )}
 
       {/* Expanded: full column list */}
       {expanded && (
         <div className="px-3 pb-3" style={{ borderTop: "1px solid var(--border)" }}>
+          {/* Expression block */}
+          {step.expression && step.expression.expression_type !== "opaque" && (
+            <div
+              className="my-2 px-2 py-1.5 rounded text-[11px] font-mono"
+              style={{ background: "rgba(255,255,255,.04)", color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+            >
+              {formatExpression(step.expression.expression_text, 200)}
+            </div>
+          )}
+          {step.expression && step.expression.expression_type === "opaque" && (
+            <div className="my-2 text-[11px]" style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+              computed
+            </div>
+          )}
+
+          {/* Calculation block */}
+          {step.calculation && (
+            <div
+              className="my-2 px-2 py-1.5 rounded text-[12px] font-mono font-semibold"
+              style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+            >
+              {step.calculation.substituted_text}
+            </div>
+          )}
+
+          {/* Node detail section */}
+          {step.node_detail && (
+            <NodeDetailBlock detail={step.node_detail} />
+          )}
+
           {/* Schema changes summary */}
           <div className="flex flex-wrap gap-2 py-2 text-[10px]">
             {columns_added.length > 0 && (
@@ -122,8 +272,8 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
             </span>
           </div>
 
-          {/* Column values table */}
-          <div className="space-y-0.5">
+          {/* Column values table (shown when no expression/calculation detail) */}
+          {!step.expression && !step.calculation && <div className="space-y-0.5">
             {allOutputCols.map((col) => {
               const isAdded = columns_added.includes(col)
               const isModified = columns_modified.includes(col)
@@ -172,7 +322,7 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
                 </div>
               )
             })}
-          </div>
+          </div>}
         </div>
       )}
     </div>
