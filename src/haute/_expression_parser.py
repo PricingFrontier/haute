@@ -1207,7 +1207,9 @@ def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AS
         if new_left is node.left and new_right is node.right:
             return node
         new_node = ast.BinOp(
-            left=cast(ast.expr, new_left), op=node.op, right=cast(ast.expr, new_right),
+            left=cast(ast.expr, new_left),
+            op=node.op,
+            right=cast(ast.expr, new_right),
         )
         ast.copy_location(node, new_node)
         return new_node
@@ -1255,7 +1257,8 @@ def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AS
         if new_left is node.left and all(n is o for n, o in zip(new_comps, node.comparators)):
             return node
         new_node_cmp = ast.Compare(
-            left=cast(ast.expr, new_left), ops=node.ops,
+            left=cast(ast.expr, new_left),
+            ops=node.ops,
             comparators=cast(list[ast.expr], new_comps),
         )
         ast.copy_location(node, new_node_cmp)

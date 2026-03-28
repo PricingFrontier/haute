@@ -955,8 +955,7 @@ class TrainingJob:
         if self.offset:
             non_feature_cols.add(self.offset)
         dropped = [
-            col for col in self.exclude
-            if col not in available and col not in non_feature_cols
+            col for col in self.exclude if col not in available and col not in non_feature_cols
         ]
         if dropped:
             logger.debug("exclude_columns_already_dropped", count=len(dropped))
