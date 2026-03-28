@@ -13,8 +13,22 @@ than using a fixed positional index), they should all pass.
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from haute.trace import TraceResult, execute_trace
+from haute.trace import _cache as _trace_cache
+from haute.executor import _preview_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_trace_caches():
+    _trace_cache.invalidate()
+    _preview_cache.invalidate()
+    yield
+    _trace_cache.invalidate()
+    _preview_cache.invalidate()
+
+
 from tests.conftest import (
     make_edge as _edge,
 )

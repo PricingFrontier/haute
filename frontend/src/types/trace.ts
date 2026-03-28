@@ -28,6 +28,19 @@ export interface TraceStep {
   } | null
   node_detail?: Record<string, unknown> | null
   row_lineage_type?: string | null
+  taken_branch?: string | null
+  taken_branch_index?: number | null
+  null_explanation?: string | null
+  expression_chain?: Array<{expression_text: string; target_column: string}> | null
+  rename_info?: {original_name: string; chain: string[]} | null
+}
+
+export interface WaterfallEntry {
+  label: string
+  operation: string
+  value: number
+  delta: number
+  cumulative: number
 }
 
 export interface TraceResult {
@@ -41,4 +54,5 @@ export interface TraceResult {
   total_nodes_in_pipeline: number
   nodes_in_trace: number
   execution_ms: number
+  waterfall?: WaterfallEntry[] | null
 }

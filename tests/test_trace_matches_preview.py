@@ -35,6 +35,7 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+
 @pytest.fixture(autouse=True)
 def _clear_trace_caches():
     """Invalidate the global trace and preview caches between tests."""
@@ -43,6 +44,7 @@ def _clear_trace_caches():
     yield
     _trace_cache.invalidate()
     _preview_cache.invalidate()
+
 
 # Use a consistent row_limit across preview and trace, matching real usage.
 _ROW_LIMIT = 1000

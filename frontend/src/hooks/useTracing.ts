@@ -57,7 +57,7 @@ export default function useTracing({
     traceCell({ graph, row_index: rowIndex, target_node_id: selectedNode.id, column, row_limit: rowLimit, source: activeSource, row_values: rowValues })
       .then((data) => {
         if (data.status === "ok" && data.trace) {
-          setTraceResult(data.trace as unknown as TraceResult)
+          setTraceResult(data.trace as TraceResult)
         } else {
           addToast("error", data.error || "Trace failed")
           clearTrace()

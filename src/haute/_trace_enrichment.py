@@ -13,6 +13,56 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from haute._logging import get_logger
+
+logger = get_logger(component="trace_enrichment")
+
+
+# ---------------------------------------------------------------------------
+# Null value explanation
+# ---------------------------------------------------------------------------
+
+
+def explain_null_value(value: Any = None, context: dict[str, Any] | None = None) -> str | None:
+    """Explain why a value is null.
+
+    Args:
+        value: The value to explain. If not None, returns None (no explanation needed).
+        context: Dict with keys describing the origin:
+            - ``join_type``, ``right_table``, ``join_key``, ``join_value`` for joins
+            - ``origin`` = ``"source"`` for source data
+            - ``origin`` = ``"computation"`` for computed nulls
+
+    Returns:
+        A human-readable explanation string, or None if the value is not null.
+    """
+    if value is not None:
+        return None
+
+    if context is None:
+        return "null value (unknown origin)"
+
+    origin = context.get("origin", "")
+    join_type = context.get("join_type", "")
+
+    if join_type == "left":
+        right_table = context.get("right_table", "table")
+        join_key = context.get("join_key", "")
+        join_value = context.get("join_value", "")
+        return f"no match in {right_table} — {join_key} = {join_value} (left join)"
+
+    if origin == "source":
+        return "null in source data"
+
+    if origin == "computation":
+        error = context.get("error", "")
+        if error:
+            return f"computation produced null ({error})"
+        return "computation produced null"
+
+    return "null value"
+
+
 # ---------------------------------------------------------------------------
 # Rating step enrichment
 # ---------------------------------------------------------------------------
@@ -144,6 +194,7 @@ def enrich_rating_step(
             "matched": matched,
         }
     except Exception:
+        logger.debug("enrichment_failed", node_type="rating_step", exc_info=True)
         return {
             "detail_type": "rating_step",
             "matched_key": {},
@@ -311,6 +362,7 @@ def enrich_banding(
             "input_value": input_value,
         }
     except Exception:
+        logger.debug("enrichment_failed", node_type="banding", exc_info=True)
         return {
             "detail_type": "banding",
             "selected_band": None,
@@ -364,6 +416,7 @@ def enrich_model_score(
             "model_identity": model_identity,
         }
     except Exception:
+        logger.debug("enrichment_failed", node_type="model_score", exc_info=True)
         return {
             "detail_type": "model_score",
             "prediction_value": None,
@@ -401,6 +454,7 @@ def enrich_scenario_expansion(
             },
         }
     except Exception:
+        logger.debug("enrichment_failed", node_type="scenario_expander", exc_info=True)
         return {"detail_type": "scenario_expander", "scenario_value": None, "scenario_column": ""}
 
 
@@ -435,6 +489,7 @@ def enrich_live_switch(
             "pruned_branches": pruned_branches,
         }
     except Exception:
+        logger.debug("enrichment_failed", node_type="live_switch", exc_info=True)
         return {
             "detail_type": "live_switch",
             "active_branch": "",
@@ -507,4 +562,5 @@ def detect_row_lineage_type(
 
         return "passthrough"
     except Exception:
+        logger.debug("enrichment_failed", node_type="row_lineage", exc_info=True)
         return "passthrough"

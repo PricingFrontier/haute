@@ -31,8 +31,14 @@ class TestActuarialMultiplicativeRatingChain:
     def test_eight_factor_named_rating_chain(self):
         """base * area * age * ncd * vehicle * excess * conviction * claims."""
         factors = [
-            "base_rate", "area_factor", "age_factor", "ncd_factor",
-            "vehicle_factor", "excess_factor", "conviction_factor", "claims_factor",
+            "base_rate",
+            "area_factor",
+            "age_factor",
+            "ncd_factor",
+            "vehicle_factor",
+            "excess_factor",
+            "conviction_factor",
+            "claims_factor",
         ]
         mul = " * ".join(f'pl.col("{f}")' for f in factors)
         code = f'df = df.with_columns(({mul}).alias("technical_premium"))'
@@ -45,15 +51,21 @@ class TestActuarialMultiplicativeRatingChain:
 
     def test_eight_factor_rating_chain_evaluation(self):
         factors = [
-            "base_rate", "area_factor", "age_factor", "ncd_factor",
-            "vehicle_factor", "excess_factor", "conviction_factor", "claims_factor",
+            "base_rate",
+            "area_factor",
+            "age_factor",
+            "ncd_factor",
+            "vehicle_factor",
+            "excess_factor",
+            "conviction_factor",
+            "claims_factor",
         ]
         mul = " * ".join(f'pl.col("{f}")' for f in factors)
         code = f'df = df.with_columns(({mul}).alias("technical_premium"))'
         vals = {f: 1.1 for f in factors}
         vals["base_rate"] = 200.0
         result = evaluate_expression(code, "technical_premium", vals)
-        expected = 200.0 * (1.1 ** 7)
+        expected = 200.0 * (1.1**7)
         assert result.result_value == pytest.approx(expected)
 
 
@@ -66,29 +78,31 @@ class TestActuarialLossRatio:
 
     def test_loss_ratio_evaluation(self):
         code = 'df = df.with_columns((pl.col("claims_incurred") / pl.col("earned_premium")).alias("loss_ratio"))'
-        result = evaluate_expression(code, "loss_ratio", {"claims_incurred": 70000.0, "earned_premium": 100000.0})
+        result = evaluate_expression(
+            code, "loss_ratio", {"claims_incurred": 70000.0, "earned_premium": 100000.0}
+        )
         assert result.result_value == pytest.approx(0.7)
 
 
 class TestActuarialBurnCost:
     def test_burn_cost_formula(self):
         code = (
-            'IBNR_factor = 0.05\n'
-            'expense_ratio = 0.12\n'
-            'df = df.with_columns(\n'
+            "IBNR_factor = 0.05\n"
+            "expense_ratio = 0.12\n"
+            "df = df.with_columns(\n"
             '    (pl.col("premium") * pl.col("loss_ratio") * (1 + IBNR_factor) * (1 + expense_ratio)).alias("burn_cost")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "burn_cost")
         assert set(expr.referenced_columns) == {"premium", "loss_ratio"}
 
     def test_burn_cost_evaluation(self):
         code = (
-            'IBNR_factor = 0.05\n'
-            'expense_ratio = 0.12\n'
-            'df = df.with_columns(\n'
+            "IBNR_factor = 0.05\n"
+            "expense_ratio = 0.12\n"
+            "df = df.with_columns(\n"
             '    (pl.col("premium") * pl.col("loss_ratio") * (1 + IBNR_factor) * (1 + expense_ratio)).alias("burn_cost")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "burn_cost", {"premium": 1000.0, "loss_ratio": 0.65})
         expected = 1000.0 * 0.65 * 1.05 * 1.12
@@ -103,45 +117,55 @@ class TestActuarialFrequencySeverity:
 
     def test_freq_sev_evaluation(self):
         code = 'df = df.with_columns((pl.col("freq_prediction") * pl.col("sev_prediction") * pl.col("exposure")).alias("expected_loss"))'
-        result = evaluate_expression(code, "expected_loss", {
-            "freq_prediction": 0.05, "sev_prediction": 3000.0, "exposure": 1.0,
-        })
+        result = evaluate_expression(
+            code,
+            "expected_loss",
+            {
+                "freq_prediction": 0.05,
+                "sev_prediction": 3000.0,
+                "exposure": 1.0,
+            },
+        )
         assert result.result_value == pytest.approx(150.0)
 
 
 class TestActuarialEarnedPremium:
     def test_earned_premium_with_clip(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    (pl.col("written_premium") * (pl.col("inception_to_val_days") / pl.col("policy_term_days")).clip(0, 1)).alias("earned_premium")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "earned_premium")
-        assert set(expr.referenced_columns) == {"written_premium", "inception_to_val_days", "policy_term_days"}
+        assert set(expr.referenced_columns) == {
+            "written_premium",
+            "inception_to_val_days",
+            "policy_term_days",
+        }
         assert "clip" in expr.expression_text
 
 
 class TestActuarialTechnicalPrice:
     def test_technical_price_formula(self):
         code = (
-            'expense_load = 0.15\n'
-            'profit_margin = 0.05\n'
-            'commission_rate = 0.20\n'
-            'df = df.with_columns(\n'
+            "expense_load = 0.15\n"
+            "profit_margin = 0.05\n"
+            "commission_rate = 0.20\n"
+            "df = df.with_columns(\n"
             '    (pl.col("pure_premium") * (1 + expense_load) * (1 + profit_margin) * (1 + commission_rate)).alias("technical_price")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "technical_price")
         assert expr.referenced_columns == ["pure_premium"]
 
     def test_technical_price_evaluation(self):
         code = (
-            'expense_load = 0.15\n'
-            'profit_margin = 0.05\n'
-            'commission_rate = 0.20\n'
-            'df = df.with_columns(\n'
+            "expense_load = 0.15\n"
+            "profit_margin = 0.05\n"
+            "commission_rate = 0.20\n"
+            "df = df.with_columns(\n"
             '    (pl.col("pure_premium") * (1 + expense_load) * (1 + profit_margin) * (1 + commission_rate)).alias("technical_price")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "technical_price", {"pure_premium": 500.0})
         expected = 500.0 * 1.15 * 1.05 * 1.20
@@ -151,9 +175,9 @@ class TestActuarialTechnicalPrice:
 class TestActuarialLargeLossLoading:
     def test_large_loss_loading_with_when(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    (pl.col("base") + pl.when(pl.col("sum_insured") > 1_000_000).then(pl.col("sum_insured") * 0.001).otherwise(0)).alias("loaded_premium")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "loaded_premium")
         assert "base" in expr.referenced_columns
@@ -161,20 +185,24 @@ class TestActuarialLargeLossLoading:
 
     def test_large_loss_loading_evaluation_triggered(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    (pl.col("base") + pl.when(pl.col("sum_insured") > 1_000_000).then(pl.col("sum_insured") * 0.001).otherwise(0)).alias("loaded_premium")\n'
-            ')'
+            ")"
         )
-        result = evaluate_expression(code, "loaded_premium", {"base": 1000.0, "sum_insured": 2_000_000.0})
+        result = evaluate_expression(
+            code, "loaded_premium", {"base": 1000.0, "sum_insured": 2_000_000.0}
+        )
         assert result.result_value == pytest.approx(1000.0 + 2_000_000.0 * 0.001)
 
     def test_large_loss_loading_evaluation_not_triggered(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    (pl.col("base") + pl.when(pl.col("sum_insured") > 1_000_000).then(pl.col("sum_insured") * 0.001).otherwise(0)).alias("loaded_premium")\n'
-            ')'
+            ")"
         )
-        result = evaluate_expression(code, "loaded_premium", {"base": 1000.0, "sum_insured": 500_000.0})
+        result = evaluate_expression(
+            code, "loaded_premium", {"base": 1000.0, "sum_insured": 500_000.0}
+        )
         assert result.result_value == pytest.approx(1000.0)
 
 
@@ -182,16 +210,16 @@ class TestActuarialNCDDiscount:
     def test_ncd_chained_when_then(self):
         """No Claims Discount: NCD years 0-5+ mapped to discount factors."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("ncd_years") == 0).then(1.0)\n'
             '    .when(pl.col("ncd_years") == 1).then(0.95)\n'
             '    .when(pl.col("ncd_years") == 2).then(0.90)\n'
             '    .when(pl.col("ncd_years") == 3).then(0.80)\n'
             '    .when(pl.col("ncd_years") == 4).then(0.70)\n'
             '    .when(pl.col("ncd_years") >= 5).then(0.60)\n'
-            '    .otherwise(1.0)\n'
+            "    .otherwise(1.0)\n"
             '    .alias("ncd_factor")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "ncd_factor")
         assert expr.expression_type == "conditional"
@@ -199,15 +227,15 @@ class TestActuarialNCDDiscount:
 
     def test_ncd_evaluation_year_3(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("ncd_years") == 0).then(1.0)\n'
             '    .when(pl.col("ncd_years") == 1).then(0.95)\n'
             '    .when(pl.col("ncd_years") == 2).then(0.90)\n'
             '    .when(pl.col("ncd_years") == 3).then(0.80)\n'
             '    .when(pl.col("ncd_years") >= 4).then(0.70)\n'
-            '    .otherwise(1.0)\n'
+            "    .otherwise(1.0)\n"
             '    .alias("ncd_factor")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "ncd_factor", {"ncd_years": 3})
         assert result.result_value == pytest.approx(0.80)
@@ -222,19 +250,23 @@ class TestActuarialMinimumPremium:
 
     def test_minimum_premium_evaluation_above(self):
         code = 'df = df.with_columns(pl.max_horizontal(pl.col("calculated_premium"), pl.col("minimum_premium")).alias("final_premium"))'
-        result = evaluate_expression(code, "final_premium", {"calculated_premium": 500.0, "minimum_premium": 200.0})
+        result = evaluate_expression(
+            code, "final_premium", {"calculated_premium": 500.0, "minimum_premium": 200.0}
+        )
         assert result.result_value == pytest.approx(500.0)
 
     def test_minimum_premium_evaluation_below(self):
         code = 'df = df.with_columns(pl.max_horizontal(pl.col("calculated_premium"), pl.col("minimum_premium")).alias("final_premium"))'
-        result = evaluate_expression(code, "final_premium", {"calculated_premium": 100.0, "minimum_premium": 200.0})
+        result = evaluate_expression(
+            code, "final_premium", {"calculated_premium": 100.0, "minimum_premium": 200.0}
+        )
         assert result.result_value == pytest.approx(200.0)
 
 
 class TestActuarialIPT:
     def test_ipt_calculation(self):
         code = (
-            'ipt_rate = 0.12\n'
+            "ipt_rate = 0.12\n"
             'df = df.with_columns((pl.col("net_premium") * (1 + ipt_rate)).alias("gross_with_ipt"))'
         )
         expr = parse_expression(code, "gross_with_ipt")
@@ -242,7 +274,7 @@ class TestActuarialIPT:
 
     def test_ipt_evaluation(self):
         code = (
-            'ipt_rate = 0.12\n'
+            "ipt_rate = 0.12\n"
             'df = df.with_columns((pl.col("net_premium") * (1 + ipt_rate)).alias("gross_with_ipt"))'
         )
         result = evaluate_expression(code, "gross_with_ipt", {"net_premium": 1000.0})
@@ -266,12 +298,16 @@ class TestActuarialAggregateDeductible:
 
     def test_aggregate_deductible_evaluation_positive(self):
         code = 'df = df.with_columns(pl.max_horizontal(pl.col("incurred") - pl.col("deductible"), pl.lit(0)).alias("net_incurred"))'
-        result = evaluate_expression(code, "net_incurred", {"incurred": 5000.0, "deductible": 1000.0})
+        result = evaluate_expression(
+            code, "net_incurred", {"incurred": 5000.0, "deductible": 1000.0}
+        )
         assert result.result_value == pytest.approx(4000.0)
 
     def test_aggregate_deductible_evaluation_negative_clipped(self):
         code = 'df = df.with_columns(pl.max_horizontal(pl.col("incurred") - pl.col("deductible"), pl.lit(0)).alias("net_incurred"))'
-        result = evaluate_expression(code, "net_incurred", {"incurred": 500.0, "deductible": 1000.0})
+        result = evaluate_expression(
+            code, "net_incurred", {"incurred": 500.0, "deductible": 1000.0}
+        )
         assert result.result_value == pytest.approx(0.0)
 
 
@@ -280,13 +316,13 @@ class TestActuarialAgeBandPricing:
         """Multi-step: age -> age_band -> age_factor -> adjusted_premium."""
         code = (
             'df = df.with_columns((pl.col("age") // 10).alias("age_band"))\n'
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("age_band") <= 2).then(1.5)\n'
             '    .when(pl.col("age_band") <= 4).then(1.0)\n'
             '    .when(pl.col("age_band") <= 6).then(1.2)\n'
-            '    .otherwise(1.8)\n'
+            "    .otherwise(1.8)\n"
             '    .alias("age_factor")\n'
-            ')\n'
+            ")\n"
             'df = df.with_columns((pl.col("base_premium") * pl.col("age_factor")).alias("adjusted_premium"))'
         )
         expr = parse_expression(code, "adjusted_premium")
@@ -300,13 +336,13 @@ class TestActuarialAgeBandPricing:
 class TestActuarialVehicleGroupFactor:
     def test_vehicle_group_with_bands_and_caps(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("vehicle_group") <= 10).then(1.0)\n'
             '    .when(pl.col("vehicle_group") <= 20).then(1.3)\n'
             '    .when(pl.col("vehicle_group") <= 35).then(1.6)\n'
-            '    .otherwise(2.0)\n'
+            "    .otherwise(2.0)\n"
             '    .alias("vehicle_factor")\n'
-            ')\n'
+            ")\n"
         )
         expr = parse_expression(code, "vehicle_factor")
         assert expr.expression_type == "conditional"
@@ -317,23 +353,31 @@ class TestActuarialMultiLinePricing:
     def test_combined_property_liability_motor(self):
         """Combine three lines of business into a package premium."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    (pl.col("property_premium") + pl.col("liability_premium") + pl.col("motor_premium")).alias("package_premium")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "package_premium")
-        assert set(expr.referenced_columns) == {"property_premium", "liability_premium", "motor_premium"}
+        assert set(expr.referenced_columns) == {
+            "property_premium",
+            "liability_premium",
+            "motor_premium",
+        }
         assert expr.expression_text == "property_premium + liability_premium + motor_premium"
 
     def test_combined_with_discount_for_package(self):
         code = (
-            'package_discount = 0.10\n'
-            'df = df.with_columns(\n'
+            "package_discount = 0.10\n"
+            "df = df.with_columns(\n"
             '    ((pl.col("property_premium") + pl.col("liability_premium") + pl.col("motor_premium")) * (1 - package_discount)).alias("package_premium")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "package_premium")
-        assert set(expr.referenced_columns) == {"property_premium", "liability_premium", "motor_premium"}
+        assert set(expr.referenced_columns) == {
+            "property_premium",
+            "liability_premium",
+            "motor_premium",
+        }
 
 
 # ###########################################################################
@@ -350,10 +394,10 @@ class TestPolarsIsBetween:
 
     def test_is_between_in_condition(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("speed").is_between(30, 70)).then("normal").otherwise("extreme")\n'
             '    .alias("speed_band")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "speed_band")
         assert "speed" in expr.referenced_columns
@@ -389,7 +433,9 @@ class TestPolarsReplace:
         assert expr.referenced_columns == ["grade"]
 
     def test_replace_simple(self):
-        code = 'df = df.with_columns(pl.col("status").replace({"old": "new"}).alias("status_clean"))'
+        code = (
+            'df = df.with_columns(pl.col("status").replace({"old": "new"}).alias("status_clean"))'
+        )
         expr = parse_expression(code, "status_clean")
         assert expr.referenced_columns == ["status"]
 
@@ -481,7 +527,9 @@ class TestPolarsCoalesce:
         assert set(expr.referenced_columns) == {"primary", "secondary", "fallback"}
 
     def test_coalesce_with_pl_col(self):
-        code = 'df = df.with_columns(pl.coalesce(pl.col("a"), pl.col("b"), pl.lit(0)).alias("result"))'
+        code = (
+            'df = df.with_columns(pl.coalesce(pl.col("a"), pl.col("b"), pl.lit(0)).alias("result"))'
+        )
         expr = parse_expression(code, "result")
         assert set(expr.referenced_columns) == {"a", "b"}
         assert 0 in expr.constants
@@ -506,7 +554,7 @@ class TestVariableChains:
     def test_three_step_variable_chain(self):
         code = (
             'a = pl.col("x") + 1\n'
-            'b = a * 2\n'
+            "b = a * 2\n"
             'c = b - pl.col("y")\n'
             'df = df.with_columns(c.alias("result"))'
         )
@@ -516,10 +564,10 @@ class TestVariableChains:
     def test_variable_reuse_in_two_outputs(self):
         code = (
             'shared = pl.col("base") * pl.col("factor")\n'
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    (shared + pl.col("loading")).alias("loaded"),\n'
             '    (shared * 0.9).alias("discounted"),\n'
-            ')'
+            ")"
         )
         loaded = parse_expression(code, "loaded")
         discounted = parse_expression(code, "discounted")
@@ -533,8 +581,8 @@ class TestConditionalVariableAssignment:
         code = (
             'if "ncd_years" in df.columns:\n'
             '    ncd = pl.col("ncd_years")\n'
-            'else:\n'
-            '    ncd = pl.lit(0)\n'
+            "else:\n"
+            "    ncd = pl.lit(0)\n"
             'df = df.with_columns(ncd.alias("ncd_factor"))'
         )
         expr = parse_expression(code, "ncd_factor")
@@ -545,10 +593,10 @@ class TestLoopBuildingColumns:
     def test_loop_with_reduce_is_opaque(self):
         """Loop building a list of expressions and reducing is opaque."""
         code = (
-            'factors = []\n'
+            "factors = []\n"
             'for col in ["age", "area", "vehicle"]:\n'
             '    factors.append(pl.col(f"{col}_factor"))\n'
-            'combined = pl.reduce(lambda a, b: a * b, factors)\n'
+            "combined = pl.reduce(lambda a, b: a * b, factors)\n"
             'df = df.with_columns(combined.alias("combined_factor"))'
         )
         expr = parse_expression(code, "combined_factor")
@@ -561,9 +609,9 @@ class TestDictionaryLookup:
     def test_replace_strict_with_dict_variable(self):
         code = (
             'rates = {"A": 1.0, "B": 1.5, "C": 2.0}\n'
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.col("risk_class").replace_strict(rates, default=1.0).alias("risk_factor")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "risk_factor")
         assert "risk_class" in expr.referenced_columns
@@ -583,19 +631,16 @@ class TestMultiStatementDependencyMisc:
 
     def test_tuple_unpacking_not_crash(self):
         """Tuple unpacking should not crash the parser."""
-        code = (
-            'a, b = pl.col("x"), pl.col("y")\n'
-            'df = df.with_columns((a + b).alias("sum"))'
-        )
+        code = 'a, b = pl.col("x"), pl.col("y")\ndf = df.with_columns((a + b).alias("sum"))'
         expr = parse_expression(code, "sum")
         assert expr is not None
 
     def test_expression_in_function_call(self):
         """Expression passed through a user function call."""
         code = (
-            'def add_loading(expr, load):\n'
-            '    return expr * (1 + load)\n'
-            '\n'
+            "def add_loading(expr, load):\n"
+            "    return expr * (1 + load)\n"
+            "\n"
             'df = df.with_columns(add_loading(pl.col("base"), 0.15).alias("loaded"))'
         )
         expr = parse_expression(code, "loaded")
@@ -606,9 +651,9 @@ class TestMultiStatementDependencyMisc:
     def test_walrus_operator_in_comprehension(self):
         """Walrus operator should not crash the parser."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    [(e := pl.col(c) * 2).alias(f"{c}_doubled") for c in ["a", "b"]]\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "a_doubled")
         assert expr is not None
@@ -639,7 +684,7 @@ class TestMalformedPolarsCode:
         assert "a" in expr.referenced_columns
 
     def test_with_columns_no_args(self):
-        code = 'df = df.with_columns()'
+        code = "df = df.with_columns()"
         expr = parse_expression(code, "result")
         assert expr is None or expr.expression_type == "opaque"
 
@@ -667,10 +712,8 @@ class TestDeeplyNestedExpressions:
 
 class TestVeryWideWithColumns:
     def test_fifty_expressions_in_with_columns(self):
-        exprs = ", ".join(
-            f'(pl.col("col_{i}") * {i}).alias("out_{i}")' for i in range(50)
-        )
-        code = f'df = df.with_columns({exprs})'
+        exprs = ", ".join(f'(pl.col("col_{i}") * {i}).alias("out_{i}")' for i in range(50))
+        code = f"df = df.with_columns({exprs})"
         expr = parse_expression(code, "out_25")
         assert expr is not None
         assert expr.referenced_columns == ["col_25"]
@@ -713,10 +756,7 @@ class TestSelfAndClsReferences:
 
 class TestWalrusOperator:
     def test_walrus_in_if_condition(self):
-        code = (
-            'if (n := len(df)) > 0:\n'
-            '    df = df.with_columns((pl.col("x") / n).alias("x_norm"))'
-        )
+        code = 'if (n := len(df)) > 0:\n    df = df.with_columns((pl.col("x") / n).alias("x_norm"))'
         expr = parse_expression(code, "x_norm")
         # Has runtime-dependent control flow
         assert expr is not None
@@ -726,12 +766,12 @@ class TestWalrusOperator:
 class TestMatchCase:
     def test_match_case_is_opaque(self):
         code = (
-            'match risk_type:\n'
+            "match risk_type:\n"
             '    case "low":\n'
             '        df = df.with_columns((pl.col("base") * 0.8).alias("rate"))\n'
             '    case "high":\n'
             '        df = df.with_columns((pl.col("base") * 1.5).alias("rate"))\n'
-            '    case _:\n'
+            "    case _:\n"
             '        df = df.with_columns(pl.col("base").alias("rate"))'
         )
         expr = parse_expression(code, "rate")
@@ -760,7 +800,7 @@ class TestStarredExpressions:
     def test_starred_list_in_with_columns(self):
         code = (
             'exprs = [(pl.col("a") * 2).alias("a2"), (pl.col("b") + 1).alias("b1")]\n'
-            'df = df.with_columns(*exprs)'
+            "df = df.with_columns(*exprs)"
         )
         expr = parse_expression(code, "a2")
         assert expr is not None
@@ -768,10 +808,7 @@ class TestStarredExpressions:
 
     def test_double_starred_dict_is_opaque(self):
         """**kwargs style unpacking is too dynamic to resolve statically."""
-        code = (
-            'mapping = {"result": pl.col("a") + pl.col("b")}\n'
-            'df = df.with_columns(**mapping)'
-        )
+        code = 'mapping = {"result": pl.col("a") + pl.col("b")}\ndf = df.with_columns(**mapping)'
         expr = parse_expression(code, "result")
         assert expr is not None
 
@@ -789,8 +826,7 @@ class TestStaticallyUnparseableCode:
 
     def test_eval_based_expression(self):
         code = (
-            'expr_str = \'pl.col("a") * 2\'\n'
-            'df = df.with_columns(eval(expr_str).alias("result"))'
+            'expr_str = \'pl.col("a") * 2\'\ndf = df.with_columns(eval(expr_str).alias("result"))'
         )
         expr = parse_expression(code, "result")
         assert expr is not None
@@ -842,8 +878,12 @@ class TestCrossNodeComposition:
     def test_fan_in_composition(self):
         """Two nodes feed into one: node_a + node_b -> node_c."""
         code_a = 'df = df.with_columns((pl.col("claims") / pl.col("exposure")).alias("frequency"))'
-        code_b = 'df = df.with_columns((pl.col("total_cost") / pl.col("claim_count")).alias("severity"))'
-        code_c = 'df = df.with_columns((pl.col("frequency") * pl.col("severity")).alias("pure_premium"))'
+        code_b = (
+            'df = df.with_columns((pl.col("total_cost") / pl.col("claim_count")).alias("severity"))'
+        )
+        code_c = (
+            'df = df.with_columns((pl.col("frequency") * pl.col("severity")).alias("pure_premium"))'
+        )
         expr_a = parse_expression(code_a, "frequency")
         expr_b = parse_expression(code_b, "severity")
         expr_c = parse_expression(code_c, "pure_premium")
@@ -891,12 +931,14 @@ class TestCrossNodeComposition:
     def test_cross_node_with_conditional(self):
         """Node 1 produces a factor via when/then, Node 2 uses it arithmetically."""
         node1_code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("age") < 25).then(1.5).otherwise(1.0)\n'
             '    .alias("age_factor")\n'
-            ')'
+            ")"
         )
-        node2_code = 'df = df.with_columns((pl.col("base") * pl.col("age_factor")).alias("premium"))'
+        node2_code = (
+            'df = df.with_columns((pl.col("base") * pl.col("age_factor")).alias("premium"))'
+        )
         expr1 = parse_expression(node1_code, "age_factor")
         expr2 = parse_expression(node2_code, "premium")
         assert expr1.expression_type == "conditional"
@@ -904,7 +946,9 @@ class TestCrossNodeComposition:
         # Evaluate the chain for a young driver
         result1 = evaluate_expression(node1_code, "age_factor", {"age": 20})
         assert result1.result_value == pytest.approx(1.5)
-        result2 = evaluate_expression(node2_code, "premium", {"base": 400.0, "age_factor": result1.result_value})
+        result2 = evaluate_expression(
+            node2_code, "premium", {"base": 400.0, "age_factor": result1.result_value}
+        )
         assert result2.result_value == pytest.approx(600.0)
 
     def test_cross_node_many_intermediates(self):
@@ -916,17 +960,17 @@ class TestCrossNodeComposition:
             'df = df.with_columns((pl.col("step_3") - 1).alias("step_4"))',
             'df = df.with_columns((pl.col("step_4") ** 2).alias("step_5"))',
         ]
-        exprs = [parse_expression(c, f"step_{i+1}") for i, c in enumerate(codes)]
+        exprs = [parse_expression(c, f"step_{i + 1}") for i, c in enumerate(codes)]
         assert exprs[0].referenced_columns == ["input"]
         for i in range(1, 5):
             assert exprs[i].referenced_columns == [f"step_{i}"]
         # Evaluate chain: input=3 -> 6 -> 16 -> 8 -> 7 -> 49
         val = 3.0
-        val = val * 2         # step_1 = 6
-        val = val + 10        # step_2 = 16
-        val = val * 0.5       # step_3 = 8
-        val = val - 1         # step_4 = 7
-        val = val ** 2        # step_5 = 49
+        val = val * 2  # step_1 = 6
+        val = val + 10  # step_2 = 16
+        val = val * 0.5  # step_3 = 8
+        val = val - 1  # step_4 = 7
+        val = val**2  # step_5 = 49
         result = evaluate_expression(codes[0], "step_1", {"input": 3.0})
         assert result.result_value == pytest.approx(6.0)
         result = evaluate_expression(codes[4], "step_5", {"step_4": 7.0})

@@ -22,6 +22,7 @@ __all__ = [
     "EvaluatedExpression",
     "parse_expression",
     "evaluate_expression",
+    "parse_expression_chain",
 ]
 
 
@@ -46,6 +47,11 @@ class EvaluatedExpression(ParsedExpression):
     substituted_text: str = ""
     result_value: Any = None
     input_values: dict[str, Any] = field(default_factory=dict)
+    # Conditional branch tracking
+    taken_branch: str | None = None
+    taken_branch_index: int | None = None
+    dimmed_branches: list[int] = field(default_factory=list)
+    nested_branches: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1289,11 +1295,12 @@ def evaluate_expression(
     code: str,
     target_column: str,
     row_values: dict[str, Any],
+    preamble_ns: dict[str, Any] | None = None,
 ) -> EvaluatedExpression:
     """Parse *code*, substitute *row_values* for referenced columns, and compute
     the result.  Returns an :class:`EvaluatedExpression`."""
     try:
-        return _evaluate_expression_impl(code, target_column, row_values)
+        return _evaluate_expression_impl(code, target_column, row_values, preamble_ns=preamble_ns)
     except Exception:
         parsed = parse_expression(code, target_column)
         if parsed is None:
@@ -1322,7 +1329,24 @@ def _evaluate_expression_impl(
     code: str,
     target_column: str,
     row_values: dict[str, Any],
+    preamble_ns: dict[str, Any] | None = None,
 ) -> EvaluatedExpression:
+    # Wrap dot-chain syntax so the parser sees valid Python
+    if code.lstrip().startswith("."):
+        code = f"df = (df\n{code})"
+    elif (
+        code and not code.lstrip().startswith("df") and "=" not in code.split("\n")[0].split("(")[0]
+    ):
+        code = f"df = (\n{code}\n)"
+
+    # Merge preamble constants into row_values for evaluation.
+    # Column values (row_values) take priority over preamble constants.
+    effective_row = dict(preamble_ns or {})
+    effective_row.update(row_values)
+
+    # Detect window function: .over() in code
+    is_window = ".over(" in code
+
     parsed = parse_expression(code, target_column)
     if parsed is None:
         parsed = ParsedExpression(
@@ -1333,19 +1357,50 @@ def _evaluate_expression_impl(
             constants=[],
         )
 
+    # Window function handling
+    if is_window:
+        parsed_expr_type = "window"
+        # Extract partition columns from .over() calls
+        _add_window_partition_cols(code, parsed)
+    else:
+        parsed_expr_type = parsed.expression_type
+
     # Build input_values: only cols that are referenced
-    input_values = {k: v for k, v in row_values.items() if k in parsed.referenced_columns}
+    input_values = {k: v for k, v in effective_row.items() if k in parsed.referenced_columns}
 
     # Build substituted text
-    substituted_text = _substitute_values(parsed.expression_text, input_values)
+    if is_window:
+        substituted_text = _build_window_description(code, target_column, effective_row, parsed)
+    else:
+        substituted_text = _substitute_values(parsed.expression_text, input_values)
+
+    # Resolve preamble constants in substituted text
+    if preamble_ns:
+        for name, val in preamble_ns.items():
+            if name not in row_values:
+                # Replace unresolved preamble constant names with their values
+                substituted_text = _replace_column_name(substituted_text, name, _format_value(val))
 
     # Compute result
-    result_value = _compute_result(code, target_column, row_values, parsed)
+    result_value = _compute_result(code, target_column, effective_row, parsed)
+
+    # Conditional branch tracking
+    taken_branch: str | None = None
+    taken_branch_index: int | None = None
+    dimmed_branches: list[int] = []
+    nested_branches: list[str] = []
+
+    if parsed.expression_type == "conditional":
+        branch_info = _evaluate_conditional_branches(code, target_column, effective_row)
+        taken_branch = branch_info.get("taken_branch")
+        taken_branch_index = branch_info.get("taken_branch_index")
+        dimmed_branches = branch_info.get("dimmed_branches", [])
+        nested_branches = branch_info.get("nested_branches", [])
 
     return EvaluatedExpression(
         target_column=parsed.target_column,
         expression_text=parsed.expression_text,
-        expression_type=parsed.expression_type,
+        expression_type=parsed_expr_type,
         referenced_columns=parsed.referenced_columns,
         constants=parsed.constants,
         sub_expressions=parsed.sub_expressions,
@@ -1353,7 +1408,79 @@ def _evaluate_expression_impl(
         substituted_text=substituted_text,
         result_value=result_value,
         input_values=input_values,
+        taken_branch=taken_branch,
+        taken_branch_index=taken_branch_index,
+        dimmed_branches=dimmed_branches,
+        nested_branches=nested_branches,
     )
+
+
+def _add_window_partition_cols(code: str, parsed: ParsedExpression) -> None:
+    """Extract partition columns from .over() calls and add to referenced_columns."""
+    # Match .over('col') or .over("col")
+    over_pattern = re.findall(r"\.over\(\s*['\"](\w+)['\"]\s*\)", code)
+    for col in over_pattern:
+        if col not in parsed.referenced_columns:
+            parsed.referenced_columns.append(col)
+
+
+def _build_window_description(
+    code: str,
+    target_column: str,
+    row_values: dict[str, Any],
+    parsed: ParsedExpression,
+) -> str:
+    """Build a human-readable description for window functions."""
+    # Extract the aggregation function and column
+    # e.g., pl.col('premium').sum().over('region') -> "sum of premium over region"
+    agg_funcs = re.findall(r"\.(\w+)\(\)\s*\.over\(", code)
+    col_match = re.findall(r"pl\.col\(['\"](\w+)['\"]\)", code)
+    over_match = re.findall(r"\.over\(\s*['\"](\w+)['\"]\s*\)", code)
+
+    agg_func = agg_funcs[0] if agg_funcs else "aggregate"
+    agg_col = col_match[0] if col_match else "column"
+    part_col = over_match[0] if over_match else "partition"
+
+    return f"{agg_func} of {agg_col} over {part_col}"
+
+
+def _evaluate_conditional_branches(
+    code: str,
+    target_column: str,
+    row_values: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate a conditional expression and determine which branch was taken."""
+    code_clean = code.lstrip("\ufeff")
+    try:
+        tree = ast.parse(code_clean)
+    except SyntaxError:
+        return {}
+
+    stmts = tree.body
+    symbol_table = _build_safe_symbol_table(stmts)
+    _resolve_reassignment_chains(stmts, symbol_table)
+
+    wc_calls = _find_with_columns_calls(tree)
+    best_match: ast.AST | None = None
+
+    for wc_call, lineno in wc_calls:
+        exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
+        for expr_node, alias_name, ln in exprs:
+            if alias_name == target_column:
+                best_match = expr_node
+
+    if best_match is None:
+        return {}
+
+    # Use _BranchTrackingEvaluator (defined after _ExprEvaluator below)
+    evaluator = _BranchTrackingEvaluator(row_values, symbol_table)
+    evaluator.evaluate(best_match)
+    return {
+        "taken_branch": evaluator.taken_branch,
+        "taken_branch_index": evaluator.taken_branch_index,
+        "dimmed_branches": evaluator.dimmed_branches,
+        "nested_branches": evaluator.nested_branches,
+    }
 
 
 def _substitute_values(expression_text: str, values: dict[str, Any]) -> str:
@@ -1932,3 +2059,173 @@ class _ExprEvaluator:
                     if kw.arg == "default":
                         return self.evaluate(kw.value)
         return base_val
+
+
+class _BranchTrackingEvaluator(_ExprEvaluator):
+    """Extends _ExprEvaluator to track which conditional branch was taken."""
+
+    def __init__(self, row_values: dict[str, Any], symbol_table: dict[str, ast.AST] | None = None):
+        super().__init__(row_values, symbol_table)
+        self.taken_branch: str | None = None
+        self.taken_branch_index: int | None = None
+        self.dimmed_branches: list[int] = []
+        self.nested_branches: list[str] = []
+        self._is_outer = True  # Track if this is the outermost conditional
+
+    def _eval_clauses(self, clauses: list[dict[str, Any]]) -> Any:
+        # Count branches: each "cond" clause is a branch, "otherwise" is the last
+        total_branches = sum(1 for c in clauses if "cond" in c) + (
+            1 if any("otherwise" in c for c in clauses) else 0
+        )
+        is_outer = self._is_outer
+
+        for i, clause in enumerate(clauses):
+            if "cond" in clause:
+                cond_val = self.evaluate(clause["cond"]) if clause["cond"] else False
+                if cond_val:
+                    # Check if then value contains a nested conditional
+                    then_node = clause["then"]
+                    has_nested = self._check_nested_when(then_node)
+
+                    if is_outer:
+                        self.taken_branch = "then"
+                        self.taken_branch_index = i
+                        self.dimmed_branches = [j for j in range(total_branches) if j != i]
+                        self._is_outer = False
+
+                    result = self.evaluate(then_node)
+
+                    if has_nested and is_outer:
+                        # The nested evaluator's branch info becomes nested_branches
+                        self.nested_branches.append(self.taken_branch or "then")
+                        # Reset outer taken_branch to "then" for the outer level
+                        self.taken_branch = "then"
+                        self.taken_branch_index = i
+                        self.dimmed_branches = [j for j in range(total_branches) if j != i]
+
+                    return result
+            elif "otherwise" in clause:
+                otherwise_idx = total_branches - 1
+                if is_outer:
+                    self.taken_branch = "otherwise"
+                    self.taken_branch_index = otherwise_idx
+                    self.dimmed_branches = [j for j in range(total_branches) if j != otherwise_idx]
+                return self.evaluate(clause["otherwise"])
+        return None
+
+    def _check_nested_when(self, node: ast.AST) -> bool:
+        """Check if the node contains a nested when/then chain."""
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                if node.func.attr in ("then", "otherwise"):
+                    return True
+                if node.func.attr == "when":
+                    if isinstance(node.func.value, ast.Name) and node.func.value.id == "pl":
+                        return True
+                return self._check_nested_when(node.func.value)
+            for a in node.args:
+                if self._check_nested_when(a):
+                    return True
+        return False
+
+    def _eval_when_from_then_or_otherwise(self, node: ast.Call) -> Any:
+        """Override to track nested branches."""
+        clauses = self._collect_eval_clauses(node)
+        return self._eval_clauses(clauses)
+
+
+# ---------------------------------------------------------------------------
+# Intra-node dependency chain
+# ---------------------------------------------------------------------------
+
+
+def parse_expression_chain(code: str, target_column: str) -> list[ParsedExpression] | None:
+    """Walk backward through sequential with_columns calls to find dependencies.
+
+    If *target_column* references column ``X``, and ``X`` was created in an earlier
+    ``with_columns`` in the same code, include that expression in the chain.
+    Returns the chain in dependency order (earliest first).
+    """
+    try:
+        return _parse_expression_chain_impl(code, target_column)
+    except Exception:
+        # Graceful fallback
+        parsed = parse_expression(code, target_column)
+        if parsed is not None:
+            return [parsed]
+        return []
+
+
+def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedExpression]:
+    """Implementation of parse_expression_chain."""
+    code_clean = code.lstrip("\ufeff")
+
+    # Wrap dot-chain code
+    if code_clean.startswith("."):
+        code_wrapped = f"df = (df\n{code_clean})"
+    elif code_clean and "df" not in code_clean.split("=")[0]:
+        code_wrapped = f"df = (\n{code_clean}\n)"
+    else:
+        code_wrapped = code_clean
+
+    try:
+        tree = ast.parse(code_wrapped)
+    except SyntaxError:
+        parsed = parse_expression(code_wrapped, target_column)
+        return [parsed] if parsed else []
+
+    stmts = tree.body
+    symbol_table = _build_safe_symbol_table(stmts)
+    _resolve_reassignment_chains(stmts, symbol_table)
+
+    wc_calls = _find_with_columns_calls(tree)
+
+    # Collect all column definitions across with_columns calls
+    all_defs: list[tuple[str, ast.AST, list[str], int]] = []
+
+    for wc_idx, (wc_call, lineno) in enumerate(wc_calls):
+        exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
+        for expr_node, alias_name, ln in exprs:
+            if alias_name is None:
+                alias_name = _infer_auto_name(expr_node)
+            if alias_name is None:
+                continue
+            converter = _ExprConverter(symbol_table)
+            converter.convert(expr_node)
+            refs = converter.columns
+            all_defs.append((alias_name, expr_node, refs, wc_idx))
+
+    # Build a mapping from column name to its definition
+    col_defs: dict[str, tuple[ast.AST, list[str], int]] = {}
+    for col_name, expr_node, refs, wc_idx in all_defs:
+        col_defs[col_name] = (expr_node, refs, wc_idx)
+
+    if target_column not in col_defs:
+        return []
+
+    # Walk backward to find the dependency chain
+    chain_cols: list[str] = []
+    visited: set[str] = set()
+
+    def _walk_deps(col: str) -> None:
+        if col in visited:
+            return
+        visited.add(col)
+        if col not in col_defs:
+            return
+        _, refs, _ = col_defs[col]
+        for ref in refs:
+            if ref in col_defs and ref != col:
+                _walk_deps(ref)
+        chain_cols.append(col)
+
+    _walk_deps(target_column)
+
+    # Build ParsedExpression for each in order
+    chain: list[ParsedExpression] = []
+    for col in chain_cols:
+        parsed = parse_expression(code_wrapped, col)
+        if parsed is not None:
+            chain.append(parsed)
+
+    return chain if chain else []

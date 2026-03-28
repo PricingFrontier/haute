@@ -104,6 +104,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Rating").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/base_premium/)).toBeInTheDocument()
@@ -129,6 +132,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Condition").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/when/i)).toBeInTheDocument()
@@ -154,6 +160,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Opaque Node").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Opaque expressions should show a "computed" indicator rather than a formula
@@ -185,6 +194,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Multi-ref").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Referenced columns should appear somewhere in the expanded step
@@ -213,6 +225,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Long Expr").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Should render without crashing; may truncate or wrap
@@ -238,6 +253,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Single Ref").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/loss_amount/)).toBeInTheDocument()
@@ -262,6 +280,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Const Expr").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Const Expr")).toBeInTheDocument()
@@ -292,6 +313,9 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     expect(screen.getByText("No Diff")).toBeInTheDocument()
   })
 })
@@ -322,6 +346,9 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Calc Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // The substituted calculation text should be visible
@@ -348,6 +375,9 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Null Calc").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Null Calc")).toBeInTheDocument()
@@ -373,6 +403,9 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Multi Input Calc").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Multi Input Calc")).toBeInTheDocument()
@@ -397,6 +430,9 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Zero Result").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Zero Result")).toBeInTheDocument()
@@ -421,6 +457,9 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("String Result").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("String Result")).toBeInTheDocument()
@@ -450,6 +489,9 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Full Detail").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Full Detail")).toBeInTheDocument()
@@ -484,6 +526,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Rate Lookup").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Rate Lookup")).toBeInTheDocument()
@@ -511,6 +556,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Age Band").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Age Band")).toBeInTheDocument()
@@ -537,6 +585,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("GLM Score").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("GLM Score")).toBeInTheDocument()
@@ -567,6 +618,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("SHAP Model").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("SHAP Model")).toBeInTheDocument()
@@ -593,6 +647,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Scenario Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Scenario Step")).toBeInTheDocument()
@@ -618,6 +675,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Live Switch").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Live Switch")).toBeInTheDocument()
@@ -643,6 +703,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Unknown Detail").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Unknown Detail")).toBeInTheDocument()
@@ -669,6 +732,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Default Rate").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Default Rate")).toBeInTheDocument()
@@ -696,6 +762,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Edge Band").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Edge Band")).toBeInTheDocument()
@@ -723,6 +792,9 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Big Model").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Big Model")).toBeInTheDocument()
@@ -751,6 +823,9 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     expect(screen.getByText("Pass Through")).toBeInTheDocument()
   })
 
@@ -769,6 +844,9 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     expect(screen.getByText("Source Node")).toBeInTheDocument()
   })
 
@@ -787,6 +865,9 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     expect(screen.getByText("Filter Node")).toBeInTheDocument()
   })
 
@@ -805,6 +886,9 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     expect(screen.getByText("Agg Node")).toBeInTheDocument()
   })
 
@@ -823,6 +907,9 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     expect(screen.getByText("Join Node")).toBeInTheDocument()
   })
 
@@ -840,17 +927,22 @@ describe("TracePanel — Waterfall View Concepts", () => {
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Step A", execution_ms: 2.0 }),
-            makeStep({ node_id: "n2", node_name: "Step B", execution_ms: 3.0 }),
-            makeStep({ node_id: "n3", node_name: "Step C", execution_ms: 1.5 }),
+            makeStep({ node_id: "n1", node_name: "Step A", execution_ms: 2.0, schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
+            makeStep({ node_id: "n2", node_name: "Step B", execution_ms: 3.0, schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+            makeStep({ node_id: "n3", node_name: "Step C", execution_ms: 1.5, schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
           ] as TraceStep[],
         })}
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepA = screen.getByText("Step A")
     const stepB = screen.getByText("Step B")
-    const stepC = screen.getByText("Step C")
+    // Step C may appear in both CalculationHero (nodeName) and StepCard
+    const stepCElements = screen.getAllByText("Step C")
+    const stepC = stepCElements[stepCElements.length - 1]
     // All three should render in document order matching the steps array
     const body = document.body
     const allElements = Array.from(body.querySelectorAll("*"))
@@ -880,6 +972,9 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Formula Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Expression should be visible after expanding
@@ -906,6 +1001,9 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Diff Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/1 added/)).toBeInTheDocument()
@@ -933,6 +1031,9 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     // Pass-through steps with no changes should still render the step name
     expect(screen.getByText("Pass-through")).toBeInTheDocument()
   })
@@ -947,10 +1048,10 @@ describe("TracePanel — Waterfall View Concepts", () => {
               node_id: "n1",
               node_name: "Source",
               schema_diff: {
-                columns_added: [],
+                columns_added: ["age"],
                 columns_removed: [],
-                columns_modified: [],
-                columns_passed: ["age"],
+                columns_modified: ["premium"],
+                columns_passed: [],
               },
               column_relevant: false,
             }),
@@ -970,8 +1071,12 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     // The relevant step should NOT have reduced opacity
-    expect(screen.getByText("Creator")).toBeInTheDocument()
+    // "Creator" may appear in both CalculationHero (nodeName) and StepCard
+    expect(screen.getAllByText("Creator").length).toBeGreaterThan(0)
     // The non-relevant step should have reduced opacity
     const reducedOpacityEl = container.querySelector("[style*='opacity: 0.55']")
     expect(reducedOpacityEl).toBeTruthy()
@@ -1009,6 +1114,9 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Enhanced Step").closest("button") as HTMLElement
     // Expand
     fireEvent.click(stepButton)
@@ -1030,6 +1138,9 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
+    // Click "Nodes" tab to switch to node list view
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
     expect(screen.getByText("Polars Step")).toBeInTheDocument()
     expect(screen.getByText("Rating Step")).toBeInTheDocument()
   })

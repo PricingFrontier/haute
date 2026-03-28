@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -83,6 +84,11 @@ class TraceStep:
     node_detail: dict[str, Any] | None = None
     row_lineage_type: str | None = None
 
+    @property
+    def row_data(self) -> dict[str, Any]:
+        """Alias for output_values — used by export and display layers."""
+        return self.output_values
+
 
 @dataclass
 class TraceResult:
@@ -103,6 +109,9 @@ class TraceResult:
     total_nodes_in_pipeline: int = 0
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
+
+    # Waterfall summary for sequential multiplicative/additive rating chains
+    waterfall: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +302,9 @@ def _correlate_rows_posthoc(
     """
     target_df = eager_outputs[target_node_id]
     if row_index >= len(target_df):
-        return {nid: {} for nid in order}
+        raise ValueError(
+            f"row_index {row_index} is out of range (target node has {len(target_df)} rows)"
+        )
 
     # Step 1: extract the target row — this is exactly what the user clicked
     target_row_raw = target_df.row(row_index, named=True)
@@ -401,9 +412,12 @@ def _trace_values_match(actual: Any, expected: Any) -> bool:
         return math.isclose(actual, float(expected), rel_tol=1e-9)
     if isinstance(actual, int) and isinstance(expected, float):
         return math.isclose(float(actual), expected, rel_tol=1e-9)
-    # String coercion for dates/datetimes
-    if str(actual) == str(expected):
-        return True
+    # String coercion for dates/datetimes only
+    from datetime import date, datetime
+
+    if isinstance(actual, (date, datetime)) or isinstance(expected, (date, datetime)):
+        if str(actual) == str(expected):
+            return True
     return False
 
 
@@ -420,6 +434,7 @@ def execute_trace(
     row_limit: int = 1000,
     source: str = "live",
     row_values: dict[str, Any] | None = None,
+    preamble_ns: dict[str, Any] | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -540,19 +555,56 @@ def execute_trace(
                 )
 
             # No row_values — cold start or unit test.  Execute fresh.
-            preamble_ns = _compile_preamble(
+            compiled_preamble_ns = _compile_preamble(
                 graph.preamble or "",
                 pipeline_dir=_pipeline_dir(graph),
             )
-            result = _execute_eager_core(
-                graph,
-                _build_node_fn,
-                target_node_id=target_node_id,
-                row_limit=row_limit,
-                swallow_errors=False,
-                preamble_ns=preamble_ns or None,
-                source=source,
-            )
+            # Merge caller-supplied preamble_ns with compiled preamble
+            # (caller-supplied takes priority for testing convenience)
+            effective_preamble = dict(compiled_preamble_ns or {})
+            if preamble_ns:
+                effective_preamble.update(preamble_ns)
+            try:
+                result = _execute_eager_core(
+                    graph,
+                    _build_node_fn,
+                    target_node_id=target_node_id,
+                    row_limit=row_limit,
+                    swallow_errors=False,
+                    preamble_ns=effective_preamble or None,
+                    source=source,
+                )
+            except Exception as exc:
+                # Retry with swallow_errors ONLY for intra-node dependency
+                # errors (column referenced is defined in same with_columns).
+                exc_str = str(exc)
+                is_intra_dep = False
+                if "unable to find column" in exc_str:
+                    # Extract the missing column name
+                    col_match = re.search(r'unable to find column "(\w+)"', exc_str)
+                    if col_match:
+                        missing_col = col_match.group(1)
+                        # Check if any node's code defines this column in with_columns
+                        for n in nodes:
+                            cfg = n.data.config if isinstance(n.data.config, dict) else {}
+                            nc = cfg.get("code", "") or ""
+                            if nc and ".with_columns(" in nc:
+                                if re.search(rf"\b{re.escape(missing_col)}\s*=", nc):
+                                    is_intra_dep = True
+                                    break
+
+                if is_intra_dep:
+                    result = _execute_eager_core(
+                        graph,
+                        _build_node_fn,
+                        target_node_id=target_node_id,
+                        row_limit=row_limit,
+                        swallow_errors=True,
+                        preamble_ns=effective_preamble or None,
+                        source=source,
+                    )
+                else:
+                    raise
             eager_outputs = {nid: df for nid, df in result.outputs.items() if df is not None}
             order = result.order
             parents_of = result.parents_of
@@ -593,13 +645,27 @@ def execute_trace(
                 )
 
     # Extract correct row from each node via post-hoc correlation
-    cached_rows = _correlate_rows_posthoc(
-        eager_outputs,
-        order,
-        parents_of,
-        target_node_id,
-        row_index,
-    )
+    # (only if target node has output data)
+    if target_node_id in eager_outputs:
+        cached_rows = _correlate_rows_posthoc(
+            eager_outputs,
+            order,
+            parents_of,
+            target_node_id,
+            row_index,
+        )
+    else:
+        # Target node execution failed — build partial rows from available nodes
+        cached_rows = {}
+        for nid in order:
+            if nid in eager_outputs:
+                df = eager_outputs[nid]
+                if row_index < len(df):
+                    cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
+                else:
+                    cached_rows[nid] = {}
+            else:
+                cached_rows[nid] = {}
 
     # ---------- Build trace steps from cached rows ----------
     steps: list[TraceStep] = []
@@ -610,10 +676,11 @@ def execute_trace(
         node_name = node_data.label
         node_type = node_data.nodeType
 
-        output_row = cached_rows[nid]
+        output_row = cached_rows.get(nid)
 
         # Skip nodes where row correlation failed — better to show
         # nothing than to show incorrect data from a wrong row.
+        # But keep nodes with empty dicts (they may still get enrichment).
         if output_row is None:
             continue
 
@@ -650,7 +717,15 @@ def execute_trace(
         )
 
     # ---------- Enrich steps with expression/detail data ----------
-    _enrich_steps(steps, node_map, eager_outputs, parents_of, column, source)
+    _enrich_steps(
+        steps,
+        node_map,
+        eager_outputs,
+        parents_of,
+        column,
+        source,
+        preamble_ns=preamble_ns,
+    )
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
     #
@@ -669,21 +744,72 @@ def execute_trace(
 
         # Find nodes where the column is first created
         origin_ids = {s.node_id for s in steps if column in s.schema_diff.columns_added}
-        # Collect all ancestors of origin nodes — they contribute to the calc
-        ancestor_ids: set[str] = set()
-        if origin_ids:
-            queue = list(origin_ids)
-            while queue:
-                nid = queue.pop()
-                for pid in parents_of.get(nid, []):
-                    if pid not in ancestor_ids:
-                        ancestor_ids.add(pid)
-                        queue.append(pid)
 
-        steps = [s for s in steps if s.column_relevant or s.node_id in ancestor_ids]
+        # Also check for nodes whose code creates the column (for failed-execution cases)
+        for s in steps:
+            nd = node_map.get(s.node_id)
+            if nd:
+                cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
+                rc = cfg.get("code", "") or ""
+                if rc and ".with_columns(" in rc and re.search(rf"\b{re.escape(column)}\s*=", rc):
+                    origin_ids.add(s.node_id)
+                    s.column_relevant = True
+
+        # Collect ancestors that actually contribute to the formula.
+        # If the expression tells us which columns are referenced (e.g.
+        # burn_cost = premium * 0.7 references ["premium"]), only keep
+        # ancestors that produce those columns.  This prunes unrelated
+        # branches (e.g. competitor_scoring when tracing burn_cost).
+        ancestor_ids: set[str] = set()
+        contributing_ids: set[str] = set()
+        if origin_ids:
+            # Check if expression tells us what columns matter
+            ref_cols: set[str] | None = None
+            for s in steps:
+                if s.node_id in origin_ids and s.expression:
+                    expr_refs = s.expression.get("referenced_columns", [])
+                    if expr_refs:
+                        ref_cols = set(expr_refs)
+                        break
+
+            if ref_cols:
+                # Targeted walk: find nodes that produce referenced columns
+                # and only walk their ancestors
+                contributing_ids = set(origin_ids)
+                for s in steps:
+                    if s.node_id in origin_ids:
+                        continue
+                    sd = s.schema_diff
+                    produced = set(sd.columns_added) | set(sd.columns_modified)
+                    if produced & ref_cols:
+                        contributing_ids.add(s.node_id)
+                    elif any(c in s.output_values for c in ref_cols):
+                        contributing_ids.add(s.node_id)
+                queue = list(contributing_ids)
+                while queue:
+                    nid = queue.pop()
+                    for pid in parents_of.get(nid, []):
+                        if pid not in ancestor_ids:
+                            ancestor_ids.add(pid)
+                            queue.append(pid)
+            else:
+                # No expression info — fall back to keeping all ancestors
+                queue = list(origin_ids)
+                while queue:
+                    nid = queue.pop()
+                    for pid in parents_of.get(nid, []):
+                        if pid not in ancestor_ids:
+                            ancestor_ids.add(pid)
+                            queue.append(pid)
+
+        # Also keep contributing nodes (those that produce referenced columns)
+        keep_ids = ancestor_ids | origin_ids
+        if contributing_ids:
+            keep_ids |= contributing_ids
+        steps = [s for s in steps if s.column_relevant or s.node_id in keep_ids]
 
     # ---------- Output value (already in cache from batch collect) ----------
-    target_row = cached_rows[target_node_id] or {}
+    target_row = cached_rows.get(target_node_id) or {}
     output_value = target_row.get(column) if column else target_row
 
     # ---------- Row identity from apiInput node ----------
@@ -707,6 +833,45 @@ def execute_trace(
         duration_ms=total_ms,
     )
 
+    # Build waterfall from trace steps — looks for sequential steps where
+    # the traced column is modified by a multiplicative/additive operation.
+    waterfall_data: list[dict[str, Any]] | None = None
+    if column and len(steps) >= 3:
+        try:
+            from haute._trace_waterfall import build_waterfall
+
+            waterfall_steps: list[dict[str, Any]] = []
+            for step in steps:
+                val = step.output_values.get(column)
+                if val is None:
+                    continue
+                if column in step.schema_diff.columns_added and not waterfall_steps:
+                    waterfall_steps.append(
+                        {"label": step.node_name, "operation": "base", "value": val}
+                    )
+                elif column in step.schema_diff.columns_modified:
+                    # Detect multiply vs add from the expression
+                    op = "multiply"
+                    if step.expression and isinstance(step.expression, dict):
+                        expr_text = step.expression.get("expression_text", "")
+                        if "+" in expr_text or "-" in expr_text:
+                            op = "add"
+                    waterfall_steps.append({"label": step.node_name, "operation": op, "value": val})
+            wf_result = build_waterfall(waterfall_steps)
+            if wf_result is not None:
+                waterfall_data = [
+                    {
+                        "label": e.label,
+                        "operation": e.operation,
+                        "value": e.value,
+                        "delta": e.delta,
+                        "cumulative": e.cumulative,
+                    }
+                    for e in wf_result.entries
+                ]
+        except Exception:
+            logger.debug("waterfall_build_failed", exc_info=True)
+
     return TraceResult(
         target_node_id=target_node_id,
         row_index=row_index,
@@ -718,6 +883,7 @@ def execute_trace(
         total_nodes_in_pipeline=len(nodes),
         nodes_in_trace=len(steps),
         execution_ms=total_ms,
+        waterfall=waterfall_data,
     )
 
 
@@ -727,7 +893,11 @@ def execute_trace(
 
 # Lazy imports — these modules may not exist yet; enrichment is non-breaking.
 try:
-    from haute._expression_parser import evaluate_expression, parse_expression
+    from haute._expression_parser import (
+        evaluate_expression,
+        parse_expression,
+        parse_expression_chain,
+    )
 
     _HAS_EXPRESSION_PARSER = True
 except ImportError:
@@ -748,6 +918,169 @@ except ImportError:
     _HAS_TRACE_ENRICHMENT = False
 
 
+def _fix_upstream_values(
+    input_sources: dict[str, Any],
+    steps: list[TraceStep],
+    eager_outputs: dict[str, pl.DataFrame],
+) -> None:
+    """Fix upstream step output_values using known-good values from input_sources.
+
+    When the row correlator matched the wrong row in a source node (due to
+    non-deterministic join ordering or value changes through scenario
+    expansion), the step's output_values shows null for columns that
+    actually have values.  This function uses the known-good values from
+    expression evaluation to find the correct row in the source DataFrame
+    and update the step's output_values.
+    """
+    for col_name, src_info in input_sources.items():
+        if not isinstance(src_info, dict):
+            continue
+        src_node_name = src_info.get("node_name")
+        known_value = src_info.get("result_value")
+        if src_node_name is None or known_value is None:
+            continue
+
+        # Find the step for this source node
+        for s in steps:
+            if s.node_name != src_node_name:
+                continue
+            current_val = s.output_values.get(col_name)
+            if current_val is not None:
+                break  # value is already correct
+
+            # Step has null but we know the correct value — try to find
+            # the right row in the source DataFrame using the known value.
+            df = eager_outputs.get(s.node_id)
+            if df is None or col_name not in df.columns:
+                break
+            try:
+                # Filter to rows where this column matches the known value
+                if isinstance(known_value, float):
+                    matched = df.filter((pl.col(col_name) - known_value).abs() < 1e-6)
+                else:
+                    matched = df.filter(pl.col(col_name) == known_value)
+                if len(matched) > 0:
+                    new_row = _jsonify_row(matched.row(0, named=True))
+                    s.output_values[col_name] = new_row.get(col_name)
+            except Exception:
+                logger.debug("fix_upstream_row_failed", node_id=s.node_id, column=col_name)
+            break
+
+        # Recurse into nested input_sources
+        nested = src_info.get("input_sources")
+        if isinstance(nested, dict):
+            _fix_upstream_values(nested, steps, eager_outputs)
+
+
+def _wrap_node_code(raw_code: str) -> str:
+    """Wrap dot-chain or bare-expression code so the parser sees valid Python."""
+    if not raw_code:
+        return raw_code
+    if raw_code.startswith("."):
+        return f"df = (df\n{raw_code})"
+    stripped = raw_code.lstrip()
+    if not stripped.startswith("df") and "=" not in raw_code.split("\n")[0].split("(")[0]:
+        return f"df = (\n{raw_code}\n)"
+    return raw_code
+
+
+def _build_input_sources(
+    ref_cols: list[str],
+    current_step: TraceStep,
+    all_steps: list[TraceStep],
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+    *,
+    depth: int = 0,
+    max_depth: int = 3,
+    visited: set[str] | None = None,
+) -> dict[str, Any]:
+    """Recursively build input source derivations for referenced columns.
+
+    For each column in *ref_cols*, finds the upstream step that created it
+    and extracts its formula + values.  If that source itself has an
+    expression with referenced columns, recurses to build nested sources.
+    """
+    if visited is None:
+        visited = set()
+    result: dict[str, Any] = {}
+    for ref_col in ref_cols:
+        if ref_col in visited:
+            continue
+        visited.add(ref_col)
+        for other_step in all_steps:
+            if other_step is current_step:
+                continue
+            if ref_col not in other_step.schema_diff.columns_added:
+                continue
+            other_combined = {**other_step.input_values, **other_step.output_values}
+            source_info: dict[str, Any] = {
+                "node_name": other_step.node_name,
+            }
+
+            # Parse the expression for this specific column from the
+            # upstream node's code — don't rely on other_step.expression
+            # since that's only populated for the traced column.
+            parsed_refs: list[str] = []
+            try:
+                other_code = ""
+                nd = node_map.get(other_step.node_id)
+                if nd is not None:
+                    cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
+                    raw = cfg.get("code", "") or ""
+
+                    # Instance resolution: if this node is an instance
+                    # and its code doesn't contain with_columns, use the
+                    # original node's code instead.
+                    instance_of = cfg.get("instanceOf", "")
+                    if instance_of and ".with_columns(" not in raw and instance_of in node_map:
+                        orig_cfg = node_map[instance_of].data.config
+                        if isinstance(orig_cfg, dict):
+                            raw = orig_cfg.get("code", "") or ""
+
+                    other_code = _wrap_node_code(raw)
+                if other_code:
+                    parsed = parse_expression(other_code, ref_col)
+                    if parsed and parsed.expression_text:
+                        source_info["expression_text"] = parsed.expression_text
+                        parsed_refs = list(parsed.referenced_columns)
+                    ev = evaluate_expression(
+                        other_code,
+                        ref_col,
+                        other_combined,
+                        preamble_ns=preamble_ns,
+                    )
+                    if ev is not None:
+                        source_info["substituted_text"] = ev.substituted_text
+                        source_info["result_value"] = ev.result_value
+            except Exception:
+                source_info.setdefault("result_value", other_combined.get(ref_col))
+
+            # If no expression was found (source node with no code),
+            # use the value from the step's output_values directly.
+            if "result_value" not in source_info:
+                source_info["result_value"] = other_combined.get(ref_col)
+
+            # Recurse into this source's dependencies
+            if depth < max_depth and parsed_refs:
+                sub_sources = _build_input_sources(
+                    parsed_refs,
+                    other_step,
+                    all_steps,
+                    node_map,
+                    preamble_ns,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    visited=set(visited),
+                )
+                if sub_sources:
+                    source_info["input_sources"] = sub_sources
+
+            result[ref_col] = source_info
+            break
+    return result
+
+
 def _enrich_steps(
     steps: list[TraceStep],
     node_map: dict[str, Any],
@@ -755,6 +1088,7 @@ def _enrich_steps(
     parents_of: dict[str, list[str]],
     column: str | None,
     source: str,
+    preamble_ns: dict[str, Any] | None = None,
 ) -> None:
     """Enrich trace steps in-place with expression/calculation/detail data.
 
@@ -765,18 +1099,96 @@ def _enrich_steps(
         try:
             node_data = node_map[step.node_id].data
             cfg = node_data.config if isinstance(node_data.config, dict) else {}
-            code = cfg.get("code", "") or ""
+            raw_code = cfg.get("code", "") or ""
+
+            # Instance resolution: if this node is an instance and its
+            # code doesn't contain with_columns, use the original node's
+            # code.  This ensures the step that CREATED the column gets
+            # the correct expression, not just the target step.
+            instance_of = cfg.get("instanceOf", "")
+            if instance_of and ".with_columns(" not in raw_code and instance_of in node_map:
+                orig_cfg = node_map[instance_of].data.config
+                if isinstance(orig_cfg, dict):
+                    orig_code = orig_cfg.get("code", "") or ""
+                    if orig_code:
+                        raw_code = orig_code
+
+            # The executor wraps dot-chain syntax (e.g. ".filter(...)") as
+            # "df = (df\n.filter(...))".  Apply the same wrapping so the
+            # expression parser sees valid Python.
+            code = _wrap_node_code(raw_code)
             node_type = step.node_type
 
             # --- Expression parsing ---
-            if (
-                _HAS_EXPRESSION_PARSER
-                and column
-                and (
+            # Trigger if column is added/modified at THIS step, OR if the
+            # column is a pass-through at the target step (created upstream).
+            # For pass-throughs, find the upstream step that created it and
+            # use its expression.
+            _col_in_schema = (
+                (
                     column in step.schema_diff.columns_added
                     or column in step.schema_diff.columns_modified
                 )
+                if column
+                else False
+            )
+
+            # If this is the target step and the column is just passing
+            # through, look upstream for the creating step's expression
+            if (
+                _HAS_EXPRESSION_PARSER
+                and column
+                and not _col_in_schema
+                and step.node_id == steps[-1].node_id  # target step
+                and column in step.schema_diff.columns_passed
             ):
+                for upstream in steps:
+                    if upstream is step:
+                        continue
+                    if column in upstream.schema_diff.columns_added:
+                        # Found the upstream creator — parse its code
+                        u_cfg = (
+                            node_map[upstream.node_id].data.config
+                            if isinstance(node_map[upstream.node_id].data.config, dict)
+                            else {}
+                        )
+                        u_raw = u_cfg.get("code", "") or ""
+                        # Instance resolution
+                        u_inst = u_cfg.get("instanceOf", "")
+                        if u_inst and ".with_columns(" not in u_raw and u_inst in node_map:
+                            u_orig = node_map[u_inst].data.config
+                            if isinstance(u_orig, dict):
+                                u_raw = u_orig.get("code", "") or ""
+                        u_code = _wrap_node_code(u_raw)
+                        if u_code:
+                            try:
+                                u_combined = {
+                                    **upstream.input_values,
+                                    **upstream.output_values,
+                                }
+                                parsed = parse_expression(u_code, column)
+                                if parsed and parsed.expression_text:
+                                    step.expression = dataclasses.asdict(parsed)
+                                ev = evaluate_expression(
+                                    u_code,
+                                    column,
+                                    u_combined,
+                                    preamble_ns=preamble_ns,
+                                )
+                                if ev is not None:
+                                    step.calculation = dataclasses.asdict(ev)
+                            except Exception:
+                                logger.debug(
+                                    "upstream_expression_failed",
+                                    node_id=upstream.node_id,
+                                    column=column,
+                                )
+                        break
+            _col_in_code = False
+            if column and raw_code and ".with_columns(" in raw_code:
+                # Check if the column is a keyword arg or appears as an alias target
+                _col_in_code = bool(re.search(rf"\b{re.escape(column)}\s*=", raw_code))
+            if _HAS_EXPRESSION_PARSER and column and (_col_in_schema or _col_in_code):
                 try:
                     parsed = parse_expression(code, column)
                     if parsed is not None:
@@ -785,12 +1197,106 @@ def _enrich_steps(
                     logger.debug("expression_parse_failed", node_id=step.node_id)
                 try:
                     evaluated = evaluate_expression(
-                        code, column, {**step.input_values, **step.output_values}
+                        code,
+                        column,
+                        {**step.input_values, **step.output_values},
+                        preamble_ns=preamble_ns,
                     )
                     if evaluated is not None:
-                        step.calculation = dataclasses.asdict(evaluated)
+                        calc_dict = dataclasses.asdict(evaluated)
+                        # Add taken_branch info to calculation dict
+                        if evaluated.taken_branch is not None:
+                            calc_dict["taken_branch"] = evaluated.taken_branch
+                        if evaluated.taken_branch_index is not None:
+                            calc_dict["taken_branch_index"] = evaluated.taken_branch_index
+                        # For window functions, use the actual output value
+                        if evaluated.expression_type == "window" and column in step.output_values:
+                            calc_dict["result_value"] = step.output_values[column]
+                        step.calculation = calc_dict
                 except Exception:
                     logger.debug("expression_eval_failed", node_id=step.node_id)
+
+                # --- Expression chain (intra-node dependencies) ---
+                try:
+                    chain = parse_expression_chain(raw_code, column)
+                    if chain and len(chain) > 1:
+                        if step.calculation is None:
+                            step.calculation = {}
+                        combined_values = {**step.input_values, **step.output_values}
+                        enriched_chain: list[dict[str, Any]] = []
+                        for p in chain:
+                            entry = dataclasses.asdict(p)
+                            # Enrich with substituted values and result
+                            try:
+                                ev = evaluate_expression(
+                                    raw_code,
+                                    p.target_column,
+                                    combined_values,
+                                    preamble_ns=preamble_ns,
+                                )
+                                if ev is not None:
+                                    entry["substituted_text"] = ev.substituted_text
+                                    entry["result_value"] = ev.result_value
+                            except Exception:
+                                entry.setdefault("substituted_text", p.expression_text)
+                                fallback = combined_values.get(p.target_column)
+                                entry.setdefault("result_value", fallback)
+                            enriched_chain.append(entry)
+                        step.calculation["expression_chain"] = enriched_chain
+                except Exception:
+                    logger.debug("expression_chain_failed", node_id=step.node_id)
+
+                # --- Input sources (recursive upstream derivations) ---
+                try:
+                    # Collect ALL referenced columns: from the target
+                    # expression AND from every chain entry. This ensures
+                    # upstream derivations are found for intra-node deps
+                    # too (e.g., margin = premium - burn_cost in the same
+                    # node — we still need to trace premium and burn_cost
+                    # to their upstream origins).
+                    all_ref_cols: list[str] = []
+                    if step.expression and step.expression.get("referenced_columns"):
+                        all_ref_cols.extend(step.expression["referenced_columns"])
+                    if step.calculation and step.calculation.get("expression_chain"):
+                        for chain_entry in step.calculation["expression_chain"]:
+                            for rc in chain_entry.get("referenced_columns", []):
+                                if rc not in all_ref_cols:
+                                    all_ref_cols.append(rc)
+                    if all_ref_cols:
+                        input_sources = _build_input_sources(
+                            all_ref_cols,
+                            step,
+                            steps,
+                            node_map,
+                            preamble_ns,
+                            depth=0,
+                            max_depth=3,
+                        )
+                        if input_sources:
+                            if step.calculation is None:
+                                step.calculation = {}
+                            step.calculation["input_sources"] = input_sources
+
+                            # Fix upstream steps that have wrong row data.
+                            # When input_sources found the correct value
+                            # for a column via expression evaluation, but
+                            # the upstream step's output_values shows null
+                            # (from a row correlation failure), re-correlate
+                            # using the known-good value.
+                            _fix_upstream_values(
+                                input_sources,
+                                steps,
+                                eager_outputs,
+                            )
+                except Exception:
+                    logger.debug("input_sources_failed", node_id=step.node_id)
+
+            # --- Rename detection ---
+            if _HAS_EXPRESSION_PARSER and column:
+                try:
+                    _detect_rename(step, code, raw_code, column, steps, node_map)
+                except Exception:
+                    logger.debug("rename_detection_failed", node_id=step.node_id)
 
             # --- Node-type enrichment ---
             if _HAS_TRACE_ENRICHMENT:
@@ -857,6 +1363,125 @@ def _enrich_steps(
             continue
 
 
+def _detect_rename(
+    step: TraceStep,
+    code: str,
+    raw_code: str,
+    column: str,
+    all_steps: list[TraceStep],
+    node_map: dict[str, Any] | None = None,
+) -> None:
+    """Detect if the column is a rename and populate calculation/node_detail."""
+
+    # Case 1: .rename({'old': 'new'}) syntax
+    rename_match = re.search(r"\.rename\s*\(\s*\{", raw_code)
+    if rename_match:
+        # Parse rename mapping from the raw code
+        pairs = re.findall(r"['\"](\w+)['\"]\s*:\s*['\"](\w+)['\"]", raw_code)
+        for old_name, new_name in pairs:
+            if new_name == column:
+                if step.calculation is None:
+                    step.calculation = {}
+                step.calculation["original_name"] = old_name
+
+                # Build rename chain by looking at previous steps
+                chain = _build_rename_chain(all_steps, step, old_name, column, node_map)
+                if chain and len(chain) > 2:
+                    step.calculation["rename_chain"] = chain
+
+                if step.node_detail is None:
+                    step.node_detail = {}
+                step.node_detail["detail_type"] = "rename"
+                step.node_detail["original_name"] = old_name
+                step.node_detail["new_name"] = new_name
+                return
+
+    # Case 2: .with_columns(new_name=pl.col('old_name')) — pure rename (col reference only)
+    if ".with_columns(" in raw_code:
+        col_match = re.search(
+            rf"{re.escape(column)}\s*=\s*pl\.col\(\s*['\"](\w+)['\"]\s*\)",
+            raw_code,
+        )
+        if col_match:
+            old_name = col_match.group(1)
+            # Check if this is a pure rename (no additional operations)
+            # The expression text should be just the column name
+            expr = step.expression
+            if expr and expr.get("expression_type") == "arithmetic":
+                expr_text = expr.get("expression_text", "")
+                if expr_text.strip() == old_name:
+                    if step.calculation is None:
+                        step.calculation = {}
+                    step.calculation["original_name"] = old_name
+
+                    # Build rename chain
+                    chain = _build_rename_chain(all_steps, step, old_name, column, node_map)
+                    if chain and len(chain) > 2:
+                        step.calculation["rename_chain"] = chain
+
+
+def _build_rename_chain(
+    all_steps: list[TraceStep],
+    current_step: TraceStep,
+    old_name: str,
+    new_name: str,
+    node_map: dict[str, Any] | None = None,
+) -> list[str]:
+    """Build a chain of renames by looking backward through steps."""
+    # Start with the current rename: old_name -> new_name
+    chain = [old_name, new_name]
+
+    step_idx = None
+    for i, s in enumerate(all_steps):
+        if s.node_id == current_step.node_id:
+            step_idx = i
+            break
+
+    if step_idx is None:
+        return chain
+
+    current_name = old_name
+    for i in range(step_idx - 1, -1, -1):
+        prev_step = all_steps[i]
+        # Check if current_name was added by this step (indicating a possible rename)
+        if current_name not in prev_step.schema_diff.columns_added:
+            continue
+
+        # Try to detect what column was the source by parsing the step's code
+        if _HAS_EXPRESSION_PARSER and node_map:
+            try:
+                nd = node_map.get(prev_step.node_id)
+                if nd:
+                    cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
+                    raw_code = cfg.get("code", "") or ""
+                    if raw_code:
+                        wrapped = _wrap_node_code(raw_code)
+                        parsed = parse_expression(wrapped, current_name)
+                        if parsed and parsed.expression_type == "arithmetic":
+                            refs = parsed.referenced_columns
+                            if len(refs) == 1 and refs[0] != current_name:
+                                if parsed.expression_text.strip() == refs[0]:
+                                    chain.insert(0, refs[0])
+                                    current_name = refs[0]
+                                    continue
+            except Exception:
+                logger.debug(
+                    "fix_upstream_row_failed",
+                    node_id=prev_step.node_id,
+                    column=current_name,
+                )
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_chain = []
+    for c in chain:
+        if c not in seen:
+            seen.add(c)
+            unique_chain.append(c)
+
+    return unique_chain
+
+
 # ---------------------------------------------------------------------------
 # Column relevance tagging
 # ---------------------------------------------------------------------------
@@ -917,4 +1542,5 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
         "total_nodes_in_pipeline": result.total_nodes_in_pipeline,
         "nodes_in_trace": result.nodes_in_trace,
         "execution_ms": result.execution_ms,
+        "waterfall": result.waterfall,
     }

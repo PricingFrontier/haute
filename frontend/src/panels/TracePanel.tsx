@@ -1,12 +1,15 @@
-import { useState } from "react"
-import { X, ChevronDown, ChevronRight, Clock, Layers, Scan } from "lucide-react"
+import { useState, useMemo } from "react"
+import { X, ChevronDown, ChevronRight, Scan, Copy, Check } from "lucide-react"
 import type { TraceResult, TraceStep } from "../types/trace"
 import { nodeTypeLabels, nodeTypeColors } from "../utils/nodeTypes"
 import { formatValue as _formatValue } from "../utils/formatValue"
 import { formatExpression } from "../utils/formatTrace"
 import PanelShell from "./PanelShell"
+import CalculationHero from "../trace/CalculationHero"
+import { findTargetStep, collapsePassthroughs } from "./trace/traceGrouping"
+import { traceToMarkdown } from "./trace/traceToMarkdown"
 
-const formatValue = (v: unknown) => _formatValue(v, 6)
+const formatValue = (v: unknown) => _formatValue(v, 2)
 
 function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
   const detailType = detail.detail_type as string | undefined
@@ -111,7 +114,7 @@ function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
   )
 }
 
-function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: number; tracedColumn: string | null }) {
+function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep; index: number; tracedColumn: string | null; isTargetStep?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const accent = nodeTypeColors[step.node_type] || "#06b6d4"
   const typeLabel = nodeTypeLabels[step.node_type] || "NODE"
@@ -138,8 +141,8 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
   }
 
   const tagColors = {
-    added: { bg: "rgba(34,197,94,.12)", color: "#4ade80", label: "+" },
-    modified: { bg: "rgba(251,191,36,.12)", color: "#fbbf24", label: "~" },
+    added: { bg: "rgba(34,197,94,.12)", color: "var(--color-added, #4ade80)", label: "+" },
+    modified: { bg: "rgba(251,191,36,.12)", color: "var(--color-modified, #fbbf24)", label: "~" },
     value: { bg: "rgba(255,255,255,.06)", color: "var(--text-secondary)", label: "=" },
   }
 
@@ -183,14 +186,26 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
         >
           {typeLabel}
         </span>
-        {step.row_lineage_type && (
-          <span
-            className="text-[9px] font-medium shrink-0 px-1 py-0.5 rounded"
-            style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.06)" }}
-          >
-            {step.row_lineage_type}
-          </span>
-        )}
+        {(() => {
+          const badge = (() => {
+            if (tracedColumn) {
+              const diff = step.schema_diff
+              if (diff.columns_added.includes(tracedColumn)) return "creates"
+              if (diff.columns_modified.includes(tracedColumn)) return "modifies"
+              if (diff.columns_passed.includes(tracedColumn)) return "passes"
+              return null
+            }
+            return step.row_lineage_type || null
+          })()
+          return badge ? (
+            <span
+              className="text-[9px] font-medium shrink-0 px-1 py-0.5 rounded"
+              style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.06)" }}
+            >
+              {badge}
+            </span>
+          ) : null
+        })()}
         <span className="ml-auto text-[10px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
           {step.execution_ms.toFixed(1)}ms
         </span>
@@ -212,7 +227,7 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
               </span>
             )
           })}
-          {step.calculation && (
+          {step.calculation && !isTargetStep && (
             <span
               className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono"
               style={{ background: "rgba(255,255,255,.06)", color: "var(--text-secondary)" }}
@@ -259,13 +274,13 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
           {/* Schema changes summary */}
           <div className="flex flex-wrap gap-2 py-2 text-[10px]">
             {columns_added.length > 0 && (
-              <span style={{ color: "#4ade80" }}>+{columns_added.length} added</span>
+              <span style={{ color: "var(--color-added, #4ade80)" }}>+{columns_added.length} added</span>
             )}
             {columns_modified.length > 0 && (
-              <span style={{ color: "#fbbf24" }}>~{columns_modified.length} modified</span>
+              <span style={{ color: "var(--color-modified, #fbbf24)" }}>~{columns_modified.length} modified</span>
             )}
             {columns_removed.length > 0 && (
-              <span style={{ color: "#f87171" }}>-{columns_removed.length} removed</span>
+              <span style={{ color: "var(--color-removed, #f87171)" }}>-{columns_removed.length} removed</span>
             )}
             <span style={{ color: "var(--text-muted)" }}>
               {step.schema_diff.columns_passed.length} passed through
@@ -285,13 +300,13 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
               let rowColor = "var(--text-secondary)"
               let prefix = ""
               if (isAdded) {
-                rowColor = "#4ade80"
+                rowColor = "var(--color-added, #4ade80)"
                 prefix = "+"
               } else if (isModified) {
-                rowColor = "#fbbf24"
+                rowColor = "var(--color-modified, #fbbf24)"
                 prefix = "~"
               } else if (isRemoved) {
-                rowColor = "#f87171"
+                rowColor = "var(--color-removed, #f87171)"
                 prefix = "-"
               }
 
@@ -329,12 +344,65 @@ function StepCard({ step, index, tracedColumn }: { step: TraceStep; index: numbe
   )
 }
 
+type TraceTab = "calculation" | "nodes"
+
 interface TracePanelProps {
   trace: TraceResult
   onClose: () => void
 }
 
+type DetailLevel = "formula" | "sources" | "all"
+
 export default function TracePanel({ trace, onClose }: TracePanelProps) {
+  const [activeTab, setActiveTab] = useState<TraceTab>("calculation")
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>("sources")
+  const [copied, setCopied] = useState(false)
+  const [showHidden, setShowHidden] = useState(false)
+
+  const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])
+  // Build a set of node IDs that are collapsed (pass-through)
+  const collapsedIds = useMemo(() => {
+    if (!trace.column) return new Set<string>()
+    const entries = collapsePassthroughs(trace.steps, trace.column)
+    const ids = new Set<string>()
+    for (const entry of entries) {
+      if ("collapsed" in entry) {
+        for (const step of entry.collapsed) {
+          ids.add(step.node_id)
+        }
+      }
+    }
+    return ids
+  }, [trace.steps, trace.column])
+
+  const handleCopy = async () => {
+    const md = traceToMarkdown(trace, targetStep)
+    try {
+      await navigator.clipboard.writeText(md)
+    } catch {
+      // Fallback for non-HTTPS contexts
+      const ta = document.createElement("textarea")
+      ta.value = md
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand("copy")
+      document.body.removeChild(ta)
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  // Split steps into visible vs hidden
+  const visibleSteps: TraceStep[] = []
+  const hiddenSteps: TraceStep[] = []
+  for (const step of trace.steps) {
+    if (detailLevel === "all" || showHidden || !collapsedIds.has(step.node_id)) {
+      visibleSteps.push(step)
+    } else {
+      hiddenSteps.push(step)
+    }
+  }
+
   return (
     <PanelShell>
       {/* Header */}
@@ -357,6 +425,16 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           </div>
         </div>
         <button
+          onClick={handleCopy}
+          className="p-1 rounded transition-colors"
+          style={{ color: copied ? "var(--color-added, #4ade80)" : "var(--text-muted)" }}
+          title="Copy trace as markdown"
+          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+        <button
           onClick={onClose}
           className="p-1 rounded transition-colors"
           style={{ color: "var(--text-muted)" }}
@@ -367,35 +445,118 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         </button>
       </div>
 
-      {/* Output value badge */}
-      <div className="px-4 py-2 shrink-0" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>Result</span>
-          <span
-            className="px-2 py-0.5 rounded text-[13px] font-mono font-bold"
-            style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-          >
-            {formatValue(trace.output_value)}
-          </span>
-        </div>
-        <div className="flex items-center gap-3 mt-1.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-          <span className="inline-flex items-center gap-1">
-            <Clock size={10} />
-            {trace.execution_ms.toFixed(1)}ms
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Layers size={10} />
-            {trace.steps.length} steps
-          </span>
+      {/* Tab selection: Calculation | Nodes */}
+      <div className="shrink-0 px-3 py-1.5" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div style={{
+          display: "flex", background: "rgba(0,0,0,.2)", borderRadius: 6,
+          padding: 2, gap: 2, border: "1px solid rgba(255,255,255,.05)",
+        }}>
+          {(["calculation", "nodes"] as const).map((tab) => {
+            const active = activeTab === tab
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                style={{
+                  flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 600,
+                  borderRadius: 4, border: "none", cursor: "pointer",
+                  transition: "all 150ms ease",
+                  background: active ? "rgba(59,130,246,.12)" : "transparent",
+                  color: active ? "#60a5fa" : "rgba(255,255,255,.35)",
+                  boxShadow: active ? "0 1px 3px rgba(0,0,0,.2)" : "none",
+                }}
+              >
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            )
+          })}
         </div>
       </div>
 
-      {/* Steps list */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {trace.steps.map((step, i) => (
-          <StepCard key={step.node_id} step={step} index={i} tracedColumn={trace.column} />
-        ))}
-      </div>
+      {/* Tab content */}
+      {activeTab === "calculation" ? (
+        /* Calculation tab — full derivation */
+        <div className="flex-1 overflow-y-auto" style={{
+          background: "linear-gradient(180deg, rgba(59,130,246,.04) 0%, rgba(59,130,246,.01) 100%)",
+        }}>
+          {targetStep && trace.column ? (
+            <CalculationHero
+              column={trace.column}
+              expression={targetStep.expression ?? null}
+              calculation={targetStep.calculation ?? null}
+              executionMs={trace.execution_ms}
+              stepCount={trace.steps.length}
+              nodeName={targetStep.node_name}
+              waterfall={trace.waterfall}
+            />
+          ) : (
+            <div className="px-4 py-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>Result</span>
+                <span className="px-2 py-0.5 rounded text-[13px] font-mono font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                  {formatValue(trace.output_value)}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* Nodes tab — pipeline node list */
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {/* Detail level toggle */}
+          <div className="px-3 py-1.5 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div style={{
+              display: "flex", background: "rgba(0,0,0,.2)", borderRadius: 6,
+              padding: 2, gap: 2, border: "1px solid rgba(255,255,255,.05)",
+            }}>
+              {(["formula", "sources", "all"] as const).map((level) => {
+                const active = detailLevel === level
+                return (
+                  <button
+                    key={level}
+                    onClick={() => { setDetailLevel(level); setShowHidden(false) }}
+                    style={{
+                      flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 600,
+                      borderRadius: 4, border: "none", cursor: "pointer",
+                      transition: "all 150ms ease",
+                      background: active ? "rgba(59,130,246,.12)" : "transparent",
+                      color: active ? "#60a5fa" : "rgba(255,255,255,.35)",
+                      boxShadow: active ? "0 1px 3px rgba(0,0,0,.2)" : "none",
+                    }}
+                  >
+                    {level.charAt(0).toUpperCase() + level.slice(1)}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          {/* Steps list */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {detailLevel === "formula" ? (
+              targetStep && (
+                <StepCard step={targetStep} index={trace.steps.indexOf(targetStep)} tracedColumn={trace.column} isTargetStep={true} />
+              )
+            ) : (
+              <>
+                {visibleSteps.map((step) => (
+                  <StepCard key={step.node_id} step={step} index={trace.steps.indexOf(step)} tracedColumn={trace.column} isTargetStep={targetStep?.node_id === step.node_id} />
+                ))}
+                {hiddenSteps.length > 0 && !showHidden && (
+                  <button
+                    onClick={() => setShowHidden(true)}
+                    className="w-full py-1.5 rounded text-[11px] transition-colors"
+                    style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.03)", border: "1px dashed var(--border)", fontStyle: "italic" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.03)")}
+                  >
+                    {hiddenSteps.length} pass-through node{hiddenSteps.length > 1 ? "s" : ""} hidden
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </PanelShell>
   )
 }

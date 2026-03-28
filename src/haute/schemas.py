@@ -154,6 +154,7 @@ class TraceResultResponse(BaseModel):
     total_nodes_in_pipeline: int = 0
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
+    waterfall: list[dict[str, Any]] | None = None
 
 
 class TraceResponse(BaseModel):

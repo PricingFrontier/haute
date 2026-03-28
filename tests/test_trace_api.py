@@ -44,13 +44,15 @@ def _clear_trace_caches():
 
 def _simple_graph(parquet_path: str | Path, code: str = "") -> dict:
     """Build a minimal source -> transform graph dict for the API."""
-    graph = _g({
-        "nodes": [
-            _source_node("src", str(parquet_path)),
-            _transform_node("t", code),
-        ],
-        "edges": [_edge("src", "t")],
-    })
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("src", str(parquet_path)),
+                _transform_node("t", code),
+            ],
+            "edges": [_edge("src", "t")],
+        }
+    )
     return graph.model_dump()
 
 
@@ -109,25 +111,23 @@ class TestRequestValidation:
         assert resp.status_code == 422
 
     def test_out_of_bounds_row_index_returns_error(self, client, tmp_path):
-        """POST with row_index beyond data length returns an error or empty trace."""
+        """POST with row_index beyond data length returns an error."""
         p = _simple_parquet(tmp_path)  # 3 rows
         graph = _simple_graph(p)
 
         resp = _trace_post(client, graph, row_index=9999, target_node_id="t")
 
-        # The API should either return an error or handle gracefully
+        # Out-of-bounds row_index now raises ValueError → 500
+        assert resp.status_code == 500
         body = resp.json()
-        # Out-of-bounds is handled by returning empty output or the last row
-        assert resp.status_code in (200, 400, 500)
+        assert "detail" in body
 
     def test_nonexistent_target_node_returns_error(self, client, tmp_path):
         """POST with a target_node_id that does not exist in the graph."""
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p)
 
-        resp = _trace_post(
-            client, graph, row_index=0, target_node_id="nonexistent_node"
-        )
+        resp = _trace_post(client, graph, row_index=0, target_node_id="nonexistent_node")
 
         assert resp.status_code == 500
         body = resp.json()
@@ -141,9 +141,7 @@ class TestRequestValidation:
 
     def test_missing_graph_field_returns_422(self, client):
         """POST with body missing the required 'graph' field returns 422."""
-        resp = client.post(
-            "/api/pipeline/trace", json={"row_index": 0}
-        )
+        resp = client.post("/api/pipeline/trace", json={"row_index": 0})
 
         assert resp.status_code == 422
 
@@ -152,9 +150,7 @@ class TestRequestValidation:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
 
-        resp = _trace_post(
-            client, graph, row_index=0, target_node_id="t", column="z"
-        )
+        resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -169,9 +165,7 @@ class TestRequestValidation:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p)
 
-        resp = _trace_post(
-            client, graph, row_index=0, target_node_id="t", row_limit=10
-        )
+        resp = _trace_post(client, graph, row_index=0, target_node_id="t", row_limit=10)
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -181,9 +175,7 @@ class TestRequestValidation:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p)
 
-        resp = _trace_post(
-            client, graph, row_index=0, target_node_id="t", source="live"
-        )
+        resp = _trace_post(client, graph, row_index=0, target_node_id="t", source="live")
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -321,17 +313,19 @@ class TestPipelineIntegration:
         pl.DataFrame({"key": [1, 2], "a": [10, 20]}).write_parquet(p1)
         pl.DataFrame({"key": [1, 2], "b": [100, 200]}).write_parquet(p2)
 
-        graph = _g({
-            "nodes": [
-                _source_node("s1", str(p1)),
-                _source_node("s2", str(p2)),
-                _transform_node(
-                    "join",
-                    "s1.join(s2, on='key')",
-                ),
-            ],
-            "edges": [_edge("s1", "join"), _edge("s2", "join")],
-        }).model_dump()
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("s1", str(p1)),
+                    _source_node("s2", str(p2)),
+                    _transform_node(
+                        "join",
+                        "s1.join(s2, on='key')",
+                    ),
+                ],
+                "edges": [_edge("s1", "join"), _edge("s2", "join")],
+            }
+        ).model_dump()
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="join")
 
@@ -345,9 +339,7 @@ class TestPipelineIntegration:
         graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
 
         # Trace a column that is added by the transform
-        resp = _trace_post(
-            client, graph, row_index=0, target_node_id="t", column="z"
-        )
+        resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -363,9 +355,7 @@ class TestPipelineIntegration:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
 
-        resp = _trace_post(
-            client, graph, row_index=0, target_node_id="t", column="z"
-        )
+        resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
 
         trace = resp.json()["trace"]
         # Scalar value, not a dict
@@ -403,9 +393,7 @@ class TestPipelineIntegration:
         prev = "src"
         for i in range(5):
             nid = f"t{i}"
-            nodes.append(
-                _transform_node(nid, f".with_columns(c{i}=pl.col('x') + {i})")
-            )
+            nodes.append(_transform_node(nid, f".with_columns(c{i}=pl.col('x') + {i})"))
             edges.append(_edge(prev, nid))
             prev = nid
 
@@ -489,7 +477,7 @@ class TestErrorHandling:
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
         # Should be 504 (timeout) or 500 (internal error if timeout doesn't fire cleanly)
-        assert resp.status_code in (500, 504)
+        assert resp.status_code == 504
 
     def test_malformed_graph_json_returns_422(self, client):
         """Malformed graph JSON structure returns 422 validation error."""
@@ -506,16 +494,18 @@ class TestErrorHandling:
     def test_edges_referencing_nonexistent_nodes(self, client, tmp_path):
         """Graph with edges pointing to non-existent nodes returns error."""
         p = _simple_parquet(tmp_path)
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [_edge("src", "ghost_node")],
-        }).model_dump()
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [_edge("src", "ghost_node")],
+            }
+        ).model_dump()
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="src")
 
         # Should return 200 (the target exists) or error depending on validation
         # The ghost edge is simply ignored since target_node_id is valid
-        assert resp.status_code in (200, 500)
+        assert resp.status_code == 200
 
     def test_empty_nodes_list_returns_error(self, client):
         """Graph with empty nodes list returns error."""
@@ -528,7 +518,7 @@ class TestErrorHandling:
         assert "detail" in body
 
     def test_trace_on_node_with_no_rows(self, client, tmp_path):
-        """Trace on a node whose output has zero rows handles gracefully."""
+        """Trace on a node whose output has zero rows returns an error."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
@@ -537,12 +527,10 @@ class TestErrorHandling:
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
-        # Should succeed with empty output or appropriate handling
-        assert resp.status_code in (200, 500)
-        if resp.status_code == 200:
-            trace = resp.json()["trace"]
-            # With 0 rows the output_value should be empty
-            assert trace["output_value"] == {} or trace["output_value"] is None
+        # Zero rows means row_index 0 is out of range → 500
+        assert resp.status_code == 500
+        body = resp.json()
+        assert "detail" in body
 
 
 # ===========================================================================
@@ -583,9 +571,11 @@ class TestSerialization:
     def test_date_values_serialized_as_strings(self, client, tmp_path):
         """Date values in output are serialized as strings."""
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "d": [date(2024, 1, 15), date(2024, 6, 30), date(2024, 12, 31)],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "d": [date(2024, 1, 15), date(2024, 6, 30), date(2024, 12, 31)],
+            }
+        ).write_parquet(p)
         graph = _simple_graph(p)
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")

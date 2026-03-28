@@ -107,13 +107,15 @@ class TestLinearPipelineSimpleArithmetic:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t", column="z")
 
@@ -127,13 +129,15 @@ class TestLinearPipelineSimpleArithmetic:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(z=pl.col('x') * pl.col('y'))"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(z=pl.col('x') * pl.col('y'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         expected_z = [10, 40, 90]
         for i, ez in enumerate(expected_z):
@@ -157,14 +161,16 @@ class TestLinearPipelineTwoTransforms:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [5, 10, 15]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
-            ],
-            "edges": [_edge("src", "t1"), _edge("t1", "t2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                ],
+                "edges": [_edge("src", "t1"), _edge("t1", "t2")],
+            }
+        )
 
         result = execute_trace(graph, row_index=1, target_node_id="t2", column="z")
 
@@ -182,14 +188,16 @@ class TestLinearPipelineTwoTransforms:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [5, 10, 15]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
-            ],
-            "edges": [_edge("src", "t1"), _edge("t1", "t2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                ],
+                "edges": [_edge("src", "t1"), _edge("t1", "t2")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t2")
 
@@ -222,16 +230,18 @@ class TestLinearPipelineMultipleWithColumns:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [2, 4, 6]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node(
-                    "t",
-                    ".with_columns(y=pl.col('x') * 3).with_columns(z=pl.col('y') + pl.col('x'))",
-                ),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        ".with_columns(y=pl.col('x') * 3).with_columns(z=pl.col('y') + pl.col('x'))",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t", column="z")
 
@@ -264,14 +274,16 @@ class TestJoinTraceLeftColumn:
         pl.DataFrame({"key": [1, 2, 3], "val_a": [10, 20, 30]}).write_parquet(p_a)
         pl.DataFrame({"key": [3, 2, 1], "val_b": [300, 200, 100]}).write_parquet(p_b)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p_a)),
-                _source_node("b", str(p_b)),
-                _transform_node("join", "a.join(b, on='key')"),
-            ],
-            "edges": [_edge("a", "join"), _edge("b", "join")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p_a)),
+                    _source_node("b", str(p_b)),
+                    _transform_node("join", "a.join(b, on='key')"),
+                ],
+                "edges": [_edge("a", "join"), _edge("b", "join")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="join", column="val_a")
         join_step = _step_by_id(result, "join")
@@ -296,14 +308,16 @@ class TestJoinTraceRightColumn:
         pl.DataFrame({"key": [1, 2, 3], "val_a": [10, 20, 30]}).write_parquet(p_a)
         pl.DataFrame({"key": [3, 2, 1], "val_b": [300, 200, 100]}).write_parquet(p_b)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p_a)),
-                _source_node("b", str(p_b)),
-                _transform_node("join", "a.join(b, on='key')"),
-            ],
-            "edges": [_edge("a", "join"), _edge("b", "join")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p_a)),
+                    _source_node("b", str(p_b)),
+                    _transform_node("join", "a.join(b, on='key')"),
+                ],
+                "edges": [_edge("a", "join"), _edge("b", "join")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="join", column="val_b")
         join_step = _step_by_id(result, "join")
@@ -330,25 +344,23 @@ class TestJoinTraceNullLeftJoin:
         pl.DataFrame({"key": [1, 2, 3, 4], "val_a": [10, 20, 30, 40]}).write_parquet(p_a)
         pl.DataFrame({"key": [1, 3], "val_b": [100, 300]}).write_parquet(p_b)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p_a)),
-                _source_node("b", str(p_b)),
-                _transform_node("join", "a.join(b, on='key', how='left')"),
-            ],
-            "edges": [_edge("a", "join"), _edge("b", "join")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p_a)),
+                    _source_node("b", str(p_b)),
+                    _transform_node("join", "a.join(b, on='key', how='left')"),
+                ],
+                "edges": [_edge("a", "join"), _edge("b", "join")],
+            }
+        )
 
         # Find which row has key=2 (no match in b)
         results = execute_graph(graph, target_node_id="join", row_limit=_ROW_LIMIT)
         preview_rows = results["join"].preview
-        null_row_idx = next(
-            i for i, r in enumerate(preview_rows) if r["key"] == 2
-        )
+        null_row_idx = next(i for i, r in enumerate(preview_rows) if r["key"] == 2)
 
-        result = execute_trace(
-            graph, row_index=null_row_idx, target_node_id="join", column="val_b"
-        )
+        result = execute_trace(graph, row_index=null_row_idx, target_node_id="join", column="val_b")
         assert result.output_value is None
 
 
@@ -368,14 +380,16 @@ class TestJoinInnerReducesRows:
         pl.DataFrame({"key": [1, 2, 3, 4, 5], "val_a": [10, 20, 30, 40, 50]}).write_parquet(p_a)
         pl.DataFrame({"key": [2, 4], "val_b": [200, 400]}).write_parquet(p_b)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p_a)),
-                _source_node("b", str(p_b)),
-                _transform_node("join", "a.join(b, on='key', how='inner')"),
-            ],
-            "edges": [_edge("a", "join"), _edge("b", "join")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p_a)),
+                    _source_node("b", str(p_b)),
+                    _transform_node("join", "a.join(b, on='key', how='inner')"),
+                ],
+                "edges": [_edge("a", "join"), _edge("b", "join")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="join")
         join_step = _step_by_id(result, "join")
@@ -404,21 +418,21 @@ class TestJoinCompositeKey:
     def test_composite_key_join_trace(self, tmp_path):
         p_a = tmp_path / "a.parquet"
         p_b = tmp_path / "b.parquet"
-        pl.DataFrame({
-            "k1": [1, 1, 2], "k2": ["a", "b", "a"], "val": [10, 20, 30]
-        }).write_parquet(p_a)
-        pl.DataFrame({
-            "k1": [1, 2], "k2": ["b", "a"], "factor": [1.5, 2.0]
-        }).write_parquet(p_b)
+        pl.DataFrame({"k1": [1, 1, 2], "k2": ["a", "b", "a"], "val": [10, 20, 30]}).write_parquet(
+            p_a
+        )
+        pl.DataFrame({"k1": [1, 2], "k2": ["b", "a"], "factor": [1.5, 2.0]}).write_parquet(p_b)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p_a)),
-                _source_node("b", str(p_b)),
-                _transform_node("join", "a.join(b, on=['k1', 'k2'])"),
-            ],
-            "edges": [_edge("a", "join"), _edge("b", "join")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p_a)),
+                    _source_node("b", str(p_b)),
+                    _transform_node("join", "a.join(b, on=['k1', 'k2'])"),
+                ],
+                "edges": [_edge("a", "join"), _edge("b", "join")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="join")
         join_step = _step_by_id(result, "join")
@@ -456,27 +470,33 @@ class TestRatingStepSingleTable:
         """Exercises the lookup pattern equivalent to a rating_step."""
         p_data = tmp_path / "data.parquet"
         p_rates = tmp_path / "rates.parquet"
-        pl.DataFrame({
-            "region": ["north", "south", "north"],
-            "base": [100, 200, 150],
-        }).write_parquet(p_data)
-        pl.DataFrame({
-            "region": ["north", "south"],
-            "region_factor": [1.1, 0.9],
-        }).write_parquet(p_rates)
+        pl.DataFrame(
+            {
+                "region": ["north", "south", "north"],
+                "base": [100, 200, 150],
+            }
+        ).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "region": ["north", "south"],
+                "region_factor": [1.1, 0.9],
+            }
+        ).write_parquet(p_rates)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _source_node("rates", str(p_rates)),
-                _transform_node(
-                    "rated",
-                    "data.join(rates, on='region').with_columns("
-                    "rated_premium=pl.col('base') * pl.col('region_factor'))",
-                ),
-            ],
-            "edges": [_edge("data", "rated"), _edge("rates", "rated")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _source_node("rates", str(p_rates)),
+                    _transform_node(
+                        "rated",
+                        "data.join(rates, on='region').with_columns("
+                        "rated_premium=pl.col('base') * pl.col('region_factor'))",
+                    ),
+                ],
+                "edges": [_edge("data", "rated"), _edge("rates", "rated")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="rated", column="rated_premium")
         rated_step = _step_by_id(result, "rated")
@@ -499,41 +519,49 @@ class TestRatingStepMultiplyTables:
         p_data = tmp_path / "data.parquet"
         p_age = tmp_path / "age_factors.parquet"
         p_region = tmp_path / "region_factors.parquet"
-        pl.DataFrame({
-            "age_band": ["25-35", "25-35", "36-45"],
-            "region": ["north", "south", "north"],
-            "base_premium": [100, 200, 150],
-        }).write_parquet(p_data)
-        pl.DataFrame({
-            "age_band": ["25-35", "36-45"],
-            "age_factor": [1.2, 0.9],
-        }).write_parquet(p_age)
-        pl.DataFrame({
-            "region": ["north", "south"],
-            "region_factor": [1.1, 0.95],
-        }).write_parquet(p_region)
+        pl.DataFrame(
+            {
+                "age_band": ["25-35", "25-35", "36-45"],
+                "region": ["north", "south", "north"],
+                "base_premium": [100, 200, 150],
+            }
+        ).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "age_band": ["25-35", "36-45"],
+                "age_factor": [1.2, 0.9],
+            }
+        ).write_parquet(p_age)
+        pl.DataFrame(
+            {
+                "region": ["north", "south"],
+                "region_factor": [1.1, 0.95],
+            }
+        ).write_parquet(p_region)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _source_node("age_tbl", str(p_age)),
-                _source_node("region_tbl", str(p_region)),
-                _transform_node("join_age", "data.join(age_tbl, on='age_band')"),
-                _transform_node("join_region", "join_age.join(region_tbl, on='region')"),
-                _transform_node(
-                    "calc",
-                    ".with_columns("
-                    "final_premium=pl.col('base_premium') * pl.col('age_factor') * pl.col('region_factor'))",
-                ),
-            ],
-            "edges": [
-                _edge("data", "join_age"),
-                _edge("age_tbl", "join_age"),
-                _edge("join_age", "join_region"),
-                _edge("region_tbl", "join_region"),
-                _edge("join_region", "calc"),
-            ],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _source_node("age_tbl", str(p_age)),
+                    _source_node("region_tbl", str(p_region)),
+                    _transform_node("join_age", "data.join(age_tbl, on='age_band')"),
+                    _transform_node("join_region", "join_age.join(region_tbl, on='region')"),
+                    _transform_node(
+                        "calc",
+                        ".with_columns("
+                        "final_premium=pl.col('base_premium') * pl.col('age_factor') * pl.col('region_factor'))",
+                    ),
+                ],
+                "edges": [
+                    _edge("data", "join_age"),
+                    _edge("age_tbl", "join_age"),
+                    _edge("join_age", "join_region"),
+                    _edge("region_tbl", "join_region"),
+                    _edge("join_region", "calc"),
+                ],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="calc", column="final_premium")
         calc_step = _step_by_id(result, "calc")
@@ -556,35 +584,41 @@ class TestBandingThenRating:
     def test_banding_then_lookup(self, tmp_path):
         p_data = tmp_path / "data.parquet"
         p_rates = tmp_path / "rates.parquet"
-        pl.DataFrame({
-            "driver_age": [22, 35, 55, 18, 45],
-            "base": [100, 100, 100, 100, 100],
-        }).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "driver_age": [22, 35, 55, 18, 45],
+                "base": [100, 100, 100, 100, 100],
+            }
+        ).write_parquet(p_data)
         # Simulate banding: age -> age_band
-        pl.DataFrame({
-            "age_band": ["18-25", "26-40", "41-60"],
-            "age_factor": [1.5, 1.0, 0.8],
-        }).write_parquet(p_rates)
+        pl.DataFrame(
+            {
+                "age_band": ["18-25", "26-40", "41-60"],
+                "age_factor": [1.5, 1.0, 0.8],
+            }
+        ).write_parquet(p_rates)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _transform_node(
-                    "banding",
-                    ".with_columns("
-                    "age_band=pl.when(pl.col('driver_age') <= 25).then(pl.lit('18-25'))"
-                    ".when(pl.col('driver_age') <= 40).then(pl.lit('26-40'))"
-                    ".otherwise(pl.lit('41-60')))",
-                ),
-                _source_node("rates", str(p_rates)),
-                _transform_node("rated", "banding.join(rates, on='age_band')"),
-            ],
-            "edges": [
-                _edge("data", "banding"),
-                _edge("banding", "rated"),
-                _edge("rates", "rated"),
-            ],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _transform_node(
+                        "banding",
+                        ".with_columns("
+                        "age_band=pl.when(pl.col('driver_age') <= 25).then(pl.lit('18-25'))"
+                        ".when(pl.col('driver_age') <= 40).then(pl.lit('26-40'))"
+                        ".otherwise(pl.lit('41-60')))",
+                    ),
+                    _source_node("rates", str(p_rates)),
+                    _transform_node("rated", "banding.join(rates, on='age_band')"),
+                ],
+                "edges": [
+                    _edge("data", "banding"),
+                    _edge("banding", "rated"),
+                    _edge("rates", "rated"),
+                ],
+            }
+        )
 
         # Trace without column filter first to verify full pipeline
         result_full = execute_trace(graph, row_index=0, target_node_id="rated")
@@ -615,39 +649,47 @@ class TestFullPricingWaterfall:
     def test_full_waterfall_trace(self, tmp_path):
         p_data = tmp_path / "data.parquet"
         p_rates = tmp_path / "rates.parquet"
-        pl.DataFrame({
-            "driver_age": [30], "base_premium": [500],
-        }).write_parquet(p_data)
-        pl.DataFrame({
-            "age_band": ["26-40"], "age_factor": [1.0],
-        }).write_parquet(p_rates)
+        pl.DataFrame(
+            {
+                "driver_age": [30],
+                "base_premium": [500],
+            }
+        ).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "age_band": ["26-40"],
+                "age_factor": [1.0],
+            }
+        ).write_parquet(p_rates)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _transform_node(
-                    "banding",
-                    ".with_columns("
-                    "age_band=pl.when(pl.col('driver_age') <= 25).then(pl.lit('18-25'))"
-                    ".when(pl.col('driver_age') <= 40).then(pl.lit('26-40'))"
-                    ".otherwise(pl.lit('41-60')))",
-                ),
-                _source_node("rates", str(p_rates)),
-                _transform_node("rated", "banding.join(rates, on='age_band')"),
-                _transform_node(
-                    "discount",
-                    ".with_columns("
-                    "rated_premium=pl.col('base_premium') * pl.col('age_factor'),"
-                    "discounted_premium=pl.col('base_premium') * pl.col('age_factor') * 0.9)",
-                ),
-            ],
-            "edges": [
-                _edge("data", "banding"),
-                _edge("banding", "rated"),
-                _edge("rates", "rated"),
-                _edge("rated", "discount"),
-            ],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _transform_node(
+                        "banding",
+                        ".with_columns("
+                        "age_band=pl.when(pl.col('driver_age') <= 25).then(pl.lit('18-25'))"
+                        ".when(pl.col('driver_age') <= 40).then(pl.lit('26-40'))"
+                        ".otherwise(pl.lit('41-60')))",
+                    ),
+                    _source_node("rates", str(p_rates)),
+                    _transform_node("rated", "banding.join(rates, on='age_band')"),
+                    _transform_node(
+                        "discount",
+                        ".with_columns("
+                        "rated_premium=pl.col('base_premium') * pl.col('age_factor'),"
+                        "discounted_premium=pl.col('base_premium') * pl.col('age_factor') * 0.9)",
+                    ),
+                ],
+                "edges": [
+                    _edge("data", "banding"),
+                    _edge("banding", "rated"),
+                    _edge("rates", "rated"),
+                    _edge("rated", "discount"),
+                ],
+            }
+        )
 
         result = execute_trace(
             graph, row_index=0, target_node_id="discount", column="discounted_premium"
@@ -677,23 +719,27 @@ class TestModelScoreFeatureEngineering:
 
     def test_feature_engineering_trace(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "age": [25, 35, 45],
-            "income": [30000, 50000, 70000],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "age": [25, 35, 45],
+                "income": [30000, 50000, 70000],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node(
-                    "features",
-                    ".with_columns("
-                    "log_income=pl.col('income').log(),"
-                    "age_squared=pl.col('age') ** 2)",
-                ),
-            ],
-            "edges": [_edge("src", "features")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "features",
+                        ".with_columns("
+                        "log_income=pl.col('income').log(),"
+                        "age_squared=pl.col('age') ** 2)",
+                    ),
+                ],
+                "edges": [_edge("src", "features")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="features", column="log_income")
         f_step = _step_by_id(result, "features")
@@ -713,22 +759,26 @@ class TestModelScorePostProcess:
 
     def test_post_process_of_prediction(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "feature1": [1.0, 2.0, 3.0],
-            "prediction": [0.3, 0.7, 0.5],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "feature1": [1.0, 2.0, 3.0],
+                "prediction": [0.3, 0.7, 0.5],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node(
-                    "post",
-                    ".with_columns(decision=pl.when(pl.col('prediction') > 0.5)"
-                    ".then(pl.lit('accept')).otherwise(pl.lit('reject')))",
-                ),
-            ],
-            "edges": [_edge("src", "post")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "post",
+                        ".with_columns(decision=pl.when(pl.col('prediction') > 0.5)"
+                        ".then(pl.lit('accept')).otherwise(pl.lit('reject')))",
+                    ),
+                ],
+                "edges": [_edge("src", "post")],
+            }
+        )
 
         result = execute_trace(graph, row_index=1, target_node_id="post", column="decision")
         assert result.output_value == "accept"  # prediction 0.7 > 0.5
@@ -753,28 +803,30 @@ class TestScenarioExpanderTrace:
 
     def test_scenario_expansion_pattern(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "quote_id": [1, 2],
-            "premium": [100, 200],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "quote_id": [1, 2],
+                "premium": [100, 200],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                # Simulate scenario expansion: cross-join with multipliers
-                _transform_node(
-                    "expand",
-                    ".join("
-                    "pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),"
-                    "how='cross')",
-                ),
-                _transform_node(
-                    "calc",
-                    ".with_columns(scenario_premium=pl.col('premium') * pl.col('multiplier'))",
-                ),
-            ],
-            "edges": [_edge("src", "expand"), _edge("expand", "calc")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    # Simulate scenario expansion: cross-join with multipliers
+                    _transform_node(
+                        "expand",
+                        ".join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),how='cross')",
+                    ),
+                    _transform_node(
+                        "calc",
+                        ".with_columns(scenario_premium=pl.col('premium') * pl.col('multiplier'))",
+                    ),
+                ],
+                "edges": [_edge("src", "expand"), _edge("expand", "calc")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="calc", column="scenario_premium")
         assert len(result.steps) == 3
@@ -791,21 +843,25 @@ class TestOptimiserApplyTrace:
 
     def test_optimiser_apply_pattern(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "premium": [100, 200, 300],
-            "lambda_adj": [1.05, 0.95, 1.0],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "premium": [100, 200, 300],
+                "lambda_adj": [1.05, 0.95, 1.0],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node(
-                    "opt",
-                    ".with_columns(optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
-                ),
-            ],
-            "edges": [_edge("src", "opt")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "opt",
+                        ".with_columns(optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
+                    ),
+                ],
+                "edges": [_edge("src", "opt")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="opt", column="optimised_premium")
         opt_step = _step_by_id(result, "opt")
@@ -841,20 +897,22 @@ class TestDiamondPattern:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"id": [1, 2, 3], "x": [10, 20, 30]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p)),
-                _transform_node("b", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("c", ".with_columns(z=pl.col('x') + 5)"),
-                _transform_node("d", "b.join(c, on='id')"),
-            ],
-            "edges": [
-                _edge("a", "b"),
-                _edge("a", "c"),
-                _edge("b", "d"),
-                _edge("c", "d"),
-            ],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p)),
+                    _transform_node("b", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("c", ".with_columns(z=pl.col('x') + 5)"),
+                    _transform_node("d", "b.join(c, on='id')"),
+                ],
+                "edges": [
+                    _edge("a", "b"),
+                    _edge("a", "c"),
+                    _edge("b", "d"),
+                    _edge("c", "d"),
+                ],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="d")
 
@@ -883,14 +941,16 @@ class TestFanOut:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p)),
-                _transform_node("b", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("c", ".with_columns(z=pl.col('x') + 1)"),
-            ],
-            "edges": [_edge("a", "b"), _edge("a", "c")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p)),
+                    _transform_node("b", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("c", ".with_columns(z=pl.col('x') + 1)"),
+                ],
+                "edges": [_edge("a", "b"), _edge("a", "c")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="b")
         ids = set(_step_ids(result))
@@ -920,9 +980,9 @@ class TestLongChain:
         nodes = [_source_node("n0", str(p))]
         edges = []
         for i in range(1, 11):
-            code = f".with_columns(col_{i}=pl.col('col_{i-1}') + 1)"
+            code = f".with_columns(col_{i}=pl.col('col_{i - 1}') + 1)"
             nodes.append(_transform_node(f"n{i}", code))
-            edges.append(_edge(f"n{i-1}", f"n{i}"))
+            edges.append(_edge(f"n{i - 1}", f"n{i}"))
 
         graph = _g({"nodes": nodes, "edges": edges})
 
@@ -953,15 +1013,17 @@ class TestInstanceNode:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
-                # "instance" of t -- same logic applied to same input
-                _transform_node("t_inst", ".with_columns(y=pl.col('x') * 2)"),
-            ],
-            "edges": [_edge("src", "t"), _edge("src", "t_inst")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    # "instance" of t -- same logic applied to same input
+                    _transform_node("t_inst", ".with_columns(y=pl.col('x') * 2)"),
+                ],
+                "edges": [_edge("src", "t"), _edge("src", "t_inst")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t_inst")
         t_inst_step = _step_by_id(result, "t_inst")
@@ -990,19 +1052,21 @@ class TestSubmodelTrace:
         pl.DataFrame({"x": [10, 20, 30]}).write_parquet(p)
 
         # Simulate a flattened submodel: sub__t1 and sub__t2
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("sub__t1", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("sub__t2", ".with_columns(z=pl.col('y') + 1)"),
-                _transform_node("post", ".with_columns(w=pl.col('z') * 3)"),
-            ],
-            "edges": [
-                _edge("src", "sub__t1"),
-                _edge("sub__t1", "sub__t2"),
-                _edge("sub__t2", "post"),
-            ],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("sub__t1", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("sub__t2", ".with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("post", ".with_columns(w=pl.col('z') * 3)"),
+                ],
+                "edges": [
+                    _edge("src", "sub__t1"),
+                    _edge("sub__t1", "sub__t2"),
+                    _edge("sub__t2", "post"),
+                ],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="post")
         ids = _step_ids(result)
@@ -1022,19 +1086,21 @@ class TestNestedSubmodels:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [5]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("outer__inner__t1", ".with_columns(y=pl.col('x') + 1)"),
-                _transform_node("outer__t2", ".with_columns(z=pl.col('y') + 1)"),
-                _transform_node("final", ".with_columns(w=pl.col('z') + 1)"),
-            ],
-            "edges": [
-                _edge("src", "outer__inner__t1"),
-                _edge("outer__inner__t1", "outer__t2"),
-                _edge("outer__t2", "final"),
-            ],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("outer__inner__t1", ".with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("outer__t2", ".with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("final", ".with_columns(w=pl.col('z') + 1)"),
+                ],
+                "edges": [
+                    _edge("src", "outer__inner__t1"),
+                    _edge("outer__inner__t1", "outer__t2"),
+                    _edge("outer__t2", "final"),
+                ],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="final")
         assert result.output_value["w"] == 8  # 5+1+1+1
@@ -1069,21 +1135,24 @@ class TestLiveSwitchTrace:
                 GraphNode(
                     id="live_src",
                     data=NodeData(
-                        label="live_src", nodeType="dataSource",
+                        label="live_src",
+                        nodeType="dataSource",
                         config={"path": str(p_live)},
                     ),
                 ),
                 GraphNode(
                     id="batch_src",
                     data=NodeData(
-                        label="batch_src", nodeType="dataSource",
+                        label="batch_src",
+                        nodeType="dataSource",
                         config={"path": str(p_batch)},
                     ),
                 ),
                 GraphNode(
                     id="sw",
                     data=NodeData(
-                        label="switch", nodeType="liveSwitch",
+                        label="switch",
+                        nodeType="liveSwitch",
                         config={
                             "input_scenario_map": {
                                 "live_src": "live",
@@ -1126,21 +1195,24 @@ class TestLiveSwitchBranchChange:
                 GraphNode(
                     id="live_src",
                     data=NodeData(
-                        label="live_src", nodeType="dataSource",
+                        label="live_src",
+                        nodeType="dataSource",
                         config={"path": str(p_live)},
                     ),
                 ),
                 GraphNode(
                     id="batch_src",
                     data=NodeData(
-                        label="batch_src", nodeType="dataSource",
+                        label="batch_src",
+                        nodeType="dataSource",
                         config={"path": str(p_batch)},
                     ),
                 ),
                 GraphNode(
                     id="sw",
                     data=NodeData(
-                        label="switch", nodeType="liveSwitch",
+                        label="switch",
+                        nodeType="liveSwitch",
                         config={
                             "input_scenario_map": {
                                 "live_src": "live",
@@ -1184,13 +1256,15 @@ class TestRowCorrelationSameRowCount:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [10, 20, 30]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         for row_idx in range(3):
             result = execute_trace(graph, row_index=row_idx, target_node_id="t")
@@ -1208,18 +1282,22 @@ class TestRowCorrelationFilterReducesRows:
 
     def test_value_based_match_after_filter(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "id": [1, 2, 3, 4, 5],
-            "value": [10, 20, 30, 40, 50],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "id": [1, 2, 3, 4, 5],
+                "value": [10, 20, 30, 40, 50],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("filt", ".filter(pl.col('value') > 25)"),
-            ],
-            "edges": [_edge("src", "filt")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("filt", ".filter(pl.col('value') > 25)"),
+                ],
+                "edges": [_edge("src", "filt")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="filt")
         filt_step = _step_by_id(result, "filt")
@@ -1238,21 +1316,25 @@ class TestRowCorrelationAggregation:
 
     def test_aggregation_traces_group_key(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "region": ["south", "north", "south", "north", "south"],
-            "premium": [200, 100, 250, 150, 175],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "region": ["south", "north", "south", "north", "south"],
+                "premium": [200, 100, 250, 150, 175],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node(
-                    "agg",
-                    ".group_by('region').agg(pl.col('premium').sum()).sort('region')",
-                ),
-            ],
-            "edges": [_edge("src", "agg")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "agg",
+                        ".group_by('region').agg(pl.col('premium').sum()).sort('region')",
+                    ),
+                ],
+                "edges": [_edge("src", "agg")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="agg")
         agg_step = _step_by_id(result, "agg")
@@ -1274,13 +1356,15 @@ class TestRowCorrelationSortChangesOrder:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"id": [3, 1, 2], "val": [30, 10, 20]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("sorted", ".sort('id')"),
-            ],
-            "edges": [_edge("src", "sorted")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("sorted", ".sort('id')"),
+                ],
+                "edges": [_edge("src", "sorted")],
+            }
+        )
 
         # Sorted row 0 = id=1
         result = execute_trace(graph, row_index=0, target_node_id="sorted")
@@ -1300,21 +1384,25 @@ class TestRowCorrelationScenarioExpansion:
 
     def test_scenario_expansion_row_correlation(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "quote_id": [1, 2],
-            "premium": [100, 200],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "quote_id": [1, 2],
+                "premium": [100, 200],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node(
-                    "expand",
-                    ".join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
-                ),
-            ],
-            "edges": [_edge("src", "expand")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "expand",
+                        ".join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
+                    ),
+                ],
+                "edges": [_edge("src", "expand")],
+            }
+        )
 
         # 2 quotes x 3 scenarios = 6 rows
         result = execute_trace(graph, row_index=0, target_node_id="expand")
@@ -1342,14 +1430,16 @@ class TestColumnRelevanceSpecificColumn:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
-            ],
-            "edges": [_edge("src", "t1"), _edge("t1", "t2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                ],
+                "edges": [_edge("src", "t1"), _edge("t1", "t2")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t2", column="y")
 
@@ -1371,14 +1461,16 @@ class TestColumnRelevancePassthrough:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1], "unused": [99]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
-            ],
-            "edges": [_edge("src", "t1"), _edge("t1", "t2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                ],
+                "edges": [_edge("src", "t1"), _edge("t1", "t2")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t2", column="x")
         # 'x' passes through all 3 nodes -- all should be column_relevant
@@ -1400,14 +1492,16 @@ class TestColumnRelevanceCreatedAtNode:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                _transform_node("t2", ".with_columns(z=pl.col('y') * 3)"),
-            ],
-            "edges": [_edge("src", "t1"), _edge("t1", "t2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", ".with_columns(z=pl.col('y') * 3)"),
+                ],
+                "edges": [_edge("src", "t1"), _edge("t1", "t2")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t2", column="z")
         ids = _step_ids(result)
@@ -1430,14 +1524,16 @@ class TestColumnRelevanceRenamedColumn:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [10], "y": [20]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t1", ".rename({'x': 'x_renamed'})"),
-                _transform_node("t2", ".with_columns(z=pl.col('x_renamed') * 2)"),
-            ],
-            "edges": [_edge("src", "t1"), _edge("t1", "t2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t1", ".rename({'x': 'x_renamed'})"),
+                    _transform_node("t2", ".with_columns(z=pl.col('x_renamed') * 2)"),
+                ],
+                "edges": [_edge("src", "t1"), _edge("t1", "t2")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t2", column="x_renamed")
         ids = _step_ids(result)
@@ -1459,14 +1555,16 @@ class TestColumnRelevancePrunesUnrelatedBranch:
         pl.DataFrame({"x": [1], "shared": [10]}).write_parquet(p1)
         pl.DataFrame({"y": [2], "shared": [10]}).write_parquet(p2)
 
-        graph = _g({
-            "nodes": [
-                _source_node("a", str(p1)),
-                _source_node("b", str(p2)),
-                _transform_node("join", "a.join(b, on='shared')"),
-            ],
-            "edges": [_edge("a", "join"), _edge("b", "join")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p1)),
+                    _source_node("b", str(p2)),
+                    _transform_node("join", "a.join(b, on='shared')"),
+                ],
+                "edges": [_edge("a", "join"), _edge("b", "join")],
+            }
+        )
 
         result = execute_trace(graph, column="x")
         ids = {s.node_id for s in result.steps}
@@ -1495,10 +1593,12 @@ class TestCacheFirstTraceFull:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0)
         assert result.output_value["x"] == 1
@@ -1514,10 +1614,12 @@ class TestCacheSameGraphDifferentRow:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [10, 20, 30]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         r0 = execute_trace(graph, row_index=0)
         assert r0.output_value["x"] == 10
@@ -1539,13 +1641,15 @@ class TestCacheSameGraphDifferentColumn:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1], "y": [2]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         r_x = execute_trace(graph, row_index=0, column="x")
         assert r_x.output_value == 1
@@ -1564,23 +1668,27 @@ class TestCacheInvalidatesOnGraphChange:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [5]}).write_parquet(p)
 
-        graph1 = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph1 = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
         r1 = execute_trace(graph1, row_index=0)
         assert r1.output_value["y"] == 10
 
-        graph2 = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('x') * 3)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph2 = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('x') * 3)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
         r2 = execute_trace(graph2, row_index=0)
         assert r2.output_value["y"] == 15
 
@@ -1600,10 +1708,12 @@ class TestCacheReusesPreview:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         # Preview first
         execute_graph(graph, target_node_id="t", row_limit=_ROW_LIMIT)
@@ -1641,10 +1751,12 @@ class TestErrorSingleNode:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
 
         result = execute_trace(graph, row_index=0)
         assert len(result.steps) == 1
@@ -1663,16 +1775,16 @@ class TestErrorInvalidRowIndex:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
 
         # Row index 999 is well beyond the 2-row DataFrame
-        result = execute_trace(graph, row_index=999)
-        # Should return empty output values (per _correlate_rows_posthoc behavior)
-        # The exact behavior depends on implementation -- the key is no crash
-        assert isinstance(result, TraceResult)
+        with pytest.raises(ValueError, match="row_index 999 is out of range"):
+            execute_trace(graph, row_index=999)
 
 
 class TestErrorNonExistentColumn:
@@ -1686,10 +1798,12 @@ class TestErrorNonExistentColumn:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, column="nonexistent")
         assert result.output_value is None
@@ -1722,13 +1836,15 @@ class TestErrorNodeCodeThrows:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("bad", ".with_columns(y=pl.col('nonexistent') * 2)"),
-            ],
-            "edges": [_edge("src", "bad")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("bad", ".with_columns(y=pl.col('nonexistent') * 2)"),
+                ],
+                "edges": [_edge("src", "bad")],
+            }
+        )
 
         _trace_cache.invalidate()
         _preview_cache.invalidate()
@@ -1748,16 +1864,18 @@ class TestErrorZeroRowsOutput:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("filt", ".filter(pl.col('x') > 999)"),
-            ],
-            "edges": [_edge("src", "filt")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("filt", ".filter(pl.col('x') > 999)"),
+                ],
+                "edges": [_edge("src", "filt")],
+            }
+        )
 
-        result = execute_trace(graph, row_index=0, target_node_id="filt")
-        assert isinstance(result, TraceResult)
+        with pytest.raises(ValueError, match="row_index 0 is out of range"):
+            execute_trace(graph, row_index=0, target_node_id="filt")
 
 
 # ===========================================================================
@@ -1774,14 +1892,20 @@ class TestEdgeCaseAllNulls:
 
     def test_all_null_row(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "a": [None, 1], "b": [None, 2], "c": [None, 3],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "a": [None, 1],
+                "b": [None, 2],
+                "c": [None, 3],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
@@ -1801,13 +1925,15 @@ class TestEdgeCaseNaN:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [0.0, 1.0]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('x') / pl.col('x'))"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('x') / pl.col('x'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         # 0/0 = NaN
         result = execute_trace(graph, row_index=0, target_node_id="t")
@@ -1826,13 +1952,15 @@ class TestEdgeCaseLargeFloats:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1e18, 2e18]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('x') * 1000)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('x') * 1000)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
@@ -1847,18 +1975,24 @@ class TestEdgeCaseStringColumns:
 
     def test_string_column_trace(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "name": ["alice", "bob"],
-            "region": ["north", "south"],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "name": ["alice", "bob"],
+                "region": ["north", "south"],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(greeting=pl.lit('Hello ') + pl.col('name'))"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t", ".with_columns(greeting=pl.lit('Hello ') + pl.col('name'))"
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t", column="greeting")
         assert result.output_value == "Hello alice"
@@ -1873,14 +2007,18 @@ class TestEdgeCaseDateColumns:
 
     def test_date_column_serialization(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "inception": [date(2025, 1, 15), date(2025, 6, 1)],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "inception": [date(2025, 1, 15), date(2025, 6, 1)],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
@@ -1896,15 +2034,19 @@ class TestEdgeCaseBooleanColumns:
 
     def test_boolean_column_trace(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "is_renewal": [True, False],
-            "has_claims": [False, True],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "is_renewal": [True, False],
+                "has_claims": [False, True],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
@@ -1921,14 +2063,18 @@ class TestEdgeCaseListColumns:
 
     def test_list_column_serialization(self, tmp_path):
         p = tmp_path / "data.parquet"
-        pl.DataFrame({
-            "tags": [["a", "b"], ["c"]],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "tags": [["a", "b"], ["c"]],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
@@ -1945,16 +2091,20 @@ class TestEdgeCaseStructColumns:
 
     def test_struct_column_serialization(self, tmp_path):
         p = tmp_path / "data.parquet"
-        df = pl.DataFrame({
-            "x": [1, 2],
-            "y": [10, 20],
-        }).select(pl.struct("x", "y").alias("s"))
+        df = pl.DataFrame(
+            {
+                "x": [1, 2],
+                "y": [10, 20],
+            }
+        ).select(pl.struct("x", "y").alias("s"))
         df.write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
@@ -1972,16 +2122,18 @@ class TestEdgeCaseUnicodeColumnNames:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"prix_unitaire": [100], "quantite": [5]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node(
-                    "t",
-                    ".with_columns(total=pl.col('prix_unitaire') * pl.col('quantite'))",
-                ),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        ".with_columns(total=pl.col('prix_unitaire') * pl.col('quantite'))",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t", column="total")
         assert result.output_value == 500
@@ -1997,10 +2149,12 @@ class TestEdgeCaseSpacesInColumnNames:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"my column": [42], "other col": [10]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t", column="my column")
         assert result.output_value == 42
@@ -2017,10 +2171,12 @@ class TestEdgeCasePythonKeywordColumn:
         # 'class' is a Python keyword but valid as a Polars column name
         pl.DataFrame({"class": ["A", "B"], "value": [100, 200]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t", column="class")
         assert result.output_value == "A"
@@ -2051,30 +2207,36 @@ class TestBurnCostExample:
     def test_burn_cost_trace_value_correct(self, tmp_path):
         p_data = tmp_path / "data.parquet"
         p_premiums = tmp_path / "premiums.parquet"
-        pl.DataFrame({
-            "quote_id": [101, 102, 103],
-            "proposer_age": [30, 45, 25],
-            "cover_type": ["comp", "tpft", "comp"],
-        }).write_parquet(p_data)
-        pl.DataFrame({
-            "quote_id": [101, 102, 103],
-            "premium": [500.0, 300.0, 700.0],
-            "policy_id": [1001, None, 1003],
-        }).write_parquet(p_premiums)
+        pl.DataFrame(
+            {
+                "quote_id": [101, 102, 103],
+                "proposer_age": [30, 45, 25],
+                "cover_type": ["comp", "tpft", "comp"],
+            }
+        ).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "quote_id": [101, 102, 103],
+                "premium": [500.0, 300.0, 700.0],
+                "policy_id": [1001, None, 1003],
+            }
+        ).write_parquet(p_premiums)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _source_node("premiums", str(p_premiums)),
-                _transform_node(
-                    "join_premiums",
-                    "data.join(premiums, on='quote_id', how='left').with_columns("
-                    "sale_flag=pl.when(pl.col('policy_id').is_null()).then(pl.lit(0)).otherwise(pl.lit(1)),"
-                    "burn_cost=pl.col('premium') * 0.7)",
-                ),
-            ],
-            "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _source_node("premiums", str(p_premiums)),
+                    _transform_node(
+                        "join_premiums",
+                        "data.join(premiums, on='quote_id', how='left').with_columns("
+                        "sale_flag=pl.when(pl.col('policy_id').is_null()).then(pl.lit(0)).otherwise(pl.lit(1)),"
+                        "burn_cost=pl.col('premium') * 0.7)",
+                    ),
+                ],
+                "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
+            }
+        )
 
         result = execute_trace(
             graph, row_index=0, target_node_id="join_premiums", column="burn_cost"
@@ -2089,25 +2251,35 @@ class TestBurnCostExample:
         """All upstream nodes appear in the trace for burn_cost."""
         p_data = tmp_path / "data.parquet"
         p_premiums = tmp_path / "premiums.parquet"
-        pl.DataFrame({
-            "quote_id": [101], "proposer_age": [30], "cover_type": ["comp"],
-        }).write_parquet(p_data)
-        pl.DataFrame({
-            "quote_id": [101], "premium": [500.0], "policy_id": [1001],
-        }).write_parquet(p_premiums)
+        pl.DataFrame(
+            {
+                "quote_id": [101],
+                "proposer_age": [30],
+                "cover_type": ["comp"],
+            }
+        ).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "quote_id": [101],
+                "premium": [500.0],
+                "policy_id": [1001],
+            }
+        ).write_parquet(p_premiums)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _source_node("premiums", str(p_premiums)),
-                _transform_node(
-                    "join_premiums",
-                    "data.join(premiums, on='quote_id', how='left').with_columns("
-                    "burn_cost=pl.col('premium') * 0.7)",
-                ),
-            ],
-            "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _source_node("premiums", str(p_premiums)),
+                    _transform_node(
+                        "join_premiums",
+                        "data.join(premiums, on='quote_id', how='left').with_columns("
+                        "burn_cost=pl.col('premium') * 0.7)",
+                    ),
+                ],
+                "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
+            }
+        )
 
         result = execute_trace(
             graph, row_index=0, target_node_id="join_premiums", column="burn_cost"
@@ -2121,25 +2293,33 @@ class TestBurnCostExample:
         """column_relevant correctly identifies which nodes touch burn_cost."""
         p_data = tmp_path / "data.parquet"
         p_premiums = tmp_path / "premiums.parquet"
-        pl.DataFrame({
-            "quote_id": [101], "proposer_age": [30],
-        }).write_parquet(p_data)
-        pl.DataFrame({
-            "quote_id": [101], "premium": [500.0],
-        }).write_parquet(p_premiums)
+        pl.DataFrame(
+            {
+                "quote_id": [101],
+                "proposer_age": [30],
+            }
+        ).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "quote_id": [101],
+                "premium": [500.0],
+            }
+        ).write_parquet(p_premiums)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _source_node("premiums", str(p_premiums)),
-                _transform_node(
-                    "join_premiums",
-                    "data.join(premiums, on='quote_id', how='left').with_columns("
-                    "burn_cost=pl.col('premium') * 0.7)",
-                ),
-            ],
-            "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _source_node("premiums", str(p_premiums)),
+                    _transform_node(
+                        "join_premiums",
+                        "data.join(premiums, on='quote_id', how='left').with_columns("
+                        "burn_cost=pl.col('premium') * 0.7)",
+                    ),
+                ],
+                "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
+            }
+        )
 
         result = execute_trace(
             graph, row_index=0, target_node_id="join_premiums", column="burn_cost"
@@ -2157,34 +2337,38 @@ class TestBurnCostExample:
         """
         p_data = tmp_path / "data.parquet"
         p_premiums = tmp_path / "premiums.parquet"
-        pl.DataFrame({
-            "quote_id": [101, 102, 103],
-            "age": [30, 45, 25],
-        }).write_parquet(p_data)
-        pl.DataFrame({
-            "quote_id": [101, 103],
-            "premium": [500.0, 700.0],
-        }).write_parquet(p_premiums)
+        pl.DataFrame(
+            {
+                "quote_id": [101, 102, 103],
+                "age": [30, 45, 25],
+            }
+        ).write_parquet(p_data)
+        pl.DataFrame(
+            {
+                "quote_id": [101, 103],
+                "premium": [500.0, 700.0],
+            }
+        ).write_parquet(p_premiums)
 
-        graph = _g({
-            "nodes": [
-                _source_node("data", str(p_data)),
-                _source_node("premiums", str(p_premiums)),
-                _transform_node(
-                    "join_premiums",
-                    "data.join(premiums, on='quote_id', how='left').with_columns("
-                    "burn_cost=pl.col('premium') * 0.7)",
-                ),
-            ],
-            "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("data", str(p_data)),
+                    _source_node("premiums", str(p_premiums)),
+                    _transform_node(
+                        "join_premiums",
+                        "data.join(premiums, on='quote_id', how='left').with_columns("
+                        "burn_cost=pl.col('premium') * 0.7)",
+                    ),
+                ],
+                "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
+            }
+        )
 
         # Find which row has quote_id=102 (no premium match) in the join output
         results = execute_graph(graph, target_node_id="join_premiums", row_limit=_ROW_LIMIT)
         preview_rows = results["join_premiums"].preview
-        null_row_idx = next(
-            i for i, r in enumerate(preview_rows) if r["quote_id"] == 102
-        )
+        null_row_idx = next(i for i, r in enumerate(preview_rows) if r["quote_id"] == 102)
 
         result = execute_trace(
             graph, row_index=null_row_idx, target_node_id="join_premiums", column="burn_cost"
@@ -2195,39 +2379,48 @@ class TestBurnCostExample:
         """Full waterfall: processing -> join -> burn_cost -> downstream select."""
         p_quotes = tmp_path / "quotes.parquet"
         p_premiums = tmp_path / "premiums.parquet"
-        pl.DataFrame({
-            "quote_id": [101, 102], "age": [30, 45], "premium": [500.0, 300.0],
-        }).write_parquet(p_quotes)
-        pl.DataFrame({
-            "quote_id": [101, 102], "quoted_premium": [480.0, 290.0],
-        }).write_parquet(p_premiums)
+        pl.DataFrame(
+            {
+                "quote_id": [101, 102],
+                "age": [30, 45],
+                "premium": [500.0, 300.0],
+            }
+        ).write_parquet(p_quotes)
+        pl.DataFrame(
+            {
+                "quote_id": [101, 102],
+                "quoted_premium": [480.0, 290.0],
+            }
+        ).write_parquet(p_premiums)
 
-        graph = _g({
-            "nodes": [
-                _source_node("quotes", str(p_quotes)),
-                _transform_node("processing", ".with_columns(age_band=pl.col('age') // 10 * 10)"),
-                _source_node("premiums", str(p_premiums)),
-                _transform_node(
-                    "join_premiums",
-                    "processing.join(premiums, on='quote_id', how='left').with_columns("
-                    "burn_cost=pl.col('premium') * 0.7)",
-                ),
-                _transform_node(
-                    "features",
-                    ".select('quote_id', 'premium', 'burn_cost', 'quoted_premium')",
-                ),
-            ],
-            "edges": [
-                _edge("quotes", "processing"),
-                _edge("processing", "join_premiums"),
-                _edge("premiums", "join_premiums"),
-                _edge("join_premiums", "features"),
-            ],
-        })
-
-        result = execute_trace(
-            graph, row_index=0, target_node_id="features", column="burn_cost"
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("quotes", str(p_quotes)),
+                    _transform_node(
+                        "processing", ".with_columns(age_band=pl.col('age') // 10 * 10)"
+                    ),
+                    _source_node("premiums", str(p_premiums)),
+                    _transform_node(
+                        "join_premiums",
+                        "processing.join(premiums, on='quote_id', how='left').with_columns("
+                        "burn_cost=pl.col('premium') * 0.7)",
+                    ),
+                    _transform_node(
+                        "features",
+                        ".select('quote_id', 'premium', 'burn_cost', 'quoted_premium')",
+                    ),
+                ],
+                "edges": [
+                    _edge("quotes", "processing"),
+                    _edge("processing", "join_premiums"),
+                    _edge("premiums", "join_premiums"),
+                    _edge("join_premiums", "features"),
+                ],
+            }
         )
+
+        result = execute_trace(graph, row_index=0, target_node_id="features", column="burn_cost")
 
         # burn_cost should trace through the full waterfall
         assert len(result.steps) >= 3
@@ -2258,18 +2451,22 @@ class TestPerformanceLargeDataset:
 
         p = tmp_path / "data.parquet"
         n = 100_000
-        pl.DataFrame({
-            "id": list(range(n)),
-            "value": [float(i) * 1.5 for i in range(n)],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "id": list(range(n)),
+                "value": [float(i) * 1.5 for i in range(n)],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('value') * 2)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('value') * 2)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         # Use row_limit large enough to include row 50000
         row_limit = 100_000
@@ -2284,18 +2481,22 @@ class TestPerformanceLargeDataset:
     def test_large_dataset_cached_trace(self, tmp_path):
         p = tmp_path / "data.parquet"
         n = 100_000
-        pl.DataFrame({
-            "id": list(range(n)),
-            "value": [float(i) * 1.5 for i in range(n)],
-        }).write_parquet(p)
+        pl.DataFrame(
+            {
+                "id": list(range(n)),
+                "value": [float(i) * 1.5 for i in range(n)],
+            }
+        ).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('value') * 2)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(y=pl.col('value') * 2)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         row_limit = 100_000
 
@@ -2326,9 +2527,9 @@ class TestPerformanceManyNodes:
         nodes = [_source_node("n0", str(p))]
         edges = []
         for i in range(1, 21):
-            code = f".with_columns(col_{i}=pl.col('col_{i-1}') + 1)"
+            code = f".with_columns(col_{i}=pl.col('col_{i - 1}') + 1)"
             nodes.append(_transform_node(f"n{i}", code))
-            edges.append(_edge(f"n{i-1}", f"n{i}"))
+            edges.append(_edge(f"n{i - 1}", f"n{i}"))
 
         graph = _g({"nodes": nodes, "edges": edges})
 
@@ -2356,13 +2557,15 @@ class TestSerializationRoundTrip:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2], "y": [10, 20]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         result = execute_trace(graph, row_index=0, target_node_id="t", column="z")
         d = trace_result_to_dict(result)
