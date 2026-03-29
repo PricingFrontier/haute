@@ -852,54 +852,10 @@ class TestFileWatcher:
 class TestPipelineTimeouts:
     """Timeout paths — mock asyncio.wait_for to raise TimeoutError."""
 
-    def test_trace_timeout(self, client: TestClient, pipeline_dir: Path):
-        from unittest.mock import AsyncMock, patch
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
-
-        with patch(
-            "haute.routes.pipeline.asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=TimeoutError,
-        ):
-            resp = client.post(
-                "/api/pipeline/trace",
-                json={
-                    "graph": graph.model_dump(),
-                    "row_index": 0,
-                },
-            )
-        assert resp.status_code == 504
-
-    def test_preview_timeout(self, client: TestClient, pipeline_dir: Path):
-        from unittest.mock import AsyncMock, patch
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
-        node_id = graph.nodes[0].id
-
-        with patch(
-            "haute.routes.pipeline.asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=TimeoutError,
-        ):
-            resp = client.post(
-                "/api/pipeline/preview",
-                json={
-                    "graph": graph.model_dump(),
-                    "node_id": node_id,
-                },
-            )
-        assert resp.status_code == 504
-
-    def test_sink_timeout(self, client: TestClient, pipeline_dir: Path):
-        from unittest.mock import AsyncMock, patch
-
+    @staticmethod
+    def _sink_graph(pipeline_dir: Path) -> dict:
         data_path = pipeline_dir / "data" / "input.parquet"
-        graph = {
+        return {
             "nodes": [
                 {
                     "id": "src",
@@ -924,68 +880,48 @@ class TestPipelineTimeouts:
             ],
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
+
+    @pytest.mark.parametrize(
+        ("endpoint", "use_parsed_graph"),
+        [
+            ("trace", True),
+            ("preview", True),
+            ("sink", False),
+        ],
+        ids=["trace_timeout", "preview_timeout", "sink_timeout"],
+    )
+    def test_timeout_returns_504(
+        self, client: TestClient, pipeline_dir: Path, endpoint: str, use_parsed_graph: bool
+    ):
+        from unittest.mock import AsyncMock, patch
+
+        if use_parsed_graph:
+            from haute.parser import parse_pipeline_file
+
+            graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+            if endpoint == "trace":
+                body = {"graph": graph.model_dump(), "row_index": 0}
+            else:
+                body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
+        else:
+            body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
+
         with patch(
             "haute.routes.pipeline.asyncio.wait_for",
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):
-            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
+            resp = client.post(f"/api/pipeline/{endpoint}", json=body)
         assert resp.status_code == 504
 
 
 class TestPipelineExceptions:
     """Exception paths — mock execute_graph to raise RuntimeError → 500."""
 
-    def test_trace_exception(self, client: TestClient, pipeline_dir: Path):
-        from unittest.mock import patch
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
-
-        with patch(
-            "haute.trace.execute_trace",
-            side_effect=RuntimeError("trace error"),
-        ):
-            resp = client.post(
-                "/api/pipeline/trace",
-                json={
-                    "graph": graph.model_dump(),
-                    "row_index": 0,
-                },
-            )
-        assert resp.status_code == 500
-        assert "trace error" not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
-
-    def test_preview_exception(self, client: TestClient, pipeline_dir: Path):
-        from unittest.mock import patch
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
-        node_id = graph.nodes[0].id
-
-        with patch(
-            "haute.executor.execute_graph",
-            side_effect=RuntimeError("preview error"),
-        ):
-            resp = client.post(
-                "/api/pipeline/preview",
-                json={
-                    "graph": graph.model_dump(),
-                    "node_id": node_id,
-                },
-            )
-        assert resp.status_code == 500
-        assert "preview error" not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
-
-    def test_sink_exception(self, client: TestClient, pipeline_dir: Path):
-        from unittest.mock import patch
-
+    @staticmethod
+    def _sink_graph(pipeline_dir: Path) -> dict:
         data_path = pipeline_dir / "data" / "input.parquet"
-        graph = {
+        return {
             "nodes": [
                 {
                     "id": "src",
@@ -1010,13 +946,42 @@ class TestPipelineExceptions:
             ],
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
-        with patch(
-            "haute.executor.execute_sink",
-            side_effect=RuntimeError("sink error"),
-        ):
-            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
+
+    @pytest.mark.parametrize(
+        ("endpoint", "patch_target", "error_msg", "use_parsed_graph"),
+        [
+            ("trace", "haute.trace.execute_trace", "trace error", True),
+            ("preview", "haute.executor.execute_graph", "preview error", True),
+            ("sink", "haute.executor.execute_sink", "sink error", False),
+        ],
+        ids=["trace_exception", "preview_exception", "sink_exception"],
+    )
+    def test_exception_returns_500(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        endpoint: str,
+        patch_target: str,
+        error_msg: str,
+        use_parsed_graph: bool,
+    ):
+        from unittest.mock import patch
+
+        if use_parsed_graph:
+            from haute.parser import parse_pipeline_file
+
+            graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+            if endpoint == "trace":
+                body = {"graph": graph.model_dump(), "row_index": 0}
+            else:
+                body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
+        else:
+            body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
+
+        with patch(patch_target, side_effect=RuntimeError(error_msg)):
+            resp = client.post(f"/api/pipeline/{endpoint}", json=body)
         assert resp.status_code == 500
-        assert "sink error" not in resp.json()["detail"]
+        assert error_msg not in resp.json()["detail"]
         assert "Check the server logs" in resp.json()["detail"]
 
 
@@ -1604,29 +1569,33 @@ pipeline.connect("middle", "final")
 
 
 class TestMiddlewareLogging:
-    def test_2xx_logs_info(self, client: TestClient, pipeline_dir: Path):
+    @pytest.mark.parametrize(
+        ("url", "expected_status", "event_name", "log_level"),
+        [
+            ("/api/pipelines", 200, "request_ok", "info"),
+            ("/api/pipeline/nonexistent_pipeline_xyz", 404, "request_client_error", "warning"),
+        ],
+        ids=["2xx_logs_info", "4xx_logs_warning"],
+    )
+    def test_status_logs_correct_level(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        url: str,
+        expected_status: int,
+        event_name: str,
+        log_level: str,
+    ):
         import structlog.testing
 
         with structlog.testing.capture_logs() as captured:
-            resp = client.get("/api/pipelines")
+            resp = client.get(url)
 
-        assert resp.status_code == 200
-        info_events = [e for e in captured if e.get("event") == "request_ok"]
-        assert len(info_events) >= 1
-        assert info_events[0]["status"] == 200
-        assert info_events[0]["log_level"] == "info"
-
-    def test_4xx_logs_warning(self, client: TestClient, pipeline_dir: Path):
-        import structlog.testing
-
-        with structlog.testing.capture_logs() as captured:
-            resp = client.get("/api/pipeline/nonexistent_pipeline_xyz")
-
-        assert resp.status_code == 404
-        warning_events = [e for e in captured if e.get("event") == "request_client_error"]
-        assert len(warning_events) >= 1
-        assert warning_events[0]["status"] == 404
-        assert warning_events[0]["log_level"] == "warning"
+        assert resp.status_code == expected_status
+        matching = [e for e in captured if e.get("event") == event_name]
+        assert len(matching) >= 1
+        assert matching[0]["status"] == expected_status
+        assert matching[0]["log_level"] == log_level
 
     def test_5xx_logs_error(self):
         import asyncio

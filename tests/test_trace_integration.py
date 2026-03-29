@@ -43,19 +43,6 @@ from tests.conftest import (
 _ROW_LIMIT = 1000
 
 
-@pytest.fixture(autouse=True)
-def _clear_trace_caches():
-    """Invalidate the global trace and preview caches between tests.
-
-    The FingerprintCache is a module-level singleton.  Without clearing it,
-    a prior test's cached DataFrames can bleed into the next test if they
-    happen to share the same fingerprint (e.g., same node ids, same code).
-    """
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
-    yield
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
 
 
 # ---------------------------------------------------------------------------

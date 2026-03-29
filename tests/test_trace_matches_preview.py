@@ -36,16 +36,6 @@ from tests.conftest import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _clear_trace_caches():
-    """Invalidate the global trace and preview caches between tests."""
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
-    yield
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
-
-
 # Use a consistent row_limit across preview and trace, matching real usage.
 _ROW_LIMIT = 1000
 

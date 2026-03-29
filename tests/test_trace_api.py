@@ -15,8 +15,6 @@ from typing import Any
 import polars as pl
 import pytest
 
-from haute.executor import _preview_cache
-from haute.trace import _cache as _trace_cache
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
@@ -27,16 +25,6 @@ from tests.conftest import make_transform_node as _transform_node
 # ---------------------------------------------------------------------------
 
 _ROW_LIMIT = 100
-
-
-@pytest.fixture(autouse=True)
-def _clear_trace_caches():
-    """Invalidate global caches between tests to avoid cross-contamination."""
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
-    yield
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
 
 
 def _simple_graph(parquet_path: str | Path, code: str = "") -> dict:

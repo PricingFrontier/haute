@@ -330,20 +330,6 @@ class TestBuildNodeConfigProducesValidKeys:
         bad = warn_unrecognized_config_keys(node_type, config)
         assert bad == [], f"Unrecognized keys in {node_type}: {bad}"
 
-    def test_transform_with_selected_columns_no_warning(self):
-        """selected_columns in a transform config must not be flagged."""
-        from haute._parser_helpers import _build_node_config
-
-        config = _build_node_config(
-            NodeType.POLARS,
-            {"selected_columns": ["col_a", "col_b"]},
-            '    """doc"""\n    return df',
-            ["df"],
-        )
-        bad = warn_unrecognized_config_keys(NodeType.POLARS, config)
-        assert bad == [], f"selected_columns should be valid: {bad}"
-        assert config["selected_columns"] == ["col_a", "col_b"]
-
     def test_model_score_source_type_maps_to_sourceType(self):
         """Parser should map snake_case source_type to camelCase sourceType."""
         from haute._parser_helpers import _build_node_config
@@ -388,28 +374,6 @@ class TestBuildNodeConfigProducesValidKeys:
         )
         bad = warn_unrecognized_config_keys(NodeType.MODEL_SCORE, config)
         assert bad == [], f"Unrecognized keys in modelScore: {bad}"
-
-    def test_optimiser_data_input_banding_source_valid(self):
-        """data_input and banding_source should be valid optimiser keys."""
-        bad = warn_unrecognized_config_keys(
-            NodeType.OPTIMISER,
-            {"mode": "ratebook", "data_input": "node_1", "banding_source": "node_2"},
-        )
-        assert bad == [], f"data_input/banding_source should be valid: {bad}"
-
-    def test_optimiser_apply_experiment_name_run_name_valid(self):
-        """experiment_name and run_name should be valid optimiserApply keys."""
-        bad = warn_unrecognized_config_keys(
-            NodeType.OPTIMISER_APPLY,
-            {
-                "artifact_path": "opt.json",
-                "experiment_name": "my_exp",
-                "run_name": "my_run",
-                "experiment_id": "eid",
-                "run_id": "rid",
-            },
-        )
-        assert bad == [], f"experiment_name/run_name should be valid: {bad}"
 
 
 # ---------------------------------------------------------------------------

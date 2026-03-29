@@ -287,6 +287,26 @@ class TestConcurrency:
         assert not errors
         assert len(cache) <= 20, f"Cache size {len(cache)} exceeds max_size=20"
 
+    def test_concurrent_puts_no_data_loss(self) -> None:
+        """Barrier-synchronised writers into a large-enough cache must not lose entries."""
+        cache: LRUCache[int, int] = LRUCache(max_size=200)
+        barrier = threading.Barrier(4)
+
+        def writer(start: int) -> None:
+            barrier.wait()
+            for i in range(start, start + 50):
+                cache.put(i, i)
+
+        threads = [threading.Thread(target=writer, args=(t * 50,)) for t in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(cache) == 200
+        for i in range(200):
+            assert cache.get(i) == i
+
 
 # ---------------------------------------------------------------------------
 # B17: None values vs cache misses (sentinel fix)
@@ -383,18 +403,6 @@ class TestTTLEdgeCases:
         # TTL check uses strict >, so ttl=0 within the same monotonic tick is a hit
         assert cache.get("k") == 42
 
-    def test_get_immediately_after_ttl_expires_returns_none(self, monkeypatch) -> None:
-        import haute._lru_cache as _mod
-
-        now = 1000.0
-        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
-        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=5.0)
-        cache.put("k", 42)
-        now = 1006.0
-        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
-        assert cache.get("k") is None
-        assert len(cache) == 0
-
 
 # ---------------------------------------------------------------------------
 # __contains__ TTL interaction
@@ -469,32 +477,6 @@ class TestClearReuse:
         assert cache.get("b") is None
         assert cache.get("c") == 3
         assert len(cache) == 1
-
-
-# ---------------------------------------------------------------------------
-# Thread safety: concurrent puts don't lose data
-# ---------------------------------------------------------------------------
-
-
-class TestConcurrentPutsNoLoss:
-    def test_concurrent_puts_no_data_loss(self) -> None:
-        cache: LRUCache[int, int] = LRUCache(max_size=200)
-        barrier = threading.Barrier(4)
-
-        def writer(start: int) -> None:
-            barrier.wait()
-            for i in range(start, start + 50):
-                cache.put(i, i)
-
-        threads = [threading.Thread(target=writer, args=(t * 50,)) for t in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert len(cache) == 200
-        for i in range(200):
-            assert cache.get(i) == i
 
 
 # ---------------------------------------------------------------------------

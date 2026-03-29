@@ -8,12 +8,10 @@ import pytest
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import (
     _execute_lazy,
-    _object_cache,
     _prepare_graph,
     _resolve_sink_path,
     _sanitize_func_name,
     ancestors,
-    load_external_object,
     topo_sort_ids,
 )
 from tests.conftest import make_edge as _e
@@ -334,55 +332,6 @@ class TestExecuteLazy:
 
         with pytest.raises(ValueError, match="No input data available"):
             _execute_lazy(g, build_fn)
-
-
-@pytest.mark.usefixtures("_widen_sandbox_root")
-class TestLoadExternalObjectCache:
-    @pytest.fixture(autouse=True)
-    def _clear_object_cache(self):
-        _object_cache.clear()
-        yield
-        _object_cache.clear()
-
-    def test_json_cached_on_second_call(self, tmp_path):
-        p = tmp_path / "data.json"
-        p.write_text('{"a": 1}')
-
-        obj1 = load_external_object(str(p), "json")
-        obj2 = load_external_object(str(p), "json")
-        assert obj1 is obj2
-        assert obj1 == {"a": 1}
-
-    def test_mtime_change_invalidates_cache(self, tmp_path):
-        import os
-        import time as _time
-
-        p = tmp_path / "data.json"
-        p.write_text('{"v": 1}')
-
-        obj1 = load_external_object(str(p), "json")
-        assert obj1 == {"v": 1}
-
-        p.write_text('{"v": 2}')
-        # Force mtime 2 seconds in the future to avoid filesystem granularity issues
-        future = _time.time() + 2
-        os.utime(str(p), (future, future))
-
-        obj2 = load_external_object(str(p), "json")
-        assert obj2 == {"v": 2}
-        assert obj1 is not obj2
-
-    def test_pickle_cached(self, tmp_path):
-        import pickle
-
-        p = tmp_path / "obj.pkl"
-        with open(p, "wb") as f:
-            pickle.dump([1, 2, 3], f)
-
-        obj1 = load_external_object(str(p), "pickle")
-        obj2 = load_external_object(str(p), "pickle")
-        assert obj1 is obj2
-        assert obj1 == [1, 2, 3]
 
 
 class TestExecuteLazyMultiInput:

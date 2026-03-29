@@ -33,8 +33,7 @@ from haute.trace import (
     execute_trace,
     trace_result_to_dict,
 )
-from haute.trace import _cache as _trace_cache
-from haute.executor import _preview_cache, execute_graph
+from haute.executor import execute_graph
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import (
     make_edge as _edge,
@@ -45,19 +44,6 @@ from tests.conftest import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Cache clearing fixture (autouse)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _clear_trace_caches():
-    """Invalidate the global trace and preview caches between tests."""
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
-    yield
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
 
 
 # ---------------------------------------------------------------------------

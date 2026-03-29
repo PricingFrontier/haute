@@ -8,7 +8,24 @@ import pytest
 from click.testing import CliRunner
 
 from haute._sandbox import _get_project_root, set_project_root
+from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.trace import _cache as _trace_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_trace_caches():
+    """Invalidate the global trace and preview caches between tests.
+
+    The FingerprintCache is a module-level singleton.  Without clearing it,
+    a prior test's cached DataFrames can bleed into the next test if they
+    happen to share the same fingerprint (e.g., same node ids, same code).
+    """
+    _trace_cache.invalidate()
+    _preview_cache.invalidate()
+    yield
+    _trace_cache.invalidate()
+    _preview_cache.invalidate()
 
 
 @pytest.fixture(autouse=True)

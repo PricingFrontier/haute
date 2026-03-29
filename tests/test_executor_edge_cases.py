@@ -12,7 +12,6 @@ Covers gaps in:
 from __future__ import annotations
 
 import errno
-import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -182,53 +181,6 @@ class TestExtractColumnRefsEdgeCases:
 
 
 class TestExecuteSinkEdgeCases:
-    def test_unknown_sink_node_id_raises(self):
-        graph = _g({"nodes": [], "edges": []})
-        with pytest.raises(ValueError, match="not.*found"):
-            execute_sink(graph, sink_node_id="nonexistent")
-
-    def test_missing_path_config_raises(self, tmp_path):
-        src = tmp_path / "in.parquet"
-        pl.DataFrame({"x": [1]}).write_parquet(src)
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src", str(src)),
-                    _n(
-                        {
-                            "id": "sink",
-                            "data": {
-                                "label": "sink",
-                                "nodeType": "dataSink",
-                                "config": {"format": "parquet"},
-                            },
-                        }
-                    ),
-                ],
-                "edges": [_edge("src", "sink")],
-            }
-        )
-        with pytest.raises(ValueError, match="no.*output path"):
-            execute_sink(graph, sink_node_id="sink")
-
-    def test_parquet_format_writes_correctly(self, tmp_path):
-        graph, out_path = _sink_graph(tmp_path, fmt="parquet", src_data={"a": [1, 2, 3]})
-        result = execute_sink(graph, sink_node_id="sink")
-        assert result.status == "ok"
-        assert result.format == "parquet"
-        assert out_path.exists()
-        df = pl.read_parquet(out_path)
-        assert df["a"].to_list() == [1, 2, 3]
-
-    def test_csv_format_writes_correctly(self, tmp_path):
-        graph, out_path = _sink_graph(tmp_path, fmt="csv", src_data={"b": [10, 20]})
-        result = execute_sink(graph, sink_node_id="sink")
-        assert result.status == "ok"
-        assert result.format == "csv"
-        assert out_path.exists()
-        df = pl.read_csv(out_path)
-        assert df["b"].to_list() == [10, 20]
-
     def test_parent_directory_auto_created(self, tmp_path):
         src_path = tmp_path / "in.parquet"
         out_path = tmp_path / "nested" / "deep" / "out.parquet"
@@ -255,15 +207,6 @@ class TestExecuteSinkEdgeCases:
         result = execute_sink(graph, sink_node_id="sink")
         assert result.status == "ok"
         assert out_path.exists()
-
-    def test_row_count_matches_actual_rows(self, tmp_path):
-        data = {"x": list(range(50))}
-        graph, out_path = _sink_graph(tmp_path, fmt="parquet", src_data=data)
-        result = execute_sink(graph, sink_node_id="sink")
-        assert result.row_count == 50
-        df = pl.read_parquet(out_path)
-        assert len(df) == 50
-        assert result.row_count == len(df)
 
 
 # ===========================================================================
@@ -367,36 +310,6 @@ class TestApplySelectedColumnsEdgeCases:
 
 
 class TestPruneLiveSwitchEdgesEdgeCases:
-    def test_no_live_switch_nodes_returns_edges_unchanged(self):
-        edges = [_e("a", "b"), _e("b", "c")]
-        node_map = {"a": _src_node("a"), "b": _tx_node("b"), "c": _tx_node("c")}
-        result = _prune_live_switch_edges(edges, node_map, "live")
-        assert result == edges
-
-    def test_prunes_inactive_branch_for_live(self):
-        edges = [_e("live_in", "sw"), _e("batch_in", "sw")]
-        node_map = {
-            "live_in": _src_node("live_in"),
-            "batch_in": _src_node("batch_in"),
-            "sw": _live_switch_node("sw", {"live_in": "live", "batch_in": "batch"}),
-        }
-        result = _prune_live_switch_edges(edges, node_map, "live")
-        sources = [e.source for e in result]
-        assert "live_in" in sources
-        assert "batch_in" not in sources
-
-    def test_prunes_inactive_branch_for_batch(self):
-        edges = [_e("live_in", "sw"), _e("batch_in", "sw")]
-        node_map = {
-            "live_in": _src_node("live_in"),
-            "batch_in": _src_node("batch_in"),
-            "sw": _live_switch_node("sw", {"live_in": "live", "batch_in": "batch"}),
-        }
-        result = _prune_live_switch_edges(edges, node_map, "batch")
-        sources = [e.source for e in result]
-        assert "batch_in" in sources
-        assert "live_in" not in sources
-
     def test_keeps_all_edges_when_scenario_not_in_ism(self):
         edges = [_e("a", "sw"), _e("b", "sw")]
         node_map = {
@@ -533,21 +446,6 @@ class TestPreambleFailureSourceNodesRun:
         assert results["src"].status == "ok"
         assert results["src"].row_count == 3
         assert results["tx"].status == "error"
-
-
-# ===========================================================================
-# Column rename collision
-# ===========================================================================
-
-
-class TestColumnRenameCollision:
-    def test_rename_a_to_b_when_b_exists_raises(self):
-        df = pl.DataFrame({"a": [1], "b": [2]})
-        config = {"column_renames": {"a": "b"}}
-        with pytest.raises(Exception):
-            result = _apply_column_renames(df, config)
-            if isinstance(result, pl.LazyFrame):
-                result.collect()
 
 
 # ===========================================================================

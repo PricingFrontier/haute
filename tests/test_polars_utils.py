@@ -71,17 +71,24 @@ def test_safe_sink_writes_csv(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Fallback tests (parquet)
+# Fallback tests (parquet & csv, parametrized)
 # ---------------------------------------------------------------------------
 
+_POLARS_FALLBACK_ERRORS = [
+    pl.exceptions.ComputeError,
+    pl.exceptions.SchemaError,
+    pl.exceptions.InvalidOperationError,
+]
 
-def _run_parquet_fallback(tmp_path: Path, error: Exception) -> None:
-    """Shared helper: verify parquet fallback for a given Polars error type."""
+
+@pytest.mark.parametrize("error_cls", _POLARS_FALLBACK_ERRORS)
+def test_safe_sink_parquet_fallback_on_error(tmp_path: Path, error_cls: type):
+    """Polars error in sink_parquet triggers collect+write_parquet fallback."""
     lf = pl.LazyFrame({"a": [1, 2, 3]})
     out = tmp_path / "test.parquet"
 
     with (
-        patch.object(pl.LazyFrame, "sink_parquet", side_effect=error),
+        patch.object(pl.LazyFrame, "sink_parquet", side_effect=error_cls("sink failed")),
         patch.object(
             pl.DataFrame,
             "write_parquet",
@@ -95,36 +102,17 @@ def _run_parquet_fallback(tmp_path: Path, error: Exception) -> None:
     assert result["a"].to_list() == [1, 2, 3]
 
 
-def test_safe_sink_fallback_on_compute_error(tmp_path: Path):
-    """ComputeError in sink_parquet triggers collect+write_parquet fallback."""
-    _run_parquet_fallback(tmp_path, pl.exceptions.ComputeError("streaming not supported"))
-
-
-def test_safe_sink_fallback_on_invalid_operation_error(tmp_path: Path):
-    """InvalidOperationError in sink_parquet triggers fallback."""
-    _run_parquet_fallback(tmp_path, pl.exceptions.InvalidOperationError("bad op"))
-
-
-def test_safe_sink_fallback_on_schema_error(tmp_path: Path):
-    """SchemaError in sink_parquet triggers fallback."""
-    _run_parquet_fallback(tmp_path, pl.exceptions.SchemaError("schema mismatch"))
-
-
-# ---------------------------------------------------------------------------
-# Fallback tests (csv)
-# ---------------------------------------------------------------------------
-
-
-def test_safe_sink_csv_fallback(tmp_path: Path):
-    """ComputeError in sink_csv triggers collect+write_csv fallback."""
-    lf = pl.LazyFrame({"name": ["alice", "bob"], "score": [90, 85]})
+@pytest.mark.parametrize("error_cls", _POLARS_FALLBACK_ERRORS)
+def test_safe_sink_csv_fallback_on_error(tmp_path: Path, error_cls: type):
+    """Polars error in sink_csv triggers collect+write_csv fallback."""
+    lf = pl.LazyFrame({"v": [10, 20]})
     out = tmp_path / "test.csv"
 
     with (
         patch.object(
             pl.LazyFrame,
             "sink_csv",
-            side_effect=pl.exceptions.ComputeError("csv streaming failed"),
+            side_effect=error_cls("csv sink failed"),
         ),
         patch.object(
             pl.DataFrame,
@@ -136,8 +124,7 @@ def test_safe_sink_csv_fallback(tmp_path: Path):
         safe_sink(lf, out, fmt="csv")
 
     result = pl.read_csv(out)
-    assert result["name"].to_list() == ["alice", "bob"]
-    assert result["score"].to_list() == [90, 85]
+    assert result["v"].to_list() == [10, 20]
 
 
 # ---------------------------------------------------------------------------
@@ -445,28 +432,6 @@ class TestSafeSinkEdgeCases:
         assert nested.exists()
         assert pl.read_parquet(nested)["x"].to_list() == [1]
 
-    def test_csv_fallback_on_compute_error(self, tmp_path: Path):
-        lf = pl.LazyFrame({"v": [10, 20]})
-        out = tmp_path / "fallback.csv"
-
-        with (
-            patch.object(
-                pl.LazyFrame,
-                "sink_csv",
-                side_effect=pl.exceptions.ComputeError("csv sink failed"),
-            ),
-            patch.object(
-                pl.DataFrame,
-                "write_csv",
-                autospec=True,
-                side_effect=_manual_write_csv,
-            ),
-        ):
-            safe_sink(lf, out, fmt="csv")
-
-        result = pl.read_csv(out)
-        assert result["v"].to_list() == [10, 20]
-
     def test_non_polars_error_propagates(self, tmp_path: Path):
         lf = pl.LazyFrame({"a": [1]})
         out = tmp_path / "test.parquet"
@@ -520,51 +485,6 @@ class TestSafeSinkEdgeCases:
         with pytest.raises((FileNotFoundError, OSError)):
             safe_sink(lf, out)
 
-    def test_parquet_fallback_on_schema_error_csv(self, tmp_path: Path):
-        """SchemaError in sink_csv triggers collect+write_csv fallback."""
-        lf = pl.LazyFrame({"a": [1, 2, 3]})
-        out = tmp_path / "schema_fallback.csv"
-
-        with (
-            patch.object(
-                pl.LazyFrame,
-                "sink_csv",
-                side_effect=pl.exceptions.SchemaError("schema mismatch"),
-            ),
-            patch.object(
-                pl.DataFrame,
-                "write_csv",
-                autospec=True,
-                side_effect=_manual_write_csv,
-            ),
-        ):
-            safe_sink(lf, out, fmt="csv")
-
-        result = pl.read_csv(out)
-        assert result["a"].to_list() == [1, 2, 3]
-
-    def test_invalid_operation_error_csv_fallback(self, tmp_path: Path):
-        """InvalidOperationError in sink_csv triggers fallback."""
-        lf = pl.LazyFrame({"z": [10]})
-        out = tmp_path / "inv_op_fallback.csv"
-
-        with (
-            patch.object(
-                pl.LazyFrame,
-                "sink_csv",
-                side_effect=pl.exceptions.InvalidOperationError("bad csv op"),
-            ),
-            patch.object(
-                pl.DataFrame,
-                "write_csv",
-                autospec=True,
-                side_effect=_manual_write_csv,
-            ),
-        ):
-            safe_sink(lf, out, fmt="csv")
-
-        result = pl.read_csv(out)
-        assert result["z"].to_list() == [10]
 
 
 # ---------------------------------------------------------------------------

@@ -105,17 +105,6 @@ def dag_strategy():
 class TestTopoSortProperties:
     @given(data=dag_strategy())
     @settings(max_examples=200)
-    def test_topological_invariant(self, data):
-        """Every edge (u→v) must have u before v in the sorted output."""
-        ids, edges = data
-        result = topo_sort_ids(ids, edges)
-        idx = {nid: i for i, nid in enumerate(result)}
-        for e in edges:
-            if e.source in idx and e.target in idx:
-                assert idx[e.source] < idx[e.target], f"{e.source} should come before {e.target}"
-
-    @given(data=dag_strategy())
-    @settings(max_examples=200)
     def test_preserves_all_nodes(self, data):
         """All input nodes should appear in the output (for a DAG, no cycles)."""
         ids, edges = data
@@ -124,15 +113,27 @@ class TestTopoSortProperties:
 
     @given(data=dag_strategy())
     @settings(max_examples=200)
-    def test_respects_edge_ordering(self, data):
-        """Every edge (u, v) has u before v in the sort."""
+    def test_every_node_appears_after_all_its_dependencies(self, data):
+        """For any DAG, every node appears after ALL of its dependencies."""
         ids, edges = data
         result = topo_sort_ids(ids, edges)
-        pos = {node: i for i, node in enumerate(result)}
-        for edge in edges:
-            assert pos[edge.source] < pos[edge.target], (
-                f"{edge.source} should come before {edge.target}"
-            )
+        pos = {nid: i for i, nid in enumerate(result)}
+        # Build full parent map
+        parents: dict[str, set[str]] = {nid: set() for nid in ids}
+        for e in edges:
+            parents[e.target].add(e.source)
+        for nid in result:
+            for parent in parents[nid]:
+                assert pos[parent] < pos[nid], f"Dependency {parent} should appear before {nid}"
+
+    @given(data=dag_strategy())
+    @settings(max_examples=100)
+    def test_deterministic(self, data):
+        """Same DAG always produces the same topo sort."""
+        ids, edges = data
+        r1 = topo_sort_ids(ids, edges)
+        r2 = topo_sort_ids(ids, edges)
+        assert r1 == r2
 
 
 # ---------------------------------------------------------------------------
@@ -623,36 +624,6 @@ class TestFingerprintDeterminism:
         fp2 = graph_fingerprint(g2)
         assert fp1 != fp2, "Structurally different graphs should have different fingerprints"
 
-
-# ---------------------------------------------------------------------------
-# 7. Topological sort validity (extended)
-# ---------------------------------------------------------------------------
-
-
-class TestTopoSortValidity:
-    @given(data=dag_strategy())
-    @settings(max_examples=200)
-    def test_every_node_appears_after_all_its_dependencies(self, data):
-        """For any DAG, every node appears after ALL of its dependencies."""
-        ids, edges = data
-        result = topo_sort_ids(ids, edges)
-        pos = {nid: i for i, nid in enumerate(result)}
-        # Build full parent map
-        parents: dict[str, set[str]] = {nid: set() for nid in ids}
-        for e in edges:
-            parents[e.target].add(e.source)
-        for nid in result:
-            for parent in parents[nid]:
-                assert pos[parent] < pos[nid], f"Dependency {parent} should appear before {nid}"
-
-    @given(data=dag_strategy())
-    @settings(max_examples=100)
-    def test_deterministic(self, data):
-        """Same DAG always produces the same topo sort."""
-        ids, edges = data
-        r1 = topo_sort_ids(ids, edges)
-        r2 = topo_sort_ids(ids, edges)
-        assert r1 == r2
 
 
 # ---------------------------------------------------------------------------

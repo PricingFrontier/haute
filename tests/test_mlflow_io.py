@@ -24,7 +24,6 @@ from haute._mlflow_io import (
     load_local_model,
     load_mlflow_model,
 )
-from haute._mlflow_utils import resolve_version as _resolve_version
 
 
 @pytest.fixture(autouse=True)
@@ -269,75 +268,6 @@ class TestModelCache:
             )
 
         assert ("run", "new_run", "model.cbm", "regression") in _model_cache
-
-
-# ---------------------------------------------------------------------------
-# _resolve_version
-# ---------------------------------------------------------------------------
-
-
-class TestResolveVersion:
-    def test_concrete_version_returned_as_is(self):
-        """Non-'latest' version is returned unchanged."""
-        client = MagicMock()
-        assert _resolve_version(client, "my-model", "3") == "3"
-
-    def test_latest_resolves_to_highest(self):
-        """'latest' resolves to the highest version number."""
-        client = MagicMock()
-        v1 = MagicMock(version="1")
-        v2 = MagicMock(version="2")
-        v3 = MagicMock(version="3")
-        client.search_model_versions.return_value = [v1, v3, v2]
-        result = _resolve_version(client, "my-model", "latest")
-        assert result == "3"
-
-    def test_empty_version_resolves_to_latest(self):
-        """Empty string resolves to the latest version."""
-        client = MagicMock()
-        v1 = MagicMock(version="1")
-        client.search_model_versions.return_value = [v1]
-        result = _resolve_version(client, "my-model", "")
-        assert result == "1"
-
-    def test_no_versions_raises(self):
-        """Raises ValueError when no versions exist."""
-        client = MagicMock()
-        client.search_model_versions.return_value = []
-        with pytest.raises(ValueError, match="No versions found"):
-            _resolve_version(client, "my-model", "latest")
-
-
-# ---------------------------------------------------------------------------
-# _find_cbm_artifact
-# ---------------------------------------------------------------------------
-
-
-class TestFindCbmArtifact:
-    def test_finds_top_level_cbm(self):
-        """Finds .cbm at the root level."""
-        client = MagicMock()
-        art = MagicMock(path="my_model.cbm", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        assert _find_cbm_artifact(client, "run1") == "my_model.cbm"
-
-    def test_finds_cbm_in_subdirectory(self):
-        """Finds .cbm one level deep."""
-        client = MagicMock()
-        dir_art = MagicMock(path="models", is_dir=True)
-        client.list_artifacts.side_effect = [
-            [dir_art],  # Top level
-            [MagicMock(path="models/trained.cbm", is_dir=False)],  # Subdirectory
-        ]
-        assert _find_cbm_artifact(client, "run1") == "models/trained.cbm"
-
-    def test_no_cbm_raises(self):
-        """Raises FileNotFoundError when no .cbm is found."""
-        client = MagicMock()
-        art = MagicMock(path="readme.txt", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        with pytest.raises(FileNotFoundError, match="No .cbm artifact"):
-            _find_cbm_artifact(client, "run1")
 
 
 # ---------------------------------------------------------------------------

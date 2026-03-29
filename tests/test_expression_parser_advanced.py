@@ -795,6 +795,35 @@ class TestFStringAlias:
         expr = parse_expression(code, "loaded_premium")
         assert expr is not None
 
+    def test_fstring_alias_with_known_variable(self):
+        code = (
+            'suffix = "total"\n'
+            'df = df.with_columns((pl.col("x") + pl.col("y")).alias(f"result_{suffix}"))'
+        )
+        expr = parse_expression(code, "result_total")
+        assert expr is not None
+        assert expr.target_column == "result_total"
+        assert set(expr.referenced_columns) == {"x", "y"}
+
+    def test_fstring_alias_numeric_suffix(self):
+        code = (
+            "version = 2\n"
+            'df = df.with_columns((pl.col("a") * 3).alias(f"col_v{version}"))'
+        )
+        expr = parse_expression(code, "col_v2")
+        assert expr is not None
+        assert expr.target_column == "col_v2"
+        assert "a" in expr.referenced_columns
+
+    def test_fstring_alias_evaluate(self):
+        code = (
+            'suffix = "out"\n'
+            'df = df.with_columns((pl.col("x") + 1).alias(f"result_{suffix}"))'
+        )
+        result = evaluate_expression(code, "result_out", {"x": 10})
+        assert result is not None
+        assert result.result_value in (11, None)
+
 
 class TestStarredExpressions:
     def test_starred_list_in_with_columns(self):
@@ -811,6 +840,34 @@ class TestStarredExpressions:
         code = 'mapping = {"result": pl.col("a") + pl.col("b")}\ndf = df.with_columns(**mapping)'
         expr = parse_expression(code, "result")
         assert expr is not None
+
+    def test_starred_list_parse(self):
+        code = (
+            'exprs = [(pl.col("a") + 1).alias("result")]\n'
+            "df = df.with_columns(*exprs)"
+        )
+        expr = parse_expression(code, "result")
+        assert expr is not None
+        assert "a" in expr.referenced_columns
+        assert expr.expression_text == "a + 1"
+
+    def test_starred_list_multiple_expressions(self):
+        code = (
+            'exprs = [(pl.col("a") + 1).alias("x"), (pl.col("b") * 2).alias("y")]\n'
+            "df = df.with_columns(*exprs)"
+        )
+        expr_x = parse_expression(code, "x")
+        expr_y = parse_expression(code, "y")
+        assert expr_x is not None
+        assert expr_x.expression_text == "a + 1"
+        assert expr_y is not None
+        assert expr_y.expression_text == "b * 2"
+
+    def test_starred_inline_list_falls_back_to_opaque(self):
+        code = 'df = df.with_columns(*[(pl.col("a") + 1).alias("result")])'
+        expr = parse_expression(code, "result")
+        assert expr is not None
+        assert expr.expression_type == "opaque"
 
 
 class TestStaticallyUnparseableCode:

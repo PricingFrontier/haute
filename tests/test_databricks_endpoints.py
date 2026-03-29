@@ -35,6 +35,233 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 # ---------------------------------------------------------------------------
+# Parametrized cross-resource tests
+# ---------------------------------------------------------------------------
+
+# (url, sdk_attr_chain, params, response_key, error_message)
+_EXCEPTION_ENDPOINTS = [
+    ("/api/databricks/warehouses", "warehouses.list", {}, "network issue"),
+    ("/api/databricks/catalogs", "catalogs.list", {}, "API quota exceeded"),
+    ("/api/databricks/schemas", "schemas.list", {"catalog": "main"}, "network timeout"),
+    ("/api/databricks/tables", "tables.list", {"catalog": "cat", "schema": "sch"}, "quota exceeded"),
+]
+
+
+class TestExceptionReturns500:
+    """Unexpected SDK exceptions return 500 without leaking details."""
+
+    @pytest.mark.parametrize(
+        "url,sdk_attr_chain,params,error_msg",
+        _EXCEPTION_ENDPOINTS,
+        ids=["warehouses", "catalogs", "schemas", "tables"],
+    )
+    def test_exception_returns_500(
+        self, client: TestClient, url: str, sdk_attr_chain: str, params: dict, error_msg: str
+    ) -> None:
+        mock_ws = MagicMock()
+        # Navigate the attribute chain (e.g. "warehouses.list") to set side_effect
+        obj = mock_ws
+        parts = sdk_attr_chain.split(".")
+        for part in parts:
+            obj = getattr(obj, part)
+        obj.side_effect = RuntimeError(error_msg)
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get(url, params=params)
+
+        assert resp.status_code == 500
+        assert error_msg not in resp.json()["detail"]
+        assert "Check the server logs" in resp.json()["detail"]
+
+
+# (url, sdk_attr_chain, params, response_key)
+_EMPTY_LIST_ENDPOINTS = [
+    ("/api/databricks/warehouses", "warehouses.list", {}, "warehouses"),
+    ("/api/databricks/catalogs", "catalogs.list", {}, "catalogs"),
+    ("/api/databricks/schemas", "schemas.list", {"catalog": "main"}, "schemas"),
+]
+
+
+class TestEmptyListHandling:
+    """Empty SDK responses return 200 with empty arrays."""
+
+    @pytest.mark.parametrize(
+        "url,sdk_attr_chain,params,response_key",
+        _EMPTY_LIST_ENDPOINTS,
+        ids=["warehouses", "catalogs", "schemas"],
+    )
+    def test_empty_list_returns_empty_array(
+        self, client: TestClient, url: str, sdk_attr_chain: str, params: dict, response_key: str
+    ) -> None:
+        mock_ws = MagicMock()
+        obj = mock_ws
+        parts = sdk_attr_chain.split(".")
+        for part in parts:
+            obj = getattr(obj, part)
+        obj.return_value = []
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get(url, params=params)
+
+        assert resp.status_code == 200
+        assert resp.json()[response_key] == []
+
+
+# (url, sdk_attr_chain, params, response_key, valid_factory, invalid_factory, expected_name)
+_NONE_NAME_ENDPOINTS = [
+    (
+        "/api/databricks/catalogs",
+        "catalogs.list",
+        {},
+        "catalogs",
+        "valid_catalog",
+        "invalid_catalog",
+    ),
+    (
+        "/api/databricks/schemas",
+        "schemas.list",
+        {"catalog": "main"},
+        "schemas",
+        "valid_schema",
+        "invalid_schema",
+    ),
+    (
+        "/api/databricks/tables",
+        "tables.list",
+        {"catalog": "cat", "schema": "sch"},
+        "tables",
+        "valid_table",
+        "invalid_table",
+    ),
+]
+
+
+def _make_sdk_objects(fixture_key: str):
+    """Create (valid, invalid, expected_name) tuples for None-name filtering tests."""
+    if fixture_key == "valid_catalog":
+        from databricks.sdk.service.catalog import CatalogInfo
+
+        return CatalogInfo(name="main", comment="Main catalog")
+    elif fixture_key == "invalid_catalog":
+        from databricks.sdk.service.catalog import CatalogInfo
+
+        return CatalogInfo(name=None, comment="No name")
+    elif fixture_key == "valid_schema":
+        from databricks.sdk.service.catalog import SchemaInfo
+
+        return SchemaInfo(name="pricing", comment="Pricing data")
+    elif fixture_key == "invalid_schema":
+        from databricks.sdk.service.catalog import SchemaInfo
+
+        return SchemaInfo(name=None, comment="No name")
+    elif fixture_key == "valid_table":
+        from databricks.sdk.service.catalog import TableInfo, TableType
+
+        return TableInfo(
+            name="valid_tbl",
+            full_name="cat.sch.valid_tbl",
+            table_type=TableType.MANAGED,
+            comment="",
+        )
+    elif fixture_key == "invalid_table":
+        from databricks.sdk.service.catalog import TableInfo
+
+        return TableInfo(name=None, full_name=None, table_type=None, comment="")
+    raise ValueError(f"Unknown fixture key: {fixture_key}")
+
+
+class TestNoneNameFiltering:
+    """Items where name is None are filtered out of list responses."""
+
+    @pytest.mark.parametrize(
+        "url,sdk_attr_chain,params,response_key,valid_key,invalid_key",
+        _NONE_NAME_ENDPOINTS,
+        ids=["catalogs", "schemas", "tables"],
+    )
+    def test_none_name_items_skipped(
+        self,
+        client: TestClient,
+        url: str,
+        sdk_attr_chain: str,
+        params: dict,
+        response_key: str,
+        valid_key: str,
+        invalid_key: str,
+    ) -> None:
+        valid = _make_sdk_objects(valid_key)
+        invalid = _make_sdk_objects(invalid_key)
+
+        mock_ws = MagicMock()
+        obj = mock_ws
+        for part in sdk_attr_chain.split("."):
+            obj = getattr(obj, part)
+        obj.return_value = [valid, invalid]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get(url, params=params)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data[response_key]) == 1
+        assert data[response_key][0]["name"] == valid.name
+
+
+# (url, sdk_attr_chain, params, response_key, info_class_path, item_kwargs)
+_NONE_COMMENT_ENDPOINTS = [
+    (
+        "/api/databricks/catalogs",
+        "catalogs.list",
+        {},
+        "catalogs",
+    ),
+    (
+        "/api/databricks/schemas",
+        "schemas.list",
+        {"catalog": "main"},
+        "schemas",
+    ),
+]
+
+
+class TestNoneCommentHandling:
+    """Items with comment=None default to empty string."""
+
+    @pytest.mark.parametrize(
+        "url,sdk_attr_chain,params,response_key",
+        _NONE_COMMENT_ENDPOINTS,
+        ids=["catalogs", "schemas"],
+    )
+    def test_none_comment_defaults_to_empty(
+        self,
+        client: TestClient,
+        url: str,
+        sdk_attr_chain: str,
+        params: dict,
+        response_key: str,
+    ) -> None:
+        if response_key == "catalogs":
+            from databricks.sdk.service.catalog import CatalogInfo
+
+            item = CatalogInfo(name="test_item", comment=None)
+        else:
+            from databricks.sdk.service.catalog import SchemaInfo
+
+            item = SchemaInfo(name="test_item", comment=None)
+
+        mock_ws = MagicMock()
+        obj = mock_ws
+        for part in sdk_attr_chain.split("."):
+            obj = getattr(obj, part)
+        obj.return_value = [item]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get(url, params=params)
+
+        assert resp.status_code == 200
+        assert resp.json()[response_key][0]["comment"] == ""
+
+
+# ---------------------------------------------------------------------------
 # GET /api/databricks/warehouses
 # ---------------------------------------------------------------------------
 
@@ -65,30 +292,6 @@ class TestListWarehouses:
         assert wh["http_path"] == "/sql/1.0/warehouses/abc123"
         assert wh["state"] == "RUNNING"
         assert wh["size"] == "Small"
-
-    def test_empty_warehouse_list(self, client: TestClient) -> None:
-        """Returns empty warehouses list when none exist."""
-        mock_ws = MagicMock()
-        mock_ws.warehouses.list.return_value = []
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/warehouses")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["warehouses"] == []
-
-    def test_exception_returns_500(self, client: TestClient) -> None:
-        """Unexpected exception from Databricks SDK returns 500 without leaking details."""
-        mock_ws = MagicMock()
-        mock_ws.warehouses.list.side_effect = RuntimeError("network issue")
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/warehouses")
-
-        assert resp.status_code == 500
-        assert "network issue" not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
 
     def test_warehouse_without_state(self, client: TestClient) -> None:
         """Warehouse with state=None returns UNKNOWN."""
@@ -240,47 +443,6 @@ class TestListTables:
         assert resp.status_code == 200
         data = resp.json()
         assert data["tables"][0]["full_name"] == "prod.insurance.claims"
-
-    def test_tables_with_none_name_skipped(self, client: TestClient) -> None:
-        """Tables where name is None are filtered out."""
-        from databricks.sdk.service.catalog import TableInfo, TableType
-
-        valid = TableInfo(
-            name="valid_tbl",
-            full_name="cat.sch.valid_tbl",
-            table_type=TableType.MANAGED,
-            comment="",
-        )
-        invalid = TableInfo(name=None, full_name=None, table_type=None, comment="")
-
-        mock_ws = MagicMock()
-        mock_ws.tables.list.return_value = [valid, invalid]
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get(
-                "/api/databricks/tables",
-                params={"catalog": "cat", "schema": "sch"},
-            )
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["tables"]) == 1
-        assert data["tables"][0]["name"] == "valid_tbl"
-
-    def test_exception_returns_500(self, client: TestClient) -> None:
-        """Unexpected error from tables.list returns 500 without leaking details."""
-        mock_ws = MagicMock()
-        mock_ws.tables.list.side_effect = RuntimeError("quota exceeded")
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get(
-                "/api/databricks/tables",
-                params={"catalog": "cat", "schema": "sch"},
-            )
-
-        assert resp.status_code == 500
-        assert "quota exceeded" not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -594,127 +756,6 @@ class TestGetDatabricksClient:
         c = TestClient(app)
         resp = c.get("/api/databricks/warehouses")
         assert resp.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# Catalog / Schema exceptions
-# ---------------------------------------------------------------------------
-
-
-class TestCatalogExceptions:
-    def test_catalogs_exception_returns_500(self, client: TestClient) -> None:
-        """Unexpected error from catalogs.list returns 500."""
-        mock_ws = MagicMock()
-        mock_ws.catalogs.list.side_effect = RuntimeError("API quota exceeded")
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/catalogs")
-
-        assert resp.status_code == 500
-        assert "API quota exceeded" not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
-
-    def test_catalogs_empty_list(self, client: TestClient) -> None:
-        """Empty catalog list returns empty array."""
-        mock_ws = MagicMock()
-        mock_ws.catalogs.list.return_value = []
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/catalogs")
-
-        assert resp.status_code == 200
-        assert resp.json()["catalogs"] == []
-
-    def test_catalogs_with_none_name_skipped(self, client: TestClient) -> None:
-        """Catalogs where name is None are filtered out."""
-        from databricks.sdk.service.catalog import CatalogInfo
-
-        valid = CatalogInfo(name="main", comment="Main catalog")
-        invalid = CatalogInfo(name=None, comment="No name")
-
-        mock_ws = MagicMock()
-        mock_ws.catalogs.list.return_value = [valid, invalid]
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/catalogs")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["catalogs"]) == 1
-        assert data["catalogs"][0]["name"] == "main"
-
-    def test_catalog_with_none_comment(self, client: TestClient) -> None:
-        """Catalog with comment=None defaults to empty string."""
-        from databricks.sdk.service.catalog import CatalogInfo
-
-        cat = CatalogInfo(name="test_cat", comment=None)
-
-        mock_ws = MagicMock()
-        mock_ws.catalogs.list.return_value = [cat]
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/catalogs")
-
-        assert resp.status_code == 200
-        assert resp.json()["catalogs"][0]["comment"] == ""
-
-
-class TestSchemaExceptions:
-    def test_schemas_exception_returns_500(self, client: TestClient) -> None:
-        """Unexpected error from schemas.list returns 500."""
-        mock_ws = MagicMock()
-        mock_ws.schemas.list.side_effect = RuntimeError("network timeout")
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
-
-        assert resp.status_code == 500
-        assert "network timeout" not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
-
-    def test_schemas_empty_list(self, client: TestClient) -> None:
-        """Empty schema list returns empty array."""
-        mock_ws = MagicMock()
-        mock_ws.schemas.list.return_value = []
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
-
-        assert resp.status_code == 200
-        assert resp.json()["schemas"] == []
-
-    def test_schemas_with_none_name_skipped(self, client: TestClient) -> None:
-        """Schemas where name is None are filtered out."""
-        from databricks.sdk.service.catalog import SchemaInfo
-
-        valid = SchemaInfo(name="pricing", comment="Pricing data")
-        invalid = SchemaInfo(name=None, comment="No name")
-
-        mock_ws = MagicMock()
-        mock_ws.schemas.list.return_value = [valid, invalid]
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["schemas"]) == 1
-        assert data["schemas"][0]["name"] == "pricing"
-
-    def test_schema_with_none_comment(self, client: TestClient) -> None:
-        """Schema with comment=None defaults to empty string."""
-        from databricks.sdk.service.catalog import SchemaInfo
-
-        sch = SchemaInfo(name="test_schema", comment=None)
-
-        mock_ws = MagicMock()
-        mock_ws.schemas.list.return_value = [sch]
-
-        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
-            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
-
-        assert resp.status_code == 200
-        assert resp.json()["schemas"][0]["comment"] == ""
 
 
 # ---------------------------------------------------------------------------

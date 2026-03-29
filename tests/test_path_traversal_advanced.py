@@ -417,7 +417,7 @@ class TestWindowsMixedSeparatorTraversal:
 
 
 # =========================================================================
-# 6. Null byte injection
+# 6. Null byte injection — parametrized across all validation functions
 # =========================================================================
 
 
@@ -428,61 +428,100 @@ class TestNullByteInjection:
     - Be truncated to 'config/valid.json' at the OS level
 
     Modern Python (3.x) raises ValueError for embedded null bytes,
-    but we should confirm this consistently.
+    but we should confirm this consistently across all validation functions.
 
     Production failure: bypassing path validation in older Python or
     through ctypes/cffi calls that pass paths to C libraries.
     """
 
-    def test_null_byte_in_load_node_config(self, tmp_path: Path):
-        """load_node_config with null byte in path should raise, not read."""
-        from haute._config_io import load_node_config
+    @pytest.mark.parametrize(
+        "func_name, call_args_factory",
+        [
+            pytest.param(
+                "load_node_config",
+                lambda tmp_path: {
+                    "args": ("config.json\x00../../etc/passwd",),
+                    "kwargs": {"base_dir": tmp_path / "project"},
+                    "setup": lambda tp: (tp / "project").mkdir(exist_ok=True)
+                    or _write_json(tp / "project" / "config.json", {"ok": True}),
+                },
+                id="load_node_config",
+            ),
+            pytest.param(
+                "validate_safe_path",
+                lambda tmp_path: {
+                    "args": (tmp_path, "file\x00.txt"),
+                    "kwargs": {},
+                    "setup": lambda tp: None,
+                },
+                id="validate_safe_path",
+            ),
+            pytest.param(
+                "validate_project_path",
+                lambda tmp_path: {
+                    "args": (tmp_path / "data\x00.json",),
+                    "kwargs": {},
+                    "setup": lambda tp: __import__(
+                        "haute._sandbox", fromlist=["set_project_root"]
+                    ).set_project_root(tp),
+                },
+                id="validate_project_path",
+            ),
+            pytest.param(
+                "config_path_for_node",
+                lambda tmp_path: {
+                    "args": (
+                        __import__("haute._types", fromlist=["NodeType"]).NodeType.BANDING,
+                        "evil\x00../../etc/passwd",
+                    ),
+                    "kwargs": {},
+                    "setup": lambda tp: None,
+                },
+                id="config_path_for_node",
+            ),
+            pytest.param(
+                "score_from_config",
+                lambda tmp_path: {
+                    "args": (),
+                    "kwargs": {"config": "config\x00.json", "base_dir": str(tmp_path)},
+                    "setup": lambda tp: None,
+                },
+                id="score_from_config",
+            ),
+        ],
+    )
+    def test_null_byte_rejected(self, tmp_path: Path, func_name: str, call_args_factory):
+        """Null bytes in paths must raise ValueError or OSError, never succeed."""
+        call_spec = call_args_factory(tmp_path)
+        if call_spec["setup"]:
+            call_spec["setup"](tmp_path)
 
-        project = tmp_path / "project"
-        project.mkdir()
-        # Create a valid config file
-        _write_json(project / "config.json", {"ok": True})
+        # Resolve the function from its module
+        func_map = {
+            "load_node_config": lambda: __import__(
+                "haute._config_io", fromlist=["load_node_config"]
+            ).load_node_config,
+            "validate_safe_path": lambda: __import__(
+                "haute.routes._helpers", fromlist=["validate_safe_path"]
+            ).validate_safe_path,
+            "validate_project_path": lambda: __import__(
+                "haute._sandbox", fromlist=["validate_project_path"]
+            ).validate_project_path,
+            "config_path_for_node": lambda: __import__(
+                "haute._config_io", fromlist=["config_path_for_node"]
+            ).config_path_for_node,
+            "score_from_config": lambda: __import__(
+                "haute._model_scorer", fromlist=["score_from_config"]
+            ).score_from_config,
+        }
+        func = func_map[func_name]()
 
         with pytest.raises((ValueError, OSError)):
-            load_node_config("config.json\x00../../etc/passwd", base_dir=project)
-
-    def test_null_byte_in_validate_safe_path(self, tmp_path: Path):
-        """validate_safe_path must not accept paths with null bytes."""
-        from haute.routes._helpers import validate_safe_path
-
-        # Python's pathlib raises ValueError on null bytes
-        with pytest.raises((ValueError, Exception)):
-            validate_safe_path(tmp_path, "file\x00.txt")
-
-    def test_null_byte_in_validate_project_path(self, tmp_path: Path):
-        """validate_project_path must not accept null bytes."""
-        from haute._sandbox import set_project_root, validate_project_path
-
-        set_project_root(tmp_path)
-        with pytest.raises((ValueError, Exception)):
-            validate_project_path(tmp_path / "data\x00.json")
-
-    def test_null_byte_in_config_path_for_node(self):
-        """node_name with null byte is now rejected by path traversal check."""
-        from haute._config_io import config_path_for_node
-        from haute._types import NodeType
-
-        # The null byte name also contains path separators, so it is
-        # rejected by the traversal check. Either ValueError from our
-        # check or from OS-level null byte rejection is acceptable.
-        with pytest.raises((ValueError, OSError)):
-            config_path_for_node(NodeType.BANDING, "evil\x00../../etc/passwd")
-
-    def test_null_byte_in_score_from_config(self, tmp_path: Path):
-        """score_from_config with null byte in config path should raise."""
-        from haute._model_scorer import score_from_config
-
-        with pytest.raises((ValueError, OSError)):
-            score_from_config(config="config\x00.json", base_dir=str(tmp_path))
+            func(*call_spec["args"], **call_spec["kwargs"])
 
 
 # =========================================================================
-# 7. Very long paths exceeding OS limits
+# 7. Very long paths — parametrized across all validation functions
 # =========================================================================
 
 
@@ -492,75 +531,131 @@ class TestVeryLongPaths:
     - Buffer overflows in C extensions
     - DoS via excessive memory allocation
 
-    These tests confirm the functions fail gracefully.
+    These tests confirm the functions fail gracefully (either succeed
+    with a valid result or raise an appropriate exception).
 
     Production failure: a crafted node_name with 10,000 characters causes
     an unhandled exception or memory exhaustion.
     """
 
-    def test_long_node_name_in_config_path(self):
-        """A very long node_name should not crash config_path_for_node."""
-        from haute._config_io import config_path_for_node
-        from haute._types import NodeType
+    @pytest.mark.parametrize(
+        "description, func_getter, args_factory, expect_error",
+        [
+            pytest.param(
+                "config_path_for_node builds path without error",
+                lambda: __import__(
+                    "haute._config_io", fromlist=["config_path_for_node"]
+                ).config_path_for_node,
+                lambda tp: {
+                    "args": (
+                        __import__("haute._types", fromlist=["NodeType"]).NodeType.BANDING,
+                        "a" * 10000,
+                    ),
+                    "kwargs": {},
+                    "check": lambda result: "a" * 10000 in str(result),
+                },
+                False,
+                id="config_path_for_node",
+            ),
+            pytest.param(
+                "load_node_config raises OSError for very long path",
+                lambda: __import__(
+                    "haute._config_io", fromlist=["load_node_config"]
+                ).load_node_config,
+                lambda tp: {
+                    "args": ("/".join(["x" * 300] * 20) + "/config.json",),
+                    "kwargs": {"base_dir": tp},
+                },
+                True,
+                id="load_node_config",
+            ),
+            pytest.param(
+                "validate_safe_path handles very long path",
+                lambda: __import__(
+                    "haute.routes._helpers", fromlist=["validate_safe_path"]
+                ).validate_safe_path,
+                lambda tp: {
+                    "args": (tp, "sub/" * 500 + "file.txt"),
+                    "kwargs": {},
+                    "check": lambda result: result.is_relative_to(tp),
+                },
+                False,
+                id="validate_safe_path",
+            ),
+            pytest.param(
+                "validate_project_path handles very long path",
+                lambda: (
+                    __import__(
+                        "haute._sandbox", fromlist=["set_project_root"]
+                    ).set_project_root,
+                    __import__(
+                        "haute._sandbox", fromlist=["validate_project_path"]
+                    ).validate_project_path,
+                ),
+                lambda tp: {
+                    "args": (tp / ("a" * 300) / ("b" * 300) / "file.txt",),
+                    "kwargs": {},
+                    "check": lambda result: result.is_relative_to(tp),
+                    "setup_root": True,
+                },
+                False,
+                id="validate_project_path",
+            ),
+            pytest.param(
+                "save_node_config raises OSError for long name",
+                lambda: __import__(
+                    "haute._config_io", fromlist=["save_node_config"]
+                ).save_node_config,
+                lambda tp: {
+                    "args": (
+                        __import__("haute._types", fromlist=["NodeType"]).NodeType.BANDING,
+                        "z" * 500,
+                        {"data": "test"},
+                    ),
+                    "kwargs": {"base_dir": tp},
+                },
+                True,
+                id="save_node_config",
+            ),
+            pytest.param(
+                "score_from_config raises for very long path",
+                lambda: __import__(
+                    "haute._model_scorer", fromlist=["score_from_config"]
+                ).score_from_config,
+                lambda tp: {
+                    "args": (),
+                    "kwargs": {
+                        "config": "config/" + "a" * 5000 + ".json",
+                        "base_dir": str(tp),
+                    },
+                },
+                True,
+                id="score_from_config",
+            ),
+        ],
+    )
+    def test_long_path_handled(
+        self, tmp_path: Path, description, func_getter, args_factory, expect_error
+    ):
+        """Long paths must either succeed gracefully or raise OSError/FileNotFoundError."""
+        raw = func_getter()
+        call_spec = args_factory(tmp_path)
 
-        long_name = "a" * 10000
-        # Should not raise -- it just builds a Path object
-        path = config_path_for_node(NodeType.BANDING, long_name)
-        assert long_name in str(path)
+        # Handle validate_project_path which needs set_project_root setup
+        if isinstance(raw, tuple):
+            set_root, func = raw
+            set_root(tmp_path)
+        else:
+            func = raw
 
-    def test_long_path_in_load_node_config(self, tmp_path: Path):
-        """Loading from a path exceeding OS limits should raise OSError."""
-        from haute._config_io import load_node_config
-
-        long_segment = "x" * 300
-        long_path = "/".join([long_segment] * 20) + "/config.json"
-
-        with pytest.raises((OSError, FileNotFoundError)):
-            load_node_config(long_path, base_dir=tmp_path)
-
-    def test_long_path_in_validate_safe_path(self, tmp_path: Path):
-        """validate_safe_path with a very long path should not crash."""
-        from haute.routes._helpers import validate_safe_path
-
-        long_path = "sub/" * 500 + "file.txt"
-        # Should succeed (path is within base, just very long)
-        result = validate_safe_path(tmp_path, long_path)
-        assert result.is_relative_to(tmp_path)
-
-    def test_long_path_in_validate_project_path(self, tmp_path: Path):
-        """validate_project_path should handle very long paths gracefully."""
-        from haute._sandbox import set_project_root, validate_project_path
-
-        set_project_root(tmp_path)
-        long_path = tmp_path / ("a" * 300) / ("b" * 300) / "file.txt"
-        # Should not crash -- just validates the path
-        result = validate_project_path(long_path)
-        assert result.is_relative_to(tmp_path)
-
-    def test_long_path_in_save_node_config(self, tmp_path: Path):
-        """save_node_config with a very long node_name should raise OSError
-        when it tries to create the file.
-        """
-        from haute._config_io import save_node_config
-        from haute._types import NodeType
-
-        long_name = "z" * 500  # Exceeds most filesystem name limits (255 chars)
-
-        with pytest.raises(OSError):
-            save_node_config(
-                NodeType.BANDING,
-                long_name,
-                {"data": "test"},
-                base_dir=tmp_path,
-            )
-
-    def test_long_config_path_in_score_from_config(self, tmp_path: Path):
-        """score_from_config with a very long config path should raise."""
-        from haute._model_scorer import score_from_config
-
-        long_path = "config/" + "a" * 5000 + ".json"
-        with pytest.raises((OSError, FileNotFoundError)):
-            score_from_config(config=long_path, base_dir=str(tmp_path))
+        if expect_error:
+            with pytest.raises((OSError, FileNotFoundError)):
+                func(*call_spec["args"], **call_spec["kwargs"])
+        else:
+            result = func(*call_spec["args"], **call_spec["kwargs"])
+            check = call_spec.get("check")
+            if check:
+                assert check(result)
 
 
 # =========================================================================

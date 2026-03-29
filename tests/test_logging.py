@@ -81,29 +81,17 @@ class TestLogLevel:
         configure_logging()
         assert logging.getLogger().level == logging.INFO
 
-    def test_debug_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HAUTE_LOG_LEVEL", "DEBUG")
+    @pytest.mark.parametrize("level_name,level_const", [
+        ("DEBUG", logging.DEBUG),
+        ("WARNING", logging.WARNING),
+        ("ERROR", logging.ERROR),
+        ("CRITICAL", logging.CRITICAL),
+    ])
+    def test_level_from_env(self, monkeypatch: pytest.MonkeyPatch, level_name: str, level_const: int) -> None:
+        monkeypatch.setenv("HAUTE_LOG_LEVEL", level_name)
         monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
         configure_logging()
-        assert logging.getLogger().level == logging.DEBUG
-
-    def test_warning_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HAUTE_LOG_LEVEL", "WARNING")
-        monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
-        configure_logging()
-        assert logging.getLogger().level == logging.WARNING
-
-    def test_error_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HAUTE_LOG_LEVEL", "ERROR")
-        monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
-        configure_logging()
-        assert logging.getLogger().level == logging.ERROR
-
-    def test_critical_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HAUTE_LOG_LEVEL", "CRITICAL")
-        monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
-        configure_logging()
-        assert logging.getLogger().level == logging.CRITICAL
+        assert logging.getLogger().level == level_const
 
     def test_level_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAUTE_LOG_LEVEL", "debug")
@@ -111,17 +99,11 @@ class TestLogLevel:
         configure_logging()
         assert logging.getLogger().level == logging.DEBUG
 
-    def test_invalid_level_falls_back_to_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HAUTE_LOG_LEVEL", "NONEXISTENT")
+    @pytest.mark.parametrize("bad_value", ["NONEXISTENT", ""])
+    def test_invalid_level_falls_back_to_info(self, monkeypatch: pytest.MonkeyPatch, bad_value: str) -> None:
+        monkeypatch.setenv("HAUTE_LOG_LEVEL", bad_value)
         monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
         configure_logging()
-        assert logging.getLogger().level == logging.INFO
-
-    def test_empty_level_falls_back_to_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HAUTE_LOG_LEVEL", "")
-        monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
-        configure_logging()
-        # Empty string uppercased is "", getattr(logging, "", logging.INFO) -> INFO
         assert logging.getLogger().level == logging.INFO
 
 

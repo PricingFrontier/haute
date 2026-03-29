@@ -23,8 +23,6 @@ from haute.trace import (
     execute_trace,
     trace_result_to_dict,
 )
-from haute.trace import _cache as _trace_cache
-from haute.executor import _preview_cache
 from haute._trace_waterfall import WaterfallEntry, WaterfallResult, build_waterfall
 from haute._trace_export import export_trace
 from tests.conftest import (
@@ -34,16 +32,6 @@ from tests.conftest import (
     make_source_node as _source_node,
     make_transform_node as _transform_node,
 )
-
-
-@pytest.fixture(autouse=True)
-def _clear_caches():
-    """Invalidate caches between tests."""
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
-    yield
-    _trace_cache.invalidate()
-    _preview_cache.invalidate()
 
 
 # ===========================================================================

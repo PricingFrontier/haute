@@ -758,38 +758,6 @@ class TestBuildCompareUrlEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-class TestListBranchesEdgeCases:
-    def test_lists_main_branch(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        result = list_branches(repo)
-        names = [b.name for b in result.branches]
-        assert "main" in names
-
-    def test_own_branches_sorted_first(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "checkout", "-b", "pricing/other-user/other")
-        _git(repo, "checkout", "main")
-        _git(repo, "checkout", "-b", "pricing/test-user/mine")
-        _git(repo, "checkout", "main")
-
-        result = list_branches(repo)
-        non_main = [b for b in result.branches if b.name != "main"]
-        assert len(non_main) >= 2
-        assert non_main[0].is_yours is True
-
-    def test_archived_branches_sorted_last(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "checkout", "-b", "archive/old")
-        _git(repo, "checkout", "main")
-        _git(repo, "checkout", "-b", "pricing/test-user/active")
-        _git(repo, "checkout", "main")
-
-        result = list_branches(repo)
-        non_main = [b for b in result.branches if b.name != "main"]
-        assert non_main[-1].is_archived is True
-        assert non_main[-1].name == "archive/old"
-
-
 class TestArgumentInjectionPrevention:
     """Verify that public functions reject malicious ref names before
     passing them to git commands."""

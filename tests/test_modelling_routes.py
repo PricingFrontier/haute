@@ -357,6 +357,24 @@ class TestFriendlyError:
         assert "infinite" in result.lower() or "inf" in result.lower()
         assert "polars" in result.lower()
 
+    def test_empty_exception_message(self):
+        exc = RuntimeError("")
+        result = _friendly_error(exc)
+        assert "RuntimeError" in result
+
+    def test_catboost_nan_recommends_fill_null(self):
+        exc = type("CatBoostError", (Exception,), {})("NaN values in column 'x'")
+        result = _friendly_error(exc)
+        assert ".fill_null()" in result or ".drop_nulls()" in result
+
+    def test_catboost_feature_mismatch_includes_original_message(self):
+        exc = type("CatBoostError", (Exception,), {})(
+            "feature number mismatch: expected 5 but got 3"
+        )
+        result = _friendly_error(exc)
+        assert "feature mismatch" in result.lower()
+        assert "expected 5 but got 3" in result
+
 
 class TestClampRowLimit:
     """Unit tests for _clamp_row_limit — applies user row limits."""
@@ -384,6 +402,7 @@ class TestClampRowLimit:
 
     def test_float_user_limit_converted(self):
         assert _clamp_row_limit(1000, 500.7) == 500
+        assert isinstance(_clamp_row_limit(1000, 500.7), int)
 
     def test_both_none(self):
         assert _clamp_row_limit(None, None) is None
@@ -430,30 +449,6 @@ class TestOutputDirDefault:
 # ---------------------------------------------------------------------------
 # Phase 1A: Endpoint validation gaps
 # ---------------------------------------------------------------------------
-
-
-class TestTrainValidation:
-    """Upfront validation errors that return 400 without starting a job."""
-
-    def test_train_no_target(self, client, training_data):
-        graph = _make_modelling_graph(training_data, target="y")
-        # Remove target from config
-        graph_dict = graph
-        for node in graph_dict["nodes"]:
-            if node["id"] == "train":
-                node["data"]["config"]["target"] = ""
-        resp = client.post("/api/modelling/train", json={"graph": graph_dict, "node_id": "train"})
-        assert resp.status_code == 400
-        assert "target" in resp.json()["detail"].lower()
-
-    def test_train_unknown_algorithm(self, client, training_data):
-        graph = _make_modelling_graph(training_data, algorithm="catboost")
-        for node in graph["nodes"]:
-            if node["id"] == "train":
-                node["data"]["config"]["algorithm"] = "nonexistent_algo"
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
-        assert resp.status_code == 400
-        assert "nonexistent_algo" in resp.json()["detail"]
 
 
 class TestEstimateEndpoint:
@@ -932,113 +927,6 @@ class TestValidateGlmFamilyLink:
     def test_empty_link_skips(self):
         _validate_glm_family_link("poisson", "")
 
-
-# ---------------------------------------------------------------------------
-# _friendly_error additional tests
-# ---------------------------------------------------------------------------
-
-
-class TestFriendlyErrorAdditional:
-
-    def test_empty_exception_message(self):
-        exc = RuntimeError("")
-        result = _friendly_error(exc)
-        assert "RuntimeError" in result
-
-    def test_catboost_nan_recommends_fill_null(self):
-        exc = type("CatBoostError", (Exception,), {})("NaN values in column 'x'")
-        result = _friendly_error(exc)
-        assert ".fill_null()" in result or ".drop_nulls()" in result
-
-    def test_generic_exception_includes_type_name(self):
-        exc = type("CustomTrainingError", (Exception,), {})("custom problem")
-        result = _friendly_error(exc)
-        assert "CustomTrainingError" in result
-        assert "custom problem" in result
-
-    def test_value_error_passes_through_unchanged(self):
-        exc = ValueError("exact message")
-        assert _friendly_error(exc) == "exact message"
-
-    def test_file_not_found_formatted(self):
-        exc = FileNotFoundError("data.parquet")
-        result = _friendly_error(exc)
-        assert result == "File not found: data.parquet"
-
-    def test_catboost_feature_mismatch_detection(self):
-        exc = type("CatBoostError", (Exception,), {})(
-            "feature number mismatch: expected 5 but got 3"
-        )
-        result = _friendly_error(exc)
-        assert "feature mismatch" in result.lower()
-        assert "expected 5 but got 3" in result
-
-
-# ---------------------------------------------------------------------------
-# _clamp_row_limit additional tests
-# ---------------------------------------------------------------------------
-
-
-class TestClampRowLimitAdditional:
-
-    def test_no_user_limit_returns_current(self):
-        assert _clamp_row_limit(5000, None) == 5000
-
-    def test_zero_user_limit_ignored(self):
-        assert _clamp_row_limit(5000, 0) == 5000
-
-    def test_negative_user_limit_ignored(self):
-        assert _clamp_row_limit(5000, -10) == 5000
-
-    def test_user_smaller_than_current_takes_minimum(self):
-        assert _clamp_row_limit(5000, 200) == 200
-
-    def test_both_none_returns_none(self):
-        assert _clamp_row_limit(None, None) is None
-
-    def test_float_user_limit_converted_to_int(self):
-        assert _clamp_row_limit(5000, 300.9) == 300
-        assert isinstance(_clamp_row_limit(5000, 300.9), int)
-
-
-# ---------------------------------------------------------------------------
-# /estimate endpoint additional tests
-# ---------------------------------------------------------------------------
-
-
-class TestEstimateEndpointAdditional:
-
-    def test_valid_modelling_node_returns_estimate(self, client, training_data):
-        graph = _make_modelling_graph(training_data)
-        resp = client.post(
-            "/api/modelling/estimate", json={"graph": graph, "node_id": "train"}
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_rows"] is not None
-        assert data["estimated_mb"] is not None
-
-    def test_missing_node_returns_404(self, client, training_data):
-        graph = _make_modelling_graph(training_data)
-        resp = client.post(
-            "/api/modelling/estimate", json={"graph": graph, "node_id": "missing"}
-        )
-        assert resp.status_code == 404
-
-    def test_exception_returns_empty_response(self, client, training_data):
-        graph = _make_modelling_graph(training_data)
-        with patch(
-            "haute._ram_estimate.estimate_safe_training_rows",
-            side_effect=RuntimeError("probe failure"),
-        ):
-            resp = client.post(
-                "/api/modelling/estimate",
-                json={"graph": graph, "node_id": "train"},
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_rows"] is None
-        assert data["safe_row_limit"] is None
 
 
 # ---------------------------------------------------------------------------

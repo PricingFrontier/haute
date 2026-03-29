@@ -186,80 +186,70 @@ class TestPollCompletedJob:
 
 
 # ============================================================================
-# 3. Frontier select on error job — 400
+# 3. Reject non-completed job — 400 (parametrized)
 # ============================================================================
 
 
-class TestFrontierSelectOnErrorJob:
-    """Selecting a frontier point on a failed optimiser job must return 400."""
+def _make_payload(job_id: str, url: str) -> dict:
+    """Build the minimal JSON payload for the given endpoint, inserting job_id."""
+    if url == "/api/optimiser/frontier/select":
+        return {"job_id": job_id, "point_index": 0}
+    if url == "/api/optimiser/save":
+        return {"job_id": job_id, "output_path": "output/test.json"}
+    # Default: endpoints that only need a job_id
+    return {"job_id": job_id}
+
+
+class TestRejectNonCompletedJob:
+    """Every endpoint that requires a completed job must return 400
+    with 'not completed' in the detail when given a running or error job."""
+
+    _CASES = [
+        ("optimiser", "error", "/api/optimiser/frontier/select"),
+        ("optimiser", "running", "/api/optimiser/frontier/select"),
+        ("modelling", "running", "/api/modelling/mlflow/log"),
+        ("modelling", "error", "/api/modelling/mlflow/log"),
+        ("optimiser", "running", "/api/optimiser/apply"),
+        ("optimiser", "error", "/api/optimiser/apply"),
+        ("optimiser", "running", "/api/optimiser/save"),
+        ("optimiser", "error", "/api/optimiser/save"),
+        ("optimiser", "running", "/api/optimiser/mlflow/log"),
+    ]
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        from haute.routes.optimiser import _store
+        from haute.routes.modelling import _store as modelling_store
+        from haute.routes.optimiser import _store as optimiser_store
 
-        self._store = _store
-        self._snapshot = dict(_store.jobs)
+        self._stores = {
+            "modelling": modelling_store,
+            "optimiser": optimiser_store,
+        }
+        self._snapshots = {
+            name: dict(store.jobs) for name, store in self._stores.items()
+        }
         yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
+        for name, store in self._stores.items():
+            store.jobs.clear()
+            store.jobs.update(self._snapshots[name])
 
-    def test_frontier_select_on_error_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "error", message="Solve failed")
+    @pytest.mark.parametrize("store_name,status,url", _CASES)
+    def test_rejects_non_completed_job(
+        self,
+        client: "TestClient",
+        store_name: str,
+        status: str,
+        url: str,
+    ) -> None:
+        store = self._stores[store_name]
+        extra = {"message": "Injected failure"} if status == "error" else {}
+        job_id = _inject_job(store, status, **extra)
 
-        resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={"job_id": job_id, "point_index": 0},
+        resp = client.post(url, json=_make_payload(job_id, url))
+        assert resp.status_code == 400, (
+            f"Expected 400 for {url} with status={status}, "
+            f"got {resp.status_code}: {resp.text}"
         )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
-
-    def test_frontier_select_on_running_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "running")
-
-        resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={"job_id": job_id, "point_index": 0},
-        )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
-
-
-# ============================================================================
-# 4. MLflow log on running job — 400
-# ============================================================================
-
-
-class TestMlflowLogOnRunningJob:
-    """Logging to MLflow before training completes must return 400."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        from haute.routes.modelling import _store
-
-        self._store = _store
-        self._snapshot = dict(_store.jobs)
-        yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
-
-    def test_mlflow_log_on_running_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "running")
-
-        resp = client.post(
-            "/api/modelling/mlflow/log",
-            json={"job_id": job_id},
-        )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
-
-    def test_mlflow_log_on_error_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "error", message="Training failed")
-
-        resp = client.post(
-            "/api/modelling/mlflow/log",
-            json={"job_id": job_id},
-        )
-        assert resp.status_code == 400
         assert "not completed" in resp.json()["detail"].lower()
 
 
@@ -312,45 +302,6 @@ class TestExportScript:
         body = resp.json()
         assert "script" in body
         assert "filename" in body
-
-
-# ============================================================================
-# 6. Apply on running optimiser — 400
-# ============================================================================
-
-
-class TestApplyOnRunningOptimiser:
-    """Applying lambdas before solve completes must return 400."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        from haute.routes.optimiser import _store
-
-        self._store = _store
-        self._snapshot = dict(_store.jobs)
-        yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
-
-    def test_apply_on_running_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "running")
-
-        resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": job_id},
-        )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
-
-    def test_apply_on_error_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "error", message="Solve timeout")
-
-        resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": job_id},
-        )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
 
 
 # ============================================================================
@@ -606,74 +557,6 @@ class TestOptimiserTimeoutDetection:
         body = resp.json()
         assert body["status"] == "error"
         assert "timed out" in body["message"].lower()
-
-
-# ============================================================================
-# Optimiser save on non-completed job
-# ============================================================================
-
-
-class TestOptimiserSaveOnBadState:
-    """Saving an optimiser result requires a completed job."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        from haute.routes.optimiser import _store
-
-        self._store = _store
-        self._snapshot = dict(_store.jobs)
-        yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
-
-    def test_save_on_running_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "running")
-
-        resp = client.post(
-            "/api/optimiser/save",
-            json={"job_id": job_id, "output_path": "output/test.json"},
-        )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
-
-    def test_save_on_error_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "error")
-
-        resp = client.post(
-            "/api/optimiser/save",
-            json={"job_id": job_id, "output_path": "output/test.json"},
-        )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
-
-
-# ============================================================================
-# Optimiser MLflow log on non-completed job
-# ============================================================================
-
-
-class TestOptimiserMlflowLogOnBadState:
-    """Logging optimiser results to MLflow requires a completed job."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        from haute.routes.optimiser import _store
-
-        self._store = _store
-        self._snapshot = dict(_store.jobs)
-        yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
-
-    def test_mlflow_log_on_running_job(self, client: "TestClient") -> None:
-        job_id = _inject_job(self._store, "running")
-
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": job_id},
-        )
-        assert resp.status_code == 400
-        assert "not completed" in resp.json()["detail"].lower()
 
 
 # ============================================================================

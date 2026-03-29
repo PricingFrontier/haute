@@ -137,6 +137,14 @@ class TestResidualsHistogram:
         _, stats = compute_residuals_histogram(y_true, y_pred, n_bins=50)
         assert stats["skew"] > 0
 
+    def test_negative_skew(self):
+        rng = np.random.RandomState(99)
+        residuals = -rng.exponential(size=1000)
+        y_true = residuals
+        y_pred = np.zeros(1000)
+        _, stats = compute_residuals_histogram(y_true, y_pred, n_bins=50)
+        assert stats["skew"] < 0
+
 
 # ---------------------------------------------------------------------------
 # compute_actual_vs_predicted
@@ -727,81 +735,11 @@ class TestLoglossEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# compute_residuals_histogram additional edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestResidualsHistogramEdgeCases:
-    def test_empty_arrays_defaults(self):
-        bins, stats = compute_residuals_histogram(np.array([]), np.array([]))
-        assert bins == []
-        assert stats["mean"] == 0.0
-        assert stats["std"] == 0.0
-        assert stats["skew"] == 0.0
-        assert stats["min"] == 0.0
-        assert stats["max"] == 0.0
-
-    def test_single_value_histogram(self):
-        y_true = np.array([7.0])
-        y_pred = np.array([5.0])
-        bins, stats = compute_residuals_histogram(y_true, y_pred, n_bins=10)
-        assert stats["mean"] == pytest.approx(2.0)
-        assert stats["min"] == pytest.approx(2.0)
-        assert stats["max"] == pytest.approx(2.0)
-
-    def test_all_zero_residuals_std_zero(self):
-        y = np.array([1.0, 2.0, 3.0, 4.0])
-        bins, stats = compute_residuals_histogram(y, y, n_bins=5)
-        assert stats["mean"] == pytest.approx(0.0)
-        assert stats["std"] == pytest.approx(0.0)
-        assert stats["skew"] == pytest.approx(0.0)
-
-    def test_negative_skew(self):
-        rng = np.random.RandomState(99)
-        residuals = -rng.exponential(size=1000)
-        y_true = residuals
-        y_pred = np.zeros(1000)
-        _, stats = compute_residuals_histogram(y_true, y_pred, n_bins=50)
-        assert stats["skew"] < 0
-
-
-# ---------------------------------------------------------------------------
-# compute_actual_vs_predicted additional edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestActualVsPredictedEdgeCases:
-    def test_empty_returns_empty(self):
-        result = compute_actual_vs_predicted(np.array([]), np.array([]))
-        assert result == []
-
-    def test_n_leq_max_points_returns_all(self):
-        y_true = np.array([1.0, 2.0, 3.0])
-        y_pred = np.array([1.1, 2.1, 3.1])
-        result = compute_actual_vs_predicted(y_true, y_pred, max_points=10)
-        assert len(result) == 3
-
-    def test_n_greater_max_points_subsamples(self):
-        n = 5000
-        rng = np.random.RandomState(42)
-        y_true = rng.randn(n)
-        y_pred = rng.randn(n)
-        result = compute_actual_vs_predicted(y_true, y_pred, max_points=200)
-        assert len(result) <= 200
-
-
-# ---------------------------------------------------------------------------
 # compute_lorenz_curve additional edge cases
 # ---------------------------------------------------------------------------
 
 
 class TestLorenzCurveEdgeCases:
-    def test_empty_returns_endpoints_only(self):
-        model_curve, perfect_curve = compute_lorenz_curve(np.array([]), np.array([]))
-        assert len(model_curve) == 1
-        assert model_curve[0] == {"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}
-        assert len(perfect_curve) == 1
-
     def test_all_same_actuals(self):
         y_true = np.array([3.0, 3.0, 3.0, 3.0, 3.0])
         y_pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])

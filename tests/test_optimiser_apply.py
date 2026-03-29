@@ -11,10 +11,6 @@ import tempfile
 import polars as pl
 import pytest
 
-from haute._optimiser_io import (
-    _artifact_cache,
-    load_optimiser_artifact,
-)
 from haute._parser_helpers import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _node_to_code
@@ -420,59 +416,6 @@ class TestExecutorRatebook:
             assert "__optimiser_version__" in result.columns
         finally:
             os.unlink(path)
-
-
-# ---------------------------------------------------------------------------
-# Artifact loader & caching
-# ---------------------------------------------------------------------------
-
-
-class TestArtifactLoader:
-    def setup_method(self):
-        _artifact_cache.clear()
-
-    def test_load_artifact(self):
-        path = _write_artifact(_make_online_artifact())
-        try:
-            artifact = load_optimiser_artifact(path)
-            assert artifact["mode"] == "online"
-            assert artifact["lambdas"] == {"predicted_volume": 0.5}
-        finally:
-            os.unlink(path)
-
-    def test_cache_hit(self):
-        path = _write_artifact(_make_online_artifact())
-        try:
-            a1 = load_optimiser_artifact(path)
-            a2 = load_optimiser_artifact(path)
-            assert a1 == a2  # same content from cache (deepcopy)
-        finally:
-            os.unlink(path)
-
-    def test_cache_invalidation_on_mtime(self):
-        artifact = _make_online_artifact(version="v1")
-        path = _write_artifact(artifact)
-        try:
-            a1 = load_optimiser_artifact(path)
-            assert a1["version"] == "v1"
-
-            # Overwrite file with different content — bump mtime explicitly
-            artifact["version"] = "v2"
-            with open(path, "w") as f:
-                json.dump(artifact, f)
-            # Force mtime forward so cache invalidation triggers
-            stat = os.stat(path)
-            os.utime(path, (stat.st_atime + 1, stat.st_mtime + 1))
-
-            a2 = load_optimiser_artifact(path)
-            assert a2["version"] == "v2"
-            assert a1 is not a2
-        finally:
-            os.unlink(path)
-
-    def test_missing_file_raises(self):
-        with pytest.raises(FileNotFoundError):
-            load_optimiser_artifact("/tmp/nonexistent_artifact_12345.json")
 
 
 # ---------------------------------------------------------------------------

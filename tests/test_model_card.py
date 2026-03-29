@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from haute.modelling._model_card import generate_model_card
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
@@ -59,45 +61,21 @@ class TestModelCardContainsMetrics:
 
 
 class TestModelCardOmitsEmptySections:
-    def test_no_shap_header_when_empty(self):
+    @pytest.mark.parametrize("header", [
+        "SHAP Summary",
+        "Cross-Validation",
+        "Double Lift",
+        "Loss Curve",
+        "Actual vs Expected",
+        "Lorenz Curve",
+        "Residuals",
+        "Actual vs Predicted",
+        "Partial Dependence",
+        "Holdout Metrics",
+    ])
+    def test_section_omitted_when_empty(self, header):
         html = generate_model_card(**_minimal_kwargs())
-        assert "SHAP Summary" not in html
-
-    def test_no_cv_header_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Cross-Validation" not in html
-
-    def test_no_double_lift_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Double Lift" not in html
-
-    def test_no_loss_curve_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Loss Curve" not in html
-
-    def test_no_ave_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Actual vs Expected" not in html
-
-    def test_no_lorenz_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Lorenz Curve" not in html
-
-    def test_no_residuals_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Residuals" not in html
-
-    def test_no_scatter_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Actual vs Predicted" not in html
-
-    def test_no_pdp_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Partial Dependence" not in html
-
-    def test_no_holdout_metrics_when_empty(self):
-        html = generate_model_card(**_minimal_kwargs())
-        assert "Holdout Metrics" not in html
+        assert header not in html
 
 
 class TestModelCardMinimalInput:
