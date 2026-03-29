@@ -415,7 +415,7 @@ describe("OptimiserConfig", () => {
       )
     })
 
-    it("shows 'Optimising...' during active solve job", () => {
+    it("shows 'Executing pipeline...' during active solve job before progress arrives", () => {
       useNodeResultsStore.setState({
         solveJobs: {
           opt_1: {
@@ -441,7 +441,9 @@ describe("OptimiserConfig", () => {
           })}
         />,
       )
-      expect(screen.getByText("Optimising...")).toBeInTheDocument()
+      expect(screen.getByText("Executing pipeline...")).toBeInTheDocument()
+      // The Optimise button should not be visible while solving
+      expect(screen.queryByRole("button", { name: /Optimise/ })).not.toBeInTheDocument()
     })
   })
 

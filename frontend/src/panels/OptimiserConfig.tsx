@@ -584,46 +584,47 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
 
       {/* Actions */}
       <div className="space-y-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-        <button
-          onClick={handleSolve}
-          disabled={solving || !canSolve}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
-          style={{
-            background: solving ? "var(--chrome-hover)" : accentColor,
-            color: solving ? "var(--text-muted)" : "#fff",
-            opacity: !canSolve ? 0.5 : 1,
-          }}
-        >
-          {solving ? <Loader2 size={14} className="animate-spin" /> : <Target size={14} />}
-          {solving ? "Optimising..." : "Optimise"}
-        </button>
-      </div>
-
-      {/* Submitting (before job starts polling) */}
-      {submitting && !solveProgress && (
-        <div className="px-3 py-2.5 rounded-lg text-xs flex items-center gap-2" style={{ background: withAlpha(accentColor, 0.06), border: `1px solid ${withAlpha(accentColor, 0.2)}` }}>
-          <Loader2 size={12} className="animate-spin" style={{ color: accentColor }} />
-          <span style={{ color: accentColor }}>Executing pipeline...</span>
-        </div>
-      )}
-
-      {/* Live Progress */}
-      {solveProgress && (
-        <div className="px-3 py-2.5 rounded-lg text-xs space-y-2" style={{ background: withAlpha(accentColor, 0.06), border: `1px solid ${withAlpha(accentColor, 0.2)}` }}>
-          <div className="space-y-1">
-            <div className="flex justify-between text-[11px]">
-              <span style={{ color: accentColor }}>{solveProgress.message || "Solving..."}</span>
-              <span style={{ color: "var(--text-muted)" }}>{formatElapsed(solveProgress.elapsed_seconds)}</span>
-            </div>
-            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: withAlpha(accentColor, 0.15) }}>
-              <div
-                className="h-full rounded-full transition-all duration-300"
-                style={{ width: `${Math.max(solveProgress.progress * 100, 2)}%`, background: accentColor }}
-              />
-            </div>
+        {solving ? (
+          <div className="px-3 py-2.5 rounded-lg text-xs space-y-2" style={{ background: withAlpha(accentColor, 0.06), border: `1px solid ${withAlpha(accentColor, 0.2)}` }}>
+            {solveProgress ? (
+              <div className="space-y-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="flex items-center gap-1.5" style={{ color: accentColor }}>
+                    <Loader2 size={12} className="animate-spin shrink-0" />
+                    {solveProgress.message || "Solving..."}
+                  </span>
+                  <span style={{ color: "var(--text-muted)" }}>{formatElapsed(solveProgress.elapsed_seconds)}</span>
+                </div>
+                <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: withAlpha(accentColor, 0.15) }}>
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${Math.max(solveProgress.progress * 100, 2)}%`, background: accentColor }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Loader2 size={12} className="animate-spin shrink-0" style={{ color: accentColor }} />
+                <span style={{ color: accentColor }}>Executing pipeline...</span>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        ) : (
+          <button
+            onClick={handleSolve}
+            disabled={!canSolve}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
+            style={{
+              background: accentColor,
+              color: "#fff",
+              opacity: !canSolve ? 0.5 : 1,
+            }}
+          >
+            <Target size={14} />
+            Optimise
+          </button>
+        )}
+      </div>
 
       {/* Error */}
       {solveError && (
