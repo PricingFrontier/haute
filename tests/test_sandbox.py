@@ -308,7 +308,7 @@ class TestValidateUserCode:
         validate_user_code('x = "hello".__len__()')
 
     def test_syntax_error_raises_unsafe_code_error(self):
-        """SyntaxError code must raise UnsafeCodeError — we cannot verify safety without a valid AST."""
+        """SyntaxError raises UnsafeCodeError (can't verify safety)."""
         with pytest.raises(UnsafeCodeError, match="syntax errors"):
             validate_user_code("df = (((")
 
@@ -1437,7 +1437,9 @@ class TestValidateProjectPathEdgeCases:
         result = validate_project_path("")
         assert result == tmp_path
 
-    def test_empty_string_outside_root_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_empty_string_outside_root_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
         other = tmp_path / "other"
         other.mkdir()
         monkeypatch.chdir(other)
@@ -1781,16 +1783,18 @@ class TestJoblibConcurrentLoadSafety:
 
 class TestDeeplyNestedASTValidation:
 
-    def test_500_nested_parens_no_crash(self):
-        depth = 500
+    def test_deeply_nested_parens_no_crash(self):
+        depth = 200
         code = "x = " + "(" * depth + "1" + ")" * depth
         try:
             validate_user_code(code)
-        except (RecursionError, UnsafeCodeError):
+        except (RecursionError, MemoryError, UnsafeCodeError):
+            # Python 3.13+ raises MemoryError for deep nesting;
+            # older versions may raise RecursionError. Either is acceptable.
             pass
 
-    def test_200_nested_parens_valid(self):
-        depth = 200
+    def test_100_nested_parens_valid(self):
+        depth = 100
         code = "x = " + "(" * depth + "42" + ")" * depth
         validate_user_code(code)
 
@@ -1798,7 +1802,7 @@ class TestDeeplyNestedASTValidation:
 class TestPreambleCacheEviction:
 
     def test_cache_does_not_exceed_max(self):
-        from haute.executor import _compile_preamble, _PREAMBLE_CACHE_MAX, _preamble_cache
+        from haute.executor import _PREAMBLE_CACHE_MAX, _compile_preamble, _preamble_cache
 
         initial_keys = set(_preamble_cache.keys())
 

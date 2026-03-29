@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 
 from haute._ram_estimate import (
     RamEstimate,
@@ -776,13 +778,12 @@ class TestAvailableRamPlatformPaths:
                 result = available_ram_bytes()
         assert result == 2000 * 4096
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="ctypes.windll only exists on Windows")
     def test_windows_ctypes_failure_falls_to_4gib(self, monkeypatch) -> None:
         """When GlobalMemoryStatusEx raises OSError, falls to 4 GiB."""
         monkeypatch.setattr("sys.platform", "win32")
         with patch("builtins.open", side_effect=OSError):
             with patch("os.sysconf", side_effect=AttributeError, create=True):
-                # The real ctypes will be used but GlobalMemoryStatusEx
-                # might succeed on Windows. Force an exception in it.
                 with patch(
                     "ctypes.windll.kernel32.GlobalMemoryStatusEx",
                     side_effect=OSError,
