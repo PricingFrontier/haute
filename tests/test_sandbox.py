@@ -270,9 +270,9 @@ class TestValidateUserCode:
 
     # ------- Legitimate Polars code should pass -------
 
-    def test_polars_chain_passes(self):
-        """Standard Polars method chain is allowed."""
-        validate_user_code('.filter(pl.col("age") > 25).select("name", "age")')
+    def test_polars_assignment_passes(self):
+        """Standard Polars assignment is allowed."""
+        validate_user_code('df = df.filter(pl.col("age") > 25).select("name", "age")')
 
     def test_polars_with_columns_passes(self):
         """with_columns expression is allowed."""
@@ -327,14 +327,14 @@ class TestValidateUserCode:
         with pytest.raises(UnsafeCodeError):
             validate_user_code("really broken ((( code ===")
 
-    def test_chain_syntax_passes_validation(self):
-        """Chain syntax (.filter(...)) is valid transform code and should pass."""
-        validate_user_code('.filter(pl.col("x") > 0)')
+    def test_explicit_assignment_passes_validation(self):
+        """Explicit df assignment is valid transform code and should pass."""
+        validate_user_code('df = df.filter(pl.col("x") > 0)')
 
-    def test_chain_syntax_with_dangerous_pattern_blocked(self):
-        """Chain syntax that contains a dangerous pattern should still be blocked."""
+    def test_assignment_with_dangerous_pattern_blocked(self):
+        """Assignment that contains a dangerous pattern should still be blocked."""
         with pytest.raises(UnsafeCodeError, match="__class__"):
-            validate_user_code(".filter(x.__class__)")
+            validate_user_code("df = df.filter(x.__class__)")
 
     def test_empty_code_passes(self):
         """Empty string should pass."""
@@ -798,101 +798,6 @@ class TestUnboundedValidationCache:
         )
 
 
-class TestChainSyntaxDetectionFragility:
-    """Gap 6: ``code.startswith(".")`` in the executor triggers chain
-    wrapping, but this mis-triggers on float literals like ``.5 * df``.
-
-    Production failure: User writes ``.5 * df["amount"]`` (a valid Python
-    expression starting with a float literal).  The executor wraps it as
-    ``df = (\\n    df\\n    .5 * df["amount"]\\n)`` which is a syntax error.
-    """
-
-    def test_dot_five_is_valid_python(self):
-        """'.5 * 2' is valid Python that starts with '.' — not chain syntax."""
-        import ast
-
-        # This is valid Python
-        tree = ast.parse(".5 * 2")
-        assert tree is not None
-
-    def test_chain_detection_triggers_on_float_literal(self):
-        """The startswith('.') check in the executor would mis-classify
-        '.5 * df' as chain syntax.
-
-        This documents the fragility — float literals starting with '.'
-        would be incorrectly wrapped as method chains.
-        """
-        code = ".5 * 100"
-        assert code.startswith("."), "This code starts with '.' like chain syntax"
-
-        # Wrapping it as chain syntax produces broken code
-        wrapped_chain = f"df = (\n    df\n    {code}\n)"
-        # The chain-wrapped version is syntactically valid but semantically wrong:
-        # it becomes "df = (\n    df\n    .5 * 100\n)" which Python parses as
-        # df.5 which is a SyntaxError (or df .5 which may also fail)
-        import ast
-
-        try:
-            ast.parse(wrapped_chain)
-            chain_parses = True
-        except SyntaxError:
-            chain_parses = False
-
-        # The correct wrapping (non-chain) would be:
-        wrapped_expr = f"df = (\n    {code}\n)"
-        ast.parse(wrapped_expr)  # This should parse fine
-
-        # Document the bug: chain wrapping of float literals either fails to
-        # parse or produces wrong semantics
-        if not chain_parses:
-            # Good — the chain wrapping fails, so _try_parse_code falls back.
-            # But the executor itself (line 212) does startswith('.') BEFORE
-            # validation and doesn't fall back.
-            pass
-
-    def test_validate_user_code_handles_dot_float(self):
-        """validate_user_code should handle '.5 * 2' — a float expression
-        starting with dot.  It first fails to parse as standalone (it
-        actually parses fine), so this tests the direct path."""
-        # .5 * 2 is valid standalone Python, so it should pass directly
-        validate_user_code(".5 * 2")
-
-
-class TestAssignmentDetectionFalsePositive:
-    """Gap 7: ``"df =" in code`` in the executor is a substring check that
-    matches comments and strings containing 'df ='.
-
-    Production failure: User writes
-      ``# df = this is a comment\\nresult = claims.sum()``
-    The executor sees ``"df =" in code`` and skips wrapping, but the code
-    doesn't actually assign to ``df``, so the result is silently lost.
-    """
-
-    def test_comment_containing_df_equals_triggers_detection(self):
-        """A comment with 'df =' fools the assignment detection."""
-        code = "# df = old value\nresult = 42"
-        # The executor checks "df =" in code — this matches the comment
-        assert "df =" in code, "Substring check matches 'df =' inside a comment"
-        # But the code doesn't actually assign to df
-        local = {}
-        exec(code, {}, local)
-        assert "df" not in local, "Code doesn't assign to df"
-
-    def test_string_containing_df_equals_triggers_detection(self):
-        """A string literal with 'df =' fools the assignment detection."""
-        code = 'label = "df = the dataframe"\nresult = 42'
-        assert "df =" in code
-        local = {}
-        exec(code, {}, local)
-        assert "df" not in local
-
-    def test_df_equals_in_fstring_triggers_detection(self):
-        """An f-string mentioning 'df =' triggers the false positive."""
-        code = 'msg = f"df = {len([1,2,3])} rows"'
-        assert "df =" in code
-        local = {}
-        exec(code, {"len": len}, local)
-        assert "df" not in local
 
 
 class TestNonBlockedDunders:
@@ -1595,12 +1500,12 @@ class TestValidateUserCodeEdgeCases:
         with pytest.raises(UnsafeCodeError, match="syntax errors"):
             validate_user_code("def f(:")
 
-    def test_chain_syntax_passes(self):
-        validate_user_code('.select("name", "age")')
+    def test_explicit_assignment_passes(self):
+        validate_user_code('df = df.select("name", "age")')
 
-    def test_chain_syntax_with_dangerous_pattern_blocked(self):
+    def test_assignment_with_dangerous_pattern_blocked(self):
         with pytest.raises(UnsafeCodeError, match="__class__"):
-            validate_user_code(".select(x.__class__)")
+            validate_user_code("df = df.select(x.__class__)")
 
     def test_caching_returns_consistent_results(self):
         import haute._sandbox

@@ -85,6 +85,9 @@ export default function ExternalFileEditor({
         errorLine={errorLine}
         placeholder=""
       />
+      <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+        return df
+      </div>
     </div>
   )
 }

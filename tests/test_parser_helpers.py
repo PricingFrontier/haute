@@ -742,10 +742,7 @@ class TestBuildNodeConfigExtended:
             '    """Expand."""\n'
             "    df = source\n"
             "    # -- user code --\n"
-            "    df = (\n"
-            "        df\n"
-            '        .filter(pl.col("sv") > 0.9)\n'
-            "    )\n"
+            '    df = df.filter(pl.col("sv") > 0.9)\n'
             "    return df"
         )
         config = _build_node_config(
@@ -952,8 +949,9 @@ class TestResolveNodeConfig:
         cfg_file.write_text("{}")
 
         body = (
-            '    """doc"""\n    df = (\n        source\n'
-            '        .filter(pl.col("x") > 0)\n    )\n    return df'
+            '    """doc"""\n'
+            '    df = df.filter(pl.col("x") > 0)\n'
+            '    return df'
         )
 
         with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
@@ -1106,11 +1104,7 @@ class TestExtractSentinelUserCode:
         body = (
             '    df = pl.scan_parquet("data.parquet")\n'
             "    # -- user code --\n"
-            "    df = (\n"
-            "        df\n"
-            "        .filter(pl.col('x') > 0)\n"
-            "        .select('x', 'y')\n"
-            "    )\n"
+            "    df = df.filter(pl.col('x') > 0).select('x', 'y')\n"
             "    return df"
         )
         result = _extract_sentinel_user_code(body, "df")

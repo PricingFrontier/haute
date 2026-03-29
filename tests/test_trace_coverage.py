@@ -354,7 +354,7 @@ class TestExecuteTraceColumnTracing:
         graph = _g({
             "nodes": [
                 _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
+                _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
             ],
             "edges": [_edge("src", "t")],
         })
@@ -459,7 +459,7 @@ class TestExecuteTraceCaching:
         g2 = _g({
             "nodes": [
                 _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(y=pl.col('x') * 3)"),
+                _transform_node("t", "df = df.with_columns(y=pl.col('x') * 3)"),
             ],
             "edges": [_edge("src", "t")],
         })
@@ -499,8 +499,8 @@ class TestExecuteTraceEdgeCases:
         graph = _g({
             "nodes": [
                 _source_node("src", str(p)),
-                _transform_node("t1", ".with_columns(c=pl.col('a') + pl.col('b'))"),
-                _transform_node("t2", ".with_columns(d=pl.col('c') * 2)"),
+                _transform_node("t1", "df = df.with_columns(c=pl.col('a') + pl.col('b'))"),
+                _transform_node("t2", "df = df.with_columns(d=pl.col('c') * 2)"),
             ],
             "edges": [_edge("src", "t1"), _edge("t1", "t2")],
         })
@@ -1030,8 +1030,8 @@ class TestWaterfallIntegration:
         graph = _g({
             "nodes": [
                 _source_node("src", str(p)),
-                _transform_node("step1", ".with_columns(premium=pl.col('premium') * pl.col('factor1'))"),
-                _transform_node("step2", ".with_columns(premium=pl.col('premium') + pl.col('loading'))"),
+                _transform_node("step1", "df = df.with_columns(premium=pl.col('premium') * pl.col('factor1'))"),
+                _transform_node("step2", "df = df.with_columns(premium=pl.col('premium') + pl.col('loading'))"),
             ],
             "edges": [_edge("src", "step1"), _edge("step1", "step2")],
         })
@@ -1059,7 +1059,7 @@ class TestWaterfallIntegration:
         graph = _g({
             "nodes": [
                 _source_node("src", str(p)),
-                _transform_node("t", ".with_columns(x=pl.col('x') * 2)"),
+                _transform_node("t", "df = df.with_columns(x=pl.col('x') * 2)"),
             ],
             "edges": [_edge("src", "t")],
         })

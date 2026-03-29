@@ -13,7 +13,6 @@ can optimise the full plan end-to-end.
 from __future__ import annotations
 
 import gc
-import re
 import shutil
 import tempfile
 import threading
@@ -232,13 +231,13 @@ def _exec_user_code(
     orig_source_names: list[str] | None = None,
     input_mapping: dict[str, str] | None = None,
 ) -> _Frame:
-    """Wrap, execute, and return the result of user-provided code.
+    """Execute user-provided code and return the ``df`` variable.
 
     Shared by transform and externalFile node types.
     - Injects ``pl``, input DataFrames by name, and ``df`` (first input).
     - Optionally merges *extra_ns* into the local namespace (e.g. ``obj``).
-    - Handles the ``.chain`` / bare-expression wrapping and adjusts line
-      numbers in error messages so they match the editor.
+    - User code must assign to ``df``; the value of ``df`` after execution
+      is returned.
     """
     local_ns: dict[str, Any] = {"pl": pl}
     for i, d in enumerate(dfs):
@@ -256,58 +255,27 @@ def _exec_user_code(
     if extra_ns:
         local_ns.update(extra_ns)
 
-    exec_code = code
-    line_offset = 0
-    if code.startswith("."):
-        first = src_names[0] if src_names else "df"
-        exec_code = f"df = (\n    {first}\n    {code}\n)"
-        line_offset = 2
-    elif "df =" not in code and "df=" not in code:
-        exec_code = f"df = (\n    {code}\n)"
-        line_offset = 1
-
-    # Validate the *wrapped* code at the AST level before exec().
-    # We validate exec_code (not the raw snippet) because user code
-    # fragments like chain syntax (".filter(...)") are not valid Python
-    # on their own — only the wrapped version is parseable.
+    # Validate user code at the AST level before exec().
     # This blocks dunder access, imports, getattr, class defs, etc.
     # at the structural level — a stronger layer than restricted builtins.
     try:
-        validate_user_code(exec_code)
+        validate_user_code(code)
     except UnsafeCodeError as uce:
-        # If the sandbox rejection was caused by a SyntaxError (code we
-        # couldn't parse), convert back to SyntaxError with adjusted line
-        # numbers so callers see the same error type they'd get from exec().
         if isinstance(uce.__cause__, SyntaxError):
-            syn = uce.__cause__
-            if syn.lineno is not None:
-                syn.lineno = max(1, syn.lineno - line_offset)
-            raise syn from None
+            raise uce.__cause__ from None
         raise
 
     try:
-        exec(exec_code, safe_globals(pl=pl, **(extra_ns or {})), local_ns)
-    except SyntaxError as exc:
-        if exc.lineno is not None:
-            exc.lineno = max(1, exc.lineno - line_offset)
-        raise
+        exec(code, safe_globals(pl=pl, **(extra_ns or {})), local_ns)
     except Exception as exc:
-        msg = str(exc)
-        if line_offset and re.search(r"line \d+", msg):
-            msg = re.sub(
-                r"line (\d+)",
-                lambda m: f"line {max(1, int(m.group(1)) - line_offset)}",
-                msg,
-            )
-            raise type(exc)(msg) from None
         # For errors without "line N" in the message (e.g. NameError),
-        # extract the line from the traceback and adjust for preamble offset.
+        # extract the line from the traceback and attach it.
         if exc.__traceback__:
             import traceback as _tb
 
             for frame in reversed(_tb.extract_tb(exc.__traceback__)):
                 if frame.filename == "<string>" and frame.lineno is not None:
-                    exc._user_code_line = max(1, frame.lineno - line_offset)  # type: ignore[attr-defined]
+                    exc._user_code_line = frame.lineno  # type: ignore[attr-defined]
                     break
         raise
 

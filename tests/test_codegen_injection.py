@@ -195,7 +195,7 @@ class TestTripleQuoteInjection:
         "node_type,config",
         [
             ("dataSource", {"path": "data.parquet"}),
-            ("polars", {"code": ".drop_nulls()"}),
+            ("polars", {"code": "df = df.drop_nulls()"}),
             ("dataSink", {"path": "out.parquet", "format": "parquet"}),
             (
                 "banding",
@@ -238,7 +238,7 @@ class TestTripleQuoteInjection:
         """Transform node with triple-quote description compiles."""
         node = _make_node(
             "polars",
-            {"code": ".with_columns(y=pl.lit(1))"},
+            {"code": "df = df.with_columns(y=pl.lit(1))"},
             description='Load the """premium""" data',
         )
         code = _node_to_code(node, source_names=["src"])
@@ -714,7 +714,7 @@ class TestCombinedInjection:
                         "data": {
                             "label": "Clean",
                             "nodeType": "polars",
-                            "config": {"code": ".drop_nulls()"},
+                            "config": {"code": "df = df.drop_nulls()"},
                             "description": 'Clean """dirty""" records',
                         },
                     },

@@ -906,7 +906,7 @@ class TestScoreGraphBadInput:
                             "label": "calc",
                             "nodeType": "polars",
                             "config": {
-                                "code": '.with_columns(result=pl.col("VehPower").cast(pl.Float64) * 2)'
+                                "code": 'df = df.with_columns(result=pl.col("VehPower").cast(pl.Float64) * 2)'
                             },
                         },
                     },

@@ -53,7 +53,7 @@ def flat_graph() -> PipelineGraph:
                     "data": {
                         "label": "Transform",
                         "nodeType": "polars",
-                        "config": {"code": ".select('x')"},
+                        "config": {"code": "df = df.select('x')"},
                     },
                 },
                 {
@@ -126,7 +126,7 @@ def submodel_graph() -> PipelineGraph:
                                 "data": {
                                     "label": "Transform",
                                     "nodeType": "polars",
-                                    "config": {"code": ".select('x')"},
+                                    "config": {"code": "df = df.select('x')"},
                                 },
                             },
                             {

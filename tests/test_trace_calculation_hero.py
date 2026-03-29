@@ -91,7 +91,7 @@ class TestSimpleFormulaDisplay:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(burn_cost=pl.col('premium') * 0.7)"),
+                    _transform_node("t", "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -120,7 +120,7 @@ class TestSimpleFormulaDisplay:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(total=pl.col('a') + pl.col('b'))"),
+                    _transform_node("t", "df = df.with_columns(total=pl.col('a') + pl.col('b'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -147,7 +147,7 @@ class TestSimpleFormulaDisplay:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(result=pl.col('a') * pl.col('b') * pl.col('c'))"
+                        "t", "df = df.with_columns(result=pl.col('a') * pl.col('b') * pl.col('c'))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -176,7 +176,7 @@ class TestSimpleFormulaDisplay:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(ratio=pl.col('claims') / pl.col('premium'))"
+                        "t", "df = df.with_columns(ratio=pl.col('claims') / pl.col('premium'))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -203,7 +203,7 @@ class TestSimpleFormulaDisplay:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(result=(pl.col('a') + pl.col('b')) * pl.col('c'))"
+                        "t", "df = df.with_columns(result=(pl.col('a') + pl.col('b')) * pl.col('c'))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -226,7 +226,7 @@ class TestSimpleFormulaDisplay:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(net=pl.col('gross') - 100)"),
+                    _transform_node("t", "df = df.with_columns(net=pl.col('gross') - 100)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -249,7 +249,7 @@ class TestSimpleFormulaDisplay:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(result=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(result=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -273,7 +273,7 @@ class TestSimpleFormulaDisplay:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns((pl.col('x') * 2).alias('result'))"),
+                    _transform_node("t", "df = df.with_columns((pl.col('x') * 2).alias('result'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -314,8 +314,8 @@ class TestSimpleFormulaDisplay:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid1", ".with_columns(z=pl.col('y') + 1)"),
-                    _transform_node("mid2", ".with_columns(w=pl.col('y') + 2)"),
+                    _transform_node("mid1", "df = df.with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("mid2", "df = df.with_columns(w=pl.col('y') + 2)"),
                 ],
                 "edges": [_edge("src", "mid1"), _edge("mid1", "mid2")],
             }
@@ -337,7 +337,7 @@ class TestSimpleFormulaDisplay:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(result=pl.col('x') + 5)"),
+                    _transform_node("t", "df = df.with_columns(result=pl.col('x') + 5)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -370,7 +370,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
+                        "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -397,7 +397,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "grade=pl.when(pl.col('score') >= 90).then(pl.lit('A'))"
                         ".when(pl.col('score') >= 80).then(pl.lit('B'))"
                         ".when(pl.col('score') >= 70).then(pl.lit('C'))"
@@ -429,7 +429,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(result=pl.when(pl.col('x').is_null()).then(99.0).otherwise(pl.col('x')))",
+                        "df = df.with_columns(result=pl.when(pl.col('x').is_null()).then(99.0).otherwise(pl.col('x')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -455,7 +455,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "area=pl.when(pl.col('region').is_in(['A','B'])).then(pl.lit('urban'))"
                         ".otherwise(pl.lit('rural'))"
                         ")",
@@ -487,7 +487,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "result=pl.when(pl.col('x') > 0).then("
                         "pl.when(pl.col('y') > 5).then(pl.lit('high')).otherwise(pl.lit('mid'))"
                         ").otherwise(pl.lit('low'))"
@@ -517,7 +517,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "discount=pl.when((pl.col('age') > 25) & (pl.col('claims') == 0))"
                         ".then(0.1).otherwise(0.0)"
                         ")",
@@ -546,7 +546,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
+                        "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -571,7 +571,7 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "bonus=pl.when(pl.col('status') == 'active').then(100.0)"
                         ".otherwise(pl.lit(None).cast(pl.Float64))"
                         ")",
@@ -608,7 +608,7 @@ class TestHorizontalFunctions:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(mx=pl.max_horizontal(pl.col('a'), pl.col('b')))"
+                        "t", "df = df.with_columns(mx=pl.max_horizontal(pl.col('a'), pl.col('b')))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -634,7 +634,7 @@ class TestHorizontalFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(mn=pl.min_horizontal(pl.col('a'), pl.col('b'), pl.col('c')))",
+                        "df = df.with_columns(mn=pl.min_horizontal(pl.col('a'), pl.col('b'), pl.col('c')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -661,7 +661,7 @@ class TestHorizontalFunctions:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(s=pl.sum_horizontal('a', 'b'))"),
+                    _transform_node("t", "df = df.with_columns(s=pl.sum_horizontal('a', 'b'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -685,7 +685,7 @@ class TestHorizontalFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(best=pl.max_horizontal(pl.col('x') * 1.1, pl.col('y')))",
+                        "df = df.with_columns(best=pl.max_horizontal(pl.col('x') * 1.1, pl.col('y')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -711,7 +711,7 @@ class TestHorizontalFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(premium=pl.max_horizontal(pl.col('calculated'), pl.col('minimum')))",
+                        "df = df.with_columns(premium=pl.max_horizontal(pl.col('calculated'), pl.col('minimum')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -742,7 +742,7 @@ class TestMethodChains:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x').cast(pl.Float64))"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x').cast(pl.Float64))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -768,7 +768,7 @@ class TestMethodChains:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x').fill_null(0))"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x').fill_null(0))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -796,7 +796,7 @@ class TestMethodChains:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(y=pl.col('x').fill_null(pl.col('fallback')))"
+                        "t", "df = df.with_columns(y=pl.col('x').fill_null(pl.col('fallback')))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -819,7 +819,7 @@ class TestMethodChains:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x').round(2))"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x').round(2))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -841,7 +841,7 @@ class TestMethodChains:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x').abs())"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x').abs())"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -863,7 +863,7 @@ class TestMethodChains:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x').clip(lower_bound=0))"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x').clip(lower_bound=0))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -885,7 +885,7 @@ class TestMethodChains:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x').str.to_lowercase())"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x').str.to_lowercase())"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -909,7 +909,7 @@ class TestMethodChains:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(yr=pl.col('d').dt.year())"),
+                    _transform_node("t", "df = df.with_columns(yr=pl.col('d').dt.year())"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -935,7 +935,7 @@ class TestMethodChains:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(y=pl.col('x').fill_null(0).cast(pl.Int32))"
+                        "t", "df = df.with_columns(y=pl.col('x').fill_null(0).cast(pl.Int32))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -964,7 +964,8 @@ class TestMultiStepWithinNode:
         pl.DataFrame({"x": [10.0]}).write_parquet(p)
 
         code = (
-            ".with_columns(doubled=pl.col('x') * 2).with_columns(tripled=pl.col('doubled') * 1.5)"
+            "df = df.with_columns(doubled=pl.col('x') * 2)\n"
+            "df = df.with_columns(tripled=pl.col('doubled') * 1.5)"
         )
         graph = _g(
             {
@@ -990,9 +991,9 @@ class TestMultiStepWithinNode:
         pl.DataFrame({"premium": [1000.0], "claims": [350.0], "months": [6]}).write_parquet(p)
 
         code = (
-            ".with_columns(exposure=pl.col('months') / 12)"
-            ".with_columns(earned_premium=pl.col('premium') * pl.col('exposure'))"
-            ".with_columns(loss_ratio=pl.col('claims') / pl.col('earned_premium'))"
+            "df = df.with_columns(exposure=pl.col('months') / 12)\n"
+            "df = df.with_columns(earned_premium=pl.col('premium') * pl.col('exposure'))\n"
+            "df = df.with_columns(loss_ratio=pl.col('claims') / pl.col('earned_premium'))"
         )
         graph = _g(
             {
@@ -1069,7 +1070,7 @@ class TestMultiStepWithinNode:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"a": [10.0]}).write_parquet(p)
 
-        code = ".with_columns(x=pl.col('a') * 2).with_columns(x=pl.col('a') * 3)"
+        code = "df = df.with_columns(x=pl.col('a') * 2)\ndf = df.with_columns(x=pl.col('a') * 3)"
         graph = _g(
             {
                 "nodes": [
@@ -1095,7 +1096,7 @@ class TestMultiStepWithinNode:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"a": [10.0], "b": [20.0]}).write_parquet(p)
 
-        code = ".with_columns(sum=pl.col('a') + pl.col('b'), diff=pl.col('a') - pl.col('b'))"
+        code = "df = df.with_columns(sum=pl.col('a') + pl.col('b'), diff=pl.col('a') - pl.col('b'))"
         graph = _g(
             {
                 "nodes": [
@@ -1138,7 +1139,7 @@ class TestWindowFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(region_total=pl.col('amount').sum().over('region'))",
+                        "df = df.with_columns(region_total=pl.col('amount').sum().over('region'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1168,7 +1169,7 @@ class TestWindowFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(group_avg=pl.col('val').mean().over('group'))",
+                        "df = df.with_columns(group_avg=pl.col('val').mean().over('group'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1198,7 +1199,7 @@ class TestWindowFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(rnk=pl.col('score').rank().over('category'))",
+                        "df = df.with_columns(rnk=pl.col('score').rank().over('category'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1233,7 +1234,7 @@ class TestJoinsAndRowLineage:
                 "nodes": [
                     _source_node("a", str(p1)),
                     _source_node("b", str(p2)),
-                    _transform_node("j", "a.join(b, on='key', how='left')"),
+                    _transform_node("j", "df = a.join(b, on='key', how='left')"),
                 ],
                 "edges": [_edge("a", "j"), _edge("b", "j")],
             }
@@ -1255,7 +1256,7 @@ class TestJoinsAndRowLineage:
                 "nodes": [
                     _source_node("a", str(p1)),
                     _source_node("b", str(p2)),
-                    _transform_node("j", "a.join(b, on='key', how='left')"),
+                    _transform_node("j", "df = a.join(b, on='key', how='left')"),
                 ],
                 "edges": [_edge("a", "j"), _edge("b", "j")],
             }
@@ -1275,7 +1276,7 @@ class TestJoinsAndRowLineage:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".filter(pl.col('x') > 2)"),
+                    _transform_node("t", "df = df.filter(pl.col('x') > 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1294,7 +1295,7 @@ class TestJoinsAndRowLineage:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".sort('x')"),
+                    _transform_node("t", "df = df.sort('x')"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1314,7 +1315,7 @@ class TestJoinsAndRowLineage:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".group_by('group').agg(pl.col('val').sum())"),
+                    _transform_node("t", "df = df.group_by('group').agg(pl.col('val').sum())"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1349,7 +1350,7 @@ class TestJoinsAndRowLineage:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1371,7 +1372,7 @@ class TestJoinsAndRowLineage:
                 "nodes": [
                     _source_node("a", str(p1)),
                     _source_node("b", str(p2)),
-                    _transform_node("j", "a.join(b, how='cross')"),
+                    _transform_node("j", "df = a.join(b, how='cross')"),
                 ],
                 "edges": [_edge("a", "j"), _edge("b", "j")],
             }
@@ -1402,7 +1403,7 @@ class TestOpaquePatterns:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
+                        "df = df.with_columns(y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1539,7 +1540,7 @@ class TestNodeDetailEnrichment:
                 "nodes": [
                     _source_node("a", str(p1)),
                     _source_node("b", str(p2)),
-                    _transform_node("j", "a.join(b, on='key')"),
+                    _transform_node("j", "df = a.join(b, on='key')"),
                 ],
                 "edges": [_edge("a", "j"), _edge("b", "j")],
             }
@@ -1688,8 +1689,8 @@ class TestNodeDetailEnrichment:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(a=pl.col('x') * 2)"),
-                    _transform_node("t2", ".with_columns(b=pl.col('a') + pl.col('y'))"),
+                    _transform_node("t1", "df = df.with_columns(a=pl.col('x') * 2)"),
+                    _transform_node("t2", "df = df.with_columns(b=pl.col('a') + pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -1717,7 +1718,7 @@ class TestNodeDetailEnrichment:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') + 1)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1788,7 +1789,7 @@ class TestEdgeCases:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1810,7 +1811,7 @@ class TestEdgeCases:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1834,7 +1835,7 @@ class TestEdgeCases:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(result=pl.col('col_0') + pl.col('col_59'))"
+                        "t", "df = df.with_columns(result=pl.col('col_0') + pl.col('col_59'))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1871,7 +1872,7 @@ class TestEdgeCases:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1888,7 +1889,7 @@ class TestEdgeCases:
         data = {f"c{i}": [float(i + 1)] for i in range(8)}
         pl.DataFrame(data).write_parquet(p)
 
-        code = ".with_columns(total=" + " + ".join(f"pl.col('c{i}')" for i in range(8)) + ")"
+        code = "df = df.with_columns(total=" + " + ".join(f"pl.col('c{i}')" for i in range(8)) + ")"
         graph = _g(
             {
                 "nodes": [
@@ -1919,7 +1920,7 @@ class TestEdgeCases:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(result=pl.col('my col') * 2)"),
+                    _transform_node("t", "df = df.with_columns(result=pl.col('my col') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1943,7 +1944,7 @@ class TestEdgeCases:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(total=pl.col('\u00e9l\u00e8ve') + pl.col('\u00e9cole'))",
+                        "df = df.with_columns(total=pl.col('\u00e9l\u00e8ve') + pl.col('\u00e9cole'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1973,7 +1974,7 @@ class TestCalculationValueVerification:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(total=pl.col('price') * pl.col('qty'))"),
+                    _transform_node("t", "df = df.with_columns(total=pl.col('price') * pl.col('qty'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1995,7 +1996,7 @@ class TestCalculationValueVerification:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(ratio=pl.col('a') / pl.col('b'))"),
+                    _transform_node("t", "df = df.with_columns(ratio=pl.col('a') / pl.col('b'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2021,7 +2022,7 @@ class TestCalculationValueVerification:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(result=pl.col('a') + pl.col('b'))"),
+                    _transform_node("t", "df = df.with_columns(result=pl.col('a') + pl.col('b'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2045,7 +2046,7 @@ class TestCalculationValueVerification:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "band=pl.when(pl.col('x') < 10).then(pl.lit('low'))"
                         ".when(pl.col('x') < 20).then(pl.lit('mid'))"
                         ".otherwise(pl.lit('high'))"
@@ -2072,7 +2073,7 @@ class TestCalculationValueVerification:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(tax=pl.col('price') * pl.col('tax_rate'))"),
+                    _transform_node("t", "df = df.with_columns(tax=pl.col('price') * pl.col('tax_rate'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }

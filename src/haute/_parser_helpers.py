@@ -284,19 +284,29 @@ def _extract_user_code(body_source: str, param_names: list[str]) -> str:
         return ""
     code = "\n".join(code_lines).strip()
 
+    # Strip codegen-prepended "df = <param_name>" alias to prevent
+    # accumulation on save/reload roundtrips.
+    first_line = code.splitlines()[0].strip() if code else ""
+    if first_line.startswith("df = ") or first_line.startswith("df="):
+        alias_target = first_line.split("=", 1)[1].strip()
+        if alias_target in (param_names or []):
+            remaining = "\n".join(code.splitlines()[1:]).strip()
+            if remaining:
+                code = remaining
+
     # Pattern 1: codegen chain style "df = (\n...\n)" — unwrap to inner
     chain = _unwrap_chain_assignment(code, param_names=param_names)
     if chain is not None:
         return chain
 
-    # Pattern 2: hand-written "return <expr>" — strip "return " prefix
+    # Pattern 2: hand-written "return <expr>" — convert to "df = <expr>"
     stripped_lines = []
     in_return = False
     for line in code.splitlines():
         s = line.strip()
         is_return = s == "return" or (s.startswith("return ") and not s.startswith("return_"))
         if is_return and not in_return:
-            stripped_lines.append(line.replace("return ", "", 1) if "return " in line else "")
+            stripped_lines.append(line.replace("return ", "df = ", 1) if "return " in line else "")
             in_return = True
         elif in_return:
             stripped_lines.append(line)

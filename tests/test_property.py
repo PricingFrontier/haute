@@ -667,7 +667,7 @@ class TestCodeValidationConsistency:
                 "x = 1 + 2",
                 "result = [i for i in range(10)]",
                 "df = df.filter(pl.col('a') > 0)",
-                ".filter(pl.col('x') > 0)",
+                "df = df.filter(pl.col('x') > 0)",
                 "y = {'a': 1, 'b': 2}",
             ]
         ),

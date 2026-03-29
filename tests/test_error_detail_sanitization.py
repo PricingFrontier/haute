@@ -1341,7 +1341,7 @@ class TestUserCodeErrorSanitization:
 
         with pytest.raises(NameError) as exc_info:
             _exec_user_code(
-                code="df.filter(pl.col('x') > threshold)",
+                code="df = df.filter(pl.col('x') > threshold)",
                 src_names=["df"],
                 dfs=(pl.DataFrame({"x": [1, 2, 3]}).lazy(),),
             )
@@ -1397,7 +1397,7 @@ class TestUserCodeErrorSanitization:
                     "data": {
                         "label": "bad_transform",
                         "nodeType": "polars",
-                        "config": {"code": "df.filter(pl.col('x') > threshold)"},
+                        "config": {"code": "df = df.filter(pl.col('x') > threshold)"},
                     },
                 },
             ],

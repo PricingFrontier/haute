@@ -1071,7 +1071,7 @@ class TestEvaluateExpressionPaths:
 
     def test_evaluate_dot_chain_wrapping(self):
         """Code starting with dot is wrapped (line 1335–1336)."""
-        code = '.with_columns((pl.col("x") + 1).alias("r"))'
+        code = 'df = df.with_columns((pl.col("x") + 1).alias("r"))'
         result = evaluate_expression(code, "r", {"x": 5})
         assert result is not None
 
@@ -1804,7 +1804,7 @@ class TestParseExpressionChainEdges:
 
     def test_chain_dot_syntax_wrapping(self):
         """Dot-chain wrapping (line 2164–2165)."""
-        code = '.with_columns((pl.col("x") + 1).alias("r"))'
+        code = 'df = df.with_columns((pl.col("x") + 1).alias("r"))'
         chain = parse_expression_chain(code, "r")
         assert chain is not None
 

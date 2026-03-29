@@ -4,7 +4,7 @@
  * Tests: label, hint text for empty/present input sources, input sources bar.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent } from "@testing-library/react"
+import { render, screen, cleanup } from "@testing-library/react"
 import TransformEditor from "../../panels/editors/TransformEditor"
 
 vi.mock("../../panels/editors/_shared", async () => {
@@ -32,12 +32,11 @@ describe("TransformEditor", () => {
     expect(screen.getByText("Polars Code")).toBeTruthy()
   })
 
-  it('shows "start with" hint when no input sources', () => {
+  it('shows "assign to df" hint when no input sources', () => {
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={[]} />,
     )
-    expect(screen.getByText(/start with/)).toBeTruthy()
-    expect(screen.getByText(/to chain/)).toBeTruthy()
+    expect(screen.getByText("assign to df")).toBeTruthy()
   })
 
   it('shows "use input names" hint when input sources present', () => {
@@ -72,59 +71,11 @@ describe("TransformEditor", () => {
     expect(editor.defaultValue).toBe("df = claims.filter(pl.col('amount') > 0)")
   })
 
-  it("renders available columns section when upstreamColumns provided", () => {
-    render(
-      <TransformEditor
-        config={{}}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[
-          { name: "age", dtype: "Int64" },
-          { name: "name", dtype: "Utf8" },
-        ]}
-      />,
-    )
-    expect(screen.getByText("Available Columns")).toBeTruthy()
-    expect(screen.getByText("2")).toBeTruthy()
-  })
-
-  it("hides available columns section when no upstreamColumns", () => {
+  it("shows return df hint below code editor", () => {
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={[]} />,
     )
-    expect(screen.queryByText("Available Columns")).toBeNull()
-  })
-
-  it("shows column names and dtypes when columns section is expanded", () => {
-    render(
-      <TransformEditor
-        config={{}}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[
-          { name: "age", dtype: "Int64" },
-          { name: "premium", dtype: "Float64" },
-        ]}
-      />,
-    )
-    fireEvent.click(screen.getByText("Available Columns"))
-    expect(screen.getByText("age")).toBeTruthy()
-    expect(screen.getByText("Int64")).toBeTruthy()
-    expect(screen.getByText("premium")).toBeTruthy()
-    expect(screen.getByText("Float64")).toBeTruthy()
-  })
-
-  it("column insert buttons have correct title attributes", () => {
-    render(
-      <TransformEditor
-        config={{}}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "claim_id", dtype: "Utf8" }]}
-      />,
-    )
-    fireEvent.click(screen.getByText("Available Columns"))
-    expect(screen.getByTitle('Insert pl.col("claim_id")')).toBeTruthy()
+    expect(screen.getByText("return df")).toBeTruthy()
   })
 
   it("passes empty string as default value when config.code is absent", () => {

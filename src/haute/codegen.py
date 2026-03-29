@@ -324,31 +324,21 @@ def _wrap_external_code(code: str) -> str:
 def _wrap_user_code(code: str, source_names: list[str]) -> str:
     """Wrap user code into indented function body lines.
 
-    Rules:
-    - If code starts with '.', it's a chain → wrap as `df = (<first_input>\\n<code>\\n)`
-    - If code already contains a statement (``df =``, ``return``, etc.), indent it as-is.
-    - Otherwise it's a bare expression → wrap as `df = <code>`
+    User code must assign to ``df``. We indent it and append ``return df``.
+    When the first source parameter is not ``df``, a ``df = <source>`` alias
+    is prepended so user code can always reference ``df``.
     """
     code = code.strip()
+    first = source_names[0] if source_names else "df"
     if not code:
-        first = source_names[0] if source_names else "df"
         return f"    return {first}"
 
-    if code.startswith("."):
-        # Chain syntax: .filter(...).select(...)
-        first = source_names[0] if source_names else "df"
-        chain_indented = "\n".join(f"        {line}" for line in code.splitlines())
-        return f"    df = (\n        {first}\n{chain_indented}\n    )\n    return df"
+    preamble = ""
+    if first != "df":
+        preamble = f"    df = {first}\n"
 
-    # Code that already contains an assignment or return — indent as-is
-    first_line = code.split("\n", 1)[0]
-    if "=" in first_line.split("(", 1)[0] or first_line.startswith("return "):
-        indented = "\n".join(f"    {line}" for line in code.splitlines())
-        return f"{indented}\n    return df"
-
-    # Bare expression: wrap as `df = (<code>)`
     indented = "\n".join(f"    {line}" for line in code.splitlines())
-    return f"    df = (\n{indented}\n    )\n    return df"
+    return f"{preamble}{indented}\n    return df"
 
 
 def _node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str:

@@ -115,12 +115,17 @@ export default function ModelScoreEditor({
         </button>
       </div>
       {showCode && (
-        <CodeEditor
-          defaultValue={defaultCode}
-          onChange={(val) => onUpdate("code", val)}
-          errorLine={errorLine}
-          placeholder=""
-        />
+        <>
+          <CodeEditor
+            defaultValue={defaultCode}
+            onChange={(val) => onUpdate("code", val)}
+            errorLine={errorLine}
+            placeholder=""
+          />
+          <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+            return df
+          </div>
+        </>
       )}
     </div>
   )

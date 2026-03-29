@@ -550,7 +550,7 @@ class TestBuildScenarioExpander:
                 "min_value": 0.8,
                 "max_value": 1.2,
                 "steps": 3,
-                "code": '.filter(pl.col("sv") >= 1.0)',
+                "code": 'df = df.filter(pl.col("sv") >= 1.0)',
             },
             source_names=["upstream"],
         )

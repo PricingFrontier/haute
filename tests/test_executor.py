@@ -31,29 +31,17 @@ from tests.conftest import (
 
 
 class TestExecUserCode:
-    def test_chain_syntax(self):
+    def test_explicit_assignment(self):
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        result = _exec_user_code(".with_columns(y=pl.col('x') * 2)", ["df"], (lf,))
+        result = _exec_user_code("df = df.with_columns(y=pl.col('x') * 2)", ["df"], (lf,))
         df = result.collect()
         assert "y" in df.columns
         assert df["y"].to_list() == [2, 4, 6]
 
-    def test_full_expression(self):
-        lf = pl.DataFrame({"x": [10]}).lazy()
-        result = _exec_user_code("df.with_columns(y=pl.lit(42))", ["df"], (lf,))
-        df = result.collect()
-        assert df["y"].to_list() == [42]
-
-    def test_assignment_style(self):
+    def test_syntax_error_reported(self):
         lf = pl.DataFrame({"x": [1]}).lazy()
-        result = _exec_user_code("df = df.with_columns(y=pl.lit(99))", ["df"], (lf,))
-        df = result.collect()
-        assert df["y"].to_list() == [99]
-
-    def test_syntax_error_adjusts_line_number(self):
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        with pytest.raises(SyntaxError):
-            _exec_user_code(".invalid syntax here !!!", ["df"], (lf,))
+        with pytest.raises(Exception):
+            _exec_user_code("df = invalid syntax here !!!", ["df"], (lf,))
 
     def test_eager_result_converted_to_lazy(self):
         lf = pl.DataFrame({"x": [1]}).lazy()
@@ -84,29 +72,26 @@ class TestExecUserCode:
             _exec_user_code("df = 1 / 0", ["df"], (lf,))
         assert "division" in str(exc_info.value).lower()
 
-    def test_bare_expression_wraps_as_df_assignment(self):
-        """Code without 'df =' is wrapped as df = (<code>), i.e. an expression."""
+    def test_multiline_code(self):
+        """Multi-line user code with intermediate variables works."""
         lf = pl.DataFrame({"x": [1, 2]}).lazy()
-        # A bare expression (no df = ...) gets wrapped as df = (expression)
-        result = _exec_user_code("df.with_columns(y=pl.lit(7))", ["df"], (lf,))
+        code = "tmp = df.with_columns(y=pl.lit(7))\ndf = tmp.with_columns(z=pl.lit(8))"
+        result = _exec_user_code(code, ["df"], (lf,))
         df = result.collect()
         assert "y" in df.columns
-        assert df["y"].to_list() == [7, 7]
+        assert "z" in df.columns
 
-    def test_explicit_df_assignment_preserved(self):
-        """When user code uses 'df = ...', no extra wrapping happens."""
+    def test_df_passthrough_when_no_assignment(self):
+        """When user code doesn't assign to df, the original df is returned."""
         lf = pl.DataFrame({"x": [1]}).lazy()
-        result = _exec_user_code(
-            "df = df.with_columns(y=pl.lit(99))",
-            ["df"],
-            (lf,),
-        )
-        assert result.collect()["y"].to_list() == [99]
+        result = _exec_user_code("_ = 1 + 1", ["df"], (lf,))
+        df = result.collect()
+        assert df["x"].to_list() == [1]
 
     def test_empty_dataframe_passthrough(self):
         """Empty DataFrame (0 rows) passes through correctly."""
         lf = pl.DataFrame({"x": pl.Series([], dtype=pl.Int64)}).lazy()
-        result = _exec_user_code(".with_columns(y=pl.col('x') * 2)", ["df"], (lf,))
+        result = _exec_user_code("df = df.with_columns(y=pl.col('x') * 2)", ["df"], (lf,))
         df = result.collect()
         assert len(df) == 0
         assert set(df.columns) == {"x", "y"}
@@ -280,7 +265,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataSource",
-                    "config": {"path": str(p), "code": ".filter(pl.col('x') > 1)"},
+                    "config": {"path": str(p), "code": "df = df.filter(pl.col('x') > 1)"},
                 },
             }
         )
@@ -289,8 +274,8 @@ class TestBuildNodeFn:
         df = fn().collect()
         assert df["x"].to_list() == [2, 3]
 
-    def test_data_source_with_code_chain_syntax(self, tmp_path):
-        """DataSource code supports chain syntax (starting with '.')."""
+    def test_data_source_with_code_select(self, tmp_path):
+        """DataSource code supports explicit df assignment syntax."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"a": [1, 2, 3]}).write_parquet(p)
         node = _n(
@@ -299,7 +284,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataSource",
-                    "config": {"path": str(p), "code": ".select('a')"},
+                    "config": {"path": str(p), "code": "df = df.select('a')"},
                 },
             }
         )
@@ -328,7 +313,7 @@ class TestBuildNodeFn:
         assert df["x"].to_list() == [1]
 
     def test_transform_with_code(self):
-        node = _transform_node("t", code=".with_columns(y=pl.col('x') + 1)")
+        node = _transform_node("t", code="df = df.with_columns(y=pl.col('x') + 1)")
         _, fn, is_source = _build_node_fn(node, source_names=["df"])
         assert is_source is False
         lf = pl.DataFrame({"x": [10]}).lazy()
@@ -628,7 +613,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -647,7 +632,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') + 1)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -665,7 +650,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(z=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -683,7 +668,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("bad", "df.select('nonexistent_column')"),
+                    _transform_node("bad", "df = df.select('nonexistent_column')"),
                 ],
                 "edges": [_edge("src", "bad")],
             }
@@ -730,7 +715,7 @@ class TestExecuteGraph:
                 "nodes": [
                     _source_node("src", str(p)),
                     # Select a column that doesn't exist - triggers ColumnNotFoundError at collect
-                    _transform_node("bad", code=".select('nonexistent_col')"),
+                    _transform_node("bad", code="df = df.select('nonexistent_col')"),
                 ],
                 "edges": [_edge("src", "bad")],
             }
@@ -753,8 +738,8 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid", code=".select('nonexistent_col')"),
-                    _transform_node("leaf", code=".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("mid", code="df = df.select('nonexistent_col')"),
+                    _transform_node("leaf", code="df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -792,7 +777,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", code=".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", code="df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1229,7 +1214,7 @@ class TestExecuteSink:
                             "data": {
                                 "label": "join",
                                 "nodeType": "polars",
-                                "config": {"code": "s1.join(s2, on='key', how='left')"},
+                                "config": {"code": "df = s1.join(s2, on='key', how='left')"},
                             },
                         }
                     ),
@@ -1615,7 +1600,7 @@ class TestExecUserCodeErrors:
         """Syntax error in chain-style code should raise SyntaxError."""
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(SyntaxError):
-            _exec_user_code(".filter(pl.col('x') > )", ["df"], (lf,))
+            _exec_user_code("df = df.filter(pl.col('x') > )", ["df"], (lf,))
 
     def test_syntax_error_in_assignment_code(self):
         """Syntax error in assignment-style code should raise SyntaxError."""
@@ -1678,7 +1663,7 @@ class TestBuildNodeFnErrorPaths:
 
     def test_transform_with_syntax_error_in_code(self):
         """Transform node whose code has a syntax error should raise when invoked."""
-        node = _transform_node("bad", code=".filter(pl.col('x') >")
+        node = _transform_node("bad", code="df = df.filter(pl.col('x') >")
         _, fn, _ = _build_node_fn(node, source_names=["df"])
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(SyntaxError):
@@ -1733,7 +1718,7 @@ class TestSelectedColumns:
                                 "label": "t",
                                 "nodeType": "polars",
                                 "config": {
-                                    "code": ".with_columns(d=pl.col('a') + pl.col('b'))",
+                                    "code": "df = df.with_columns(d=pl.col('a') + pl.col('b'))",
                                     "selected_columns": ["a", "d"],
                                 },
                             },
@@ -1805,7 +1790,7 @@ class TestSelectedColumns:
             {
                 "nodes": [
                     src,
-                    _transform_node("t", ".with_columns(x=pl.col('a') * 10)"),
+                    _transform_node("t", "df = df.with_columns(x=pl.col('a') * 10)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1843,7 +1828,7 @@ class TestExecuteGraphErrorPaths:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("bad", code=".select('no_such_column')"),
+                    _transform_node("bad", code="df = df.select('no_such_column')"),
                 ],
                 "edges": [_edge("src", "bad")],
             }
@@ -1905,7 +1890,7 @@ class TestExecuteGraphErrorPaths:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("bad", code=".filter(pl.col('x') >"),
+                    _transform_node("bad", code="df = df.filter(pl.col('x') >"),
                 ],
                 "edges": [_edge("src", "bad")],
             }
@@ -2161,8 +2146,8 @@ class TestPreviewCachePartialHit:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid", ".with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("leaf", ".with_columns(z=pl.col('y') * 10)"),
+                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -2405,7 +2390,7 @@ class TestMaxPreviewRowsTruncation:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2480,8 +2465,8 @@ class TestEmptyDataFrameFullPipeline:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(z=pl.col('x') + 1)"),
-                    _transform_node("t2", ".with_columns(w=pl.col('z') * pl.col('y'))"),
+                    _transform_node("t1", "df = df.with_columns(z=pl.col('x') + 1)"),
+                    _transform_node("t2", "df = df.with_columns(w=pl.col('z') * pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -2531,7 +2516,7 @@ class TestEmptyDataFrameFullPipeline:
                                 "label": "join",
                                 "nodeType": "polars",
                                 "config": {
-                                    "code": "empty_src.join(full_src, on='key', how='left')",
+                                    "code": "df = empty_src.join(full_src, on='key', how='left')",
                                 },
                             },
                         }
@@ -2762,8 +2747,8 @@ class TestPreambleFailureIsolation:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("t2", ".filter(pl.col('x') > 0)"),
+                    _transform_node("t1", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("t2", "df = df.filter(pl.col('x') > 0)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
                 "preamble": "from utility.broken import *\n",

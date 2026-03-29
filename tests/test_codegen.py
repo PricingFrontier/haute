@@ -126,7 +126,7 @@ class TestNodeToCode:
         [
             pytest.param(
                 "Load Data",
-                {"path": "data/input.parquet", "code": ".filter(pl.col('x') > 0)"},
+                {"path": "data/input.parquet", "code": "df = df.filter(pl.col('x') > 0)"},
                 ["df = pl.scan_parquet", "filter", "return df"],
                 id="parquet_with_code",
             ),
@@ -138,7 +138,7 @@ class TestNodeToCode:
             ),
             pytest.param(
                 "DB Source",
-                {"sourceType": "databricks", "table": "cat.sch.tbl", "code": ".limit(100)"},
+                {"sourceType": "databricks", "table": "cat.sch.tbl", "code": "df = df.limit(100)"},
                 ["read_cached_table", "limit", "return df"],
                 id="databricks_with_code",
             ),
@@ -183,7 +183,7 @@ class TestNodeToCode:
                 "data": {
                     "label": "Clean",
                     "nodeType": "polars",
-                    "config": {"code": ".filter(pl.col('x') > 0)"},
+                    "config": {"code": "df = load_data.filter(pl.col('x') > 0)"},
                 },
             }
         )
@@ -429,7 +429,7 @@ class TestGraphToCode:
                         "data": {
                             "label": "Transform",
                             "nodeType": "polars",
-                            "config": {"code": ".with_columns(y=pl.col('x'))"},
+                            "config": {"code": "df = Source.with_columns(y=pl.col('x'))"},
                         },
                     },
                 ],
@@ -501,7 +501,7 @@ class TestGraphToCode:
                         "data": {
                             "label": "Clean",
                             "nodeType": "polars",
-                            "config": {"code": ".drop_nulls()"},
+                            "config": {"code": "df = Read.drop_nulls()"},
                         },
                     },
                     {
@@ -725,7 +725,7 @@ class TestSelectedColumnsCodegen:
                     "label": "my_transform",
                     "nodeType": "polars",
                     "config": {
-                        "code": ".with_columns(y=pl.col('x') * 2)",
+                        "code": "df = load_data.with_columns(y=pl.col('x') * 2)",
                         "selected_columns": ["x", "y"],
                     },
                 },
@@ -773,7 +773,7 @@ class TestCodegenEdgeCases:
                 "data": {
                     "label": "My Node (v2) - Final!",
                     "nodeType": "polars",
-                    "config": {"code": ".with_columns(y=pl.lit(1))"},
+                    "config": {"code": "df = df.with_columns(y=pl.lit(1))"},
                 },
             }
         )
@@ -791,7 +791,7 @@ class TestCodegenEdgeCases:
                 "data": {
                     "label": "price_update_cafe",
                     "nodeType": "polars",
-                    "config": {"code": ".with_columns(y=pl.lit(1))"},
+                    "config": {"code": "df = df.with_columns(y=pl.lit(1))"},
                 },
             }
         )
@@ -863,7 +863,7 @@ class TestCodegenEdgeCases:
                 "data": {
                     "label": long_label,
                     "nodeType": "polars",
-                    "config": {"code": ".with_columns(y=pl.lit(1))"},
+                    "config": {"code": "df = df.with_columns(y=pl.lit(1))"},
                 },
             }
         )
@@ -1319,7 +1319,7 @@ class TestDataSourceJsonCodegen:
                         "data": {
                             "label": "Clean",
                             "nodeType": "polars",
-                            "config": {"code": ".drop_nulls()"},
+                            "config": {"code": "df = JsonData.drop_nulls()"},
                         },
                     },
                 ],
@@ -1350,7 +1350,7 @@ class TestDataSourceJsonCodegen:
                         "data": {
                             "label": "Filter",
                             "nodeType": "polars",
-                            "config": {"code": ".filter(pl.col('x') > 0)"},
+                            "config": {"code": "df = EventLog.filter(pl.col('x') > 0)"},
                         },
                     },
                 ],
@@ -1748,7 +1748,7 @@ class TestUnknownNodeTypeFallbackCode:
                 "data": {
                     "label": "FutureNode",
                     "nodeType": "banding",
-                    "config": {"code": ".filter(pl.col('x') > 0)"},
+                    "config": {"code": "df = upstream.filter(pl.col('x') > 0)"},
                 },
             }
         )
@@ -1791,52 +1791,33 @@ class TestUnknownNodeTypeFallbackCode:
 
 
 # ---------------------------------------------------------------------------
-# Gap 2: _wrap_user_code misdetects comparison operators as assignments
+# Gap 2: _wrap_user_code simple indent + return df behavior
 # ---------------------------------------------------------------------------
 
 
-class TestWrapUserCodeAssignmentDetection:
-    """Catch: code like ``x == 5`` is misdetected as an assignment because
-    ``"=" in first_line.split("(", 1)[0]`` matches the ``==`` operator.
-    This means the code is indented as-is instead of wrapped as a bare
-    expression, producing ``x == 5\\nreturn df`` instead of
-    ``df = (x == 5)\\nreturn df``."""
+class TestWrapUserCodeIndentBehavior:
+    """Verify _wrap_user_code indents code, prepends df alias, and appends return df."""
 
-    def test_equality_comparison_misdetected_as_assignment(self):
-        """Demonstrates the known bug: ``x == 5`` triggers the assignment branch."""
-        result = _wrap_user_code("x == 5", ["src"])
-        # BUG: the code treats ``==`` as containing ``=`` and enters the
-        # assignment branch, indenting as-is rather than wrapping as expression.
-        # The test documents this behaviour so a future fix doesn't regress.
-        assert "x == 5" in result
-        # In the assignment branch, code is indented and ``return df`` appended
-        assert "return df" in result
+    def test_df_alias_prepended_when_source_not_df(self):
+        """When first source is not 'df', a df = <source> preamble is added."""
+        result = _wrap_user_code("df = df.filter(pl.col('x') > 0)", ["src"])
+        assert result == "    df = src\n    df = df.filter(pl.col('x') > 0)\n    return df"
 
-    def test_not_equal_comparison_misdetected(self):
-        """``!=`` also contains ``=`` and triggers the assignment branch."""
-        result = _wrap_user_code("status != 'active'", ["src"])
-        assert "status != 'active'" in result
-        assert "return df" in result
+    def test_no_alias_when_source_is_df(self):
+        """When first source is 'df', no preamble is added."""
+        result = _wrap_user_code("df = df.filter(pl.col('x') > 0)", ["df"])
+        assert result == "    df = df.filter(pl.col('x') > 0)\n    return df"
 
-    def test_less_equal_comparison_misdetected(self):
-        """``<=`` also contains ``=`` and triggers the assignment branch."""
-        result = _wrap_user_code("value <= 100", ["src"])
-        assert "value <= 100" in result
-        assert "return df" in result
+    def test_multiline_all_lines_indented(self):
+        """Each line of multiline code gets 4-space indent."""
+        code = "a = 1\nb = 2\ndf = a + b"
+        result = _wrap_user_code(code, ["df"])
+        assert result == "    a = 1\n    b = 2\n    df = a + b\n    return df"
 
-    def test_genuine_assignment_still_detected(self):
-        """Real assignments like ``df = ...`` must still be detected correctly."""
-        result = _wrap_user_code("df = src.filter(pl.col('x') > 0)", ["src"])
-        assert "df = src.filter" in result
-        assert "return df" in result
-        # Should NOT be wrapped in df = (...)
-        assert "df = (\n" not in result
-
-    def test_bare_expression_without_equals(self):
-        """A bare expression without any = should be wrapped in df = (...)."""
-        result = _wrap_user_code("src.filter(pl.col('x') > 0)", ["src"])
-        assert "df = (" in result
-        assert "return df" in result
+    def test_strips_leading_trailing_whitespace(self):
+        """Leading/trailing whitespace in the code is stripped before indenting."""
+        result = _wrap_user_code("  df = df.filter(pl.col('x') > 0)  \n", ["src"])
+        assert result == "    df = src\n    df = df.filter(pl.col('x') > 0)\n    return df"
 
 
 # ---------------------------------------------------------------------------
@@ -2236,9 +2217,9 @@ class TestVeryLongUserCode:
     in string operations (splitlines, join, indent) or exceed Python's
     compile limits."""
 
-    def test_large_chain_code_block(self):
-        """1000-line method chain should still produce compilable code."""
-        lines = [".with_columns(pl.lit(1).alias('col_{i}'))".format(i=i) for i in range(1000)]
+    def test_large_assignment_code_block_in_node(self):
+        """1000 lines of assignment-style code should still produce compilable code."""
+        lines = [f"df = df.with_columns(pl.lit(1).alias('col_{i}'))" for i in range(1000)]
         code_block = "\n".join(lines)
         node = _n(
             {
@@ -2302,35 +2283,17 @@ class TestWrapUserCodeEdgeCases:
         result = _wrap_user_code("", [])
         assert "return df" in result
 
-    def test_chain_syntax_wrapped_correctly(self):
-        result = _wrap_user_code(".filter(pl.col('x') > 0)", ["src"])
-        assert "df = (" in result
-        assert "src" in result
-        assert ".filter(pl.col('x') > 0)" in result
-        assert "return df" in result
-
-    def test_chain_syntax_multiline(self):
-        code = ".filter(pl.col('x') > 0)\n.select('x', 'y')"
-        result = _wrap_user_code(code, ["upstream"])
-        assert "upstream" in result
-        assert ".filter" in result
-        assert ".select" in result
-        assert "return df" in result
-
-    def test_assignment_detected(self):
+    def test_assignment_indented_with_return(self):
         result = _wrap_user_code("df = src.filter(pl.col('x') > 0)", ["src"])
-        assert "df = src.filter" in result
-        assert "return df" in result
-        assert "df = (\n" not in result
-
-    def test_bare_expression_wrapped_in_return(self):
-        result = _wrap_user_code("src.filter(pl.col('x') > 0)", ["src"])
-        assert "df = (" in result
+        assert "    df = src.filter" in result
         assert "return df" in result
 
-    def test_return_statement_detected_as_is(self):
-        result = _wrap_user_code("return df.filter(pl.col('x') > 0)", ["src"])
-        assert "return df.filter" in result
+    def test_multiline_code_indented(self):
+        code = "tmp = df.filter(pl.col('x') > 0)\ndf = tmp.select('x', 'y')"
+        result = _wrap_user_code(code, ["df"])
+        assert "    tmp = df.filter" in result
+        assert "    df = tmp.select" in result
+        assert "return df" in result
 
     def test_whitespace_only_code_returns_first_input(self):
         result = _wrap_user_code("   \n  \n  ", ["abc"])
@@ -2512,7 +2475,7 @@ class TestGenTransformEdgeCases:
                 "label": "SelCol",
                 "nodeType": "polars",
                 "config": {
-                    "code": ".with_columns(y=pl.col('x') * 2)",
+                    "code": "df = src.with_columns(y=pl.col('x') * 2)",
                     "selected_columns": ["x", "y"],
                 },
             },
@@ -2677,7 +2640,7 @@ class TestGraphToCodeEdgeCases:
             "data": {
                 "label": "FutureType",
                 "nodeType": "banding",
-                "config": {"code": ".drop_nulls()"},
+                "config": {"code": "df = src.drop_nulls()"},
             },
         })
         saved = _CODEGEN_BUILDERS.pop("banding", None)

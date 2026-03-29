@@ -89,13 +89,13 @@ class TestDedent:
 
 class TestExtractUserCode:
     def test_codegen_style_df_assignment(self):
-        """Codegen produces: df = (\n    source\n    .filter(...)\n)\nreturn df"""
-        body = '    """doc"""\n    df = (\n        source\n        .filter(pl.col("x") > 0)\n    )\n    return df'
+        """Codegen produces: df = source.filter(...)\nreturn df"""
+        body = '    """doc"""\n    df = source.filter(pl.col("x") > 0)\n    return df'
         result = _extract_user_code(body, ["source"])
         assert "source" in result
         assert ".filter" in result
         assert "return" not in result
-        assert "df =" not in result
+        assert "df =" in result
 
     def test_single_return_expression(self):
         body = '    """doc"""\n    return source.with_columns(y=pl.lit(1))'
@@ -103,9 +103,10 @@ class TestExtractUserCode:
         assert "source.with_columns" in result
         assert "return" not in result
 
-    def test_chain_syntax(self):
-        body = '    """doc"""\n    df = (\n        df\n        .filter(pl.col("x") > 0)\n    )\n    return df'
+    def test_explicit_assignment(self):
+        body = '    """doc"""\n    df = df.filter(pl.col("x") > 0)\n    return df'
         result = _extract_user_code(body, ["df"])
+        assert "df =" in result
         assert ".filter" in result
 
     def test_empty_body(self):
@@ -492,10 +493,7 @@ def source() -> pl.DataFrame:
 @pipeline.polars
 def transform(source: pl.DataFrame) -> pl.DataFrame:
     """Clean data."""
-    df = (
-        source
-        .filter(pl.col("x") > 0)
-    )
+    df = source.filter(pl.col("x") > 0)
     return df
 
 

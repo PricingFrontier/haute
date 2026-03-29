@@ -452,7 +452,7 @@ class TestRowLimitEdgeCases:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') + 1)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -523,7 +523,7 @@ class TestPreambleFailureSourceNodesRun:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("tx", "df.with_columns(y=my_func(pl.col('x')))"),
+                    _transform_node("tx", "df = df.with_columns(y=my_func(pl.col('x')))"),
                 ],
                 "edges": [_edge("src", "tx")],
                 "preamble": "x = undefined_name_that_does_not_exist + 1",

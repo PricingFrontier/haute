@@ -375,19 +375,18 @@ class TestGenScenarioExpander:
         assert 'config="config/expander/PartialExpand.json"' in code
         _compile_node_code(code)
 
-    def test_with_user_code_chain(self) -> None:
-        """Scenario expander with chain-syntax Polars code generates sentinel."""
+    def test_with_user_code_explicit(self) -> None:
+        """Scenario expander with explicit assignment Polars code generates sentinel."""
         node = _make_codegen_node(
             "scenarioExpander",
             {
                 "column_name": "sv",
                 "steps": 5,
-                "code": '.filter(pl.col("sv") > 0.9)',
+                "code": 'df = df.filter(pl.col("sv") > 0.9)',
             },
             label="FilteredExpand",
         )
         code = _node_to_code(node, source_names=["upstream"])
-        assert "df = upstream" in code
         assert '.filter(pl.col("sv") > 0.9)' in code
         assert "return df" in code
         _compile_node_code(code)
@@ -635,7 +634,7 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "Process",
                             "nodeType": "polars",
-                            "config": {"code": ".with_columns(y=pl.lit(1))"},
+                            "config": {"code": "df = df.with_columns(y=pl.lit(1))"},
                         },
                     },
                 ],
@@ -912,7 +911,7 @@ class TestCodegenExecValidation:
 
         node = _make_codegen_node(
             "polars",
-            {"code": '.with_columns(doubled=pl.col("x") * 2)'},
+            {"code": 'df = df.with_columns(doubled=pl.col("x") * 2)'},
             label="double_it",
         )
         code = _node_to_code(node, source_names=["src"])

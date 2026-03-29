@@ -155,7 +155,7 @@ class TestCollectNodeConfigs:
                         "data": {
                             "label": "clean",
                             "nodeType": "polars",
-                            "config": {"code": ".filter()"},
+                            "config": {"code": "df = df.filter()"},
                         },
                     },
                 ],
@@ -658,7 +658,7 @@ class TestCollectNodeConfigsEdgeCases:
                         "data": {
                             "label": "filter",
                             "nodeType": "polars",
-                            "config": {"code": "df.filter()"},
+                            "config": {"code": "df = df.filter()"},
                         },
                     },
                 ],

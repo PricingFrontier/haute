@@ -246,7 +246,7 @@ class TestFullPipelineLifecycle:
                 "transform",
                 "transform",
                 NodeType.POLARS,
-                {"code": ".with_columns(doubled=pl.col('value') * 2)"},
+                {"code": "df = df.with_columns(doubled=pl.col('value') * 2)"},
             ),
             _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
         ]
@@ -507,7 +507,7 @@ class TestSubmodelLifecycle:
                 "step_one",
                 NodeType.POLARS,
                 {
-                    "code": ".with_columns(a=pl.col('x') + 1)",
+                    "code": "df = df.with_columns(a=pl.col('x') + 1)",
                 },
             ),
             _make_node(
@@ -515,7 +515,7 @@ class TestSubmodelLifecycle:
                 "step_two",
                 NodeType.POLARS,
                 {
-                    "code": ".with_columns(b=pl.col('a') + 10)",
+                    "code": "df = df.with_columns(b=pl.col('a') + 10)",
                 },
             ),
             _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),

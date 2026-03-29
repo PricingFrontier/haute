@@ -136,7 +136,7 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 10)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 10)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -184,7 +184,7 @@ class TestExecuteTrace:
                     # passthrough - doesn't have 'y' but feeds into t
                     _transform_node("mid"),
                     # adds 'y' - column_relevant, ancestors kept for calc path
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "t")],
             }
@@ -210,7 +210,7 @@ class TestExecuteTrace:
                 "nodes": [
                     _source_node("a", str(p1)),  # has x
                     _source_node("b", str(p2)),  # has y, not x
-                    _transform_node("join", "a.join(b, on='shared')"),
+                    _transform_node("join", "df = a.join(b, on='shared')"),
                 ],
                 "edges": [_edge("a", "join"), _edge("b", "join")],
             }
@@ -233,7 +233,7 @@ class TestExecuteTrace:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node("mid"),  # passes x through
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "t")],
             }
@@ -342,7 +342,7 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }

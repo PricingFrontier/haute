@@ -94,7 +94,7 @@ class TestConditionalBranchIndication:
 
     def test_conditional_indicates_taken_branch_then(self, tmp_path):
         """when age < 25 then 1.5 otherwise 1.0 with age=22 -> taken_branch == 'then'."""
-        code = ".with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))"
+        code = "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))"
         result = evaluate_expression(code, "factor", {"age": 22})
 
         assert result.result_value is not None
@@ -105,7 +105,7 @@ class TestConditionalBranchIndication:
 
     def test_conditional_indicates_taken_branch_otherwise(self, tmp_path):
         """when age < 25 then 1.5 otherwise 1.0 with age=30 -> taken_branch == 'otherwise'."""
-        code = ".with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))"
+        code = "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))"
         result = evaluate_expression(code, "factor", {"age": 30})
 
         assert result.result_value is not None
@@ -116,7 +116,7 @@ class TestConditionalBranchIndication:
     def test_chained_conditional_indicates_second_branch(self, tmp_path):
         """Three-branch conditional, second matches -> taken_branch_index == 1."""
         code = (
-            ".with_columns(tier=pl.when(pl.col('score') > 90).then(pl.lit('gold'))"
+            "df = df.with_columns(tier=pl.when(pl.col('score') > 90).then(pl.lit('gold'))"
             ".when(pl.col('score') > 70).then(pl.lit('silver'))"
             ".otherwise(pl.lit('bronze')))"
         )
@@ -130,7 +130,7 @@ class TestConditionalBranchIndication:
     def test_chained_conditional_indicates_otherwise(self, tmp_path):
         """None of the when-branches match -> taken_branch == 'otherwise'."""
         code = (
-            ".with_columns(tier=pl.when(pl.col('score') > 90).then(pl.lit('gold'))"
+            "df = df.with_columns(tier=pl.when(pl.col('score') > 90).then(pl.lit('gold'))"
             ".when(pl.col('score') > 70).then(pl.lit('silver'))"
             ".otherwise(pl.lit('bronze')))"
         )
@@ -144,7 +144,7 @@ class TestConditionalBranchIndication:
     def test_nested_conditional_indicates_outer_and_inner_branch(self, tmp_path):
         """Nested when: verify both outer and inner branch are tracked."""
         code = (
-            ".with_columns(result=pl.when(pl.col('type') == pl.lit('A'))"
+            "df = df.with_columns(result=pl.when(pl.col('type') == pl.lit('A'))"
             ".then(pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))"
             ".otherwise(2.0))"
         )
@@ -161,7 +161,7 @@ class TestConditionalBranchIndication:
 
     def test_conditional_with_null_input_indicates_branch(self, tmp_path):
         """NULL value in conditional -> should indicate which branch null takes."""
-        code = ".with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))"
+        code = "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))"
         result = evaluate_expression(code, "factor", {"age": None})
 
         assert hasattr(result, "taken_branch"), "EvaluatedExpression must have taken_branch field"
@@ -179,7 +179,7 @@ class TestConditionalBranchIndication:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
+                        "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -198,7 +198,7 @@ class TestConditionalBranchIndication:
     def test_conditional_dimmed_branches(self, tmp_path):
         """Non-taken branches should be available for UI dimming."""
         code = (
-            ".with_columns(tier=pl.when(pl.col('score') > 90).then(pl.lit('gold'))"
+            "df = df.with_columns(tier=pl.when(pl.col('score') > 90).then(pl.lit('gold'))"
             ".when(pl.col('score') > 70).then(pl.lit('silver'))"
             ".otherwise(pl.lit('bronze')))"
         )
@@ -324,7 +324,7 @@ class TestPreambleConstantResolution:
 
     def test_preamble_constant_resolved_in_expression(self, tmp_path):
         """BASE_RATE constant from preamble should be substituted in the text."""
-        code = ".with_columns(x=pl.lit(BASE_RATE) * 2)"
+        code = "df = df.with_columns(x=pl.lit(BASE_RATE) * 2)"
         result = evaluate_expression(code, "x", {}, preamble_ns={"BASE_RATE": 250})
 
         assert result.substituted_text is not None
@@ -333,7 +333,7 @@ class TestPreambleConstantResolution:
 
     def test_preamble_multiple_constants(self, tmp_path):
         """Two preamble constants used in the same expression."""
-        code = ".with_columns(x=pl.lit(RATE_A) + pl.lit(RATE_B))"
+        code = "df = df.with_columns(x=pl.lit(RATE_A) + pl.lit(RATE_B))"
         result = evaluate_expression(code, "x", {}, preamble_ns={"RATE_A": 100, "RATE_B": 50})
 
         assert "100" in result.substituted_text
@@ -342,7 +342,7 @@ class TestPreambleConstantResolution:
 
     def test_preamble_constant_not_found_shows_name(self, tmp_path):
         """Constant not in preamble_ns -> shows variable name unresolved."""
-        code = ".with_columns(x=pl.lit(UNKNOWN_RATE) * 2)"
+        code = "df = df.with_columns(x=pl.lit(UNKNOWN_RATE) * 2)"
         result = evaluate_expression(code, "x", {}, preamble_ns={})
 
         assert "UNKNOWN_RATE" in result.substituted_text
@@ -358,7 +358,7 @@ class TestPreambleConstantResolution:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(adjusted=pl.col('premium') * pl.lit(LOADING))",
+                        "df = df.with_columns(adjusted=pl.col('premium') * pl.lit(LOADING))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -379,7 +379,7 @@ class TestPreambleConstantResolution:
 
     def test_preamble_does_not_override_column_values(self, tmp_path):
         """Column named same as preamble constant -> column value wins."""
-        code = ".with_columns(result=pl.col('RATE') * 2)"
+        code = "df = df.with_columns(result=pl.col('RATE') * 2)"
         result = evaluate_expression(code, "result", {"RATE": 500}, preamble_ns={"RATE": 100})
 
         # Column value 500 should be used, not preamble constant 100
@@ -398,7 +398,7 @@ class TestWindowFunctionFallback:
 
     def test_window_function_detected_as_window_type(self, tmp_path):
         """.sum().over('region') -> expression_type should be 'window'."""
-        code = ".with_columns(region_total=pl.col('premium').sum().over('region'))"
+        code = "df = df.with_columns(region_total=pl.col('premium').sum().over('region'))"
         result = evaluate_expression(code, "region_total", {"premium": 1200, "region": "North"})
 
         assert result.expression_type == "window", (
@@ -407,7 +407,7 @@ class TestWindowFunctionFallback:
 
     def test_window_function_substitution_shows_description(self, tmp_path):
         """substituted_text should be human-readable, not broken '1200.0.sum().over(region)'."""
-        code = ".with_columns(region_total=pl.col('premium').sum().over('region'))"
+        code = "df = df.with_columns(region_total=pl.col('premium').sum().over('region'))"
         result = evaluate_expression(code, "region_total", {"premium": 1200, "region": "North"})
 
         # substituted_text must be a clean human-readable description,
@@ -439,7 +439,7 @@ class TestWindowFunctionFallback:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(region_total=pl.col('premium').sum().over('region'))",
+                        "df = df.with_columns(region_total=pl.col('premium').sum().over('region'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -455,7 +455,7 @@ class TestWindowFunctionFallback:
 
     def test_window_function_referenced_columns_includes_partition(self, tmp_path):
         """referenced_columns should include both aggregated and partition columns."""
-        code = ".with_columns(region_total=pl.col('premium').sum().over('region'))"
+        code = "df = df.with_columns(region_total=pl.col('premium').sum().over('region'))"
         result = evaluate_expression(code, "region_total", {"premium": 1200, "region": "North"})
 
         refs = result.referenced_columns
@@ -477,7 +477,7 @@ class TestIntraNodeDependencyChain:
         from haute._expression_parser import parse_expression_chain
 
         code = (
-            ".with_columns(\n"
+            "df = df.with_columns(\n"
             "    exposure=pl.col('months') / 12,\n"
             "    earned_premium=pl.col('written_premium') * pl.col('exposure'),\n"
             ")"
@@ -494,7 +494,7 @@ class TestIntraNodeDependencyChain:
         from haute._expression_parser import parse_expression_chain
 
         code = (
-            ".with_columns(\n"
+            "df = df.with_columns(\n"
             "    rate=pl.col('base') * pl.col('factor'),\n"
             "    adjusted=pl.col('rate') * pl.col('discount'),\n"
             "    final=pl.col('adjusted') + pl.col('loading'),\n"
@@ -512,7 +512,7 @@ class TestIntraNodeDependencyChain:
         """Two columns in same with_columns that don't depend on each other -> no chain."""
         from haute._expression_parser import parse_expression_chain
 
-        code = ".with_columns(\n    x=pl.col('a') * 2,\n    y=pl.col('b') * 3,\n)"
+        code = "df = df.with_columns(\n    x=pl.col('a') * 2,\n    y=pl.col('b') * 3,\n)"
         chain = parse_expression_chain(code, "x")
 
         # No dependencies within the node, so chain should be length 1 (just itself)
@@ -531,7 +531,7 @@ class TestIntraNodeDependencyChain:
         ).write_parquet(p)
 
         code = (
-            ".with_columns(\n"
+            "df = df.with_columns(\n"
             "    exposure=pl.col('months') / 12,\n"
             "    earned_premium=pl.col('written_premium') * pl.col('exposure'),\n"
             ")"
@@ -559,7 +559,7 @@ class TestIntraNodeDependencyChain:
         """Column references itself -> no crash, graceful handling."""
         from haute._expression_parser import parse_expression_chain
 
-        code = ".with_columns(x=pl.col('x') + 1)"
+        code = "df = df.with_columns(x=pl.col('x') + 1)"
         # Should not raise; returns a chain of length 1 or empty
         chain = parse_expression_chain(code, "x")
         assert chain is not None  # does not crash
@@ -582,7 +582,7 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(new_name=pl.col('old_name'))"),
+                    _transform_node("t", "df = df.with_columns(new_name=pl.col('old_name'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -606,8 +606,8 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(mid=pl.col('old'))"),
-                    _transform_node("t2", ".with_columns(new=pl.col('mid'))"),
+                    _transform_node("t1", "df = df.with_columns(mid=pl.col('old'))"),
+                    _transform_node("t2", "df = df.with_columns(new=pl.col('mid'))"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -632,7 +632,7 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".rename({'source_col': 'target_col'})"),
+                    _transform_node("t", "df = df.rename({'source_col': 'target_col'})"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -655,7 +655,7 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".rename({'premium': 'written_premium'})"),
+                    _transform_node("t", "df = df.rename({'premium': 'written_premium'})"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -755,7 +755,7 @@ class TestCopyExportDataStructure:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(burn_cost=pl.col('premium') * 0.7)"),
+                    _transform_node("t", "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -779,7 +779,7 @@ class TestCopyExportDataStructure:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(burn_cost=pl.col('premium') * 0.7)"),
+                    _transform_node("t", "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -802,7 +802,7 @@ class TestCopyExportDataStructure:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(total=pl.col('a') + pl.col('b'))"),
+                    _transform_node("t", "df = df.with_columns(total=pl.col('a') + pl.col('b'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -828,7 +828,7 @@ class TestCopyExportDataStructure:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }

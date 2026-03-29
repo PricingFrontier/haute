@@ -79,7 +79,7 @@ class TestRequestValidation:
     def test_valid_graph_returns_200(self, client, tmp_path):
         """POST with valid graph and row_index returns 200 OK with trace."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
@@ -145,7 +145,7 @@ class TestRequestValidation:
     def test_column_parameter_filters_trace(self, client, tmp_path):
         """POST with column parameter returns a trace filtered to that column."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
 
@@ -190,7 +190,7 @@ class TestResponseShape:
     def trace_response(self, client, tmp_path):
         """Return a successful trace response body for shape testing."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
         assert resp.status_code == 200
         return resp.json()
@@ -269,7 +269,7 @@ class TestResponseShape:
     def test_output_value_matches_traced_row(self, client, tmp_path):
         """output_value matches the data from the traced row."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
         trace = resp.json()["trace"]
@@ -293,7 +293,7 @@ class TestPipelineIntegration:
     def test_simple_source_transform_trace(self, client, tmp_path):
         """Simple source -> transform pipeline trace works end-to-end."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') * 2)")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') * 2)")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
@@ -317,7 +317,7 @@ class TestPipelineIntegration:
                     _source_node("s2", str(p2)),
                     _transform_node(
                         "join",
-                        "s1.join(s2, on='key')",
+                        "df = s1.join(s2, on='key')",
                     ),
                 ],
                 "edges": [_edge("s1", "join"), _edge("s2", "join")],
@@ -333,7 +333,7 @@ class TestPipelineIntegration:
     def test_column_tracing_filters_relevant_nodes(self, client, tmp_path):
         """Column tracing returns only relevant nodes."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
 
         # Trace a column that is added by the transform
         resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
@@ -350,7 +350,7 @@ class TestPipelineIntegration:
     def test_trace_with_column_returns_scalar(self, client, tmp_path):
         """Trace with column parameter returns scalar output_value."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
 
@@ -362,7 +362,7 @@ class TestPipelineIntegration:
     def test_trace_without_column_returns_dict(self, client, tmp_path):
         """Trace without column parameter returns dict output_value."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
@@ -375,7 +375,7 @@ class TestPipelineIntegration:
     def test_pipeline_with_error_in_node_code(self, client, tmp_path):
         """Pipeline with invalid node code returns an error response."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(INVALID_SYNTAX_HERE===)")
+        graph = _simple_graph(p, "df = df.with_columns(INVALID_SYNTAX_HERE===)")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
@@ -390,7 +390,7 @@ class TestPipelineIntegration:
         prev = "src"
         for i in range(5):
             nid = f"t{i}"
-            nodes.append(_transform_node(nid, f".with_columns(c{i}=pl.col('x') + {i})"))
+            nodes.append(_transform_node(nid, f"df = df.with_columns(c{i}=pl.col('x') + {i})"))
             edges.append(_edge(prev, nid))
             prev = nid
 
@@ -411,7 +411,7 @@ class TestPipelineIntegration:
     def test_cached_trace_returns_faster_on_second_call(self, client, tmp_path):
         """Second trace on same graph should hit cache and return faster."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
 
         # First call — cold
         resp1 = _trace_post(client, graph, row_index=0, target_node_id="t")
@@ -443,7 +443,7 @@ class TestErrorHandling:
     def test_node_code_raises_exception(self, client, tmp_path):
         """Node code that raises a Python exception returns an error."""
         p = _simple_parquet(tmp_path)
-        graph = _simple_graph(p, ".with_columns(z=pl.col('nonexistent_col'))")
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('nonexistent_col'))")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
@@ -460,7 +460,7 @@ class TestErrorHandling:
         monkeypatch.setattr(route_mod, "_TRACE_TIMEOUT", 0.01)
 
         p = _simple_parquet(tmp_path)
-        code = ".with_columns(z=pl.col('x') + 1)"
+        code = "df = df.with_columns(z=pl.col('x') + 1)"
         graph = _simple_graph(p, code)
 
         def slow_trace(*args, **kwargs):
@@ -515,7 +515,7 @@ class TestErrorHandling:
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
         # Filter everything out so output has 0 rows
-        graph = _simple_graph(p, ".filter(pl.col('x') > 999)")
+        graph = _simple_graph(p, "df = df.filter(pl.col('x') > 999)")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 

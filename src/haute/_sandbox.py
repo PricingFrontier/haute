@@ -326,28 +326,15 @@ def _validate_user_code_cached(
 def _try_parse_code(code: str) -> ast.Module:
     """Try to parse *code* as Python; return the AST or raise.
 
-    If *code* is a fragment (e.g. chain syntax starting with ``"."`` or
-    a bare expression), wrap it in an assignment context and retry.
     Raises ``UnsafeCodeError`` (with the original ``SyntaxError`` as
-    ``__cause__``) only when all parse attempts fail.
+    ``__cause__``) when the code cannot be parsed.
     """
-    first_exc: SyntaxError | None = None
     try:
         return ast.parse(code)
     except SyntaxError as exc:
-        first_exc = exc
-
-    # Retry with executor-style wrapping for code fragments.
-    if code.lstrip().startswith("."):
-        wrapped = f"df = (\n    df\n    {code}\n)"
-    else:
-        wrapped = f"df = (\n    {code}\n)"
-    try:
-        return ast.parse(wrapped)
-    except SyntaxError:
         raise UnsafeCodeError(
-            f"Cannot validate code with syntax errors (line {first_exc.lineno}): {first_exc.msg}"
-        ) from first_exc
+            f"Cannot validate code with syntax errors (line {exc.lineno}): {exc.msg}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

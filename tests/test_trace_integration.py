@@ -111,7 +111,7 @@ class TestLinearPipelineSimpleArithmetic:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -133,7 +133,7 @@ class TestLinearPipelineSimpleArithmetic:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(z=pl.col('x') * pl.col('y'))"),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') * pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -165,8 +165,8 @@ class TestLinearPipelineTwoTransforms:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("t1", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", "df = df.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -192,8 +192,8 @@ class TestLinearPipelineTwoTransforms:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("t1", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", "df = df.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -236,7 +236,7 @@ class TestLinearPipelineMultipleWithColumns:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(y=pl.col('x') * 3).with_columns(z=pl.col('y') + pl.col('x'))",
+                        "df = df.with_columns(y=pl.col('x') * 3)\ndf = df.with_columns(z=pl.col('y') + pl.col('x'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -279,7 +279,7 @@ class TestJoinTraceLeftColumn:
                 "nodes": [
                     _source_node("a", str(p_a)),
                     _source_node("b", str(p_b)),
-                    _transform_node("join", "a.join(b, on='key')"),
+                    _transform_node("join", "df = a.join(b, on='key')"),
                 ],
                 "edges": [_edge("a", "join"), _edge("b", "join")],
             }
@@ -313,7 +313,7 @@ class TestJoinTraceRightColumn:
                 "nodes": [
                     _source_node("a", str(p_a)),
                     _source_node("b", str(p_b)),
-                    _transform_node("join", "a.join(b, on='key')"),
+                    _transform_node("join", "df = a.join(b, on='key')"),
                 ],
                 "edges": [_edge("a", "join"), _edge("b", "join")],
             }
@@ -349,7 +349,7 @@ class TestJoinTraceNullLeftJoin:
                 "nodes": [
                     _source_node("a", str(p_a)),
                     _source_node("b", str(p_b)),
-                    _transform_node("join", "a.join(b, on='key', how='left')"),
+                    _transform_node("join", "df = a.join(b, on='key', how='left')"),
                 ],
                 "edges": [_edge("a", "join"), _edge("b", "join")],
             }
@@ -385,7 +385,7 @@ class TestJoinInnerReducesRows:
                 "nodes": [
                     _source_node("a", str(p_a)),
                     _source_node("b", str(p_b)),
-                    _transform_node("join", "a.join(b, on='key', how='inner')"),
+                    _transform_node("join", "df = a.join(b, on='key', how='inner')"),
                 ],
                 "edges": [_edge("a", "join"), _edge("b", "join")],
             }
@@ -428,7 +428,7 @@ class TestJoinCompositeKey:
                 "nodes": [
                     _source_node("a", str(p_a)),
                     _source_node("b", str(p_b)),
-                    _transform_node("join", "a.join(b, on=['k1', 'k2'])"),
+                    _transform_node("join", "df = a.join(b, on=['k1', 'k2'])"),
                 ],
                 "edges": [_edge("a", "join"), _edge("b", "join")],
             }
@@ -490,8 +490,8 @@ class TestRatingStepSingleTable:
                     _source_node("rates", str(p_rates)),
                     _transform_node(
                         "rated",
-                        "data.join(rates, on='region').with_columns("
-                        "rated_premium=pl.col('base') * pl.col('region_factor'))",
+                        "df = data.join(rates, on='region')\n"
+                        "df = df.with_columns(rated_premium=pl.col('base') * pl.col('region_factor'))",
                     ),
                 ],
                 "edges": [_edge("data", "rated"), _edge("rates", "rated")],
@@ -545,11 +545,11 @@ class TestRatingStepMultiplyTables:
                     _source_node("data", str(p_data)),
                     _source_node("age_tbl", str(p_age)),
                     _source_node("region_tbl", str(p_region)),
-                    _transform_node("join_age", "data.join(age_tbl, on='age_band')"),
-                    _transform_node("join_region", "join_age.join(region_tbl, on='region')"),
+                    _transform_node("join_age", "df = data.join(age_tbl, on='age_band')"),
+                    _transform_node("join_region", "df = join_age.join(region_tbl, on='region')"),
                     _transform_node(
                         "calc",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "final_premium=pl.col('base_premium') * pl.col('age_factor') * pl.col('region_factor'))",
                     ),
                 ],
@@ -604,13 +604,13 @@ class TestBandingThenRating:
                     _source_node("data", str(p_data)),
                     _transform_node(
                         "banding",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "age_band=pl.when(pl.col('driver_age') <= 25).then(pl.lit('18-25'))"
                         ".when(pl.col('driver_age') <= 40).then(pl.lit('26-40'))"
                         ".otherwise(pl.lit('41-60')))",
                     ),
                     _source_node("rates", str(p_rates)),
-                    _transform_node("rated", "banding.join(rates, on='age_band')"),
+                    _transform_node("rated", "df = banding.join(rates, on='age_band')"),
                 ],
                 "edges": [
                     _edge("data", "banding"),
@@ -668,16 +668,16 @@ class TestFullPricingWaterfall:
                     _source_node("data", str(p_data)),
                     _transform_node(
                         "banding",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "age_band=pl.when(pl.col('driver_age') <= 25).then(pl.lit('18-25'))"
                         ".when(pl.col('driver_age') <= 40).then(pl.lit('26-40'))"
                         ".otherwise(pl.lit('41-60')))",
                     ),
                     _source_node("rates", str(p_rates)),
-                    _transform_node("rated", "banding.join(rates, on='age_band')"),
+                    _transform_node("rated", "df = banding.join(rates, on='age_band')"),
                     _transform_node(
                         "discount",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "rated_premium=pl.col('base_premium') * pl.col('age_factor'),"
                         "discounted_premium=pl.col('base_premium') * pl.col('age_factor') * 0.9)",
                     ),
@@ -732,7 +732,7 @@ class TestModelScoreFeatureEngineering:
                     _source_node("src", str(p)),
                     _transform_node(
                         "features",
-                        ".with_columns("
+                        "df = df.with_columns("
                         "log_income=pl.col('income').log(),"
                         "age_squared=pl.col('age') ** 2)",
                     ),
@@ -772,7 +772,7 @@ class TestModelScorePostProcess:
                     _source_node("src", str(p)),
                     _transform_node(
                         "post",
-                        ".with_columns(decision=pl.when(pl.col('prediction') > 0.5)"
+                        "df = df.with_columns(decision=pl.when(pl.col('prediction') > 0.5)"
                         ".then(pl.lit('accept')).otherwise(pl.lit('reject')))",
                     ),
                 ],
@@ -817,11 +817,11 @@ class TestScenarioExpanderTrace:
                     # Simulate scenario expansion: cross-join with multipliers
                     _transform_node(
                         "expand",
-                        ".join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),how='cross')",
+                        "df = df.join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),how='cross')",
                     ),
                     _transform_node(
                         "calc",
-                        ".with_columns(scenario_premium=pl.col('premium') * pl.col('multiplier'))",
+                        "df = df.with_columns(scenario_premium=pl.col('premium') * pl.col('multiplier'))",
                     ),
                 ],
                 "edges": [_edge("src", "expand"), _edge("expand", "calc")],
@@ -856,7 +856,7 @@ class TestOptimiserApplyTrace:
                     _source_node("src", str(p)),
                     _transform_node(
                         "opt",
-                        ".with_columns(optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
+                        "df = df.with_columns(optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
                     ),
                 ],
                 "edges": [_edge("src", "opt")],
@@ -901,9 +901,9 @@ class TestDiamondPattern:
             {
                 "nodes": [
                     _source_node("a", str(p)),
-                    _transform_node("b", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("c", ".with_columns(z=pl.col('x') + 5)"),
-                    _transform_node("d", "b.join(c, on='id')"),
+                    _transform_node("b", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("c", "df = df.with_columns(z=pl.col('x') + 5)"),
+                    _transform_node("d", "df = b.join(c, on='id')"),
                 ],
                 "edges": [
                     _edge("a", "b"),
@@ -945,8 +945,8 @@ class TestFanOut:
             {
                 "nodes": [
                     _source_node("a", str(p)),
-                    _transform_node("b", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("c", ".with_columns(z=pl.col('x') + 1)"),
+                    _transform_node("b", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("c", "df = df.with_columns(z=pl.col('x') + 1)"),
                 ],
                 "edges": [_edge("a", "b"), _edge("a", "c")],
             }
@@ -980,7 +980,7 @@ class TestLongChain:
         nodes = [_source_node("n0", str(p))]
         edges = []
         for i in range(1, 11):
-            code = f".with_columns(col_{i}=pl.col('col_{i - 1}') + 1)"
+            code = f"df = df.with_columns(col_{i}=pl.col('col_{i - 1}') + 1)"
             nodes.append(_transform_node(f"n{i}", code))
             edges.append(_edge(f"n{i - 1}", f"n{i}"))
 
@@ -1017,9 +1017,9 @@ class TestInstanceNode:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                     # "instance" of t -- same logic applied to same input
-                    _transform_node("t_inst", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t_inst", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t"), _edge("src", "t_inst")],
             }
@@ -1056,9 +1056,9 @@ class TestSubmodelTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("sub__t1", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("sub__t2", ".with_columns(z=pl.col('y') + 1)"),
-                    _transform_node("post", ".with_columns(w=pl.col('z') * 3)"),
+                    _transform_node("sub__t1", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("sub__t2", "df = df.with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("post", "df = df.with_columns(w=pl.col('z') * 3)"),
                 ],
                 "edges": [
                     _edge("src", "sub__t1"),
@@ -1090,9 +1090,9 @@ class TestNestedSubmodels:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("outer__inner__t1", ".with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("outer__t2", ".with_columns(z=pl.col('y') + 1)"),
-                    _transform_node("final", ".with_columns(w=pl.col('z') + 1)"),
+                    _transform_node("outer__inner__t1", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("outer__t2", "df = df.with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("final", "df = df.with_columns(w=pl.col('z') + 1)"),
                 ],
                 "edges": [
                     _edge("src", "outer__inner__t1"),
@@ -1260,7 +1260,7 @@ class TestRowCorrelationSameRowCount:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1293,7 +1293,7 @@ class TestRowCorrelationFilterReducesRows:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("filt", ".filter(pl.col('value') > 25)"),
+                    _transform_node("filt", "df = df.filter(pl.col('value') > 25)"),
                 ],
                 "edges": [_edge("src", "filt")],
             }
@@ -1329,7 +1329,7 @@ class TestRowCorrelationAggregation:
                     _source_node("src", str(p)),
                     _transform_node(
                         "agg",
-                        ".group_by('region').agg(pl.col('premium').sum()).sort('region')",
+                        "df = df.group_by('region').agg(pl.col('premium').sum()).sort('region')",
                     ),
                 ],
                 "edges": [_edge("src", "agg")],
@@ -1360,7 +1360,7 @@ class TestRowCorrelationSortChangesOrder:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("sorted", ".sort('id')"),
+                    _transform_node("sorted", "df = df.sort('id')"),
                 ],
                 "edges": [_edge("src", "sorted")],
             }
@@ -1397,7 +1397,7 @@ class TestRowCorrelationScenarioExpansion:
                     _source_node("src", str(p)),
                     _transform_node(
                         "expand",
-                        ".join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
+                        "df = df.join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
                     ),
                 ],
                 "edges": [_edge("src", "expand")],
@@ -1434,8 +1434,8 @@ class TestColumnRelevanceSpecificColumn:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("t1", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", "df = df.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -1465,8 +1465,8 @@ class TestColumnRelevancePassthrough:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("t2", ".with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("t1", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", "df = df.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -1496,8 +1496,8 @@ class TestColumnRelevanceCreatedAtNode:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".with_columns(y=pl.col('x') * 2)"),
-                    _transform_node("t2", ".with_columns(z=pl.col('y') * 3)"),
+                    _transform_node("t1", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t2", "df = df.with_columns(z=pl.col('y') * 3)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -1528,8 +1528,8 @@ class TestColumnRelevanceRenamedColumn:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", ".rename({'x': 'x_renamed'})"),
-                    _transform_node("t2", ".with_columns(z=pl.col('x_renamed') * 2)"),
+                    _transform_node("t1", "df = df.rename({'x': 'x_renamed'})"),
+                    _transform_node("t2", "df = df.with_columns(z=pl.col('x_renamed') * 2)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -1560,7 +1560,7 @@ class TestColumnRelevancePrunesUnrelatedBranch:
                 "nodes": [
                     _source_node("a", str(p1)),
                     _source_node("b", str(p2)),
-                    _transform_node("join", "a.join(b, on='shared')"),
+                    _transform_node("join", "df = a.join(b, on='shared')"),
                 ],
                 "edges": [_edge("a", "join"), _edge("b", "join")],
             }
@@ -1645,7 +1645,7 @@ class TestCacheSameGraphDifferentColumn:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1672,7 +1672,7 @@ class TestCacheInvalidatesOnGraphChange:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1684,7 +1684,7 @@ class TestCacheInvalidatesOnGraphChange:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 3)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 3)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1840,7 +1840,7 @@ class TestErrorNodeCodeThrows:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("bad", ".with_columns(y=pl.col('nonexistent') * 2)"),
+                    _transform_node("bad", "df = df.with_columns(y=pl.col('nonexistent') * 2)"),
                 ],
                 "edges": [_edge("src", "bad")],
             }
@@ -1868,7 +1868,7 @@ class TestErrorZeroRowsOutput:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("filt", ".filter(pl.col('x') > 999)"),
+                    _transform_node("filt", "df = df.filter(pl.col('x') > 999)"),
                 ],
                 "edges": [_edge("src", "filt")],
             }
@@ -1929,7 +1929,7 @@ class TestEdgeCaseNaN:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') / pl.col('x'))"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') / pl.col('x'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1956,7 +1956,7 @@ class TestEdgeCaseLargeFloats:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('x') * 1000)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 1000)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1987,7 +1987,7 @@ class TestEdgeCaseStringColumns:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", ".with_columns(greeting=pl.lit('Hello ') + pl.col('name'))"
+                        "t", "df = df.with_columns(greeting=pl.lit('Hello ') + pl.col('name'))"
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -2128,7 +2128,7 @@ class TestEdgeCaseUnicodeColumnNames:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        ".with_columns(total=pl.col('prix_unitaire') * pl.col('quantite'))",
+                        "df = df.with_columns(total=pl.col('prix_unitaire') * pl.col('quantite'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -2229,7 +2229,8 @@ class TestBurnCostExample:
                     _source_node("premiums", str(p_premiums)),
                     _transform_node(
                         "join_premiums",
-                        "data.join(premiums, on='quote_id', how='left').with_columns("
+                        "df = data.join(premiums, on='quote_id', how='left')\n"
+                        "df = df.with_columns("
                         "sale_flag=pl.when(pl.col('policy_id').is_null()).then(pl.lit(0)).otherwise(pl.lit(1)),"
                         "burn_cost=pl.col('premium') * 0.7)",
                     ),
@@ -2273,8 +2274,8 @@ class TestBurnCostExample:
                     _source_node("premiums", str(p_premiums)),
                     _transform_node(
                         "join_premiums",
-                        "data.join(premiums, on='quote_id', how='left').with_columns("
-                        "burn_cost=pl.col('premium') * 0.7)",
+                        "df = data.join(premiums, on='quote_id', how='left')\n"
+                        "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)",
                     ),
                 ],
                 "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
@@ -2313,8 +2314,8 @@ class TestBurnCostExample:
                     _source_node("premiums", str(p_premiums)),
                     _transform_node(
                         "join_premiums",
-                        "data.join(premiums, on='quote_id', how='left').with_columns("
-                        "burn_cost=pl.col('premium') * 0.7)",
+                        "df = data.join(premiums, on='quote_id', how='left')\n"
+                        "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)",
                     ),
                 ],
                 "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
@@ -2357,8 +2358,8 @@ class TestBurnCostExample:
                     _source_node("premiums", str(p_premiums)),
                     _transform_node(
                         "join_premiums",
-                        "data.join(premiums, on='quote_id', how='left').with_columns("
-                        "burn_cost=pl.col('premium') * 0.7)",
+                        "df = data.join(premiums, on='quote_id', how='left')\n"
+                        "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)",
                     ),
                 ],
                 "edges": [_edge("data", "join_premiums"), _edge("premiums", "join_premiums")],
@@ -2398,17 +2399,17 @@ class TestBurnCostExample:
                 "nodes": [
                     _source_node("quotes", str(p_quotes)),
                     _transform_node(
-                        "processing", ".with_columns(age_band=pl.col('age') // 10 * 10)"
+                        "processing", "df = df.with_columns(age_band=pl.col('age') // 10 * 10)"
                     ),
                     _source_node("premiums", str(p_premiums)),
                     _transform_node(
                         "join_premiums",
-                        "processing.join(premiums, on='quote_id', how='left').with_columns("
-                        "burn_cost=pl.col('premium') * 0.7)",
+                        "df = processing.join(premiums, on='quote_id', how='left')\n"
+                        "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)",
                     ),
                     _transform_node(
                         "features",
-                        ".select('quote_id', 'premium', 'burn_cost', 'quoted_premium')",
+                        "df = df.select('quote_id', 'premium', 'burn_cost', 'quoted_premium')",
                     ),
                 ],
                 "edges": [
@@ -2462,7 +2463,7 @@ class TestPerformanceLargeDataset:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('value') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('value') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2492,7 +2493,7 @@ class TestPerformanceLargeDataset:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(y=pl.col('value') * 2)"),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('value') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2527,7 +2528,7 @@ class TestPerformanceManyNodes:
         nodes = [_source_node("n0", str(p))]
         edges = []
         for i in range(1, 21):
-            code = f".with_columns(col_{i}=pl.col('col_{i - 1}') + 1)"
+            code = f"df = df.with_columns(col_{i}=pl.col('col_{i - 1}') + 1)"
             nodes.append(_transform_node(f"n{i}", code))
             edges.append(_edge(f"n{i - 1}", f"n{i}"))
 
@@ -2561,7 +2562,7 @@ class TestSerializationRoundTrip:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", ".with_columns(z=pl.col('x') + pl.col('y'))"),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
