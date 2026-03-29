@@ -112,3 +112,4 @@ nav:
   - Building Models:
     - building-models/index.md
     - Preparing Your Data: building-models/preparing-your-data.md
+    - Node Types: building-models/nodes.md

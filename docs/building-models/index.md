@@ -12,3 +12,4 @@ This section covers how to build pricing models in Haute - from loading your dat
 | I want to... | Read this |
 |---|---|
 | Load JSON data and turn it into clean columns for modelling | [Preparing Your Data](preparing-your-data.md) |
+| Understand what each node type does and how to configure it | [Node Types](nodes.md) |
