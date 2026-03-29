@@ -7,23 +7,20 @@ covered by test_trace_integration.py.
 
 from __future__ import annotations
 
-import math
 import time
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 import pytest
 
-from haute.trace import _cache as _trace_cache
 from haute.executor import _preview_cache
-from tests.conftest import (
-    make_edge as _edge,
-    make_graph as _g,
-    make_source_node as _source_node,
-    make_transform_node as _transform_node,
-)
+from haute.trace import _cache as _trace_cache
+from tests.conftest import make_edge as _edge
+from tests.conftest import make_graph as _g
+from tests.conftest import make_source_node as _source_node
+from tests.conftest import make_transform_node as _transform_node
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -417,15 +414,11 @@ class TestPipelineIntegration:
         graph = _simple_graph(p, ".with_columns(z=pl.col('x') + pl.col('y'))")
 
         # First call — cold
-        t0 = time.perf_counter()
         resp1 = _trace_post(client, graph, row_index=0, target_node_id="t")
-        cold_ms = (time.perf_counter() - t0) * 1000
         assert resp1.status_code == 200
 
         # Second call — should use cache
-        t0 = time.perf_counter()
         resp2 = _trace_post(client, graph, row_index=1, target_node_id="t")
-        warm_ms = (time.perf_counter() - t0) * 1000
         assert resp2.status_code == 200
 
         # Both should succeed (cache doesn't corrupt results)
@@ -460,23 +453,22 @@ class TestErrorHandling:
 
     def test_timeout_returns_504(self, client, tmp_path, monkeypatch):
         """If trace execution exceeds the timeout, return 504."""
+        from unittest.mock import patch
+
         import haute.routes.pipeline as route_mod
 
-        monkeypatch.setattr(route_mod, "_TRACE_TIMEOUT", 0.001)
+        monkeypatch.setattr(route_mod, "_TRACE_TIMEOUT", 0.01)
 
         p = _simple_parquet(tmp_path)
-        # Use a transform that takes some time (sleep not available, so use
-        # a code path that will run longer than 1ms timeout)
-        code = (
-            ".with_columns("
-            "z=pl.col('x').map_elements(lambda v: __import__('time').sleep(0.1) or v, return_dtype=pl.Int64)"
-            ")"
-        )
+        code = ".with_columns(z=pl.col('x') + 1)"
         graph = _simple_graph(p, code)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        def slow_trace(*args, **kwargs):
+            time.sleep(2.0)
 
-        # Should be 504 (timeout) or 500 (internal error if timeout doesn't fire cleanly)
+        with patch("haute.trace.execute_trace", side_effect=slow_trace):
+            resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+
         assert resp.status_code == 504
 
     def test_malformed_graph_json_returns_422(self, client):
