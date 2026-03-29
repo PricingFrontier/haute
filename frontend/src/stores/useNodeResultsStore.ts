@@ -143,6 +143,16 @@ export function hashConfig(config: Record<string, unknown>): string {
   return djb2(JSON.stringify(sortKeys(rest)))
 }
 
+// ─── Derived-getter caches (Issue #13) ──────────────────────────
+// These caches prevent getOptimiserPreview / getModellingPreview from creating
+// new objects on every call, which would cause unnecessary re-renders when
+// called during render (e.g. in App.tsx).
+
+// eslint-disable-next-line prefer-const -- mutated via property assignment in getters and clearNode
+let _optimiserPreviewCache: Record<string, { source: CachedSolveResult; result: ReturnType<NodeResultsState["getOptimiserPreview"]> }> = {}
+// eslint-disable-next-line prefer-const -- mutated via property assignment in getters and clearNode
+let _modellingPreviewCache: Record<string, { source: CachedTrainResult; jobRef: ActiveTrainJob | undefined; result: ReturnType<NodeResultsState["getModellingPreview"]> }> = {}
+
 // ─── Store ───────────────────────────────────────────────────────
 
 interface NodeResultsState {
@@ -407,8 +417,14 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   getOptimiserPreview: (nodeId) => {
     const cached = get().solveResults[nodeId]
-    if (!cached) return null
-    return {
+    if (!cached) {
+      delete _optimiserPreviewCache[nodeId]
+      return null
+    }
+    // Return cached object if the underlying CachedSolveResult is the same by reference
+    const prev = _optimiserPreviewCache[nodeId]
+    if (prev && prev.source === cached) return prev.result
+    const result = {
       result: cached.result,
       jobId: cached.jobId,
       constraints: cached.constraints,
@@ -416,25 +432,36 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       frontier: cached.frontier,
       selectedPointIndex: cached.selectedPointIndex,
     }
+    _optimiserPreviewCache[nodeId] = { source: cached, result }
+    return result
   },
 
   getModellingPreview: (nodeId) => {
     const cached = get().trainResults[nodeId]
-    if (!cached) return null
-    // Only show completed (non-error) results in the preview panel
-    if (cached.result.status === "error") return null
+    if (!cached || cached.result.status === "error") {
+      delete _modellingPreviewCache[nodeId]
+      return null
+    }
     const job = get().trainJobs[nodeId]
-    return {
+    // Return cached object if the underlying references haven't changed
+    const prev = _modellingPreviewCache[nodeId]
+    if (prev && prev.source === cached && prev.jobRef === job) return prev.result
+    const result = {
       result: cached.result,
       jobId: cached.jobId,
       nodeLabel: job?.nodeLabel ?? "Model",
       configHash: cached.configHash,
     }
+    _modellingPreviewCache[nodeId] = { source: cached, jobRef: job, result }
+    return result
   },
 
   // ── Cleanup ──
 
-  clearNode: (nodeId) =>
+  clearNode: (nodeId) => {
+    // Clear derived-getter caches for this node
+    delete _optimiserPreviewCache[nodeId]
+    delete _modellingPreviewCache[nodeId]
     set((s) => {
       const { [nodeId]: _rp, ...previews } = s.previews; void _rp
       const columnCache = Object.fromEntries(
@@ -445,7 +472,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _rtr, ...trainResults } = s.trainResults; void _rtr
       const { [nodeId]: _rtj, ...trainJobs } = s.trainJobs; void _rtj
       return { previews, columnCache, solveResults, solveJobs, trainResults, trainJobs }
-    }),
+    })
+  },
 }))
 
 export default useNodeResultsStore

@@ -2264,3 +2264,532 @@ class TestVeryLongUserCode:
         # Verify it compiles in a function context
         func_code = f"import polars as pl\ndef test_func(src):\n{result}\n"
         compile(func_code, "<test>", "exec")
+
+
+# ---------------------------------------------------------------------------
+# Edge-case tests: _build_params
+# ---------------------------------------------------------------------------
+
+
+class TestBuildParamsEdgeCases:
+    def test_no_sources_returns_default(self):
+        assert _build_params([]) == "df: pl.LazyFrame"
+
+    def test_single_source_returns_typed_param(self):
+        assert _build_params(["source_name"]) == "source_name: pl.LazyFrame"
+
+    def test_multiple_sources_returns_comma_separated(self):
+        result = _build_params(["name1", "name2"])
+        assert result == "name1: pl.LazyFrame, name2: pl.LazyFrame"
+
+    def test_source_names_that_are_python_keywords(self):
+        result = _build_params(["node_class", "node_return"])
+        assert "node_class: pl.LazyFrame" in result
+        assert "node_return: pl.LazyFrame" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge-case tests: _wrap_user_code
+# ---------------------------------------------------------------------------
+
+
+class TestWrapUserCodeEdgeCases:
+    def test_empty_code_returns_first_input_name(self):
+        result = _wrap_user_code("", ["my_source"])
+        assert "return my_source" in result
+
+    def test_empty_code_no_sources_returns_df(self):
+        result = _wrap_user_code("", [])
+        assert "return df" in result
+
+    def test_chain_syntax_wrapped_correctly(self):
+        result = _wrap_user_code(".filter(pl.col('x') > 0)", ["src"])
+        assert "df = (" in result
+        assert "src" in result
+        assert ".filter(pl.col('x') > 0)" in result
+        assert "return df" in result
+
+    def test_chain_syntax_multiline(self):
+        code = ".filter(pl.col('x') > 0)\n.select('x', 'y')"
+        result = _wrap_user_code(code, ["upstream"])
+        assert "upstream" in result
+        assert ".filter" in result
+        assert ".select" in result
+        assert "return df" in result
+
+    def test_assignment_detected(self):
+        result = _wrap_user_code("df = src.filter(pl.col('x') > 0)", ["src"])
+        assert "df = src.filter" in result
+        assert "return df" in result
+        assert "df = (\n" not in result
+
+    def test_bare_expression_wrapped_in_return(self):
+        result = _wrap_user_code("src.filter(pl.col('x') > 0)", ["src"])
+        assert "df = (" in result
+        assert "return df" in result
+
+    def test_return_statement_detected_as_is(self):
+        result = _wrap_user_code("return df.filter(pl.col('x') > 0)", ["src"])
+        assert "return df.filter" in result
+
+    def test_whitespace_only_code_returns_first_input(self):
+        result = _wrap_user_code("   \n  \n  ", ["abc"])
+        assert "return abc" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge-case tests: node type generators
+# ---------------------------------------------------------------------------
+
+
+class TestGenConstantEdgeCases:
+    def test_empty_values_list(self):
+        node = _n({
+            "id": "c",
+            "data": {
+                "label": "EmptyConst",
+                "nodeType": "constant",
+                "config": {"values": []},
+            },
+        })
+        code = _node_to_code(node)
+        assert "def EmptyConst()" in code
+        assert '"constant": [0]' in code
+        _compile_node_code(code)
+
+    def test_none_values_coerced(self):
+        node = _n({
+            "id": "c",
+            "data": {
+                "label": "NoneConst",
+                "nodeType": "constant",
+                "config": {"values": None},
+            },
+        })
+        code = _node_to_code(node)
+        assert '"constant": [0]' in code
+        _compile_node_code(code)
+
+    def test_nan_handling(self):
+        node = _n({
+            "id": "c",
+            "data": {
+                "label": "NanConst",
+                "nodeType": "constant",
+                "config": {"values": [{"name": "x", "value": "nan"}]},
+            },
+        })
+        code = _node_to_code(node)
+        assert "float('nan')" in code
+        _compile_node_code(code)
+
+    def test_numeric_values(self):
+        node = _n({
+            "id": "c",
+            "data": {
+                "label": "NumConst",
+                "nodeType": "constant",
+                "config": {"values": [
+                    {"name": "rate", "value": "3.14"},
+                    {"name": "count", "value": "42"},
+                ]},
+            },
+        })
+        code = _node_to_code(node)
+        assert "3.14" in code
+        assert "42" in code
+        _compile_node_code(code)
+
+    def test_string_values(self):
+        node = _n({
+            "id": "c",
+            "data": {
+                "label": "StrConst",
+                "nodeType": "constant",
+                "config": {"values": [{"name": "label", "value": "hello"}]},
+            },
+        })
+        code = _node_to_code(node)
+        assert '"hello"' in code
+        _compile_node_code(code)
+
+
+class TestGenDataSourceEdgeCases:
+    def test_unknown_file_extension_defaults_to_parquet(self):
+        node = _n({
+            "id": "src",
+            "data": {
+                "label": "WeirdSrc",
+                "nodeType": "dataSource",
+                "config": {"path": "data/file.xyz"},
+            },
+        })
+        code = _node_to_code(node)
+        assert "scan_parquet" in code
+        _compile_node_code(code)
+
+    def test_no_extension_defaults_to_parquet(self):
+        node = _n({
+            "id": "src",
+            "data": {
+                "label": "NoExtSrc",
+                "nodeType": "dataSource",
+                "config": {"path": "data/noext"},
+            },
+        })
+        code = _node_to_code(node)
+        assert "scan_parquet" in code
+        _compile_node_code(code)
+
+    def test_databricks_config(self):
+        node = _n({
+            "id": "src",
+            "data": {
+                "label": "DBSrc",
+                "nodeType": "dataSource",
+                "config": {
+                    "sourceType": "databricks",
+                    "table": "catalog.schema.tbl",
+                    "http_path": "/sql/1.0/endpoints/abc",
+                    "query": "SELECT * FROM t",
+                },
+            },
+        })
+        code = _node_to_code(node)
+        assert "read_cached_table" in code
+        assert "catalog.schema.tbl" in code
+        _compile_node_code(code)
+
+
+class TestGenOutputEdgeCases:
+    def test_empty_fields_list(self):
+        node = _n({
+            "id": "out",
+            "data": {
+                "label": "EmptyOut",
+                "nodeType": "output",
+                "config": {"fields": []},
+            },
+        })
+        code = _node_to_code(node, source_names=["src"])
+        assert "return src" in code
+        assert ".select" not in code
+        _compile_node_code(code)
+
+    def test_none_fields(self):
+        node = _n({
+            "id": "out",
+            "data": {
+                "label": "NoneOut",
+                "nodeType": "output",
+                "config": {"fields": None},
+            },
+        })
+        code = _node_to_code(node, source_names=["src"])
+        assert "return src" in code
+        assert ".select" not in code
+        _compile_node_code(code)
+
+
+class TestGenTransformEdgeCases:
+    def test_empty_code_passthrough(self):
+        node = _n({
+            "id": "t",
+            "data": {
+                "label": "NoOp",
+                "nodeType": "polars",
+                "config": {"code": ""},
+            },
+        })
+        code = _node_to_code(node, source_names=["upstream"])
+        assert "return upstream" in code
+        _compile_node_code(code)
+
+    def test_selected_columns_decorator_kwarg(self):
+        node = _n({
+            "id": "t",
+            "data": {
+                "label": "SelCol",
+                "nodeType": "polars",
+                "config": {
+                    "code": ".with_columns(y=pl.col('x') * 2)",
+                    "selected_columns": ["x", "y"],
+                },
+            },
+        })
+        code = _node_to_code(node, source_names=["src"])
+        assert "selected_columns=" in code
+        assert "@pipeline.polars(selected_columns=" in code
+        _compile_node_code(code)
+
+    def test_no_selected_columns_uses_bare_decorator(self):
+        node = _n({
+            "id": "t",
+            "data": {
+                "label": "Bare",
+                "nodeType": "polars",
+                "config": {"code": ""},
+            },
+        })
+        code = _node_to_code(node, source_names=[])
+        assert code.startswith("@pipeline.polars\n")
+        _compile_node_code(code)
+
+
+class TestGenLiveSwitchRoundTrip:
+    def test_round_trip_preserves_scenario_map(self, tmp_path):
+        import json
+        from haute.parser import parse_pipeline_file
+
+        scenario_map = {"src_a": "live", "src_b": "test_batch"}
+        node = _n({
+            "id": "sw",
+            "data": {
+                "label": "MySwitch",
+                "nodeType": "liveSwitch",
+                "config": {
+                    "input_scenario_map": scenario_map,
+                    "inputs": ["src_a", "src_b"],
+                },
+            },
+        })
+        code = _node_to_code(node, source_names=["src_a", "src_b"])
+        full_code = (
+            "import polars as pl\nimport haute\n"
+            'pipeline = haute.Pipeline("test")\n\n'
+            '@pipeline.data_source(path="a.parquet")\n'
+            "def src_a() -> pl.LazyFrame:\n"
+            '    return pl.scan_parquet("a.parquet")\n\n'
+            '@pipeline.data_source(path="b.parquet")\n'
+            "def src_b() -> pl.LazyFrame:\n"
+            '    return pl.scan_parquet("b.parquet")\n\n'
+            f"{code}\n"
+            'pipeline.connect("src_a", "MySwitch")\n'
+            'pipeline.connect("src_b", "MySwitch")\n'
+        )
+        cfg_dir = tmp_path / "config" / "source_switch"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "MySwitch.json").write_text(
+            json.dumps({"input_scenario_map": scenario_map, "inputs": ["src_a", "src_b"]})
+        )
+        for name in ("src_a", "src_b"):
+            ds_dir = tmp_path / "config" / "data_source"
+            ds_dir.mkdir(parents=True, exist_ok=True)
+            (ds_dir / f"{name}.json").write_text(json.dumps({"path": "a.parquet"}))
+        py_file = tmp_path / "test.py"
+        py_file.write_text(full_code)
+        graph = parse_pipeline_file(py_file)
+        switch_nodes = [n for n in graph.nodes if n.data.nodeType == "liveSwitch"]
+        assert len(switch_nodes) == 1
+        assert switch_nodes[0].data.config["input_scenario_map"] == scenario_map
+
+
+class TestGenExternalFileEdgeCases:
+    def test_empty_code_passthrough(self):
+        node = _n({
+            "id": "ext",
+            "data": {
+                "label": "ExtModel",
+                "nodeType": "externalFile",
+                "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
+            },
+        })
+        code = _node_to_code(node, source_names=["features"])
+        assert "return df" in code
+        assert "load_external_object" in code
+        _compile_node_code(code)
+
+    def test_none_code_passthrough(self):
+        node = _n({
+            "id": "ext",
+            "data": {
+                "label": "ExtNone",
+                "nodeType": "externalFile",
+                "config": {"path": "model.pkl", "fileType": "pickle", "code": None},
+            },
+        })
+        code = _node_to_code(node, source_names=["features"])
+        assert "return df" in code
+        _compile_node_code(code)
+
+
+# ---------------------------------------------------------------------------
+# Edge-case tests: graph_to_code
+# ---------------------------------------------------------------------------
+
+
+class TestGraphToCodeEdgeCases:
+    def test_empty_graph_produces_valid_python(self):
+        code = graph_to_code(_g({"nodes": [], "edges": []}))
+        assert "import polars as pl" in code
+        assert "import haute" in code
+        assert "Pipeline" in code
+        assert "pipeline.connect" not in code
+        compile(code, "<test>", "exec")
+
+    def test_single_node_pipeline_compiles(self):
+        graph = _g({
+            "nodes": [{
+                "id": "s",
+                "data": {
+                    "label": "OnlySource",
+                    "nodeType": "dataSource",
+                    "config": {"path": "data.parquet"},
+                },
+            }],
+            "edges": [],
+        })
+        code = graph_to_code(graph, pipeline_name="single")
+        assert "def OnlySource()" in code
+        assert "pipeline.connect" not in code
+        compile(code, "<test>", "exec")
+
+    def test_pipeline_with_description_included(self):
+        graph = _g({"nodes": [], "edges": []})
+        code = graph_to_code(graph, pipeline_name="rated", description="Motor pricing model")
+        assert "description='Motor pricing model'" in code
+        compile(code, "<test>", "exec")
+
+    def test_preamble_positioned_before_pipeline_def(self):
+        graph = _g({
+            "nodes": [{
+                "id": "s",
+                "data": {
+                    "label": "S",
+                    "nodeType": "dataSource",
+                    "config": {"path": "d.parquet"},
+                },
+            }],
+            "edges": [],
+        })
+        code = graph_to_code(graph, preamble="MY_CONST = 42")
+        lines = code.splitlines()
+        preamble_idx = next(i for i, l in enumerate(lines) if "MY_CONST" in l)
+        pipeline_idx = next(i for i, l in enumerate(lines) if "haute.Pipeline(" in l)
+        assert preamble_idx < pipeline_idx
+
+    def test_unknown_node_type_falls_back_gracefully(self):
+        from unittest.mock import patch
+        from haute.codegen import _CODEGEN_BUILDERS
+
+        node = _n({
+            "id": "u",
+            "data": {
+                "label": "FutureType",
+                "nodeType": "banding",
+                "config": {"code": ".drop_nulls()"},
+            },
+        })
+        saved = _CODEGEN_BUILDERS.pop("banding", None)
+        try:
+            with patch("haute.codegen.logger") as mock_logger:
+                code = _generate_node_code(node, source_names=["src"])
+            mock_logger.warning.assert_any_call(
+                "unknown_node_type_fallback",
+                node_type="banding",
+                node_id="u",
+                label="FutureType",
+            )
+            assert "def FutureType(src: pl.LazyFrame)" in code
+            _compile_node_code(code)
+        finally:
+            if saved is not None:
+                _CODEGEN_BUILDERS["banding"] = saved
+
+
+# ---------------------------------------------------------------------------
+# Round-trip tests
+# ---------------------------------------------------------------------------
+
+
+class TestRoundTripEdgeCases:
+    def test_banding_with_multiple_factors(self):
+        node = _n({
+            "id": "b",
+            "data": {
+                "label": "MultiBand",
+                "nodeType": "banding",
+                "config": {
+                    "factors": [
+                        {
+                            "banding": "continuous",
+                            "column": "age",
+                            "outputColumn": "age_factor",
+                            "rules": [{"op1": ">=", "val1": 0, "op2": "<", "val2": 100, "assignment": "1.0"}],
+                        },
+                        {
+                            "banding": "discrete",
+                            "column": "region",
+                            "outputColumn": "region_factor",
+                            "rules": [{"match": "North", "assignment": "1.2"}],
+                            "default": "1.0",
+                        },
+                    ],
+                },
+            },
+        })
+        raw_code = _generate_node_code(node, source_names=["data"])
+        assert "factors=" in raw_code
+        assert "def MultiBand(data: pl.LazyFrame)" in raw_code
+        assert "return data" in raw_code
+        final_code = _node_to_code(node, source_names=["data"])
+        assert 'config="config/banding/MultiBand.json"' in final_code
+        assert "def MultiBand(data: pl.LazyFrame)" in final_code
+        _compile_node_code(final_code)
+
+    def test_rating_step_with_multiple_tables(self):
+        node = _n({
+            "id": "rs",
+            "data": {
+                "label": "MultiRate",
+                "nodeType": "ratingStep",
+                "config": {
+                    "tables": [
+                        {
+                            "name": "Region",
+                            "factors": ["region"],
+                            "outputColumn": "region_factor",
+                            "defaultValue": 1.0,
+                            "entries": [{"region": "North", "value": 1.1}],
+                        },
+                        {
+                            "name": "Age",
+                            "factors": ["age_band"],
+                            "outputColumn": "age_factor",
+                            "entries": [{"age_band": "18-25", "value": 1.5}],
+                        },
+                    ],
+                    "operation": "add",
+                    "combinedColumn": "total_factor",
+                },
+            },
+        })
+        raw_code = _generate_node_code(node, source_names=["base"])
+        assert "tables=" in raw_code
+        assert "operation='add'" in raw_code
+        assert "combined_column='total_factor'" in raw_code
+        assert "return base" in raw_code
+        final_code = _node_to_code(node, source_names=["base"])
+        assert 'config="config/rating_step/MultiRate.json"' in final_code
+        assert "return base" in final_code
+        _compile_node_code(final_code)
+
+    def test_data_source_with_databricks_config(self):
+        node = _n({
+            "id": "db",
+            "data": {
+                "label": "DBRead",
+                "nodeType": "dataSource",
+                "config": {
+                    "sourceType": "databricks",
+                    "table": "catalog.schema.my_table",
+                    "http_path": "/sql/1.0/endpoints/xyz",
+                    "query": "SELECT col1, col2 FROM t WHERE year = 2024",
+                },
+            },
+        })
+        code = _node_to_code(node)
+        assert "read_cached_table" in code
+        assert "catalog.schema.my_table" in code
+        assert "def DBRead()" in code
+        _compile_node_code(code)

@@ -5,9 +5,11 @@ from __future__ import annotations
 import dataclasses
 import os
 from pathlib import Path
+from unittest.mock import PropertyMock
 
 import pytest
 
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.deploy._config import (
     AwsEcsConfig,
     AzureContainerAppsConfig,
@@ -16,9 +18,13 @@ from haute.deploy._config import (
     DatabricksConfig,
     DeployConfig,
     GcpRunConfig,
+    ResolvedDeploy,
     SafetyConfig,
+    _apply_env_overrides,
+    _validate_toml_keys,
     _VALID_TOML_SCHEMA,
 )
+from haute.deploy._validators import validate_deploy
 
 
 @pytest.fixture()
@@ -260,3 +266,278 @@ class TestTomlSchemaSyncWithDataclasses:
             f"CIConfig fields {dc_fields - flat_keys} missing from TOML schema, "
             f"or schema has extra keys {flat_keys - dc_fields}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _validate_toml_keys tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateTomlKeys:
+    def test_valid_data_no_error(self, tmp_path: Path) -> None:
+        data = {
+            "project": {"name": "foo", "pipeline": "main.py"},
+            "deploy": {
+                "target": "databricks",
+                "model_name": "foo",
+                "databricks": {"catalog": "main"},
+            },
+        }
+        _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_unknown_top_level_section(self, tmp_path: Path) -> None:
+        data = {"project": {"name": "foo"}, "bogus": {"x": 1}}
+        with pytest.raises(ValueError, match=r"unknown top-level section \[bogus\]"):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_unknown_key_in_project(self, tmp_path: Path) -> None:
+        data = {"project": {"name": "foo", "unknown_key": "bar"}}
+        with pytest.raises(ValueError, match=r"\[project\] unknown key 'unknown_key'"):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_unknown_key_in_deploy_databricks(self, tmp_path: Path) -> None:
+        data = {"deploy": {"databricks": {"catalog": "main", "typo_key": "x"}}}
+        with pytest.raises(
+            ValueError, match=r"\[deploy\.databricks\] unknown key 'typo_key'"
+        ):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_unknown_subsection_in_deploy(self, tmp_path: Path) -> None:
+        data = {"deploy": {"unknown": {"x": 1}}}
+        with pytest.raises(ValueError, match=r"\[deploy\] unknown key 'unknown'"):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_typo_in_section_name(self, tmp_path: Path) -> None:
+        data = {"deploy": {"databrick": {"catalog": "main"}}}
+        with pytest.raises(ValueError, match=r"\[deploy\] unknown key 'databrick'"):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_empty_data_no_error(self, tmp_path: Path) -> None:
+        _validate_toml_keys({}, tmp_path / "haute.toml")
+
+    def test_non_dict_value_for_expected_section(self, tmp_path: Path) -> None:
+        data = {"project": "not_a_dict"}
+        # Non-dict value for a section that expects a dict should be silently skipped
+        # (the isinstance check in the loop guards this)
+        _validate_toml_keys(data, tmp_path / "haute.toml")
+
+
+# ---------------------------------------------------------------------------
+# validate_deploy tests
+# ---------------------------------------------------------------------------
+
+
+def _make_node(
+    node_id: str,
+    node_type: NodeType = NodeType.POLARS,
+    config: dict | None = None,
+) -> GraphNode:
+    return GraphNode(
+        id=node_id,
+        data=NodeData(nodeType=node_type, config=config or {}),
+    )
+
+
+def _make_resolved(
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    input_node_ids: list[str],
+    output_node_id: str,
+    artifacts: dict[str, Path] | None = None,
+    input_schema: dict[str, str] | None = None,
+    output_schema: dict[str, str] | None = None,
+) -> ResolvedDeploy:
+    graph = PipelineGraph(nodes=nodes, edges=edges)
+    return ResolvedDeploy(
+        config=DeployConfig(pipeline_file=Path("main.py"), model_name="test"),
+        full_graph=graph,
+        pruned_graph=graph,
+        input_node_ids=input_node_ids,
+        output_node_id=output_node_id,
+        artifacts=artifacts or {},
+        input_schema=input_schema or {"col": "float"},
+        output_schema=output_schema or {"result": "float"},
+    )
+
+
+class TestValidateDeploy:
+    def test_all_checks_pass_returns_empty(self) -> None:
+        inp = _make_node("input1")
+        out = _make_node("output1")
+        edge = GraphEdge(id="e1", source="input1", target="output1")
+        resolved = _make_resolved(
+            nodes=[inp, out],
+            edges=[edge],
+            input_node_ids=["input1"],
+            output_node_id="output1",
+        )
+        assert validate_deploy(resolved) == []
+
+    def test_input_node_not_in_pruned_graph(self) -> None:
+        out = _make_node("output1")
+        resolved = _make_resolved(
+            nodes=[out],
+            edges=[],
+            input_node_ids=["missing_input"],
+            output_node_id="output1",
+        )
+        errors = validate_deploy(resolved)
+        assert any("missing_input" in e and "not in pruned graph" in e for e in errors)
+
+    def test_input_node_has_incoming_edges(self) -> None:
+        inp = _make_node("input1")
+        mid = _make_node("mid1")
+        out = _make_node("output1")
+        edges = [
+            GraphEdge(id="e1", source="mid1", target="input1"),
+            GraphEdge(id="e2", source="input1", target="output1"),
+        ]
+        resolved = _make_resolved(
+            nodes=[inp, mid, out],
+            edges=edges,
+            input_node_ids=["input1"],
+            output_node_id="output1",
+        )
+        errors = validate_deploy(resolved)
+        assert any("input1" in e and "incoming edges" in e for e in errors)
+
+    def test_artifact_file_not_found(self, tmp_path: Path) -> None:
+        inp = _make_node("input1")
+        out = _make_node("output1")
+        edge = GraphEdge(id="e1", source="input1", target="output1")
+        missing_path = tmp_path / "nonexistent.pkl"
+        resolved = _make_resolved(
+            nodes=[inp, out],
+            edges=[edge],
+            input_node_ids=["input1"],
+            output_node_id="output1",
+            artifacts={"model": missing_path},
+        )
+        errors = validate_deploy(resolved)
+        assert any("model" in e and "not found" in e for e in errors)
+
+    def test_databricks_source_node_detected(self) -> None:
+        inp = _make_node("input1")
+        db_src = _make_node(
+            "db_src",
+            node_type=NodeType.DATA_SOURCE,
+            config={"sourceType": "databricks"},
+        )
+        out = _make_node("output1")
+        edges = [
+            GraphEdge(id="e1", source="input1", target="output1"),
+            GraphEdge(id="e2", source="db_src", target="output1"),
+        ]
+        resolved = _make_resolved(
+            nodes=[inp, db_src, out],
+            edges=edges,
+            input_node_ids=["input1"],
+            output_node_id="output1",
+        )
+        errors = validate_deploy(resolved)
+        assert any("db_src" in e and "Databricks dataSource" in e for e in errors)
+
+    def test_multiple_validation_errors_returned_together(
+        self, tmp_path: Path
+    ) -> None:
+        db_src = _make_node(
+            "db_src",
+            node_type=NodeType.DATA_SOURCE,
+            config={"sourceType": "databricks"},
+        )
+        out = _make_node("output1")
+        missing_artifact = tmp_path / "missing.pkl"
+        resolved = _make_resolved(
+            nodes=[db_src, out],
+            edges=[],
+            input_node_ids=["ghost_input"],
+            output_node_id="output1",
+            artifacts={"m": missing_artifact},
+        )
+        errors = validate_deploy(resolved)
+        assert len(errors) >= 3
+
+
+# ---------------------------------------------------------------------------
+# _apply_env_overrides edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestApplyEnvOverridesEdgeCases:
+    def _make_config(self) -> DeployConfig:
+        return DeployConfig(pipeline_file=Path("main.py"), model_name="base")
+
+    def test_scale_to_zero_false_capital_f(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "False")
+        config = _apply_env_overrides(self._make_config())
+        assert config.databricks.serving_scale_to_zero is False
+
+    def test_scale_to_zero_true_all_caps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "TRUE")
+        config = _apply_env_overrides(self._make_config())
+        assert config.databricks.serving_scale_to_zero is True
+
+    def test_scale_to_zero_numeric_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "0")
+        config = _apply_env_overrides(self._make_config())
+        assert config.databricks.serving_scale_to_zero is False
+
+    def test_empty_string_env_var_still_applied(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAUTE_MODEL_NAME", "")
+        config = _apply_env_overrides(self._make_config())
+        assert config.model_name == ""
+
+    def test_model_name_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HAUTE_MODEL_NAME", "env-model")
+        config = _apply_env_overrides(self._make_config())
+        assert config.model_name == "env-model"
+
+    def test_target_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HAUTE_TARGET", "container")
+        config = _apply_env_overrides(self._make_config())
+        assert config.target == "container"
+
+    def test_endpoint_name_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HAUTE_ENDPOINT_NAME", "my-ep")
+        config = _apply_env_overrides(self._make_config())
+        assert config.endpoint_name == "my-ep"
+
+
+# ---------------------------------------------------------------------------
+# DeployConfig.override() edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestDeployConfigOverride:
+    def _make_config(self) -> DeployConfig:
+        return DeployConfig(
+            pipeline_file=Path("main.py"),
+            model_name="original",
+            target="databricks",
+        )
+
+    def test_override_with_none_is_skipped(self) -> None:
+        config = self._make_config()
+        overridden = config.override(model_name=None)
+        assert overridden.model_name == "original"
+
+    def test_override_nonexistent_attribute_is_skipped(self) -> None:
+        config = self._make_config()
+        overridden = config.override(nonexistent_field="value")
+        assert not hasattr(overridden, "nonexistent_field")
+
+    def test_multiple_overrides_in_single_call(self) -> None:
+        config = self._make_config()
+        overridden = config.override(model_name="new-name", target="container")
+        assert overridden.model_name == "new-name"
+        assert overridden.target == "container"
+        assert config.model_name == "original"
+        assert config.target == "databricks"

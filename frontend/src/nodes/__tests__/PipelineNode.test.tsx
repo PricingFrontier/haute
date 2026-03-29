@@ -289,4 +289,171 @@ describe("PipelineNode", () => {
     // formatValueCompact(42.5) -> "42.5"
     expect(screen.getByText("42.5")).toBeInTheDocument()
   })
+
+  // ── Missing node type renders ─────────────────────────────────
+
+  it("renders a ratingStep node", () => {
+    renderNode({ label: "Premium Rating", nodeType: NODE_TYPES.RATING_STEP })
+    expect(screen.getByText("Premium Rating")).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.RATING_STEP])).toBeInTheDocument()
+  })
+
+  it("renders an externalFile node", () => {
+    renderNode({ label: "Load Pickle", nodeType: NODE_TYPES.EXTERNAL_FILE })
+    expect(screen.getByText("Load Pickle")).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.EXTERNAL_FILE])).toBeInTheDocument()
+  })
+
+  it("renders a scenarioExpander node", () => {
+    renderNode({ label: "Price Grid", nodeType: NODE_TYPES.SCENARIO_EXPANDER })
+    expect(screen.getByText("Price Grid")).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.SCENARIO_EXPANDER])).toBeInTheDocument()
+  })
+
+  it("renders an optimiserApply node", () => {
+    renderNode({ label: "Apply Lambdas", nodeType: NODE_TYPES.OPTIMISER_APPLY })
+    expect(screen.getByText("Apply Lambdas")).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.OPTIMISER_APPLY])).toBeInTheDocument()
+  })
+
+  it("renders a constant node", () => {
+    renderNode({ label: "Base Rate", nodeType: NODE_TYPES.CONSTANT })
+    expect(screen.getByText("Base Rate")).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.CONSTANT])).toBeInTheDocument()
+  })
+
+  it("renders a liveSwitch node", () => {
+    useSettingsStore.setState({ activeSource: "backtest" })
+    renderNode({ label: "Source Toggle", nodeType: NODE_TYPES.LIVE_SWITCH })
+    expect(screen.getByText("Source Toggle")).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.LIVE_SWITCH])).toBeInTheDocument()
+  })
+
+  // ── Trace active border ────────────────────────────────────────
+
+  it("applies solid accent border when _traceActive is true", () => {
+    const { container } = renderNode({
+      label: "Trace Active",
+      nodeType: NODE_TYPES.POLARS,
+      _traceActive: true,
+    })
+    const nodeEl = container.querySelector(".rounded-xl") as HTMLElement
+    const rawStyle = nodeEl.getAttribute("style") || ""
+    expect(rawStyle).toContain("3px solid")
+    expect(rawStyle).not.toContain("dashed")
+  })
+
+  it("does not show trace value when _traceActive is false", () => {
+    renderNode({
+      label: "No Trace",
+      nodeType: NODE_TYPES.POLARS,
+      _traceActive: false,
+      _traceValue: 99,
+    })
+    expect(screen.queryByText("99")).not.toBeInTheDocument()
+  })
+
+  it("does not show trace value when _traceValue is undefined", () => {
+    renderNode({
+      label: "No Value",
+      nodeType: NODE_TYPES.POLARS,
+      _traceActive: true,
+    })
+    const nodeEl = screen.getByRole("button")
+    const monoDivs = nodeEl.querySelectorAll(".font-mono")
+    expect(monoDivs.length).toBe(0)
+  })
+
+  // ── Warning indicator ──────────────────────────────────────────
+
+  it("shows warning indicator when _schemaWarnings present", () => {
+    renderNode({
+      label: "Warned",
+      nodeType: NODE_TYPES.POLARS,
+      _schemaWarnings: [{ column: "age", status: "missing" }],
+    })
+    expect(screen.getByLabelText("Node has schema warnings")).toBeInTheDocument()
+  })
+
+  it("hides warning indicator when _schemaWarnings is empty", () => {
+    renderNode({
+      label: "No Warnings",
+      nodeType: NODE_TYPES.POLARS,
+      _schemaWarnings: [],
+    })
+    expect(screen.queryByLabelText("Node has schema warnings")).not.toBeInTheDocument()
+  })
+
+  it("hides warning indicator when status is error", () => {
+    renderNode({
+      label: "Error Overrides",
+      nodeType: NODE_TYPES.POLARS,
+      _status: "error",
+      _schemaWarnings: [{ column: "x", status: "extra" }],
+    })
+    expect(screen.queryByLabelText("Node has schema warnings")).not.toBeInTheDocument()
+  })
+
+  // ── Status dots ────────────────────────────────────────────────
+
+  it("running status has animate-pulse-dot class", () => {
+    const { container } = renderNode({
+      label: "Running",
+      nodeType: NODE_TYPES.POLARS,
+      _status: "running",
+    })
+    const dot = container.querySelector(".animate-pulse-dot")
+    expect(dot).not.toBeNull()
+  })
+
+  it("ok status does not have animate-pulse-dot class", () => {
+    const { container } = renderNode({
+      label: "OK",
+      nodeType: NODE_TYPES.POLARS,
+      _status: "ok",
+    })
+    const dot = container.querySelector(".animate-pulse-dot")
+    expect(dot).toBeNull()
+  })
+
+  // ── Opacity (no dimming) ───────────────────────────────────────
+
+  it("has full opacity when neither _traceDimmed nor _hoverDimmed", () => {
+    const { container } = renderNode({
+      label: "Normal",
+      nodeType: NODE_TYPES.POLARS,
+    })
+    const nodeEl = container.querySelector(".rounded-xl") as HTMLElement
+    const rawStyle = nodeEl.getAttribute("style") || ""
+    expect(rawStyle).toContain("opacity: 1")
+  })
+
+  // ── LIVE badge on API_INPUT ────────────────────────────────────
+
+  it("shows API badge on API_INPUT node", () => {
+    renderNode({ label: "Quote", nodeType: NODE_TYPES.API_INPUT })
+    expect(screen.getByText("API")).toBeInTheDocument()
+  })
+
+  // ── Aria label includes trace active ───────────────────────────
+
+  it("includes trace active in aria-label when active", () => {
+    renderNode({
+      label: "Traced Node",
+      nodeType: NODE_TYPES.POLARS,
+      _traceActive: true,
+    })
+    const nodeEl = screen.getByRole("button")
+    expect(nodeEl.getAttribute("aria-label")).toContain("trace active")
+  })
+
+  it("includes instance in aria-label when instanceOf set", () => {
+    renderNode({
+      label: "Instance Node",
+      nodeType: NODE_TYPES.POLARS,
+      config: { instanceOf: "base" },
+    })
+    const nodeEl = screen.getByRole("button")
+    expect(nodeEl.getAttribute("aria-label")).toContain("instance")
+  })
 })

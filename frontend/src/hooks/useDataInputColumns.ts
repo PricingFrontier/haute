@@ -58,6 +58,28 @@ export function useDataInputColumns(
     cachedColumns ?? [],
   )
 
+  // Read cache state via refs so the fetch effect doesn't re-fire when the
+  // store is updated with fresh columns (which would cause an infinite loop:
+  // effect fires → setColumnsCache → cachedColumns changes → effect re-fires).
+  const cachedColumnsRef = useRef(cachedColumns)
+  const isCacheFreshRef = useRef(isCacheFresh)
+  useEffect(() => { cachedColumnsRef.current = cachedColumns }, [cachedColumns])
+  useEffect(() => { isCacheFreshRef.current = isCacheFresh }, [isCacheFresh])
+
+  // Sync local state when cache is populated externally (e.g. by another hook
+  // instance or a WebSocket graph refresh).  Compare by content to avoid
+  // triggering a re-render when the store creates a new array reference
+  // for the same column data.
+  const prevCacheJson = useRef("")
+  useEffect(() => {
+    if (!cachedColumns) return
+    const json = JSON.stringify(cachedColumns)
+    if (json !== prevCacheJson.current) {
+      prevCacheJson.current = json
+      setDataInputColumns(cachedColumns)
+    }
+  }, [cachedColumns])
+
   useEffect(() => {
     if (!dataInput) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- cleanup path: clear columns when no data input selected
@@ -65,9 +87,9 @@ export function useDataInputColumns(
       return
     }
     // Show cached columns immediately (no loading flash)
-    if (cachedColumns) {
-      setDataInputColumns(cachedColumns)
-      if (isCacheFresh) return // cache is current, skip API call
+    if (cachedColumnsRef.current) {
+      setDataInputColumns(cachedColumnsRef.current)
+      if (isCacheFreshRef.current) return // cache is current, skip API call
     }
     // Abort in-flight request when deps change (prevents stale responses overwriting fresh data)
     const controller = new AbortController()
@@ -76,7 +98,12 @@ export function useDataInputColumns(
     previewNode(graph, dataInput, 1, activeSource, { signal: controller.signal })
       .then((result) => {
         if (result.columns) {
-          setDataInputColumns(result.columns)
+          const json = JSON.stringify(result.columns)
+          // Only update local state if columns actually changed (avoids re-render cascade)
+          if (json !== prevCacheJson.current) {
+            prevCacheJson.current = json
+            setDataInputColumns(result.columns)
+          }
           // getState() in .then() callback: reads graphVersion at completion time,
           // not at effect setup time, so the cached version stays accurate.
           setColumnsCache(dataInput, result.columns, useNodeResultsStore.getState().graphVersion, activeSource)
@@ -86,10 +113,15 @@ export function useDataInputColumns(
         if (e instanceof DOMException && e.name === "AbortError") return
         console.warn("Column fetch failed for node", dataInput, e)
         addToast("warning", `Column fetch failed for "${dataInput}"`)
-        if (!cachedColumns) setDataInputColumns([])
+        if (!cachedColumnsRef.current) setDataInputColumns([])
       })
     return () => controller.abort()
-  }, [dataInput, graphFingerprint, submodels, preamble, activeSource, setColumnsCache, cachedColumns, isCacheFresh, addToast])
+  // cachedColumns and isCacheFresh intentionally read via refs to break the
+  // store-update → effect-refire loop.  The effect should only re-run when
+  // the *inputs* change (dataInput, graph structure, source), not when the
+  // *output* (cached columns) changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataInput, graphFingerprint, submodels, preamble, activeSource, setColumnsCache, addToast])
 
   return dataInputColumns
 }

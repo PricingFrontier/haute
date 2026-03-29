@@ -68,25 +68,28 @@ export default function useWebSocketSync({
             // Guard: prevent React Flow's onSelectionChange from clearing
             // the open panel while we replace nodes.
             graphRefreshingRef.current += 1
-            if (hasPositions) {
-              setNodesRaw(newNodes)
-            } else {
-              const layouted = await getLayoutedElements(newNodes, newEdges)
-              setNodesRaw(layouted)
+            try {
+              if (hasPositions) {
+                setNodesRaw(newNodes)
+              } else {
+                const layouted = await getLayoutedElements(newNodes, newEdges)
+                setNodesRaw(layouted)
+              }
+              setEdgesRaw(newEdges)
+              if (g.preamble !== undefined) {
+                setPreamble(g.preamble || "")
+                preambleRef.current = g.preamble || ""
+              }
+              nodeIdCounter.current = computeNextNodeId(newNodes)
+              setSyncBanner(null)
+              // The GUI is now in sync with the file on disk — not dirty.
+              useUIStore.getState().setDirty(false)
+              addToast("info", "Pipeline updated from file")
+              if (g.warning) addToast("warning", g.warning)
+              setTimeout(() => fitView({ padding: 0.8 }), 100)
+            } finally {
+              setTimeout(() => { graphRefreshingRef.current -= 1 }, SELECTION_CHANGE_GUARD_MS)
             }
-            setEdgesRaw(newEdges)
-            setTimeout(() => { graphRefreshingRef.current -= 1 }, SELECTION_CHANGE_GUARD_MS)
-            if (g.preamble !== undefined) {
-              setPreamble(g.preamble || "")
-              preambleRef.current = g.preamble || ""
-            }
-            nodeIdCounter.current = computeNextNodeId(newNodes)
-            setSyncBanner(null)
-            // The GUI is now in sync with the file on disk — not dirty.
-            useUIStore.getState().setDirty(false)
-            addToast("info", "Pipeline updated from file")
-            if (g.warning) addToast("warning", g.warning)
-            setTimeout(() => fitView({ padding: 0.8 }), 100)
           }
 
           if (msg.type === "parse_error") {

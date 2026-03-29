@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { formatValue, formatValueCompact } from "../formatValue"
+import { formatValue, formatValueCompact, formatFixed } from "../formatValue"
 
 describe("formatValue", () => {
   it("formats null as 'null'", () => {
@@ -90,5 +90,82 @@ describe("formatValueCompact", () => {
     const result = formatValueCompact("123456789012345678901")
     expect(result.length).toBe(19)
     expect(result.endsWith("\u2026")).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatValue – edge cases
+// ---------------------------------------------------------------------------
+
+describe("formatValue edge cases", () => {
+  it("formats NaN as a string", () => {
+    const result = formatValue(NaN)
+    expect(result).toBe("NaN")
+  })
+
+  it("formats Infinity as a string", () => {
+    const result = formatValue(Infinity)
+    // toLocaleString may render as "∞" or "Infinity" depending on locale/runtime
+    expect(result === "∞" || result === "Infinity").toBe(true)
+  })
+
+  it("formats -Infinity as a string", () => {
+    const result = formatValue(-Infinity)
+    expect(result === "-∞" || result === "-Infinity").toBe(true)
+  })
+
+  it("formats negative zero", () => {
+    const result = formatValue(-0)
+    // Number.isInteger(-0) is true; toLocaleString may return "0" or "-0"
+    expect(result === "0" || result === "-0").toBe(true)
+  })
+
+  it("formats very large numbers (1e15+)", () => {
+    const result = formatValue(1e15)
+    expect(result.length).toBeGreaterThan(0)
+    // Should contain digits representing 1 quadrillion
+    expect(result.replace(/[^0-9]/g, "")).toContain("1")
+  })
+
+  it("formats negative numbers correctly", () => {
+    const result = formatValue(-42)
+    expect(result).toContain("-")
+    expect(result).toContain("42")
+  })
+
+  it("formats negative float correctly", () => {
+    const result = formatValue(-3.14, 2)
+    expect(result).toContain("-")
+    expect(result).toContain("3")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatFixed – edge cases
+// ---------------------------------------------------------------------------
+
+describe("formatFixed", () => {
+  it("formats a finite number with given digits", () => {
+    expect(formatFixed(3.14159, 2)).toBe("3.14")
+  })
+
+  it("returns N/A for NaN", () => {
+    expect(formatFixed(NaN, 2)).toBe("N/A")
+  })
+
+  it("returns N/A for Infinity", () => {
+    expect(formatFixed(Infinity, 2)).toBe("N/A")
+  })
+
+  it("returns N/A for -Infinity", () => {
+    expect(formatFixed(-Infinity, 2)).toBe("N/A")
+  })
+
+  it("returns N/A for string input", () => {
+    expect(formatFixed("hello", 2)).toBe("N/A")
+  })
+
+  it("returns N/A for null", () => {
+    expect(formatFixed(null, 2)).toBe("N/A")
   })
 })

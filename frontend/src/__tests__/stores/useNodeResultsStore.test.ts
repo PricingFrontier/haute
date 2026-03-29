@@ -337,13 +337,14 @@ describe("useNodeResultsStore", () => {
       expect(hashConfig(a)).not.toBe(hashConfig(b))
     })
 
-    it("strips _nodeId, _columns, and _schemaWarnings before hashing", () => {
+    it("strips _nodeId, _columns, _schemaWarnings, and _availableColumns before hashing", () => {
       const base = { solver: "glpk", tolerance: 0.01 }
       const withInternals = {
         ...base,
         _nodeId: "n-42",
         _columns: [{ name: "x", dtype: "float64" }],
         _schemaWarnings: [{ column: "x", status: "missing" }],
+        _availableColumns: ["x", "y", "z"],
       }
       expect(hashConfig(base)).toBe(hashConfig(withInternals))
     })
@@ -517,6 +518,22 @@ describe("useNodeResultsStore", () => {
       expect(after.solveResults["n1"]).toBeUndefined()
       expect(after.trainJobs["n1"]).toBeUndefined()
       expect(after.trainResults["n1"]).toBeUndefined()
+    })
+
+    it("clearNode removes source-keyed column cache entries", () => {
+      const s = useNodeResultsStore.getState()
+      s.setColumns("n1", [{ name: "a", dtype: "float64" }], 0, "live")
+      s.setColumns("n1", [{ name: "b", dtype: "float64" }], 0, "staging")
+      s.setColumns("n2", [{ name: "c", dtype: "float64" }], 0, "live")
+
+      expect(useNodeResultsStore.getState().getColumns("n1", "live")).not.toBeNull()
+      expect(useNodeResultsStore.getState().getColumns("n1", "staging")).not.toBeNull()
+
+      useNodeResultsStore.getState().clearNode("n1")
+
+      expect(useNodeResultsStore.getState().getColumns("n1", "live")).toBeNull()
+      expect(useNodeResultsStore.getState().getColumns("n1", "staging")).toBeNull()
+      expect(useNodeResultsStore.getState().getColumns("n2", "live")).not.toBeNull()
     })
 
     it("does not affect other nodes", () => {
@@ -863,6 +880,46 @@ describe("useNodeResultsStore", () => {
       expect(useNodeResultsStore.getState().trainJobs["n1"].progress).toBeNull()
     })
 
+    it("multiple solve jobs on different nodes simultaneously", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "sj-1", "Node 1", { c: { min: 0 } }, "h1")
+      s.startSolveJob("n2", "sj-2", "Node 2", { d: { max: 1 } }, "h2")
+
+      expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeDefined()
+      expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeDefined()
+      expect(useNodeResultsStore.getState().solveJobs["n1"].jobId).toBe("sj-1")
+      expect(useNodeResultsStore.getState().solveJobs["n2"].jobId).toBe("sj-2")
+
+      s.updateSolveProgress("n1", { status: "running", progress: 0.5, message: "n1 halfway", elapsed_seconds: 2 })
+      s.updateSolveProgress("n2", { status: "running", progress: 0.8, message: "n2 almost", elapsed_seconds: 4 })
+
+      expect(useNodeResultsStore.getState().solveJobs["n1"].progress!.progress).toBe(0.5)
+      expect(useNodeResultsStore.getState().solveJobs["n2"].progress!.progress).toBe(0.8)
+
+      s.completeSolveJob("n1", makeSolveResult({ total_objective: 100 }))
+      expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().solveResults["n1"].result.total_objective).toBe(100)
+      expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeDefined()
+
+      s.completeSolveJob("n2", makeSolveResult({ total_objective: 200 }))
+      expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().solveResults["n2"].result.total_objective).toBe(200)
+      expect(useNodeResultsStore.getState().solveResults["n1"].result.total_objective).toBe(100)
+    })
+
+    it("failing one solve does not affect other nodes' solve jobs", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "sj-1", "Node 1", {}, "h1")
+      s.startSolveJob("n2", "sj-2", "Node 2", {}, "h2")
+
+      s.failSolveJob("n1", "Diverged")
+
+      expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().solveResults["n1"].error).toBe("Diverged")
+      expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeDefined()
+      expect(useNodeResultsStore.getState().solveJobs["n2"].jobId).toBe("sj-2")
+    })
+
     it("getOptimiserPreview includes frontier and selectedPointIndex", () => {
       const s = useNodeResultsStore.getState()
       const constraints = { vol: { min: 0.9 } }
@@ -887,6 +944,74 @@ describe("useNodeResultsStore", () => {
       expect(preview!.frontier!.n_points).toBe(2)
       expect(preview!.frontier!.constraint_names).toEqual(["vol"])
       expect(preview!.selectedPointIndex).toBe(1)
+    })
+  })
+
+  // ────────────────────────────────────────────────────────────────
+  // Issue #13: Derived getter caching
+  // ────────────────────────────────────────────────────────────────
+
+  describe("derived getter caching (Issue #13)", () => {
+    it("getOptimiserPreview returns same reference on repeated calls", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.completeSolveJob("n1", makeSolveResult())
+
+      const a = useNodeResultsStore.getState().getOptimiserPreview("n1")
+      const b = useNodeResultsStore.getState().getOptimiserPreview("n1")
+      expect(a).toBe(b) // same reference, not just deep-equal
+    })
+
+    it("getOptimiserPreview returns new reference after state change", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.completeSolveJob("n1", makeSolveResult())
+
+      const a = useNodeResultsStore.getState().getOptimiserPreview("n1")
+      // Trigger a state change on the same node
+      useNodeResultsStore.getState().selectFrontierPoint("n1", 0)
+      const b = useNodeResultsStore.getState().getOptimiserPreview("n1")
+      expect(a).not.toBe(b)
+    })
+
+    it("getOptimiserPreview returns null after clearNode", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.completeSolveJob("n1", makeSolveResult())
+
+      expect(useNodeResultsStore.getState().getOptimiserPreview("n1")).not.toBeNull()
+      useNodeResultsStore.getState().clearNode("n1")
+      expect(useNodeResultsStore.getState().getOptimiserPreview("n1")).toBeNull()
+    })
+
+    it("getModellingPreview returns same reference on repeated calls", () => {
+      const s = useNodeResultsStore.getState()
+      s.startTrainJob("n1", "j1", "Model", "h1")
+      s.completeTrainJob("n1", makeTrainResult())
+
+      const a = useNodeResultsStore.getState().getModellingPreview("n1")
+      const b = useNodeResultsStore.getState().getModellingPreview("n1")
+      expect(a).toBe(b)
+    })
+
+    it("getModellingPreview returns new reference after state change", () => {
+      const s = useNodeResultsStore.getState()
+      s.startTrainJob("n1", "j1", "Model", "h1")
+      s.completeTrainJob("n1", makeTrainResult())
+
+      const a = useNodeResultsStore.getState().getModellingPreview("n1")
+      // Overwrite with a new result
+      s.completeTrainJob("n1", makeTrainResult({ status: "completed", metrics: { rmse: 0.01 } }))
+      const b = useNodeResultsStore.getState().getModellingPreview("n1")
+      expect(a).not.toBe(b)
+    })
+
+    it("getModellingPreview returns null for error results", () => {
+      const s = useNodeResultsStore.getState()
+      s.startTrainJob("n1", "j1", "Model", "h1")
+      s.failTrainJob("n1", "boom")
+
+      expect(useNodeResultsStore.getState().getModellingPreview("n1")).toBeNull()
     })
   })
 })

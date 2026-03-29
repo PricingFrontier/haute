@@ -109,3 +109,62 @@ class TestReadCachedTable:
         df = lf.collect()
         assert len(df) == 3
         assert df["val"].to_list() == [10, 20, 30]
+
+
+# ---------------------------------------------------------------------------
+# Additional edge-case tests for cache_path_for
+# ---------------------------------------------------------------------------
+
+
+class TestCachePathForEdgeCases:
+    def test_backtick_quoted_table(self, tmp_path: Path) -> None:
+        p = _cache_path_for("`my-catalog`.`my-schema`.`my-table`", project_root=tmp_path)
+        assert p.parent.name == CACHE_DIR
+        assert p.suffix == ".parquet"
+
+    def test_hyphenated_table_name(self, tmp_path: Path) -> None:
+        p = _cache_path_for("cat-a.sch-b.tbl-c", project_root=tmp_path)
+        assert p.name == "cat-a_sch-b_tbl-c.parquet"
+
+    def test_result_is_within_cache_dir(self, tmp_path: Path) -> None:
+        p = _cache_path_for("a.b.c", project_root=tmp_path)
+        cache_dir = (tmp_path / CACHE_DIR).resolve()
+        assert p.resolve().is_relative_to(cache_dir)
+
+
+# ---------------------------------------------------------------------------
+# Additional cache hit/miss and clear_cache edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCacheHitMissEdgeCases:
+    def test_cached_path_returns_none_for_different_table(self, tmp_path: Path) -> None:
+        """Caching table A does not create a cache hit for table B."""
+        p = _cache_path_for("cat.sch.tblA", project_root=tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"a": [1]}).write_parquet(p)
+
+        assert cached_path("cat.sch.tblA", project_root=tmp_path) is not None
+        assert cached_path("cat.sch.tblB", project_root=tmp_path) is None
+
+    def test_clear_cache_then_read_raises(self, tmp_path: Path) -> None:
+        """After clearing cache, reading the table should raise."""
+        p = _cache_path_for("cat.sch.tbl", project_root=tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"v": [1]}).write_parquet(p)
+
+        assert clear_cache("cat.sch.tbl", project_root=tmp_path) is True
+        with pytest.raises(CacheNotFoundError):
+            read_cached_table("cat.sch.tbl", project_root=tmp_path)
+
+
+class TestCacheInfoEdgeCases:
+    def test_cache_info_has_correct_path(self, tmp_path: Path) -> None:
+        """cache_info path matches the expected cache path."""
+        p = _cache_path_for("cat.sch.tbl", project_root=tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"x": [1], "y": [2]}).write_parquet(p)
+
+        info = cache_info("cat.sch.tbl", project_root=tmp_path)
+        assert info is not None
+        assert info["path"] == str(p)

@@ -149,10 +149,15 @@ function FlowEditor() {
     if (selectedNode) setLastSelectedId(selectedNode.id)
   }, [selectedNode])
 
+  // Ref for setPreviewData — resolved after usePipelineAPI hook below.
+  // Needed because closePanel is defined before the hook for hook-ordering rules.
+  const setPreviewDataRef = useRef<(d: null) => void>(() => {})
+
   const closePanel = useCallback(() => {
     setSelectedNode(null)
     lastSelectedNodeRef.current = null
     setLastSelectedId(null)
+    setPreviewDataRef.current(null)
     setUtilityOpen(false)
     setImportsOpen(false)
     setGitOpen(false)
@@ -225,6 +230,7 @@ function FlowEditor() {
     preambleRef, pipelineNameRef, sourceFileRef, lastSavedRef,
     nodeIdCounter,
   })
+  useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
 
   const {
     traceResult, tracedCell,
@@ -318,9 +324,9 @@ function FlowEditor() {
         onRedo={redo}
         onZoomIn={() => zoomIn()}
         onZoomOut={() => zoomOut()}
-        onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null }}
-        onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null }}
-        onOpenGit={() => { setGitOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null }}
+        onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        onOpenGit={() => { setGitOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         onSave={handleSave}
@@ -370,7 +376,7 @@ function FlowEditor() {
                 onSelectionChange={onSelectionChange}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
-                onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); onNodeClick(event, node) }}
+                onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
                 onNodeContextMenu={onNodeContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {

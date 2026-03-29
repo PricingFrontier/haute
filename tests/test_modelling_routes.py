@@ -9,8 +9,14 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import polars as pl
 import pytest
+from fastapi import HTTPException
 
-from haute.routes._train_service import TrainService, _clamp_row_limit, _friendly_error
+from haute.routes._train_service import (
+    TrainService,
+    _clamp_row_limit,
+    _friendly_error,
+    _validate_glm_family_link,
+)
 from haute.server import app
 from tests.conftest import make_edge, make_graph
 
@@ -814,3 +820,544 @@ class TestExecuteAndSinkCheckpointCleanup:
         # Checkpoint dir should have been created and then cleaned up
         assert len(created_dirs) == 1
         assert not created_dirs[0].exists(), "checkpoint_dir should be cleaned up after error"
+
+
+# ---------------------------------------------------------------------------
+# _validate_config unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateConfig:
+
+    def test_no_target_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config({"algorithm": "catboost"})
+        assert exc_info.value.status_code == 400
+        assert "No target column" in exc_info.value.detail
+
+    def test_empty_target_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config({"target": "", "algorithm": "catboost"})
+        assert exc_info.value.status_code == 400
+        assert "No target column" in exc_info.value.detail
+
+    def test_unknown_algorithm_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config({"target": "y", "algorithm": "xgboost"})
+        assert exc_info.value.status_code == 400
+        assert "xgboost" in exc_info.value.detail
+        assert "Available algorithms" in exc_info.value.detail
+
+    def test_glm_unknown_family_raises_with_suggestions(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config({
+                "target": "y",
+                "algorithm": "glm",
+                "family": "exponential",
+            })
+        assert exc_info.value.status_code == 400
+        assert "exponential" in exc_info.value.detail
+        assert "gaussian" in exc_info.value.detail
+
+    def test_glm_invalid_link_for_family_raises_with_valid_options(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config({
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "link": "logit",
+            })
+        assert exc_info.value.status_code == 400
+        assert "logit" in exc_info.value.detail
+        assert "log" in exc_info.value.detail
+
+    def test_valid_catboost_config_passes(self):
+        TrainService._validate_config({
+            "target": "y",
+            "algorithm": "catboost",
+            "params": {"iterations": 10},
+        })
+
+    def test_valid_glm_config_passes(self):
+        TrainService._validate_config({
+            "target": "y",
+            "algorithm": "glm",
+            "family": "poisson",
+            "link": "log",
+        })
+
+    def test_glm_empty_family_passes(self):
+        TrainService._validate_config({
+            "target": "y",
+            "algorithm": "glm",
+            "family": "",
+        })
+
+    def test_glm_empty_link_passes(self):
+        TrainService._validate_config({
+            "target": "y",
+            "algorithm": "glm",
+            "family": "gaussian",
+            "link": "",
+        })
+
+
+# ---------------------------------------------------------------------------
+# _validate_glm_family_link unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateGlmFamilyLink:
+
+    def test_unknown_family(self):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("exponential", "log")
+        assert exc_info.value.status_code == 400
+        assert "exponential" in exc_info.value.detail
+        assert "gaussian" in exc_info.value.detail
+
+    def test_invalid_link_for_family(self):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_glm_family_link("binomial", "identity")
+        assert exc_info.value.status_code == 400
+        assert "identity" in exc_info.value.detail
+        assert "logit" in exc_info.value.detail
+
+    def test_valid_family_link(self):
+        _validate_glm_family_link("gamma", "log")
+
+    def test_empty_family_skips(self):
+        _validate_glm_family_link("", "log")
+
+    def test_empty_link_skips(self):
+        _validate_glm_family_link("poisson", "")
+
+
+# ---------------------------------------------------------------------------
+# _friendly_error additional tests
+# ---------------------------------------------------------------------------
+
+
+class TestFriendlyErrorAdditional:
+
+    def test_empty_exception_message(self):
+        exc = RuntimeError("")
+        result = _friendly_error(exc)
+        assert "RuntimeError" in result
+
+    def test_catboost_nan_recommends_fill_null(self):
+        exc = type("CatBoostError", (Exception,), {})("NaN values in column 'x'")
+        result = _friendly_error(exc)
+        assert ".fill_null()" in result or ".drop_nulls()" in result
+
+    def test_generic_exception_includes_type_name(self):
+        exc = type("CustomTrainingError", (Exception,), {})("custom problem")
+        result = _friendly_error(exc)
+        assert "CustomTrainingError" in result
+        assert "custom problem" in result
+
+    def test_value_error_passes_through_unchanged(self):
+        exc = ValueError("exact message")
+        assert _friendly_error(exc) == "exact message"
+
+    def test_file_not_found_formatted(self):
+        exc = FileNotFoundError("data.parquet")
+        result = _friendly_error(exc)
+        assert result == "File not found: data.parquet"
+
+    def test_catboost_feature_mismatch_detection(self):
+        exc = type("CatBoostError", (Exception,), {})(
+            "feature number mismatch: expected 5 but got 3"
+        )
+        result = _friendly_error(exc)
+        assert "feature mismatch" in result.lower()
+        assert "expected 5 but got 3" in result
+
+
+# ---------------------------------------------------------------------------
+# _clamp_row_limit additional tests
+# ---------------------------------------------------------------------------
+
+
+class TestClampRowLimitAdditional:
+
+    def test_no_user_limit_returns_current(self):
+        assert _clamp_row_limit(5000, None) == 5000
+
+    def test_zero_user_limit_ignored(self):
+        assert _clamp_row_limit(5000, 0) == 5000
+
+    def test_negative_user_limit_ignored(self):
+        assert _clamp_row_limit(5000, -10) == 5000
+
+    def test_user_smaller_than_current_takes_minimum(self):
+        assert _clamp_row_limit(5000, 200) == 200
+
+    def test_both_none_returns_none(self):
+        assert _clamp_row_limit(None, None) is None
+
+    def test_float_user_limit_converted_to_int(self):
+        assert _clamp_row_limit(5000, 300.9) == 300
+        assert isinstance(_clamp_row_limit(5000, 300.9), int)
+
+
+# ---------------------------------------------------------------------------
+# /estimate endpoint additional tests
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateEndpointAdditional:
+
+    def test_valid_modelling_node_returns_estimate(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "node_id": "train"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_rows"] is not None
+        assert data["estimated_mb"] is not None
+
+    def test_missing_node_returns_404(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "node_id": "missing"}
+        )
+        assert resp.status_code == 404
+
+    def test_exception_returns_empty_response(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        with patch(
+            "haute._ram_estimate.estimate_safe_training_rows",
+            side_effect=RuntimeError("probe failure"),
+        ):
+            resp = client.post(
+                "/api/modelling/estimate",
+                json={"graph": graph, "node_id": "train"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_rows"] is None
+        assert data["safe_row_limit"] is None
+
+
+# ---------------------------------------------------------------------------
+# /mlflow/check backend resolution tests
+# ---------------------------------------------------------------------------
+
+
+class TestMlflowCheckBackend:
+
+    def test_mlflow_installed_detected(self, client):
+        resp = client.get("/api/modelling/mlflow/check")
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_installed"] is True
+
+    def test_local_backend(self, client):
+        with patch(
+            "haute.modelling._mlflow_log.resolve_tracking_backend",
+            return_value=("file:///mlruns", "local"),
+        ):
+            resp = client.get("/api/modelling/mlflow/check")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["databricks_host"] == ""
+
+    def test_databricks_backend(self, client):
+        with (
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("databricks", "databricks"),
+            ),
+            patch.dict("os.environ", {"DATABRICKS_HOST": "https://my.cloud.databricks.com"}),
+        ):
+            resp = client.get("/api/modelling/mlflow/check")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["backend"] == "databricks"
+        assert data["databricks_host"] == "https://my.cloud.databricks.com"
+
+
+# ---------------------------------------------------------------------------
+# /model-cache endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestClearModelCache:
+
+    def test_clears_cache_successfully(self, client):
+        with patch(
+            "haute._mlflow_io.clear_model_cache",
+            return_value=3,
+        ):
+            resp = client.delete("/api/modelling/model-cache")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed"] == 3
+        assert data["run_id"] is None
+
+    def test_clears_specific_run_cache(self, client):
+        with patch(
+            "haute._mlflow_io.clear_model_cache",
+            return_value=1,
+        ):
+            resp = client.delete("/api/modelling/model-cache?run_id=abc123")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed"] == 1
+        assert data["run_id"] == "abc123"
+
+
+# ---------------------------------------------------------------------------
+# Direct route function tests — bypasses TestClient for coverage
+# ---------------------------------------------------------------------------
+
+
+class TestTrainModelDirect:
+    """Test train_model route function directly (not through HTTP client)."""
+
+    def test_train_model_delegates_to_service(self):
+        """train_model should delegate to _train_service.start()."""
+        from haute.routes.modelling import _store, _train_service, train_model
+        from haute.schemas import TrainRequest, TrainResponse
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
+                        },
+                    },
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": {
+                                "target": "y",
+                                "algorithm": "catboost",
+                                "params": {"iterations": 5},
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "train").model_dump()],
+            }
+        )
+        body = TrainRequest(graph=graph, node_id="train")
+        fake_response = TrainResponse(status="started", job_id="abc123")
+
+        with patch.object(_train_service, "start", return_value=fake_response) as mock_start:
+            result = train_model(body)
+            mock_start.assert_called_once_with(body)
+            assert result.status == "started"
+            assert result.job_id == "abc123"
+
+
+class TestTrainStatusDirect:
+    """Test train_status route function directly."""
+
+    @pytest.mark.asyncio
+    async def test_returns_status_for_existing_job(self):
+        from haute.routes.modelling import _store, train_status
+
+        job_id = _store.create_job(
+            {
+                "status": "running",
+                "progress": 0.42,
+                "message": "Epoch 5/10",
+                "iteration": 5,
+                "total_iterations": 10,
+                "train_loss": {"rmse": 0.15},
+                "elapsed_seconds": 12.5,
+            }
+        )
+        try:
+            result = await train_status(job_id)
+            assert result.status == "running"
+            assert result.progress == 0.42
+            assert result.message == "Epoch 5/10"
+            assert result.iteration == 5
+            assert result.total_iterations == 10
+            assert result.train_loss == {"rmse": 0.15}
+            assert result.elapsed_seconds == 12.5
+            assert result.result is None
+            assert result.warning is None
+        finally:
+            _store.jobs.pop(job_id, None)
+
+    @pytest.mark.asyncio
+    async def test_completed_job_includes_result(self):
+        from haute.routes.modelling import _store, train_status
+        from haute.schemas import TrainResponse
+
+        fake_result = TrainResponse(
+            status="completed",
+            job_id="test",
+            metrics={"gini": 0.85},
+        )
+        job_id = _store.create_job(
+            {
+                "status": "completed",
+                "progress": 1.0,
+                "message": "Done",
+                "result": fake_result,
+                "warning": "Row limit applied",
+            }
+        )
+        try:
+            result = await train_status(job_id)
+            assert result.status == "completed"
+            assert result.result is not None
+            assert result.warning == "Row limit applied"
+        finally:
+            _store.jobs.pop(job_id, None)
+
+    @pytest.mark.asyncio
+    async def test_missing_job_raises_404(self):
+        from haute.routes.modelling import train_status
+
+        with pytest.raises(HTTPException) as exc_info:
+            await train_status("nonexistent_job_id")
+        assert exc_info.value.status_code == 404
+
+
+class TestExportScriptDirect:
+    """Test export_script route function directly."""
+
+    @pytest.mark.asyncio
+    async def test_generates_script(self):
+        from haute.routes.modelling import export_script
+        from haute.schemas import ExportScriptRequest
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
+                        },
+                    },
+                    {
+                        "id": "model",
+                        "data": {
+                            "label": "my_model",
+                            "nodeType": "modelling",
+                            "config": {
+                                "target": "y",
+                                "algorithm": "catboost",
+                                "task": "regression",
+                                "params": {"iterations": 100},
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "model").model_dump()],
+            }
+        )
+        body = ExportScriptRequest(graph=graph, node_id="model", data_path="output/data.parquet")
+        result = await export_script(body)
+        assert "TrainingJob" in result.script
+        assert result.filename == "train_my_model.py"
+
+    @pytest.mark.asyncio
+    async def test_default_data_path(self):
+        """When data_path is not provided, uses a default based on node name."""
+        from haute.routes.modelling import export_script
+        from haute.schemas import ExportScriptRequest
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "m1",
+                        "data": {
+                            "label": "my_model",
+                            "nodeType": "modelling",
+                            "config": {
+                                "target": "y",
+                                "algorithm": "catboost",
+                                "params": {"iterations": 10},
+                            },
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+        body = ExportScriptRequest(graph=graph, node_id="m1")
+        result = await export_script(body)
+        assert "TrainingJob" in result.script
+        assert "output/" in result.script
+
+    @pytest.mark.asyncio
+    async def test_missing_node_raises_404(self):
+        from haute.routes.modelling import export_script
+        from haute.schemas import ExportScriptRequest
+
+        graph = make_graph({"nodes": [], "edges": []})
+        body = ExportScriptRequest(graph=graph, node_id="nonexistent")
+        with pytest.raises(HTTPException) as exc_info:
+            await export_script(body)
+        assert exc_info.value.status_code == 404
+
+
+class TestClearModelCacheDirect:
+    """Test clear_model_cache route function directly."""
+
+    @pytest.mark.asyncio
+    async def test_clears_all(self):
+        from haute.routes.modelling import clear_model_cache
+
+        with patch("haute._mlflow_io.clear_model_cache", return_value=5) as mock:
+            result = await clear_model_cache(run_id=None)
+            mock.assert_called_once_with(None)
+            assert result == {"removed": 5, "run_id": None}
+
+    @pytest.mark.asyncio
+    async def test_clears_specific_run(self):
+        from haute.routes.modelling import clear_model_cache
+
+        with patch("haute._mlflow_io.clear_model_cache", return_value=2) as mock:
+            result = await clear_model_cache(run_id="run_xyz")
+            mock.assert_called_once_with("run_xyz")
+            assert result == {"removed": 2, "run_id": "run_xyz"}
+
+
+class TestMlflowCheckDirect:
+    """Test mlflow_check route function directly."""
+
+    @pytest.mark.asyncio
+    async def test_mlflow_installed(self):
+        from haute.routes.modelling import mlflow_check
+
+        result = await mlflow_check()
+        assert result.mlflow_installed is True
+
+    @pytest.mark.asyncio
+    async def test_mlflow_not_installed(self):
+        """When mlflow import fails, returns mlflow_installed=False."""
+        import builtins
+        import sys
+
+        from haute.routes.modelling import mlflow_check
+
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "mlflow":
+                raise ImportError("No module named 'mlflow'")
+            return real_import(name, *args, **kwargs)
+
+        with patch.dict(sys.modules, {"mlflow": None}):
+            with patch("builtins.__import__", side_effect=mock_import):
+                result = await mlflow_check()
+                assert result.mlflow_installed is False

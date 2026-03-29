@@ -1412,3 +1412,422 @@ class TestStringManipulationEvasion:
         code = 'ga = __builtins__["getattr"]\nattr = "__" + "class" + "__"\nresult = ga((), attr)\n'
         with pytest.raises(UnsafeCodeError, match="__builtins__"):
             validate_user_code(code)
+
+
+# ===================================================================
+# Edge-case tests for sandbox module
+# ===================================================================
+
+
+class TestValidateProjectPathEdgeCases:
+
+    def test_relative_path_resolved_to_absolute(self, tmp_path: Path):
+        set_project_root(tmp_path)
+        subdir = tmp_path / "data"
+        subdir.mkdir()
+        f = subdir / "file.csv"
+        f.touch()
+        result = validate_project_path(str(subdir / ".." / "data" / "file.csv"))
+        assert result.is_absolute()
+        assert result == f
+
+    def test_empty_string_resolves_to_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        result = validate_project_path("")
+        assert result == tmp_path
+
+    def test_empty_string_outside_root_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.chdir(other)
+        set_project_root(tmp_path / "restricted")
+        with pytest.raises(ValueError, match="outside.*project root"):
+            validate_project_path("")
+
+    def test_nested_subdirectory_inside_root(self, tmp_path: Path):
+        set_project_root(tmp_path)
+        nested = tmp_path / "a" / "b" / "c"
+        nested.mkdir(parents=True)
+        f = nested / "deep.txt"
+        f.touch()
+        assert validate_project_path(str(f)) == f
+
+    def test_symlink_traversal_blocked(self, tmp_path: Path):
+        set_project_root(tmp_path / "project")
+        (tmp_path / "project").mkdir()
+        outside = tmp_path / "secret.txt"
+        outside.touch()
+        link = tmp_path / "project" / "link.txt"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlinks not supported")
+        with pytest.raises(ValueError, match="outside.*project root"):
+            validate_project_path(str(link))
+
+
+class TestSafeGlobalsBuiltinCoverage:
+
+    @pytest.mark.parametrize("name", [
+        "len", "range", "min", "max", "sum", "int", "float", "str",
+        "bool", "list", "dict", "tuple", "set", "sorted", "reversed",
+        "enumerate", "zip", "map", "filter", "any", "all", "abs",
+        "round", "isinstance", "issubclass", "print", "repr",
+    ])
+    def test_common_builtin_available(self, name: str):
+        ns = safe_globals()
+        builtins_ns = ns.get("__builtins__", ns)
+        assert name in builtins_ns, f"{name} should be available in safe builtins"
+
+    def test_type_blocked_in_builtins(self):
+        ns = safe_globals()
+        builtins_ns = ns.get("__builtins__", ns)
+        assert "type" not in builtins_ns
+
+    def test_extra_kwargs_injected(self):
+        import polars as pl
+
+        ns = safe_globals(pl=pl, my_value=42)
+        assert ns["pl"] is pl
+        assert ns["my_value"] == 42
+
+    def test_extra_kwargs_override_nothing_in_builtins(self):
+        ns = safe_globals(custom_fn=lambda x: x + 1)
+        local = {}
+        exec("result = custom_fn(10)", ns, local)
+        assert local["result"] == 11
+
+    def test_allow_imports_restores_import(self):
+        import builtins as _builtins
+
+        ns = safe_globals(allow_imports=True)
+        assert ns["__import__"] is _builtins.__import__
+
+    def test_allow_imports_false_has_no_import(self):
+        ns = safe_globals(allow_imports=False)
+        assert "__import__" not in ns
+
+    def test_polars_operations_in_namespace(self):
+        import polars as pl
+
+        ns = safe_globals(pl=pl)
+        local = {}
+        exec(
+            'df = pl.DataFrame({"a": [1, 2, 3]})\n'
+            'result = df.select(pl.col("a") * 2)\n',
+            ns,
+            local,
+        )
+        assert local["result"]["a"].to_list() == [2, 4, 6]
+
+
+class TestASTValidatorEdgeCases:
+
+    def test_class_definition_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="class"):
+            validate_user_code("class Foo:\n    x = 1")
+
+    def test_async_function_definition_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="async"):
+            validate_user_code("async def fetch():\n    await something()")
+
+    def test_global_statement_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="global"):
+            validate_user_code("def f():\n    global x\n    x = 1")
+
+    def test_nonlocal_statement_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="nonlocal"):
+            validate_user_code("def outer():\n    x = 1\n    def inner():\n        nonlocal x")
+
+    def test_import_statement_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="import"):
+            validate_user_code("import sys")
+
+    def test_from_import_statement_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="import"):
+            validate_user_code("from pathlib import Path")
+
+    def test_allow_imports_permits_import(self):
+        validate_user_code("import os", allow_imports=True)
+
+    def test_allow_imports_permits_from_import(self):
+        validate_user_code("from os.path import join", allow_imports=True)
+
+    def test_builtins_subscript_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="__builtins__"):
+            validate_user_code('__builtins__["open"]')
+
+    def test_builtins_subscript_variable_key_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="__builtins__"):
+            validate_user_code("__builtins__[key]")
+
+    def test_chained_dunder_access_blocked(self):
+        with pytest.raises(UnsafeCodeError):
+            validate_user_code("obj.__class__.__subclasses__()")
+
+    def test_chained_dunder_class_bases(self):
+        with pytest.raises(UnsafeCodeError):
+            validate_user_code("x.__class__.__bases__")
+
+    def test_single_blocked_dunder_in_chain(self):
+        with pytest.raises(UnsafeCodeError, match="__globals__"):
+            validate_user_code("f.__globals__['os']")
+
+
+class TestValidateUserCodeEdgeCases:
+
+    def test_valid_polars_code_passes(self):
+        validate_user_code('df.filter(pl.col("age") > 25)')
+
+    def test_lambda_expression_passes(self):
+        validate_user_code("fn = lambda x, y: x + y")
+
+    def test_empty_code_passes(self):
+        validate_user_code("")
+
+    def test_whitespace_only_code_passes(self):
+        validate_user_code("   \n\n  ")
+
+    def test_syntax_error_raises_unsafe_code_error(self):
+        with pytest.raises(UnsafeCodeError, match="syntax errors"):
+            validate_user_code("def f(:")
+
+    def test_chain_syntax_passes(self):
+        validate_user_code('.select("name", "age")')
+
+    def test_chain_syntax_with_dangerous_pattern_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="__class__"):
+            validate_user_code(".select(x.__class__)")
+
+    def test_caching_returns_consistent_results(self):
+        import haute._sandbox
+
+        code = "cached_test_unique_12345 = 1"
+        cache = haute._sandbox._validation_cache
+        key = (code, False)
+        cache.pop(key, None)
+        validate_user_code(code)
+        assert key in cache
+
+    def test_caching_second_call_uses_cache(self):
+        import time
+
+        import haute._sandbox
+
+        code = "cached_perf_test_unique_67890 = 1"
+        cache = haute._sandbox._validation_cache
+        key = (code, False)
+        cache.pop(key, None)
+
+        validate_user_code(code)
+        assert key in cache
+
+        start = time.perf_counter()
+        for _ in range(1000):
+            validate_user_code(code)
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 1.0, "1000 cached validations should be near-instant"
+
+    def test_unsafe_code_not_cached(self):
+        import haute._sandbox
+
+        code = "import os"
+        key = (code, False)
+        with pytest.raises(UnsafeCodeError):
+            validate_user_code(code)
+        assert key not in haute._sandbox._validation_cache
+
+
+class TestSafeUnpickleEdgeCases:
+
+    def test_safe_dict_unpickles(self, tmp_path: Path):
+        set_project_root(tmp_path)
+        f = tmp_path / "data.pkl"
+        f.write_bytes(pickle.dumps({"a": 1, "b": [2, 3]}))
+        assert safe_unpickle(str(f)) == {"a": 1, "b": [2, 3]}
+
+    def test_safe_nested_structures(self, tmp_path: Path):
+        set_project_root(tmp_path)
+        data = {"list": [1, 2.0, "three"], "tuple": (4, 5), "set": frozenset({6})}
+        f = tmp_path / "nested.pkl"
+        f.write_bytes(pickle.dumps(data))
+        result = safe_unpickle(str(f))
+        assert result["list"] == [1, 2.0, "three"]
+        assert result["tuple"] == (4, 5)
+        assert result["set"] == frozenset({6})
+
+    def test_os_system_payload_blocked(self, tmp_path: Path):
+        set_project_root(tmp_path)
+        f = tmp_path / "evil.pkl"
+
+        class _Evil:
+            def __reduce__(self):
+                import os
+                return (os.system, ("echo pwned",))
+
+        f.write_bytes(pickle.dumps(_Evil()))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            safe_unpickle(str(f))
+
+    def test_path_outside_project_root_blocked(self, tmp_path: Path):
+        set_project_root(tmp_path / "project")
+        f = tmp_path / "outside.pkl"
+        f.write_bytes(pickle.dumps(42))
+        with pytest.raises(ValueError, match="outside.*project root"):
+            safe_unpickle(str(f))
+
+    def test_subprocess_payload_blocked(self, tmp_path: Path):
+        set_project_root(tmp_path)
+        f = tmp_path / "evil2.pkl"
+
+        class _Evil:
+            def __reduce__(self):
+                import subprocess
+                return (subprocess.check_output, (["echo", "pwned"],))
+
+        f.write_bytes(pickle.dumps(_Evil()))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            safe_unpickle(str(f))
+
+
+# ===================================================================
+# Critical edge-case gap-closing tests
+# ===================================================================
+
+
+class TestPickleBombDeeplyNested:
+
+    def test_deeply_nested_pickle_no_stack_overflow(self, tmp_path: Path):
+        import sys
+
+        obj: object = "leaf"
+        for _ in range(1500):
+            obj = [obj]
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(5000)
+        try:
+            payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+        finally:
+            sys.setrecursionlimit(old_limit)
+        set_project_root(tmp_path)
+        f = tmp_path / "nested_bomb.pkl"
+        f.write_bytes(payload)
+        try:
+            result = safe_unpickle(str(f))
+            depth = 0
+            cur = result
+            while isinstance(cur, list) and len(cur) == 1:
+                depth += 1
+                cur = cur[0]
+            assert depth == 1500
+            assert cur == "leaf"
+        except (RecursionError, pickle.UnpicklingError):
+            pass
+
+
+class TestPickleReduceExploit:
+
+    def test_reduce_os_system_blocked(self, tmp_path: Path):
+        import os
+
+        class Exploit:
+            def __reduce__(self):
+                return (os.system, ("echo pwned",))
+
+        payload = pickle.dumps(Exploit())
+        set_project_root(tmp_path)
+        f = tmp_path / "reduce_exploit.pkl"
+        f.write_bytes(payload)
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            safe_unpickle(str(f))
+
+
+class TestJoblibConcurrentLoadSafety:
+
+    def test_ten_threads_same_file_no_corruption(self, tmp_path: Path):
+        import threading
+
+        import joblib
+        import numpy as np
+
+        set_project_root(tmp_path)
+        f = tmp_path / "shared.joblib"
+        data = {"arr": np.array([1.0, 2.0, 3.0]), "label": "test"}
+        joblib.dump(data, str(f))
+
+        results: list[dict | None] = [None] * 10
+        errors: list[Exception] = []
+
+        def load(idx: int) -> None:
+            try:
+                results[idx] = safe_joblib_load(str(f))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=load, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, f"Concurrent loads raised: {errors}"
+        for i, r in enumerate(results):
+            assert r is not None, f"Thread {i} returned None"
+            assert r["label"] == "test"
+            np.testing.assert_array_equal(r["arr"], [1.0, 2.0, 3.0])
+
+
+class TestDeeplyNestedASTValidation:
+
+    def test_500_nested_parens_no_crash(self):
+        depth = 500
+        code = "x = " + "(" * depth + "1" + ")" * depth
+        try:
+            validate_user_code(code)
+        except (RecursionError, UnsafeCodeError):
+            pass
+
+    def test_200_nested_parens_valid(self):
+        depth = 200
+        code = "x = " + "(" * depth + "42" + ")" * depth
+        validate_user_code(code)
+
+
+class TestPreambleCacheEviction:
+
+    def test_cache_does_not_exceed_max(self):
+        from haute.executor import _compile_preamble, _PREAMBLE_CACHE_MAX, _preamble_cache
+
+        initial_keys = set(_preamble_cache.keys())
+
+        for i in range(_PREAMBLE_CACHE_MAX + 5):
+            preamble = f"PREAMBLE_EVICT_TEST_{i} = {i}\n"
+            _compile_preamble(preamble, force_refresh=True)
+
+        assert len(_preamble_cache) <= _PREAMBLE_CACHE_MAX
+
+        for k in list(_preamble_cache.keys()):
+            if k not in initial_keys:
+                _preamble_cache.pop(k, None)
+
+
+class TestValidationCacheDoesNotCacheUnsafe:
+
+    def test_syntax_error_then_fixed_code_passes(self):
+        import haute._sandbox
+
+        bad_code = "def _cache_edge_test(:"
+        good_code = "def _cache_edge_test(): pass"
+
+        haute._sandbox._validation_cache.pop((bad_code, False), None)
+        haute._sandbox._validation_cache.pop((good_code, False), None)
+
+        with pytest.raises(UnsafeCodeError):
+            validate_user_code(bad_code)
+
+        assert (bad_code, False) not in haute._sandbox._validation_cache
+
+        validate_user_code(good_code)
+        assert (good_code, False) in haute._sandbox._validation_cache

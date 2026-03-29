@@ -484,3 +484,269 @@ class TestPdpFeatureSvg:
     def test_feature_name_in_title(self):
         svg = render_pdp_feature_svg("my_feature", _sample_pdp_numeric(), "numeric")
         assert "my_feature" in svg
+
+    def test_categorical_has_rotated_labels(self):
+        """Categorical PDP should contain rotated x-axis labels."""
+        svg = render_pdp_feature_svg("vehicle", _sample_pdp_categorical(), "categorical")
+        assert "rotate(-45" in svg
+
+    def test_numeric_single_point(self):
+        """Single numeric point: x_min == x_max guard."""
+        grid = [{"value": 5, "avg_prediction": 0.4}]
+        svg = render_pdp_feature_svg("const", grid, "numeric")
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_categorical_single_bar(self):
+        grid = [{"value": "only", "avg_prediction": 0.5}]
+        svg = render_pdp_feature_svg("cat", grid, "categorical")
+        root = _parse_svg(svg)
+        rects = root.findall(".//{http://www.w3.org/2000/svg}rect")
+        assert len(rects) >= 2  # background + 1 bar
+
+    def test_numeric_equal_predictions(self):
+        """When all predictions are equal, y_min == y_max guard fires."""
+        grid = [{"value": i, "avg_prediction": 0.5} for i in range(5)]
+        svg = render_pdp_feature_svg("flat", grid, "numeric")
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+
+# ---------------------------------------------------------------------------
+# Additional scatter coverage
+# ---------------------------------------------------------------------------
+
+
+class TestScatterSvgExtra:
+    def test_single_point(self):
+        """Single point scatter: v_min == v_max guard."""
+        points = [{"actual": 1.0, "predicted": 1.0, "weight": 1.0}]
+        svg = render_scatter_svg(points)
+        root = _parse_svg(svg)
+        circles = root.findall(".//{http://www.w3.org/2000/svg}circle")
+        assert len(circles) == 1
+
+    def test_identical_actual_predicted(self):
+        """All same values: tests padding guard."""
+        points = [{"actual": 5.0, "predicted": 5.0, "weight": 1.0} for _ in range(10)]
+        svg = render_scatter_svg(points)
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_large_scatter_valid(self):
+        """Many points still produces valid SVG."""
+        points = [{"actual": i * 0.01, "predicted": i * 0.012, "weight": 1.0} for i in range(200)]
+        svg = render_scatter_svg(points)
+        root = _parse_svg(svg)
+        circles = root.findall(".//{http://www.w3.org/2000/svg}circle")
+        assert len(circles) == 200
+
+
+# ---------------------------------------------------------------------------
+# Additional residuals coverage
+# ---------------------------------------------------------------------------
+
+
+class TestResidualsSvgExtra:
+    def test_single_bin(self):
+        """Single bin: x_min == x_max guard."""
+        hist = [{"bin_center": 0, "count": 50, "weighted_count": 50.0}]
+        svg = render_residuals_svg(hist)
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_all_zero_weighted_counts(self):
+        """All zero weighted counts: y_max == 0 guard."""
+        hist = [{"bin_center": i, "count": 0, "weighted_count": 0.0} for i in range(5)]
+        svg = render_residuals_svg(hist)
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_stats_partial_keys(self):
+        """Stats dict with missing keys should use 0 defaults."""
+        stats = {"mean": 0.5}
+        svg = render_residuals_svg(_sample_residuals_histogram(), stats)
+        assert "mean=" in svg
+        assert "std=" in svg  # defaults to 0
+
+
+# ---------------------------------------------------------------------------
+# Loss curve extra coverage
+# ---------------------------------------------------------------------------
+
+
+class TestLossCurveSvgExtra:
+    def test_single_iteration(self):
+        """Single data point: x_min == x_max guard."""
+        data = [{"iteration": 0, "train_RMSE": 0.5}]
+        svg = render_loss_curve_svg(data)
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_no_loss_values(self):
+        """Data with no train_/eval_ keys returns placeholder."""
+        data = [{"iteration": 0, "something_else": 1.0}]
+        svg = render_loss_curve_svg(data)
+        root = _parse_svg(svg)
+        texts = [t.text for t in root.findall(".//{http://www.w3.org/2000/svg}text")]
+        assert any("No" in (t or "") for t in texts)
+
+    def test_constant_loss_values(self):
+        """All same loss values: y_min == y_max guard."""
+        data = [{"iteration": i, "train_RMSE": 1.0, "eval_RMSE": 1.0} for i in range(10)]
+        svg = render_loss_curve_svg(data)
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_best_iteration_beyond_data(self):
+        """best_iteration beyond data range should be clamped."""
+        data = [{"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)]
+        svg = render_loss_curve_svg(data, best_iteration=999)
+        assert "best=999" in svg
+
+
+# ---------------------------------------------------------------------------
+# Horizontal bars extra coverage
+# ---------------------------------------------------------------------------
+
+
+class TestHorizontalBarsExtra:
+    def test_all_zero_values(self):
+        """All zero importance: max_val == 0 guard."""
+        data = [{"feature": f"f{i}", "importance": 0.0} for i in range(3)]
+        svg = render_horizontal_bars_svg(data, "feature", "importance", title="Zeros")
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_negative_values(self):
+        """Negative values should use absolute value for bar width."""
+        data = [{"feature": "neg", "importance": -0.5}, {"feature": "pos", "importance": 0.3}]
+        svg = render_horizontal_bars_svg(data, "feature", "importance", title="Signed")
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_long_feature_name_truncated(self):
+        """Feature names longer than 25 chars should be truncated."""
+        data = [{"feature": "a_very_long_feature_name_that_exceeds_limit", "importance": 0.5}]
+        svg = render_horizontal_bars_svg(data, "feature", "importance", title="Truncation")
+        # The truncated label should appear (with ellipsis)
+        root = _parse_svg(svg)
+        texts = [t.text for t in root.findall(".//{http://www.w3.org/2000/svg}text") if t.text]
+        # Should have a truncated version
+        assert any(len(t) <= 26 for t in texts if "a_very" in t)
+
+    def test_no_title(self):
+        """Empty title should not produce title text element."""
+        data = [{"feature": "x", "importance": 1.0}]
+        svg = render_horizontal_bars_svg(data, "feature", "importance", title="")
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+
+# ---------------------------------------------------------------------------
+# Dual-axis chart extra: single bin (n=1, no polyline)
+# ---------------------------------------------------------------------------
+
+
+class TestDualAxisChartExtra:
+    def test_single_decile_double_lift(self):
+        """Single decile: n=1 means no polyline, just dots."""
+        data = [{"decile": 1, "actual": 0.5, "predicted": 0.6, "count": 100}]
+        svg = render_double_lift_svg(data)
+        root = _parse_svg(svg)
+        polylines = root.findall(".//{http://www.w3.org/2000/svg}polyline")
+        assert len(polylines) == 0  # n=1, no polyline
+
+    def test_equal_line_values(self):
+        """All same line values: y_min == y_max guard."""
+        data = [
+            {"decile": i + 1, "actual": 0.5, "predicted": 0.5, "count": 100} for i in range(5)
+        ]
+        svg = render_double_lift_svg(data)
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+    def test_zero_bar_max(self):
+        """All zero counts: max_bar == 0 guard."""
+        data = [{"decile": i + 1, "actual": i * 0.1, "predicted": i * 0.12, "count": 0} for i in range(3)]
+        svg = render_double_lift_svg(data)
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+
+# ---------------------------------------------------------------------------
+# AvE feature extra coverage
+# ---------------------------------------------------------------------------
+
+
+class TestAveFeatureSvgExtra:
+    def test_categorical_with_long_labels(self):
+        """Categorical bins with long labels should trigger label rotation."""
+        bins = [
+            {"label": "long_category_name_here", "exposure": 100.0, "avg_actual": 0.5, "avg_predicted": 0.6}
+            for _ in range(3)
+        ]
+        svg = render_ave_feature_svg("feature", bins, is_categorical=True)
+        assert "rotate(-45" in svg
+
+    def test_numeric_with_short_labels(self):
+        """Short labels should NOT be rotated."""
+        bins = [
+            {"label": f"{i}", "exposure": 100.0, "avg_actual": 0.5, "avg_predicted": 0.6}
+            for i in range(3)
+        ]
+        svg = render_ave_feature_svg("feature", bins, is_categorical=False)
+        # Short labels - rotation depends on label length
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"
+
+
+# ---------------------------------------------------------------------------
+# Helper function edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestHelperFunctions:
+    def test_nice_ticks_non_finite_returns_empty(self):
+        from haute.modelling._charts import _nice_ticks
+        assert _nice_ticks(float("inf"), float("-inf")) == []
+        assert _nice_ticks(float("nan"), 1.0) == []
+
+    def test_nice_ticks_equal_min_max(self):
+        from haute.modelling._charts import _nice_ticks
+        result = _nice_ticks(5.0, 5.0)
+        assert result == [5.0]
+
+    def test_format_tick_zero(self):
+        from haute.modelling._charts import _format_tick
+        assert _format_tick(0) == "0"
+
+    def test_format_tick_millions(self):
+        from haute.modelling._charts import _format_tick
+        result = _format_tick(1_500_000)
+        assert "M" in result
+
+    def test_format_tick_thousands(self):
+        from haute.modelling._charts import _format_tick
+        result = _format_tick(2_500)
+        assert "k" in result
+
+    def test_format_tick_small_decimal(self):
+        from haute.modelling._charts import _format_tick
+        result = _format_tick(0.00123)
+        assert "0.00123" in result
+
+    def test_truncate_label_short(self):
+        from haute.modelling._charts import _truncate_label
+        assert _truncate_label("short") == "short"
+
+    def test_truncate_label_long(self):
+        from haute.modelling._charts import _truncate_label
+        result = _truncate_label("a" * 30, max_len=10)
+        assert len(result) == 10
+
+    def test_placeholder_svg_valid(self):
+        from haute.modelling._charts import _placeholder_svg
+        svg = _placeholder_svg(200, 100, "Test message")
+        root = _parse_svg(svg)
+        assert root.tag == "{http://www.w3.org/2000/svg}svg"

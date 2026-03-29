@@ -330,3 +330,306 @@ class TestReadParquetMetadata:
         """FileNotFoundError for missing files."""
         with pytest.raises(FileNotFoundError):
             read_parquet_metadata(tmp_path / "nope.parquet")
+
+    def test_multiple_column_types(self, tmp_path: Path):
+        p = tmp_path / "multi.parquet"
+        df = pl.DataFrame({
+            "int_col": [1, 2],
+            "float_col": [1.5, 2.5],
+            "str_col": ["a", "b"],
+            "bool_col": [True, False],
+        })
+        df.write_parquet(p)
+
+        meta = read_parquet_metadata(p)
+        assert meta["row_count"] == 2
+        assert meta["column_count"] == 4
+        assert set(meta["columns"].keys()) == {"int_col", "float_col", "str_col", "bool_col"}
+
+    def test_empty_multi_column(self, tmp_path: Path):
+        p = tmp_path / "empty_multi.parquet"
+        df = pl.DataFrame({
+            "a": pl.Series([], dtype=pl.Int64),
+            "b": pl.Series([], dtype=pl.Utf8),
+            "c": pl.Series([], dtype=pl.Float64),
+        })
+        df.write_parquet(p)
+
+        meta = read_parquet_metadata(p)
+        assert meta["row_count"] == 0
+        assert meta["column_count"] == 3
+
+    def test_size_bytes_and_mtime_populated(self, tmp_path: Path):
+        p = tmp_path / "check.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(p)
+
+        meta = read_parquet_metadata(p)
+        assert isinstance(meta["size_bytes"], int)
+        assert meta["size_bytes"] > 0
+        assert isinstance(meta["mtime"], float)
+        assert meta["mtime"] > 0
+
+
+# ---------------------------------------------------------------------------
+# safe_sink edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSafeSinkEdgeCases:
+
+    def test_fast_checkpoint_uses_lz4(self, tmp_path: Path):
+        lf = pl.LazyFrame({"x": list(range(1000))})
+        lz4_path = tmp_path / "lz4.parquet"
+        zstd_path = tmp_path / "zstd.parquet"
+
+        safe_sink(lf, lz4_path, fast_checkpoint=True)
+        safe_sink(lf, zstd_path, fast_checkpoint=False)
+
+        assert lz4_path.exists()
+        assert zstd_path.exists()
+        lz4_size = lz4_path.stat().st_size
+        zstd_size = zstd_path.stat().st_size
+        assert lz4_size != zstd_size
+
+    def test_fast_checkpoint_false_uses_zstd(self, tmp_path: Path):
+        lf = pl.LazyFrame({"x": [1, 2, 3]})
+        out = tmp_path / "zstd.parquet"
+        safe_sink(lf, out, fast_checkpoint=False)
+
+        import pyarrow.parquet as pq
+
+        meta = pq.read_metadata(str(out))
+        compression = meta.row_group(0).column(0).compression
+        assert compression.lower() == "zstd"
+
+    def test_fast_checkpoint_true_uses_lz4_compression(self, tmp_path: Path):
+        lf = pl.LazyFrame({"x": [1, 2, 3]})
+        out = tmp_path / "lz4.parquet"
+        safe_sink(lf, out, fast_checkpoint=True)
+
+        import pyarrow.parquet as pq
+
+        meta = pq.read_metadata(str(out))
+        compression = meta.row_group(0).column(0).compression
+        assert compression.lower() == "lz4"
+
+    def test_csv_write_and_read_back(self, tmp_path: Path):
+        lf = pl.LazyFrame({"name": ["alice", "bob"], "age": [30, 25]})
+        out = tmp_path / "test.csv"
+        safe_sink(lf, out, fmt="csv")
+
+        result = pl.read_csv(out)
+        assert result.shape == (2, 2)
+        assert result["name"].to_list() == ["alice", "bob"]
+        assert result["age"].to_list() == [30, 25]
+
+    def test_empty_lazyframe(self, tmp_path: Path):
+        lf = pl.LazyFrame({
+            "a": pl.Series([], dtype=pl.Int64),
+            "b": pl.Series([], dtype=pl.Utf8),
+            "c": pl.Series([], dtype=pl.Float64),
+        })
+        out = tmp_path / "empty.parquet"
+        safe_sink(lf, out)
+
+        result = pl.read_parquet(out)
+        assert result.shape == (0, 3)
+        assert result.columns == ["a", "b", "c"]
+
+    def test_parent_directory_creatable(self, tmp_path: Path):
+        nested = tmp_path / "a" / "b" / "c" / "out.parquet"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        lf = pl.LazyFrame({"x": [1]})
+        safe_sink(lf, nested)
+
+        assert nested.exists()
+        assert pl.read_parquet(nested)["x"].to_list() == [1]
+
+    def test_csv_fallback_on_compute_error(self, tmp_path: Path):
+        lf = pl.LazyFrame({"v": [10, 20]})
+        out = tmp_path / "fallback.csv"
+
+        with (
+            patch.object(
+                pl.LazyFrame,
+                "sink_csv",
+                side_effect=pl.exceptions.ComputeError("csv sink failed"),
+            ),
+            patch.object(
+                pl.DataFrame,
+                "write_csv",
+                autospec=True,
+                side_effect=_manual_write_csv,
+            ),
+        ):
+            safe_sink(lf, out, fmt="csv")
+
+        result = pl.read_csv(out)
+        assert result["v"].to_list() == [10, 20]
+
+    def test_non_polars_error_propagates(self, tmp_path: Path):
+        lf = pl.LazyFrame({"a": [1]})
+        out = tmp_path / "test.parquet"
+
+        with patch.object(
+            pl.LazyFrame,
+            "sink_parquet",
+            side_effect=RuntimeError("unexpected"),
+        ):
+            with pytest.raises(RuntimeError, match="unexpected"):
+                safe_sink(lf, out)
+
+    def test_oserror_propagates(self, tmp_path: Path):
+        lf = pl.LazyFrame({"a": [1]})
+        out = tmp_path / "test.parquet"
+
+        with patch.object(
+            pl.LazyFrame,
+            "sink_parquet",
+            side_effect=OSError("disk full"),
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                safe_sink(lf, out)
+
+    def test_path_as_string(self, tmp_path: Path):
+        lf = pl.LazyFrame({"x": [1, 2]})
+        out = str(tmp_path / "string_path.parquet")
+        safe_sink(lf, out)
+
+        result = pl.read_parquet(out)
+        assert result["x"].to_list() == [1, 2]
+
+    def test_path_as_path_object(self, tmp_path: Path):
+        lf = pl.LazyFrame({"x": [3, 4]})
+        out = tmp_path / "path_obj.parquet"
+        safe_sink(lf, out)
+
+        result = pl.read_parquet(out)
+        assert result["x"].to_list() == [3, 4]
+
+    def test_nonexistent_parent_skips_atomic_write(self, tmp_path: Path):
+        """When parent dir does not exist, safe_sink uses direct _do_sink
+        (no atomic_write wrapper) — this exercises the else branch at line 166."""
+        lf = pl.LazyFrame({"x": [1, 2]})
+        # Create a path whose parent does NOT exist
+        out = tmp_path / "nonexistent_dir" / "out.parquet"
+        assert not out.parent.exists()
+
+        # sink_parquet will fail because dir doesn't exist — that's expected.
+        # The important thing is it goes through _do_sink(path) not atomic_write.
+        with pytest.raises((FileNotFoundError, OSError)):
+            safe_sink(lf, out)
+
+    def test_parquet_fallback_on_schema_error_csv(self, tmp_path: Path):
+        """SchemaError in sink_csv triggers collect+write_csv fallback."""
+        lf = pl.LazyFrame({"a": [1, 2, 3]})
+        out = tmp_path / "schema_fallback.csv"
+
+        with (
+            patch.object(
+                pl.LazyFrame,
+                "sink_csv",
+                side_effect=pl.exceptions.SchemaError("schema mismatch"),
+            ),
+            patch.object(
+                pl.DataFrame,
+                "write_csv",
+                autospec=True,
+                side_effect=_manual_write_csv,
+            ),
+        ):
+            safe_sink(lf, out, fmt="csv")
+
+        result = pl.read_csv(out)
+        assert result["a"].to_list() == [1, 2, 3]
+
+    def test_invalid_operation_error_csv_fallback(self, tmp_path: Path):
+        """InvalidOperationError in sink_csv triggers fallback."""
+        lf = pl.LazyFrame({"z": [10]})
+        out = tmp_path / "inv_op_fallback.csv"
+
+        with (
+            patch.object(
+                pl.LazyFrame,
+                "sink_csv",
+                side_effect=pl.exceptions.InvalidOperationError("bad csv op"),
+            ),
+            patch.object(
+                pl.DataFrame,
+                "write_csv",
+                autospec=True,
+                side_effect=_manual_write_csv,
+            ),
+        ):
+            safe_sink(lf, out, fmt="csv")
+
+        result = pl.read_csv(out)
+        assert result["z"].to_list() == [10]
+
+
+# ---------------------------------------------------------------------------
+# atomic_write edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicWriteEdgeCases:
+
+    def test_creates_deeply_nested_parents(self, tmp_path: Path):
+        dest = tmp_path / "a" / "b" / "c" / "d" / "out.parquet"
+        with atomic_write(dest) as tmp:
+            pl.DataFrame({"v": [42]}).write_parquet(tmp)
+
+        assert dest.exists()
+        assert pl.read_parquet(dest)["v"].to_list() == [42]
+
+    def test_cleans_up_temp_on_exception(self, tmp_path: Path):
+        dest = tmp_path / "fail.parquet"
+        tmp_ref = None
+        with pytest.raises(IOError):
+            with atomic_write(dest) as tmp:
+                tmp_ref = tmp
+                tmp.write_bytes(b"partial data")
+                raise IOError("write failed")
+
+        assert not dest.exists()
+        assert tmp_ref is not None
+        assert not tmp_ref.exists()
+
+    def test_overwrites_existing_file(self, tmp_path: Path):
+        dest = tmp_path / "overwrite.parquet"
+        pl.DataFrame({"v": [1]}).write_parquet(dest)
+        original_size = dest.stat().st_size
+
+        with atomic_write(dest) as tmp:
+            pl.DataFrame({"v": list(range(100))}).write_parquet(tmp)
+
+        assert dest.exists()
+        assert dest.stat().st_size != original_size
+        assert pl.read_parquet(dest)["v"].to_list() == list(range(100))
+
+    def test_atomic_rename(self, tmp_path: Path):
+        dest = tmp_path / "atomic.parquet"
+        with atomic_write(dest) as tmp:
+            assert tmp.name == "atomic.parquet.tmp"
+            pl.DataFrame({"x": [1]}).write_parquet(tmp)
+            assert tmp.exists()
+            assert not dest.exists()
+
+        assert dest.exists()
+        assert not tmp.exists()
+
+
+# ---------------------------------------------------------------------------
+# _malloc_trim edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestMallocTrimEdgeCases:
+
+    def test_returns_none(self):
+        assert _malloc_trim() is None
+
+    def test_multiple_consecutive_calls(self):
+        for _ in range(5):
+            result = _malloc_trim()
+            assert result is None

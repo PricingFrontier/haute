@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
 
 from haute._fingerprint_cache import FingerprintCache
-
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -236,3 +234,174 @@ class TestRepr:
         cache.store("fp1", items={"k": "v"})
         r = repr(cache)
         assert "fp1" in r
+
+
+# ---------------------------------------------------------------------------
+# Pinning
+# ---------------------------------------------------------------------------
+
+
+class TestPinning:
+    def test_pin_nonexistent_fingerprint_is_silent_noop(self) -> None:
+        cache = FingerprintCache(slots=("x",))
+        cache.pin("does_not_exist")
+        cache.store("fp1", x={"a": 1})
+        assert cache.try_get("fp1") is not None
+
+    def test_pin_already_pinned_is_idempotent(self) -> None:
+        cache = FingerprintCache(slots=("x",), max_entries=2)
+        cache.store("fp1", x={"a": 1})
+        cache.pin("fp1")
+        cache.pin("fp1")
+        cache.store("fp2", x={"b": 2})
+        cache.store("fp3", x={"c": 3})
+        assert cache.try_get("fp1") is not None
+
+    def test_all_entries_pinned_store_new_evicts_unpinned_newcomer(self) -> None:
+        cache = FingerprintCache(slots=("x",), max_entries=2)
+        cache.store("fp1", x={"a": 1})
+        cache.pin("fp1")
+        cache.store("fp2", x={"b": 2})
+        cache.pin("fp2")
+        cache.store("fp3", x={"c": 3})
+        assert cache.try_get("fp1") is not None
+        assert cache.try_get("fp2") is not None
+        assert cache.try_get("fp3") is None
+
+
+# ---------------------------------------------------------------------------
+# Duplicate store
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateStore:
+    def test_store_duplicate_replaces_and_promotes_to_mru(self) -> None:
+        cache = FingerprintCache(slots=("x",), max_entries=3)
+        cache.store("fp1", x={"v": 1})
+        cache.store("fp2", x={"v": 2})
+        cache.store("fp3", x={"v": 3})
+        cache.store("fp1", x={"v": 100})
+        cache.store("fp4", x={"v": 4})
+        assert cache.try_get("fp1") is not None
+        assert cache.try_get("fp1")["x"] == {"v": 100}
+        assert cache.try_get("fp2") is None
+
+
+# ---------------------------------------------------------------------------
+# update_slot edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateSlotEdgeCases:
+    def test_update_slot_nonexistent_fingerprint_logs_warning(self) -> None:
+        cache = FingerprintCache(slots=("a",))
+        cache.update_slot("a", {"new": True}, fingerprint="ghost")
+
+
+# ---------------------------------------------------------------------------
+# fingerprint property
+# ---------------------------------------------------------------------------
+
+
+class TestFingerprintProperty:
+    def test_fingerprint_none_on_empty_cache(self) -> None:
+        cache = FingerprintCache(slots=("x",))
+        assert cache.fingerprint is None
+
+    def test_fingerprint_returns_last_stored(self) -> None:
+        cache = FingerprintCache(slots=("x",))
+        cache.store("fp1", x={})
+        cache.store("fp2", x={})
+        assert cache.fingerprint == "fp2"
+
+    def test_fingerprint_returns_last_accessed(self) -> None:
+        cache = FingerprintCache(slots=("x",))
+        cache.store("fp1", x={"a": 1})
+        cache.store("fp2", x={"b": 2})
+        cache.try_get("fp1")
+        assert cache.fingerprint == "fp1"
+
+
+# ---------------------------------------------------------------------------
+# Invalidation edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidationEdgeCases:
+    def test_invalidate_then_pin_is_safe(self) -> None:
+        cache = FingerprintCache(slots=("x",))
+        cache.store("fp1", x={})
+        cache.invalidate()
+        cache.pin("fp1")
+
+    def test_invalidate_then_unpin_is_safe(self) -> None:
+        cache = FingerprintCache(slots=("x",))
+        cache.store("fp1", x={})
+        cache.pin("fp1")
+        cache.invalidate()
+        cache.unpin("fp1")
+
+    def test_try_get_after_invalidate_returns_none(self) -> None:
+        cache = FingerprintCache(slots=("x",))
+        cache.store("fp1", x={"val": 42})
+        cache.invalidate()
+        assert cache.try_get("fp1") is None
+
+
+# ---------------------------------------------------------------------------
+# graph_fingerprint
+# ---------------------------------------------------------------------------
+
+
+class TestGraphFingerprint:
+    def test_same_graph_same_fingerprint(self) -> None:
+        from haute._cache import graph_fingerprint
+        from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+
+        node = GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"k": 1}))
+        edge = GraphEdge(id="e1", source="n1", target="n2")
+        g1 = PipelineGraph(nodes=[node], edges=[edge])
+        g2 = PipelineGraph(nodes=[node], edges=[edge])
+        assert graph_fingerprint(g1) == graph_fingerprint(g2)
+
+    def test_different_node_different_fingerprint(self) -> None:
+        from haute._cache import graph_fingerprint
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        g1 = PipelineGraph(
+            nodes=[GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={}))],
+        )
+        g2 = PipelineGraph(
+            nodes=[GraphNode(id="n2", data=NodeData(label="B", nodeType="polars", config={}))],
+        )
+        assert graph_fingerprint(g1) != graph_fingerprint(g2)
+
+    def test_extra_keys_affect_fingerprint(self) -> None:
+        from haute._cache import graph_fingerprint
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        node = GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={}))
+        g = PipelineGraph(nodes=[node])
+        fp_no_extra = graph_fingerprint(g)
+        fp_with_extra = graph_fingerprint(g, "target_node")
+        assert fp_no_extra != fp_with_extra
+
+    def test_no_extra_keys_vs_empty_tuple_same_result(self) -> None:
+        from haute._cache import graph_fingerprint
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        node = GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={}))
+        g = PipelineGraph(nodes=[node])
+        assert graph_fingerprint(g) == graph_fingerprint(g)
+
+    def test_empty_graph_consistent_fingerprint(self) -> None:
+        from haute._cache import graph_fingerprint
+        from haute._types import PipelineGraph
+
+        g1 = PipelineGraph()
+        g2 = PipelineGraph()
+        fp1 = graph_fingerprint(g1)
+        fp2 = graph_fingerprint(g2)
+        assert fp1 == fp2
+        assert isinstance(fp1, str)
+        assert len(fp1) == 64

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
@@ -1595,6 +1596,260 @@ pipeline.connect("middle", "final")
         assert any(e["target"] == "final" for e in outgoing)
         # The outgoing edge should have a sourceHandle referencing "middle"
         assert any("middle" in (e.get("sourceHandle") or "") for e in outgoing)
+
+
+# ---------------------------------------------------------------------------
+# RequestIdMiddleware logging levels
+# ---------------------------------------------------------------------------
+
+
+class TestMiddlewareLogging:
+    def test_2xx_logs_info(self, client: TestClient, pipeline_dir: Path):
+        import structlog.testing
+
+        with structlog.testing.capture_logs() as captured:
+            resp = client.get("/api/pipelines")
+
+        assert resp.status_code == 200
+        info_events = [e for e in captured if e.get("event") == "request_ok"]
+        assert len(info_events) >= 1
+        assert info_events[0]["status"] == 200
+        assert info_events[0]["log_level"] == "info"
+
+    def test_4xx_logs_warning(self, client: TestClient, pipeline_dir: Path):
+        import structlog.testing
+
+        with structlog.testing.capture_logs() as captured:
+            resp = client.get("/api/pipeline/nonexistent_pipeline_xyz")
+
+        assert resp.status_code == 404
+        warning_events = [e for e in captured if e.get("event") == "request_client_error"]
+        assert len(warning_events) >= 1
+        assert warning_events[0]["status"] == 404
+        assert warning_events[0]["log_level"] == "warning"
+
+    def test_5xx_logs_error(self):
+        import asyncio
+
+        import structlog.testing
+        from unittest.mock import AsyncMock, MagicMock
+
+        from haute.server import _RequestIdMiddleware
+
+        middleware = _RequestIdMiddleware(app=MagicMock())
+        request = MagicMock()
+        request.headers = {}
+        request.method = "POST"
+        request.url.path = "/api/test"
+
+        call_next = AsyncMock(side_effect=RuntimeError("boom"))
+
+        loop = asyncio.new_event_loop()
+        try:
+            with structlog.testing.capture_logs() as captured:
+                resp = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert resp.status_code == 500
+        error_events = [e for e in captured if e.get("event") == "unhandled_exception"]
+        assert len(error_events) >= 1
+        assert "traceback" in error_events[0]
+        assert error_events[0]["log_level"] == "error"
+
+    def test_500_response_no_stack_trace(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from haute.server import _RequestIdMiddleware
+
+        middleware = _RequestIdMiddleware(app=MagicMock())
+        request = MagicMock()
+        request.headers = {}
+        request.method = "GET"
+        request.url.path = "/api/explode"
+
+        call_next = AsyncMock(side_effect=ValueError("secret internal detail"))
+
+        loop = asyncio.new_event_loop()
+        try:
+            resp = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert resp.status_code == 500
+        body = json.loads(resp.body)
+        assert body == {"detail": "Internal server error"}
+        assert "secret internal detail" not in resp.body.decode()
+        assert "Traceback" not in resp.body.decode()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket keep-alive
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketKeepAlive:
+    def test_keep_alive_messages_accepted(self, client: TestClient):
+        with client.websocket_connect("/ws/sync") as ws:
+            ws.send_text("keep-alive")
+            ws.send_text("ping")
+            ws.send_text("")
+
+    def test_dead_client_removed_from_set(self, client: TestClient):
+        from haute.routes._helpers import ws_clients
+
+        with client.websocket_connect("/ws/sync"):
+            assert len(ws_clients) >= 1
+        assert len(ws_clients) == 0
+
+
+# ---------------------------------------------------------------------------
+# validate_safe_path unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateSafePath:
+    def test_valid_path_succeeds(self, tmp_path: Path):
+        from haute.routes._helpers import validate_safe_path
+
+        result = validate_safe_path(tmp_path, "subdir/file.txt")
+        assert result == (tmp_path / "subdir" / "file.txt").resolve()
+
+    def test_traversal_raises_403(self, tmp_path: Path):
+        from haute.routes._helpers import validate_safe_path
+
+        with pytest.raises(HTTPException) as exc_info:
+            validate_safe_path(tmp_path, "../../etc/passwd")
+        assert exc_info.value.status_code == 403
+
+    def test_symlink_escape_raises_403(self, tmp_path: Path):
+        import os
+
+        from haute.routes._helpers import validate_safe_path
+
+        outside = tmp_path.parent / "outside_target"
+        outside.mkdir(exist_ok=True)
+        link = tmp_path / "escape_link"
+        try:
+            os.symlink(outside, link)
+        except OSError:
+            pytest.skip("symlink creation not supported")
+        with pytest.raises(HTTPException) as exc_info:
+            validate_safe_path(tmp_path, "escape_link/secret.txt")
+        assert exc_info.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# broadcast sends to all WebSocket clients
+# ---------------------------------------------------------------------------
+
+
+class TestBroadcastMultipleClients:
+    def test_broadcast_sends_to_all_clients(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from haute.routes._helpers import broadcast, ws_clients
+
+        ws1 = MagicMock()
+        ws1.send_text = AsyncMock()
+        ws2 = MagicMock()
+        ws2.send_text = AsyncMock()
+
+        ws_clients.add(ws1)
+        ws_clients.add(ws2)
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(broadcast({"type": "test", "data": 42}))
+            finally:
+                loop.close()
+
+            ws1.send_text.assert_called_once()
+            ws2.send_text.assert_called_once()
+            payload1 = json.loads(ws1.send_text.call_args[0][0])
+            payload2 = json.loads(ws2.send_text.call_args[0][0])
+            assert payload1 == {"type": "test", "data": 42}
+            assert payload2 == {"type": "test", "data": 42}
+        finally:
+            ws_clients.discard(ws1)
+            ws_clients.discard(ws2)
+
+
+# ---------------------------------------------------------------------------
+# load_sidecar unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSidecar:
+    def test_valid_json_returns_dict(self, tmp_path: Path):
+        from haute.routes._helpers import load_sidecar
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("")
+        sidecar = py_path.with_suffix(".haute.json")
+        sidecar.write_text(json.dumps({"positions": {"a": {"x": 1, "y": 2}}}))
+
+        result = load_sidecar(py_path)
+        assert result == {"positions": {"a": {"x": 1, "y": 2}}}
+
+    def test_missing_file_returns_empty(self, tmp_path: Path):
+        from haute.routes._helpers import load_sidecar
+
+        py_path = tmp_path / "nonexistent.py"
+        result = load_sidecar(py_path)
+        assert result == {}
+
+    def test_corrupt_json_returns_empty(self, tmp_path: Path):
+        from haute.routes._helpers import load_sidecar
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("")
+        sidecar = py_path.with_suffix(".haute.json")
+        sidecar.write_text("{invalid json content!!!")
+
+        result = load_sidecar(py_path)
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# mark_self_write and is_self_write timing
+# ---------------------------------------------------------------------------
+
+
+class TestSelfWriteTiming:
+    def test_is_self_write_false_before_mark(self, monkeypatch: pytest.MonkeyPatch):
+        import time as _time
+
+        import haute.routes._helpers as helpers
+
+        fake_time = [1000.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
+        helpers._last_self_write = 0.0
+        assert helpers.is_self_write() is False
+
+    def test_is_self_write_true_within_cooldown(self, monkeypatch: pytest.MonkeyPatch):
+        import time as _time
+
+        import haute.routes._helpers as helpers
+
+        fake_time = [100.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
+        helpers.mark_self_write()
+        fake_time[0] = 101.5  # 1.5s < 2.0s cooldown
+        assert helpers.is_self_write() is True
+
+    def test_is_self_write_false_after_cooldown(self, monkeypatch: pytest.MonkeyPatch):
+        import time as _time
+
+        import haute.routes._helpers as helpers
+
+        fake_time = [100.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: fake_time[0])
+        helpers.mark_self_write()
+        fake_time[0] = 103.0  # 3.0s > 2.0s cooldown
+        assert helpers.is_self_write() is False
 
 
 class TestGetSubmodelSidecarPositions:

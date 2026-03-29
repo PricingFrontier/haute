@@ -69,6 +69,7 @@ def cancel_json_cache(data_path: str) -> bool:
         event = _cancel_events.get(data_path)
         if event is not None:
             event.set()
+            _flatten_progress.pop(data_path, None)
             return True
         return False
 

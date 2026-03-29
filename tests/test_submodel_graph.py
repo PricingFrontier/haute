@@ -68,6 +68,24 @@ class TestBuildSubmodelPlaceholder:
         node = build_submodel_placeholder("n", "f.py", ["a"], [], [])
         assert node.position == {"x": 0, "y": 0}
 
+    def test_empty_child_node_ids(self):
+        node = build_submodel_placeholder("empty", "f.py", [], [], [])
+        assert node.data.config["childNodeIds"] == []
+        assert node.id == "submodel__empty"
+        assert node.type == NodeType.SUBMODEL
+
+    def test_empty_input_and_output_ports(self):
+        node = build_submodel_placeholder("iso", "f.py", ["a"], [], [])
+        assert node.data.config["inputPorts"] == []
+        assert node.data.config["outputPorts"] == []
+
+    def test_description_with_special_characters(self):
+        desc = 'Line1\nLine2\t"quoted" <tag> & symbol'
+        node = build_submodel_placeholder(
+            "sp", "f.py", ["a"], [], [], description=desc
+        )
+        assert node.data.description == desc
+
 
 # ---------------------------------------------------------------------------
 # classify_ports
@@ -120,6 +138,36 @@ class TestClassifyPorts:
         """Edges fully inside the submodel produce no ports."""
         child_ids = {"a", "b"}
         cross_edges = [("a", "b")]  # both inside
+        inputs, outputs = classify_ports(cross_edges, child_ids)
+        assert inputs == []
+        assert outputs == []
+
+    def test_empty_cross_edges_empty_children(self):
+        inputs, outputs = classify_ports([], set())
+        assert (inputs, outputs) == ([], [])
+
+    def test_node_both_input_and_output(self):
+        child_ids = {"a", "b"}
+        cross_edges = [("ext1", "a"), ("a", "ext2"), ("ext3", "b"), ("b", "ext4")]
+        inputs, outputs = classify_ports(cross_edges, child_ids)
+        assert inputs == ["a", "b"]
+        assert outputs == ["a", "b"]
+
+    def test_deduplication_with_order_preservation(self):
+        child_ids = {"a", "b", "c"}
+        cross_edges = [
+            ("ext", "c"),
+            ("ext", "a"),
+            ("ext", "c"),
+            ("ext", "b"),
+            ("ext", "a"),
+        ]
+        inputs, _ = classify_ports(cross_edges, child_ids)
+        assert inputs == ["c", "a", "b"]
+
+    def test_all_edges_internal_empty_ports(self):
+        child_ids = {"a", "b", "c"}
+        cross_edges = [("a", "b"), ("b", "c"), ("a", "c")]
         inputs, outputs = classify_ports(cross_edges, child_ids)
         assert inputs == []
         assert outputs == []
@@ -201,3 +249,41 @@ class TestRewireEdges:
         ids = {e.id for e in result}
         assert "e_ext_submodel__grp__child" in ids
         assert "e_submodel__grp_ext2__child" in ids
+
+    def test_all_internal_all_dropped(self):
+        edges = [self._edge("a", "b"), self._edge("b", "c"), self._edge("a", "c")]
+        result = rewire_edges(edges, "submodel__grp", {"a", "b", "c"})
+        assert result == []
+
+    def test_all_external_all_preserved(self):
+        edges = [self._edge("x", "y"), self._edge("y", "z")]
+        result = rewire_edges(edges, "submodel__grp", {"a"})
+        assert len(result) == 2
+        assert result[0].source == "x" and result[0].target == "y"
+        assert result[1].source == "y" and result[1].target == "z"
+
+    def test_multiple_inbound_to_same_child(self):
+        edges = [self._edge("ext1", "a"), self._edge("ext2", "a")]
+        result = rewire_edges(edges, "submodel__grp", {"a"})
+        assert len(result) == 2
+        for e in result:
+            assert e.target == "submodel__grp"
+            assert e.targetHandle == "in__a"
+        assert result[0].source == "ext1"
+        assert result[1].source == "ext2"
+
+    def test_multiple_outbound_from_same_child(self):
+        edges = [self._edge("a", "ext1"), self._edge("a", "ext2")]
+        result = rewire_edges(edges, "submodel__grp", {"a"})
+        assert len(result) == 2
+        for e in result:
+            assert e.source == "submodel__grp"
+            assert e.sourceHandle == "out__a"
+        assert result[0].target == "ext1"
+        assert result[1].target == "ext2"
+
+    def test_edge_id_deterministic(self):
+        edges = [self._edge("ext", "child")]
+        r1 = rewire_edges(edges, "submodel__grp", {"child"})
+        r2 = rewire_edges(edges, "submodel__grp", {"child"})
+        assert r1[0].id == r2[0].id == "e_ext_submodel__grp__child"

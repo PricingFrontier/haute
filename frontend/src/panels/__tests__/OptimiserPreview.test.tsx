@@ -381,6 +381,87 @@ describe("OptimiserPreview", () => {
     })
   })
 
+  describe("Export tab", () => {
+    it("renders Export tab button", () => {
+      renderPreview()
+      expect(screen.getByText("Export")).toBeInTheDocument()
+    })
+
+    it("switches to Export tab on click and shows save option", () => {
+      renderPreview()
+      fireEvent.click(screen.getByText("Export"))
+      expect(screen.getByText("Save to file")).toBeInTheDocument()
+      expect(screen.getByText("Save result")).toBeInTheDocument()
+    })
+
+    it("Export tab shows Log to MLflow section when MLflow connected", () => {
+      renderPreview()
+      fireEvent.click(screen.getByText("Export"))
+      const mlflowElements = screen.getAllByText("Log to MLflow")
+      expect(mlflowElements.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  describe("Summary tab constraint indicators", () => {
+    it("renders met constraint with green indicator dot", () => {
+      const data = makeData({
+        result: makeSolveResult({
+          constraints: { loss_ratio: 0.60 },
+          baseline_constraints: { loss_ratio: 0.60 },
+        }),
+        constraints: { loss_ratio: { max: 1.05 } },
+      })
+      const { container } = renderPreview({ data })
+      fireEvent.click(screen.getByText("Summary"))
+      const dots = container.querySelectorAll('span[style*="background: rgb(34, 197, 94)"]')
+      expect(dots.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it("renders unmet constraint with red indicator dot", () => {
+      const data = makeData({
+        result: makeSolveResult({
+          constraints: { loss_ratio: 999 },
+          baseline_constraints: { loss_ratio: 1 },
+        }),
+        constraints: { loss_ratio: { max: 1.05 } },
+      })
+      const { container } = renderPreview({ data })
+      fireEvent.click(screen.getByText("Summary"))
+      const redDots = container.querySelectorAll('span[style*="background: rgb(239, 68, 68)"]')
+      expect(redDots.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  describe("Summary tab lambda values", () => {
+    it("renders lambda values with 6 decimal places", () => {
+      renderPreview()
+      fireEvent.click(screen.getByText("Summary"))
+      expect(screen.getByText("0.005000")).toBeInTheDocument()
+    })
+
+    it("renders lambda constraint name", () => {
+      renderPreview()
+      fireEvent.click(screen.getByText("Summary"))
+      const lambdaSection = screen.getByText("Lambdas")
+      expect(lambdaSection).toBeInTheDocument()
+      expect(screen.getAllByText("loss_ratio").length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  describe("tab defaults", () => {
+    it("defaults to Summary tab when no frontier data", () => {
+      renderPreview()
+      expect(screen.getByText("Objective")).toBeInTheDocument()
+      expect(screen.getByText("Optimised")).toBeInTheDocument()
+    })
+
+    it("defaults to Frontier tab when frontier data exists", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier() }) })
+      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.queryByText("Optimised")).not.toBeInTheDocument()
+    })
+  })
+
   describe("collapse/expand", () => {
     it("collapse button hides the main panel", () => {
       renderPreview()

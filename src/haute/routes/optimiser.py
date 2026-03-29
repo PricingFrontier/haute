@@ -129,7 +129,13 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     solver = job.get("solver")
     quote_grid = job.get("quote_grid")
     if solver is None or quote_grid is None:
-        raise HTTPException(status_code=400, detail="Job has no solver or quote grid")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Solver and quote grid have been released to free memory. "
+                "Use the pre-computed frontier from the solve result, or re-run the solve."
+            ),
+        )
 
     try:
         # Convert threshold ranges from lists to tuples for Rust binding
@@ -174,7 +180,13 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
     frontier_data = job.get("frontier_data")
 
     if solver is None or quote_grid is None:
-        raise HTTPException(status_code=400, detail="Job has no solver or quote grid")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Solver and quote grid have been released to free memory. "
+                "Use the pre-computed frontier from the solve result, or re-run the solve."
+            ),
+        )
     if not frontier_data or not frontier_data.get("points"):
         raise HTTPException(status_code=400, detail="Job has no frontier data")
 
@@ -307,8 +319,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     job = _store.require_completed_job(body.job_id)
 
     solve_result = job.get("solve_result")
-    solver = job.get("solver")
-    if solve_result is None or solver is None:
+    if solve_result is None:
         raise HTTPException(status_code=400, detail="Job has no solve result")
 
     from haute.routes._helpers import pipeline_dir
@@ -353,10 +364,19 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
     """Log optimisation results to MLflow."""
     job = _store.require_completed_job(body.job_id)
 
-    solver = job.get("solver")
     solve_result = job.get("solve_result")
-    if solver is None or solve_result is None:
+    solver = job.get("solver")
+    if solve_result is None:
         raise HTTPException(status_code=400, detail="Job has no solve result")
+    if solver is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Solver has been released to free memory. "
+                "MLflow logging must happen before the solver is garbage-collected. "
+                "Re-run the solve to log results."
+            ),
+        )
 
     try:
         import mlflow

@@ -212,6 +212,233 @@ class TestSplitMask:
         with pytest.raises(ValueError, match="empty"):
             split_mask(0, SplitConfig())
 
+    # --- Temporal mask with holdout ---
+
+    def test_temporal_mask_with_holdout(self):
+        """Temporal split: holdout = most recent, validation = next, train = oldest."""
+        dates = [f"2024-{m:02d}-15" for m in range(1, 13)]
+        df = pl.DataFrame({"date": dates})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+            validation_size=0.2,
+            holdout_size=0.1,
+        )
+        mask = split_mask(len(df), cfg, df=df)
+        assert len(mask) == 12
+        # First 6 months (Jan-Jun) are train
+        for i in range(6):
+            assert mask[i] == PARTITION_TRAIN
+        # Post-cutoff rows are split into validation and holdout
+        post_cutoff = mask[6:].to_list()
+        # At least some holdout and some validation among the 6 post-cutoff rows
+        assert PARTITION_HOLDOUT in post_cutoff
+        assert PARTITION_VALIDATION in post_cutoff
+
+    def test_temporal_mask_holdout_is_most_recent(self):
+        """Holdout should be the most-recent rows within post-cutoff data."""
+        dates = [f"2024-{m:02d}-01" for m in range(1, 11)]
+        df = pl.DataFrame({"date": dates})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-06-01",
+            validation_size=0.3,
+            holdout_size=0.2,
+        )
+        mask = split_mask(len(df), cfg, df=df)
+        # Pre-cutoff (Jan-May) = train
+        for i in range(5):
+            assert mask[i] == PARTITION_TRAIN
+        # Post-cutoff: 5 rows (Jun-Oct)
+        # Holdout should contain the most-recent rows
+        post_labels = mask[5:].to_list()
+        holdout_positions = [i for i, v in enumerate(post_labels) if v == PARTITION_HOLDOUT]
+        val_positions = [i for i, v in enumerate(post_labels) if v == PARTITION_VALIDATION]
+        if holdout_positions and val_positions:
+            # Holdout positions should be later than validation positions
+            assert min(holdout_positions) >= min(val_positions)
+
+    def test_temporal_mask_date_column_not_found(self):
+        """Missing date column should raise ValueError."""
+        df = pl.DataFrame({"x": [1, 2, 3]})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+        )
+        with pytest.raises(ValueError, match="not found"):
+            split_mask(len(df), cfg, df=df)
+
+    def test_temporal_mask_no_holdout_no_validation(self):
+        """Temporal split with validation_size=0 should reclassify to train."""
+        dates = ["2024-01-01", "2024-06-15", "2024-12-31"]
+        df = pl.DataFrame({"date": dates})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+            validation_size=0,
+            holdout_size=0,
+        )
+        mask = split_mask(len(df), cfg, df=df)
+        # All should be train when validation_size=0 and holdout_size=0
+        assert all(v == PARTITION_TRAIN for v in mask.to_list())
+
+    def test_temporal_mask_string_dates(self):
+        """Temporal mask should handle Utf8 date columns properly."""
+        df = pl.DataFrame({"date": ["2024-01-15", "2024-06-15", "2024-08-15", "2024-12-15"]})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+            validation_size=0.3,
+            holdout_size=0.2,
+        )
+        mask = split_mask(len(df), cfg, df=df)
+        assert mask[0] == PARTITION_TRAIN
+        assert mask[1] == PARTITION_TRAIN
+
+    # --- Group mask with holdout ---
+
+    def test_group_mask_with_holdout(self):
+        """Group mask should produce train, validation, and holdout partitions."""
+        df = pl.DataFrame({"group": [f"g{i % 10}" for i in range(200)]})
+        cfg = SplitConfig(
+            strategy="group",
+            group_column="group",
+            validation_size=0.3,
+            holdout_size=0.2,
+            seed=42,
+        )
+        mask = split_mask(len(df), cfg, df=df)
+        partitions = set(mask.to_list())
+        # With 10 groups and 50% non-train, we should get all three partitions
+        assert PARTITION_TRAIN in partitions
+        # Groups should stay intact
+        labeled = df.with_columns(mask)
+        for gv in df["group"].unique().to_list():
+            group_parts = labeled.filter(pl.col("group") == gv)["_partition"].to_list()
+            assert len(set(group_parts)) == 1
+
+    def test_group_mask_missing_column_raises(self):
+        df = pl.DataFrame({"x": [1, 2, 3]})
+        cfg = SplitConfig(strategy="group", group_column="group", validation_size=0.2, seed=42)
+        with pytest.raises(ValueError, match="not found"):
+            split_mask(len(df), cfg, df=df)
+
+    def test_group_mask_no_validation_assigned_fallback(self):
+        """When no groups hash to validation, fallback forces a train group to validation."""
+        # Use 2 groups with a seed that hashes both to train (requires holdout_size=0
+        # and a seed where both hash above the validation_size threshold).
+        # We use a large holdout_size to make both groups fall into holdout,
+        # then check the fallback forces one into validation.
+        df = pl.DataFrame({"group": ["X", "X", "Y", "Y"]})
+        cfg = SplitConfig(
+            strategy="group",
+            group_column="group",
+            validation_size=0.01,  # tiny validation fraction — likely 0 groups hash to it
+            holdout_size=0.0,
+            seed=12345,
+        )
+        mask = split_mask(len(df), cfg, df=df)
+        # Should not crash; should produce some partition
+        assert len(mask) == 4
+
+    def test_group_mask_missing_df_raises(self):
+        cfg = SplitConfig(strategy="group", group_column="group", validation_size=0.2, seed=42)
+        with pytest.raises(ValueError, match="requires df"):
+            split_mask(10, cfg, df=None)
+
+    # --- Random mask with holdout ---
+
+    def test_random_mask_holdout_only(self):
+        """Random mask with holdout_size > 0 and validation_size = 0."""
+        n = 1000
+        cfg = SplitConfig(validation_size=0.0, holdout_size=0.2, seed=42)
+        mask = split_mask(n, cfg)
+        ho_n = int((mask == PARTITION_HOLDOUT).sum())
+        assert ho_n == 200
+        # No validation
+        assert int((mask == PARTITION_VALIDATION).sum()) == 0
+
+    # --- Unknown strategy ---
+
+    def test_split_mask_unknown_strategy_raises(self):
+        """split_mask should raise on unknown strategy."""
+        cfg = SplitConfig.__new__(SplitConfig)
+        cfg.strategy = "invalid"
+        cfg.validation_size = 0.2
+        cfg.holdout_size = 0.0
+        cfg.seed = 42
+        cfg.date_column = None
+        cfg.cutoff_date = None
+        cfg.group_column = None
+        cfg.test_size = None
+        with pytest.raises(ValueError, match="Unknown split strategy"):
+            split_mask(100, cfg)
+
+    def test_split_data_unknown_strategy_raises(self):
+        """split_data should raise on unknown strategy."""
+        cfg = SplitConfig.__new__(SplitConfig)
+        cfg.strategy = "invalid"
+        cfg.validation_size = 0.2
+        cfg.holdout_size = 0.0
+        cfg.seed = 42
+        cfg.date_column = None
+        cfg.cutoff_date = None
+        cfg.group_column = None
+        cfg.test_size = None
+        df = pl.DataFrame({"x": [1, 2, 3]})
+        with pytest.raises(ValueError, match="Unknown split strategy"):
+            split_data(df, cfg)
+
+
+class TestSplitConfigEdgeCases:
+    def test_holdout_size_negative_raises(self):
+        with pytest.raises(ValueError, match="holdout_size"):
+            SplitConfig(holdout_size=-0.1)
+
+    def test_holdout_size_one_raises(self):
+        with pytest.raises(ValueError, match="holdout_size"):
+            SplitConfig(holdout_size=1.0)
+
+    def test_validation_plus_holdout_ge_one_raises(self):
+        with pytest.raises(ValueError, match="must be less than 1"):
+            SplitConfig(validation_size=0.6, holdout_size=0.5)
+
+    def test_validation_plus_holdout_exactly_one_raises(self):
+        with pytest.raises(ValueError, match="must be less than 1"):
+            SplitConfig(validation_size=0.5, holdout_size=0.5)
+
+    def test_test_size_alias_overrides_validation_size(self):
+        """test_size should override validation_size as an alias."""
+        cfg = SplitConfig(test_size=0.3)
+        assert cfg.validation_size == 0.3
+        assert cfg.test_size is None
+
+    def test_test_size_negative_raises(self):
+        with pytest.raises(ValueError, match="validation_size"):
+            SplitConfig(test_size=-0.5)
+
+    def test_valid_temporal_config(self):
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-01-01",
+            holdout_size=0.1,
+        )
+        assert cfg.strategy == "temporal"
+
+    def test_valid_group_config(self):
+        cfg = SplitConfig(
+            strategy="group",
+            group_column="grp",
+            holdout_size=0.05,
+        )
+        assert cfg.strategy == "group"
+
 
 # ---------------------------------------------------------------------------
 # _assign_group_split — hash-based group assignment

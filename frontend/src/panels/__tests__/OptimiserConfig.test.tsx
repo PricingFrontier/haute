@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import OptimiserConfig from "../OptimiserConfig"
-import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 
 // ── Mock API client ──
@@ -87,7 +87,10 @@ beforeEach(() => {
   mockHandleConstraintValueChange.mockReset()
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
 
 // ═══════════════════════════════════════════════════════════════════
 // Mode toggle
@@ -439,6 +442,333 @@ describe("OptimiserConfig", () => {
         />,
       )
       expect(screen.getByText("Optimising...")).toBeInTheDocument()
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Constraint interactions
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Constraint interactions", () => {
+    it("clicking remove button on a constraint calls handleRemoveConstraint with the name", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+            },
+          })}
+        />,
+      )
+      const removeButtons = document.querySelectorAll(".lucide-x")
+      expect(removeButtons.length).toBeGreaterThanOrEqual(1)
+      fireEvent.click(removeButtons[0].closest("button")!)
+      expect(mockHandleRemoveConstraint).toHaveBeenCalledWith("loss_ratio")
+    })
+
+    it("changing the constraint column dropdown calls handleConstraintColumnChange", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+            },
+          })}
+        />,
+      )
+      const constraintSelects = document.querySelectorAll("select")
+      const columnSelect = Array.from(constraintSelects).find(s =>
+        (s as HTMLSelectElement).value === "loss_ratio" &&
+        (s as HTMLSelectElement).classList.contains("font-mono") &&
+        Array.from(s.querySelectorAll("option")).length > 1,
+      )!
+      fireEvent.change(columnSelect, { target: { value: "volume" } })
+      expect(mockHandleConstraintColumnChange).toHaveBeenCalledWith("loss_ratio", "volume")
+    })
+
+    it("changing the constraint value input calls handleConstraintValueChange", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+            },
+          })}
+        />,
+      )
+      const numberInputs = document.querySelectorAll('input[type="number"]')
+      const valueInput = Array.from(numberInputs).find(i => (i as HTMLInputElement).value === "1.05")!
+      fireEvent.change(valueInput, { target: { value: "0.95" } })
+      expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "max", 0.95)
+    })
+
+    it("changing the constraint type dropdown calls handleConstraintValueChange", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+            },
+          })}
+        />,
+      )
+      const selects = document.querySelectorAll("select")
+      const typeSelect = Array.from(selects).find(s =>
+        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Max (relative)") &&
+        (s as HTMLSelectElement).value === "max",
+      )!
+      fireEvent.change(typeSelect, { target: { value: "min" } })
+      expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "min", 1.05)
+    })
+
+    it("shows multiple constraints with correct count", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 }, volume: { min: 0.9 } },
+            },
+          })}
+        />,
+      )
+      expect(screen.getByText(/Constraints \(2\)/)).toBeInTheDocument()
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Solver Tuning extended
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Solver Tuning extended", () => {
+    it("changing tolerance calls onUpdate with tolerance key", () => {
+      const props = makeProps()
+      render(<OptimiserConfig {...props} />)
+      const input = screen.getByDisplayValue("0.000001")
+      fireEvent.change(input, { target: { value: "0.001" } })
+      expect(props.onUpdate).toHaveBeenCalledWith("tolerance", 0.001)
+    })
+
+    it("renders custom max_iter from config", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, max_iter: 200 },
+          })}
+        />,
+      )
+      expect(screen.getByDisplayValue("200")).toBeInTheDocument()
+    })
+
+    it("renders custom tolerance from config", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, tolerance: 0.01 },
+          })}
+        />,
+      )
+      expect(screen.getByDisplayValue("0.01")).toBeInTheDocument()
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Advanced section extended
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Advanced section extended", () => {
+    it("clicking Advanced toggles the section in the settings store", () => {
+      render(<OptimiserConfig {...makeProps()} />)
+      fireEvent.click(screen.getByText("Advanced"))
+      const state = useSettingsStore.getState()
+      expect(state.openSections["optimiser.advanced"]).toBe(true)
+    })
+
+    it("clicking Advanced again collapses the section", () => {
+      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
+      render(<OptimiserConfig {...makeProps()} />)
+      fireEvent.click(screen.getByText("Advanced"))
+      const state = useSettingsStore.getState()
+      expect(state.openSections["optimiser.advanced"]).toBe(false)
+    })
+
+    it("changing chunk_size calls onUpdate", () => {
+      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
+      const props = makeProps()
+      render(<OptimiserConfig {...props} />)
+      const input = screen.getByDisplayValue("500000")
+      fireEvent.change(input, { target: { value: "100000" } })
+      expect(props.onUpdate).toHaveBeenCalledWith("chunk_size", 100000)
+    })
+
+    it("toggling record_history calls onUpdate", () => {
+      useSettingsStore.setState({ openSections: { "optimiser.advanced": true } })
+      const props = makeProps()
+      render(<OptimiserConfig {...props} />)
+      fireEvent.click(screen.getByText("Off"))
+      expect(props.onUpdate).toHaveBeenCalledWith("record_history", true)
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Mode toggle extended
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Mode toggle extended", () => {
+    it("clicking online mode from ratebook calls onUpdate with mode online", () => {
+      const props = makeProps({
+        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} },
+      })
+      render(<OptimiserConfig {...props} />)
+      fireEvent.click(screen.getByRole("button", { name: "Online" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("mode", "online")
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Solve action extended
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Solve action extended", () => {
+    it("solve button is enabled when valid config has objective set", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: {},
+            },
+          })}
+        />,
+      )
+      const btn = screen.getByRole("button", { name: /Optimise/ })
+      expect(btn).not.toBeDisabled()
+    })
+
+    it("ratebook mode solve button is disabled when no factor columns selected", () => {
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "ratebook",
+              objective: "premium",
+              constraints: {},
+              factor_columns: [],
+            },
+          })}
+        />,
+      )
+      const btn = screen.getByRole("button", { name: /Optimise/ })
+      expect(btn).toBeDisabled()
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Staleness extended
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Staleness extended", () => {
+    it("does not show staleness indicator when config hash matches", () => {
+      const cfg = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} }
+      const matchingHash = hashConfig(cfg as Record<string, unknown>)
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            result: {
+              total_objective: 1000,
+              baseline_objective: 900,
+              constraints: {},
+              baseline_constraints: {},
+              lambdas: {},
+              converged: true,
+              iterations: 5,
+            },
+            jobId: "job_42",
+            configHash: matchingHash,
+            constraints: {},
+            nodeLabel: "Optimiser",
+            originalResult: {
+              total_objective: 1000,
+              baseline_objective: 900,
+              constraints: {},
+              baseline_constraints: {},
+              lambdas: {},
+              converged: true,
+              iterations: 5,
+            },
+            frontier: null,
+            selectedPointIndex: null,
+          },
+        },
+      })
+      render(
+        <OptimiserConfig
+          {...makeProps({ config: cfg })}
+        />,
+      )
+      expect(screen.queryByText("Config changed since last solve")).not.toBeInTheDocument()
+    })
+
+    it("Re-run button calls solveOptimiser", async () => {
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_99" })
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            result: {
+              total_objective: 1000,
+              baseline_objective: 900,
+              constraints: {},
+              baseline_constraints: {},
+              lambdas: {},
+              converged: true,
+              iterations: 5,
+            },
+            jobId: "job_42",
+            configHash: "definitely_stale_hash",
+            constraints: {},
+            nodeLabel: "Optimiser",
+            originalResult: {
+              total_objective: 1000,
+              baseline_objective: 900,
+              constraints: {},
+              baseline_constraints: {},
+              lambdas: {},
+              converged: true,
+              iterations: 5,
+            },
+            frontier: null,
+            selectedPointIndex: null,
+          },
+        },
+      })
+      render(
+        <OptimiserConfig
+          {...makeProps({
+            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+          })}
+        />,
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Re-run" }))
+      await waitFor(() => {
+        expect(mockSolveOptimiser).toHaveBeenCalledTimes(1)
+      })
     })
   })
 

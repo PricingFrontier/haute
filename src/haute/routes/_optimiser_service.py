@@ -207,6 +207,12 @@ def _finalize_solve_result(
         },
     )
 
+    # Release heavy objects now that the result summary has been stored.
+    # The job retains lightweight metadata (total_objective, lambdas,
+    # constraints, frontier, etc.) but drops the solver engine and raw
+    # data grid to avoid holding ~100s of MB for the 24h TTL window.
+    store.clear_result_data(job_id, keys=("solver", "quote_grid"))
+
 
 def _solve_online(
     quote_grid: QuoteGrid,

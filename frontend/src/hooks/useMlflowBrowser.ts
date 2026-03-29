@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import {
   getExperiments,
   getRuns,
@@ -74,6 +74,14 @@ export function useMlflowBrowser(opts?: { runTag?: string; initialExpId?: string
   const fetchedModels = useRef(false)
   const fetchedRunsFor = useRef("")
   const fetchedVersionsFor = useRef("")
+
+  // Reset all fetch guards on mount so data is re-fetched after remount
+  useEffect(() => {
+    fetchedExperiments.current = false
+    fetchedModels.current = false
+    fetchedRunsFor.current = ""
+    fetchedVersionsFor.current = ""
+  }, [])
 
   const errorMsg = (e: Error) => e instanceof ApiError ? e.detail || e.message : e.message
 

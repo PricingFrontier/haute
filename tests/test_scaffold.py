@@ -2,12 +2,20 @@
 
 import tomllib
 
+import pytest
+import yaml
+
 from haute._scaffold import (
+    TARGETS,
+    azure_devops_yml,
     env_example,
     github_ci_yml,
     github_deploy_yml,
+    gitlab_ci_yml,
     haute_toml,
+    pre_commit_hook,
     starter_pipeline,
+    starter_test,
     starter_test_quote,
 )
 
@@ -454,8 +462,6 @@ class TestAzureDevopsYml:
 # expected top-level keys and job/stage structure.
 # ---------------------------------------------------------------------------
 
-import yaml
-
 
 class TestYamlStructure:
     """Validate that generated CI/CD YAML is syntactically valid and has required keys."""
@@ -687,3 +693,192 @@ class TestStarterFiles:
         parsed = json.loads(result)
         assert isinstance(parsed, list)
         assert len(parsed) == 1
+
+
+class TestPreCommitHook:
+    """pre_commit_hook() generates a valid shell hook."""
+
+    def test_returns_non_empty_string(self) -> None:
+        result = pre_commit_hook()
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_contains_shebang(self) -> None:
+        result = pre_commit_hook()
+        assert result.startswith("#!/bin/sh")
+
+    def test_contains_ruff_format(self) -> None:
+        result = pre_commit_hook()
+        assert "ruff format" in result
+
+    def test_contains_git_add(self) -> None:
+        result = pre_commit_hook()
+        assert "git add" in result
+
+    def test_valid_shell_syntax(self) -> None:
+        result = pre_commit_hook()
+        assert "#!/bin/sh" in result
+        assert "exit 0" in result
+        lines = result.strip().splitlines()
+        for line in lines:
+            assert line.count("$(") == line.count(")") or "#" in line or "2>/dev/null" in line
+
+
+class TestStarterTest:
+    """starter_test() generates a valid starter test file."""
+
+    def test_returns_non_empty_string(self) -> None:
+        result = starter_test("my_project")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_contains_test_function(self) -> None:
+        result = starter_test("my_project")
+        assert "def test_" in result
+
+    def test_contains_pipeline_path_reference(self) -> None:
+        result = starter_test("my_project")
+        assert "rating" in result
+        assert "main.py" in result
+
+    def test_name_substituted(self) -> None:
+        result = starter_test("acme_motor")
+        assert "acme_motor" in result
+
+    def test_name_with_special_chars(self) -> None:
+        result = starter_test("my-project")
+        assert "my-project" in result
+
+
+class TestHauteTomlEdgeCases:
+    """Edge cases for haute_toml()."""
+
+    def test_name_with_hyphens(self) -> None:
+        raw = haute_toml("my-rating-engine", "databricks", "github")
+        doc = tomllib.loads(raw)
+        assert doc["project"]["name"] == "my-rating-engine"
+
+    def test_name_with_quotes_escaped(self) -> None:
+        raw = haute_toml("it's", "databricks", "github")
+        assert "it's" in raw
+
+    def test_all_targets_produce_valid_toml(self) -> None:
+        for target in TARGETS:
+            raw = haute_toml("motor", target, "github")
+            doc = tomllib.loads(raw)
+            assert "project" in doc, f"Missing [project] for target={target}"
+            assert "deploy" in doc, f"Missing [deploy] for target={target}"
+
+    def test_ci_provider_in_output(self) -> None:
+        for ci in ("github", "gitlab", "azure-devops", "none"):
+            raw = haute_toml("motor", "databricks", ci)
+            doc = tomllib.loads(raw)
+            assert doc["ci"]["provider"] == ci
+
+
+class TestEnvExampleEdgeCases:
+    """Edge cases for env_example()."""
+
+    def test_unknown_target_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="Unknown target"):
+            env_example("nonexistent")
+
+    def test_each_target_contains_required_credentials(self) -> None:
+        for target, cfg in TARGETS.items():
+            result = env_example(target)
+            secrets = cfg["secrets"]
+            assert isinstance(secrets, list)
+            for secret in secrets:
+                assert secret in result, f"{secret} missing in env_example({target!r})"
+
+    def test_databricks_has_host_and_token(self) -> None:
+        result = env_example("databricks")
+        assert "DATABRICKS_HOST" in result
+        assert "DATABRICKS_TOKEN" in result
+
+    def test_container_has_registry(self) -> None:
+        result = env_example("container")
+        assert "DOCKER_USERNAME" in result
+        assert "DOCKER_PASSWORD" in result
+
+
+class TestGithubCiYamlValidation:
+    """Structural YAML validation for github_ci_yml()."""
+
+    def test_contains_required_jobs(self) -> None:
+        result = github_ci_yml()
+        assert "lint:" in result
+        assert "typecheck:" in result
+        assert "test:" in result
+
+    def test_triggers_on_pr_to_main(self) -> None:
+        result = github_ci_yml()
+        assert "pull_request:" in result
+        assert "branches: [main]" in result
+
+    def test_python_version_pinned(self) -> None:
+        result = github_ci_yml()
+        assert '"3.11"' in result
+
+    def test_yaml_parses(self) -> None:
+        doc = yaml.safe_load(github_ci_yml())
+        assert isinstance(doc, dict)
+        assert "jobs" in doc
+
+
+class TestGitlabCiYamlValidation:
+    """Structural YAML validation for gitlab_ci_yml()."""
+
+    def test_contains_required_stages(self) -> None:
+        result = gitlab_ci_yml("databricks")
+        doc = yaml.safe_load(result)
+        stages = doc["stages"]
+        assert "validate" in stages
+        assert "deploy-staging" in stages
+        assert "deploy-production" in stages
+
+    def test_secrets_only_in_deploy_jobs(self) -> None:
+        result = gitlab_ci_yml("databricks")
+        doc = yaml.safe_load(result)
+        lint_job = doc["lint"]
+        assert "variables" not in lint_job
+
+    def test_yaml_parses(self) -> None:
+        for target in TARGETS:
+            result = gitlab_ci_yml(target)
+            doc = yaml.safe_load(result)
+            assert isinstance(doc, dict), f"YAML parse failed for target={target}"
+
+
+class TestAzureDevopsYamlValidation:
+    """Structural YAML validation for azure_devops_yml()."""
+
+    def test_contains_required_stages(self) -> None:
+        result = azure_devops_yml("databricks")
+        assert "Validate" in result
+        assert "DeployStaging" in result
+        assert "DeployProduction" in result
+
+    def test_ci_env_var_set(self) -> None:
+        result = azure_devops_yml("databricks")
+        assert 'CI: "true"' in result
+
+    def test_yaml_header_parses(self) -> None:
+        for target in TARGETS:
+            raw = azure_devops_yml(target)
+            header = raw.split("\nstages:")[0] + "\nstages: []"
+            doc = yaml.safe_load(header)
+            assert isinstance(doc, dict), f"YAML header parse failed for target={target}"
+
+
+class TestStarterPipelineContent:
+    """starter_pipeline() generates valid pipeline content."""
+
+    def test_contains_pipeline_name(self) -> None:
+        result = starter_pipeline("acme_rating")
+        assert 'Pipeline("acme_rating"' in result
+
+    def test_imports_haute_and_polars(self) -> None:
+        result = starter_pipeline("test")
+        assert "import haute" in result
+        assert "import polars as pl" in result

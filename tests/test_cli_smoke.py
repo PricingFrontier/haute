@@ -231,6 +231,115 @@ class TestSmokeHttp:
         assert "staging" in result.output.lower()
 
 
+class TestSmokeDatabricksEdgeCases:
+    """Edge cases for Databricks smoke tests."""
+
+    def test_databricks_sdk_import_error(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Missing databricks-sdk should fail with install instructions."""
+        _setup_smoke_project(tmp_path, monkeypatch)
+
+        with patch(
+            "databricks.sdk.WorkspaceClient",
+            side_effect=ImportError("No module named 'databricks.sdk'"),
+        ):
+            # Need to also make the import inside _smoke_databricks fail
+            import builtins
+
+            real_import = builtins.__import__
+
+            def mock_import(name, *args, **kwargs):
+                if name == "databricks.sdk":
+                    raise ImportError("No module named 'databricks.sdk'")
+                return real_import(name, *args, **kwargs)
+
+            monkeypatch.setattr(builtins, "__import__", mock_import)
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "databricks-sdk" in result.output.lower() or "databricks" in result.output.lower()
+
+    def test_databricks_endpoint_timeout(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Endpoint that never becomes ready should timeout."""
+        _setup_smoke_project(tmp_path, monkeypatch)
+
+        mock_ws = MagicMock()
+
+        not_ready_state = MagicMock()
+        not_ready_state.ready = "PENDING"
+        not_ready_state.config_update = "IN_PROGRESS"
+        not_ready_ep = MagicMock()
+        not_ready_ep.state = not_ready_state
+
+        # Always return not-ready — the function loops max_wait/poll_interval = 60 times
+        mock_ws.serving_endpoints.get.return_value = not_ready_ep
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 1
+        assert "not ready" in result.output.lower() or "minutes" in result.output.lower()
+
+    def test_databricks_endpoint_get_error_retries(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Endpoint.get() errors should be retried until ready."""
+        _setup_smoke_project(tmp_path, monkeypatch)
+
+        mock_ws = MagicMock()
+
+        # First call raises, second returns ready
+        mock_ws.serving_endpoints.get.side_effect = [
+            RuntimeError("endpoint not found"),
+            _ready_endpoint_mock(),
+        ]
+
+        mock_response = MagicMock()
+        mock_response.predictions = [{"premium": 200.0}]
+        mock_ws.serving_endpoints.query.return_value = mock_response
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_ws.serving_endpoints.get.call_count == 2
+        assert "passed" in result.output.lower()
+
+    def test_databricks_multiple_predictions(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Multiple predictions should report count correctly."""
+        _setup_smoke_project(tmp_path, monkeypatch)
+
+        mock_ws = MagicMock()
+        mock_ws.serving_endpoints.get.return_value = _ready_endpoint_mock()
+
+        mock_response = MagicMock()
+        mock_response.predictions = [{"premium": 100.0}, {"premium": 200.0}]
+        mock_ws.serving_endpoints.query.return_value = mock_response
+
+        with patch("databricks.sdk.WorkspaceClient", return_value=mock_ws), patch("time.sleep"):
+            result = runner.invoke(cli, ["smoke"])
+
+        assert result.exit_code == 0, result.output
+        assert "2 predictions" in result.output
+
+
 class TestSmokeUnsupportedTarget:
     def test_unsupported_target_warns(
         self,

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 logger = get_logger(component="mlflow_io")
 
 _MODEL_CACHE_MAX_SIZE = 16
+_DISK_CACHE_MAX_DIRS = 50
 _model_cache: LRUCache[tuple[str, str, str, str], ScoringModel] = LRUCache(
     max_size=_MODEL_CACHE_MAX_SIZE,
 )
@@ -280,6 +281,29 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
     )
 
 
+def _evict_disk_cache(cache_root: Path) -> None:
+    """Remove oldest run directories when disk cache exceeds the limit.
+
+    Keeps at most ``_DISK_CACHE_MAX_DIRS`` run directories under
+    *cache_root*, deleting the ones with the oldest modification time.
+    """
+    import shutil
+
+    if not cache_root.is_dir():
+        return
+
+    run_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+    if len(run_dirs) <= _DISK_CACHE_MAX_DIRS:
+        return
+
+    # Sort by modification time, oldest first
+    run_dirs.sort(key=lambda d: d.stat().st_mtime)
+    to_remove = len(run_dirs) - _DISK_CACHE_MAX_DIRS
+    for d in run_dirs[:to_remove]:
+        logger.info("mlflow_disk_cache_evict", path=str(d))
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def _resolve_artifact_local(
     mlflow: Any,
     run_id: str,
@@ -349,6 +373,9 @@ def _resolve_artifact_local(
     finally:
         if tmp_dir and tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # Evict oldest run directories if disk cache exceeds the limit
+    _evict_disk_cache(cache_dir.parent)
 
     return str(local_path)
 

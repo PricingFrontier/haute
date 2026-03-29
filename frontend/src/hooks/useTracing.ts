@@ -45,6 +45,10 @@ export default function useTracing({
   const [traceResult, setTraceResult] = useState<TraceResult | null>(null)
   const [tracedCell, setTracedCell] = useState<{ rowIndex: number; column: string } | null>(null)
 
+  // clearTrace fully resets both traceResult and tracedCell, so trace
+  // decorations (node highlights, edge styling) that depend on traceResult
+  // are automatically cleaned up. This is called on node delete (via edge
+  // handlers) ensuring deleted node IDs are never referenced by trace state.
   const clearTrace = useCallback(() => {
     setTraceResult(null)
     setTracedCell(null)

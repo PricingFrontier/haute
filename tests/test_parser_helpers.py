@@ -35,20 +35,25 @@ from haute._parser_helpers import (
     _eval_ast_literal,
     _extract_connect_calls,
     _extract_decorated_nodes,
+    _extract_external_user_code,
     _extract_function_bodies,
     _extract_meta,
+    _extract_model_score_user_code,
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
     _extract_sentinel_user_code,
+    _extract_source_user_code,
     _extract_submodel_meta,
     _extract_user_code,
     _get_decorator_kwargs,
+    _get_decorator_node_type,
     _get_docstring,
     _is_pipeline_node_decorator,
     _is_submodel_node_decorator,
     _resolve_node_config,
     _strip_docstring,
+    _unwrap_chain_assignment,
 )
 from haute._types import NodeType
 
@@ -1338,3 +1343,290 @@ class TestExtractDecoratedNodes:
                 None,
             )
             assert len(nodes2) == 0
+
+
+# ===========================================================================
+# _unwrap_chain_assignment
+# ===========================================================================
+
+
+class TestUnwrapChainAssignment:
+    def test_unwraps_chain_syntax(self):
+        code = "df = (\n    source\n    .filter(pl.col('x') > 0)\n)"
+        result = _unwrap_chain_assignment(code)
+        assert result is not None
+        assert ".filter(pl.col('x') > 0)" in result
+
+    def test_non_matching_pattern_returns_none(self):
+        assert _unwrap_chain_assignment("x = 1") is None
+        assert _unwrap_chain_assignment("result = foo()") is None
+        assert _unwrap_chain_assignment("") is None
+
+    def test_strips_leading_source_when_not_in_param_names(self):
+        code = "df = (\n    injected_var\n    .filter(pl.col('x') > 0)\n)"
+        result = _unwrap_chain_assignment(code, param_names=["other"])
+        assert result is not None
+        assert "injected_var" not in result
+        assert ".filter(pl.col('x') > 0)" in result
+
+    def test_keeps_leading_source_when_in_param_names(self):
+        code = "df = (\n    source\n    .filter(pl.col('x') > 0)\n)"
+        result = _unwrap_chain_assignment(code, param_names=["source"])
+        assert result is not None
+        assert "source" in result
+        assert ".filter(pl.col('x') > 0)" in result
+
+    def test_no_space_variant(self):
+        code = "df=(\n    source\n    .select('a')\n)"
+        result = _unwrap_chain_assignment(code)
+        assert result is not None
+        assert ".select('a')" in result
+
+    def test_single_line_inside_parens(self):
+        code = "df = (\n    source.filter(x > 0)\n)"
+        result = _unwrap_chain_assignment(code)
+        assert result is not None
+        assert "source.filter(x > 0)" in result
+
+
+# ===========================================================================
+# _extract_source_user_code
+# ===========================================================================
+
+
+class TestExtractSourceUserCode:
+    def test_multiline_first_assignment(self):
+        body = (
+            '    df = pl.scan_parquet(\n        "data.parquet"\n    )\n'
+            "    df = df.filter(pl.col('x') > 0)\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert "filter" in result
+
+    def test_first_assignment_with_parenthesized_expression(self):
+        body = (
+            '    df = pl.scan_parquet("data.parquet")\n'
+            "    df = df.select('a', 'b')\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert "select" in result
+        assert "scan_parquet" not in result
+
+    def test_code_after_first_assignment(self):
+        body = (
+            '    df = pl.scan_parquet("data.parquet")\n'
+            "    df = df.rename({'a': 'b'})\n"
+            "    df = df.select('b')\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert "rename" in result
+        assert "select" in result
+
+    def test_empty_rest_returns_empty(self):
+        body = '    df = pl.scan_parquet("data.parquet")\n    return df'
+        result = _extract_source_user_code(body)
+        assert result == ""
+
+    def test_sentinel_format_detection(self):
+        body = (
+            '    df = pl.scan_parquet("data.parquet")\n'
+            "    # -- user code --\n"
+            "    df = df.filter(pl.col('x') > 0)\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert "filter" in result
+        assert "scan_parquet" not in result
+
+
+# ===========================================================================
+# _extract_model_score_user_code
+# ===========================================================================
+
+
+class TestExtractModelScoreUserCode:
+    def test_finds_score_from_config_call(self):
+        body = (
+            "    from pathlib import Path\n"
+            '    result = score_from_config(df, Path("model.json"))\n'
+            "    result = result.with_columns(x=1)\n"
+            "    return result"
+        )
+        result = _extract_model_score_user_code(body)
+        assert "with_columns" in result
+
+    def test_extracts_code_after_sentinel(self):
+        body = (
+            '    result = score_from_config(df, Path("model.json"))\n'
+            "    # -- user code --\n"
+            "    result = result.filter(pl.col('x') > 0)\n"
+            "    return result"
+        )
+        result = _extract_model_score_user_code(body)
+        assert "filter" in result
+
+    def test_no_sentinel_and_no_score_returns_empty(self):
+        body = "    x = 1\n    return x"
+        result = _extract_model_score_user_code(body)
+        assert result == ""
+
+    def test_multiline_score_from_config_call(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    result = score_from_config(\n"
+            "        df,\n"
+            '        Path("model.json"),\n'
+            "    )\n"
+            "    result = result.with_columns(flag=True)\n"
+            "    return result"
+        )
+        result = _extract_model_score_user_code(body)
+        assert "with_columns" in result
+        assert "score_from_config" not in result
+
+    def test_no_code_after_score_returns_empty(self):
+        body = (
+            "    from pathlib import Path\n"
+            '    result = score_from_config(df, Path("model.json"))\n'
+            "    return result"
+        )
+        result = _extract_model_score_user_code(body)
+        assert result == ""
+
+
+# ===========================================================================
+# _extract_external_user_code
+# ===========================================================================
+
+
+class TestExtractExternalUserCode:
+    def test_strips_import_and_with_block(self):
+        body = (
+            "import pickle\n"
+            "with open('model.pkl', 'rb') as f:\n"
+            "    obj = pickle.load(f)\n"
+            "df = df.with_columns(pred=obj.predict(df['x']))\n"
+            "return df"
+        )
+        result = _extract_external_user_code(body, ["df"])
+        assert "with_columns" in result
+        assert "import pickle" not in result
+        assert "with open" not in result
+
+    def test_strips_obj_assignment(self):
+        body = (
+            "import pickle\n"
+            "with open('model.pkl', 'rb') as f:\n"
+            "    obj = pickle.load(f)\n"
+            "obj = obj.submodel\n"
+            "df = df.with_columns(pred=obj.predict(df['x']))\n"
+            "return df"
+        )
+        result = _extract_external_user_code(body, ["df"])
+        assert "with_columns" in result
+        assert "obj = obj.submodel" not in result
+
+    def test_empty_body_returns_empty(self):
+        result = _extract_external_user_code("", ["df"])
+        assert result == ""
+
+    def test_only_boilerplate_returns_empty(self):
+        body = (
+            "import pickle\n"
+            "with open('model.pkl', 'rb') as f:\n"
+            "    obj = pickle.load(f)\n"
+            "return df"
+        )
+        result = _extract_external_user_code(body, ["df"])
+        assert result == ""
+
+    def test_user_code_after_boilerplate(self):
+        body = (
+            "import pickle\n"
+            "with open('model.pkl', 'rb') as f:\n"
+            "    obj = pickle.load(f)\n"
+            "x = obj.predict(df['a'])\n"
+            "df = df.with_columns(pred=x)\n"
+            "return df"
+        )
+        result = _extract_external_user_code(body, ["df"])
+        assert "x = obj.predict" in result
+        assert "with_columns" in result
+
+
+# ===========================================================================
+# _extract_function_bodies — zero-coverage extras
+# ===========================================================================
+
+
+class TestExtractFunctionBodiesZeroCov:
+    def test_single_function_body_content(self):
+        source = "def greet():\n    msg = 'hi'\n    return msg"
+        bodies = _extract_function_bodies(source)
+        assert "greet" in bodies
+        assert "msg = 'hi'" in bodies["greet"]
+        assert "return msg" in bodies["greet"]
+
+    def test_multiple_functions_isolated(self):
+        source = "def alpha():\n    return 1\n\ndef beta():\n    return 2\n\ndef gamma():\n    return 3"
+        bodies = _extract_function_bodies(source)
+        assert set(bodies.keys()) == {"alpha", "beta", "gamma"}
+        assert "return 1" in bodies["alpha"]
+        assert "return 2" in bodies["beta"]
+        assert "return 3" in bodies["gamma"]
+
+    def test_nested_not_extracted(self):
+        source = "def outer():\n    def inner():\n        pass\n    return inner()"
+        bodies = _extract_function_bodies(source)
+        assert "outer" in bodies
+        assert "inner" not in bodies
+
+    def test_empty_source_returns_empty(self):
+        assert _extract_function_bodies("") == {}
+
+    def test_syntax_error_returns_empty(self):
+        assert _extract_function_bodies("def broken(") == {}
+
+
+# ===========================================================================
+# _get_decorator_node_type
+# ===========================================================================
+
+
+class TestGetDecoratorNodeType:
+    def _dec(self, source: str) -> ast.expr:
+        tree = ast.parse(source)
+        return tree.body[0].decorator_list[0]
+
+    def test_pipeline_data_source(self):
+        result = _get_decorator_node_type(self._dec("@pipeline.data_source\ndef f(): pass"))
+        assert result == NodeType.DATA_SOURCE
+
+    def test_pipeline_polars(self):
+        result = _get_decorator_node_type(self._dec("@pipeline.polars\ndef f(): pass"))
+        assert result == NodeType.POLARS
+
+    def test_submodel_polars(self):
+        result = _get_decorator_node_type(self._dec("@submodel.polars\ndef f(): pass"))
+        assert result == NodeType.POLARS
+
+    def test_unrecognized_decorator_returns_none(self):
+        result = _get_decorator_node_type(self._dec("@pipeline.connect\ndef f(): pass"))
+        assert result is None
+
+    def test_call_style_decorator(self):
+        result = _get_decorator_node_type(
+            self._dec("@pipeline.data_source(path='x')\ndef f(): pass")
+        )
+        assert result == NodeType.DATA_SOURCE
+
+    def test_plain_name_returns_none(self):
+        result = _get_decorator_node_type(self._dec("@some_decorator\ndef f(): pass"))
+        assert result is None
+
+    def test_other_object_returns_none(self):
+        result = _get_decorator_node_type(self._dec("@other.polars\ndef f(): pass"))
+        assert result is None

@@ -325,49 +325,48 @@ class TestSaveSidecar:
 # ===========================================================================
 
 
+@pytest.fixture()
+def _clean_ws_clients():
+    """Clear ws_clients before and after each test to prevent cross-test pollution."""
+    ws_clients.clear()
+    yield
+    ws_clients.clear()
+
+
 class TestBroadcast:
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
     async def test_sends_to_all_clients(self):
         ws1 = AsyncMock()
         ws2 = AsyncMock()
-        ws_clients.clear()
         ws_clients.add(ws1)
         ws_clients.add(ws2)
-        try:
-            await broadcast({"type": "test"})
-            ws1.send_text.assert_called_once()
-            ws2.send_text.assert_called_once()
-            payload = json.loads(ws1.send_text.call_args[0][0])
-            assert payload["type"] == "test"
-        finally:
-            ws_clients.clear()
+        await broadcast({"type": "test"})
+        ws1.send_text.assert_called_once()
+        ws2.send_text.assert_called_once()
+        payload = json.loads(ws1.send_text.call_args[0][0])
+        assert payload["type"] == "test"
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
     async def test_removes_dead_clients(self):
         live_ws = AsyncMock()
         dead_ws = AsyncMock()
         dead_ws.send_text.side_effect = Exception("connection closed")
-        ws_clients.clear()
         ws_clients.add(live_ws)
         ws_clients.add(dead_ws)
-        try:
-            await broadcast({"type": "ping"})
-            assert dead_ws not in ws_clients
-            assert live_ws in ws_clients
-        finally:
-            ws_clients.clear()
+        await broadcast({"type": "ping"})
+        assert dead_ws not in ws_clients
+        assert live_ws in ws_clients
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
     async def test_non_serializable_payload_skipped(self):
         """Payload that can't be JSON-serialized should not crash."""
         ws = AsyncMock()
-        ws_clients.clear()
         ws_clients.add(ws)
-        try:
-            await broadcast({"bad": object()})
-            ws.send_text.assert_not_called()
-        finally:
-            ws_clients.clear()
+        await broadcast({"bad": object()})
+        ws.send_text.assert_not_called()
 
 
 # ===========================================================================
@@ -413,12 +412,262 @@ class TestScenarioNormalization:
 
 
 class TestInvalidatePipelineIndex:
-    def test_clears_cache(self):
+    def test_clears_cache(self, monkeypatch):
         """Calling invalidate should set module-level caches to None."""
         import haute.routes._helpers as helpers
 
-        helpers._pipeline_index = {"old": Path("old.py")}
-        helpers._module_deps = {"old": set()}
+        monkeypatch.setattr(helpers, "_pipeline_index", {"old": Path("old.py")})
+        monkeypatch.setattr(helpers, "_module_deps", {"old": set()})
         invalidate_pipeline_index()
         assert helpers._pipeline_index is None
         assert helpers._module_deps is None
+
+
+# ===========================================================================
+# pipeline_dir() — haute.toml resolution
+# ===========================================================================
+
+
+class TestPipelineDir:
+    """Tests for pipeline_dir() — haute.toml presence/absence/malformed."""
+
+    def test_returns_cwd_when_no_toml(self, tmp_path, monkeypatch):
+        """When haute.toml is absent, falls back to cwd."""
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        result = pipeline_dir()
+        assert result == tmp_path.resolve()
+        pipeline_dir.cache_clear()
+
+    def test_returns_parent_of_configured_pipeline(self, tmp_path, monkeypatch):
+        """When haute.toml has [project].pipeline, return its parent."""
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        # Create a subdirectory with a pipeline file
+        sub = tmp_path / "pipelines"
+        sub.mkdir()
+        (sub / "main.py").write_text("")
+        # Write haute.toml
+        toml = tmp_path / "haute.toml"
+        toml.write_text('[project]\npipeline = "pipelines/main.py"\n')
+        result = pipeline_dir()
+        assert result == sub.resolve()
+        pipeline_dir.cache_clear()
+
+    def test_falls_back_when_toml_has_no_pipeline_key(self, tmp_path, monkeypatch):
+        """When haute.toml exists but has no [project].pipeline, falls back to cwd."""
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        toml = tmp_path / "haute.toml"
+        toml.write_text("[project]\n")
+        result = pipeline_dir()
+        assert result == tmp_path.resolve()
+        pipeline_dir.cache_clear()
+
+    def test_falls_back_when_toml_is_corrupt(self, tmp_path, monkeypatch):
+        """When haute.toml exists but is unreadable, falls back to cwd."""
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        toml = tmp_path / "haute.toml"
+        toml.write_text("not valid toml {{{}}}}")
+        result = pipeline_dir()
+        assert result == tmp_path.resolve()
+        pipeline_dir.cache_clear()
+
+
+# ===========================================================================
+# find_typed_node — found, not found, wrong type
+# ===========================================================================
+
+
+class TestFindTypedNode:
+    """Tests for find_typed_node — lookup + type validation."""
+
+    def test_returns_node_when_found_and_type_matches(self):
+        from haute.routes._helpers import find_typed_node
+
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="m1",
+                    data=NodeData(label="model", nodeType=NodeType.MODELLING),
+                ),
+            ],
+        )
+        node = find_typed_node(graph, "m1", NodeType.MODELLING, "modelling")
+        assert node.id == "m1"
+        assert node.data.nodeType == NodeType.MODELLING
+
+    def test_raises_404_when_node_not_found(self):
+        from haute.routes._helpers import find_typed_node
+
+        graph = PipelineGraph(nodes=[])
+        with pytest.raises(HTTPException) as exc_info:
+            find_typed_node(graph, "missing", NodeType.MODELLING, "modelling")
+        assert exc_info.value.status_code == 404
+
+    def test_raises_400_when_wrong_type(self):
+        from haute.routes._helpers import find_typed_node
+
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="s1",
+                    data=NodeData(label="source", nodeType=NodeType.DATA_SOURCE),
+                ),
+            ],
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            find_typed_node(graph, "s1", NodeType.MODELLING, "modelling")
+        assert exc_info.value.status_code == 400
+        assert "modelling" in exc_info.value.detail
+        assert "dataSource" in exc_info.value.detail
+
+
+# ===========================================================================
+# discover_pipelines and lookup_pipeline_by_name
+# ===========================================================================
+
+
+class TestDiscoverPipelines:
+    """Tests for discover_pipelines wrapper."""
+
+    def test_delegates_to_discovery_module(self):
+        """discover_pipelines should delegate to haute.discovery.discover_pipelines."""
+        from haute.routes._helpers import discover_pipelines
+
+        with patch("haute.discovery.discover_pipelines", return_value=[Path("/a.py")]):
+            result = discover_pipelines()
+            assert result == [Path("/a.py")]
+
+    def test_returns_empty_list_when_no_pipelines(self):
+        from haute.routes._helpers import discover_pipelines
+
+        with patch("haute.discovery.discover_pipelines", return_value=[]):
+            result = discover_pipelines()
+            assert result == []
+
+
+class TestLookupPipelineByName:
+    """Tests for lookup_pipeline_by_name — O(1) name→path lookup."""
+
+    def test_returns_path_for_known_pipeline(self):
+        import haute.routes._helpers as helpers
+        from haute.routes._helpers import lookup_pipeline_by_name
+
+        # Manually inject a known pipeline index
+        old_index = helpers._pipeline_index
+        try:
+            helpers._pipeline_index = {"my_pipeline": Path("/path/to/my_pipeline.py")}
+            result = lookup_pipeline_by_name("my_pipeline")
+            assert result == Path("/path/to/my_pipeline.py")
+        finally:
+            helpers._pipeline_index = old_index
+
+    def test_returns_none_for_unknown_pipeline(self):
+        import haute.routes._helpers as helpers
+        from haute.routes._helpers import lookup_pipeline_by_name
+
+        old_index = helpers._pipeline_index
+        try:
+            helpers._pipeline_index = {"other": Path("/other.py")}
+            result = lookup_pipeline_by_name("nonexistent")
+            assert result is None
+        finally:
+            helpers._pipeline_index = old_index
+
+
+# ===========================================================================
+# parse_pipeline_to_graph — sidecar position merging and source normalization
+# ===========================================================================
+
+
+class TestParsePipelineToGraph:
+    """Tests for parse_pipeline_to_graph — merges sidecar state into parsed graph."""
+
+    def test_positions_applied_from_sidecar(self, tmp_path):
+        """Node positions from sidecar file are applied to the parsed graph."""
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text(
+            "import haute\n"
+            "pipeline = haute.Pipeline('test')\n"
+            "@pipeline.polars\n"
+            "def my_node(df):\n"
+            "    return df\n"
+        )
+        sidecar = py_path.with_suffix(".haute.json")
+        sidecar.write_text(json.dumps({"positions": {"my_node": {"x": 42.0, "y": 99.0}}}))
+
+        graph = parse_pipeline_to_graph(py_path)
+        # Find the node with id "my_node"
+        node = next((n for n in graph.nodes if n.id == "my_node"), None)
+        assert node is not None
+        assert node.position == {"x": 42.0, "y": 99.0}
+
+    def test_sources_without_live_get_live_prepended(self, tmp_path):
+        """When sidecar sources list does not contain 'live', it is prepended."""
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text(
+            "import haute\n"
+            "pipeline = haute.Pipeline('test')\n"
+            "@pipeline.polars\n"
+            "def node(df):\n"
+            "    return df\n"
+        )
+        sidecar = py_path.with_suffix(".haute.json")
+        sidecar.write_text(json.dumps({"sources": ["batch_a", "batch_b"]}))
+
+        graph = parse_pipeline_to_graph(py_path)
+        assert graph.sources[0] == "live"
+        assert "batch_a" in graph.sources
+        assert "batch_b" in graph.sources
+
+    def test_active_source_added_to_sources_if_missing(self, tmp_path):
+        """If active_source is not in the sources list, it should be appended."""
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text(
+            "import haute\n"
+            "pipeline = haute.Pipeline('test')\n"
+            "@pipeline.polars\n"
+            "def node(df):\n"
+            "    return df\n"
+        )
+        sidecar = py_path.with_suffix(".haute.json")
+        sidecar.write_text(
+            json.dumps({"sources": ["live", "batch_a"], "active_source": "batch_new"})
+        )
+
+        graph = parse_pipeline_to_graph(py_path)
+        assert "batch_new" in graph.sources
+        assert graph.active_source == "batch_new"
+
+    def test_no_sidecar_uses_defaults(self, tmp_path):
+        """Without a sidecar file, graph gets default source state."""
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text(
+            "import haute\n"
+            "pipeline = haute.Pipeline('test')\n"
+            "@pipeline.polars\n"
+            "def node(df):\n"
+            "    return df\n"
+        )
+
+        graph = parse_pipeline_to_graph(py_path)
+        assert graph.sources == ["live"]
+        assert graph.active_source == "live"

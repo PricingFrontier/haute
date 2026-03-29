@@ -208,3 +208,47 @@ class TestObjectCacheBehavior:
         path = tmp_path / "missing.json"
         with pytest.raises(FileNotFoundError):
             load_external_object(str(path), "json")
+
+
+class TestLoadExternalObjectUnsupportedType:
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_unsupported_file_type_raises(self, tmp_path: Path) -> None:
+        """Unsupported file_type raises ValueError."""
+        path = tmp_path / "model.xyz"
+        path.write_bytes(b"data")
+        with pytest.raises(ValueError, match="Unsupported file_type"):
+            load_external_object(str(path), "xyz")
+
+
+class TestReadSourcePathTraversal:
+    def test_path_traversal_blocked(self) -> None:
+        """Paths containing '..' are rejected."""
+        with pytest.raises(ValueError, match="not allowed"):
+            read_source("/some/../etc/passwd.csv")
+
+    def test_dotdot_in_middle_blocked(self) -> None:
+        with pytest.raises(ValueError, match="not allowed"):
+            read_source("/data/../secrets/file.parquet")
+
+
+class TestObjectCacheDifferentModelClass:
+    """Cache keys include model_class — different model_class = cache miss."""
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_different_model_class_is_cache_miss(self, tmp_path: Path) -> None:
+        path = tmp_path / "model.json"
+        path.write_text('{"x": 1}')
+        r1 = load_external_object(str(path), "json", model_class="classifier")
+        r2 = load_external_object(str(path), "json", model_class="regressor")
+        # Both calls load the same data, but cache has 2 entries (different keys)
+        assert r1 == r2
+        assert len(_object_cache) == 2
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_same_key_is_cache_hit(self, tmp_path: Path) -> None:
+        path = tmp_path / "model.json"
+        path.write_text('{"v": 42}')
+        r1 = load_external_object(str(path), "json")
+        r2 = load_external_object(str(path), "json")
+        assert r1 is r2  # exact same object from cache
+        assert len(_object_cache) == 1

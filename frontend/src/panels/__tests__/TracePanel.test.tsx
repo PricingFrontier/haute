@@ -337,4 +337,131 @@ describe("TracePanel", () => {
     const card = container.querySelector("[style*='opacity: 0.55']")
     expect(card).toBeTruthy()
   })
+
+  it("relevant steps have full opacity", () => {
+    const { container } = render(
+      <TracePanel
+        trace={makeTrace({
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Relevant Step",
+              column_relevant: true,
+              schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
+    const card = container.querySelector("[style*='opacity: 1']")
+    expect(card).toBeTruthy()
+    expect(container.querySelector("[style*='opacity: 0.55']")).toBeFalsy()
+  })
+
+  it("tab switching between Calculation and Nodes", () => {
+    render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+    const calcTab = screen.getByText("Calculation")
+    const nodesTab = screen.getByText("Nodes")
+    expect(calcTab).toBeInTheDocument()
+    expect(nodesTab).toBeInTheDocument()
+
+    // Default tab is Calculation — detail level sub-tabs should NOT appear
+    expect(screen.queryByText("Sources")).not.toBeInTheDocument()
+
+    // Switch to Nodes tab
+    fireEvent.click(nodesTab)
+    // Detail level sub-tabs should appear in Nodes view
+    expect(screen.getByText("Sources")).toBeInTheDocument()
+    expect(screen.getByText("All")).toBeInTheDocument()
+
+    // Switch back to Calculation tab
+    fireEvent.click(calcTab)
+    expect(screen.queryByText("Sources")).not.toBeInTheDocument()
+  })
+
+  it("Calculation tab is active by default", () => {
+    render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+    const calcTab = screen.getByText("Calculation")
+    expect(calcTab).toHaveStyle({ color: "#60a5fa" })
+  })
+
+  it("Nodes tab shows per-step execution times for multiple steps", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          steps: [
+            makeStep({ node_id: "n1", node_name: "Step A", execution_ms: 3.1, schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
+            makeStep({ node_id: "n2", node_name: "Step B", execution_ms: 9.8, schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] } }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
+    expect(screen.getByText("3.1ms")).toBeInTheDocument()
+    expect(screen.getByText("9.8ms")).toBeInTheDocument()
+  })
+
+  it("collapse then expand restores expanded content", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Toggle Step",
+              schema_diff: {
+                columns_added: ["x"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age"],
+              },
+              output_values: { age: 25, x: 10 },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
+    const stepButton = screen.getAllByText("Toggle Step").find((el) => el.closest("button"))!.closest("button") as HTMLElement
+    // Expand
+    fireEvent.click(stepButton)
+    expect(screen.getByText(/1 added/)).toBeInTheDocument()
+    // Collapse
+    fireEvent.click(stepButton)
+    expect(screen.queryByText(/1 added/)).not.toBeInTheDocument()
+    // Re-expand
+    fireEvent.click(stepButton)
+    expect(screen.getByText(/1 added/)).toBeInTheDocument()
+  })
+
+  it("mixed relevant and non-relevant steps have correct opacity", () => {
+    const { container } = render(
+      <TracePanel
+        trace={makeTrace({
+          column: null,
+          steps: [
+            makeStep({ node_id: "n1", node_name: "Relevant", column_relevant: true, schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
+            makeStep({ node_id: "n2", node_name: "Not Relevant", column_relevant: false, schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["age"], columns_passed: [] } }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
+    // Switch to "All" detail level so all steps are visible
+    const allBtn = screen.getByText("All")
+    fireEvent.click(allBtn)
+    const fullOpacity = container.querySelectorAll("[style*='opacity: 1']")
+    const reducedOpacity = container.querySelectorAll("[style*='opacity: 0.55']")
+    expect(fullOpacity.length).toBeGreaterThanOrEqual(1)
+    expect(reducedOpacity.length).toBeGreaterThanOrEqual(1)
+  })
 })

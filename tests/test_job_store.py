@@ -930,41 +930,17 @@ class TestClearResultDataDeadCode:
     to ensure it works correctly if/when it is wired in.
     """
 
-    def test_clear_result_data_not_called_anywhere_in_routes(self) -> None:
-        """Structural test: grep the source tree for clear_result_data calls.
-
-        If this test starts failing, it means someone wired the method
-        into a route — great!  Update the test accordingly.
-        """
-        import importlib
+    def test_clear_result_data_is_used_in_optimiser_service(self) -> None:
+        """Structural test: verify clear_result_data is wired into the
+        optimiser service to free solver/quote_grid after solve completion."""
         import inspect
 
-        from haute.routes import _job_store
+        from haute.routes import _optimiser_service
 
-        # Get the source of the module that defines clear_result_data
-        src = inspect.getsource(_job_store)
-        # The definition appears once; there should be no call sites in
-        # other modules.  We check by importing all route modules and
-        # scanning for the method name.
-        route_modules = []
-        try:
-            from haute.routes import _train_service
-
-            route_modules.append(_train_service)
-        except ImportError:
-            pass
-        try:
-            from haute.routes import _optimiser_service
-
-            route_modules.append(_optimiser_service)
-        except ImportError:
-            pass
-
-        for mod in route_modules:
-            mod_src = inspect.getsource(mod)
-            assert "clear_result_data" not in mod_src, (
-                f"clear_result_data is called in {mod.__name__} — no longer dead code!"
-            )
+        mod_src = inspect.getsource(_optimiser_service)
+        assert "clear_result_data" in mod_src, (
+            "clear_result_data should be called in _optimiser_service to free heavy objects"
+        )
 
     def test_end_to_end_optimiser_job_shape(self) -> None:
         """Exercise clear_result_data on a dict shaped like a real
@@ -1274,3 +1250,100 @@ class TestRequireCompletedJobErrorVsRunning:
             store.require_completed_job(job_id)
         detail = exc_info.value.detail
         assert detail == f"Job '{job_id}' is not completed (status: error)"
+
+
+# ---------------------------------------------------------------------------
+# atomic_update with expected_status guard
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicUpdateExpectedStatus:
+    """Tests for the expected_status parameter of atomic_update.
+
+    The guard prevents a timeout/error from overwriting a completed job.
+    """
+
+    def test_update_applied_when_status_matches(self) -> None:
+        """When expected_status matches the current status, the update proceeds."""
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "progress": 0.5})
+        result = store.atomic_update(
+            job_id,
+            {"status": "completed", "progress": 1.0},
+            expected_status="running",
+        )
+        assert result["status"] == "completed"
+        assert result["progress"] == 1.0
+        # Verify the store reflects the update
+        assert store.get_job(job_id)["status"] == "completed"
+
+    def test_update_skipped_when_status_does_not_match(self) -> None:
+        """When expected_status does not match, the update is a no-op."""
+        store = JobStore()
+        job_id = store.create_job({"status": "completed", "progress": 1.0})
+        result = store.atomic_update(
+            job_id,
+            {"status": "error", "message": "timeout"},
+            expected_status="running",
+        )
+        # Should return the old dict unchanged
+        assert result["status"] == "completed"
+        assert result["progress"] == 1.0
+        assert "message" not in result
+        # Store should also be unchanged
+        assert store.get_job(job_id)["status"] == "completed"
+
+    def test_no_expected_status_always_applies(self) -> None:
+        """When expected_status is None (default), update always applies."""
+        store = JobStore()
+        job_id = store.create_job({"status": "completed"})
+        result = store.atomic_update(job_id, {"status": "error"})
+        assert result["status"] == "error"
+
+    def test_expected_status_returns_old_dict_on_mismatch(self) -> None:
+        """The returned dict on mismatch is the existing stored dict."""
+        store = JobStore()
+        job_id = store.create_job({"status": "completed", "result": {"score": 0.9}})
+        old = store.get_job(job_id)
+        result = store.atomic_update(
+            job_id,
+            {"status": "error"},
+            expected_status="running",
+        )
+        # The returned dict should be the original stored dict
+        assert result is old
+
+    def test_expected_status_guard_prevents_timeout_overwrite(self) -> None:
+        """Realistic scenario: timeout callback fires after job already completed.
+
+        The expected_status guard ensures the timeout does not overwrite
+        the completed status.
+        """
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "progress": 0.0})
+
+        # Background thread completes the job
+        store.atomic_update(job_id, {"status": "completed", "progress": 1.0})
+
+        # Timeout callback fires late — tries to set error, but only if still running
+        store.atomic_update(
+            job_id,
+            {"status": "error", "message": "Training timed out"},
+            expected_status="running",
+        )
+
+        # Job should still be completed, not error
+        job = store.get_job(job_id)
+        assert job["status"] == "completed"
+        assert job["progress"] == 1.0
+        assert "message" not in job
+
+    def test_raises_key_error_for_missing_job(self) -> None:
+        """expected_status guard should not mask KeyError for missing jobs."""
+        store = JobStore()
+        with pytest.raises(KeyError):
+            store.atomic_update(
+                "nonexistent",
+                {"status": "error"},
+                expected_status="running",
+            )

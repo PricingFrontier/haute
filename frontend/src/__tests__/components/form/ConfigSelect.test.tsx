@@ -70,4 +70,12 @@ describe("ConfigSelect", () => {
     const select = screen.getByRole("combobox") as HTMLSelectElement
     expect(select.disabled).toBe(true)
   })
+
+  it("disabled select has disabled attribute preventing interaction", () => {
+    render(<ConfigSelect value="a" onChange={vi.fn()} options={OBJECT_OPTIONS} disabled />)
+    const select = screen.getByRole("combobox") as HTMLSelectElement
+    expect(select.disabled).toBe(true)
+    expect(select.className).toContain("disabled:cursor-not-allowed")
+    expect(select.className).toContain("disabled:opacity-50")
+  })
 })

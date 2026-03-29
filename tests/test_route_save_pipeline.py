@@ -508,3 +508,296 @@ class TestSaveEndpointIntegration:
         )
         assert resp.status_code == 400
         assert "source_file" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# _infer_flatten_schemas
+# ---------------------------------------------------------------------------
+
+
+class TestInferFlattenSchemas:
+    def test_infers_schema_from_json_file(self, tmp_path: Path) -> None:
+        """Auto-infers flattenSchema for API input nodes backed by .json files."""
+        svc = SavePipelineService(tmp_path)
+
+        json_file = tmp_path / "input.json"
+        json_file.write_text('[{"a": 1, "b": {"c": 2}}, {"a": 3, "b": {"c": 4}}]')
+
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": "input.json"}),
+        )
+
+        svc._infer_flatten_schemas(graph)
+
+        cfg = graph.nodes[0].data.config
+        assert "flattenSchema" in cfg
+        assert isinstance(cfg["flattenSchema"], dict)
+
+    def test_skips_non_api_input_nodes(self, tmp_path: Path) -> None:
+        """Non-apiInput nodes are not processed."""
+        svc = SavePipelineService(tmp_path)
+
+        graph = _make_graph(
+            _make_node("t1", "transform", "polars", {"path": "data.json"}),
+        )
+
+        svc._infer_flatten_schemas(graph)
+        assert "flattenSchema" not in graph.nodes[0].data.config
+
+    def test_skips_non_json_path(self, tmp_path: Path) -> None:
+        """API input nodes with non-JSON paths are skipped."""
+        svc = SavePipelineService(tmp_path)
+
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": "data.parquet"}),
+        )
+
+        svc._infer_flatten_schemas(graph)
+        assert "flattenSchema" not in graph.nodes[0].data.config
+
+    def test_skips_if_flatten_schema_already_set(self, tmp_path: Path) -> None:
+        """Does not overwrite existing flattenSchema."""
+        svc = SavePipelineService(tmp_path)
+
+        json_file = tmp_path / "input.json"
+        json_file.write_text('[{"a": 1}]')
+
+        existing_schema = {"a": "int"}
+        graph = _make_graph(
+            _make_node(
+                "api",
+                "api_input",
+                "apiInput",
+                {"path": "input.json", "flattenSchema": existing_schema},
+            ),
+        )
+
+        svc._infer_flatten_schemas(graph)
+        assert graph.nodes[0].data.config["flattenSchema"] == existing_schema
+
+    def test_skips_nonexistent_file(self, tmp_path: Path) -> None:
+        """Non-existent JSON files are skipped without error."""
+        svc = SavePipelineService(tmp_path)
+
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": "missing.json"}),
+        )
+
+        svc._infer_flatten_schemas(graph)
+        assert "flattenSchema" not in graph.nodes[0].data.config
+
+    def test_skips_empty_path(self, tmp_path: Path) -> None:
+        """Empty path string is skipped."""
+        svc = SavePipelineService(tmp_path)
+
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": ""}),
+        )
+
+        svc._infer_flatten_schemas(graph)
+        assert "flattenSchema" not in graph.nodes[0].data.config
+
+    def test_jsonl_extension_supported(self, tmp_path: Path) -> None:
+        """Also works for .jsonl files."""
+        svc = SavePipelineService(tmp_path)
+
+        jsonl_file = tmp_path / "input.jsonl"
+        jsonl_file.write_text('{"x": 1}\n{"x": 2}\n')
+
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": "input.jsonl"}),
+        )
+
+        svc._infer_flatten_schemas(graph)
+        cfg = graph.nodes[0].data.config
+        assert "flattenSchema" in cfg
+
+
+# ---------------------------------------------------------------------------
+# _remove_stale_config_files — second-save diff path
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveStaleConfigDiffPath:
+    """Tests for the second-save path where prev config files exist."""
+
+    def test_second_save_removes_diff(self, tmp_path: Path) -> None:
+        """On second save, only files in (prev - current) are removed."""
+        svc = SavePipelineService(tmp_path)
+
+        # First save: graph with banding node
+        graph1 = _make_graph(
+            _make_node("b1", "first_banding", "banding", {"bands": []}),
+        )
+        svc._write_config_files(graph1)
+        svc._remove_stale_config_files(graph1)
+
+        first_config = tmp_path / "config" / "banding" / "first_banding.json"
+        assert first_config.exists()
+
+        # Second save: graph with different banding node
+        graph2 = _make_graph(
+            _make_node("b2", "second_banding", "banding", {"bands": []}),
+        )
+        svc._write_config_files(graph2)
+        svc._remove_stale_config_files(graph2)
+
+        second_config = tmp_path / "config" / "banding" / "second_banding.json"
+        assert second_config.exists()
+        assert not first_config.exists()  # stale file removed
+
+    def test_second_save_no_stale_is_noop(self, tmp_path: Path) -> None:
+        """When prev and current are identical, nothing is deleted."""
+        svc = SavePipelineService(tmp_path)
+
+        graph = _make_graph(
+            _make_node("b1", "stable_banding", "banding", {"bands": []}),
+        )
+        svc._write_config_files(graph)
+        svc._remove_stale_config_files(graph)
+
+        config_file = tmp_path / "config" / "banding" / "stable_banding.json"
+        assert config_file.exists()
+
+        # Second save with same graph
+        svc._write_config_files(graph)
+        svc._remove_stale_config_files(graph)
+
+        assert config_file.exists()
+
+    def test_stale_path_traversal_skipped(self, tmp_path: Path) -> None:
+        """Stale file paths that escape project root are skipped."""
+        svc = SavePipelineService(tmp_path)
+
+        # Manually set prev_config_files with a traversal path
+        svc._prev_config_files = {"../../etc/evil.json": "{}"}
+        svc._last_config_files = {}
+        svc._protected_config_files = set()
+
+        graph = _make_graph()
+        svc._remove_stale_config_files(graph)
+        # Should not raise or delete anything outside project root
+
+    def test_protected_config_files_preserved(self, tmp_path: Path) -> None:
+        """Protected config files are not removed even when stale."""
+        svc = SavePipelineService(tmp_path)
+
+        # Create a config file
+        config_dir = tmp_path / "config" / "banding"
+        config_dir.mkdir(parents=True)
+        protected_file = config_dir / "protected_banding.json"
+        protected_file.write_text("{}")
+
+        # Set up prev/current diff where protected file would be stale
+        svc._prev_config_files = {"config/banding/protected_banding.json": "{}"}
+        svc._last_config_files = {}
+        svc._protected_config_files = {"config/banding/protected_banding.json"}
+
+        graph = _make_graph()
+        svc._remove_stale_config_files(graph)
+
+        assert protected_file.exists()  # protected file survives
+
+
+# ---------------------------------------------------------------------------
+# _write_sidecar
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSidecar:
+    def test_writes_sidecar_with_sources(self, tmp_path: Path) -> None:
+        """_write_sidecar persists source state to .haute.json."""
+        graph = _make_graph(
+            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+        )
+        py_path = tmp_path / "pipe.py"
+        py_path.write_text("# placeholder")
+
+        SavePipelineService._write_sidecar(
+            py_path, graph, sources=["live", "batch"], active_source="live"
+        )
+
+        sidecar_path = py_path.with_suffix(".haute.json")
+        assert sidecar_path.exists()
+        data = json.loads(sidecar_path.read_text())
+        assert "positions" in data
+
+    def test_graph_sources_updated(self, tmp_path: Path) -> None:
+        """_write_sidecar sets graph.sources and graph.active_source before saving."""
+        graph = _make_graph(
+            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+        )
+        py_path = tmp_path / "pipe.py"
+        py_path.write_text("# placeholder")
+
+        SavePipelineService._write_sidecar(
+            py_path, graph, sources=["s1", "s2"], active_source="s2"
+        )
+
+        assert graph.sources == ["s1", "s2"]
+        assert graph.active_source == "s2"
+
+
+# ---------------------------------------------------------------------------
+# _write_code — preamble and preserved_blocks
+# ---------------------------------------------------------------------------
+
+
+class TestWriteCodeOptions:
+    def test_preamble_passed_to_codegen(self, tmp_path: Path) -> None:
+        """preamble is forwarded to graph_to_code."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+        )
+        body = SavePipelineRequest(
+            name="pipe",
+            description="desc",
+            graph=graph,
+            source_file="pipe.py",
+            preamble="# Custom preamble\n",
+        )
+        py_path = tmp_path / "pipe.py"
+
+        svc._write_code(body, graph, py_path)
+
+        assert py_path.exists()
+        content = py_path.read_text()
+        assert "Custom preamble" in content
+
+    def test_none_preamble_defaults_to_empty(self, tmp_path: Path) -> None:
+        """When preamble is None, it defaults to empty string."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+        )
+        body = SavePipelineRequest(
+            name="pipe",
+            description="",
+            graph=graph,
+            source_file="pipe.py",
+            preamble=None,
+        )
+        py_path = tmp_path / "pipe.py"
+
+        svc._write_code(body, graph, py_path)
+        assert py_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Full save pipeline — pipeline_root differs from project_root
+# ---------------------------------------------------------------------------
+
+
+class TestSaveWithPipelineRoot:
+    def test_pipeline_root_defaults_to_project_root(self, tmp_path: Path) -> None:
+        """When pipeline_root is not given, it defaults to project_root."""
+        svc = SavePipelineService(tmp_path)
+        assert svc._pipeline_root == tmp_path
+
+    def test_pipeline_root_override(self, tmp_path: Path) -> None:
+        """When pipeline_root is given, it is used instead of project_root."""
+        sub = tmp_path / "subdir"
+        sub.mkdir()
+        svc = SavePipelineService(tmp_path, pipeline_root=sub)
+        assert svc._pipeline_root == sub

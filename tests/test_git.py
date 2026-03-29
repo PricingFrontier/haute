@@ -20,6 +20,7 @@ from haute._git import (
     _get_default_branch_cached,
     _get_user_slug,
     _is_own_branch,
+    _is_protected,
     _slugify,
     _validate_ref_name,
     archive_branch,
@@ -634,6 +635,159 @@ class TestValidateRefName:
     def test_rejects_bracket(self) -> None:
         with pytest.raises(GitError, match="forbidden characters"):
             _validate_ref_name("branch[name")
+
+
+# ---------------------------------------------------------------------------
+# Protected branch detection
+# ---------------------------------------------------------------------------
+
+
+class TestIsProtected:
+    def test_main_is_protected(self) -> None:
+        assert _is_protected("main") is True
+
+    def test_master_is_protected(self) -> None:
+        assert _is_protected("master") is True
+
+    def test_develop_is_protected(self) -> None:
+        assert _is_protected("develop") is True
+
+    def test_production_is_protected(self) -> None:
+        assert _is_protected("production") is True
+
+    def test_feature_branch_not_protected(self) -> None:
+        assert _is_protected("feature/my-work") is False
+
+    def test_branch_containing_main_not_protected(self) -> None:
+        assert _is_protected("not-main") is False
+
+
+# ---------------------------------------------------------------------------
+# Commit message generation — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateCommitMessageEdgeCases:
+    def test_single_py_mentions_stem(self) -> None:
+        msg = _generate_commit_message(["models/scoring.py"])
+        assert "scoring" in msg
+
+    def test_multiple_files_mentions_count(self) -> None:
+        files = [f"dir/mod{i}.py" for i in range(4)]
+        msg = _generate_commit_message(files)
+        assert "4 files" in msg
+
+    def test_config_json_mentions_stem(self) -> None:
+        msg = _generate_commit_message(["config/factors.json"])
+        assert "config/factors" in msg
+
+    def test_only_sidecar_files_returns_save_progress(self) -> None:
+        msg = _generate_commit_message(["a.haute.json", "b.haute.json"])
+        assert msg == "Save progress"
+
+
+# ---------------------------------------------------------------------------
+# get_history — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGetHistoryEdgeCases:
+    def test_limit_one_returns_single(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        for i in range(3):
+            (repo / f"f{i}.py").write_text(f"x = {i}\n")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", f"Commit {i}")
+
+        entries = get_history(limit=1, cwd=repo)
+        assert len(entries) == 1
+
+    def test_limit_larger_than_available(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        (repo / "only.py").write_text("x = 1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Only commit")
+
+        entries = get_history(limit=100, cwd=repo)
+        assert len(entries) == 1
+
+    def test_empty_branch_returns_empty(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/empty")
+        entries = get_history(cwd=repo)
+        assert entries == []
+
+
+# ---------------------------------------------------------------------------
+# Compare URL — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCompareUrlEdgeCases:
+    def test_github_ssh_converts_to_https(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "remote", "add", "origin", "git@github.com:acme/pricing.git")
+        url = _build_compare_url("pricing/user/feat", "main", repo)
+        assert url is not None
+        assert url.startswith("https://github.com/acme/pricing/")
+        assert "git@" not in url
+
+    def test_github_https_works(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "remote", "add", "origin", "https://github.com/acme/pricing.git")
+        url = _build_compare_url("my-branch", "main", repo)
+        assert url == "https://github.com/acme/pricing/compare/main...my-branch"
+
+    def test_gitlab_produces_merge_requests_path(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "remote", "add", "origin", "https://gitlab.com/org/repo.git")
+        url = _build_compare_url("pricing/user/feat", "main", repo)
+        assert url is not None
+        assert "/-/merge_requests/new" in url
+
+    def test_no_remote_returns_none(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        url = _build_compare_url("feat", "main", repo)
+        assert url is None
+
+
+# ---------------------------------------------------------------------------
+# list_branches — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestListBranchesEdgeCases:
+    def test_lists_main_branch(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        result = list_branches(repo)
+        names = [b.name for b in result.branches]
+        assert "main" in names
+
+    def test_own_branches_sorted_first(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/other-user/other")
+        _git(repo, "checkout", "main")
+        _git(repo, "checkout", "-b", "pricing/test-user/mine")
+        _git(repo, "checkout", "main")
+
+        result = list_branches(repo)
+        non_main = [b for b in result.branches if b.name != "main"]
+        assert len(non_main) >= 2
+        assert non_main[0].is_yours is True
+
+    def test_archived_branches_sorted_last(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "archive/old")
+        _git(repo, "checkout", "main")
+        _git(repo, "checkout", "-b", "pricing/test-user/active")
+        _git(repo, "checkout", "main")
+
+        result = list_branches(repo)
+        non_main = [b for b in result.branches if b.name != "main"]
+        assert non_main[-1].is_archived is True
+        assert non_main[-1].name == "archive/old"
 
 
 class TestArgumentInjectionPrevention:
@@ -1378,3 +1532,308 @@ class TestSaveProgressStagesSensitiveFiles:
         committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
         assert ".env" not in committed_files
         assert ".gitignore" in committed_files
+
+
+# ---------------------------------------------------------------------------
+# EDGE CASE 1: Protected branch check is case-sensitive
+# ---------------------------------------------------------------------------
+
+
+class TestProtectedBranchCaseSensitivity:
+    """_is_protected uses a frozenset lookup, which is case-sensitive.
+    Only exact lowercase matches ("main", "master", etc.) are protected.
+    This is intentional: git branch names are case-sensitive, and "MAIN"
+    is a different branch from "main".
+    """
+
+    def test_uppercase_MAIN_is_not_protected(self) -> None:
+        assert _is_protected("MAIN") is False
+
+    def test_titlecase_Main_is_not_protected(self) -> None:
+        assert _is_protected("Main") is False
+
+    def test_mixed_case_mAiN_is_not_protected(self) -> None:
+        assert _is_protected("mAiN") is False
+
+    def test_uppercase_MASTER_is_not_protected(self) -> None:
+        assert _is_protected("MASTER") is False
+
+    def test_uppercase_DEVELOP_is_not_protected(self) -> None:
+        assert _is_protected("DEVELOP") is False
+
+    def test_uppercase_PRODUCTION_is_not_protected(self) -> None:
+        assert _is_protected("PRODUCTION") is False
+
+    def test_lowercase_variants_still_protected(self) -> None:
+        for name in ("main", "master", "develop", "production"):
+            assert _is_protected(name) is True
+
+
+# ---------------------------------------------------------------------------
+# EDGE CASE 2: Sensitive file staging — credentials.json
+# ---------------------------------------------------------------------------
+
+
+class TestSensitiveFileStagingCredentials:
+    """save_progress uses 'git add -A', which stages all untracked files.
+    This documents that credentials.json is staged when no .gitignore
+    is present, and excluded when .gitignore covers it.
+    """
+
+    def test_credentials_json_gets_staged_without_gitignore(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+
+        (repo / ".env").write_text("SECRET=abc\n")
+        (repo / "credentials.json").write_text('{"api_key": "sk-12345"}\n')
+
+        result = save_progress(repo)
+        assert result.commit_sha
+        committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
+        assert ".env" in committed_files
+        assert "credentials.json" in committed_files
+
+    def test_gitignore_excludes_credentials_json(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+
+        (repo / ".gitignore").write_text(".env\ncredentials.json\n")
+        (repo / ".env").write_text("SECRET=abc\n")
+        (repo / "credentials.json").write_text('{"api_key": "sk-12345"}\n')
+        (repo / "app.py").write_text("print('hello')\n")
+
+        result = save_progress(repo)
+        committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
+        assert ".env" not in committed_files
+        assert "credentials.json" not in committed_files
+        assert "app.py" in committed_files
+
+
+# ---------------------------------------------------------------------------
+# EDGE CASE 3: Pull with merge conflict — divergent commits
+# ---------------------------------------------------------------------------
+
+
+class TestPullLatestMergeConflictDivergent:
+    """Create truly divergent commits on local and remote (same file,
+    different content on the same lines) and verify conflict handling.
+    """
+
+    def test_divergent_same_file_conflict_detected(self, tmp_path: Path) -> None:
+        repo, remote = _init_repo_with_remote(tmp_path)
+
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        (repo / "config.py").write_text("RATE = 0.05\nTAX = 0.2\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Local rate config")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", str(remote), str(clone))
+        _git(clone, "config", "user.name", "Other User")
+        _git(clone, "config", "user.email", "other@example.com")
+        (clone / "config.py").write_text("RATE = 0.10\nTAX = 0.25\n")
+        _git(clone, "add", ".")
+        _git(clone, "commit", "-m", "Remote rate config")
+        _git(clone, "push", "origin", "main")
+
+        result = pull_latest(repo)
+        assert result.success is False
+        assert result.conflict is True
+        assert result.conflict_message is not None
+        assert result.commits_pulled == 0
+
+    def test_repo_clean_after_divergent_conflict(self, tmp_path: Path) -> None:
+        repo, remote = _init_repo_with_remote(tmp_path)
+
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        (repo / "data.py").write_text("VALUE = 1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Local data")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", str(remote), str(clone))
+        _git(clone, "config", "user.name", "Other User")
+        _git(clone, "config", "user.email", "other@example.com")
+        (clone / "data.py").write_text("VALUE = 999\n")
+        _git(clone, "add", ".")
+        _git(clone, "commit", "-m", "Remote data")
+        _git(clone, "push", "origin", "main")
+
+        pull_latest(repo)
+
+        status = _git(repo, "status", "--porcelain")
+        assert status == "", f"Repo not clean after conflict abort: {status}"
+        assert _get_current_branch(repo) == "pricing/test-user/feat"
+        assert (repo / "data.py").read_text() == "VALUE = 1\n"
+
+
+# ---------------------------------------------------------------------------
+# EDGE CASE 4: Validate ref name with double-dash tricks
+# ---------------------------------------------------------------------------
+
+
+class TestValidateRefNameDoubleDash:
+    """_validate_ref_name rejects names starting with '-' to prevent
+    argument injection.  Double-dashes mid-name are allowed because they
+    are valid in git ref names.
+    """
+
+    def test_double_dash_flag_injection_rejected(self) -> None:
+        with pytest.raises(GitError, match="must not start with '-'"):
+            _validate_ref_name("--version")
+
+    def test_single_dash_rejected(self) -> None:
+        with pytest.raises(GitError, match="must not start with '-'"):
+            _validate_ref_name("-")
+
+    def test_upload_pack_injection_rejected(self) -> None:
+        with pytest.raises(GitError, match="must not start with '-'"):
+            _validate_ref_name("--upload-pack=evil")
+
+    def test_double_dash_mid_name_allowed(self) -> None:
+        _validate_ref_name("my--upload-pack=evil")
+
+    def test_double_dash_in_normal_branch_allowed(self) -> None:
+        _validate_ref_name("feature/my--branch")
+
+    def test_leading_dash_with_equals_rejected(self) -> None:
+        with pytest.raises(GitError, match="must not start with '-'"):
+            _validate_ref_name("-c=evil.command")
+
+
+# ---------------------------------------------------------------------------
+# EDGE CASE 5: Default branch cache invalidation
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultBranchCacheInvalidation:
+    """Verify that _get_default_branch_cached uses lru_cache correctly:
+    second call with same cwd hits cache (no subprocess), and cache_clear()
+    forces a new subprocess call.
+    """
+
+    def test_second_call_uses_cache_third_after_clear_does_not(self, tmp_path: Path) -> None:
+        import haute._git as git_mod
+
+        repo = _init_repo(tmp_path)
+        _get_default_branch_cached.cache_clear()
+
+        subprocess_count = 0
+        original_run_git_ok = git_mod._run_git_ok
+
+        def counting_run_git_ok(*args, **kwargs):
+            nonlocal subprocess_count
+            subprocess_count += 1
+            return original_run_git_ok(*args, **kwargs)
+
+        git_mod._run_git_ok = counting_run_git_ok
+        try:
+            result1 = _get_default_branch(repo)
+            calls_after_first = subprocess_count
+            assert calls_after_first > 0
+
+            result2 = _get_default_branch(repo)
+            calls_after_second = subprocess_count
+            assert result1 == result2
+            assert calls_after_second == calls_after_first
+
+            _get_default_branch_cached.cache_clear()
+
+            result3 = _get_default_branch(repo)
+            calls_after_third = subprocess_count
+            assert result3 == result1
+            assert calls_after_third > calls_after_second
+        finally:
+            git_mod._run_git_ok = original_run_git_ok
+            _get_default_branch_cached.cache_clear()
+
+    def test_cache_info_shows_hit_on_second_call(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _get_default_branch_cached.cache_clear()
+
+        _get_default_branch(repo)
+        info_after_first = _get_default_branch_cached.cache_info()
+        assert info_after_first.misses >= 1
+        hits_before = info_after_first.hits
+
+        _get_default_branch(repo)
+        info_after_second = _get_default_branch_cached.cache_info()
+        assert info_after_second.hits > hits_before
+
+        _get_default_branch_cached.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# EDGE CASE 6: Revert backup tag contains timestamp
+# ---------------------------------------------------------------------------
+
+
+class TestRevertBackupTagTimestamp:
+    """revert_to creates a backup tag with the pattern
+    'backup/<branch-slug>/<ISO-timestamp>'. Verify the timestamp
+    component is present and follows the expected format.
+    """
+
+    def test_backup_tag_contains_timestamp_pattern(self, tmp_path: Path) -> None:
+        import re
+
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+
+        (repo / "a.py").write_text("v1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v1")
+        target_sha = _git(repo, "rev-parse", "HEAD")
+
+        (repo / "a.py").write_text("v2\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v2")
+
+        result = revert_to(target_sha, repo)
+
+        assert result.backup_tag.startswith("backup/")
+        timestamp_pattern = re.compile(
+            r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$"
+        )
+        tag_parts = result.backup_tag.split("/")
+        timestamp_part = tag_parts[-1]
+        assert timestamp_pattern.match(timestamp_part), (
+            f"Backup tag timestamp '{timestamp_part}' does not match "
+            "expected pattern YYYY-MM-DDTHH-MM-SS"
+        )
+
+    def test_backup_tag_contains_branch_slug(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/my-feature")
+
+        (repo / "a.py").write_text("v1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v1")
+        target_sha = _git(repo, "rev-parse", "HEAD")
+
+        (repo / "a.py").write_text("v2\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v2")
+
+        result = revert_to(target_sha, repo)
+        assert "pricing-test-user-my-feature" in result.backup_tag
+
+    def test_backup_tag_resolves_to_pre_revert_head(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+
+        (repo / "a.py").write_text("v1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v1")
+        target_sha = _git(repo, "rev-parse", "HEAD")
+
+        (repo / "a.py").write_text("v2\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v2")
+        pre_revert_sha = _git(repo, "rev-parse", "HEAD")
+
+        result = revert_to(target_sha, repo)
+        tag_sha = _git(repo, "rev-parse", result.backup_tag)
+        assert tag_sha == pre_revert_sha

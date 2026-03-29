@@ -10,9 +10,14 @@ import polars as pl
 import pytest
 
 from haute.modelling._metrics import (
+    _auc,
+    _gini,
+    _logloss,
+    _tweedie_deviance,
     compute_actual_vs_predicted,
     compute_ave_per_feature,
     compute_lorenz_curve,
+    compute_metrics,
     compute_pdp,
     compute_residuals_histogram,
 )
@@ -453,3 +458,366 @@ class TestPdp:
 
         result = compute_pdp(MagicMock(), SimpleAlgo(), df, ["z", "a", "m"], [], n_grid=5)
         assert [r["feature"] for r in result] == ["z", "a", "m"]
+
+
+# ---------------------------------------------------------------------------
+# compute_metrics edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMetricsEdgeCases:
+    def test_empty_arrays_return_nan_or_degenerate(self):
+        y_true = np.array([])
+        y_pred = np.array([])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse", "mae"])
+        for name in ["rmse", "mae"]:
+            assert np.isnan(result[name])
+
+    def test_single_sample(self):
+        y_true = np.array([3.0])
+        y_pred = np.array([2.5])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse", "mae", "mse"])
+        assert result["rmse"] == pytest.approx(0.5)
+        assert result["mae"] == pytest.approx(0.5)
+        assert result["mse"] == pytest.approx(0.25)
+
+    def test_all_identical_predictions(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        y_pred = np.array([3.0, 3.0, 3.0, 3.0, 3.0])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse", "r2", "gini"])
+        assert result["rmse"] > 0
+        assert result["r2"] == pytest.approx(0.0)
+
+    def test_all_identical_actuals(self):
+        y_true = np.array([5.0, 5.0, 5.0, 5.0])
+        y_pred = np.array([4.0, 5.0, 6.0, 7.0])
+        result = compute_metrics(y_true, y_pred, metric_names=["r2"])
+        assert result["r2"] == pytest.approx(0.0)
+
+    def test_nan_values_filtered(self):
+        y_true = np.array([1.0, np.nan, 3.0, 4.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse"])
+        assert np.isfinite(result["rmse"])
+        assert result["rmse"] == pytest.approx(0.0)
+
+    def test_inf_values_filtered(self):
+        y_true = np.array([1.0, np.inf, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse"])
+        assert np.isfinite(result["rmse"])
+        assert result["rmse"] == pytest.approx(0.0)
+
+    def test_all_nan_returns_nan(self):
+        y_true = np.array([np.nan, np.nan])
+        y_pred = np.array([np.nan, np.nan])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse"])
+        assert np.isnan(result["rmse"])
+
+    def test_nan_with_weights_filtered(self):
+        y_true = np.array([1.0, np.nan, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        weight = np.array([1.0, 2.0, 3.0])
+        result = compute_metrics(y_true, y_pred, weight=weight, metric_names=["rmse"])
+        assert np.isfinite(result["rmse"])
+
+    def test_unknown_metric_raises(self):
+        y_true = np.array([1.0, 2.0])
+        y_pred = np.array([1.0, 2.0])
+        with pytest.raises(ValueError, match="Unknown metric"):
+            compute_metrics(y_true, y_pred, metric_names=["nonexistent_metric"])
+
+    def test_tweedie_deviance_with_variance_power(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.1, 2.1, 3.1])
+        result = compute_metrics(
+            y_true, y_pred, metric_names=["tweedie_deviance"], variance_power=1.5
+        )
+        assert np.isfinite(result["tweedie_deviance"])
+
+
+# ---------------------------------------------------------------------------
+# _gini edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGiniEdgeCases:
+    def test_empty_array(self):
+        assert _gini(np.array([]), np.array([]), None) == 0.0
+
+    def test_all_same_actuals(self):
+        y_true = np.array([5.0, 5.0, 5.0, 5.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0])
+        result = _gini(y_true, y_pred, None)
+        assert result == pytest.approx(1.0)
+
+    def test_all_same_predictions(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0])
+        y_pred = np.array([3.0, 3.0, 3.0, 3.0])
+        result = _gini(y_true, y_pred, None)
+        assert np.isfinite(result)
+
+    def test_perfect_ranking(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        assert _gini(y_true, y_pred, None) == pytest.approx(1.0)
+
+    def test_weighted_gini(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        weight = np.array([1.0, 1.0, 1.0, 1.0, 10.0])
+        result = _gini(y_true, y_pred, weight)
+        assert np.isfinite(result)
+        assert result > 0
+
+    def test_weighted_vs_unweighted_differ(self):
+        y_true = np.array([0.5, 5.0, 0.2, 4.0, 1.0, 3.0, 0.1, 2.0])
+        y_pred = np.array([0.3, 4.5, 0.5, 3.5, 1.5, 2.5, 0.2, 2.0])
+        w = np.array([100.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        unweighted = _gini(y_true, y_pred, None)
+        weighted = _gini(y_true, y_pred, w)
+        assert abs(unweighted - weighted) > 0.01
+
+    def test_single_sample(self):
+        result = _gini(np.array([1.0]), np.array([2.0]), None)
+        assert np.isfinite(result)
+
+
+# ---------------------------------------------------------------------------
+# _tweedie_deviance edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestTweedieDevianceEdgeCases:
+    def test_gamma_case(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.1, 2.1, 3.1])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=2.0)
+        assert np.isfinite(result)
+        assert result >= 0
+
+    def test_gamma_perfect_predictions(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=2.0)
+        assert result == pytest.approx(0.0, abs=1e-8)
+
+    def test_general_intermediate_p(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0])
+        y_pred = np.array([1.2, 1.8, 3.2, 3.8])
+        result_15 = _tweedie_deviance(y_true, y_pred, None, variance_power=1.5)
+        result_13 = _tweedie_deviance(y_true, y_pred, None, variance_power=1.3)
+        result_17 = _tweedie_deviance(y_true, y_pred, None, variance_power=1.7)
+        assert np.isfinite(result_15)
+        assert np.isfinite(result_13)
+        assert np.isfinite(result_17)
+        assert result_15 >= 0
+        assert result_13 >= 0
+        assert result_17 >= 0
+
+    def test_zero_y_true_floored(self):
+        y_true = np.array([0.0, 0.0, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=1.5)
+        assert np.isfinite(result)
+
+    def test_negative_y_true_floored(self):
+        y_true = np.array([-1.0, 2.0, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=1.5)
+        assert np.isfinite(result)
+
+    def test_zero_y_pred_floored(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([0.0, 0.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=1.5)
+        assert np.isfinite(result)
+
+    def test_negative_y_pred_floored(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([-1.0, 2.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=1.5)
+        assert np.isfinite(result)
+
+    def test_poisson_case_delegates(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.1, 2.1, 3.1])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=1.0)
+        assert np.isfinite(result)
+        assert result >= 0
+
+    def test_weighted(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.1, 2.1, 3.1])
+        w = np.array([1.0, 2.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, w, variance_power=1.5)
+        assert np.isfinite(result)
+
+    def test_gamma_zero_y_true_floored(self):
+        y_true = np.array([0.0, 2.0, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=2.0)
+        assert np.isfinite(result)
+
+    def test_gamma_zero_y_pred_floored(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([0.0, 2.0, 3.0])
+        result = _tweedie_deviance(y_true, y_pred, None, variance_power=2.0)
+        assert np.isfinite(result)
+
+
+# ---------------------------------------------------------------------------
+# _auc / _logloss edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestAucEdgeCases:
+    def test_all_same_class_zero(self):
+        y_true = np.array([0, 0, 0, 0])
+        y_pred = np.array([0.1, 0.2, 0.3, 0.4])
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = _auc(y_true, y_pred, None)
+        assert np.isnan(result)
+
+    def test_all_same_class_one(self):
+        y_true = np.array([1, 1, 1, 1])
+        y_pred = np.array([0.6, 0.7, 0.8, 0.9])
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = _auc(y_true, y_pred, None)
+        assert np.isnan(result)
+
+    def test_predictions_exactly_zero_and_one(self):
+        y_true = np.array([0, 0, 1, 1])
+        y_pred = np.array([0.0, 0.0, 1.0, 1.0])
+        result = _auc(y_true, y_pred, None)
+        assert result == pytest.approx(1.0)
+
+    def test_perfect_separation(self):
+        y_true = np.array([0, 0, 0, 1, 1, 1])
+        y_pred = np.array([0.1, 0.2, 0.3, 0.7, 0.8, 0.9])
+        result = _auc(y_true, y_pred, None)
+        assert result == pytest.approx(1.0)
+
+
+class TestLoglossEdgeCases:
+    def test_all_same_class_zero_raises(self):
+        y_true = np.array([0, 0, 0])
+        y_pred = np.array([0.1, 0.2, 0.3])
+        with pytest.raises(ValueError):
+            _logloss(y_true, y_pred, None)
+
+    def test_all_same_class_one_raises(self):
+        y_true = np.array([1, 1, 1])
+        y_pred = np.array([0.7, 0.8, 0.9])
+        with pytest.raises(ValueError):
+            _logloss(y_true, y_pred, None)
+
+    def test_predictions_exactly_zero_and_one(self):
+        y_true = np.array([0, 1])
+        y_pred = np.array([1e-15, 1.0 - 1e-15])
+        result = _logloss(y_true, y_pred, None)
+        assert np.isfinite(result)
+        assert result >= 0
+
+
+# ---------------------------------------------------------------------------
+# compute_residuals_histogram additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestResidualsHistogramEdgeCases:
+    def test_empty_arrays_defaults(self):
+        bins, stats = compute_residuals_histogram(np.array([]), np.array([]))
+        assert bins == []
+        assert stats["mean"] == 0.0
+        assert stats["std"] == 0.0
+        assert stats["skew"] == 0.0
+        assert stats["min"] == 0.0
+        assert stats["max"] == 0.0
+
+    def test_single_value_histogram(self):
+        y_true = np.array([7.0])
+        y_pred = np.array([5.0])
+        bins, stats = compute_residuals_histogram(y_true, y_pred, n_bins=10)
+        assert stats["mean"] == pytest.approx(2.0)
+        assert stats["min"] == pytest.approx(2.0)
+        assert stats["max"] == pytest.approx(2.0)
+
+    def test_all_zero_residuals_std_zero(self):
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        bins, stats = compute_residuals_histogram(y, y, n_bins=5)
+        assert stats["mean"] == pytest.approx(0.0)
+        assert stats["std"] == pytest.approx(0.0)
+        assert stats["skew"] == pytest.approx(0.0)
+
+    def test_negative_skew(self):
+        rng = np.random.RandomState(99)
+        residuals = -rng.exponential(size=1000)
+        y_true = residuals
+        y_pred = np.zeros(1000)
+        _, stats = compute_residuals_histogram(y_true, y_pred, n_bins=50)
+        assert stats["skew"] < 0
+
+
+# ---------------------------------------------------------------------------
+# compute_actual_vs_predicted additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestActualVsPredictedEdgeCases:
+    def test_empty_returns_empty(self):
+        result = compute_actual_vs_predicted(np.array([]), np.array([]))
+        assert result == []
+
+    def test_n_leq_max_points_returns_all(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.1, 2.1, 3.1])
+        result = compute_actual_vs_predicted(y_true, y_pred, max_points=10)
+        assert len(result) == 3
+
+    def test_n_greater_max_points_subsamples(self):
+        n = 5000
+        rng = np.random.RandomState(42)
+        y_true = rng.randn(n)
+        y_pred = rng.randn(n)
+        result = compute_actual_vs_predicted(y_true, y_pred, max_points=200)
+        assert len(result) <= 200
+
+
+# ---------------------------------------------------------------------------
+# compute_lorenz_curve additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestLorenzCurveEdgeCases:
+    def test_empty_returns_endpoints_only(self):
+        model_curve, perfect_curve = compute_lorenz_curve(np.array([]), np.array([]))
+        assert len(model_curve) == 1
+        assert model_curve[0] == {"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}
+        assert len(perfect_curve) == 1
+
+    def test_all_same_actuals(self):
+        y_true = np.array([3.0, 3.0, 3.0, 3.0, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        model_curve, perfect_curve = compute_lorenz_curve(y_true, y_pred)
+        assert model_curve[0]["cum_weight_frac"] == 0.0
+        assert model_curve[-1]["cum_weight_frac"] == pytest.approx(1.0)
+        assert model_curve[-1]["cum_actual_frac"] == pytest.approx(1.0)
+
+    def test_perfect_model(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        model_curve, perfect_curve = compute_lorenz_curve(y_true, y_pred)
+        model_w = [p["cum_weight_frac"] for p in model_curve]
+        model_a = [p["cum_actual_frac"] for p in model_curve]
+        perfect_w = [p["cum_weight_frac"] for p in perfect_curve]
+        perfect_a = [p["cum_actual_frac"] for p in perfect_curve]
+        for mw, ma, pw, pa in zip(model_w, model_a, perfect_w, perfect_a):
+            assert mw == pytest.approx(pw, abs=1e-4)
+            assert ma == pytest.approx(pa, abs=1e-4)

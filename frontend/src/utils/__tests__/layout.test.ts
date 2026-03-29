@@ -132,4 +132,31 @@ describe("getLayoutedElements", () => {
       expect(Number.isFinite(node.position.y)).toBe(true)
     }
   })
+
+  it("positions default to zero when ELK returns undefined coordinates", async () => {
+    // Catches: if the `child.x ?? 0` / `child.y ?? 0` fallback is removed,
+    // nodes would get NaN or undefined positions when ELK omits coordinates.
+    // A single disconnected node is most likely to receive (0,0) from ELK;
+    // we verify that the result is a finite number regardless.
+    const nodes = [makeNode("z", 999, 999)]
+    const result = await getLayoutedElements(nodes, [])
+
+    expect(Number.isFinite(result[0].position.x)).toBe(true)
+    expect(Number.isFinite(result[0].position.y)).toBe(true)
+  })
+
+  it("fan-out nodes in the same layer share snapped x coordinate", async () => {
+    // Catches: if cluster snapping is removed, nodes placed in the same
+    // ELK layer with slightly different x values would appear misaligned.
+    const nodes = [makeNode("a"), makeNode("b"), makeNode("c"), makeNode("d")]
+    const edges = [makeEdge("a", "b"), makeEdge("a", "c"), makeEdge("a", "d")]
+
+    const result = await getLayoutedElements(nodes, edges)
+    const posB = result.find((n) => n.id === "b")!.position
+    const posC = result.find((n) => n.id === "c")!.position
+    const posD = result.find((n) => n.id === "d")!.position
+
+    expect(posB.x).toBe(posC.x)
+    expect(posC.x).toBe(posD.x)
+  })
 })

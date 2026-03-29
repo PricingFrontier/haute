@@ -332,10 +332,28 @@ describe("useSettingsStore", () => {
       expect(useSettingsStore.getState().activeSource).toBe("staging")
     })
 
-    it("setSources does not affect activeSource", () => {
+    it("setSources does not affect activeSource when it still exists in new list", () => {
       useSettingsStore.getState().setActiveSource("live")
       useSettingsStore.getState().setSources(["live", "new_sc"])
       expect(useSettingsStore.getState().activeSource).toBe("live")
+    })
+
+    it("setSources resets activeSource to 'live' when active source is removed from list", () => {
+      useSettingsStore.getState().setSources(["live", "staging", "prod"])
+      useSettingsStore.getState().setActiveSource("staging")
+      expect(useSettingsStore.getState().activeSource).toBe("staging")
+
+      // Replace sources without "staging" — activeSource should reset to "live"
+      useSettingsStore.getState().setSources(["live", "prod"])
+      expect(useSettingsStore.getState().activeSource).toBe("live")
+    })
+
+    it("setSources preserves activeSource when it exists in the new list", () => {
+      useSettingsStore.getState().setSources(["live", "staging", "prod"])
+      useSettingsStore.getState().setActiveSource("prod")
+
+      useSettingsStore.getState().setSources(["live", "prod"])
+      expect(useSettingsStore.getState().activeSource).toBe("prod")
     })
   })
 

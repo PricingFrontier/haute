@@ -423,3 +423,85 @@ describe("formatSchemaSummary", () => {
     expect(result).toBe("2 removed")
   })
 })
+
+// ---------------------------------------------------------------------------
+// formatTraceValue – additional edge cases
+// ---------------------------------------------------------------------------
+
+describe("formatTraceValue edge cases", () => {
+  it("formats negative zero", () => {
+    // -0 is an integer; toLocaleString may return "0" or "-0"
+    const result = formatTraceValue(-0)
+    expect(result === "0" || result === "-0").toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatExpression – boundary truncation
+// ---------------------------------------------------------------------------
+
+describe("formatExpression boundary truncation", () => {
+  it("does not truncate expression of exactly 60 chars", () => {
+    const expr = "a".repeat(60)
+    const result = formatExpression(expr)
+    expect(result).toBe(expr)
+    expect(result.length).toBe(60)
+  })
+
+  it("truncates expression of 61 chars to 60 + ellipsis", () => {
+    const expr = "a".repeat(61)
+    const result = formatExpression(expr)
+    expect(result.length).toBe(61)
+    expect(result).toBe("a".repeat(60) + "\u2026")
+  })
+
+  it("does not truncate expression shorter than 60 chars", () => {
+    const expr = "a".repeat(59)
+    const result = formatExpression(expr)
+    expect(result).toBe(expr)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatCalculation – additional edge cases
+// ---------------------------------------------------------------------------
+
+describe("formatCalculation edge cases", () => {
+  it("formats negative numbers in values", () => {
+    const result = formatCalculation({
+      expression: "a + b",
+      values: { a: -10, b: 5 },
+      result: -5,
+    })
+    expect(result).toBe("-10 + 5 = -5")
+  })
+
+  it("formats NaN result", () => {
+    const result = formatCalculation({
+      expression: "a / b",
+      values: { a: 0, b: 0 },
+      result: NaN,
+    })
+    expect(result).toContain("= NaN")
+  })
+
+  it("formats Infinity result", () => {
+    const result = formatCalculation({
+      expression: "a / b",
+      values: { a: 1, b: 0 },
+      result: Infinity,
+    })
+    expect(result).toContain("= \u221e")
+  })
+
+  it("formats negative values with multiplication", () => {
+    const result = formatCalculation({
+      expression: "price * quantity",
+      values: { price: -5.5, quantity: 3 },
+      result: -16.5,
+    })
+    expect(result).toContain("-5.5")
+    expect(result).toContain("3")
+    expect(result).toContain("-16.5")
+  })
+})

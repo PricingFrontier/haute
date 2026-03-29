@@ -113,8 +113,95 @@ describe("ModellingPreview", () => {
   it("shows metrics summary in collapsed state", () => {
     const result = makeTrainResult({ metrics: { gini: 0.4567, rmse: 0.1234 } })
     const data = makeData({ result })
-    // Render and test that the component renders without crashing
     const { container } = render(<ModellingPreview data={data} nodeId="n1" />)
     expect(container.innerHTML).not.toBe("")
+  })
+
+  it("clicking a tab switches active tab content", () => {
+    const result = makeTrainResult({
+      feature_importance: [
+        { feature: "age", importance: 25 },
+        { feature: "income", importance: 18 },
+      ],
+    })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    const featuresTab = screen.getAllByText("Features").find(el => el.tagName === "BUTTON")!
+    fireEvent.click(featuresTab)
+    expect(screen.getByText("age")).toBeInTheDocument()
+  })
+
+  it("Loss tab is hidden when result has no loss_history", () => {
+    const result = makeTrainResult({ loss_history: undefined })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    expect(screen.queryByText("Loss")).not.toBeInTheDocument()
+  })
+
+  it("Loss tab is hidden when loss_history has fewer than 2 entries", () => {
+    const result = makeTrainResult({
+      loss_history: [{ iteration: 0, train_rmse: 1.0 }],
+    })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    expect(screen.queryByText("Loss")).not.toBeInTheDocument()
+  })
+
+  it("Features tab shows feature names when clicked", () => {
+    const result = makeTrainResult({
+      feature_importance: [
+        { feature: "feat_a", importance: 30 },
+        { feature: "feat_b", importance: 20 },
+        { feature: "feat_c", importance: 10 },
+      ],
+    })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    const featuresTab = screen.getAllByText("Features").find(el => el.tagName === "BUTTON")!
+    fireEvent.click(featuresTab)
+    expect(screen.getByText("feat_a")).toBeInTheDocument()
+    expect(screen.getByText("feat_b")).toBeInTheDocument()
+    expect(screen.getByText("feat_c")).toBeInTheDocument()
+  })
+
+  it("collapsing hides tab content and shows node label in collapsed bar", () => {
+    render(<ModellingPreview data={makeData()} nodeId="n1" />)
+    const allButtons = screen.getAllByRole("button")
+    const collapseBtn = allButtons.filter(b => !["Summary", "Features"].includes(b.textContent || "")).pop()!
+    fireEvent.click(collapseBtn)
+    expect(screen.queryByText("Summary")).not.toBeInTheDocument()
+    expect(screen.getByText("Model Node")).toBeInTheDocument()
+  })
+
+  it("expanding after collapse restores tab content", () => {
+    render(<ModellingPreview data={makeData()} nodeId="n1" />)
+    const allButtons = screen.getAllByRole("button")
+    const collapseBtn = allButtons.filter(b => !["Summary", "Features"].includes(b.textContent || "")).pop()!
+    fireEvent.click(collapseBtn)
+    const expandBtn = screen.getAllByRole("button")[0]
+    fireEvent.click(expandBtn)
+    expect(screen.getByText("Summary")).toBeInTheDocument()
+  })
+
+  it("switching between Summary and Loss tabs works", () => {
+    const result = makeTrainResult({
+      loss_history: [
+        { iteration: 0, train_rmse: 1.0 },
+        { iteration: 1, train_rmse: 0.9 },
+      ],
+    })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    fireEvent.click(screen.getByText("Loss"))
+    fireEvent.click(screen.getByText("Summary"))
+    expect(screen.getByText("Model Info")).toBeInTheDocument()
+  })
+
+  it("Lift tab appears and is clickable when double_lift data exists", () => {
+    const result = makeTrainResult({
+      double_lift: [
+        { decile: 1, actual: 1.0, predicted: 0.9, count: 100 },
+        { decile: 2, actual: 0.8, predicted: 0.7, count: 100 },
+      ],
+    })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    const liftTab = screen.getByText("Lift")
+    fireEvent.click(liftTab)
+    expect(liftTab).toBeInTheDocument()
   })
 })

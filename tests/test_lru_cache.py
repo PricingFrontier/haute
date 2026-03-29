@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
 
 from haute._lru_cache import LRUCache
-
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -138,22 +136,38 @@ class TestEviction:
 
 
 class TestTTL:
-    def test_entry_expires_after_ttl(self) -> None:
-        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=0.05)
-        cache.put("k", 42)
-        assert cache.get("k") == 42
-        time.sleep(0.08)
-        assert cache.get("k") is None
+    def test_entry_expires_after_ttl(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
 
-    def test_entry_valid_before_ttl(self) -> None:
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
         cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=5.0)
         cache.put("k", 42)
         assert cache.get("k") == 42
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert cache.get("k") is None
 
-    def test_ttl_eviction_removes_from_data(self) -> None:
-        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=0.05)
+    def test_entry_valid_before_ttl(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=5.0)
+        cache.put("k", 42)
+        now = 1002.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert cache.get("k") == 42
+
+    def test_ttl_eviction_removes_from_data(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=5.0)
         cache.put("k", 1)
-        time.sleep(0.08)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
         cache.get("k")  # triggers lazy eviction
         assert len(cache) == 0
 
@@ -337,12 +351,166 @@ class TestNoneValues:
         assert cache.get("k") is None
         assert "k" in cache
 
-    def test_none_value_with_ttl(self) -> None:
+    def test_none_value_with_ttl(self, monkeypatch) -> None:
         """None values should be subject to TTL expiry like any other value."""
-        cache: LRUCache[str, int | None] = LRUCache(max_size=10, ttl=0.05)
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int | None] = LRUCache(max_size=10, ttl=5.0)
         cache.put("k", None)
         assert "k" in cache
         assert cache.get("k") is None  # hit before TTL
-        time.sleep(0.08)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
         assert cache.get("k") is None  # expired — but return value is same
         assert "k" not in cache  # key has been evicted
+
+
+# ---------------------------------------------------------------------------
+# TTL edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestTTLEdgeCases:
+    def test_ttl_zero_does_not_expire_within_same_tick(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=0)
+        cache.put("k", 42)
+        # TTL check uses strict >, so ttl=0 within the same monotonic tick is a hit
+        assert cache.get("k") == 42
+
+    def test_get_immediately_after_ttl_expires_returns_none(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=5.0)
+        cache.put("k", 42)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert cache.get("k") is None
+        assert len(cache) == 0
+
+
+# ---------------------------------------------------------------------------
+# __contains__ TTL interaction
+# ---------------------------------------------------------------------------
+
+
+class TestContainsTTL:
+    def test_contains_does_not_check_ttl(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=5.0)
+        cache.put("k", 42)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert "k" in cache
+        assert cache.get("k") is None
+
+
+# ---------------------------------------------------------------------------
+# put timestamp update
+# ---------------------------------------------------------------------------
+
+
+class TestPutTimestamp:
+    def test_put_same_key_updates_timestamp(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=10.0)
+        cache.put("k", 1)
+        now = 1006.0  # 6s elapsed — would expire if timestamp not refreshed
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache.put("k", 2)  # refreshes timestamp to 1006.0
+        now = 1012.0  # 6s after refresh — within TTL of 10s from refresh
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert cache.get("k") == 2
+
+
+# ---------------------------------------------------------------------------
+# None keys
+# ---------------------------------------------------------------------------
+
+
+class TestNoneKeys:
+    def test_put_with_none_key(self) -> None:
+        cache: LRUCache[None, int] = LRUCache(max_size=4)
+        cache.put(None, 99)
+        assert cache.get(None) == 99
+        assert len(cache) == 1
+
+    def test_get_with_none_key_miss(self) -> None:
+        cache: LRUCache[None, int] = LRUCache(max_size=4)
+        assert cache.get(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Clear then reuse
+# ---------------------------------------------------------------------------
+
+
+class TestClearReuse:
+    def test_clear_then_put_then_get(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(max_size=10)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.clear()
+        cache.put("c", 3)
+        assert cache.get("a") is None
+        assert cache.get("b") is None
+        assert cache.get("c") == 3
+        assert len(cache) == 1
+
+
+# ---------------------------------------------------------------------------
+# Thread safety: concurrent puts don't lose data
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentPutsNoLoss:
+    def test_concurrent_puts_no_data_loss(self) -> None:
+        cache: LRUCache[int, int] = LRUCache(max_size=200)
+        barrier = threading.Barrier(4)
+
+        def writer(start: int) -> None:
+            barrier.wait()
+            for i in range(start, start + 50):
+                cache.put(i, i)
+
+        threads = [threading.Thread(target=writer, args=(t * 50,)) for t in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(cache) == 200
+        for i in range(200):
+            assert cache.get(i) == i
+
+
+# ---------------------------------------------------------------------------
+# Large cache
+# ---------------------------------------------------------------------------
+
+
+class TestLargeCache:
+    def test_large_cache_basic_operations(self) -> None:
+        cache: LRUCache[int, int] = LRUCache(max_size=1000)
+        for i in range(1000):
+            cache.put(i, i * 3)
+        assert len(cache) == 1000
+        for i in range(1000):
+            assert cache.get(i) == i * 3
+        cache.put(1000, 3000)
+        assert cache.get(0) is None
+        assert cache.get(1000) == 3000
+        assert len(cache) == 1000

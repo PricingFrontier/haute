@@ -122,4 +122,106 @@ describe("BandingRulesGrid", () => {
     const assignedRules = onUpdate.mock.calls[0][0].rules
     expect(assignedRules[0]._id).not.toBe(assignedRules[1]._id)
   })
+
+  it("updating op1 select calls onUpdateFactor with new value", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r1" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+    const selects = screen.getAllByRole("combobox")
+    fireEvent.change(selects[0], { target: { value: ">=" } })
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules[0].op1).toBe(">=")
+    expect(lastCall.rules[0].val1).toBe("25")
+    expect(lastCall.rules[0].assignment).toBe("young")
+  })
+
+  it("updating val1 input calls onUpdateFactor with new value", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r2" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+    const inputs = screen.getAllByRole("textbox")
+    fireEvent.change(inputs[0], { target: { value: "30" } })
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules[0].val1).toBe("30")
+  })
+
+  it("updating op2 select calls onUpdateFactor with new value", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r3" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+    const selects = screen.getAllByRole("combobox")
+    fireEvent.change(selects[1], { target: { value: "<=" } })
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules[0].op2).toBe("<=")
+  })
+
+  it("updating val2 input calls onUpdateFactor with new value", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "25", op2: "<", val2: "60", assignment: "young", _id: "r4" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+    const inputs = screen.getAllByRole("textbox")
+    fireEvent.change(inputs[1], { target: { value: "50" } })
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules[0].val2).toBe("50")
+  })
+
+  it("updating assignment input calls onUpdateFactor with new value", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r5" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+    const inputs = screen.getAllByRole("textbox")
+    const assignmentInput = inputs[inputs.length - 1]
+    fireEvent.change(assignmentInput, { target: { value: "youth" } })
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules[0].assignment).toBe("youth")
+  })
+
+  it("delete button removes the correct rule from the middle", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "a" },
+      { op1: ">=", val1: "25", op2: "<", val2: "60", assignment: "mid", _id: "b" },
+      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "c" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+    const deleteButtons = screen.getAllByRole("button")
+    fireEvent.click(deleteButtons[1])
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules).toHaveLength(2)
+    expect(lastCall.rules[0].assignment).toBe("young")
+    expect(lastCall.rules[1].assignment).toBe("old")
+  })
+
+  it("rules with _id are preserved across re-render", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "stable1" },
+      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "stable2" },
+    ] as unknown as ContinuousRule[]
+    const { rerender } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    rerender(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    const calls = onUpdate.mock.calls
+    for (const call of calls) {
+      if (call[0].rules) {
+        expect(call[0].rules[0]._id).toBe("stable1")
+        expect(call[0].rules[1]._id).toBe("stable2")
+      }
+    }
+  })
 })

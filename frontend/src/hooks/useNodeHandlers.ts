@@ -39,6 +39,7 @@ export default function useNodeHandlers({
   const addToast = useToastStore((s) => s.addToast)
   const clearNode = useNodeResultsStore((s) => s.clearNode)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
+  const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
 
   const handleDeleteNode = useCallback((id: string) => {
     const { nodes: n, edges: e } = graphRef.current
@@ -48,7 +49,13 @@ export default function useNodeHandlers({
     setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
     clearNode(id)
     if (lastSelectedNodeRef.current?.id === id) lastSelectedNodeRef.current = null
-  }, [graphRef, lastSelectedNodeRef, setNodes, setEdges, setSelectedNode, setPreviewData, clearNode])
+
+    // Clear UI dialogs that reference the deleted node (Issues #8, #14)
+    const uiState = useUIStore.getState()
+    if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
+    const subDlg = uiState.submodelDialog
+    if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
+  }, [graphRef, lastSelectedNodeRef, setNodes, setEdges, setSelectedNode, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog])
 
   const handleDuplicateNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

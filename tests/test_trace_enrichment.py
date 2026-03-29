@@ -2566,3 +2566,949 @@ class TestEnrichRowLineageType:
             operation_type="sort",
         )
         assert result == "sorted"
+
+
+# ===========================================================================
+# Extended coverage tests for haute._trace_enrichment
+# ===========================================================================
+
+
+class TestExplainNullValue:
+    """Tests for explain_null_value covering all origin types."""
+
+    def test_non_null_value_returns_none(self):
+        from haute._trace_enrichment import explain_null_value
+
+        assert explain_null_value(value=42) is None
+
+    def test_null_no_context(self):
+        from haute._trace_enrichment import explain_null_value
+
+        result = explain_null_value(value=None, context=None)
+        assert result == "null value (unknown origin)"
+
+    def test_null_left_join(self):
+        from haute._trace_enrichment import explain_null_value
+
+        ctx = {
+            "join_type": "left",
+            "right_table": "rates",
+            "join_key": "region",
+            "join_value": "west",
+        }
+        result = explain_null_value(value=None, context=ctx)
+        assert "no match in rates" in result
+        assert "region = west" in result
+        assert "left join" in result
+
+    def test_null_left_join_defaults(self):
+        from haute._trace_enrichment import explain_null_value
+
+        result = explain_null_value(value=None, context={"join_type": "left"})
+        assert "no match in table" in result
+
+    def test_null_source_origin(self):
+        from haute._trace_enrichment import explain_null_value
+
+        result = explain_null_value(value=None, context={"origin": "source"})
+        assert result == "null in source data"
+
+    def test_null_computation_origin_with_error(self):
+        from haute._trace_enrichment import explain_null_value
+
+        ctx = {"origin": "computation", "error": "division by zero"}
+        result = explain_null_value(value=None, context=ctx)
+        assert "computation produced null" in result
+        assert "division by zero" in result
+
+    def test_null_computation_origin_no_error(self):
+        from haute._trace_enrichment import explain_null_value
+
+        result = explain_null_value(value=None, context={"origin": "computation"})
+        assert result == "computation produced null"
+
+    def test_null_unknown_origin(self):
+        from haute._trace_enrichment import explain_null_value
+
+        result = explain_null_value(value=None, context={"origin": "unknown_thing"})
+        assert result == "null value"
+
+    def test_null_empty_context(self):
+        from haute._trace_enrichment import explain_null_value
+
+        result = explain_null_value(value=None, context={})
+        assert result == "null value"
+
+    def test_value_zero_is_not_null(self):
+        from haute._trace_enrichment import explain_null_value
+
+        assert explain_null_value(value=0) is None
+
+    def test_value_empty_string_is_not_null(self):
+        from haute._trace_enrichment import explain_null_value
+
+        assert explain_null_value(value="") is None
+
+
+class TestMatchContinuousRule:
+    """Tests for _match_continuous_rule with all operator combinations."""
+
+    def test_less_than_true(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(5, {"op1": "<", "val1": 10}) is True
+
+    def test_less_than_false(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(10, {"op1": "<", "val1": 10}) is False
+
+    def test_less_than_equal_true(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(10, {"op1": "<=", "val1": 10}) is True
+
+    def test_less_than_equal_false(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(11, {"op1": "<=", "val1": 10}) is False
+
+    def test_greater_than_true(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(15, {"op1": ">", "val1": 10}) is True
+
+    def test_greater_than_false(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(10, {"op1": ">", "val1": 10}) is False
+
+    def test_greater_than_equal_true(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(10, {"op1": ">=", "val1": 10}) is True
+
+    def test_greater_than_equal_false(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(9, {"op1": ">=", "val1": 10}) is False
+
+    def test_equal_single_eq(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(10, {"op1": "=", "val1": 10}) is True
+
+    def test_equal_double_eq(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(10, {"op1": "==", "val1": 10}) is True
+
+    def test_not_equal(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(5, {"op1": "!=", "val1": 10}) is True
+        assert _match_continuous_rule(10, {"op1": "!=", "val1": 10}) is False
+
+    def test_not_equal_diamond(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(5, {"op1": "<>", "val1": 10}) is True
+        assert _match_continuous_rule(10, {"op1": "<>", "val1": 10}) is False
+
+    def test_two_conditions_range(self):
+        """Test a range rule: val >= 10 AND val < 20."""
+        from haute._trace_enrichment import _match_continuous_rule
+
+        rule = {"op1": ">=", "val1": 10, "op2": "<", "val2": 20}
+        assert _match_continuous_rule(10, rule) is True
+        assert _match_continuous_rule(15, rule) is True
+        assert _match_continuous_rule(20, rule) is False
+        assert _match_continuous_rule(9, rule) is False
+
+    def test_none_input_returns_false(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(None, {"op1": "<", "val1": 10}) is False
+
+    def test_non_numeric_input_returns_false(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule("abc", {"op1": "<", "val1": 10}) is False
+
+    def test_empty_rule_returns_true(self):
+        """No operators means no conditions to fail."""
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(5, {}) is True
+
+    def test_missing_val_skips_condition(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(5, {"op1": "<", "val1": ""}) is True
+
+    def test_non_numeric_threshold_skips(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(5, {"op1": "<", "val1": "abc"}) is True
+
+    def test_unknown_operator_skips(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule(5, {"op1": "??", "val1": 10}) is True
+
+    def test_string_numeric_input(self):
+        from haute._trace_enrichment import _match_continuous_rule
+
+        assert _match_continuous_rule("5", {"op1": "<", "val1": 10}) is True
+
+
+class TestEnrichBandingRealConfig:
+    """Tests for enrich_banding with real Haute config format."""
+
+    def test_categorical_banding_match(self):
+        """Categorical banding matches input value to rule."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "vehicle_type",
+                    "outputColumn": "vehicle_band",
+                    "banding": "categorical",
+                    "rules": [
+                        {"value": "sedan", "assignment": "A"},
+                        {"value": "suv", "assignment": "B"},
+                        {"value": "truck", "assignment": "C"},
+                    ],
+                    "default": "D",
+                }
+            ]
+        }
+        input_row = {"vehicle_type": "suv"}
+        output_row = {"vehicle_band": "B"}
+
+        result = enrich_banding(config, input_row, output_row)
+
+        assert result["detail_type"] == "banding"
+        assert result["selected_band"] == "B"
+        assert result["rule_index"] == 1
+        assert result["is_default"] is False
+        assert result["input_value"] == "suv"
+        assert len(result["factors"]) == 1
+        factor = result["factors"][0]
+        assert factor["banding_type"] == "categorical"
+        assert factor["column"] == "vehicle_type"
+        assert factor["output_column"] == "vehicle_band"
+
+    def test_categorical_banding_default(self):
+        """Categorical banding falls to default when no rule matches."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "vehicle_type",
+                    "outputColumn": "vehicle_band",
+                    "banding": "categorical",
+                    "rules": [
+                        {"value": "sedan", "assignment": "A"},
+                    ],
+                    "default": "X",
+                }
+            ]
+        }
+        input_row = {"vehicle_type": "motorcycle"}
+        output_row = {"vehicle_band": "X"}
+
+        result = enrich_banding(config, input_row, output_row)
+        assert result["is_default"] is True
+        assert result["rule_index"] == -1
+
+    def test_continuous_banding_match(self):
+        """Continuous banding matches a range rule."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [
+                        {"op1": "<", "val1": 25, "assignment": "young"},
+                        {"op1": ">=", "val1": 25, "op2": "<", "val2": 65, "assignment": "adult"},
+                        {"op1": ">=", "val1": 65, "assignment": "senior"},
+                    ],
+                    "default": "unknown",
+                }
+            ]
+        }
+        input_row = {"age": 35}
+        output_row = {"age_band": "adult"}
+
+        result = enrich_banding(config, input_row, output_row)
+        assert result["selected_band"] == "adult"
+        assert result["rule_index"] == 1
+        assert result["is_default"] is False
+
+    def test_continuous_banding_no_match_uses_default(self):
+        """Continuous banding falls to default when no rule matches."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "score",
+                    "outputColumn": "score_band",
+                    "banding": "continuous",
+                    "rules": [
+                        {"op1": "<", "val1": 0, "assignment": "negative"},
+                    ],
+                    "default": "other",
+                }
+            ]
+        }
+        input_row = {"score": 50}
+        output_row = {"score_band": "other"}
+
+        result = enrich_banding(config, input_row, output_row)
+        assert result["is_default"] is True
+        assert result["rule_index"] == -1
+
+    def test_multiple_factors(self):
+        """Multiple banding factors processed independently."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "default": None,
+                },
+                {
+                    "column": "region",
+                    "outputColumn": "region_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "north", "assignment": "N"}],
+                    "default": None,
+                },
+            ]
+        }
+        input_row = {"age": 20, "region": "north"}
+        output_row = {"age_band": "young", "region_band": "N"}
+
+        result = enrich_banding(config, input_row, output_row)
+        assert len(result["factors"]) == 2
+        # Top-level convenience uses first factor
+        assert result["selected_band"] == "young"
+        assert result["input_value"] == 20
+
+    def test_continuous_banding_none_input(self):
+        """Continuous banding with None input value does not match any rule."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "default": "unknown",
+                }
+            ]
+        }
+        input_row = {"age": None}
+        output_row = {"age_band": "unknown"}
+
+        result = enrich_banding(config, input_row, output_row)
+        assert result["is_default"] is True
+
+
+class TestEnrichSingleTable:
+    """Tests for _enrich_single_table covering entry matching and defaults."""
+
+    def test_entry_match(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "factors": ["region"],
+            "entries": [
+                {"region": "north", "rate": 1.1},
+                {"region": "south", "rate": 0.9},
+            ],
+            "outputColumn": "rate",
+            "defaultValue": None,
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "north"},
+            output_row={"rate": 1.1},
+        )
+        assert result["matched"] is True
+        assert result["rate_value"] == 1.1
+        assert result["matched_entry"] is not None
+        assert result["matched_entry"]["region"] == "north"
+        assert result["default_used"] is False
+
+    def test_no_entry_match_uses_default(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "factors": ["region"],
+            "entries": [
+                {"region": "north", "rate": 1.1},
+            ],
+            "outputColumn": "rate",
+            "defaultValue": "0.5",
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "west"},
+            output_row={"rate": 0.5},
+        )
+        assert result["default_used"] is True
+        assert result["matched"] is False
+        assert result["default_value"] == 0.5
+
+    def test_no_match_no_default(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "factors": ["region"],
+            "entries": [{"region": "north", "rate": 1.1}],
+            "outputColumn": "rate",
+            "defaultValue": None,
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "west"},
+            output_row={"rate": None},
+        )
+        assert result["matched"] is False
+        assert result["default_used"] is False
+        assert result["rate_value"] is None
+
+    def test_default_value_non_numeric(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "factors": ["region"],
+            "entries": [],
+            "outputColumn": "rate",
+            "defaultValue": "not_a_number",
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "west"},
+            output_row={"rate": 0.5},
+        )
+        # non-numeric default can't be parsed, so default_val is None
+        assert result["default_value"] is None
+
+    def test_default_value_empty_string(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "factors": ["region"],
+            "entries": [],
+            "outputColumn": "rate",
+            "defaultValue": "",
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "west"},
+            output_row={"rate": 0.5},
+        )
+        assert result["default_value"] is None
+
+    def test_default_value_infinity(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "factors": ["region"],
+            "entries": [],
+            "outputColumn": "rate",
+            "defaultValue": "inf",
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "west"},
+            output_row={"rate": 0.5},
+        )
+        # infinity is not finite, so default_val should be None
+        assert result["default_value"] is None
+
+    def test_multi_factor_entry_match(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "factors": ["region", "tier"],
+            "entries": [
+                {"region": "north", "tier": "gold", "rate": 1.5},
+                {"region": "north", "tier": "silver", "rate": 1.2},
+            ],
+            "outputColumn": "rate",
+            "defaultValue": None,
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "north", "tier": "silver"},
+            output_row={"rate": 1.2},
+        )
+        assert result["matched"] is True
+        assert result["matched_entry"]["tier"] == "silver"
+        assert result["lookup_keys"] == {"region": "north", "tier": "silver"}
+
+
+class TestEnrichRatingStepRealConfig:
+    """Tests for enrich_rating_step with real Haute config (tables list)."""
+
+    def test_single_table(self):
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [
+                {
+                    "factors": ["region"],
+                    "entries": [
+                        {"region": "north", "rate": 1.1},
+                        {"region": "south", "rate": 0.9},
+                    ],
+                    "outputColumn": "rate",
+                    "defaultValue": None,
+                }
+            ]
+        }
+        result = enrich_rating_step(
+            config,
+            input_row={"region": "north"},
+            output_row={"rate": 1.1},
+        )
+        assert result["detail_type"] == "rating_step"
+        assert result["matched_key"] == {"region": "north"}
+        assert result["rate_value"] == 1.1
+        assert result["matched"] is True
+        assert "tables" in result
+        assert len(result["tables"]) == 1
+
+    def test_multiple_tables_with_combined_column(self):
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [
+                {
+                    "factors": ["region"],
+                    "entries": [{"region": "north", "rate_a": 1.1}],
+                    "outputColumn": "rate_a",
+                    "defaultValue": None,
+                },
+                {
+                    "factors": ["tier"],
+                    "entries": [{"tier": "gold", "rate_b": 2.0}],
+                    "outputColumn": "rate_b",
+                    "defaultValue": None,
+                },
+            ],
+            "operation": "multiply",
+            "combinedColumn": "combined_rate",
+        }
+        result = enrich_rating_step(
+            config,
+            input_row={"region": "north", "tier": "gold"},
+            output_row={"rate_a": 1.1, "rate_b": 2.0, "combined_rate": 2.2},
+        )
+        assert result["detail_type"] == "rating_step"
+        assert "combined" in result
+        assert result["combined"]["column"] == "combined_rate"
+        assert result["combined"]["operation"] == "multiply"
+        assert result["combined"]["value"] == 2.2
+        assert result["combined"]["input_values"] == [1.1, 2.0]
+        # Multiple tables: matched_key is union of all lookup keys
+        assert result["matched_key"] == {"region": "north", "tier": "gold"}
+        # rate_value is the combined value
+        assert result["rate_value"] == 2.2
+        # matched if any table matched
+        assert result["matched"] is True
+
+    def test_multiple_tables_no_combined_column(self):
+        """Multiple tables without a combinedColumn should not have combined key."""
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [
+                {
+                    "factors": ["region"],
+                    "entries": [{"region": "north", "rate_a": 1.1}],
+                    "outputColumn": "rate_a",
+                    "defaultValue": None,
+                },
+                {
+                    "factors": ["tier"],
+                    "entries": [{"tier": "gold", "rate_b": 2.0}],
+                    "outputColumn": "rate_b",
+                    "defaultValue": None,
+                },
+            ],
+        }
+        result = enrich_rating_step(
+            config,
+            input_row={"region": "north", "tier": "gold"},
+            output_row={"rate_a": 1.1, "rate_b": 2.0},
+        )
+        assert "combined" not in result
+
+    def test_join_key_list(self):
+        """Simplified config with join_key as a list."""
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {"join_key": ["region", "tier"], "rate_column": "rate"}
+        result = enrich_rating_step(
+            config,
+            input_row={"region": "north", "tier": "gold"},
+            output_row={"rate": 1.5},
+        )
+        assert result["matched_key"] == {"region": "north", "tier": "gold"}
+        assert result["matched"] is True
+
+    def test_empty_tables_falls_to_simple_config(self):
+        """Empty tables list falls back to simple config."""
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {"tables": [], "join_key": "region", "rate_column": "rate"}
+        result = enrich_rating_step(
+            config,
+            input_row={"region": "north"},
+            output_row={"rate": 1.1},
+        )
+        assert result["matched_key"] == {"region": "north"}
+
+
+class TestEnrichModelScoreRealConfig:
+    """Tests for enrich_model_score with real Haute config."""
+
+    def test_source_type_run(self):
+        from haute._trace_enrichment import enrich_model_score
+
+        config = {
+            "output_column": "prediction",
+            "sourceType": "run",
+            "run_id": "abc123",
+            "task": "regression",
+        }
+        input_row = {"feat1": 1.0, "feat2": 2.0}
+        output_row = {"feat1": 1.0, "feat2": 2.0, "prediction": 0.85}
+
+        result = enrich_model_score(config, input_row, output_row)
+        assert result["detail_type"] == "model_score"
+        assert result["prediction_value"] == 0.85
+        assert result["prediction_column"] == "prediction"
+        assert result["model_identity"]["source_type"] == "run"
+        assert result["model_identity"]["run_id"] == "abc123"
+        assert result["model_identity"]["task"] == "regression"
+
+    def test_source_type_registered(self):
+        from haute._trace_enrichment import enrich_model_score
+
+        config = {
+            "output_column": "score",
+            "sourceType": "registered",
+            "registered_model": "my_model",
+            "version": "3",
+            "task": "classification",
+        }
+        input_row = {"x1": 10, "x2": 20}
+        output_row = {"x1": 10, "x2": 20, "score": 0.72}
+
+        result = enrich_model_score(config, input_row, output_row)
+        assert result["model_identity"]["source_type"] == "registered"
+        assert result["model_identity"]["registered_model"] == "my_model"
+        assert result["model_identity"]["version"] == "3"
+        assert result["model_identity"]["task"] == "classification"
+
+    def test_feature_columns_inferred(self):
+        """Feature columns inferred from input_row minus prediction column."""
+        from haute._trace_enrichment import enrich_model_score
+
+        config = {"output_column": "pred"}
+        input_row = {"feat_a": 1, "feat_b": 2, "pred": 0.5}
+        output_row = {"feat_a": 1, "feat_b": 2, "pred": 0.9}
+
+        result = enrich_model_score(config, input_row, output_row)
+        assert "feat_a" in result["feature_columns"]
+        assert "feat_b" in result["feature_columns"]
+        assert "pred" not in result["feature_columns"]
+        assert result["feature_values"]["feat_a"] == 1
+        assert result["feature_values"]["feat_b"] == 2
+
+    def test_feature_columns_explicit(self):
+        """Explicit feature_columns used when provided."""
+        from haute._trace_enrichment import enrich_model_score
+
+        config = {
+            "output_column": "pred",
+            "feature_columns": ["feat_a"],
+        }
+        input_row = {"feat_a": 1, "feat_b": 2}
+        output_row = {"feat_a": 1, "feat_b": 2, "pred": 0.9}
+
+        result = enrich_model_score(config, input_row, output_row)
+        assert result["feature_columns"] == ["feat_a"]
+
+
+class TestEnrichScenarioExpansionRealConfig:
+    """Tests for enrich_scenario_expansion with real config."""
+
+    def test_scenario_and_step_columns(self):
+        from haute._trace_enrichment import enrich_scenario_expansion
+
+        config = {
+            "scenario_column": "scenario",
+            "step_column": "step_idx",
+            "min_value": 0,
+            "max_value": 100,
+            "steps": 5,
+        }
+        input_row = {"id": 1}
+        output_row = {"id": 1, "scenario": "high", "step_idx": 3}
+
+        result = enrich_scenario_expansion(config, input_row, output_row)
+        assert result["detail_type"] == "scenario_expander"
+        assert result["scenario_value"] == "high"
+        assert result["scenario_column"] == "scenario"
+        assert result["scenario_index"] == 3
+        assert result["parameters"]["min_value"] == 0
+        assert result["parameters"]["max_value"] == 100
+        assert result["parameters"]["steps"] == 5
+
+    def test_column_name_fallback(self):
+        """Falls back to column_name if scenario_column is not set."""
+        from haute._trace_enrichment import enrich_scenario_expansion
+
+        config = {"column_name": "scen"}
+        output_row = {"scen": "base", "scenario_index": 0}
+
+        result = enrich_scenario_expansion(config, {}, output_row)
+        assert result["scenario_column"] == "scen"
+        assert result["scenario_value"] == "base"
+        assert result["scenario_index"] == 0
+
+    def test_default_step_column(self):
+        """Default step_column is scenario_index."""
+        from haute._trace_enrichment import enrich_scenario_expansion
+
+        config = {"scenario_column": "sc"}
+        output_row = {"sc": "low", "scenario_index": 2}
+
+        result = enrich_scenario_expansion(config, {}, output_row)
+        assert result["scenario_index"] == 2
+
+
+class TestEnrichLiveSwitchExtended:
+    """Extended tests for enrich_live_switch."""
+
+    def test_three_branches(self):
+        from haute._trace_enrichment import enrich_live_switch
+
+        config = {
+            "input_scenario_map": {
+                "branch_a": "live",
+                "branch_b": "batch",
+                "branch_c": "test",
+            }
+        }
+        result = enrich_live_switch(config, source="batch")
+        assert result["active_branch"] == "branch_b"
+        assert result["active_scenario"] == "batch"
+        assert set(result["pruned_branches"]) == {"branch_a", "branch_c"}
+
+    def test_no_matching_branch(self):
+        from haute._trace_enrichment import enrich_live_switch
+
+        config = {
+            "input_scenario_map": {"a": "x", "b": "y"},
+        }
+        result = enrich_live_switch(config, source="z")
+        assert result["active_branch"] == ""
+        assert result["active_scenario"] == ""
+        assert set(result["pruned_branches"]) == {"a", "b"}
+
+    def test_empty_map(self):
+        from haute._trace_enrichment import enrich_live_switch
+
+        config = {"input_scenario_map": {}}
+        result = enrich_live_switch(config, source="live")
+        assert result["detail_type"] == "live_switch"
+        assert result["active_branch"] == ""
+        assert result["pruned_branches"] == []
+
+
+class TestDetectRowLineageTypeExtended:
+    """Extended tests covering all branches of detect_row_lineage_type."""
+
+    def test_api_input_created(self):
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(node_type="apiInput", output_row_count=5)
+        assert result == "created"
+
+    def test_live_switch_selected(self):
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(node_type="liveSwitch", output_row_count=5)
+        assert result == "selected"
+
+    def test_groupby_operation(self):
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        assert detect_row_lineage_type(operation_type="groupby") == "aggregated"
+
+    def test_agg_operation(self):
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        assert detect_row_lineage_type(operation_type="agg") == "aggregated"
+
+    def test_sort_by_operation(self):
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        assert detect_row_lineage_type(operation_type="sort_by") == "sorted"
+
+    def test_explode_operation(self):
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        assert detect_row_lineage_type(operation_type="explode") == "expanded"
+
+    def test_scenario_expand_operation(self):
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        assert detect_row_lineage_type(operation_type="scenario_expand") == "expanded"
+
+    def test_fallback_created_from_zero(self):
+        """Zero input rows + positive output rows = created (fallback)."""
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(
+            input_row_count=0,
+            output_row_count=5,
+            node_type="custom",
+            operation_type="custom_op",
+        )
+        assert result == "created"
+
+    def test_fallback_filtered_from_counts(self):
+        """Output < input = filtered (fallback)."""
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(
+            input_row_count=10,
+            output_row_count=3,
+            node_type="custom",
+            operation_type="custom_op",
+        )
+        assert result == "filtered"
+
+    def test_fallback_expanded_from_counts(self):
+        """Output > input = expanded (fallback)."""
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(
+            input_row_count=5,
+            output_row_count=15,
+            node_type="custom",
+            operation_type="custom_op",
+        )
+        assert result == "expanded"
+
+    def test_fallback_passthrough_equal_counts(self):
+        """Output == input = passthrough (fallback)."""
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(
+            input_row_count=10,
+            output_row_count=10,
+            node_type="custom",
+            operation_type="custom_op",
+        )
+        assert result == "passthrough"
+
+    def test_none_input_row_count_fallback(self):
+        """None input_row_count defaults to 0."""
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(
+            input_row_count=None,
+            output_row_count=5,
+            node_type="custom",
+            operation_type="custom_op",
+        )
+        assert result == "created"
+
+    def test_no_args_passthrough(self):
+        """No arguments defaults to passthrough."""
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        assert detect_row_lineage_type() == "passthrough"
+
+    def test_detect_row_lineage_type_zero_rows(self):
+        """input_row_count=0 and output_row_count=0 should return passthrough."""
+        from haute._trace_enrichment import detect_row_lineage_type
+
+        result = detect_row_lineage_type(
+            input_row_count=0,
+            output_row_count=0,
+            node_type="polars",
+            operation_type="with_columns",
+        )
+        assert result == "passthrough"
+
+
+class TestEnrichBandingEmptyInputRow:
+    """Edge case: empty dict as input_row for enrich_banding."""
+
+    @pytest.fixture()
+    def _import_enrichment(self):
+        pytest.importorskip("haute._trace_enrichment")
+
+    @pytest.mark.usefixtures("_import_enrichment")
+    def test_enrich_banding_empty_input_row(self):
+        """enrich_banding handles an empty dict as input_row gracefully."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "input_column": "age",
+            "output_column": "age_band",
+            "rules": [
+                {"condition": "< 25", "value": "young"},
+                {"default": "senior"},
+            ],
+        }
+        input_data: dict = {}
+        output_data = {"age_band": "senior"}
+        detail = enrich_banding(config, input_data, output_data)
+        assert detail["detail_type"] == "banding"
+        assert detail["input_value"] is None
+        assert detail["selected_band"] == "senior"
+
+
+class TestEnrichRatingStepNullJoinKey:
+    """Edge case: None value in join key column for enrich_rating_step."""
+
+    @pytest.fixture()
+    def _import_enrichment(self):
+        pytest.importorskip("haute._trace_enrichment")
+
+    @pytest.mark.usefixtures("_import_enrichment")
+    def test_enrich_rating_step_null_join_key(self):
+        """enrich_rating_step handles None value in join key column."""
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {"join_key": "region", "rate_column": "rate"}
+        input_data = {"region": None, "base": 100}
+        output_data = {"region": None, "base": 100, "rate": None}
+        detail = enrich_rating_step(config, input_data, output_data)
+        assert detail["detail_type"] == "rating_step"
+        assert detail["matched_key"] == {"region": None}
+        assert detail["matched"] is False

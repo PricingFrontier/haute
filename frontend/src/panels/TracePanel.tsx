@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useEffect } from "react"
 import { X, ChevronDown, ChevronRight, Scan, Copy, Check } from "lucide-react"
 import type { TraceResult, TraceStep } from "../types/trace"
 import { nodeTypeLabels, nodeTypeColors } from "../utils/nodeTypes"
@@ -358,6 +358,10 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const [detailLevel, setDetailLevel] = useState<DetailLevel>("sources")
   const [copied, setCopied] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  // Clear copy timer on unmount
+  useEffect(() => () => clearTimeout(copyTimerRef.current), [])
 
   const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])
   // Build a set of node IDs that are collapsed (pass-through)
@@ -389,7 +393,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
       document.body.removeChild(ta)
     }
     setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
   }
 
   // Split steps into visible vs hidden

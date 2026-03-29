@@ -414,6 +414,73 @@ pipeline.connect("source", "bad")
         assert result.exit_code == 1
         assert "failed" in result.output.lower() or "✗" in result.output
 
+    def test_run_shows_output_preview(self, runner: CliRunner, project_dir: Path):
+        """Successful run should show output preview from last node."""
+        pipeline_file = str(project_dir / "main.py")
+        result = runner.invoke(
+            cli,
+            ["run", pipeline_file],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        # The output preview should show data from the last node
+        assert "Output" in result.output or "rows" in result.output
+
+    def test_run_shows_pipeline_name(self, runner: CliRunner, project_dir: Path):
+        """Run output should display pipeline name and node count."""
+        pipeline_file = str(project_dir / "main.py")
+        result = runner.invoke(
+            cli,
+            ["run", pipeline_file],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Pipeline: test_cli" in result.output
+        assert "2 nodes" in result.output
+
+    def test_run_shows_per_node_success(self, runner: CliRunner, project_dir: Path):
+        """Successful nodes should show row x col counts."""
+        pipeline_file = str(project_dir / "main.py")
+        result = runner.invoke(
+            cli,
+            ["run", pipeline_file],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        # Each successful node shows rows x cols
+        assert "rows" in result.output
+        assert "cols" in result.output
+
+    def test_run_parse_error(self, runner: CliRunner, tmp_path: Path):
+        """A .py file that raises during parsing should give a parse error."""
+        bad = tmp_path / "parse_error.py"
+        bad.write_text("raise SyntaxError('deliberate')\n")
+        result = runner.invoke(cli, ["run", str(bad)])
+        assert result.exit_code == 1
+        assert "error" in result.output.lower()
+
+    def test_run_execute_error(self, runner: CliRunner, tmp_path: Path):
+        """When execute_graph raises, the error is reported."""
+        from unittest.mock import MagicMock, patch
+
+        from haute.graph_utils import PipelineGraph
+
+        mock_graph = MagicMock(spec=PipelineGraph)
+        mock_graph.nodes = [MagicMock()]  # non-empty
+        mock_graph.pipeline_name = "test"
+
+        with (
+            patch("haute.cli._helpers.resolve_pipeline_file", return_value=tmp_path / "x.py"),
+            patch("haute.parser.parse_pipeline_file", return_value=mock_graph),
+            patch(
+                "haute.executor.execute_graph",
+                side_effect=RuntimeError("execution boom"),
+            ),
+        ):
+            result = runner.invoke(cli, ["run", str(tmp_path / "x.py")])
+        assert result.exit_code == 1
+        assert "execution boom" in result.output.lower() or "error" in result.output.lower()
+
 
 # ---------------------------------------------------------------------------
 # haute serve (smoke test only - can't test the long-running server)

@@ -28,7 +28,11 @@ def read_source(path: str) -> pl.LazyFrame:
     Raises:
         ValueError: If the file extension is not supported.
     """
+    import re as _re
     from pathlib import Path as _Path
+
+    if _re.match(r"[a-zA-Z][a-zA-Z0-9+\-.]*://", path):
+        raise ValueError(f"Path '{path}' looks like a URL and is not allowed")
 
     if ".." in _Path(path).parts:
         raise ValueError(f"Path '{path}' contains '..' and is not allowed")

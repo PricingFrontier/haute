@@ -661,3 +661,200 @@ pipeline.connect("source", "transform")
         names1 = {n.id for n in graph1.nodes}
         names2 = {n.id for n in graph2.nodes}
         assert names1 == names2
+
+
+# ---------------------------------------------------------------------------
+# Submodel edge-case tests
+# ---------------------------------------------------------------------------
+
+
+class TestCircularSubmodelReferences:
+    def test_circular_submodel_refs_terminate(self, tmp_path):
+        main_code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("circular_main")
+
+
+@pipeline.data_source(path="d.parquet")
+def src() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+pipeline.submodel("sub_b.py")
+'''
+        sub_b_code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("circular_b")
+
+pipeline.submodel("test_pipeline.py")
+
+@pipeline.data_source(path="d.parquet")
+def b_node() -> pl.DataFrame:
+    return pl.DataFrame()
+'''
+        (tmp_path / "test_pipeline.py").write_text(main_code)
+        (tmp_path / "sub_b.py").write_text(sub_b_code)
+
+        graph = parse_pipeline_file(tmp_path / "test_pipeline.py")
+
+        assert graph.pipeline_name == "circular_main"
+        assert len(graph.nodes) >= 1
+
+
+class TestNonExistentSubmodelFilePath:
+    def test_nonexistent_submodel_skipped(self, tmp_path):
+        code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("missing_sub")
+
+
+@pipeline.data_source(path="d.parquet")
+def src() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+pipeline.submodel("nonexistent.py")
+'''
+        p = _write_pipeline(tmp_path, code)
+        graph = parse_pipeline_file(p)
+
+        assert graph.pipeline_name == "missing_sub"
+        assert len(graph.nodes) == 1
+        assert graph.nodes[0].id == "src"
+
+
+class TestFileWithUtf8Bom:
+    def test_bom_prefix_parses_correctly(self, tmp_path):
+        code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("bom_test")
+
+
+@pipeline.polars
+def node_a() -> pl.DataFrame:
+    """A node."""
+    return pl.DataFrame()
+'''
+        p = tmp_path / "bom_pipeline.py"
+        p.write_bytes(b"\xef\xbb\xbf" + code.encode("utf-8"))
+        graph = parse_pipeline_file(p)
+
+        assert graph.pipeline_name == "bom_test"
+        assert len(graph.nodes) == 1
+        assert graph.nodes[0].id == "node_a"
+
+
+class TestSubmodelNameCollision:
+    def test_same_submodel_name_is_deterministic(self, tmp_path):
+        sub_a_code = '''\
+import polars as pl
+import haute
+
+submodel = haute.Submodel("shared_name", description="first")
+
+
+@submodel.polars
+def step_from_a() -> pl.DataFrame:
+    return pl.DataFrame()
+'''
+        sub_b_code = '''\
+import polars as pl
+import haute
+
+submodel = haute.Submodel("shared_name", description="second")
+
+
+@submodel.polars
+def step_from_b() -> pl.DataFrame:
+    return pl.DataFrame()
+'''
+        main_code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("collision_parent")
+
+
+@pipeline.data_source(path="d.parquet")
+def src() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+pipeline.submodel("sub_a.py")
+pipeline.submodel("sub_b.py")
+'''
+        (tmp_path / "sub_a.py").write_text(sub_a_code)
+        (tmp_path / "sub_b.py").write_text(sub_b_code)
+        p = _write_pipeline(tmp_path, main_code)
+        graph = parse_pipeline_file(p)
+
+        assert graph.pipeline_name == "collision_parent"
+        assert len(graph.nodes) >= 1
+
+
+class TestEmptySubmodelFile:
+    def test_empty_submodel_handled_gracefully(self, tmp_path):
+        main_code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("empty_sub_parent")
+
+
+@pipeline.data_source(path="d.parquet")
+def src() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+pipeline.submodel("empty_sub.py")
+'''
+        (tmp_path / "empty_sub.py").write_text("")
+        p = _write_pipeline(tmp_path, main_code)
+        graph = parse_pipeline_file(p)
+
+        assert graph.pipeline_name == "empty_sub_parent"
+        assert len(graph.nodes) >= 1
+        assert graph.nodes[0].id == "src"
+
+
+class TestSubmodelFileWithSyntaxError:
+    def test_syntax_error_submodel_no_crash(self, tmp_path):
+        broken_sub_code = '''\
+import polars as pl
+import haute
+
+submodel = haute.Submodel("broken_sub")
+
+
+@submodel.polars
+def broken_step() -> pl.DataFrame:
+    return pl.DataFrame(
+'''
+        main_code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("syntax_err_parent")
+
+
+@pipeline.data_source(path="d.parquet")
+def src() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+pipeline.submodel("broken_sub.py")
+'''
+        (tmp_path / "broken_sub.py").write_text(broken_sub_code)
+        p = _write_pipeline(tmp_path, main_code)
+        graph = parse_pipeline_file(p)
+
+        assert graph.pipeline_name == "syntax_err_parent"
+        assert len(graph.nodes) >= 1

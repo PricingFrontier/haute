@@ -433,10 +433,134 @@ describe("traceToMarkdown", () => {
     const trace = makeTrace({ column: null, output_value: null })
     const md = traceToMarkdown(trace, null)
 
-    // Header should not reference a specific column
-    // Should say something like "Trace: Full Row" or just "Trace"
     expect(md).toContain("# Trace")
-    // Should NOT contain "premium" since column is null
     expect(md).not.toMatch(/# Trace.*premium/)
+  })
+
+  it("column is null: header is just '# Trace' without equals sign", () => {
+    const trace = makeTrace({ column: null, output_value: 123 })
+    const md = traceToMarkdown(trace, null)
+
+    const headerLine = md.split("\n").find((l) => l.startsWith("# "))
+    expect(headerLine).toBe("# Trace")
+  })
+
+  it("special values: null formatted as 'null' in header", () => {
+    const trace = makeTrace({ output_value: null })
+    const target = trace.steps[1]
+    const md = traceToMarkdown(trace, target)
+
+    expect(md).toContain("premium = null")
+  })
+
+  it("special values: NaN in calculation input values", () => {
+    const trace = makeTrace({
+      steps: [
+        makeStep({ node_id: "n1", node_name: "Source", node_type: "source" }),
+        makeStep({
+          node_id: "n2",
+          node_name: "Calc",
+          node_type: "polars",
+          schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+          expression: {
+            expression_text: "col('x')",
+            expression_type: "polars",
+            referenced_columns: ["x"],
+          },
+          calculation: {
+            substituted_text: "NaN",
+            result_value: NaN,
+            input_values: { x: NaN },
+          },
+        }),
+      ],
+    })
+    const target = trace.steps[1]
+    const md = traceToMarkdown(trace, target)
+
+    expect(md).toContain("NaN")
+  })
+
+  it("special values: Infinity and -Infinity in output", () => {
+    const trace = makeTrace({ output_value: Infinity })
+    const target = trace.steps[1]
+    const md = traceToMarkdown(trace, target)
+
+    expect(md).toContain("Infinity")
+  })
+
+  it("node detail for rating steps included in data flow table", () => {
+    const trace = makeTrace({
+      steps: [
+        makeStep({ node_id: "n1", node_name: "Source", node_type: "source" }),
+        makeStep({
+          node_id: "n2",
+          node_name: "Rating Step",
+          node_type: "rating",
+          schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: ["age"] },
+          node_detail: {
+            detail_type: "rate_table_lookup",
+            lookup_keys: { age_band: "25-30" },
+            matched_row: 5,
+          },
+        }),
+      ],
+    })
+    const md = traceToMarkdown(trace, null)
+
+    expect(md).toContain("rate_table_lookup")
+    expect(md).toContain("age_band")
+    expect(md).toContain("25-30")
+    expect(md).toContain("matched_row")
+  })
+
+  it("empty steps array produces minimal output with header but no data flow", () => {
+    const trace = makeTrace({ steps: [] })
+    const md = traceToMarkdown(trace, null)
+
+    expect(md).toContain("# Trace")
+    expect(md).toContain("**Row**")
+    expect(md).toContain("**Execution**")
+    expect(md).not.toContain("## Data Flow")
+  })
+
+  it("pipe characters in node names are escaped in markdown table", () => {
+    const trace = makeTrace({
+      steps: [
+        makeStep({
+          node_id: "n1",
+          node_name: "Node | With | Pipes",
+          node_type: "polars",
+          schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+        }),
+      ],
+    })
+    const md = traceToMarkdown(trace, null)
+
+    expect(md).toContain("Node \\| With \\| Pipes")
+    expect(md).not.toMatch(/\| Node \| With \| Pipes \|/)
+  })
+
+  it("pipe characters in expression text are escaped in data flow table", () => {
+    const trace = makeTrace({
+      steps: [
+        makeStep({
+          node_id: "n1",
+          node_name: "Expr Node",
+          node_type: "polars",
+          schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+          expression: {
+            expression_text: "a | b",
+            expression_type: "polars",
+            referenced_columns: ["a", "b"],
+          },
+        }),
+      ],
+    })
+    const md = traceToMarkdown(trace, null)
+
+    const tableLines = md.split("\n").filter((l) => l.startsWith("|") && l.includes("Expr Node"))
+    expect(tableLines.length).toBe(1)
+    expect(tableLines[0]).toContain("a \\| b")
   })
 })

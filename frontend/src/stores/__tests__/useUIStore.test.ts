@@ -4,6 +4,9 @@ import useUIStore from "../useUIStore"
 function reset() {
   useUIStore.setState({
     paletteOpen: true,
+    utilityOpen: false,
+    importsOpen: false,
+    gitOpen: false,
     shortcutsOpen: false,
     submodelDialog: null,
     renameDialog: null,
@@ -115,6 +118,28 @@ describe("useUIStore", () => {
       useUIStore.getState().setGitOpen(true)
       useUIStore.getState().setImportsOpen(true)
       expect(useUIStore.getState().gitOpen).toBe(false)
+    })
+  })
+
+  describe("setUtilityOpen mutual exclusion", () => {
+    it("closes git and imports when opening utility", () => {
+      useUIStore.getState().setGitOpen(true)
+      useUIStore.getState().setImportsOpen(true)
+      useUIStore.getState().setUtilityOpen(true)
+      expect(useUIStore.getState().utilityOpen).toBe(true)
+      expect(useUIStore.getState().gitOpen).toBe(false)
+      expect(useUIStore.getState().importsOpen).toBe(false)
+    })
+  })
+
+  describe("setImportsOpen mutual exclusion", () => {
+    it("closes git and utility when opening imports", () => {
+      useUIStore.getState().setGitOpen(true)
+      useUIStore.getState().setUtilityOpen(true)
+      useUIStore.getState().setImportsOpen(true)
+      expect(useUIStore.getState().importsOpen).toBe(true)
+      expect(useUIStore.getState().gitOpen).toBe(false)
+      expect(useUIStore.getState().utilityOpen).toBe(false)
     })
   })
 

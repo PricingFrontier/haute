@@ -172,4 +172,28 @@ describe("SubmodelPortNode", () => {
     expect(wrapper.style.boxShadow).not.toBe("none")
     expect(wrapper.style.boxShadow).toContain("rgba")
   })
+
+  it("displays portName when both portName and label are provided", () => {
+    renderPortNode({
+      portDirection: "input",
+      portName: "actual_port",
+      label: "label_text",
+    })
+    expect(screen.getByText("actual_port")).toBeTruthy()
+    expect(screen.queryByText("label_text")).toBeNull()
+  })
+
+  it("renders with missing portDirection gracefully", () => {
+    const props = makeProps({
+      portDirection: undefined as unknown as "input",
+      portName: "no_direction",
+    })
+    const { container } = render(
+      <ReactFlowProvider>
+        <SubmodelPortNode {...(props as unknown as NodeProps)} />
+      </ReactFlowProvider>,
+    )
+    expect(screen.getByText("no_direction")).toBeTruthy()
+    expect(container.querySelector(".rounded-full")).toBeTruthy()
+  })
 })

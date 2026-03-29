@@ -87,4 +87,19 @@ describe("ConfigInput", () => {
     expect(input.className).toContain("disabled:opacity-50")
     expect(input.className).toContain("disabled:cursor-not-allowed")
   })
+
+  it("disabled input has disabled attribute preventing interaction", () => {
+    render(<ConfigInput value="val" onChange={vi.fn()} disabled />)
+    const input = screen.getByRole("textbox") as HTMLInputElement
+    expect(input.disabled).toBe(true)
+    expect(input.getAttribute("disabled")).toBe("")
+  })
+
+  it("number input calls onChange with string value", () => {
+    const onChange = vi.fn()
+    render(<ConfigInput value="10" onChange={onChange} type="number" />)
+    const input = screen.getByRole("spinbutton") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "25" } })
+    expect(onChange).toHaveBeenCalledWith("25")
+  })
 })

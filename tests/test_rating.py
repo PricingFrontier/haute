@@ -1257,3 +1257,461 @@ class TestBugB2CategoricalBandingFalsyValues:
         ).collect()
         bands = result["band"].to_list()
         assert bands[0] == "zero_class"
+
+
+# ===========================================================================
+# Edge cases: _apply_banding
+# ===========================================================================
+
+
+class TestApplyBandingEdgeCases:
+
+    def test_null_values_get_default(self) -> None:
+        lf = pl.DataFrame({"x": [1.0, None, 5.0]}).lazy()
+        rules = [{"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"}]
+        result = _apply_banding(lf, "x", "band", "continuous", rules, default="fallback").collect()
+        assert result["band"].to_list() == ["low", "fallback", "low"]
+
+    def test_null_values_categorical_get_default(self) -> None:
+        lf = pl.DataFrame({"cat": ["A", None, "B"]}).lazy()
+        rules = [
+            {"value": "A", "assignment": "alpha"},
+            {"value": "B", "assignment": "beta"},
+        ]
+        result = _apply_banding(lf, "cat", "band", "categorical", rules, default="other").collect()
+        assert result["band"].to_list() == ["alpha", "other", "beta"]
+
+    def test_null_values_categorical_no_default(self) -> None:
+        lf = pl.DataFrame({"cat": ["A", None]}).lazy()
+        rules = [{"value": "A", "assignment": "alpha"}]
+        result = _apply_banding(lf, "cat", "band", "categorical", rules).collect()
+        assert result["band"].to_list() == ["alpha", None]
+
+    def test_float_precision_boundary(self) -> None:
+        val = 0.1 + 0.2
+        lf = pl.DataFrame({"x": [val]}).lazy()
+        rules = [
+            {"op1": ">=", "val1": 0, "op2": "<", "val2": 0.3, "assignment": "below"},
+            {"op1": ">=", "val1": 0.3, "op2": "<", "val2": 1.0, "assignment": "above"},
+        ]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["above"]
+
+    def test_overlapping_continuous_first_match_wins(self) -> None:
+        lf = pl.DataFrame({"x": [15.0]}).lazy()
+        rules = [
+            {"op1": ">=", "val1": 10, "op2": "<=", "val2": 20, "assignment": "first"},
+            {"op1": ">=", "val1": 10, "op2": "<=", "val2": 20, "assignment": "second"},
+        ]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["first"]
+
+    def test_negative_values_continuous(self) -> None:
+        lf = pl.DataFrame({"x": [-50.0, -1.0, 0.0]}).lazy()
+        rules = [
+            {"op1": ">=", "val1": -100, "op2": "<", "val2": -10, "assignment": "very_neg"},
+            {"op1": ">=", "val1": -10, "op2": "<=", "val2": 0, "assignment": "near_zero"},
+        ]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["very_neg", "near_zero", "near_zero"]
+
+    def test_inf_values_in_input(self) -> None:
+        lf = pl.DataFrame({"x": [float("inf"), float("-inf"), 5.0]}).lazy()
+        rules = [
+            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "normal"},
+        ]
+        result = _apply_banding(lf, "x", "band", "continuous", rules, default="out_of_range").collect()
+        assert result["band"][2] == "normal"
+        assert result["band"][0] == "out_of_range"
+        assert result["band"][1] == "out_of_range"
+
+    def test_categorical_numeric_column_cast(self) -> None:
+        lf = pl.DataFrame({"code": [100, 200, 300]}).lazy()
+        rules = [
+            {"value": "100", "assignment": "hundred"},
+            {"value": "200", "assignment": "two_hundred"},
+        ]
+        result = _apply_banding(lf, "code", "band", "categorical", rules).collect()
+        assert result["band"].to_list() == ["hundred", "two_hundred", None]
+
+    def test_output_column_overwrites_existing(self) -> None:
+        lf = pl.DataFrame({"x": [5.0], "band": ["old_value"]}).lazy()
+        rules = [{"op1": ">=", "val1": 0, "op2": "<=", "val2": 10, "assignment": "new"}]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["new"]
+
+    def test_large_number_of_rules(self) -> None:
+        rules = [
+            {"op1": ">=", "val1": i, "op2": "<", "val2": i + 1, "assignment": f"band_{i}"}
+            for i in range(150)
+        ]
+        lf = pl.DataFrame({"x": [0.5, 75.5, 149.5]}).lazy()
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["band_0", "band_75", "band_149"]
+
+    def test_empty_dataframe_continuous(self) -> None:
+        lf = pl.DataFrame({"x": pl.Series([], dtype=pl.Float64)}).lazy()
+        rules = [{"op1": ">", "val1": 0, "op2": "<", "val2": 10, "assignment": "a"}]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result.height == 0
+        assert "band" in result.columns
+
+    def test_empty_dataframe_categorical(self) -> None:
+        lf = pl.DataFrame({"x": pl.Series([], dtype=pl.Utf8)}).lazy()
+        rules = [{"value": "A", "assignment": "alpha"}]
+        result = _apply_banding(lf, "x", "band", "categorical", rules).collect()
+        assert result.height == 0
+        assert "band" in result.columns
+
+    def test_column_name_with_spaces(self) -> None:
+        lf = pl.DataFrame({"my column": [10.0, 20.0]}).lazy()
+        rules = [
+            {"op1": ">=", "val1": 0, "op2": "<", "val2": 15, "assignment": "low"},
+            {"op1": ">=", "val1": 15, "op2": "<=", "val2": 30, "assignment": "high"},
+        ]
+        result = _apply_banding(lf, "my column", "my band", "continuous", rules).collect()
+        assert result["my band"].to_list() == ["low", "high"]
+
+
+# ===========================================================================
+# Edge cases: _apply_rating_table
+# ===========================================================================
+
+
+class TestApplyRatingTableEdgeCases:
+
+    def test_non_existent_factor_in_entries_passthrough(self) -> None:
+        lf = pl.DataFrame({"region": ["North"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region", "missing_col"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": 1.0}],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert "factor" not in result.columns
+
+    def test_non_existent_factor_in_frame_raises(self) -> None:
+        lf = pl.DataFrame({"region": ["North"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["nonexistent"],
+            "outputColumn": "factor",
+            "entries": [{"nonexistent": "x", "value": 1.0}],
+        }
+        with pytest.raises((pl.exceptions.ColumnNotFoundError, pl.exceptions.SchemaError)):
+            _apply_rating_table(lf, table).collect()
+
+    def test_missing_value_key_in_entries(self) -> None:
+        lf = pl.DataFrame({"region": ["North"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "score": 1.5}],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert "factor" not in result.columns
+
+    def test_null_factor_values_in_entries(self) -> None:
+        lf = pl.DataFrame({"region": ["North", "South"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [
+                {"region": "North", "value": 1.2},
+                {"region": None, "value": 0.5},
+            ],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"][0] == 1.2
+
+    def test_empty_string_factor_value_in_entries(self) -> None:
+        lf = pl.DataFrame({"region": ["North", ""]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [
+                {"region": "North", "value": 1.2},
+                {"region": "", "value": 0.8},
+            ],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"].to_list() == [1.2, 0.8]
+
+    def test_duplicate_entries_keep_last(self) -> None:
+        lf = pl.DataFrame({"region": ["North"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [
+                {"region": "North", "value": 1.0},
+                {"region": "North", "value": 9.9},
+            ],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result.height == 1
+        assert result["factor"].to_list() == [9.9]
+
+    def test_default_value_zero(self) -> None:
+        lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": 1.2}],
+            "defaultValue": "0.0",
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"].to_list() == [1.2, 0.0]
+
+    def test_default_value_negative(self) -> None:
+        lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": 1.2}],
+            "defaultValue": "-5.0",
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"].to_list() == [1.2, -5.0]
+
+    def test_output_column_collision_with_existing(self) -> None:
+        lf = pl.DataFrame({"region": ["North"], "factor": [999.0]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": 1.5}],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"].to_list() == [1.5]
+
+    def test_empty_factors_list_passthrough(self) -> None:
+        lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
+        table: dict[str, Any] = {
+            "factors": [],
+            "outputColumn": "out",
+            "entries": [{"value": 1.0}],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert "out" not in result.columns
+        assert result["x"].to_list() == [1, 2, 3]
+
+    def test_inf_in_entries_rejected(self) -> None:
+        lf = pl.DataFrame({"region": ["North"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": float("inf")}],
+        }
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            _apply_rating_table(lf, table).collect()
+
+    def test_nan_in_entries_rejected(self) -> None:
+        lf = pl.DataFrame({"region": ["North"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": float("nan")}],
+        }
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            _apply_rating_table(lf, table).collect()
+
+    def test_neg_inf_in_entries_rejected(self) -> None:
+        lf = pl.DataFrame({"region": ["North"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": float("-inf")}],
+        }
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            _apply_rating_table(lf, table).collect()
+
+
+# ===========================================================================
+# Edge cases: _combine_rating_columns
+# ===========================================================================
+
+
+class TestCombineRatingColumnsEdgeCases:
+
+    def test_multiply_all_null_fills_one(self) -> None:
+        lf = pl.DataFrame(
+            {
+                "a": pl.Series([None, None], dtype=pl.Float64),
+                "b": pl.Series([None, None], dtype=pl.Float64),
+            }
+        ).lazy()
+        result = _combine_rating_columns(lf, ["a", "b"], "multiply", "out").collect()
+        assert result["out"].to_list() == [1.0, 1.0]
+
+    def test_add_all_null_fills_zero(self) -> None:
+        lf = pl.DataFrame(
+            {
+                "a": pl.Series([None, None], dtype=pl.Float64),
+                "b": pl.Series([None, None], dtype=pl.Float64),
+            }
+        ).lazy()
+        result = _combine_rating_columns(lf, ["a", "b"], "add", "out").collect()
+        assert result["out"].to_list() == [0.0, 0.0]
+
+    def test_min_with_nulls(self) -> None:
+        lf = pl.DataFrame(
+            {
+                "a": [3.0, None, 5.0],
+                "b": [None, None, 2.0],
+            }
+        ).lazy()
+        result = _combine_rating_columns(lf, ["a", "b"], "min", "out").collect()
+        assert result["out"].to_list() == [3.0, None, 2.0]
+
+    def test_max_with_nulls(self) -> None:
+        lf = pl.DataFrame(
+            {
+                "a": [3.0, None, 5.0],
+                "b": [None, None, 2.0],
+            }
+        ).lazy()
+        result = _combine_rating_columns(lf, ["a", "b"], "max", "out").collect()
+        assert result["out"].to_list() == [3.0, None, 5.0]
+
+    def test_non_existent_column_raises(self) -> None:
+        lf = pl.DataFrame({"a": [1.0]}).lazy()
+        with pytest.raises(Exception):
+            _combine_rating_columns(lf, ["a", "nonexistent"], "multiply", "out").collect()
+
+    def test_single_column_alias_only(self) -> None:
+        lf = pl.DataFrame({"src": [7.7]}).lazy()
+        result = _combine_rating_columns(lf, ["src"], "add", "dest").collect()
+        assert result["dest"].to_list() == [7.7]
+        assert "src" in result.columns
+
+    def test_empty_columns_passthrough(self) -> None:
+        lf = pl.DataFrame({"x": [1.0, 2.0]}).lazy()
+        result = _combine_rating_columns(lf, [], "add", "out").collect()
+        assert "out" not in result.columns
+        assert result.columns == ["x"]
+
+    def test_unknown_operation_defaults_to_multiply(self) -> None:
+        lf = pl.DataFrame({"a": [2.0], "b": [5.0]}).lazy()
+        result = _combine_rating_columns(lf, ["a", "b"], "foobar", "out").collect()
+        assert result["out"].to_list() == [10.0]
+
+
+# ---------------------------------------------------------------------------
+# Edge-case coverage
+# ---------------------------------------------------------------------------
+
+
+class TestOverlappingBandingRulesFirstMatchWins:
+    def test_first_matching_rule_wins(self) -> None:
+        lf = pl.DataFrame({"x": [5, 3, 10, 11]}).lazy()
+        rules = [
+            {"op1": "<=", "val1": 10, "assignment": "low"},
+            {"op1": "<=", "val1": 5, "assignment": "very_low"},
+        ]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["low", "low", "low", None]
+
+
+class TestCombineWithNonExistentColumnRaises:
+    def test_missing_column_raises_at_collect(self) -> None:
+        lf = pl.DataFrame({"a": [1.0]}).lazy()
+        result_lf = _combine_rating_columns(lf, ["missing_col"], "multiply", "out")
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
+            result_lf.collect()
+
+
+class TestBandingWithNanInContinuousRuleValues:
+    def test_nan_val_with_gt_operator_matches_nothing(self) -> None:
+        lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
+        rules = [
+            {"op1": ">", "val1": float("nan"), "assignment": "nan_band"},
+            {"op1": "<=", "val1": 10, "assignment": "valid_band"},
+        ]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["valid_band", "valid_band", "valid_band"]
+
+    def test_nan_val_with_le_operator_matches_all(self) -> None:
+        lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
+        rules = [
+            {"op1": "<=", "val1": float("nan"), "assignment": "nan_band"},
+            {"op1": "<=", "val1": 10, "assignment": "valid_band"},
+        ]
+        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        assert result["band"].to_list() == ["nan_band", "nan_band", "nan_band"]
+
+
+class TestRatingTableEmptyStringFactorValue:
+    def test_empty_string_matches(self) -> None:
+        lf = pl.DataFrame({"region": ["", "North", ""]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [
+                {"region": "", "value": 0.5},
+                {"region": "North", "value": 1.2},
+            ],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"].to_list() == [0.5, 1.2, 0.5]
+
+
+class TestRatingTableIntColumnStringEntries:
+    def test_utf8_cast_handles_int_vs_string(self) -> None:
+        lf = pl.DataFrame({"code": [1, 2, 3]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["code"],
+            "outputColumn": "val",
+            "entries": [
+                {"code": "1", "value": 10.0},
+                {"code": "2", "value": 20.0},
+            ],
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["val"].to_list() == [10.0, 20.0, None]
+
+
+class TestCombineMultiplyWithZero:
+    def test_multiply_zero_produces_zero(self) -> None:
+        lf = pl.DataFrame({"a": [5.0, 3.0], "b": [0.0, 0.0]}).lazy()
+        result = _combine_rating_columns(lf, ["a", "b"], "multiply", "out").collect()
+        assert result["out"].to_list() == [0.0, 0.0]
+
+
+class TestCombineMinMaxMixedValues:
+    def test_min_returns_smallest(self) -> None:
+        lf = pl.DataFrame({"a": [2.0], "b": [0.5], "c": [1.0]}).lazy()
+        result = _combine_rating_columns(lf, ["a", "b", "c"], "min", "out").collect()
+        assert result["out"].to_list() == [0.5]
+
+    def test_max_returns_largest(self) -> None:
+        lf = pl.DataFrame({"a": [2.0], "b": [0.5], "c": [1.0]}).lazy()
+        result = _combine_rating_columns(lf, ["a", "b", "c"], "max", "out").collect()
+        assert result["out"].to_list() == [2.0]
+
+
+class TestDefaultValueNegativeNumber:
+    def test_negative_default_applied(self) -> None:
+        lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "North", "value": 1.2}],
+            "defaultValue": -1.5,
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"].to_list() == [1.2, -1.5]
+
+
+class TestRatingTableNullInFactorColumn:
+    def test_rating_table_null_in_factor_column(self) -> None:
+        """Null values in the factor column should not match entries and get the default."""
+        lf = pl.DataFrame({"region": ["North", None, "South"]}).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [
+                {"region": "North", "value": 1.2},
+                {"region": "South", "value": 0.9},
+            ],
+            "defaultValue": 1.0,
+        }
+        result = _apply_rating_table(lf, table).collect()
+        assert result["factor"].to_list() == [1.2, 1.0, 0.9]

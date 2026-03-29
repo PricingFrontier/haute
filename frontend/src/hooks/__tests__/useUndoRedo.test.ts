@@ -1,10 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import useUndoRedo from "../useUndoRedo"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 
 describe("useUndoRedo", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+  })
 
   it("initialises with provided nodes and edges", () => {
     const nodes = [makeNode("n1")]
@@ -226,6 +229,33 @@ describe("useUndoRedo", () => {
   // Catches: if all position changes pushed snapshots, React Flow's
   // internal layout adjustments would pollute the undo history.
   // ─────────────────────────────────────────────────────────────────
+
+  it("multiple structural changes in a single onNodesChange call push only one snapshot", () => {
+    const { result } = renderHook(() =>
+      useUndoRedo([makeNode("n1"), makeNode("n2")], []),
+    )
+    act(() => {
+      result.current.onNodesChange([
+        { type: "add", item: makeNode("n3") },
+        { type: "remove", id: "n2" },
+      ])
+    })
+    expect(result.current.canUndo).toBe(true)
+    act(() => {
+      result.current.undo()
+    })
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it("onEdgesChange with add type pushes snapshot", () => {
+    const { result } = renderHook(() => useUndoRedo([], []))
+    act(() => {
+      result.current.onEdgesChange([
+        { type: "add", item: makeEdge("a", "b", { id: "e1" }) },
+      ])
+    })
+    expect(result.current.canUndo).toBe(true)
+  })
 
   it("position-only change without dragging does not push a snapshot", () => {
     const node = makeNode("n1")

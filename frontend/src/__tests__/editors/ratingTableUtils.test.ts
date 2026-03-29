@@ -11,6 +11,7 @@ import {
   relativityTextColor,
   tableStats,
   buildCartesianEntries,
+  resolveDefault,
 } from "../../panels/editors/rating/ratingTableUtils"
 
 // ─── normaliseRatingTables ───────────────────────────────────────
@@ -53,9 +54,17 @@ describe("relativityColor", () => {
     expect(relativityColor(1.0)).toBe("transparent")
   })
 
-  it("returns transparent for values very close to 1.0", () => {
+  it("returns transparent for values within ±0.005 of 1.0", () => {
     expect(relativityColor(1.004)).toBe("transparent")
     expect(relativityColor(0.996)).toBe("transparent")
+    expect(relativityColor(1.005)).toBe("transparent")
+  })
+
+  it("returns colored for values just beyond the ±0.005 boundary", () => {
+    const above = relativityColor(1.006)
+    expect(above).toContain("rgba(239, 68, 68")
+    const below = relativityColor(0.994)
+    expect(below).toContain("rgba(59, 130, 246")
   })
 
   it("returns red-tinted color for values above 1.005", () => {
@@ -237,5 +246,64 @@ describe("buildCartesianEntries", () => {
     const levels3 = { ...bandingLevels, size: ["small", "large"] }
     const result = buildCartesianEntries(["age_band", "region", "size"], levels3, [], "1.0")
     expect(result).toHaveLength(12) // 3 * 2 * 2
+  })
+
+  it("preserves existing values for matching 2-way keys", () => {
+    const existing = [
+      { age_band: "young", region: "north", value: 2.0 },
+      { age_band: "old", region: "south", value: 3.0 },
+    ]
+    const result = buildCartesianEntries(["age_band", "region"], bandingLevels, existing, "1.0")
+    expect(result).toHaveLength(6)
+    const youngNorth = result.find(e => e.age_band === "young" && e.region === "north")
+    expect(youngNorth?.value).toBe(2.0)
+    const oldSouth = result.find(e => e.age_band === "old" && e.region === "south")
+    expect(oldSouth?.value).toBe(3.0)
+    const youngSouth = result.find(e => e.age_band === "young" && e.region === "south")
+    expect(youngSouth?.value).toBe(1.0)
+  })
+})
+
+// ─── resolveDefault ─────────────────────────────────────────────
+
+describe("resolveDefault", () => {
+  it("returns 1 for null", () => {
+    expect(resolveDefault(null)).toBe(1)
+  })
+
+  it("returns 1 for undefined", () => {
+    expect(resolveDefault(undefined)).toBe(1)
+  })
+
+  it("returns 1 for empty string", () => {
+    expect(resolveDefault("")).toBe(1)
+  })
+
+  it("returns 1 for whitespace-only string", () => {
+    expect(resolveDefault("   ")).toBe(1)
+  })
+
+  it("parses numeric string correctly", () => {
+    expect(resolveDefault("2.5")).toBe(2.5)
+  })
+
+  it("parses integer string correctly", () => {
+    expect(resolveDefault("3")).toBe(3)
+  })
+
+  it("returns number value as-is", () => {
+    expect(resolveDefault(0.75)).toBe(0.75)
+  })
+
+  it("returns 1 for non-numeric string", () => {
+    expect(resolveDefault("abc")).toBe(1)
+  })
+
+  it("returns 0 for numeric zero", () => {
+    expect(resolveDefault(0)).toBe(0)
+  })
+
+  it("parses negative numeric string", () => {
+    expect(resolveDefault("-0.5")).toBe(-0.5)
   })
 })

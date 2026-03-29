@@ -12,6 +12,8 @@ import pytest
 
 from tests._git_helpers import git_run as _git, init_repo as _init_repo
 
+from fastapi import HTTPException
+
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
@@ -424,3 +426,218 @@ class TestHandleGitErrorLogging:
             mock_logger.warning.assert_called_once()
             call_args = mock_logger.warning.call_args
             assert call_args[0][0] == "git_guardrail_error"
+
+
+# ---------------------------------------------------------------------------
+# _handle_git_error HTTP status codes
+# ---------------------------------------------------------------------------
+
+
+class TestHandleGitErrorStatusCodes:
+    """_handle_git_error must return 400 for GitError and 403 for GitGuardrailError."""
+
+    def test_git_error_raises_400(self) -> None:
+        from haute._git import GitError
+        from haute.routes.git import _handle_git_error
+
+        with pytest.raises(HTTPException) as exc_info:
+            _handle_git_error(GitError("bad ref"))
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "bad ref"
+
+    def test_guardrail_error_raises_403(self) -> None:
+        from haute._git import GitGuardrailError
+        from haute.routes.git import _handle_git_error
+
+        with pytest.raises(HTTPException) as exc_info:
+            _handle_git_error(GitGuardrailError("protected branch"))
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "protected branch"
+
+
+# ---------------------------------------------------------------------------
+# _dc_to_pydantic conversion
+# ---------------------------------------------------------------------------
+
+
+class TestDcToPydantic:
+    """_dc_to_pydantic should convert a dataclass to a Pydantic model."""
+
+    def test_converts_simple_dataclass(self) -> None:
+        import dataclasses
+
+        from pydantic import BaseModel
+
+        from haute.routes.git import _dc_to_pydantic
+
+        @dataclasses.dataclass
+        class SimpleDC:
+            name: str
+            count: int
+
+        class SimpleModel(BaseModel):
+            name: str
+            count: int
+
+        dc_inst = SimpleDC(name="test", count=42)
+        result = _dc_to_pydantic(dc_inst, SimpleModel)
+        assert isinstance(result, SimpleModel)
+        assert result.name == "test"
+        assert result.count == 42
+
+    def test_converts_nested_dataclass(self) -> None:
+        import dataclasses
+
+        from pydantic import BaseModel
+
+        from haute.routes.git import _dc_to_pydantic
+
+        @dataclasses.dataclass
+        class Inner:
+            value: str
+
+        @dataclasses.dataclass
+        class Outer:
+            items: list[Inner]
+
+        class InnerModel(BaseModel):
+            value: str
+
+        class OuterModel(BaseModel):
+            items: list[InnerModel]
+
+        dc_inst = Outer(items=[Inner(value="a"), Inner(value="b")])
+        result = _dc_to_pydantic(dc_inst, OuterModel)
+        assert isinstance(result, OuterModel)
+        assert len(result.items) == 2
+        assert result.items[0].value == "a"
+        assert result.items[1].value == "b"
+
+
+# ---------------------------------------------------------------------------
+# GitError (non-guardrail) through endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestGitErrorEndpointResponses:
+    """Endpoints that receive a GitError (non-guardrail) must return 400."""
+
+    _ENDPOINTS_FOR_GIT_ERROR: list[tuple[str, str, str, dict | None]] = [
+        ("get_status", "GET", "/api/git/status", None),
+        ("list_branches", "GET", "/api/git/branches", None),
+        ("create_branch", "POST", "/api/git/branches", {"description": "test"}),
+        ("switch_branch", "POST", "/api/git/switch", {"branch": "x"}),
+        ("save_progress", "POST", "/api/git/save", None),
+        ("submit_for_review", "POST", "/api/git/submit", None),
+        ("get_history", "GET", "/api/git/history", None),
+        ("revert_to", "POST", "/api/git/revert", {"sha": "abc123"}),
+        ("pull_latest", "POST", "/api/git/pull", None),
+        ("archive_branch", "POST", "/api/git/archive", {"branch": "x"}),
+        ("delete_branch", "DELETE", "/api/git/branches", {"branch": "x"}),
+    ]
+
+    @pytest.mark.parametrize(
+        "git_func,method,path,body",
+        _ENDPOINTS_FOR_GIT_ERROR,
+        ids=[e[0] for e in _ENDPOINTS_FOR_GIT_ERROR],
+    )
+    def test_git_error_returns_400(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        git_func: str,
+        method: str,
+        path: str,
+        body: dict | None,
+    ) -> None:
+        """Patch the underlying _git function to raise a GitError and verify 400."""
+        from haute._git import GitError
+
+        import haute.routes.git as git_routes
+
+        monkeypatch.setattr(
+            git_routes,
+            git_func,
+            lambda *a, **kw: (_ for _ in ()).throw(GitError("invalid operation")),
+        )
+
+        if method == "GET":
+            res = client.get(path)
+        elif method == "POST":
+            res = client.post(path, json=body or {})
+        elif method == "DELETE":
+            res = client.request("DELETE", path, json=body or {})
+        else:
+            raise AssertionError(f"Unknown method {method}")
+
+        assert res.status_code == 400
+        assert res.json()["detail"] == "invalid operation"
+
+    @pytest.mark.parametrize(
+        "git_func,method,path,body",
+        _ENDPOINTS_FOR_GIT_ERROR,
+        ids=[f"{e[0]}_guardrail" for e in _ENDPOINTS_FOR_GIT_ERROR],
+    )
+    def test_guardrail_error_returns_403(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        git_func: str,
+        method: str,
+        path: str,
+        body: dict | None,
+    ) -> None:
+        """Patch the underlying _git function to raise a GitGuardrailError and verify 403."""
+        from haute._git import GitGuardrailError
+
+        import haute.routes.git as git_routes
+
+        monkeypatch.setattr(
+            git_routes,
+            git_func,
+            lambda *a, **kw: (_ for _ in ()).throw(GitGuardrailError("not allowed")),
+        )
+
+        if method == "GET":
+            res = client.get(path)
+        elif method == "POST":
+            res = client.post(path, json=body or {})
+        elif method == "DELETE":
+            res = client.request("DELETE", path, json=body or {})
+        else:
+            raise AssertionError(f"Unknown method {method}")
+
+        assert res.status_code == 403
+        assert res.json()["detail"] == "not allowed"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases for specific endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestGitHistoryEdgeCases:
+    def test_limit_bounds_low(self, client: TestClient) -> None:
+        """limit=0 should fail validation (ge=1)."""
+        res = client.get("/api/git/history?limit=0")
+        assert res.status_code == 422
+
+    def test_limit_bounds_high(self, client: TestClient) -> None:
+        """limit=501 should fail validation (le=500)."""
+        res = client.get("/api/git/history?limit=501")
+        assert res.status_code == 422
+
+    def test_empty_history(self, client: TestClient, tmp_path: Path) -> None:
+        """Branch with no unique commits returns empty entries."""
+        _git(tmp_path, "checkout", "-b", "pricing/test-user/empty")
+        res = client.get("/api/git/history")
+        assert res.status_code == 200
+        assert res.json()["entries"] == []
+
+
+class TestGitCreateBranchEdgeCases:
+    def test_whitespace_only_description(self, client: TestClient) -> None:
+        """A whitespace-only description should be rejected."""
+        res = client.post("/api/git/branches", json={"description": "   "})
+        assert res.status_code == 400
+        assert "empty" in res.json()["detail"].lower()

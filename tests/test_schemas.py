@@ -85,3 +85,59 @@ class TestModelDumpRoundtrip:
         d = g.model_dump()
         assert d["nodes"][0]["id"] == "src"
         assert d["nodes"][0]["data"]["config"]["path"] == "d.parquet"
+
+
+class TestPreviewNodeRequestBoundaries:
+    def test_row_limit_zero_fails(self):
+        with pytest.raises(ValidationError):
+            PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=0)
+
+    def test_row_limit_above_max_fails(self):
+        with pytest.raises(ValidationError):
+            PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=10001)
+
+    def test_row_limit_min_boundary(self):
+        r = PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=1)
+        assert r.row_limit == 1
+
+    def test_row_limit_max_boundary(self):
+        r = PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=10000)
+        assert r.row_limit == 10000
+
+
+class TestTraceRequestBoundaries:
+    def test_row_index_negative_fails(self):
+        with pytest.raises(ValidationError):
+            TraceRequest(graph=Graph(), row_index=-1)
+
+    def test_row_index_zero_succeeds(self):
+        r = TraceRequest(graph=Graph(), row_index=0)
+        assert r.row_index == 0
+
+    def test_row_limit_zero_fails(self):
+        with pytest.raises(ValidationError):
+            TraceRequest(graph=Graph(), row_limit=0)
+
+    def test_row_limit_above_max_fails(self):
+        with pytest.raises(ValidationError):
+            TraceRequest(graph=Graph(), row_limit=10001)
+
+    def test_row_limit_min_boundary(self):
+        r = TraceRequest(graph=Graph(), row_limit=1)
+        assert r.row_limit == 1
+
+
+class TestSavePipelineRequestDefaults:
+    def test_name_defaults_to_main(self):
+        r = SavePipelineRequest()
+        assert r.name == "main"
+
+    def test_graph_defaults_to_empty(self):
+        r = SavePipelineRequest()
+        assert isinstance(r.graph, Graph)
+        assert r.graph.nodes == []
+        assert r.graph.edges == []
+
+    def test_explicit_name_overrides_default(self):
+        r = SavePipelineRequest(name="custom")
+        assert r.name == "custom"

@@ -304,10 +304,11 @@ export default function usePipelineAPI({
       })
   }, [graphRef, submodelsRef, preambleRef, sourceFileRef, pipelineNameRef, lastSavedRef, setDirty, addToast])
 
-  // Clear node statuses when nothing is selected
+  // Clear node statuses when selected node changes (including deselect)
+  // so statuses from a previous node don't bleed into the next selection.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset derived state on deselect
-    if (!selectedNode) setNodeStatuses({})
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset derived state on node switch
+    setNodeStatuses({})
   }, [selectedNode])
 
   // Cleanup on unmount

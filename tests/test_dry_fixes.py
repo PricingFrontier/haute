@@ -133,8 +133,10 @@ class TestFinalizeOnline:
         assert job["progress"] == 1.0
         assert job["message"] == "Completed"
         assert job["elapsed_seconds"] == 3.14
-        assert job["solver"] == "my_solver"
-        assert job["quote_grid"] == "my_grid"
+        # solver and quote_grid are intentionally cleared after finalization
+        # to free memory (they can be 100s of MB for large solves)
+        assert "solver" not in job
+        assert "quote_grid" not in job
         assert job["solve_result"] is result
 
     def test_scenario_value_stats_populated_when_dataframe_present(self) -> None:

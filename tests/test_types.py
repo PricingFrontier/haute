@@ -14,7 +14,10 @@ Covers:
 
 from __future__ import annotations
 
+import math
+
 import pytest
+from pydantic import ValidationError
 
 from haute._types import (
     GraphEdge,
@@ -23,6 +26,7 @@ from haute._types import (
     NodeData,
     NodeType,
     PipelineGraph,
+    _resolve_sink_path,
     _sanitize_func_name,
     build_instance_mapping,
     resolve_orig_source_names,
@@ -77,6 +81,22 @@ class TestNodeType:
         with pytest.raises(ValueError):
             NodeType("nonexistent")
 
+    def test_str_enum_equality_with_plain_string(self):
+        assert NodeType("output") == "output"
+
+    def test_hashable_as_dict_key(self):
+        d = {NodeType.OUTPUT: "ok"}
+        assert d[NodeType.OUTPUT] == "ok"
+        assert hash(NodeType.OUTPUT) == hash("output")
+
+    def test_case_sensitive_invalid(self):
+        with pytest.raises(ValueError):
+            NodeType("INVALID")
+
+    def test_empty_string_invalid(self):
+        with pytest.raises(ValueError):
+            NodeType("")
+
 
 # ===========================================================================
 # HauteError
@@ -124,6 +144,26 @@ class TestNodeData:
         nd1.config["x"] = 1
         assert "x" not in nd2.config
 
+    def test_json_serialization_roundtrip(self):
+        nd = NodeData(label="Test", nodeType=NodeType.DATA_SOURCE, config={"k": 1})
+        json_str = nd.model_dump_json()
+        restored = NodeData.model_validate_json(json_str)
+        assert restored.label == "Test"
+        assert restored.nodeType == NodeType.DATA_SOURCE
+        assert restored.config == {"k": 1}
+
+    def test_empty_string_label_preserved(self):
+        nd = NodeData(label="")
+        assert nd.label == ""
+
+    def test_invalid_node_type_string_raises(self):
+        with pytest.raises(ValidationError):
+            NodeData(nodeType="totallyBogus")
+
+    def test_extra_fields_ignored(self):
+        nd = NodeData(label="X", bonus="nope")
+        assert not hasattr(nd, "bonus")
+
 
 # ===========================================================================
 # GraphNode
@@ -166,6 +206,30 @@ class TestGraphNode:
         n1.position["x"] = 999.0
         assert n2.position["x"] == 0.0
 
+    def test_position_with_nan_coordinates(self):
+        node = GraphNode(id="n", position={"x": float("nan"), "y": float("nan")})
+        assert math.isnan(node.position["x"])
+        assert math.isnan(node.position["y"])
+
+    def test_position_with_negative_coordinates(self):
+        node = GraphNode(id="n", position={"x": -100.5, "y": -200.0})
+        assert node.position["x"] == -100.5
+        assert node.position["y"] == -200.0
+
+    def test_model_validate_nested_node_data(self):
+        raw = {
+            "id": "deep",
+            "position": {"x": 5.0, "y": 10.0},
+            "data": {
+                "label": "Deep",
+                "nodeType": "banding",
+                "config": {"factors": []},
+            },
+        }
+        node = GraphNode.model_validate(raw)
+        assert node.data.nodeType == NodeType.BANDING
+        assert node.data.config == {"factors": []}
+
 
 # ===========================================================================
 # GraphEdge
@@ -196,6 +260,23 @@ class TestGraphEdge:
         raw = {"id": "e", "source": "x", "target": "y"}
         edge = GraphEdge.model_validate(raw)
         assert edge.source == "x"
+
+    def test_self_loop_allowed(self):
+        edge = GraphEdge(id="loop", source="a", target="a")
+        assert edge.source == edge.target == "a"
+
+    def test_missing_required_fields_raises(self):
+        with pytest.raises(ValidationError):
+            GraphEdge(id="e1", source="a")
+        with pytest.raises(ValidationError):
+            GraphEdge(id="e1", target="b")
+        with pytest.raises(ValidationError):
+            GraphEdge(source="a", target="b")
+
+    def test_handles_default_to_none(self):
+        edge = GraphEdge(id="e", source="a", target="b")
+        assert edge.sourceHandle is None
+        assert edge.targetHandle is None
 
 
 # ===========================================================================
@@ -288,6 +369,25 @@ class TestPipelineGraph:
         g2 = PipelineGraph()
         g1.preserved_blocks.append("block1")
         assert g2.preserved_blocks == []
+
+    def test_node_map_returns_correct_mapping(self):
+        n1 = GraphNode(id="a", data=NodeData(label="A"))
+        n2 = GraphNode(id="b", data=NodeData(label="B"))
+        g = PipelineGraph(nodes=[n1, n2])
+        nm = g.node_map
+        assert len(nm) == 2
+        assert nm["a"].data.label == "A"
+        assert nm["b"].data.label == "B"
+
+    def test_parents_of_empty_graph_is_empty(self):
+        g = PipelineGraph(nodes=[], edges=[])
+        assert g.parents_of == {}
+
+    def test_duplicate_node_ids_last_wins_in_node_map(self):
+        n1 = GraphNode(id="dup", data=NodeData(label="First"))
+        n2 = GraphNode(id="dup", data=NodeData(label="Second"))
+        g = PipelineGraph(nodes=[n1, n2])
+        assert g.node_map["dup"].data.label == "Second"
 
 
 # ===========================================================================
@@ -424,3 +524,37 @@ class TestResolveOrigSourceNamesExtended:
         id_to_name: dict[str, str] = {}
         result = resolve_orig_source_names(inst, node_map, all_parents, id_to_name)
         assert result == ["ghost"]
+
+
+# ===========================================================================
+# _resolve_sink_path
+# ===========================================================================
+
+
+class TestResolveSinkPath:
+    def test_windows_backslash_not_prefixed(self):
+        result = _resolve_sink_path("dir\\file", "parquet")
+        assert not result.startswith("outputs/")
+        assert result.endswith(".parquet")
+
+    def test_multiple_extensions(self):
+        result = _resolve_sink_path("archive.tar.gz", "parquet")
+        assert result == "outputs/archive.tar.gz.parquet"
+
+    def test_empty_path_gets_outputs_prefix(self):
+        result = _resolve_sink_path("", "parquet")
+        assert result.startswith("outputs/")
+        assert result.endswith(".parquet")
+
+    def test_forward_slash_not_prefixed(self):
+        result = _resolve_sink_path("my/data", "csv")
+        assert not result.startswith("outputs/")
+        assert result.endswith(".csv")
+
+    def test_bare_name_gets_prefix_and_extension(self):
+        result = _resolve_sink_path("results", "parquet")
+        assert result == "outputs/results.parquet"
+
+    def test_already_has_extension(self):
+        result = _resolve_sink_path("results.parquet", "parquet")
+        assert result == "outputs/results.parquet"

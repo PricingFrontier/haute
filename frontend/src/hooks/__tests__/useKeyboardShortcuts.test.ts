@@ -34,7 +34,7 @@ describe("useKeyboardShortcuts", () => {
   beforeEach(() => {
     // Reset store state between tests
     useUIStore.setState({
-      shortcutsOpen: false, submodelDialog: null,
+      shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false,
     })
     useToastStore.setState({
       toasts: [], _toastCounter: 0,
@@ -45,6 +45,7 @@ describe("useKeyboardShortcuts", () => {
 
   afterEach(() => {
     cleanup()
+    vi.clearAllMocks()
     vi.restoreAllMocks()
   })
 
@@ -157,6 +158,107 @@ describe("useKeyboardShortcuts", () => {
     fireKey("g", { ctrlKey: true })
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: expect.stringContaining("2 nodes") })
+  })
+
+  it("Ctrl+K toggles node search open", () => {
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    fireKey("k", { ctrlKey: true })
+    expect(useUIStore.getState().nodeSearchOpen).toBe(true)
+    fireKey("k", { ctrlKey: true })
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+  })
+
+  it("ignores Ctrl+C when target is INPUT", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
+    ]
+    const input = document.createElement("input")
+    document.body.appendChild(input)
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }))
+    expect(params.clipboard.current.nodes).toHaveLength(0)
+    document.body.removeChild(input)
+  })
+
+  it("ignores Ctrl+C when target is TEXTAREA", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
+    ]
+    const textarea = document.createElement("textarea")
+    document.body.appendChild(textarea)
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }))
+    expect(params.clipboard.current.nodes).toHaveLength(0)
+    document.body.removeChild(textarea)
+  })
+
+  it("ignores Ctrl+C when target is inside .cm-editor", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
+    ]
+    const cmEditor = document.createElement("div")
+    cmEditor.className = "cm-editor"
+    const inner = document.createElement("div")
+    cmEditor.appendChild(inner)
+    document.body.appendChild(cmEditor)
+    inner.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }))
+    expect(params.clipboard.current.nodes).toHaveLength(0)
+    document.body.removeChild(cmEditor)
+  })
+
+  it("ignores ? when target is INPUT", () => {
+    useUIStore.setState({ shortcutsOpen: false })
+    const input = document.createElement("input")
+    document.body.appendChild(input)
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }))
+    expect(useUIStore.getState().shortcutsOpen).toBe(false)
+    document.body.removeChild(input)
+  })
+
+  it("Ctrl+C with no selected nodes is a no-op", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: false } as Node,
+    ]
+    fireKey("c", { ctrlKey: true })
+    expect(params.clipboard.current.nodes).toHaveLength(0)
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+  })
+
+  it("Delete with empty graphRef is a no-op", () => {
+    params.graphRef.current.nodes = []
+    params.graphRef.current.edges = []
+    fireKey("Delete")
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setEdges).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+G with 0 selected nodes shows warning toast", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: false } as Node,
+    ]
+    fireKey("g", { ctrlKey: true })
+    const toasts = useToastStore.getState().toasts
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]).toMatchObject({ type: "info", text: expect.stringContaining("2 nodes") })
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+  })
+
+  it("ignores Delete when target is INPUT", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
+    ]
+    params.graphRef.current.edges = []
+    const input = document.createElement("input")
+    document.body.appendChild(input)
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }))
+    expect(params.setNodes).not.toHaveBeenCalled()
+    document.body.removeChild(input)
+  })
+
+  it("ignores Ctrl+A when target is TEXTAREA", () => {
+    const textarea = document.createElement("textarea")
+    document.body.appendChild(textarea)
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }))
+    expect(params.setNodes).not.toHaveBeenCalled()
+    document.body.removeChild(textarea)
   })
 
   it("cleans up listener on unmount", () => {

@@ -36,7 +36,7 @@ describe("useNodeHandlers — handleRenameNode", () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
-    useUIStore.setState({ renameDialog: null })
+    useUIStore.setState({ renameDialog: null, submodelDialog: null })
   })
 
   afterEach(() => {
@@ -136,5 +136,86 @@ describe("useNodeHandlers — handleRenameNode", () => {
     })
 
     expect(params.lastSelectedNodeRef.current).toBe(n2)
+  })
+
+  // ── Issue #14: renameDialog cleared on node delete ───────────
+
+  it("handleDeleteNode clears renameDialog when it references the deleted node", () => {
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    useUIStore.setState({ renameDialog: { nodeId: "n1", currentLabel: "Test" } })
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode("n1")
+    })
+
+    expect(useUIStore.getState().renameDialog).toBeNull()
+  })
+
+  it("handleDeleteNode does NOT clear renameDialog when it references a different node", () => {
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    useUIStore.setState({ renameDialog: { nodeId: "n2", currentLabel: "Other" } })
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode("n1")
+    })
+
+    expect(useUIStore.getState().renameDialog).toEqual({ nodeId: "n2", currentLabel: "Other" })
+  })
+
+  // ── Issue #8: submodelDialog cleared on node delete ──────────
+
+  it("handleDeleteNode clears submodelDialog when it references the deleted node", () => {
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    useUIStore.setState({ submodelDialog: { nodeIds: ["n1", "n2"] } })
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode("n1")
+    })
+
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+  })
+
+  it("handleDeleteNode does NOT clear submodelDialog when it does not reference the deleted node", () => {
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    useUIStore.setState({ submodelDialog: { nodeIds: ["n3", "n4"] } })
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode("n1")
+    })
+
+    expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["n3", "n4"] })
+  })
+
+  it("handleDeleteNode handles null submodelDialog and renameDialog gracefully", () => {
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    useUIStore.setState({ submodelDialog: null, renameDialog: null })
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    // Should not throw
+    act(() => {
+      result.current.handleDeleteNode("n1")
+    })
+
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    expect(useUIStore.getState().renameDialog).toBeNull()
   })
 })

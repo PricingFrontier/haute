@@ -262,3 +262,220 @@ class TestModelCardEscaping:
         html = generate_model_card(**kwargs)
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
+
+    def test_xss_in_param_keys_escaped(self):
+        """Parameter names with HTML chars should be escaped."""
+        kwargs = _minimal_kwargs()
+        kwargs["params"] = {"<b>bold</b>": "value", "key": "<img onerror=alert(1)>"}
+        html = generate_model_card(**kwargs)
+        assert "<b>" not in html
+        assert "<img" not in html
+        assert "&lt;b&gt;" in html
+
+    def test_xss_in_metric_names_escaped(self):
+        """Metric names with HTML should be escaped."""
+        kwargs = _minimal_kwargs()
+        kwargs["metrics"] = {"<script>x</script>": 0.5}
+        html = generate_model_card(**kwargs)
+        assert "<script>x" not in html
+
+    def test_xss_in_algorithm_escaped(self):
+        """Algorithm name should be escaped."""
+        kwargs = _minimal_kwargs()
+        kwargs["metadata"] = ModelCardMetadata(
+            algorithm="<img src=x>",
+            task="regression",
+            train_rows=100,
+            test_rows=50,
+        )
+        html = generate_model_card(**kwargs)
+        assert "<img src=x>" not in html
+
+
+class TestHtmlTable:
+    def test_basic_table_structure(self):
+        from haute.modelling._model_card import _html_table
+
+        result = _html_table(["A", "B"], [["1", "2"], ["3", "4"]])
+        assert "<table>" in result
+        assert "<thead>" in result
+        assert "<tbody>" in result
+        assert "</table>" in result
+        assert "<th" in result
+        assert "<td" in result
+
+    def test_alignment(self):
+        from haute.modelling._model_card import _html_table
+
+        result = _html_table(["Left", "Right"], [["a", "b"]], align=["left", "right"])
+        assert 'text-align:left' in result
+        assert 'text-align:right' in result
+
+    def test_default_alignment(self):
+        from haute.modelling._model_card import _html_table
+
+        result = _html_table(["A", "B"], [["1", "2"]])
+        # Default is left for all columns
+        assert 'text-align:left' in result
+
+    def test_escaping_in_cells(self):
+        from haute.modelling._model_card import _html_table
+
+        result = _html_table(["<script>"], [["<b>bold</b>"]])
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+        assert "<b>" not in result
+
+    def test_empty_rows(self):
+        from haute.modelling._model_card import _html_table
+
+        result = _html_table(["A"], [])
+        assert "<table>" in result
+        assert "<tbody>" in result
+
+
+class TestModelCardCategoricalAvE:
+    def test_categorical_ave_section(self):
+        """AvE with categorical type should trigger categorical chart."""
+        kwargs = _minimal_kwargs()
+        kwargs["diagnostics"] = ModelDiagnostics(
+            ave_per_feature=[
+                {
+                    "feature": "vehicle_type",
+                    "type": "categorical",
+                    "bins": [
+                        {"label": "sedan", "exposure": 100, "avg_actual": 0.3, "avg_predicted": 0.35},
+                        {"label": "suv", "exposure": 80, "avg_actual": 0.5, "avg_predicted": 0.48},
+                    ],
+                },
+            ],
+        )
+        html = generate_model_card(**kwargs)
+        assert "Actual vs Expected" in html
+        assert "vehicle_type" in html
+
+
+class TestModelCardPdpCategorical:
+    def test_pdp_categorical_section(self):
+        """PDP with categorical type should render bars."""
+        kwargs = _minimal_kwargs()
+        kwargs["diagnostics"] = ModelDiagnostics(
+            pdp_data=[
+                {
+                    "feature": "color",
+                    "type": "categorical",
+                    "grid": [
+                        {"value": "red", "avg_prediction": 0.4},
+                        {"value": "blue", "avg_prediction": 0.6},
+                    ],
+                },
+            ],
+        )
+        html = generate_model_card(**kwargs)
+        assert "Partial Dependence" in html
+
+
+class TestModelCardNonFiniteMetrics:
+    def test_inf_metric_shows_na(self):
+        kwargs = _minimal_kwargs()
+        kwargs["metrics"] = {"rmse": float("inf")}
+        html = generate_model_card(**kwargs)
+        assert "N/A" in html
+
+    def test_nan_metric_shows_na(self):
+        kwargs = _minimal_kwargs()
+        kwargs["metrics"] = {"rmse": float("nan")}
+        html = generate_model_card(**kwargs)
+        assert "N/A" in html
+
+
+class TestModelCardCVNonFinite:
+    def test_cv_with_non_finite_values(self):
+        """CV metrics with inf/nan should show N/A."""
+        kwargs = _minimal_kwargs()
+        kwargs["diagnostics"] = ModelDiagnostics(
+            cv_results={
+                "mean_metrics": {"rmse": float("inf")},
+                "std_metrics": {"rmse": float("nan")},
+                "n_folds": 5,
+            }
+        )
+        html = generate_model_card(**kwargs)
+        assert "Cross-Validation" in html
+        assert "N/A" in html
+
+
+class TestModelCardBestIteration:
+    def test_best_iteration_displayed(self):
+        kwargs = _minimal_kwargs()
+        kwargs["metadata"] = ModelCardMetadata(
+            algorithm="catboost",
+            task="regression",
+            train_rows=800,
+            test_rows=200,
+            features=["x1"],
+            best_iteration=42,
+        )
+        html = generate_model_card(**kwargs)
+        assert "Best iteration" in html
+        assert "42" in html
+
+    def test_best_iteration_absent_when_none(self):
+        kwargs = _minimal_kwargs()
+        html = generate_model_card(**kwargs)
+        assert "Best iteration" not in html
+
+
+class TestModelCardLorenzOnly:
+    def test_lorenz_model_only(self):
+        """Lorenz curve with only model curve, no perfect curve."""
+        kwargs = _minimal_kwargs()
+        kwargs["diagnostics"] = ModelDiagnostics(
+            lorenz_curve=[
+                {"cum_weight_frac": 0.0, "cum_actual_frac": 0.0},
+                {"cum_weight_frac": 1.0, "cum_actual_frac": 1.0},
+            ],
+        )
+        html = generate_model_card(**kwargs)
+        assert "Lorenz Curve" in html
+
+    def test_lorenz_perfect_only(self):
+        """Lorenz curve with only perfect curve."""
+        kwargs = _minimal_kwargs()
+        kwargs["diagnostics"] = ModelDiagnostics(
+            lorenz_curve_perfect=[
+                {"cum_weight_frac": 0.0, "cum_actual_frac": 0.0},
+                {"cum_weight_frac": 1.0, "cum_actual_frac": 1.0},
+            ],
+        )
+        html = generate_model_card(**kwargs)
+        assert "Lorenz Curve" in html
+
+
+class TestModelCardResidualsSeparateStats:
+    def test_residuals_with_stats_table(self):
+        """Residuals with stats dict should produce a stats table."""
+        kwargs = _minimal_kwargs()
+        kwargs["diagnostics"] = ModelDiagnostics(
+            residuals_histogram=[
+                {"bin_center": i, "count": 10, "weighted_count": 10.0} for i in range(5)
+            ],
+            residuals_stats={"mean": 0.01, "std": 0.5, "skew": -0.2},
+        )
+        html = generate_model_card(**kwargs)
+        assert "Residuals" in html
+        assert "Mean" in html
+        assert "Std" in html
+
+    def test_residuals_without_stats(self):
+        """Residuals without stats should not show stats table."""
+        kwargs = _minimal_kwargs()
+        kwargs["diagnostics"] = ModelDiagnostics(
+            residuals_histogram=[
+                {"bin_center": i, "count": 10, "weighted_count": 10.0} for i in range(5)
+            ],
+        )
+        html = generate_model_card(**kwargs)
+        assert "Residuals" in html
+        # Should not have a stats table beneath residuals
+        assert "Statistic" not in html

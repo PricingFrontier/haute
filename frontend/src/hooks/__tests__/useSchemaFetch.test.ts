@@ -35,7 +35,7 @@ describe("useSchemaFetch", () => {
       expect(result.current.loading).toBe(false)
     })
     expect(result.current.schema).toEqual(fakeSchema)
-    expect(mockFetchSchema).toHaveBeenCalledWith("data.csv")
+    expect(mockFetchSchema).toHaveBeenCalledWith("data.csv", { signal: expect.any(AbortSignal) })
   })
 
   it("fetch failure sets schema to null, loading to false, and populates error", async () => {
@@ -58,7 +58,7 @@ describe("useSchemaFetch", () => {
       expect(result.current.loading).toBe(false)
     })
     expect(result.current.schema).toEqual(fakeSchema)
-    expect(mockFetchSchema).toHaveBeenCalledWith("manual.csv")
+    expect(mockFetchSchema).toHaveBeenCalledWith("manual.csv", { signal: undefined })
   })
 
   it("loading state is true while fetch is pending", async () => {

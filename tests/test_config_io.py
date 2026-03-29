@@ -13,6 +13,7 @@ from haute._config_io import (
     collect_node_configs,
     config_load_errors,
     config_path_for_node,
+    find_config_by_func_name,
     has_config_folder,
     load_node_config,
     remove_config_file,
@@ -471,3 +472,319 @@ class TestLoadErrorProtection:
 
         # The original file is still on disk, untouched
         assert original_path.read_text() == original_content
+
+
+# ---------------------------------------------------------------------------
+# find_config_by_func_name
+# ---------------------------------------------------------------------------
+
+
+class TestFindConfigByFuncName:
+    def _write_config(self, tmp_path: Path, folder: str, name: str, data: dict) -> Path:
+        p = tmp_path / "config" / folder / f"{name}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data), encoding="utf-8")
+        return p
+
+    def test_recovers_config_for_valid_func_name(self, tmp_path):
+        cfg = {"path": "data.parquet", "sourceType": "flat_file"}
+        self._write_config(tmp_path, "data_source", "my_source", cfg)
+        result = find_config_by_func_name("my_source", tmp_path)
+        assert result is not None
+        config_dict, node_type = result
+        assert config_dict == cfg
+        assert node_type is NodeType.DATA_SOURCE
+
+    def test_returns_tuple_format(self, tmp_path):
+        self._write_config(tmp_path, "banding", "age_band", {"factors": []})
+        result = find_config_by_func_name("age_band", tmp_path)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], dict)
+        assert isinstance(result[1], NodeType)
+
+    def test_scans_all_14_config_folders(self, tmp_path):
+        for folder in FOLDER_TO_NODE_TYPE:
+            self._write_config(tmp_path, folder, f"func_{folder}", {"ok": True})
+        for folder, expected_nt in FOLDER_TO_NODE_TYPE.items():
+            result = find_config_by_func_name(f"func_{folder}", tmp_path)
+            assert result is not None, f"Failed to find config in folder {folder}"
+            assert result[1] is expected_nt
+
+    def test_returns_none_when_not_found(self, tmp_path):
+        (tmp_path / "config").mkdir()
+        assert find_config_by_func_name("nonexistent_func", tmp_path) is None
+
+    def test_returns_none_for_empty_func_name(self, tmp_path):
+        (tmp_path / "config").mkdir()
+        assert find_config_by_func_name("", tmp_path) is None
+
+    def test_rejects_path_traversal(self, tmp_path):
+        assert find_config_by_func_name("../etc/passwd", tmp_path) is None
+        assert find_config_by_func_name("foo/bar", tmp_path) is None
+        assert find_config_by_func_name("foo\\bar", tmp_path) is None
+
+    def test_returns_none_for_invalid_json(self, tmp_path):
+        p = tmp_path / "config" / "banding" / "bad.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{not valid json", encoding="utf-8")
+        assert find_config_by_func_name("bad", tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# config_path_for_node edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestConfigPathForNodeEdgeCases:
+    def test_empty_node_name(self):
+        p = config_path_for_node(NodeType.BANDING, "")
+        assert p == Path("config/banding/.json")
+
+    def test_single_dot_raises(self):
+        with pytest.raises(ValueError, match="must not contain"):
+            config_path_for_node(NodeType.BANDING, "..")
+
+    def test_triple_dot_contains_double_dot_raises(self):
+        with pytest.raises(ValueError, match="must not contain"):
+            config_path_for_node(NodeType.BANDING, "...")
+
+    def test_single_dot_name_allowed(self):
+        p = config_path_for_node(NodeType.BANDING, ".")
+        assert p == Path("config/banding/..json")
+
+    @pytest.mark.skipif(
+        __import__("sys").platform != "win32",
+        reason="Windows-specific reserved name test",
+    )
+    def test_windows_reserved_names_produce_paths(self):
+        for name in ("CON", "PRN", "AUX"):
+            p = config_path_for_node(NodeType.BANDING, name)
+            assert p == Path(f"config/banding/{name}.json")
+
+
+# ---------------------------------------------------------------------------
+# load_node_config edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestLoadNodeConfigEdgeCases:
+    def test_invalid_json_raises(self, tmp_path):
+        p = tmp_path / "config" / "banding" / "bad.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{invalid json!!!", encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            load_node_config(str(p))
+
+    def test_empty_file_raises(self, tmp_path):
+        p = tmp_path / "config" / "banding" / "empty.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("", encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            load_node_config(str(p))
+
+    def test_config_file_with_bom_raises(self, tmp_path):
+        p = tmp_path / "config" / "banding" / "bom.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"key": "value"}).encode("utf-8"))
+        with pytest.raises(json.JSONDecodeError, match="BOM"):
+            load_node_config(str(p))
+
+
+# ---------------------------------------------------------------------------
+# save_node_config edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSaveNodeConfigEdgeCases:
+    def test_none_values_saved(self, tmp_path):
+        config = {"path": None, "sourceType": None}
+        save_node_config(NodeType.DATA_SOURCE, "src", config, tmp_path)
+        loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
+        assert loaded["path"] is None
+        assert loaded["sourceType"] is None
+
+    def test_underscore_keys_filtered(self, tmp_path):
+        config = {"path": "d.parquet", "_internal": "secret", "_cache": 42}
+        save_node_config(NodeType.DATA_SOURCE, "src", config, tmp_path)
+        loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
+        assert loaded == {"path": "d.parquet"}
+        assert "_internal" not in loaded
+        assert "_cache" not in loaded
+
+    def test_code_key_excluded(self, tmp_path):
+        config = {"path": "m.pkl", "code": "x = 1"}
+        save_node_config(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)
+        loaded = load_node_config("config/load_file/ext.json", base_dir=tmp_path)
+        assert "code" not in loaded
+        assert loaded == {"path": "m.pkl"}
+
+    def test_empty_config_saved_as_empty_object(self, tmp_path):
+        save_node_config(NodeType.BANDING, "empty", {}, tmp_path)
+        loaded = load_node_config("config/banding/empty.json", base_dir=tmp_path)
+        assert loaded == {}
+
+    def test_returns_relative_path(self, tmp_path):
+        rel = save_node_config(NodeType.BANDING, "b", {"factors": []}, tmp_path)
+        assert isinstance(rel, Path)
+        assert not rel.is_absolute()
+        assert str(rel) == str(Path("config/banding/b.json"))
+
+
+# ---------------------------------------------------------------------------
+# collect_node_configs edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCollectNodeConfigsEdgeCases:
+    def test_empty_graph_returns_empty_dict(self):
+        graph = make_graph({"nodes": [], "edges": []})
+        assert collect_node_configs(graph) == {}
+
+    def test_graph_with_only_transforms_returns_empty(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "t1",
+                        "data": {
+                            "label": "clean",
+                            "nodeType": "polars",
+                            "config": {"code": "df"},
+                        },
+                    },
+                    {
+                        "id": "t2",
+                        "data": {
+                            "label": "filter",
+                            "nodeType": "polars",
+                            "config": {"code": "df.filter()"},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "t1", "target": "t2"}],
+            }
+        )
+        assert collect_node_configs(graph) == {}
+
+    def test_config_paths_use_forward_slashes(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "s",
+                        "data": {
+                            "label": "my_src",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+        configs = collect_node_configs(graph)
+        for path in configs:
+            assert "\\" not in path
+
+
+# ---------------------------------------------------------------------------
+# config_load_errors edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestConfigLoadErrorsEdgeCases:
+    def test_error_node_returned(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "bad",
+                        "data": {
+                            "label": "broken",
+                            "nodeType": "dataSource",
+                            "config": {"_load_error": "file corrupt"},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+        errors = config_load_errors(graph)
+        assert "config/data_source/broken.json" in errors
+        assert errors["config/data_source/broken.json"] == "file corrupt"
+
+    def test_healthy_node_excluded(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "ok",
+                        "data": {
+                            "label": "good",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+        assert config_load_errors(graph) == {}
+
+    def test_multiple_error_nodes(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "b1",
+                        "data": {
+                            "label": "bad1",
+                            "nodeType": "dataSource",
+                            "config": {"_load_error": "err1"},
+                        },
+                    },
+                    {
+                        "id": "b2",
+                        "data": {
+                            "label": "bad2",
+                            "nodeType": "banding",
+                            "config": {"_load_error": "err2"},
+                        },
+                    },
+                    {
+                        "id": "ok",
+                        "data": {
+                            "label": "healthy",
+                            "nodeType": "output",
+                            "config": {"fields": []},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+        errors = config_load_errors(graph)
+        assert len(errors) == 2
+        assert "config/data_source/bad1.json" in errors
+        assert "config/banding/bad2.json" in errors
+        assert errors["config/data_source/bad1.json"] == "err1"
+        assert errors["config/banding/bad2.json"] == "err2"
+
+
+# ---------------------------------------------------------------------------
+# remove_config_file edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveConfigFileEdgeCases:
+    def test_remove_existing_returns_true(self, tmp_path):
+        save_node_config(NodeType.DATA_SOURCE, "src", {"path": "d"}, tmp_path)
+        assert remove_config_file(NodeType.DATA_SOURCE, "src", tmp_path) is True
+        assert not (tmp_path / "config" / "data_source" / "src.json").exists()
+
+    def test_remove_nonexistent_returns_false(self, tmp_path):
+        assert remove_config_file(NodeType.BANDING, "nope", tmp_path) is False
+
+    def test_remove_transform_type_returns_false(self, tmp_path):
+        assert remove_config_file(NodeType.POLARS, "t", tmp_path) is False

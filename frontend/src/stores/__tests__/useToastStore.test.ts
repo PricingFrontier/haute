@@ -54,5 +54,41 @@ describe("useToastStore", () => {
       addToast("info", "B")
       expect(useToastStore.getState().toasts[0].id).toBe("2")
     })
+
+    it("counter keeps incrementing across multiple dismiss cycles", () => {
+      const { addToast } = useToastStore.getState()
+      addToast("info", "A")
+      addToast("info", "B")
+      useToastStore.getState().dismissToast("1")
+      useToastStore.getState().dismissToast("2")
+      addToast("info", "C")
+      expect(useToastStore.getState()._toastCounter).toBe(3)
+      expect(useToastStore.getState().toasts[0].id).toBe("3")
+    })
+
+    it("adding toast at max capacity slices to keep last 10", () => {
+      const { addToast } = useToastStore.getState()
+      for (let i = 0; i < 10; i++) {
+        addToast("info", `Toast ${i + 1}`)
+      }
+      expect(useToastStore.getState().toasts).toHaveLength(10)
+
+      addToast("info", "Toast 11")
+      const { toasts } = useToastStore.getState()
+      expect(toasts).toHaveLength(10)
+      expect(toasts[0].id).toBe("2")
+      expect(toasts[toasts.length - 1].id).toBe("11")
+    })
+
+    it("slice keeps newest toasts when adding beyond capacity", () => {
+      const { addToast } = useToastStore.getState()
+      for (let i = 0; i < 15; i++) {
+        addToast("info", `Toast ${i + 1}`)
+      }
+      const { toasts } = useToastStore.getState()
+      expect(toasts).toHaveLength(10)
+      expect(toasts[0].text).toBe("Toast 6")
+      expect(toasts[toasts.length - 1].text).toBe("Toast 15")
+    })
   })
 })

@@ -591,6 +591,11 @@ def execute_graph(
             schema_warnings=node_warnings,
         )
 
+    # Release the pin now that results have been built from the cached
+    # DataFrames.  The entry remains in the LRU cache but is no longer
+    # exempt from eviction, preventing unbounded memory growth.
+    _preview_cache.unpin(fp)
+
     error_count = sum(1 for r in results.values() if r.status == "error")
     logger.info(
         "graph_executed",

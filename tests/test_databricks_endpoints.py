@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -538,3 +539,308 @@ class TestRouteTableValidation:
             params={"table": "cat.sch.tbl"},
         )
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# _get_databricks_client — error paths
+# ---------------------------------------------------------------------------
+
+
+class TestGetDatabricksClient:
+    def test_sdk_not_installed_returns_503(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When databricks-sdk is not installed, returns 503."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "main.py").write_text("")
+        from haute.server import app
+
+        c = TestClient(app)
+
+        with patch(
+            "haute.routes.databricks._get_databricks_client",
+            side_effect=HTTPException(
+                status_code=503, detail="databricks-sdk is not installed"
+            ),
+        ):
+            resp = c.get("/api/databricks/warehouses")
+        assert resp.status_code == 503
+        assert "databricks-sdk" in resp.json()["detail"]
+
+    def test_missing_host_returns_503(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When DATABRICKS_HOST is missing, returns 503."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DATABRICKS_TOKEN", "some_token")
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        (tmp_path / "main.py").write_text("")
+        from haute.server import app
+
+        c = TestClient(app)
+        resp = c.get("/api/databricks/warehouses")
+        assert resp.status_code == 503
+
+    def test_missing_token_returns_503(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When DATABRICKS_TOKEN is missing, returns 503."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://test.cloud.databricks.com")
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        (tmp_path / "main.py").write_text("")
+        from haute.server import app
+
+        c = TestClient(app)
+        resp = c.get("/api/databricks/warehouses")
+        assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Catalog / Schema exceptions
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogExceptions:
+    def test_catalogs_exception_returns_500(self, client: TestClient) -> None:
+        """Unexpected error from catalogs.list returns 500."""
+        mock_ws = MagicMock()
+        mock_ws.catalogs.list.side_effect = RuntimeError("API quota exceeded")
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/catalogs")
+
+        assert resp.status_code == 500
+        assert "API quota exceeded" not in resp.json()["detail"]
+        assert "Check the server logs" in resp.json()["detail"]
+
+    def test_catalogs_empty_list(self, client: TestClient) -> None:
+        """Empty catalog list returns empty array."""
+        mock_ws = MagicMock()
+        mock_ws.catalogs.list.return_value = []
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/catalogs")
+
+        assert resp.status_code == 200
+        assert resp.json()["catalogs"] == []
+
+    def test_catalogs_with_none_name_skipped(self, client: TestClient) -> None:
+        """Catalogs where name is None are filtered out."""
+        from databricks.sdk.service.catalog import CatalogInfo
+
+        valid = CatalogInfo(name="main", comment="Main catalog")
+        invalid = CatalogInfo(name=None, comment="No name")
+
+        mock_ws = MagicMock()
+        mock_ws.catalogs.list.return_value = [valid, invalid]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/catalogs")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["catalogs"]) == 1
+        assert data["catalogs"][0]["name"] == "main"
+
+    def test_catalog_with_none_comment(self, client: TestClient) -> None:
+        """Catalog with comment=None defaults to empty string."""
+        from databricks.sdk.service.catalog import CatalogInfo
+
+        cat = CatalogInfo(name="test_cat", comment=None)
+
+        mock_ws = MagicMock()
+        mock_ws.catalogs.list.return_value = [cat]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/catalogs")
+
+        assert resp.status_code == 200
+        assert resp.json()["catalogs"][0]["comment"] == ""
+
+
+class TestSchemaExceptions:
+    def test_schemas_exception_returns_500(self, client: TestClient) -> None:
+        """Unexpected error from schemas.list returns 500."""
+        mock_ws = MagicMock()
+        mock_ws.schemas.list.side_effect = RuntimeError("network timeout")
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
+
+        assert resp.status_code == 500
+        assert "network timeout" not in resp.json()["detail"]
+        assert "Check the server logs" in resp.json()["detail"]
+
+    def test_schemas_empty_list(self, client: TestClient) -> None:
+        """Empty schema list returns empty array."""
+        mock_ws = MagicMock()
+        mock_ws.schemas.list.return_value = []
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
+
+        assert resp.status_code == 200
+        assert resp.json()["schemas"] == []
+
+    def test_schemas_with_none_name_skipped(self, client: TestClient) -> None:
+        """Schemas where name is None are filtered out."""
+        from databricks.sdk.service.catalog import SchemaInfo
+
+        valid = SchemaInfo(name="pricing", comment="Pricing data")
+        invalid = SchemaInfo(name=None, comment="No name")
+
+        mock_ws = MagicMock()
+        mock_ws.schemas.list.return_value = [valid, invalid]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["schemas"]) == 1
+        assert data["schemas"][0]["name"] == "pricing"
+
+    def test_schema_with_none_comment(self, client: TestClient) -> None:
+        """Schema with comment=None defaults to empty string."""
+        from databricks.sdk.service.catalog import SchemaInfo
+
+        sch = SchemaInfo(name="test_schema", comment=None)
+
+        mock_ws = MagicMock()
+        mock_ws.schemas.list.return_value = [sch]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/schemas", params={"catalog": "main"})
+
+        assert resp.status_code == 200
+        assert resp.json()["schemas"][0]["comment"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Fetch endpoint — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestFetchTableAdditional:
+    def test_fetch_reraises_http_exception(self, client: TestClient) -> None:
+        """HTTPException from deeper layers is re-raised, not wrapped in 500."""
+        with patch(
+            "haute._databricks_io.fetch_and_cache",
+            side_effect=HTTPException(status_code=409, detail="conflict"),
+        ):
+            resp = client.post(
+                "/api/databricks/fetch",
+                json={"table": "cat.sch.tbl", "http_path": "/sql/wh"},
+            )
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "conflict"
+
+    def test_fetch_without_http_path(self, client: TestClient) -> None:
+        """Fetch without http_path is accepted (http_path is optional)."""
+        from haute._databricks_io import _cache_path_for
+
+        fake_result = {
+            "path": str(_cache_path_for("cat.sch.tbl")),
+            "table": "cat.sch.tbl",
+            "row_count": 5,
+            "column_count": 1,
+            "columns": {"x": "Int64"},
+            "size_bytes": 512,
+            "fetched_at": 1700000000.0,
+            "fetch_seconds": 0.1,
+        }
+
+        with patch("haute._databricks_io.fetch_and_cache", return_value=fake_result) as mock_fn:
+            resp = client.post(
+                "/api/databricks/fetch",
+                json={"table": "cat.sch.tbl"},
+            )
+
+        assert resp.status_code == 200
+        mock_fn.assert_called_once_with(
+            table="cat.sch.tbl",
+            http_path=None,
+            query=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Warehouse — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestWarehouseAdditional:
+    def test_warehouse_without_id_or_name_skipped(self, client: TestClient) -> None:
+        """Warehouses without id or name are filtered out."""
+        from databricks.sdk.service.sql import EndpointInfo, State
+
+        valid_wh = EndpointInfo(
+            id="abc",
+            name="Good WH",
+            state=State.RUNNING,
+            cluster_size="Small",
+        )
+        no_id = EndpointInfo(
+            id=None,
+            name="No ID",
+            state=State.RUNNING,
+            cluster_size="Small",
+        )
+        no_name = EndpointInfo(
+            id="def",
+            name=None,
+            state=State.RUNNING,
+            cluster_size="Small",
+        )
+
+        mock_ws = MagicMock()
+        mock_ws.warehouses.list.return_value = [valid_wh, no_id, no_name]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/warehouses")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["warehouses"]) == 1
+        assert data["warehouses"][0]["id"] == "abc"
+
+    def test_multiple_warehouses(self, client: TestClient) -> None:
+        """Multiple warehouses are returned correctly."""
+        from databricks.sdk.service.sql import EndpointInfo, State
+
+        wh1 = EndpointInfo(
+            id="wh1", name="Warehouse A", state=State.RUNNING, cluster_size="Small"
+        )
+        wh2 = EndpointInfo(
+            id="wh2", name="Warehouse B", state=State.STOPPED, cluster_size="Medium"
+        )
+
+        mock_ws = MagicMock()
+        mock_ws.warehouses.list.return_value = [wh1, wh2]
+
+        with patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws):
+            resp = client.get("/api/databricks/warehouses")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["warehouses"]) == 2
+        names = {w["name"] for w in data["warehouses"]}
+        assert names == {"Warehouse A", "Warehouse B"}
+
+
+# ---------------------------------------------------------------------------
+# Table validation — additional patterns
+# ---------------------------------------------------------------------------
+
+
+class TestTableValidationAdditional:
+    def test_two_part_name_rejected(self, client: TestClient) -> None:
+        """Two-part names (catalog.table) are rejected."""
+        resp = client.get("/api/databricks/cache", params={"table": "catalog.table"})
+        assert resp.status_code == 400
+
+    def test_four_part_name_rejected(self, client: TestClient) -> None:
+        """Four-part names are rejected."""
+        resp = client.get("/api/databricks/cache", params={"table": "a.b.c.d"})
+        assert resp.status_code == 400

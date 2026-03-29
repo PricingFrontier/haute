@@ -536,3 +536,218 @@ class TestListModelVersions:
             max_results=10,
             page_token="abc123",
         )
+
+
+# ---------------------------------------------------------------------------
+# _ensure_tracking — error paths
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureTracking:
+    def test_mlflow_not_installed_raises_503(self, client):
+        """When mlflow is not installed, _ensure_tracking raises 503."""
+        with patch(
+            "haute.routes.mlflow._ensure_tracking",
+            side_effect=HTTPException(status_code=503, detail="mlflow is not installed"),
+        ):
+            resp = client.get("/api/mlflow/experiments")
+        assert resp.status_code == 503
+        assert "mlflow" in resp.json()["detail"].lower()
+
+    def test_tracking_backend_resolution_failure_502(self, client):
+        """When tracking backend cannot be resolved, _ensure_tracking raises 502."""
+        with patch(
+            "haute.routes.mlflow._ensure_tracking",
+            side_effect=HTTPException(status_code=502, detail="Cannot resolve tracking backend"),
+        ):
+            resp = client.get("/api/mlflow/experiments")
+        assert resp.status_code == 502
+
+    def test_503_propagates_to_all_endpoints(self, client):
+        """503 from _ensure_tracking propagates to all MLflow endpoints."""
+        side_effect = HTTPException(status_code=503, detail="not installed")
+
+        for path in [
+            "/api/mlflow/experiments",
+            "/api/mlflow/runs?experiment_id=1",
+            "/api/mlflow/models",
+            "/api/mlflow/model-versions?model_name=test",
+        ]:
+            with patch("haute.routes.mlflow._ensure_tracking", side_effect=side_effect):
+                resp = client.get(path)
+            assert resp.status_code == 503, f"Expected 503 for {path}"
+
+
+# ---------------------------------------------------------------------------
+# Runs — additional artifact filter edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestListRunsAdditional:
+    def test_run_with_no_run_name(self, client):
+        """Runs with run_name=None default to empty string."""
+        run = _make_run(run_id="nameless")
+        run.info.run_name = None
+
+        cbm = MagicMock(path="model.cbm")
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = [run]
+        mock_client = MagicMock()
+        mock_client.list_artifacts.return_value = [cbm]
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/runs?experiment_id=1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["run_name"] == ""
+
+    def test_run_with_multiple_model_artifacts(self, client):
+        """A run with both .cbm and .rsglm returns both in artifacts."""
+        run = _make_run(run_id="multi")
+        cbm = MagicMock(path="model.cbm")
+        rsglm = MagicMock(path="glm.rsglm")
+        txt = MagicMock(path="readme.txt")
+
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = [run]
+        mock_client = MagicMock()
+        mock_client.list_artifacts.return_value = [cbm, rsglm, txt]
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/runs?experiment_id=1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert set(data[0]["artifacts"]) == {"model.cbm", "glm.rsglm"}
+
+    def test_run_with_none_metrics_and_params(self, client):
+        """Runs where metrics/params are None default to empty dict."""
+        run = _make_run(run_id="sparse")
+        run.data.metrics = None
+        run.data.params = None
+
+        cbm = MagicMock(path="model.cbm")
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = [run]
+        mock_client = MagicMock()
+        mock_client.list_artifacts.return_value = [cbm]
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/runs?experiment_id=1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["metrics"] == {}
+        assert data[0]["params"] == {}
+
+    def test_optimiser_filter_does_not_match_non_exact(self, client):
+        """artifact_filter=optimiser does NOT match similar-but-wrong filenames."""
+        run = _make_run(run_id="wrong")
+        wrong = MagicMock(path="optimiser_result.json.bak")
+
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = [run]
+        mock_client = MagicMock()
+        mock_client.list_artifacts.return_value = [wrong]
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/runs?experiment_id=1&artifact_filter=optimiser")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_all_artifact_listings_fail_returns_empty(self, client):
+        """When all artifact listings fail, the result is an empty list."""
+        run1 = _make_run(run_id="r1")
+        run2 = _make_run(run_id="r2")
+
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = [run1, run2]
+        mock_client = MagicMock()
+        mock_client.list_artifacts.side_effect = Exception("storage down")
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/runs?experiment_id=1")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Models — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestListModelsAdditional:
+    def test_models_with_multiple_versions(self, client):
+        """Model with multiple latest_versions returns them all."""
+        model = MagicMock()
+        model.name = "multi-version-model"
+        v1 = MagicMock(version="1", status="READY", run_id="r1")
+        v2 = MagicMock(version="2", status="READY", run_id="r2")
+        model.latest_versions = [v1, v2]
+
+        mock_client = MagicMock()
+        mock_client.search_registered_models.return_value = [model]
+
+        with _mock_tracking(client=mock_client):
+            resp = client.get("/api/mlflow/models")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data[0]["latest_versions"]) == 2
+
+    def test_page_token_none_not_forwarded(self, client):
+        """When page_token is not provided, None is passed (not empty string)."""
+        mock_client = MagicMock()
+        mock_client.search_registered_models.return_value = []
+
+        with _mock_tracking(client=mock_client):
+            resp = client.get("/api/mlflow/models")
+
+        assert resp.status_code == 200
+        mock_client.search_registered_models.assert_called_once_with(
+            max_results=100,
+            page_token=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Model Versions — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestListModelVersionsAdditional:
+    def test_empty_versions(self, client):
+        """Model with no versions returns empty list."""
+        mock_client = MagicMock()
+        mock_client.search_model_versions.return_value = []
+
+        with _mock_tracking(client=mock_client):
+            resp = client.get("/api/mlflow/model-versions?model_name=empty-model")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_versions_with_creation_timestamp(self, client):
+        """Verify creation_timestamp is included in the response."""
+        v = MagicMock(
+            version="1",
+            run_id="r1",
+            status="READY",
+            creation_timestamp=1700000000,
+            description="v1 desc",
+        )
+        mock_client = MagicMock()
+        mock_client.search_model_versions.return_value = [v]
+
+        with _mock_tracking(client=mock_client):
+            resp = client.get("/api/mlflow/model-versions?model_name=test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["creation_timestamp"] == 1700000000
+        assert data[0]["description"] == "v1 desc"

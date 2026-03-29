@@ -54,7 +54,12 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   // Auto-save: debounce API calls so we don't fire on every keystroke
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const activeModuleRef = useRef(activeModule)
+  const mountedRef = useRef(true)
   useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   const autoSave = useCallback((module: string, value: string) => {
     clearTimeout(saveTimer.current)
@@ -63,11 +68,11 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       if (activeModuleRef.current !== module) return
       try {
         await updateUtilityFile(module, value)
-        if (activeModuleRef.current !== module) return
+        if (!mountedRef.current || activeModuleRef.current !== module) return
         setErrorLine(null)
         setErrorMsg(null)
       } catch (err) {
-        if (activeModuleRef.current !== module) return
+        if (!mountedRef.current || activeModuleRef.current !== module) return
         const syntaxErr = parseSyntaxError(err)
         if (syntaxErr) {
           setErrorLine(syntaxErr.error_line)

@@ -100,7 +100,11 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Source system
   sources: ["live"],
   activeSource: "live",
-  setSources: (sources) => set({ sources }),
+  setSources: (sources) => set((s) => ({
+    sources,
+    // Reset activeSource to "live" if it no longer exists in the new sources list (Issue #9)
+    activeSource: sources.includes(s.activeSource) ? s.activeSource : "live",
+  })),
   setActiveSource: (source) => set({ activeSource: source }),
   addSource: (name) => {
     const trimmed = name.trim().toLowerCase().replace(/\s+/g, "_")

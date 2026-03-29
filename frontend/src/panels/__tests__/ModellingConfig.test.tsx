@@ -84,7 +84,10 @@ beforeEach(() => {
   mockEstimateTrainingRam.mockReset().mockReturnValue(new Promise(() => {}))
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
 
 // ═════════════════════════════════════════════════════════════════
 // Config rendering
@@ -832,6 +835,190 @@ describe("ModellingConfig", () => {
       fireEvent.click(gpuCheckbox)
       // Should commit params without task_type
       expect(props.onUpdate).toHaveBeenCalledWith("params", { iterations: 500 })
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // Algorithm picker — GLM option
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Algorithm picker", () => {
+    it("shows both CatBoost and GLM options when algorithm is not set", () => {
+      renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      expect(screen.getByText("CatBoost")).toBeTruthy()
+      expect(screen.getByText("GLM")).toBeTruthy()
+    })
+
+    it("clicking GLM in picker sets algorithm to glm", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("GLM"))
+      expect(props.onUpdate).toHaveBeenCalledWith("algorithm", "glm")
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // Task switching updates metrics
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Task switching metrics", () => {
+    it("switching to classification sets classification metrics", () => {
+      const { props } = renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: "classification" }))
+      expect(props.onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ task: "classification", metrics: ["auc", "logloss"] }),
+      )
+    })
+
+    it("switching back to regression sets regression metrics", () => {
+      const { props } = renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "classification", algorithm: "catboost", metrics: ["auc", "logloss"] },
+      })
+      fireEvent.click(screen.getByRole("button", { name: "regression" }))
+      expect(props.onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ task: "regression", metrics: ["gini", "rmse"] }),
+      )
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // Loss function selection (regression)
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Loss function selection", () => {
+    it("clicking Poisson sets loss_function", () => {
+      const { props } = renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: "Poisson" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", "Poisson")
+    })
+
+    it("clicking Tweedie sets loss_function", () => {
+      const { props } = renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: "Tweedie" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", "Tweedie")
+    })
+
+    it("clicking RMSE loss button sets loss_function to RMSE", () => {
+      const { props } = renderConfig()
+      const rmseButtons = screen.getAllByRole("button", { name: "RMSE" })
+      // Click the first RMSE button (the loss function one)
+      fireEvent.click(rmseButtons[0])
+      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", expect.any(String))
+    })
+
+    it("clicking MAE loss button sets loss_function to MAE", () => {
+      const { props } = renderConfig()
+      const maeButtons = screen.getAllByRole("button", { name: "MAE" })
+      fireEvent.click(maeButtons[0])
+      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", expect.any(String))
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // CV folds input
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("CV folds input", () => {
+    it("shows folds input when cv_folds is enabled", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
+      })
+      expect(screen.getByText("On")).toBeTruthy()
+      expect(screen.getByDisplayValue("5")).toBeTruthy()
+    })
+
+    it("changing folds input value calls onUpdate with new folds count", () => {
+      const { props } = renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
+      })
+      const foldsInput = screen.getByDisplayValue("5")
+      fireEvent.change(foldsInput, { target: { value: "10" } })
+      expect(props.onUpdate).toHaveBeenCalledWith("cv_folds", 10)
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // Row limit input
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Row limit input", () => {
+    it("renders row limit input with placeholder", () => {
+      renderConfig()
+      expect(screen.getByPlaceholderText("All rows")).toBeTruthy()
+    })
+
+    it("changing row limit calls onUpdate with parsed integer", () => {
+      const { props } = renderConfig()
+      const rowLimitInput = screen.getByPlaceholderText("All rows")
+      fireEvent.change(rowLimitInput, { target: { value: "50000" } })
+      expect(props.onUpdate).toHaveBeenCalledWith("row_limit", 50000)
+    })
+
+    it("clearing row limit calls onUpdate with null", () => {
+      const { props } = renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", row_limit: 50000 },
+      })
+      const rowLimitInput = screen.getByDisplayValue("50000")
+      fireEvent.change(rowLimitInput, { target: { value: "" } })
+      expect(props.onUpdate).toHaveBeenCalledWith("row_limit", null)
+    })
+
+    it("shows row count label when row limit is set", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", row_limit: 100000 },
+      })
+      expect(screen.getByText("100,000 rows")).toBeTruthy()
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // Feature exclude/include updates config
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Feature exclude/include updates config", () => {
+    it("excluding multiple columns accumulates in exclude array", () => {
+      const { props } = renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age"] },
+      })
+      fireEvent.click(screen.getByRole("button", { name: /Features/ }))
+      const regionSpan = screen.getAllByText("region").find(el => el.tagName === "SPAN")!
+      fireEvent.click(within(regionSpan.closest("div")!).getByRole("button", { name: "Exclude" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("exclude", ["age", "region"])
+    })
+
+    it("including a column from exclude list removes only that column", () => {
+      const { props } = renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age", "region"] },
+      })
+      fireEvent.click(screen.getByRole("button", { name: /Features/ }))
+      const regionSpan = screen.getAllByText("region").find(el => el.tagName === "SPAN")!
+      fireEvent.click(within(regionSpan.closest("div")!).getByRole("button", { name: "Include" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("exclude", ["age"])
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // Split strategy buttons
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Split strategy selection", () => {
+    it("clicking group split calls onUpdate with group strategy", () => {
+      const { props } = renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: "group" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("split", expect.objectContaining({ strategy: "group" }))
+    })
+
+    it("clicking random split after temporal reverts strategy", () => {
+      const { props } = renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "catboost",
+          split: { strategy: "temporal", test_size: 0.2, seed: 42 },
+        },
+      })
+      fireEvent.click(screen.getByRole("button", { name: "random" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("split", expect.objectContaining({ strategy: "random" }))
     })
   })
 })

@@ -58,11 +58,12 @@ vi.mock("../hooks/useWebSocketSync", () => ({
   default: () => "connected",
 }))
 
+const mockSetPreviewData = vi.fn()
 vi.mock("../hooks/usePipelineAPI", () => ({
   default: () => ({
     loading: mockLoading,
     previewData: null,
-    setPreviewData: vi.fn(),
+    setPreviewData: mockSetPreviewData,
     nodeStatuses: {},
     fetchPreview: vi.fn(),
     handleSave: vi.fn(),
@@ -136,7 +137,11 @@ vi.mock("../panels/NodePalette", () => ({
 }))
 
 vi.mock("../panels/NodePanel", () => ({
-  default: () => <div data-testid="node-panel" />,
+  default: ({ onClose }: { onClose?: () => void }) => (
+    <div data-testid="node-panel">
+      <button data-testid="node-panel-close" onClick={onClose}>Close</button>
+    </div>
+  ),
 }))
 
 vi.mock("../panels/DataPreview", () => ({
@@ -242,7 +247,10 @@ import useSettingsStore from "../stores/useSettingsStore"
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
 
 beforeEach(() => {
   mockLoading = false
@@ -426,5 +434,22 @@ describe("App", () => {
     useUIStore.setState({ submodelDialog: { nodeIds: ["n1", "n2"] } })
     render(<App />)
     expect(screen.getByTestId("submodel-dialog")).toBeInTheDocument()
+  })
+
+  // ── Close panel clears preview data ─────────────────────────────
+  // Regression: closing the optimiser panel left stale previewData,
+  // causing DataPreview to re-render a large dataset and freeze the UI.
+
+  // Regression: closing the optimiser panel left stale previewData,
+  // causing DataPreview to re-render a large dataset and freeze the UI.
+  it("clicking canvas (pane click) clears previewData to prevent stale render", () => {
+    mockLoading = false
+    render(<App />)
+    mockSetPreviewData.mockClear()
+
+    const canvas = screen.getByTestId("react-flow")
+    fireEvent.click(canvas)
+
+    expect(mockSetPreviewData).toHaveBeenCalledWith(null)
   })
 })

@@ -6,7 +6,7 @@
  * navigate between quotes via prev/next arrows or a search input.
  */
 
-import { useState, useMemo, useCallback, useEffect } from "react"
+import { useState, useMemo, useCallback, useEffect, memo } from "react"
 import {
   ChevronDown,
   ChevronUp,
@@ -174,6 +174,48 @@ function SeriesLine({
     </g>
   )
 }
+
+// ─── Memoized chart area (avoids rebuilding scales on every parent render) ──
+
+const CHART_W = 520
+const CHART_H = 220
+
+const ChartArea = memo(function ChartArea({
+  currentRows,
+  visibleSeries,
+  allSeries,
+}: {
+  currentRows: QuoteRow[]
+  visibleSeries: string[]
+  allSeries: string[]
+}) {
+  const ctx = useMemo(
+    () => buildScales(currentRows, visibleSeries, CHART_W, CHART_H, 0.05),
+    [currentRows, visibleSeries],
+  )
+  return (
+    <svg
+      width={CHART_W}
+      height={CHART_H}
+      style={{
+        background: "var(--bg-input)",
+        borderRadius: 6,
+        border: "1px solid var(--border)",
+      }}
+    >
+      <ChartGrid ctx={ctx} />
+      {visibleSeries.map((col) => (
+        <SeriesLine
+          key={col}
+          rows={currentRows}
+          column={col}
+          color={SERIES_COLORS[allSeries.indexOf(col) % SERIES_COLORS.length]}
+          ctx={ctx}
+        />
+      ))}
+    </svg>
+  )
+})
 
 // ─── Scenario-level summary statistics ───────────────────────────
 
@@ -443,21 +485,25 @@ export default function OptimiserDataPreview({
   )
 
   // ── Scenario-level summary statistics (aggregated across all quotes) ──
+  // Deferred: only computed when the statistics tab is active to avoid
+  // expensive O(n·log·n × #series) sorting on every render.
   const scenarioIndices = useMemo(() => {
+    if (tab !== "statistics") return []
     const idxSet = new Set<number>()
     for (const rows of quoteData.values()) {
       for (const r of rows) idxSet.add(r.scenarioIndex)
     }
     return [...idxSet].sort((a, b) => a - b)
-  }, [quoteData])
+  }, [quoteData, tab])
 
   const scenarioStatsBySeries = useMemo(() => {
+    if (tab !== "statistics") return new Map<string, ScenarioStats[]>()
     const map = new Map<string, ScenarioStats[]>()
     for (const col of allSeries) {
       map.set(col, computeScenarioStats(quoteData, scenarioIndices, col))
     }
     return map
-  }, [allSeries, quoteData, scenarioIndices])
+  }, [allSeries, quoteData, scenarioIndices, tab])
 
   // ── No config / no data guards ──
   if (!objectiveCol) {
@@ -731,31 +777,11 @@ export default function OptimiserDataPreview({
                   Select at least one series to plot.
                 </div>
               ) : (
-                (() => {
-                  const ctx = buildScales(currentRows, visibleSeries, 520, 220, 0.05)
-                  return (
-                    <svg
-                      width={520}
-                      height={220}
-                      style={{
-                        background: "var(--bg-input)",
-                        borderRadius: 6,
-                        border: "1px solid var(--border)",
-                      }}
-                    >
-                      <ChartGrid ctx={ctx} />
-                      {visibleSeries.map((col) => (
-                        <SeriesLine
-                          key={col}
-                          rows={currentRows}
-                          column={col}
-                          color={SERIES_COLORS[allSeries.indexOf(col) % SERIES_COLORS.length]}
-                          ctx={ctx}
-                        />
-                      ))}
-                    </svg>
-                  )
-                })()
+                <ChartArea
+                  currentRows={currentRows}
+                  visibleSeries={visibleSeries}
+                  allSeries={allSeries}
+                />
               )}
             </div>
           </div>

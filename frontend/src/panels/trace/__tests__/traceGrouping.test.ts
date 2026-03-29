@@ -193,6 +193,101 @@ describe("findTargetStep", () => {
     const result = findTargetStep([], "premium")
     expect(result).toBeNull()
   })
+
+  it("returns null when column is undefined", () => {
+    const steps = [
+      makeStep({
+        node_id: "n1",
+        schema_diff: {
+          columns_added: ["premium"],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: [],
+        },
+      }),
+    ]
+    const result = findTargetStep(steps, undefined)
+    expect(result).toBeNull()
+  })
+
+  it("returns LAST modifier when multiple steps add then modify the column", () => {
+    const steps = [
+      makeStep({
+        node_id: "n1",
+        node_name: "Creator",
+        schema_diff: {
+          columns_added: ["premium"],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: [],
+        },
+      }),
+      makeStep({
+        node_id: "n2",
+        node_name: "Modifier A",
+        schema_diff: {
+          columns_added: [],
+          columns_removed: [],
+          columns_modified: ["premium"],
+          columns_passed: ["age"],
+        },
+      }),
+      makeStep({
+        node_id: "n3",
+        node_name: "Passthrough",
+        schema_diff: {
+          columns_added: [],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: ["premium", "age"],
+        },
+      }),
+      makeStep({
+        node_id: "n4",
+        node_name: "Modifier B",
+        schema_diff: {
+          columns_added: [],
+          columns_removed: [],
+          columns_modified: ["premium"],
+          columns_passed: ["age"],
+        },
+      }),
+    ]
+    const result = findTargetStep(steps, "premium")
+    expect(result).not.toBeNull()
+    expect(result!.node_id).toBe("n4")
+    expect(result!.node_name).toBe("Modifier B")
+  })
+
+  it("prefers final step with usable expression when primary step has opaque expression", () => {
+    const steps = [
+      makeStep({
+        node_id: "n1",
+        node_name: "Creator",
+        schema_diff: {
+          columns_added: ["premium"],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: [],
+        },
+        expression: { expression_text: "", expression_type: "opaque", referenced_columns: [] },
+      }),
+      makeStep({
+        node_id: "n2",
+        node_name: "Final",
+        schema_diff: {
+          columns_added: [],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: ["premium"],
+        },
+        expression: { expression_text: "col('age') * 2", expression_type: "polars", referenced_columns: ["age"] },
+      }),
+    ]
+    const result = findTargetStep(steps, "premium")
+    expect(result).not.toBeNull()
+    expect(result!.node_id).toBe("n2")
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -323,6 +418,58 @@ describe("groupTraceSteps", () => {
   it("empty steps array: returns empty groups", () => {
     const groups = groupTraceSteps([], "premium")
     expect(groups).toEqual([])
+  })
+
+  it("marks group as primary when it contains the column-modifying step", () => {
+    const steps = [
+      makeStep({ node_id: "s1", node_name: "Source", node_type: "source" }),
+      makeStep({
+        node_id: "t1",
+        node_name: "Transform A",
+        node_type: "polars",
+        schema_diff: {
+          columns_added: [],
+          columns_removed: [],
+          columns_modified: [],
+          columns_passed: ["premium", "age"],
+        },
+      }),
+      makeStep({
+        node_id: "t2",
+        node_name: "Modifier",
+        node_type: "polars",
+        schema_diff: {
+          columns_added: [],
+          columns_removed: [],
+          columns_modified: ["premium"],
+          columns_passed: ["age"],
+        },
+      }),
+    ]
+    const groups = groupTraceSteps(steps, "premium")
+
+    const primaryGroup = groups.find((g) => g.primary)
+    expect(primaryGroup).toBeDefined()
+    expect(primaryGroup!.steps.some((s) => s.node_id === "t2")).toBe(true)
+  })
+
+  it("no group is primary when no step creates or modifies the column", () => {
+    const steps = [
+      makeStep({
+        node_id: "s1",
+        node_name: "Source",
+        node_type: "source",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["age"] },
+      }),
+      makeStep({
+        node_id: "t1",
+        node_name: "Transform",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["age"] },
+      }),
+    ]
+    const groups = groupTraceSteps(steps, "premium")
+    expect(groups.every((g) => !g.primary)).toBe(true)
   })
 })
 
@@ -666,6 +813,121 @@ describe("collapsePassthroughs", () => {
     expect(collapsedEntries).toHaveLength(0)
     expect(result).toHaveLength(2)
   })
+
+  it("all passthrough: first and last preserved, middle collapsed", () => {
+    const steps = [
+      makeStep({
+        node_id: "p1",
+        node_name: "Pass A",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "p2",
+        node_name: "Pass B",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "p3",
+        node_name: "Pass C",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+    ]
+    const result = collapsePassthroughs(steps, "premium")
+
+    const nonCollapsed = result.filter((e) => !("collapsed" in e)) as TraceStep[]
+    expect(nonCollapsed).toHaveLength(2)
+    expect(nonCollapsed[0].node_id).toBe("p1")
+    expect(nonCollapsed[1].node_id).toBe("p3")
+
+    const collapsedEntries = result.filter((e) => "collapsed" in e)
+    expect(collapsedEntries).toHaveLength(1)
+    expect((collapsedEntries[0] as { collapsed: TraceStep[] }).collapsed).toHaveLength(1)
+    expect((collapsedEntries[0] as { collapsed: TraceStep[] }).collapsed[0].node_id).toBe("p2")
+  })
+
+  it("source steps (dataSource type) are NOT collapsed even when passthrough", () => {
+    const steps = [
+      makeStep({
+        node_id: "ds1",
+        node_name: "Data Source",
+        node_type: "dataSource",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "p1",
+        node_name: "Pass",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "m1",
+        node_name: "Modifier",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] },
+      }),
+    ]
+    const result = collapsePassthroughs(steps, "premium")
+
+    const nonCollapsed = result.filter((e) => !("collapsed" in e)) as TraceStep[]
+    expect(nonCollapsed.some((s) => s.node_id === "ds1")).toBe(true)
+  })
+
+  it("apiInput source type is NOT collapsed", () => {
+    const steps = [
+      makeStep({
+        node_id: "api1",
+        node_name: "API Input",
+        node_type: "apiInput",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "t1",
+        node_name: "Transform",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] },
+      }),
+    ]
+    const result = collapsePassthroughs(steps, "premium")
+
+    const nonCollapsed = result.filter((e) => !("collapsed" in e)) as TraceStep[]
+    expect(nonCollapsed.some((s) => s.node_id === "api1")).toBe(true)
+  })
+
+  it("step with column not mentioned at all is treated as passthrough", () => {
+    const steps = [
+      makeStep({
+        node_id: "s1",
+        node_name: "Source",
+        node_type: "source",
+        schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+      }),
+      makeStep({
+        node_id: "u1",
+        node_name: "Unrelated",
+        node_type: "polars",
+        schema_diff: { columns_added: ["other"], columns_removed: [], columns_modified: [], columns_passed: [] },
+      }),
+      makeStep({
+        node_id: "t1",
+        node_name: "Final",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] },
+      }),
+    ]
+    const result = collapsePassthroughs(steps, "premium")
+
+    const collapsedEntries = result.filter((e) => "collapsed" in e)
+    expect(collapsedEntries).toHaveLength(1)
+    expect((collapsedEntries[0] as { collapsed: TraceStep[] }).collapsed[0].node_id).toBe("u1")
+  })
+
+  it("empty steps returns empty array", () => {
+    const result = collapsePassthroughs([], "premium")
+    expect(result).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -906,5 +1168,110 @@ describe("buildFlowChain", () => {
     ]
     const chain = buildFlowChain(steps, "nonexistent")
     expect(chain).toHaveLength(0)
+  })
+
+  it("excludes column_relevant=false steps even if they touch the column", () => {
+    const steps = [
+      makeStep({
+        node_id: "s1",
+        node_name: "Source",
+        node_type: "source",
+        column_relevant: true,
+        schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+      }),
+      makeStep({
+        node_id: "irr1",
+        node_name: "Irrelevant Modifier",
+        node_type: "polars",
+        column_relevant: false,
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] },
+      }),
+      makeStep({
+        node_id: "t1",
+        node_name: "Target",
+        node_type: "polars",
+        column_relevant: true,
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] },
+      }),
+    ]
+    const chain = buildFlowChain(steps, "premium")
+
+    expect(chain.some((e) => e.step.node_id === "irr1")).toBe(false)
+    expect(chain).toHaveLength(2)
+  })
+
+  it("marks origin as first step where column is in columns_added", () => {
+    const steps = [
+      makeStep({
+        node_id: "p1",
+        node_name: "Passthrough",
+        node_type: "polars",
+        column_relevant: true,
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "c1",
+        node_name: "Creator",
+        node_type: "polars",
+        column_relevant: true,
+        schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: ["age"] },
+      }),
+    ]
+    const chain = buildFlowChain(steps, "premium")
+
+    const origin = chain.find((e) => e.isOrigin)
+    expect(origin).toBeDefined()
+    expect(origin!.step.node_id).toBe("c1")
+  })
+
+  it("marks target as last step that adds or modifies the column", () => {
+    const steps = [
+      makeStep({
+        node_id: "c1",
+        node_name: "Creator",
+        node_type: "polars",
+        column_relevant: true,
+        schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+      }),
+      makeStep({
+        node_id: "m1",
+        node_name: "Modifier 1",
+        node_type: "polars",
+        column_relevant: true,
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] },
+      }),
+      makeStep({
+        node_id: "m2",
+        node_name: "Modifier 2",
+        node_type: "polars",
+        column_relevant: true,
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] },
+      }),
+    ]
+    const chain = buildFlowChain(steps, "premium")
+
+    const target = chain.find((e) => e.isTarget)
+    expect(target).toBeDefined()
+    expect(target!.step.node_id).toBe("m2")
+
+    const nonTargets = chain.filter((e) => !e.isTarget)
+    expect(nonTargets).toHaveLength(2)
+  })
+
+  it("origin and target can be the same step when only one step adds the column", () => {
+    const steps = [
+      makeStep({
+        node_id: "c1",
+        node_name: "Only Step",
+        node_type: "polars",
+        column_relevant: true,
+        schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+      }),
+    ]
+    const chain = buildFlowChain(steps, "premium")
+
+    expect(chain).toHaveLength(1)
+    expect(chain[0].isOrigin).toBe(true)
+    expect(chain[0].isTarget).toBe(true)
   })
 })

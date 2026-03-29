@@ -280,6 +280,107 @@ describe("OptimiserDataPreview", () => {
     })
   })
 
+  describe("Header metadata extended", () => {
+    it("shows correct quote count for multi-quote data", () => {
+      const preview = [
+        { quote_id: "A", scenario_index: 0, scenario_value: 0.9, margin: 100, volume: 1.0 },
+        { quote_id: "A", scenario_index: 1, scenario_value: 1.0, margin: 110, volume: 0.95 },
+        { quote_id: "B", scenario_index: 0, scenario_value: 0.9, margin: 200, volume: 1.0 },
+        { quote_id: "B", scenario_index: 1, scenario_value: 1.0, margin: 210, volume: 0.93 },
+        { quote_id: "C", scenario_index: 0, scenario_value: 0.9, margin: 300, volume: 1.0 },
+        { quote_id: "C", scenario_index: 1, scenario_value: 1.0, margin: 310, volume: 0.91 },
+      ]
+      renderComponent({ preview, row_count: 6 })
+      expect(screen.getByText(/3 quotes/)).toBeInTheDocument()
+      expect(screen.getByText(/2 scenarios/)).toBeInTheDocument()
+    })
+  })
+
+  describe("Quote navigation extended", () => {
+    it("prev button becomes enabled after navigating forward", () => {
+      renderComponent()
+      const positionLabel = screen.getByText("1/2")
+      const navContainer = positionLabel.parentElement!
+      const prevBtn = navContainer.querySelectorAll("button")[0]
+      const nextBtn = navContainer.querySelectorAll("button")[1]
+      expect(prevBtn).toBeDisabled()
+      fireEvent.click(nextBtn)
+      const updatedPrevBtn = screen.getByText("2/2").parentElement!.querySelectorAll("button")[0]
+      expect(updatedPrevBtn).not.toBeDisabled()
+    })
+
+    it("navigating back from last quote re-enables next button", () => {
+      renderComponent()
+      const positionLabel = screen.getByText("1/2")
+      const navContainer = positionLabel.parentElement!
+      const nextBtn = navContainer.querySelectorAll("button")[1]
+      fireEvent.click(nextBtn)
+      const updatedPrevBtn = screen.getByText("2/2").parentElement!.querySelectorAll("button")[0]
+      fireEvent.click(updatedPrevBtn)
+      const finalNextBtn = screen.getByText("1/2").parentElement!.querySelectorAll("button")[1]
+      expect(finalNextBtn).not.toBeDisabled()
+    })
+  })
+
+  describe("Chart rendering extended", () => {
+    it("chart SVG renders correct number of dots for multiple series", () => {
+      const { container } = renderComponent()
+      const chartSvg = container.querySelector('svg[style*="background"]')!
+      const circles = chartSvg.querySelectorAll("circle")
+      expect(circles.length).toBe(6)
+    })
+
+    it("chart SVG has path elements for lines", () => {
+      const { container } = renderComponent()
+      const chartSvg = container.querySelector('svg[style*="background"]')!
+      const paths = chartSvg.querySelectorAll("path")
+      expect(paths.length).toBe(2)
+    })
+  })
+
+  describe("Collapse/expand extended", () => {
+    it("collapsed state shows node label and metadata", () => {
+      const { container } = renderComponent()
+      const collapseBtn = Array.from(container.querySelectorAll("button")).find((btn) => {
+        return btn.querySelector(".lucide-chevron-down") !== null
+      })!
+      fireEvent.click(collapseBtn)
+      expect(screen.getByText("Price Optimiser")).toBeInTheDocument()
+      expect(screen.getByText(/2 quotes/)).toBeInTheDocument()
+    })
+
+    it("expanding from collapsed state restores chart", () => {
+      const { container } = renderComponent()
+      const collapseBtn = Array.from(container.querySelectorAll("button")).find((btn) => {
+        return btn.querySelector(".lucide-chevron-down") !== null
+      })!
+      fireEvent.click(collapseBtn)
+      const expandBtn = container.querySelector(".lucide-chevron-up")!.closest("button")!
+      fireEvent.click(expandBtn)
+      const chartSvg = container.querySelector('svg[style*="background"]')
+      expect(chartSvg).toBeInTheDocument()
+    })
+  })
+
+  describe("Statistics tab extended", () => {
+    it("computes correct mean for volume at scenario 0", () => {
+      const { container } = renderComponent()
+      fireEvent.click(screen.getByText("Statistics"))
+      const cells = container.querySelectorAll("td")
+      const cellTexts = Array.from(cells).map((c) => c.textContent)
+      expect(cellTexts).toContain("1")
+    })
+
+    it("statistics tables render for each series", () => {
+      renderComponent()
+      fireEvent.click(screen.getByText("Statistics"))
+      const marginLabels = screen.getAllByText("margin")
+      const volumeLabels = screen.getAllByText("volume")
+      expect(marginLabels.length).toBeGreaterThanOrEqual(1)
+      expect(volumeLabels.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
   describe("Config with no constraints", () => {
     it("renders only the objective series when no constraints", () => {
       renderComponent({}, { constraints: {} })

@@ -78,4 +78,36 @@ describe("ModalShell", () => {
     fireEvent.keyDown(document, { key: "Escape" })
     expect(props.onClose).not.toHaveBeenCalled()
   })
+
+  it("focus trap: Tab wraps from last to first focusable element", () => {
+    renderShell({
+      children: (
+        <>
+          <button>First</button>
+          <button>Last</button>
+        </>
+      ),
+    })
+    const lastBtn = screen.getByText("Last")
+    lastBtn.focus()
+    expect(document.activeElement).toBe(lastBtn)
+    fireEvent.keyDown(document, { key: "Tab" })
+    expect(document.activeElement).toBe(screen.getByText("First"))
+  })
+
+  it("focus trap: Shift+Tab wraps from first to last focusable element", () => {
+    renderShell({
+      children: (
+        <>
+          <button>First</button>
+          <button>Last</button>
+        </>
+      ),
+    })
+    const firstBtn = screen.getByText("First")
+    firstBtn.focus()
+    expect(document.activeElement).toBe(firstBtn)
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true })
+    expect(document.activeElement).toBe(screen.getByText("Last"))
+  })
 })

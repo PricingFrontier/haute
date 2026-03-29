@@ -207,7 +207,12 @@ def _apply_selected_columns(
     else:
         all_cols = frame.columns
 
-    valid = [c for c in sel_cols if c in all_cols]
+    seen: set[str] = set()
+    valid = []
+    for c in sel_cols:
+        if c in all_cols and c not in seen:
+            valid.append(c)
+            seen.add(c)
     if valid and len(valid) < len(all_cols):
         return frame.select(valid)
     return frame

@@ -175,4 +175,73 @@ describe("SubmodelNode", () => {
     expect(wrapper.style.border).toContain("solid")
     expect(wrapper.style.border).not.toContain("dashed")
   })
+
+  it("positions multiple output port handles at different top percentages", () => {
+    const { container } = renderNode({
+      label: "Multi Output",
+      config: { outputPorts: ["alpha", "beta", "gamma"] },
+    })
+    const handleA = container.querySelector('[data-handleid="out__alpha"]') as HTMLElement
+    const handleB = container.querySelector('[data-handleid="out__beta"]') as HTMLElement
+    const handleC = container.querySelector('[data-handleid="out__gamma"]') as HTMLElement
+    expect(handleA).toBeTruthy()
+    expect(handleB).toBeTruthy()
+    expect(handleC).toBeTruthy()
+    const topA = handleA.style.top
+    const topB = handleB.style.top
+    const topC = handleC.style.top
+    expect(topA).toBe("25%")
+    expect(topB).toBe("50%")
+    expect(topC).toBe("75%")
+  })
+
+  it("renders a single default source handle when no output ports defined", () => {
+    const { container } = renderNode({ label: "No Ports" })
+    const sourceHandle = container.querySelector(".react-flow__handle-right")
+    expect(sourceHandle).toBeTruthy()
+  })
+
+  it("switches from dashed to solid border when _traceActive toggles", () => {
+    const { container, rerender } = render(
+      <ReactFlowProvider>
+        <SubmodelNode {...(makeProps({ label: "Toggle" }) as unknown as NodeProps)} />
+      </ReactFlowProvider>,
+    )
+    const wrapper = () => container.querySelector(".rounded-xl") as HTMLElement
+    expect(wrapper().style.border).toContain("dashed")
+
+    rerender(
+      <ReactFlowProvider>
+        <SubmodelNode {...(makeProps({ label: "Toggle", _traceActive: true }) as unknown as NodeProps)} />
+      </ReactFlowProvider>,
+    )
+    expect(wrapper().style.border).toContain("solid")
+    expect(wrapper().style.border).not.toContain("dashed")
+  })
+
+  it("renders very long file paths with truncation", () => {
+    const longPath = "submodels/deeply/nested/directory/structure/with/many/levels/pricing_model_v2.py"
+    renderNode({
+      label: "Long Path",
+      config: { file: longPath },
+    })
+    expect(screen.getByText(longPath)).toBeTruthy()
+    const el = screen.getByText(longPath)
+    expect(el.classList.contains("truncate")).toBe(true)
+  })
+
+  it("dims node when _hoverDimmed is true", () => {
+    const { container } = renderNode({
+      label: "Hover Dimmed",
+      _hoverDimmed: true,
+    })
+    const wrapper = container.querySelector(".rounded-xl") as HTMLElement
+    expect(wrapper.style.opacity).toBe("0.3")
+  })
+
+  it("has full opacity when neither dimmed flag is set", () => {
+    const { container } = renderNode({ label: "Full" })
+    const wrapper = container.querySelector(".rounded-xl") as HTMLElement
+    expect(wrapper.style.opacity).toBe("1")
+  })
 })
