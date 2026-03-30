@@ -1,6 +1,6 @@
 import { useRef, useEffect, useMemo, useCallback } from "react"
 import { Trash } from "lucide-react"
-import type { BandingFactor, ContinuousRule, CategoricalRule } from "../../../types/banding"
+import type { BandingFactor, ContinuousRule, CategoricalRule, BreakpointRule } from "../../../types/banding"
 
 const OPS = ["<", "<=", ">", ">=", "="]
 
@@ -12,7 +12,7 @@ export function nextRuleId(): string {
 }
 
 /** Ensure every rule has a stable `_id` key. */
-function ensureRuleIds(rules: (ContinuousRule | CategoricalRule)[]): (ContinuousRule | CategoricalRule)[] {
+function ensureRuleIds(rules: (ContinuousRule | CategoricalRule | BreakpointRule)[]): (ContinuousRule | CategoricalRule | BreakpointRule)[] {
   let changed = false
   const result = rules.map((r) => {
     if ((r as Record<string, unknown>)._id) return r
@@ -23,14 +23,14 @@ function ensureRuleIds(rules: (ContinuousRule | CategoricalRule)[]): (Continuous
 }
 
 /** Extract the stable key from a rule (falls back to index). */
-function ruleKey(rule: ContinuousRule | CategoricalRule, index: number): string {
+function ruleKey(rule: ContinuousRule | CategoricalRule | BreakpointRule, index: number): string {
   return (rule as Record<string, unknown>)._id as string || `fallback_${index}`
 }
 
 /** Parse pasted TSV text into rules. */
 function parsePastedRules(
   text: string,
-  mode: "continuous" | "categorical",
+  mode: "continuous" | "categorical" | "breakpoints",
 ): (ContinuousRule | CategoricalRule)[] {
   const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0)
   const parsed: (ContinuousRule | CategoricalRule)[] = []
@@ -114,7 +114,7 @@ export function BandingRulesGrid({
 
   const bt = factor.banding || "continuous"
 
-  const setRules = (r: (ContinuousRule | CategoricalRule)[]) => onUpdateFactor({ rules: r })
+  const setRules = (r: (ContinuousRule | CategoricalRule | BreakpointRule)[]) => onUpdateFactor({ rules: r })
   const updateRule = (idx: number, field: string, value: string) => {
     const next = [...rules]; next[idx] = { ...next[idx], [field]: value }; setRules(next)
   }

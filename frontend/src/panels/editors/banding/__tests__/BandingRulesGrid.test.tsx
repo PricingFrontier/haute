@@ -301,7 +301,7 @@ describe("BandingRulesGrid", () => {
     const rules = [
       { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "w1" },
     ] as unknown as ContinuousRule[]
-    const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[0]} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[0]} />)
     const zeroCell = screen.getByText("0")
     // Should have warning color applied (browser normalizes hex to rgba)
     const zeroColor = zeroCell.style.color
@@ -421,7 +421,7 @@ describe("BandingRulesGrid", () => {
     expect(screen.getByText("From", { selector: "th" })).toBeInTheDocument()
     expect(screen.getByText("Label", { selector: "th" })).toBeInTheDocument()
     // "To (opt.)" header
-    const toHeader = screen.getByText((content, element) => {
+    const toHeader = screen.getByText((_content, element) => {
       return element?.tagName === "TH" && element.textContent === "To (opt.)"
     })
     expect(toHeader).toBeInTheDocument()

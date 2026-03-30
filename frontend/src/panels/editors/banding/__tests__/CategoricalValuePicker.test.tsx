@@ -36,7 +36,7 @@ describe("CategoricalValuePicker", () => {
   })
 
   it("already-used values are visually distinct", () => {
-    const { container } = render(
+    render(
       <CategoricalValuePicker
         availableValues={[
           { value: "Car", count: 50 },

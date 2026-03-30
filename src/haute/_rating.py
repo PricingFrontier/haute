@@ -92,7 +92,7 @@ def _apply_banding(
     if hasattr(lf, "collect_schema"):
         schema = lf.collect_schema()
     else:
-        schema = dict(zip(lf.columns, lf.dtypes))
+        schema = dict(zip(lf.columns, lf.dtypes))  # type: ignore[assignment]
     col_dtype = schema.get(column)
     if col_dtype in (pl.Float32, pl.Float64):
         lf = lf.with_columns(

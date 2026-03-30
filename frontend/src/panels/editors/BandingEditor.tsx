@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react"
+import { useState } from "react"
 import { X, Plus, Copy, AlertTriangle } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
@@ -6,7 +6,6 @@ import type { ContinuousRule, CategoricalRule, BandingFactor, BandingMode, Break
 import {
   normaliseBandingFactors,
   inferBandingType,
-  isNumericDtype,
   suggestOutputColumn,
   detectOverlaps,
   detectGaps,
@@ -134,7 +133,7 @@ export default function BandingEditor({
   const shouldShowTabs = factors.length > 1 || !singleUnconfigured
 
   // ─── Match counts ─────────────────────────────────────────────
-  const matchCounts = useMemo(() => {
+  const matchCounts = (() => {
     if (!previewRows?.length || !factor.column) return undefined
     const column = factor.column
     const rules = factor.rules || []
@@ -167,14 +166,14 @@ export default function BandingEditor({
         return matchesContinuousRule(val, cont)
       }).length
     })
-  }, [previewRows, factor.column, factor.rules, factor.banding, factor.rightClosed])
+  })()
 
   const totalRows = previewRows?.length ?? 0
   const matchedRows = matchCounts ? matchCounts.reduce((a, b) => a + b, 0) : 0
   const unmatchedCount = totalRows - matchedRows
 
   // ─── Validation warnings ──────────────────────────────────────
-  const warnings = useMemo(() => {
+  const warnings = (() => {
     const rules = factor.rules || []
     if (!rules.length) return []
     const w: string[] = []
@@ -203,10 +202,10 @@ export default function BandingEditor({
       }
     }
     return w
-  }, [factor.rules, factor.banding])
+  })()
 
   // ─── Histogram data ───────────────────────────────────────────
-  const histogramData = useMemo(() => {
+  const histogramData = (() => {
     if ((factor.banding !== "continuous" && factor.banding !== "breakpoints") || !factor.column || !previewRows?.length) {
       return null
     }
@@ -226,10 +225,10 @@ export default function BandingEditor({
       }
     }
     return { values, boundaries }
-  }, [factor.banding, factor.column, factor.rules, previewRows])
+  })()
 
   // ─── Categorical available values ─────────────────────────────
-  const categoricalValues = useMemo(() => {
+  const categoricalValues = (() => {
     if (factor.banding !== "categorical" || !factor.column || !previewRows?.length) return null
     const counts = new Map<string, number>()
     for (const row of previewRows) {
@@ -239,10 +238,10 @@ export default function BandingEditor({
     return Array.from(counts.entries())
       .map(([value, count]) => ({ value, count }))
       .sort((a, b) => b.count - a.count)
-  }, [factor.banding, factor.column, previewRows])
+  })()
 
   // ─── Data min/max for generate dialog ─────────────────────────
-  const dataMinMax = useMemo(() => {
+  const dataMinMax = (() => {
     if (!factor.column || !previewRows?.length) return { dataMin: undefined, dataMax: undefined }
     let min = Infinity, max = -Infinity
     for (const row of previewRows) {
@@ -250,7 +249,7 @@ export default function BandingEditor({
       if (!isNaN(v)) { if (v < min) min = v; if (v > max) max = v }
     }
     return min <= max ? { dataMin: min, dataMax: max } : { dataMin: undefined, dataMax: undefined }
-  }, [factor.column, previewRows])
+  })()
 
   const handleAddRule = () => {
     if (factor.banding === "breakpoints") return // breakpoints have their own add

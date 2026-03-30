@@ -35,7 +35,7 @@ export function BandingHistogram({ values, boundaries, height = 50, accentColor 
         <text x="0" y={height} fontSize={9} fill="var(--text-muted)">
           {formatNum(min)}
         </text>
-        {boundaries.map((b, i) => {
+        {boundaries.map((_b, i) => {
           // With no range, place boundary lines at center
           return (
             <line

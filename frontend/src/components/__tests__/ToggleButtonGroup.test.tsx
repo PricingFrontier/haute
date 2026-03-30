@@ -189,7 +189,7 @@ describe("ToggleButtonGroup", () => {
   })
 
   it("aria-label is applied when provided", () => {
-    renderToggle({ ariaLabel: "Choose mode" } as any)
+    renderToggle({ ariaLabel: "Choose mode" })
     expect(screen.getByRole("radiogroup")).toHaveAttribute("aria-label", "Choose mode")
   })
 
