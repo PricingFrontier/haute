@@ -364,3 +364,102 @@ class TestCreateSubmodelGraph:
         # Parent graph: c + submodel, no edges between them
         assert len(result.graph.nodes) == 2
         assert len(result.graph.edges) == 0
+
+    def test_nesting_two_submodel_nodes_raises(self):
+        """Selecting two submodel nodes also raises (not just mixed selection)."""
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "submodel__a",
+                        "data": {
+                            "label": "a",
+                            "nodeType": "submodel",
+                            "config": {
+                                "file": "modules/a.py",
+                                "childNodeIds": [],
+                                "inputPorts": [],
+                                "outputPorts": [],
+                            },
+                        },
+                    },
+                    {
+                        "id": "submodel__b",
+                        "data": {
+                            "label": "b",
+                            "nodeType": "submodel",
+                            "config": {
+                                "file": "modules/b.py",
+                                "childNodeIds": [],
+                                "inputPorts": [],
+                                "outputPorts": [],
+                            },
+                        },
+                    },
+                ],
+                "edges": [],
+                "submodels": {
+                    "a": {"file": "modules/a.py", "childNodeIds": []},
+                    "b": {"file": "modules/b.py", "childNodeIds": []},
+                },
+            }
+        )
+        with pytest.raises(ValueError, match="cannot be nested"):
+            create_submodel_graph(graph, ["submodel__a", "submodel__b"], "outer")
+
+    def test_single_submodel_node_raises_nesting_not_count(self):
+        """One submodel node: nesting error takes precedence over count error."""
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "submodel__only",
+                        "data": {
+                            "label": "only",
+                            "nodeType": "submodel",
+                            "config": {
+                                "file": "modules/only.py",
+                                "childNodeIds": [],
+                                "inputPorts": [],
+                                "outputPorts": [],
+                            },
+                        },
+                    },
+                ],
+                "edges": [],
+                "submodels": {"only": {"file": "modules/only.py", "childNodeIds": []}},
+            }
+        )
+        # Should get nesting error, not "at least 2 nodes" error
+        with pytest.raises(ValueError, match="cannot be nested"):
+            create_submodel_graph(graph, ["submodel__only"], "wrap")
+
+    def test_nesting_submodel_node_raises(self):
+        """Selecting a submodel node for grouping raises ValueError (no nesting)."""
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {"id": "a", "data": {"label": "a", "nodeType": "polars", "config": {}}},
+                    {
+                        "id": "submodel__existing",
+                        "data": {
+                            "label": "existing",
+                            "nodeType": "submodel",
+                            "config": {
+                                "file": "modules/existing.py",
+                                "childNodeIds": [],
+                                "inputPorts": [],
+                                "outputPorts": [],
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "a", "target": "submodel__existing"}],
+                "submodels": {"existing": {"file": "modules/existing.py", "childNodeIds": []}},
+            }
+        )
+        with pytest.raises(ValueError, match="cannot be nested"):
+            create_submodel_graph(graph, ["a", "submodel__existing"], "outer")

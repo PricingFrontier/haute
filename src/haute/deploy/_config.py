@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.deploy._pruner import (
     find_deploy_input_nodes,
@@ -210,7 +211,7 @@ class DeployConfig:
 
         _load_env(path.resolve().parent)
 
-        text = path.read_text()
+        text = read_user_text(path)
         data = tomllib.loads(text)
 
         _validate_toml_keys(data, path)
@@ -376,7 +377,7 @@ def _load_env(project_root: Path) -> None:
         load_dotenv(env_path, override=False)
     except ImportError:
         # Graceful fallback: minimal key=value parsing
-        for line in env_path.read_text().splitlines():
+        for line in read_user_text(env_path).splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

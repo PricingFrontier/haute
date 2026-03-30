@@ -10,6 +10,7 @@ from typing import Any, NoReturn
 
 from fastapi import HTTPException, WebSocket
 
+from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
@@ -255,7 +256,7 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
     deps: dict[str, set[Path]] = {}
     for f in discover_pipelines():
         try:
-            source = f.read_text()
+            source = read_user_text(f)
             tree = ast.parse(source)
         except Exception as exc:
             logger.debug("module_deps_parse_failed", file=f.name, error=str(exc))
@@ -292,7 +293,7 @@ def load_sidecar(py_path: Path) -> dict[str, Any]:
     sidecar = py_path.with_suffix(".haute.json")
     if sidecar.exists():
         try:
-            return dict(_json.loads(sidecar.read_text()))
+            return dict(_json.loads(read_user_text(sidecar)))
         except (_json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             logger.warning("corrupt_sidecar", file=sidecar.name, error=str(e))
     return {}

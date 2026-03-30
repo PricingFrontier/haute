@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.routes._helpers import pipeline_dir, validate_safe_path
 from haute.schemas import (
@@ -87,7 +88,7 @@ async def read_utility_file(module: str) -> UtilityReadResponse:
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"Utility file not found: {module}.py")
 
-    content = target.read_text(encoding="utf-8")
+    content = read_user_text(target)
     return UtilityReadResponse(name=f"{module}.py", module=module, content=content)
 
 

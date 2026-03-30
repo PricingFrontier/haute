@@ -416,6 +416,8 @@ def score_from_config(
     import json
     from pathlib import Path
 
+    from haute._io import read_user_text
+
     config_path = Path(config)
     if base_dir is not None and not config_path.is_absolute():
         config_path = Path(base_dir) / config_path
@@ -424,7 +426,7 @@ def score_from_config(
     root = (Path(base_dir) if base_dir else Path.cwd()).resolve()
     if not resolved.is_relative_to(root):
         raise ValueError(f"Config path {config!r} resolves outside project root")
-    cfg = json.loads(resolved.read_text())
+    cfg = json.loads(read_user_text(resolved))
     scorer = ModelScorer(
         source_type=cfg.get("sourceType", "run"),
         run_id=cfg.get("run_id", ""),

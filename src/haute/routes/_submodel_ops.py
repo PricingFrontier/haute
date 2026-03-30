@@ -9,7 +9,7 @@ from haute._submodel_graph import (
     classify_ports,
     rewire_edges,
 )
-from haute._types import PipelineGraph
+from haute._types import NodeType, PipelineGraph
 from haute.graph_utils import _sanitize_func_name
 
 
@@ -46,6 +46,11 @@ def create_submodel_graph(
     child_nodes = [n for n in nodes if n.id in selected_ids]
     parent_nodes = [n for n in nodes if n.id not in selected_ids]
     child_node_ids = {n.id for n in child_nodes}
+
+    # Reject nesting: selected nodes must not include submodel nodes
+    for n in child_nodes:
+        if n.data.nodeType == NodeType.SUBMODEL:
+            raise ValueError("Submodels cannot be nested inside other submodels")
 
     # Validate after filtering against actual graph nodes (not raw input)
     if len(child_node_ids) < 2:

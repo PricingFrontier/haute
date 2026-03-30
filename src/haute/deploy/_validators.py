@@ -8,6 +8,7 @@ from pathlib import Path
 
 import polars as pl
 
+from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._types import NodeType
 from haute.deploy._config import ResolvedDeploy
@@ -24,7 +25,7 @@ def load_test_quote_file(path: Path) -> list[dict]:
     Raises:
         ValueError: If the file is not a JSON array.
     """
-    raw = json.loads(path.read_text())
+    raw = json.loads(read_user_text(path))
     if not isinstance(raw, list):
         raise ValueError("Expected a JSON array of quote objects")
     return [{k: v for k, v in row.items() if not k.startswith("_")} for row in raw]

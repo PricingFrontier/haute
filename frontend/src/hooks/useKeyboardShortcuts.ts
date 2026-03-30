@@ -18,12 +18,14 @@ interface KeyboardShortcutsParams {
   setPreviewData: (data: null) => void
   clearTrace: () => void
   closePanel: () => void
+  isInsideSubmodel: boolean
 }
 
 export default function useKeyboardShortcuts({
   handleSave, setNodes, setEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setPreviewData, clearTrace, closePanel,
+  isInsideSubmodel,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
@@ -141,6 +143,10 @@ export default function useKeyboardShortcuts({
       // Ctrl+G → group selected nodes into a submodel
       if (mod && e.key === "g") {
         e.preventDefault()
+        if (isInsideSubmodel) {
+          addToast("info", "Submodels cannot be nested inside other submodels")
+          return
+        }
         const { nodes: currentNodes } = graphRef.current
         const selectedIds = currentNodes.filter((n) => n.selected).map((n) => n.id)
         if (selectedIds.length >= 2) {
@@ -177,6 +183,6 @@ export default function useKeyboardShortcuts({
     handleSave, setNodes, setEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData, clearTrace, closePanel,
-    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen,
+    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel,
   ])
 }

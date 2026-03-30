@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._types import NodeType, PipelineGraph, _sanitize_func_name
 
@@ -130,7 +131,7 @@ def load_node_config(
         root = base_dir.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"Config path {config_path!r} resolves outside project root")
-    return dict(json.loads(resolved.read_text(encoding="utf-8")))
+    return dict(json.loads(read_user_text(resolved)))
 
 
 def save_node_config(
@@ -193,8 +194,8 @@ def find_config_by_func_name(
         candidate = base_dir / "config" / folder / f"{func_name}.json"
         if candidate.is_file():
             try:
-                config = dict(json.loads(candidate.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, OSError) as exc:
+                config = dict(json.loads(read_user_text(candidate)))
+            except (json.JSONDecodeError, OSError, ValueError) as exc:
                 logger.warning(
                     "config_recovery_failed",
                     func=func_name,

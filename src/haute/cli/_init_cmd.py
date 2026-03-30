@@ -4,6 +4,8 @@ from pathlib import Path
 
 import click
 
+from haute._io import read_user_text
+
 _DEV_DEPS_BLOCK = """
 [dependency-groups]
 dev = [
@@ -34,7 +36,7 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
     ruff, mypy, and pytest so that the generated CI workflows work.
     """
     if pyproject_path.exists():
-        text = pyproject_path.read_text(encoding="utf-8")
+        text = read_user_text(pyproject_path)
         if "haute" not in text:
             # Insert into existing dependencies list
             if "dependencies = [" in text:
@@ -236,7 +238,7 @@ def init(target: str, ci: str) -> None:
     gitignore_path = project_dir / ".gitignore"
     haute_entries = ".env\n*.haute.json\nimpact_report.md\n.haute_cache/\nmlruns/\ndata/\n"
     if gitignore_path.exists():
-        existing = gitignore_path.read_text()
+        existing = read_user_text(gitignore_path)
         missing = [line for line in haute_entries.splitlines() if line and line not in existing]
         if missing:
             with open(gitignore_path, "a", encoding="utf-8") as fh:

@@ -262,6 +262,7 @@ function FlowEditor() {
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     clearTrace,
     closePanel,
+    isInsideSubmodel: viewStack.length > 1,
   })
 
   // Background polling for optimiser/training jobs (survives panel unmount)

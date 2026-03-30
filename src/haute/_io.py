@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 
 logger = get_logger(component="io")
+
+
+def read_user_text(path: str | Path) -> str:
+    """Read a user-supplied text file, tolerating non-UTF-8 bytes.
+
+    User files may contain Windows-1252 or other legacy-encoded bytes
+    (e.g. en-dash ``0x96`` pasted from Excel).  ``errors="replace"``
+    substitutes invalid bytes with U+FFFD rather than raising
+    ``UnicodeDecodeError``.
+    """
+    return Path(path).read_text(encoding="utf-8", errors="replace")
+
 
 _OBJECT_CACHE_MAX_SIZE = 32
 
@@ -102,7 +116,7 @@ def _load_external_object_uncached(
     if file_type == "json":
         import json as _json
 
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return _json.load(f)
     elif file_type == "joblib":
         from haute._sandbox import safe_joblib_load

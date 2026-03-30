@@ -977,7 +977,7 @@ def _resolve_node_config(
         base = base_dir or Path.cwd()
         try:
             loaded = load_node_config(config_ref, base_dir=base)
-        except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
             logger.warning("config_path_fallback", original_path=config_ref, func_name=func_name)
             # On Windows the config path may be mangled by backslash
             # escape interpretation (e.g. \b→backspace, \r→CR).  Recover

@@ -20,6 +20,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     setPreviewData: vi.fn(),
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
+    isInsideSubmodel: false,
     ...overrides,
   }
 }
@@ -267,5 +268,62 @@ describe("useKeyboardShortcuts", () => {
     unmount()
     expect(removeSpy).toHaveBeenCalledWith("keydown", expect.any(Function))
     removeSpy.mockRestore()
+  })
+
+  it("Ctrl+G inside submodel shows nesting warning instead of dialog", () => {
+    cleanup()
+    const submodelParams = makeParams({ isInsideSubmodel: true })
+    submodelParams.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+    ]
+    renderHook(() => useKeyboardShortcuts(submodelParams))
+    fireKey("g", { ctrlKey: true })
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts[toasts.length - 1]).toMatchObject({
+      type: "info",
+      text: expect.stringContaining("cannot be nested"),
+    })
+  })
+
+  it("Cmd+G (Mac) with 2+ selected opens submodel dialog", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+    ]
+    fireKey("g", { metaKey: true })
+    expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["n1", "n2"] })
+  })
+
+  it("Cmd+G (Mac) inside submodel shows nesting warning", () => {
+    cleanup()
+    const submodelParams = makeParams({ isInsideSubmodel: true })
+    submodelParams.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+    ]
+    renderHook(() => useKeyboardShortcuts(submodelParams))
+    fireKey("g", { metaKey: true })
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts[toasts.length - 1]).toMatchObject({
+      type: "info",
+      text: expect.stringContaining("cannot be nested"),
+    })
+  })
+
+  it("Backspace removes selected nodes", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: { label: "B" }, selected: false } as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e1", source: "n1", target: "n2" } as Edge,
+    ]
+    fireKey("Backspace")
+    expect(params.setNodes).toHaveBeenCalled()
+    expect(params.setEdges).toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledWith(null)
   })
 })

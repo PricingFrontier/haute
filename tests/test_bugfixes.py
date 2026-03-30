@@ -670,6 +670,37 @@ class TestParserConfigLoadWarning:
         graph = parse_pipeline_file(pipeline_dir / "main.py")
         assert graph.warning is None
 
+    def test_warning_set_when_config_has_invalid_utf8(self, tmp_path, monkeypatch):
+        """A config file with non-UTF-8 bytes (e.g. Windows-1252 en-dash)
+        should be read with replacement chars and still parse successfully."""
+        monkeypatch.chdir(tmp_path)
+        pipeline_dir = tmp_path / "rating"
+        pipeline_dir.mkdir()
+        config_dir = pipeline_dir / "config" / "banding"
+        config_dir.mkdir(parents=True)
+        # Write a JSON file with a Windows-1252 en-dash (0x96) — invalid UTF-8
+        # With errors="replace", the 0x96 becomes U+FFFD and JSON stays valid
+        (config_dir / "bands.json").write_bytes(
+            b'{"bands": [{"label": "20\x9627"}]}'
+        )
+        (pipeline_dir / "main.py").write_text(
+            "import haute\nimport polars as pl\n\n"
+            'pipeline = haute.Pipeline("test")\n\n'
+            '@pipeline.banding(config="config/banding/bands.json")\n'
+            "def bands(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return df\n"
+        )
+
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(pipeline_dir / "main.py")
+        # Pipeline parses successfully — replacement chars keep JSON valid
+        assert len(graph.nodes) == 1
+        config = graph.nodes[0].data.config
+        assert "_load_error" not in config
+        # The label contains the replacement character instead of the raw byte
+        assert "\ufffd" in config["bands"][0]["label"]
+
     def test_format_load_error_warning_empty(self):
         """No labels should produce None."""
         from haute.parser import _format_load_error_warning

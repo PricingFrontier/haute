@@ -4,6 +4,8 @@ from pathlib import Path
 
 import click
 
+from haute._io import read_user_text
+
 
 @click.command()
 @click.argument("training_script")
@@ -31,7 +33,7 @@ def train(training_script: str) -> None:
     from haute._sandbox import UnsafeCodeError, validate_user_code
 
     try:
-        validate_user_code(filepath.read_text(), allow_imports=True)
+        validate_user_code(read_user_text(filepath), allow_imports=True)
     except UnsafeCodeError as e:
         click.echo(f"Error: Training script failed safety validation: {e}", err=True)
         raise SystemExit(1)

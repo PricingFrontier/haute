@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._parser_helpers import (
     _build_edges,
@@ -73,7 +74,7 @@ def parse_pipeline_file(filepath: str | Path, *, flatten: bool = False) -> Pipel
     that valid nodes are returned alongside broken ones.
     """
     filepath = Path(filepath)
-    source = filepath.read_text()
+    source = read_user_text(filepath)
     return parse_pipeline_source(
         source,
         source_file=str(filepath),
@@ -95,7 +96,7 @@ def parse_submodel_file(
     Defaults to ``filepath.parent`` if not provided.
     """
     filepath = Path(filepath)
-    source = filepath.read_text()
+    source = read_user_text(filepath)
     return _parse_submodel_source(
         source,
         source_file=str(filepath),
