@@ -75,6 +75,11 @@ export const SINGLETON_TYPES = new Set<NodeTypeValue>([
   NODE_TYPES.API_INPUT, NODE_TYPES.OUTPUT,
 ])
 
+/** Whether a node type allows only one instance per pipeline. */
+export function isSingletonType(nodeType: string | undefined): boolean {
+  return Boolean(nodeType && SINGLETON_TYPES.has(nodeType as NodeTypeValue))
+}
+
 /** Nodes that only produce data — no input handle. */
 export const SOURCE_ONLY_TYPES = new Set<string>([
   NODE_TYPES.DATA_SOURCE, NODE_TYPES.API_INPUT, NODE_TYPES.CONSTANT,

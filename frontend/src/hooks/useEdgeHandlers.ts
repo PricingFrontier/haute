@@ -15,7 +15,7 @@ import {
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
 import { nodeData } from "../types/node"
-import { NODE_TYPES, NODE_TYPE_META, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 
 /** Check whether the target node has reached its maxInputs limit. */
 function wouldExceedMaxInputs(
@@ -37,6 +37,7 @@ type ContextMenuData = {
   nodeId: string
   nodeLabel: string
   isSubmodel?: boolean
+  isSingleton?: boolean
 }
 
 type UseEdgeHandlersParams = {
@@ -118,12 +119,14 @@ export default function useEdgeHandlers({
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
     event.preventDefault()
+    const nt = nodeData(node).nodeType
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
       nodeId: node.id,
       nodeLabel: String(node.data.label),
-      isSubmodel: nodeData(node).nodeType === NODE_TYPES.SUBMODEL,
+      isSubmodel: nt === NODE_TYPES.SUBMODEL,
+      isSingleton: isSingletonType(nt),
     })
   }, [setContextMenu])
 

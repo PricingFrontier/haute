@@ -113,6 +113,52 @@ describe("useKeyboardShortcuts", () => {
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: "Pasted 1 node" })
   })
 
+  it("Ctrl+V filters out singleton nodes that already exist in the graph", () => {
+    params.graphRef.current.nodes = [
+      { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node,
+    ]
+    params.clipboard.current = {
+      nodes: [
+        { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
+        { id: "n2", position: { x: 0, y: 0 }, data: { label: "Transform", nodeType: "polars" }, type: "pipelineNode" } as unknown as Node,
+      ],
+      edges: [],
+    }
+    fireKey("v", { ctrlKey: true })
+    expect(params.setNodes).toHaveBeenCalledOnce()
+    const updater = vi.mocked(params.setNodes).mock.calls[0][0] as (nds: Node[]) => Node[]
+    const result = updater(params.graphRef.current.nodes)
+    // Original node + 1 pasted (polars), singleton (apiInput) filtered out
+    expect(result).toHaveLength(2)
+    expect(result.some((n: Node) => n.data.label === "Transform copy")).toBe(true)
+  })
+
+  it("Ctrl+V does nothing when all copied nodes are existing singletons", () => {
+    params.graphRef.current.nodes = [
+      { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node,
+    ]
+    params.clipboard.current = {
+      nodes: [
+        { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
+      ],
+      edges: [],
+    }
+    fireKey("v", { ctrlKey: true })
+    expect(params.setNodes).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+V allows pasting singleton when it does not exist in graph", () => {
+    params.graphRef.current.nodes = []
+    params.clipboard.current = {
+      nodes: [
+        { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
+      ],
+      edges: [],
+    }
+    fireKey("v", { ctrlKey: true })
+    expect(params.setNodes).toHaveBeenCalledOnce()
+  })
+
   it("Ctrl+V with empty clipboard does nothing", () => {
     fireKey("v", { ctrlKey: true })
     expect(params.setNodes).not.toHaveBeenCalled()

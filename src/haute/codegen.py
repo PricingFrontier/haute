@@ -772,8 +772,8 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
 def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     code = (config.get("code") or "").strip()
+    first = source_names[0] if source_names else "df"
     params = _build_params(source_names)
-    body = _wrap_user_code(code, source_names)
     sel = config.get("selected_columns", [])
 
     if sel:
@@ -781,10 +781,21 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     else:
         decorator = "@pipeline.polars"
 
+    if not code:
+        body = _wrap_user_code(code, source_names)
+        return (
+            f"{decorator}\n"
+            f"def {func_name}({params}) -> pl.LazyFrame:\n"
+            f'    """{description}"""\n'
+            f"{body}\n"
+        )
+
+    body = _wrap_user_code(code, ["df"])
     return (
         f"{decorator}\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
+        f"    df = {first}\n"
         f"{body}\n"
     )
 

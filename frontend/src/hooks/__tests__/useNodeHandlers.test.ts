@@ -96,6 +96,30 @@ describe("useNodeHandlers", () => {
     expect(newNode.data.label).toContain("copy")
   })
 
+  it("handleDuplicateNode does nothing for singleton node types", () => {
+    const params = makeParams()
+    const apiNode = makeNode("api1")
+    apiNode.data = { ...apiNode.data, nodeType: "apiInput" }
+    params.graphRef.current = { nodes: [apiNode], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+    act(() => {
+      result.current.handleDuplicateNode("api1")
+    })
+    expect(params.setNodes).not.toHaveBeenCalled()
+  })
+
+  it("handleDuplicateNode does nothing for output node types", () => {
+    const params = makeParams()
+    const outputNode = makeNode("out1")
+    outputNode.data = { ...outputNode.data, nodeType: "output" }
+    params.graphRef.current = { nodes: [outputNode], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+    act(() => {
+      result.current.handleDuplicateNode("out1")
+    })
+    expect(params.setNodes).not.toHaveBeenCalled()
+  })
+
   it("handleDuplicateNode does nothing if node not found", () => {
     const params = makeParams()
     params.graphRef.current = { nodes: [], edges: [] }

@@ -255,7 +255,34 @@ describe("useEdgeHandlers", () => {
       nodeId: "n1",
       nodeLabel: "Test Node",
       isSubmodel: false,
+      isSingleton: false,
     })
+  })
+
+  it("onNodeContextMenu marks apiInput nodes as singleton", () => {
+    const params = makeParams()
+    const node = { id: "n1", data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    const event = { preventDefault: vi.fn(), clientX: 50, clientY: 60 } as unknown as React.MouseEvent
+    act(() => {
+      result.current.onNodeContextMenu(event, node)
+    })
+    expect(params.setContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ isSingleton: true }),
+    )
+  })
+
+  it("onNodeContextMenu marks output nodes as singleton", () => {
+    const params = makeParams()
+    const node = { id: "out1", data: { label: "Quote Response", nodeType: "output" } } as unknown as Node
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    const event = { preventDefault: vi.fn(), clientX: 50, clientY: 60 } as unknown as React.MouseEvent
+    act(() => {
+      result.current.onNodeContextMenu(event, node)
+    })
+    expect(params.setContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ isSingleton: true }),
+    )
   })
 
   it("onDrop creates a new node from drag data", () => {

@@ -139,7 +139,7 @@ function FlowEditor() {
 
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
   const [preamble, setPreamble] = useState("")
   const lastSelectedNodeRef = useRef<Node | null>(null)
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
@@ -528,6 +528,7 @@ function FlowEditor() {
           onRename={handleRenameNode}
           onCreateInstance={handleCreateInstance}
           isSubmodel={contextMenu.isSubmodel}
+          isSingleton={contextMenu.isSingleton}
           onDissolveSubmodel={handleDissolveSubmodel}
         />
       )}

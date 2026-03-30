@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { NODE_TYPES, NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels } from "../nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES, isSingletonType, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels } from "../nodeTypes"
 
 describe("NODE_TYPES", () => {
   it("contains all expected node types", () => {
@@ -66,6 +66,20 @@ describe("SINGLETON_TYPES", () => {
 
   it("has exactly 2 entries", () => {
     expect(SINGLETON_TYPES.size).toBe(2)
+  })
+
+  it("isSingletonType returns true for singleton types", () => {
+    expect(isSingletonType("apiInput")).toBe(true)
+    expect(isSingletonType("output")).toBe(true)
+  })
+
+  it("isSingletonType returns false for non-singleton types", () => {
+    expect(isSingletonType("polars")).toBe(false)
+    expect(isSingletonType("dataSource")).toBe(false)
+  })
+
+  it("isSingletonType returns false for undefined", () => {
+    expect(isSingletonType(undefined)).toBe(false)
   })
 })
 

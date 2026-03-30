@@ -11,7 +11,7 @@ import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
 import { nodeData } from "../types/node"
-import { NODE_TYPES } from "../utils/nodeTypes"
+import { NODE_TYPES, isSingletonType } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
 
@@ -61,6 +61,7 @@ export default function useNodeHandlers({
     const { nodes: n } = graphRef.current
     const original = n.find((node) => node.id === id)
     if (!original) return
+    if (isSingletonType(nodeData(original).nodeType)) return
     nodeIdCounterRef.current += 1
     const newId = `${original.type}_${nodeIdCounterRef.current}`
     const newNode: Node = {

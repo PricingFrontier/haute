@@ -71,6 +71,16 @@ describe("ContextMenu", () => {
     expect(props.onClose).toHaveBeenCalled()
   })
 
+  it("hides Duplicate for singleton nodes", () => {
+    render(<ContextMenu {...makeProps({ isSingleton: true })} />)
+    expect(screen.queryByText("Duplicate")).not.toBeInTheDocument()
+  })
+
+  it("shows Duplicate when isSingleton is false", () => {
+    render(<ContextMenu {...makeProps({ isSingleton: false })} />)
+    expect(screen.getByText("Duplicate")).toBeInTheDocument()
+  })
+
   it("Escape key calls onClose", () => {
     const props = makeProps()
     render(<ContextMenu {...props} />)

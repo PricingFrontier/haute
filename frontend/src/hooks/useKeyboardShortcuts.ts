@@ -3,6 +3,8 @@ import type { Node, Edge } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
+import { nodeData } from "../types/node"
+import { isSingletonType } from "../utils/nodeTypes"
 
 interface KeyboardShortcutsParams {
   handleSave: () => void
@@ -80,8 +82,19 @@ export default function useKeyboardShortcuts({
         const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current
         if (copiedNodes.length === 0) return
         e.preventDefault()
+        // Filter out singleton types that already exist in the graph
+        const existingSingletonTypes = new Set<string>()
+        for (const n of graphRef.current.nodes) {
+          const nt = nodeData(n).nodeType
+          if (isSingletonType(nt)) existingSingletonTypes.add(nt!)
+        }
+        const pasteable = copiedNodes.filter((n) => {
+          const nt = nodeData(n).nodeType
+          return !(isSingletonType(nt) && existingSingletonTypes.has(nt!))
+        })
+        if (pasteable.length === 0) return
         const idMap = new Map<string, string>()
-        const newNodes: Node[] = copiedNodes.map((n) => {
+        const newNodes: Node[] = pasteable.map((n) => {
           nodeIdCounter.current += 1
           const newId = `${n.type}_${nodeIdCounter.current}`
           idMap.set(n.id, newId)

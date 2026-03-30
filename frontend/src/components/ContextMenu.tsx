@@ -7,6 +7,7 @@ interface ContextMenuProps {
   nodeId: string
   nodeLabel: string
   isSubmodel?: boolean
+  isSingleton?: boolean
   onClose: () => void
   onDelete: (id: string) => void
   onDuplicate: (id: string) => void
@@ -26,6 +27,7 @@ export default function ContextMenu({
   onCreateInstance,
   onDissolveSubmodel,
   isSubmodel,
+  isSingleton,
   nodeId,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
@@ -35,8 +37,10 @@ export default function ContextMenu({
   const items = useMemo(() => {
     const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean }[] = [
       { label: "Rename", icon: Type, action: () => onRename(nodeId) },
-      { label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) },
     ]
+    if (!isSingleton) {
+      list.push({ label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) })
+    }
     if (onCreateInstance && !isSubmodel) {
       list.push({ label: "Create Instance", icon: Link2, action: () => onCreateInstance(nodeId) })
     }
@@ -46,7 +50,7 @@ export default function ContextMenu({
     }
     list.push({ label: "Delete", icon: Trash2, action: () => onDelete(nodeId), danger: true })
     return list
-  }, [nodeId, isSubmodel, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel])
+  }, [nodeId, isSubmodel, isSingleton, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel])
 
   // Close on outside click
   useEffect(() => {
