@@ -26,20 +26,40 @@ class FrontendBuildHook(BuildHookInterface):
             return
 
         static_dir = Path(self.root) / "src" / "haute" / "static"
+        index_html = static_dir / "index.html"
 
         # Install deps if node_modules is missing
         node_modules = frontend_dir / "node_modules"
         if not node_modules.exists():
             self._run([self._npm(), "ci", "--prefer-offline"], cwd=frontend_dir)
 
+        # Skip rebuild if static assets are newer than all frontend sources
+        if index_html.exists() and not self._is_stale(frontend_dir, index_html):
+            return
+
         # Build frontend → src/haute/static/
         self._run([self._npm(), "run", "build"], cwd=frontend_dir)
 
         # Sanity check
-        index_html = static_dir / "index.html"
         if not index_html.exists():
             msg = f"Frontend build did not produce {index_html}"
             raise RuntimeError(msg)
+
+    @staticmethod
+    def _is_stale(frontend_dir: Path, index_html: Path) -> bool:
+        """Return True if any frontend source file is newer than index.html."""
+        build_mtime = index_html.stat().st_mtime
+        src_dir = frontend_dir / "src"
+        for ext in ("*.ts", "*.tsx", "*.css", "*.html"):
+            for f in src_dir.rglob(ext):
+                if f.stat().st_mtime > build_mtime:
+                    return True
+        # Also check vite/ts config changes
+        for cfg in ("vite.config.ts", "tsconfig.json", "tsconfig.app.json", "package.json"):
+            cfg_path = frontend_dir / cfg
+            if cfg_path.exists() and cfg_path.stat().st_mtime > build_mtime:
+                return True
+        return False
 
     @staticmethod
     def _npm() -> str:

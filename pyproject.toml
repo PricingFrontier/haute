@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "haute"
-version = "0.3.1"
+version = "0.3.3"
 description = "Haute - Open-source pricing engine for insurance teams"
 readme = "README.md"
 license = "AGPL-3.0-only"
