@@ -43,6 +43,8 @@ type NodePanelProps = {
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
   errorLine?: number | null
+  /** Preview rows from the current node's preview data (input columns pass through) */
+  previewRows?: Record<string, unknown>[]
 }
 
 // ─── Node types that do NOT show the Columns tab ──
@@ -229,7 +231,7 @@ function hasUpstreamApiInput(nodeId: string, edges: SimpleEdge[], nodeMap: Recor
 
 // ─── NodePanel ────────────────────────────────────────────────────
 
-export default function NodePanel({ node, edges, allNodes, submodels, preamble, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine }: NodePanelProps) {
+export default function NodePanel({ node, edges, allNodes, submodels, preamble, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine, previewRows }: NodePanelProps) {
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
 
@@ -319,6 +321,7 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
             onDeleteInput={onDeleteEdge}
             upstreamColumns={collectUpstreamColumns(node.id, edges, nodeMap)}
             accentColor={accentColor}
+            previewRows={previewRows}
           />
         )
 

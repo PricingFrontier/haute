@@ -1,0 +1,52 @@
+{
+  "factors": [
+    {
+      "banding": "breakpoints",
+      "column": "proposer_age",
+      "outputColumn": "proposer_age_band",
+      "rules": [
+        {
+          "boundary": "27",
+          "label": "20–27"
+        },
+        {
+          "boundary": "34",
+          "label": "28–34"
+        },
+        {
+          "boundary": "41",
+          "label": "35–41"
+        },
+        {
+          "boundary": "48",
+          "label": "42–48"
+        },
+        {
+          "boundary": "55",
+          "label": "49–55"
+        },
+        {
+          "boundary": "62",
+          "label": "56–62"
+        },
+        {
+          "boundary": "69",
+          "label": "63–69"
+        },
+        {
+          "boundary": "76",
+          "label": "70–76"
+        },
+        {
+          "boundary": "83",
+          "label": "77–83"
+        },
+        {
+          "boundary": "88",
+          "label": "84–88"
+        }
+      ],
+      "default": null
+    }
+  ]
+}

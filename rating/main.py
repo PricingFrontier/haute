@@ -42,7 +42,7 @@ def quoted_premiums() -> pl.LazyFrame:
 def quotes() -> pl.LazyFrame:
     """quotes node"""
     from haute._json_flatten import read_json_flat
-    return read_json_flat("data/quotes/quotes_10m.jsonl", config_path="config/quote_input/quotes.json")
+    return read_json_flat("data/quotes/sample_quote.json", config_path="config/quote_input/quotes.json")
 
 
 @pipeline.polars
@@ -85,6 +85,12 @@ def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
 def policies(batch_quotes: pl.LazyFrame, processing: pl.LazyFrame) -> pl.LazyFrame:
     """policies node"""
     return processing
+
+
+@pipeline.banding(config="config/banding/Banding_7.json")
+def Banding_7(policies: pl.LazyFrame) -> pl.LazyFrame:
+    """Banding 7 node"""
+    return policies
 
 
 @pipeline.polars
@@ -232,3 +238,4 @@ pipeline.connect("optimiser_input", "online_optimiser")
 pipeline.connect("quotes", "processing")
 pipeline.connect("processing", "policies")
 pipeline.connect("optimiser_input", "apply_optimisation")
+pipeline.connect("policies", "Banding_7")

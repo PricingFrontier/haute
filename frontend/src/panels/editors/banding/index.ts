@@ -1,2 +1,6 @@
 export { normaliseBandingFactors, isNumericDtype, inferBandingType } from "./bandingUtils"
 export { BandingRulesGrid } from "./BandingRulesGrid"
+export { BreakpointGrid } from "./BreakpointGrid"
+export { BandingHistogram } from "./BandingHistogram"
+export { GenerateBandsDialog } from "./GenerateBandsDialog"
+export { CategoricalValuePicker } from "./CategoricalValuePicker"

@@ -51,6 +51,20 @@ FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER
 _CODE_KEYS: frozenset[str] = frozenset({"code"})
 
 
+def _strip_internal_keys(obj: Any) -> Any:
+    """Recursively strip keys starting with ``_`` from dicts.
+
+    Frontend-only state (e.g. ``_prevRules``, ``_id``) may be nested inside
+    arrays of objects (like ``factors[].rules[]``).  A top-level-only filter
+    misses these; this function walks the full structure.
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_internal_keys(v) for k, v in obj.items() if not k.startswith("_")}
+    if isinstance(obj, list):
+        return [_strip_internal_keys(item) for item in obj]
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
@@ -134,6 +148,7 @@ def save_node_config(
     abs_path = base_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
+    filtered = _strip_internal_keys(filtered)
     abs_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     logger.info("config_saved", path=str(rel_path), node_type=node_type.value)
     return rel_path
@@ -224,6 +239,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             for k, v in node.data.config.items()
             if k not in _CODE_KEYS and not k.startswith("_")
         }
+        filtered = _strip_internal_keys(filtered)
         configs[rel_path] = json.dumps(filtered, indent=2, ensure_ascii=False) + "\n"
     return configs
 

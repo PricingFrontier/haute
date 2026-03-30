@@ -66,8 +66,9 @@ class TestBandingCondition:
         cond = _banding_condition(pl.col("x"), {"op1": ">", "val1": "100"})
         assert cond is not None
 
-    def test_non_numeric_val_ignored(self) -> None:
-        assert _banding_condition(pl.col("x"), {"op1": ">", "val1": "abc"}) is None
+    def test_non_numeric_val_raises(self) -> None:
+        with pytest.raises(ValueError, match="non-numeric"):
+            _banding_condition(pl.col("x"), {"op1": ">", "val1": "abc"})
 
     def test_whitespace_in_op(self) -> None:
         cond = _banding_condition(pl.col("x"), {"op1": " <= ", "val1": 10})
@@ -1115,23 +1116,25 @@ class TestExtremeFloatValues:
     producing nonsensical downstream arithmetic (e.g. Inf * 1.2 = Inf premium).
     """
 
-    def test_inf_in_banding_gt(self) -> None:
-        """Inf should satisfy > any finite number."""
+    def test_inf_in_banding_sanitized_to_default(self) -> None:
+        """Inf input values are sanitized to null, falling to default."""
         lf = pl.DataFrame({"x": [float("inf"), 5.0, float("-inf")]}).lazy()
         rules = [
             {"op1": ">", "val1": 0, "assignment": "positive"},
         ]
         result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == ["positive", "positive", None]
+        # Inf and -Inf are sanitized to null → fall to default (None)
+        assert result["band"].to_list() == [None, "positive", None]
 
-    def test_neg_inf_in_banding(self) -> None:
-        """-Inf should satisfy < any finite number."""
-        lf = pl.DataFrame({"x": [float("-inf"), -5.0, 0.0]}).lazy()
+    def test_neg_inf_in_banding_sanitized_to_default(self) -> None:
+        """-Inf input values are sanitized to null, falling to default."""
+        lf = pl.DataFrame({"x": [float("-inf"), -200.0, 0.0]}).lazy()
         rules = [
             {"op1": "<", "val1": -100, "assignment": "extreme_low"},
         ]
         result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == ["extreme_low", None, None]
+        # -Inf is sanitized to null → falls to default (None); -200 < -100 → matches
+        assert result["band"].to_list() == [None, "extreme_low", None]
 
     def test_very_large_numbers(self) -> None:
         """Numbers near float max should band correctly without overflow."""
@@ -1265,7 +1268,6 @@ class TestBugB2CategoricalBandingFalsyValues:
 
 
 class TestApplyBandingEdgeCases:
-
     def test_null_values_get_default(self) -> None:
         lf = pl.DataFrame({"x": [1.0, None, 5.0]}).lazy()
         rules = [{"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"}]
@@ -1320,7 +1322,9 @@ class TestApplyBandingEdgeCases:
         rules = [
             {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "normal"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="out_of_range").collect()
+        result = _apply_banding(
+            lf, "x", "band", "continuous", rules, default="out_of_range"
+        ).collect()
         assert result["band"][2] == "normal"
         assert result["band"][0] == "out_of_range"
         assert result["band"][1] == "out_of_range"
@@ -1379,7 +1383,6 @@ class TestApplyBandingEdgeCases:
 
 
 class TestApplyRatingTableEdgeCases:
-
     def test_non_existent_factor_in_entries_passthrough(self) -> None:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
@@ -1530,7 +1533,6 @@ class TestApplyRatingTableEdgeCases:
 
 
 class TestCombineRatingColumnsEdgeCases:
-
     def test_multiply_all_null_fills_one(self) -> None:
         lf = pl.DataFrame(
             {
@@ -1619,23 +1621,14 @@ class TestCombineWithNonExistentColumnRaises:
 
 
 class TestBandingWithNanInContinuousRuleValues:
-    def test_nan_val_with_gt_operator_matches_nothing(self) -> None:
+    def test_nan_val_in_rule_raises(self) -> None:
+        """NaN as a boundary value now raises ValueError (fail loudly)."""
         lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
         rules = [
             {"op1": ">", "val1": float("nan"), "assignment": "nan_band"},
-            {"op1": "<=", "val1": 10, "assignment": "valid_band"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == ["valid_band", "valid_band", "valid_band"]
-
-    def test_nan_val_with_le_operator_matches_all(self) -> None:
-        lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
-        rules = [
-            {"op1": "<=", "val1": float("nan"), "assignment": "nan_band"},
-            {"op1": "<=", "val1": 10, "assignment": "valid_band"},
-        ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
-        assert result["band"].to_list() == ["nan_band", "nan_band", "nan_band"]
+        with pytest.raises(ValueError, match="non-finite"):
+            _apply_banding(lf, "x", "band", "continuous", rules)
 
 
 class TestRatingTableEmptyStringFactorValue:

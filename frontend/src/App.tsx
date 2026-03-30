@@ -504,6 +504,11 @@ function FlowEditor() {
                     ? previewData?.error_line ?? null
                     : null
                 }
+                previewRows={
+                  previewData?.status === "ok" && previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
+                    ? previewData.preview
+                    : undefined
+                }
               />
             )}
           </ErrorBoundary>

@@ -9,7 +9,7 @@ vi.mock("../editors", () => ({
   DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
   TransformEditor: () => <div data-testid="TransformEditor" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
-  BandingEditor: () => <div data-testid="BandingEditor" />,
+  BandingEditor: (props: Record<string, unknown>) => <div data-testid="BandingEditor" data-preview-rows={props.previewRows ? JSON.stringify(props.previewRows) : undefined} />,
   RatingStepEditor: () => <div data-testid="RatingStepEditor" />,
   OutputEditor: () => <div data-testid="OutputEditor" />,
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
@@ -537,6 +537,28 @@ describe("NodePanel", () => {
           }),
         }),
       )
+    })
+  })
+
+  // ─── previewRows pass-through ───────────────────────────────────
+
+  describe("previewRows", () => {
+    it("passes previewRows to BandingEditor when provided", () => {
+      const rows = [{ age: 25, age_band: "young" }, { age: 40, age_band: "middle" }]
+      renderPanel({
+        node: makeNode({ data: { label: "B", description: "", nodeType: "banding", config: {} } }),
+        previewRows: rows,
+      })
+      const editor = screen.getByTestId("BandingEditor")
+      expect(editor.getAttribute("data-preview-rows")).toBe(JSON.stringify(rows))
+    })
+
+    it("does not pass previewRows to BandingEditor when not provided", () => {
+      renderPanel({
+        node: makeNode({ data: { label: "B", description: "", nodeType: "banding", config: {} } }),
+      })
+      const editor = screen.getByTestId("BandingEditor")
+      expect(editor.getAttribute("data-preview-rows")).toBeNull()
     })
   })
 

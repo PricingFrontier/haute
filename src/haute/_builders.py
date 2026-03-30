@@ -365,6 +365,7 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 f.get("banding", "continuous"),
                 rules,
                 f.get("default"),
+                right_closed=f.get("rightClosed", True),
             )
         return lf
 

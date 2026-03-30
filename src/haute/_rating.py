@@ -33,7 +33,9 @@ def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
         try:
             num = float(val)
         except (ValueError, TypeError):
-            continue
+            raise ValueError(f"Banding rule has non-numeric value '{val}' for op{suffix}")
+        if not math.isfinite(num):
+            raise ValueError(f"Banding rule has non-finite value '{val}' for op{suffix}")
         method = _OP_MAP.get(op)
         if method is None:
             continue
@@ -53,6 +55,7 @@ def _apply_banding(
     banding_type: str,
     rules: list[dict[str, Any]],
     default: Any = None,
+    right_closed: bool = True,
 ) -> _Frame:
     """Apply banding rules to a column, producing a new output column.
 
@@ -80,6 +83,26 @@ def _apply_banding(
         cat_expr = col.cast(pl.Utf8).replace_strict(remap, default=default_lit).alias(output_column)
         return lf.with_columns(cat_expr)
 
+    # Breakpoints mode: convert to continuous rules first
+    if banding_type == "breakpoints":
+        rules = _breakpoints_to_rules(rules, right_closed=right_closed)
+
+    # For continuous banding, sanitize NaN/Inf in float columns so they
+    # don't match arbitrary rules — they fall cleanly to the default.
+    if hasattr(lf, "collect_schema"):
+        schema = lf.collect_schema()
+    else:
+        schema = dict(zip(lf.columns, lf.dtypes))
+    col_dtype = schema.get(column)
+    if col_dtype in (pl.Float32, pl.Float64):
+        lf = lf.with_columns(
+            pl.when(col.is_nan() | col.is_infinite())
+            .then(pl.lit(None))
+            .otherwise(col)
+            .alias(column)
+        )
+        col = pl.col(column)
+
     # Continuous: build a when/then chain
     chain: Any = None
     for rule in rules:
@@ -87,6 +110,8 @@ def _apply_banding(
         if cond is None:
             continue
         assignment = str(rule.get("assignment", ""))
+        if not assignment:
+            continue
         branch = pl.when(cond).then(pl.lit(assignment))
         chain = branch if chain is None else chain.when(cond).then(pl.lit(assignment))
 
@@ -94,6 +119,92 @@ def _apply_banding(
         return lf
     final_expr = chain.otherwise(default_lit).alias(output_column)
     return lf.with_columns(final_expr)
+
+
+def _breakpoints_to_rules(
+    breakpoints: list[dict[str, Any]],
+    right_closed: bool = True,
+) -> list[dict[str, Any]]:
+    """Convert breakpoint-format rules to continuous banding rules.
+
+    Each breakpoint has a ``boundary`` (numeric string) and a ``label``.
+    The last breakpoint may have an empty boundary to create an open-ended rule.
+
+    When *right_closed* is True, intervals are ``(lower, upper]`` — the first
+    rule uses ``<=`` for its upper bound and subsequent rules use ``>`` / ``<=``.
+    When False, intervals are ``[lower, upper)`` using ``>=`` / ``<``.
+    """
+    if not breakpoints:
+        return []
+
+    # Separate breakpoints with boundaries from the open-ended tail
+    bounded: list[dict[str, Any]] = []
+    open_ended: dict[str, Any] | None = None
+    for bp in breakpoints:
+        boundary = str(bp.get("boundary", "") or "").strip()
+        label = str(bp.get("label", "") or "")
+        if not boundary:
+            open_ended = bp
+        else:
+            try:
+                num = float(boundary)
+            except (ValueError, TypeError):
+                raise ValueError(f"Breakpoint has non-numeric boundary '{boundary}'")
+            if not math.isfinite(num):
+                raise ValueError(f"Breakpoint has non-finite boundary '{boundary}'")
+            bounded.append({"boundary": num, "label": label})
+
+    # Sort by boundary value
+    bounded.sort(key=lambda b: b["boundary"])
+
+    # Reject duplicate boundaries — they produce empty intervals
+    seen_boundaries: set[float] = set()
+    for entry in bounded:
+        if entry["boundary"] in seen_boundaries:
+            raise ValueError(f"Duplicate breakpoint boundary '{entry['boundary']}'")
+        seen_boundaries.add(entry["boundary"])
+
+    rules: list[dict[str, Any]] = []
+    prev_boundary: float | None = None
+
+    for entry in bounded:
+        b = entry["boundary"]
+        label = entry["label"]
+        rule: dict[str, Any] = {"assignment": label}
+
+        if prev_boundary is None:
+            # First rule: everything up to b
+            if right_closed:
+                rule["op1"] = "<="
+                rule["val1"] = b
+            else:
+                rule["op1"] = "<"
+                rule["val1"] = b
+        else:
+            # Middle rule: from prev_boundary to b
+            if right_closed:
+                rule["op1"] = ">"
+                rule["val1"] = prev_boundary
+                rule["op2"] = "<="
+                rule["val2"] = b
+            else:
+                rule["op1"] = ">="
+                rule["val1"] = prev_boundary
+                rule["op2"] = "<"
+                rule["val2"] = b
+
+        rules.append(rule)
+        prev_boundary = b
+
+    # Open-ended tail
+    if open_ended is not None and prev_boundary is not None:
+        label = str(open_ended.get("label", "") or "")
+        if right_closed:
+            rules.append({"op1": ">", "val1": prev_boundary, "assignment": label})
+        else:
+            rules.append({"op1": ">=", "val1": prev_boundary, "assignment": label})
+
+    return rules
 
 
 def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:

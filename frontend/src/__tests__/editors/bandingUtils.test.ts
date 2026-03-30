@@ -101,16 +101,16 @@ describe("inferBandingType", () => {
     score: "f32",
   }
 
-  it("returns continuous for integer column", () => {
-    expect(inferBandingType("age", colMap)).toBe("continuous")
+  it("returns breakpoints for integer column", () => {
+    expect(inferBandingType("age", colMap)).toBe("breakpoints")
   })
 
-  it("returns continuous for float column", () => {
-    expect(inferBandingType("premium", colMap)).toBe("continuous")
+  it("returns breakpoints for float column", () => {
+    expect(inferBandingType("premium", colMap)).toBe("breakpoints")
   })
 
-  it("returns continuous for Polars short alias", () => {
-    expect(inferBandingType("score", colMap)).toBe("continuous")
+  it("returns breakpoints for Polars short alias", () => {
+    expect(inferBandingType("score", colMap)).toBe("breakpoints")
   })
 
   it("returns categorical for string column", () => {
