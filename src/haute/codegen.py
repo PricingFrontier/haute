@@ -324,21 +324,15 @@ def _wrap_external_code(code: str) -> str:
 def _wrap_user_code(code: str, source_names: list[str]) -> str:
     """Wrap user code into indented function body lines.
 
-    User code must assign to ``df``. We indent it and append ``return df``.
-    When the first source parameter is not ``df``, a ``df = <source>`` alias
-    is prepended so user code can always reference ``df``.
+    User code must assign to ``df``.  We indent it and append ``return df``.
     """
     code = code.strip()
-    first = source_names[0] if source_names else "df"
     if not code:
+        first = source_names[0] if source_names else "df"
         return f"    return {first}"
 
-    preamble = ""
-    if first != "df":
-        preamble = f"    df = {first}\n"
-
     indented = "\n".join(f"    {line}" for line in code.splitlines())
-    return f"{preamble}{indented}\n    return df"
+    return f"{indented}\n    return df"
 
 
 def _node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str:

@@ -1798,10 +1798,10 @@ class TestUnknownNodeTypeFallbackCode:
 class TestWrapUserCodeIndentBehavior:
     """Verify _wrap_user_code indents code, prepends df alias, and appends return df."""
 
-    def test_df_alias_prepended_when_source_not_df(self):
-        """When first source is not 'df', a df = <source> preamble is added."""
-        result = _wrap_user_code("df = df.filter(pl.col('x') > 0)", ["src"])
-        assert result == "    df = src\n    df = df.filter(pl.col('x') > 0)\n    return df"
+    def test_no_alias_prepended_when_source_not_df(self):
+        """No preamble is added — user code is responsible for defining df."""
+        result = _wrap_user_code("df = src.filter(pl.col('x') > 0)", ["src"])
+        assert result == "    df = src.filter(pl.col('x') > 0)\n    return df"
 
     def test_no_alias_when_source_is_df(self):
         """When first source is 'df', no preamble is added."""
@@ -1816,8 +1816,8 @@ class TestWrapUserCodeIndentBehavior:
 
     def test_strips_leading_trailing_whitespace(self):
         """Leading/trailing whitespace in the code is stripped before indenting."""
-        result = _wrap_user_code("  df = df.filter(pl.col('x') > 0)  \n", ["src"])
-        assert result == "    df = src\n    df = df.filter(pl.col('x') > 0)\n    return df"
+        result = _wrap_user_code("  df = src.filter(pl.col('x') > 0)  \n", ["src"])
+        assert result == "    df = src.filter(pl.col('x') > 0)\n    return df"
 
 
 # ---------------------------------------------------------------------------

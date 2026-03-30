@@ -48,7 +48,6 @@ def quotes() -> pl.LazyFrame:
 @pipeline.polars
 def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
     """processing node"""
-    df = quotes
     df = clean_columns(quotes)
     cover_start = to_date("cover_start_date")
     
@@ -96,7 +95,6 @@ def Banding_7(policies: pl.LazyFrame) -> pl.LazyFrame:
 @pipeline.polars
 def competitor_join(policies: pl.LazyFrame, competitor_insights: pl.LazyFrame) -> pl.LazyFrame:
     """competitor_join node"""
-    df = policies
     df = policies.join(competitor_insights, on="quote_id", how="inner")
     return df
 
@@ -119,7 +117,6 @@ def competitor_scoring(policies: pl.LazyFrame) -> pl.LazyFrame:
 @pipeline.polars
 def join_scoring(policies: pl.LazyFrame, competitor_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """Join competitor scoring onto policies"""
-    df = policies
     df = policies.join(competitor_scoring, on="quote_id", how="left")
     return df
 
@@ -127,7 +124,6 @@ def join_scoring(policies: pl.LazyFrame, competitor_scoring: pl.LazyFrame) -> pl
 @pipeline.polars
 def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> pl.LazyFrame:
     """Join policy data"""
-    df = join_scoring
     df = join_scoring.join(policy_data, on="quote_id", how="left")
     return df
 
@@ -135,7 +131,6 @@ def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> p
 @pipeline.polars
 def join_premiums(join_policy_data: pl.LazyFrame, quoted_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """Join quoted premiums and derive sale_flag"""
-    df = join_policy_data
     df = join_policy_data.join(quoted_premiums, on="quote_id", how="left").with_columns(
         sale_flag=pl.when(pl.col("policy_id").is_null()).then(pl.lit(0)).otherwise(pl.lit(1)),
         burn_cost=pl.col("premium") * 0.7,
@@ -146,7 +141,6 @@ def join_premiums(join_policy_data: pl.LazyFrame, quoted_premiums: pl.LazyFrame)
 @pipeline.polars(selected_columns=['quote_id', 'sale_flag', 'competitor_premium', 'premium', 'difference_to_market', 'proposer_age', 'cover_type', 'margin', 'burn_cost'])
 def competitor_features(join_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """competitor_features node"""
-    df = join_premiums
     df = join_premiums.with_columns(
         difference_to_market=pl.col("premium") / pl.col("competitor_premium")
     )
@@ -187,7 +181,6 @@ def conversion_scoring(competitor_features_scenarios: pl.LazyFrame) -> pl.LazyFr
 @pipeline.polars
 def optimiser_input(conversion_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """Polars 8 node"""
-    df = conversion_scoring
     df = conversion_scoring.with_columns(
         margin=pl.col("premium") - pl.col("burn_cost"),
     ).with_columns(
