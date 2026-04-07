@@ -12,13 +12,13 @@ You don't need to write Polars code to use Haute. The visual editor handles that
 
 ---
 
-## Why Polars and not Excel
+## Why Polars
 
-Proprietary pricing tools typically process data row by row, or hide the processing model entirely. Excel calculates cell by cell. Polars works differently - it processes entire columns at once. When you apply a rating factor to a million rows, Polars doesn't loop through them one at a time. It applies the operation to the whole column in a single pass, using all your CPU cores in parallel.
+Polars processes entire columns at once. When you apply a rating factor to a million rows, it doesn't loop through them one at a time. It applies the operation to the whole column in a single pass, using all your CPU cores in parallel.
 
 This is why previewing data at any node in Haute feels instant. It's not a trick of the interface - the engine underneath is genuinely that fast.
 
-Polars is also strict about types. A column of ages is always integers. A column of premiums is always decimals. This catches the kind of errors that spreadsheets silently allow - a text value in a numeric column, a date formatted as a string, a missing value treated as zero. In pricing work, where a subtle data error can propagate through an entire rating structure, this strictness is a feature.
+Polars is also strict about types. A column of ages is always integers. A column of premiums is always decimals. A text value in a numeric column, a date formatted as a string, a missing value treated as zero - Polars catches these rather than silently allowing them through. In pricing work, where a subtle data error can propagate through an entire rating structure, this strictness is a feature.
 
 ---
 
