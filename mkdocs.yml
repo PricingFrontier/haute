@@ -112,4 +112,28 @@ nav:
   - Building Models:
     - building-models/index.md
     - Preparing Your Data: building-models/preparing-your-data.md
-    - Node Types: building-models/nodes.md
+    - Node Types:
+      - building-models/nodes/index.md
+      - Inputs:
+        - Quote Input: building-models/nodes/quote-input.md
+        - Data Source: building-models/nodes/data-source.md
+        - Constant: building-models/nodes/constant.md
+      - Transforms:
+        - Polars: building-models/nodes/polars.md
+        - Banding: building-models/nodes/banding.md
+        - Rating Step: building-models/nodes/rating-step.md
+        - Scenario Expander: building-models/nodes/scenario-expander.md
+        - Source Switch: building-models/nodes/source-switch.md
+      - Models:
+        - Model Training: building-models/nodes/model-training.md
+        - Model Score: building-models/nodes/model-score.md
+        - External File: building-models/nodes/external-file.md
+      - Optimisation:
+        - Optimiser: building-models/nodes/optimiser.md
+        - Optimiser Apply: building-models/nodes/optimiser-apply.md
+      - Pipeline Outputs:
+        - Output: building-models/nodes/output.md
+        - Data Sink: building-models/nodes/data-sink.md
+      - Organisation:
+        - Submodel: building-models/nodes/submodel.md
+        - Instances: building-models/nodes/instances.md
