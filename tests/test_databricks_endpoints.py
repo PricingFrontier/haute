@@ -43,7 +43,12 @@ _EXCEPTION_ENDPOINTS = [
     ("/api/databricks/warehouses", "warehouses.list", {}, "network issue"),
     ("/api/databricks/catalogs", "catalogs.list", {}, "API quota exceeded"),
     ("/api/databricks/schemas", "schemas.list", {"catalog": "main"}, "network timeout"),
-    ("/api/databricks/tables", "tables.list", {"catalog": "cat", "schema": "sch"}, "quota exceeded"),
+    (
+        "/api/databricks/tables",
+        "tables.list",
+        {"catalog": "cat", "schema": "sch"},
+        "quota exceeded",
+    ),
 ]
 
 
@@ -721,9 +726,7 @@ class TestGetDatabricksClient:
 
         with patch(
             "haute.routes.databricks._get_databricks_client",
-            side_effect=HTTPException(
-                status_code=503, detail="databricks-sdk is not installed"
-            ),
+            side_effect=HTTPException(status_code=503, detail="databricks-sdk is not installed"),
         ):
             resp = c.get("/api/databricks/warehouses")
         assert resp.status_code == 503
@@ -850,12 +853,8 @@ class TestWarehouseAdditional:
         """Multiple warehouses are returned correctly."""
         from databricks.sdk.service.sql import EndpointInfo, State
 
-        wh1 = EndpointInfo(
-            id="wh1", name="Warehouse A", state=State.RUNNING, cluster_size="Small"
-        )
-        wh2 = EndpointInfo(
-            id="wh2", name="Warehouse B", state=State.STOPPED, cluster_size="Medium"
-        )
+        wh1 = EndpointInfo(id="wh1", name="Warehouse A", state=State.RUNNING, cluster_size="Small")
+        wh2 = EndpointInfo(id="wh2", name="Warehouse B", state=State.STOPPED, cluster_size="Medium")
 
         mock_ws = MagicMock()
         mock_ws.warehouses.list.return_value = [wh1, wh2]

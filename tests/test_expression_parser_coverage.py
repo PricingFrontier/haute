@@ -32,9 +32,9 @@ class TestConverterNodeDispatch:
     def test_dict_literal_in_expression(self):
         """Dict node (line 176)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.col("x").replace_strict({"a": 1, "b": 2}).alias("mapped")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "mapped")
         assert expr is not None
@@ -49,10 +49,7 @@ class TestConverterNodeDispatch:
 
     def test_joinedstr_fstring_in_expression(self):
         """JoinedStr / f-string (lines 179, 328–337)."""
-        code = (
-            'prefix = "col"\n'
-            'df = df.with_columns(pl.col(f"{prefix}_a").alias("target"))'
-        )
+        code = 'prefix = "col"\ndf = df.with_columns(pl.col(f"{prefix}_a").alias("target"))'
         expr = parse_expression(code, "target")
         assert expr is not None
 
@@ -60,7 +57,7 @@ class TestConverterNodeDispatch:
         """Starred expression (line 181–182)."""
         code = (
             'exprs = [(pl.col("a") + 1).alias("a1"), (pl.col("b") + 2).alias("b1")]\n'
-            'df = df.with_columns(*exprs)'
+            "df = df.with_columns(*exprs)"
         )
         expr = parse_expression(code, "a1")
         assert expr is not None
@@ -109,10 +106,10 @@ class TestUnaryOperations:
 class TestBoolOp:
     def test_and_expression(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when((pl.col("a") > 0) & (pl.col("b") > 0))\n'
             '    .then(1).otherwise(0).alias("both_pos")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "both_pos")
         assert "a" in expr.referenced_columns
@@ -120,10 +117,10 @@ class TestBoolOp:
 
     def test_or_expression(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when((pl.col("a") > 0) | (pl.col("b") > 0))\n'
             '    .then(1).otherwise(0).alias("any_pos")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "any_pos")
         assert "a" in expr.referenced_columns
@@ -170,10 +167,7 @@ class TestConstantEdgeCases:
 class TestNameResolution:
     def test_symbol_table_variable(self):
         """Variable resolved via symbol table (lines 280–283)."""
-        code = (
-            'factor = 1.05\n'
-            'df = df.with_columns((pl.col("base") * factor).alias("adjusted"))'
-        )
+        code = 'factor = 1.05\ndf = df.with_columns((pl.col("base") * factor).alias("adjusted"))'
         expr = parse_expression(code, "adjusted")
         assert expr is not None
         assert "base" in expr.referenced_columns
@@ -243,10 +237,10 @@ class TestContainerNodes:
     def test_ifexp_rendering(self):
         """Ternary expression rendering (lines 322–326)."""
         code = (
-            'threshold = 100\n'
-            'df = df.with_columns(\n'
+            "threshold = 100\n"
+            "df = df.with_columns(\n"
             '    (pl.col("x") * (1.1 if threshold > 50 else 0.9)).alias("adj")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "adj")
         assert expr is not None
@@ -254,10 +248,7 @@ class TestContainerNodes:
 
     def test_joinedstr_rendering(self):
         """f-string rendering (lines 328–337)."""
-        code = (
-            'name = "premium"\n'
-            'df = df.with_columns(pl.col(f"loaded_{name}").alias("target"))'
-        )
+        code = 'name = "premium"\ndf = df.with_columns(pl.col(f"loaded_{name}").alias("target"))'
         expr = parse_expression(code, "target")
         assert expr is not None
 
@@ -385,14 +376,18 @@ class TestStructNamespaceMethods:
         assert "data" in expr.referenced_columns
 
     def test_struct_fields(self):
-        code = 'df = df.with_columns(pl.col("data").struct.rename_fields(["a", "b"]).alias("renamed"))'
+        code = (
+            'df = df.with_columns(pl.col("data").struct.rename_fields(["a", "b"]).alias("renamed"))'
+        )
         expr = parse_expression(code, "renamed")
         assert "struct" in expr.expression_text
 
 
 class TestCatNamespaceMethods:
     def test_cat_set_ordering(self):
-        code = 'df = df.with_columns(pl.col("cat_col").cat.set_ordering("lexical").alias("ordered"))'
+        code = (
+            'df = df.with_columns(pl.col("cat_col").cat.set_ordering("lexical").alias("ordered"))'
+        )
         expr = parse_expression(code, "ordered")
         assert "cat" in expr.expression_text
 
@@ -454,10 +449,7 @@ class TestBareFunctionCall:
         assert expr.expression_type == "opaque"
 
     def test_user_defined_function_opaque(self):
-        code = (
-            'def my_func(x): return x * 2\n'
-            'df = df.with_columns(my_func(pl.col("x")).alias("r"))'
-        )
+        code = 'def my_func(x): return x * 2\ndf = df.with_columns(my_func(pl.col("x")).alias("r"))'
         # my_func gets added to symbol table making it opaque
         expr = parse_expression(code, "r")
         assert expr is not None
@@ -483,18 +475,13 @@ class TestBareFunctionCall:
 class TestPlColDynamic:
     def test_pl_col_variable_from_symbol_table(self):
         """Dynamic column name resolved from symbol table (lines 463–471)."""
-        code = (
-            'col_name = "premium"\n'
-            'df = df.with_columns((pl.col(col_name) * 2).alias("doubled"))'
-        )
+        code = 'col_name = "premium"\ndf = df.with_columns((pl.col(col_name) * 2).alias("doubled"))'
         expr = parse_expression(code, "doubled")
         assert "premium" in expr.referenced_columns
 
     def test_pl_col_unresolvable_variable(self):
         """Dynamic column that can't be resolved (lines 473–475)."""
-        code = (
-            'df = df.with_columns(pl.col(get_col_name()).alias("dynamic"))'
-        )
+        code = 'df = df.with_columns(pl.col(get_col_name()).alias("dynamic"))'
         expr = parse_expression(code, "dynamic")
         assert expr.expression_type == "opaque" or expr is not None
 
@@ -562,10 +549,7 @@ class TestPlLitVariants:
 
     def test_pl_lit_variable(self):
         """pl.lit(var) where var is in symbol table (line 510)."""
-        code = (
-            'val = 42\n'
-            'df = df.with_columns(pl.lit(val).alias("answer"))'
-        )
+        code = 'val = 42\ndf = df.with_columns(pl.lit(val).alias("answer"))'
         expr = parse_expression(code, "answer")
         assert expr is not None
 
@@ -610,7 +594,9 @@ class TestHorizontalFuncEdges:
         assert "separator" in expr.expression_text
 
     def test_coalesce(self):
-        code = 'df = df.with_columns(pl.coalesce(pl.col("a"), pl.col("b"), pl.lit(0)).alias("result"))'
+        code = (
+            'df = df.with_columns(pl.coalesce(pl.col("a"), pl.col("b"), pl.lit(0)).alias("result"))'
+        )
         expr = parse_expression(code, "result")
         assert expr.expression_type == "horizontal_func"
 
@@ -639,12 +625,12 @@ class TestChainedWhenThen:
     def test_chained_when_three_branches(self):
         """Multiple when/then before otherwise (lines 560–564)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") < 0).then("neg")\n'
             '    .when(pl.col("x") == 0).then("zero")\n'
             '    .otherwise("pos")\n'
             '    .alias("sign")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "sign")
         assert expr.expression_type == "conditional"
@@ -655,10 +641,10 @@ class TestChainedWhenThen:
     def test_when_no_otherwise(self):
         """When/then without otherwise (line 582)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("flag") == 1).then(pl.col("val"))\n'
             '    .alias("result")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "result")
         assert expr.expression_type == "conditional"
@@ -666,14 +652,14 @@ class TestChainedWhenThen:
     def test_nested_when_inside_then(self):
         """Nested conditional inside a then branch (lines 645–668)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("tier") == "gold")\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("years") > 5).then(0.9).otherwise(0.95)\n'
-            '    )\n'
-            '    .otherwise(1.0)\n'
+            "    )\n"
+            "    .otherwise(1.0)\n"
             '    .alias("discount")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "discount")
         assert expr.expression_type == "conditional"
@@ -714,17 +700,13 @@ class TestFStringAlias:
 
     def test_fstring_alias_constant_value(self):
         """f-string with constant inside FormattedValue (line 744–745)."""
-        code = (
-            'df = df.with_columns((pl.col("x") * 2).alias(f"doubled_{42}"))'
-        )
+        code = 'df = df.with_columns((pl.col("x") * 2).alias(f"doubled_{42}"))'
         expr = parse_expression(code, "doubled_42")
         assert expr is not None
 
     def test_fstring_alias_unresolvable(self):
         """f-string that can't be resolved (line 747–749)."""
-        code = (
-            'df = df.with_columns((pl.col("x") * 2).alias(f"col_{unknown_var}"))'
-        )
+        code = 'df = df.with_columns((pl.col("x") * 2).alias(f"col_{unknown_var}"))'
         # parse_expression falls back since f-string can't be resolved
         expr = parse_expression(code, "col_test")
         assert expr is not None
@@ -760,61 +742,44 @@ class TestSymbolTableAndControlFlow:
     def test_build_safe_symbol_table_augassign(self):
         """AugAssign is noted but not resolved (line 804–807)."""
         code = (
-            'factor = 1.0\n'
-            'factor += 0.1\n'
-            'df = df.with_columns((pl.col("x") * factor).alias("r"))'
+            'factor = 1.0\nfactor += 0.1\ndf = df.with_columns((pl.col("x") * factor).alias("r"))'
         )
         expr = parse_expression(code, "r")
         assert expr is not None
 
     def test_has_control_flow_if(self):
         """with_columns inside if block (lines 831–840, 866–891)."""
-        code = (
-            'if True:\n'
-            '    df = df.with_columns((pl.col("x") + 1).alias("target"))\n'
-        )
+        code = 'if True:\n    df = df.with_columns((pl.col("x") + 1).alias("target"))\n'
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
     def test_has_control_flow_for(self):
-        code = (
-            'for i in range(3):\n'
-            '    df = df.with_columns((pl.col("x") + i).alias("target"))\n'
-        )
+        code = 'for i in range(3):\n    df = df.with_columns((pl.col("x") + i).alias("target"))\n'
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
     def test_has_control_flow_while(self):
-        code = (
-            'while False:\n'
-            '    df = df.with_columns((pl.col("x") + 1).alias("target"))\n'
-        )
+        code = 'while False:\n    df = df.with_columns((pl.col("x") + 1).alias("target"))\n'
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
     def test_has_control_flow_try(self):
         code = (
-            'try:\n'
-            '    df = df.with_columns((pl.col("x") + 1).alias("target"))\n'
-            'except:\n'
-            '    pass\n'
+            'try:\n    df = df.with_columns((pl.col("x") + 1).alias("target"))\nexcept:\n    pass\n'
         )
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
     def test_has_control_flow_with(self):
-        code = (
-            'with open("f") as f:\n'
-            '    df = df.with_columns((pl.col("x") + 1).alias("target"))\n'
-        )
+        code = 'with open("f") as f:\n    df = df.with_columns((pl.col("x") + 1).alias("target"))\n'
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
     def test_control_flow_assigned_vars(self):
         """Variable assigned in if block references (lines 843–863)."""
         code = (
-            'if True:\n'
-            '    factor = 1.5\n'
+            "if True:\n"
+            "    factor = 1.5\n"
             'df = df.with_columns((pl.col("x") * factor).alias("target"))\n'
         )
         expr = parse_expression(code, "target")
@@ -825,9 +790,9 @@ class TestSymbolTableAndControlFlow:
         Even though x is assigned in control flow, the top-level x=1 is in the
         symbol table so _expr_references_vars returns False — expression is still resolved."""
         code = (
-            'if True:\n'
-            '    y = 1\n'
-            '    y += 1\n'
+            "if True:\n"
+            "    y = 1\n"
+            "    y += 1\n"
             'df = df.with_columns((pl.col("a") * y).alias("target"))\n'
         )
         expr = parse_expression(code, "target")
@@ -844,11 +809,11 @@ class TestResolveListVariable:
     def test_variable_list_of_expressions(self):
         """Starred expression referencing a list variable (lines 936–945)."""
         code = (
-            'exprs = [\n'
+            "exprs = [\n"
             '    (pl.col("a") + 1).alias("a1"),\n'
             '    (pl.col("b") + 2).alias("b1"),\n'
-            ']\n'
-            'df = df.with_columns(*exprs)'
+            "]\n"
+            "df = df.with_columns(*exprs)"
         )
         expr_a = parse_expression(code, "a1")
         expr_b = parse_expression(code, "b1")
@@ -858,22 +823,14 @@ class TestResolveListVariable:
 
     def test_single_expression_variable(self):
         """Variable referencing a single expression (lines 955–962)."""
-        code = (
-            'e = (pl.col("x") * 2).alias("doubled")\n'
-            'df = df.with_columns(e)'
-        )
+        code = 'e = (pl.col("x") * 2).alias("doubled")\ndf = df.with_columns(e)'
         expr = parse_expression(code, "doubled")
         assert expr is not None
         assert "x" in expr.referenced_columns
 
     def test_list_variable_without_starred(self):
         """Variable name referencing a list passed directly (lines 948–954)."""
-        code = (
-            'exprs = [\n'
-            '    (pl.col("a") + 1).alias("a1"),\n'
-            ']\n'
-            'df = df.with_columns(exprs)'
-        )
+        code = 'exprs = [\n    (pl.col("a") + 1).alias("a1"),\n]\ndf = df.with_columns(exprs)'
         expr = parse_expression(code, "a1")
         assert expr is not None
 
@@ -977,21 +934,13 @@ class TestReassignmentChains:
 
     def test_substitute_names_binop(self):
         """BinOp substitution (lines 1210–1221)."""
-        code = (
-            'a = pl.col("x")\n'
-            'b = a + 1\n'
-            'df = df.with_columns(b.alias("result"))'
-        )
+        code = 'a = pl.col("x")\nb = a + 1\ndf = df.with_columns(b.alias("result"))'
         expr = parse_expression(code, "result")
         assert "x" in expr.referenced_columns
 
     def test_substitute_names_unaryop(self):
         """UnaryOp substitution (lines 1222–1228)."""
-        code = (
-            'a = pl.col("x")\n'
-            'b = -a\n'
-            'df = df.with_columns(b.alias("result"))'
-        )
+        code = 'a = pl.col("x")\nb = -a\ndf = df.with_columns(b.alias("result"))'
         expr = parse_expression(code, "result")
         assert "x" in expr.referenced_columns
 
@@ -1006,10 +955,7 @@ class TestReassignmentChains:
 
     def test_substitute_names_attribute(self):
         """Attribute substitution (lines 1253–1259)."""
-        code = (
-            'base = pl.col("x")\n'
-            'df = df.with_columns(base.abs().alias("abs_x"))'
-        )
+        code = 'base = pl.col("x")\ndf = df.with_columns(base.abs().alias("abs_x"))'
         expr = parse_expression(code, "abs_x")
         assert "x" in expr.referenced_columns
 
@@ -1035,10 +981,7 @@ class TestReassignmentChains:
 
     def test_substitute_names_starred(self):
         """Starred substitution (lines 1279–1285)."""
-        code = (
-            'exprs = [(pl.col("a") + 1).alias("a1")]\n'
-            'df = df.with_columns(*exprs)'
-        )
+        code = 'exprs = [(pl.col("a") + 1).alias("a1")]\ndf = df.with_columns(*exprs)'
         expr = parse_expression(code, "a1")
         assert expr is not None
 
@@ -1090,9 +1033,9 @@ class TestEvaluateExpressionPaths:
     def test_evaluate_conditional_branches(self):
         """Conditional branch tracking (lines 1387–1398)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 10).then("high").otherwise("low").alias("label")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "label", {"x": 15})
         assert result.taken_branch == "then"
@@ -1100,9 +1043,9 @@ class TestEvaluateExpressionPaths:
 
     def test_evaluate_conditional_otherwise_branch(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 10).then("high").otherwise("low").alias("label")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "label", {"x": 5})
         assert result.taken_branch == "otherwise"
@@ -1161,9 +1104,9 @@ class TestSubstituteAndFormat:
 
     def test_format_value_string(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("status") == "active").then(1).otherwise(0).alias("flag")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "flag", {"status": "active"})
         assert result is not None
@@ -1292,36 +1235,36 @@ class TestExprEvaluatorCompare:
 class TestExprEvaluatorBoolOp:
     def test_and_true(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when((pl.col("a") > 0) & (pl.col("b") > 0)).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": 1, "b": 1})
         assert result.result_value == 1
 
     def test_and_false_short_circuit(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when((pl.col("a") > 0) & (pl.col("b") > 0)).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": -1, "b": 1})
         assert result.result_value == 0
 
     def test_or_true(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when((pl.col("a") > 0) | (pl.col("b") > 0)).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": -1, "b": 1})
         assert result.result_value == 1
 
     def test_or_false(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when((pl.col("a") > 0) | (pl.col("b") > 0)).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": -1, "b": -1})
         assert result.result_value == 0
@@ -1334,21 +1277,22 @@ class TestExprEvaluatorName:
         assert result.result_value is None
 
     def test_name_true(self):
-        code = 'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        code = (
+            'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        )
         result = evaluate_expression(code, "r", {"x": 1})
         assert result.result_value is True
 
     def test_name_false(self):
-        code = 'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        code = (
+            'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        )
         result = evaluate_expression(code, "r", {"x": -1})
         assert result.result_value is False
 
     def test_name_from_symbol_table(self):
         """Variable resolved via symbol table in evaluator (line 1696–1697)."""
-        code = (
-            'mult = 2\n'
-            'df = df.with_columns((pl.col("x") * mult).alias("r"))'
-        )
+        code = 'mult = 2\ndf = df.with_columns((pl.col("x") * mult).alias("r"))'
         result = evaluate_expression(code, "r", {"x": 5})
         assert result.result_value == 10
 
@@ -1375,10 +1319,7 @@ class TestExprEvaluatorCall:
 
     def test_pl_col_variable_resolved(self):
         """pl.col(var_name) where var_name is in symbol table (lines 1717–1725)."""
-        code = (
-            'col_name = "amount"\n'
-            'df = df.with_columns(pl.col(col_name).alias("r"))'
-        )
+        code = 'col_name = "amount"\ndf = df.with_columns(pl.col(col_name).alias("r"))'
         result = evaluate_expression(code, "r", {"amount": 42})
         assert result.result_value == 42
 
@@ -1399,9 +1340,9 @@ class TestExprEvaluatorCall:
 
     def test_pl_when_chain(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(1).otherwise(-1).alias("sign")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "sign", {"x": 5})
         assert result.result_value == 1
@@ -1732,9 +1673,9 @@ class TestExprEvaluatorCall:
 class TestBranchTrackingEvaluator:
     def test_taken_branch_then(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then("pos").otherwise("non_pos").alias("sign")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "sign", {"x": 5})
         assert result.taken_branch == "then"
@@ -1743,9 +1684,9 @@ class TestBranchTrackingEvaluator:
 
     def test_taken_branch_otherwise(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then("pos").otherwise("non_pos").alias("sign")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "sign", {"x": -1})
         assert result.taken_branch == "otherwise"
@@ -1753,12 +1694,12 @@ class TestBranchTrackingEvaluator:
     def test_chained_when_second_branch(self):
         """Second branch taken in chained when (lines 2082–2106)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") < 0).then("neg")\n'
             '    .when(pl.col("x") == 0).then("zero")\n'
             '    .otherwise("pos")\n'
             '    .alias("sign")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "sign", {"x": 0})
         assert result.result_value == "zero"
@@ -1767,14 +1708,14 @@ class TestBranchTrackingEvaluator:
     def test_nested_when_in_then_branch(self):
         """Nested conditional in then value (lines 2088–2104)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("tier") == "gold")\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("years") > 5).then(0.9).otherwise(0.95)\n'
-            '    )\n'
-            '    .otherwise(1.0)\n'
+            "    )\n"
+            "    .otherwise(1.0)\n"
             '    .alias("discount")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "discount", {"tier": "gold", "years": 10})
         assert result.result_value == 0.9
@@ -1782,10 +1723,10 @@ class TestBranchTrackingEvaluator:
     def test_branch_tracking_no_match(self):
         """No branch matched returns None (line 2114)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 100).then("big")\n'
             '    .alias("label")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "label", {"x": 1})
         assert result is not None
@@ -1811,8 +1752,7 @@ class TestParseExpressionChainEdges:
     def test_chain_auto_name_inferred(self):
         """Auto name for chain (line 2190)."""
         code = (
-            'df = df.with_columns(pl.col("x"))\n'
-            'df = df.with_columns((pl.col("x") + 1).alias("r"))'
+            'df = df.with_columns(pl.col("x"))\ndf = df.with_columns((pl.col("x") + 1).alias("r"))'
         )
         chain = parse_expression_chain(code, "r")
         assert chain is not None
@@ -1826,12 +1766,7 @@ class TestParseExpressionChainEdges:
 
     def test_chain_no_df_in_code(self):
         """Code without 'df' gets wrapped (line 2166–2167)."""
-        code = (
-            'result = (\n'
-            '    table\n'
-            '    .with_columns((pl.col("x") + 1).alias("r"))\n'
-            ')'
-        )
+        code = 'result = (\n    table\n    .with_columns((pl.col("x") + 1).alias("r"))\n)'
         chain = parse_expression_chain(code, "r")
         assert chain is not None
 
@@ -1845,8 +1780,8 @@ class TestExprReferencesVars:
     def test_expr_references_control_flow_var(self):
         """Variable from control flow makes expression opaque (lines 1139–1147)."""
         code = (
-            'if True:\n'
-            '    multiplier = 2\n'
+            "if True:\n"
+            "    multiplier = 2\n"
             'df = df.with_columns((pl.col("x") * multiplier).alias("result"))'
         )
         expr = parse_expression(code, "result")
@@ -1854,10 +1789,7 @@ class TestExprReferencesVars:
 
     def test_expr_no_cf_reference(self):
         """Variable NOT from control flow is fine."""
-        code = (
-            'multiplier = 2\n'
-            'df = df.with_columns((pl.col("x") * multiplier).alias("result"))'
-        )
+        code = 'multiplier = 2\ndf = df.with_columns((pl.col("x") * multiplier).alias("result"))'
         expr = parse_expression(code, "result")
         assert expr.expression_type == "arithmetic"
 
@@ -1943,9 +1875,9 @@ class TestEvaluatorNodeTypes:
 
     def test_evaluate_boolop(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when((pl.col("a") > 0) & (pl.col("b") > 0)).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": 1, "b": 1})
         assert result.result_value == 1
@@ -1974,9 +1906,7 @@ class TestEvaluateConditionalBranches:
         """SyntaxError returns empty dict (line 1456–1457)."""
         # Force through evaluate_expression with invalid code for conditional
         code = (
-            'df = df.with_columns(\n'
-            '    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            'df = df.with_columns(\n    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n)'
         )
         # Normal valid case first
         result = evaluate_expression(code, "r", {"x": 5})
@@ -1985,9 +1915,9 @@ class TestEvaluateConditionalBranches:
     def test_conditional_target_not_found(self):
         """best_match is None in branch eval (line 1472–1473)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("something_else")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 5})
         assert result is not None
@@ -2004,9 +1934,9 @@ class TestBoolOpConverterDirect:
     def test_python_and_keyword(self):
         """Python `and` operator parsed as BoolOp (line 160, 258–260)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0 and pl.col("b") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         # Python `and` creates ast.BoolOp unlike `&` which creates ast.BinOp
         expr = parse_expression(code, "r")
@@ -2014,9 +1944,9 @@ class TestBoolOpConverterDirect:
 
     def test_python_or_keyword(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0 or pl.col("b") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "r")
         assert expr is not None
@@ -2038,11 +1968,11 @@ class TestSecondaryMatchAttempts:
     def test_variable_list_secondary_match(self):
         """Variable referencing list, matched in secondary search (lines 1095–1103)."""
         code = (
-            'my_exprs = [\n'
+            "my_exprs = [\n"
             '    (pl.col("a") + 1).alias("target"),\n'
             '    (pl.col("b") + 2).alias("other"),\n'
-            ']\n'
-            'df = df.with_columns(my_exprs)'
+            "]\n"
+            "df = df.with_columns(my_exprs)"
         )
         expr = parse_expression(code, "target")
         assert expr is not None
@@ -2050,10 +1980,7 @@ class TestSecondaryMatchAttempts:
 
     def test_starred_in_secondary_search(self):
         """Starred expressions in secondary search (line 1093–1094)."""
-        code = (
-            'my_exprs = [(pl.col("a") + 1).alias("target")]\n'
-            'df = df.with_columns(*my_exprs)'
-        )
+        code = 'my_exprs = [(pl.col("a") + 1).alias("target")]\ndf = df.with_columns(*my_exprs)'
         expr = parse_expression(code, "target")
         assert expr is not None
 
@@ -2064,7 +1991,7 @@ class TestBuildSymbolTableFunction:
     def test_symbol_table_skips_df_assignments(self):
         """df assignments are skipped (lines 786–788)."""
         code = (
-            'factor = 1.05\n'
+            "factor = 1.05\n"
             'df = df.filter(pl.col("x") > 0)\n'
             'df = df.with_columns((pl.col("x") * factor).alias("r"))'
         )
@@ -2079,13 +2006,14 @@ class TestHasControlFlowFunction:
         """Match statement detection (lines 836–837).
         Only available in Python 3.10+."""
         import sys
+
         if sys.version_info >= (3, 10):
             code = (
-                'match x:\n'
-                '    case 1:\n'
+                "match x:\n"
+                "    case 1:\n"
                 '        df = df.with_columns((pl.col("a") + 1).alias("target"))\n'
-                '    case _:\n'
-                '        pass\n'
+                "    case _:\n"
+                "        pass\n"
             )
             expr = parse_expression(code, "target")
             assert expr.expression_type == "opaque"
@@ -2095,10 +2023,7 @@ class TestControlFlowKeyword:
     """Cover keyword arg check inside control flow (lines 889–890)."""
 
     def test_keyword_in_with_columns_in_if(self):
-        code = (
-            'if True:\n'
-            '    df = df.with_columns(target=pl.col("x") + 1)\n'
-        )
+        code = 'if True:\n    df = df.with_columns(target=pl.col("x") + 1)\n'
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
@@ -2109,9 +2034,9 @@ class TestEvaluatorBoolOpDirect:
     def test_eval_and_all_true(self):
         """And where all values are truthy (lines 1673–1680)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0 and pl.col("b") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": 5, "b": 5})
         assert result is not None
@@ -2119,9 +2044,9 @@ class TestEvaluatorBoolOpDirect:
     def test_eval_or_first_false(self):
         """Or where first value is falsy (lines 1681–1686)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0 or pl.col("b") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": -1, "b": 5})
         assert result is not None
@@ -2138,13 +2063,17 @@ class TestEvaluatorNameLiterals:
 
     def test_eval_name_true(self):
         """Name 'True' (line 1692–1693)."""
-        code = 'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        code = (
+            'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        )
         result = evaluate_expression(code, "r", {"x": 5})
         assert result.result_value is True
 
     def test_eval_name_false(self):
         """Name 'False' (line 1694–1695)."""
-        code = 'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        code = (
+            'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("r"))'
+        )
         result = evaluate_expression(code, "r", {"x": -1})
         assert result.result_value is False
 
@@ -2160,10 +2089,7 @@ class TestEvaluatorPlCol:
 
     def test_pl_col_name_variable(self):
         """pl.col(variable) resolved from symbol table (lines 1717–1725)."""
-        code = (
-            'cn = "amount"\n'
-            'df = df.with_columns(pl.col(cn).alias("r"))'
-        )
+        code = 'cn = "amount"\ndf = df.with_columns(pl.col(cn).alias("r"))'
         result = evaluate_expression(code, "r", {"amount": 100})
         assert result.result_value == 100
 
@@ -2243,28 +2169,28 @@ class TestBranchTrackingNestedCheck:
     def test_nested_when_args_check(self):
         """Nested when detected via args (lines 2126–2128)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("tier") == "gold")\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("years") > 5).then(0.9).otherwise(0.95)\n'
-            '    )\n'
-            '    .otherwise(1.0)\n'
+            "    )\n"
+            "    .otherwise(1.0)\n"
             '    .alias("discount")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "discount", {"tier": "gold", "years": 3})
         assert result.result_value == 0.95
 
     def test_nested_when_otherwise_taken(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("tier") == "gold")\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("years") > 5).then(0.9).otherwise(0.95)\n'
-            '    )\n'
-            '    .otherwise(1.0)\n'
+            "    )\n"
+            "    .otherwise(1.0)\n"
             '    .alias("discount")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "discount", {"tier": "silver", "years": 10})
         assert result.result_value == 1.0
@@ -2301,10 +2227,10 @@ class TestSubstituteNamesCompare:
 
     def test_substitute_compare_node(self):
         code = (
-            'threshold = 100\n'
-            'df = df.with_columns(\n'
+            "threshold = 100\n"
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > threshold).then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "r")
         assert "100" in expr.expression_text
@@ -2333,10 +2259,7 @@ class TestResolveListVariable:
 
     def test_resolve_non_list(self):
         """Variable is not a list (line 906)."""
-        code = (
-            'expr = pl.col("x") + 1\n'
-            'df = df.with_columns(expr.alias("r"))'
-        )
+        code = 'expr = pl.col("x") + 1\ndf = df.with_columns(expr.alias("r"))'
         expr = parse_expression(code, "r")
         assert expr is not None
 
@@ -2353,12 +2276,12 @@ class TestEvalClauseCollectionAlias:
     def test_eval_when_then_otherwise_alias(self):
         """When chain wrapped with alias (line 1971–1973)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 5).then("high")\n'
             '    .when(pl.col("x") > 0).then("mid")\n'
             '    .otherwise("low")\n'
             '    .alias("tier")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "tier", {"x": 3})
         assert result.result_value == "mid"
@@ -2366,9 +2289,7 @@ class TestEvalClauseCollectionAlias:
     def test_eval_when_chain_break_path(self):
         """When chain with unexpected method (line 1975)."""
         code = (
-            'df = df.with_columns(\n'
-            '    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            'df = df.with_columns(\n    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n)'
         )
         result = evaluate_expression(code, "r", {"x": -5})
         assert result.result_value == 0
@@ -2399,10 +2320,7 @@ class TestConverterAttributeGeneral:
 
     def test_non_pl_attribute(self):
         """Attribute on non-pl object (line 297–298)."""
-        code = (
-            'obj_val = pl.col("x")\n'
-            'df = df.with_columns(obj_val.abs().alias("r"))'
-        )
+        code = 'obj_val = pl.col("x")\ndf = df.with_columns(obj_val.abs().alias("r"))'
         expr = parse_expression(code, "r")
         assert expr is not None
 
@@ -2414,10 +2332,7 @@ class TestJoinedStrElseBranch:
         """f-string with non-Constant non-FormattedValue (hard to produce normally)."""
         # A normal f-string has Constant and FormattedValue parts
         # This test covers the typical path
-        code = (
-            'x = "test"\n'
-            'df = df.with_columns(pl.col(f"{x}_col").alias("r"))'
-        )
+        code = 'x = "test"\ndf = df.with_columns(pl.col(f"{x}_col").alias("r"))'
         expr = parse_expression(code, "r")
         assert expr is not None
 
@@ -2445,9 +2360,7 @@ class TestComputeResultSyntaxError:
         """Malformed code in evaluate falls back gracefully."""
         # This is covered by the exception fallback in evaluate_expression
         result = evaluate_expression(
-            'df = df.with_columns((pl.col("x") + 1).alias("r"))',
-            "r",
-            {"x": 5}
+            'df = df.with_columns((pl.col("x") + 1).alias("r"))', "r", {"x": 5}
         )
         assert result.result_value == 6
 
@@ -2465,10 +2378,7 @@ class TestSingleExprVariableNoAlias:
     """Cover variable expression without alias (line 961)."""
 
     def test_variable_single_no_alias(self):
-        code = (
-            'expr = pl.col("x") + 1\n'
-            'df = df.with_columns(expr)'
-        )
+        code = 'expr = pl.col("x") + 1\ndf = df.with_columns(expr)'
         expr = parse_expression(code, "x")
         assert expr is not None
 
@@ -2487,11 +2397,11 @@ class TestBarePLWhenChain:
     def test_chained_when_at_top(self):
         """Nested pl.when inside a then, where the then is the top node."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(\n'
             '        pl.when(pl.col("y") > 0).then(1).otherwise(2)\n'
             '    ).alias("r")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "r")
         assert expr is not None
@@ -2503,11 +2413,7 @@ class TestWhenClauseCollectionEdges:
     def test_when_break_on_non_call(self):
         """When chain encounters non-call node (line 581-582)."""
         code = (
-            'df = df.with_columns(\n'
-            '    pl.when(pl.col("x") > 0)\n'
-            '    .then(1)\n'
-            '    .alias("r")\n'
-            ')'
+            'df = df.with_columns(\n    pl.when(pl.col("x") > 0)\n    .then(1)\n    .alias("r")\n)'
         )
         expr = parse_expression(code, "r")
         assert expr.expression_type == "conditional"
@@ -2516,9 +2422,9 @@ class TestWhenClauseCollectionEdges:
         """Alias node in middle of when chain (lines 620-622)."""
         # This shouldn't normally happen but the code handles it
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 10).then("high").otherwise("low").alias("r")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "r")
         assert expr.expression_type == "conditional"
@@ -2530,14 +2436,14 @@ class TestHasNestedWhenRecursive:
     def test_has_nested_when_in_args(self):
         """Nested when found in args of a call (lines 680-682)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("tier") == "gold")\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("age") > 65).then(0.8).otherwise(0.9)\n'
-            '    )\n'
-            '    .otherwise(1.0)\n'
+            "    )\n"
+            "    .otherwise(1.0)\n"
             '    .alias("discount")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "discount")
         assert len(expr.sub_expressions) > 0
@@ -2545,18 +2451,18 @@ class TestHasNestedWhenRecursive:
     def test_deeply_nested_when(self):
         """pl.when at the root of nested (line 675)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0)\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("b") > 0)\n'
-            '        .then(\n'
+            "        .then(\n"
             '            pl.when(pl.col("c") > 0).then(1).otherwise(2)\n'
-            '        )\n'
-            '        .otherwise(3)\n'
-            '    )\n'
-            '    .otherwise(4)\n'
+            "        )\n"
+            "        .otherwise(3)\n"
+            "    )\n"
+            "    .otherwise(4)\n"
             '    .alias("r")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "r")
         assert expr.expression_type == "conditional"
@@ -2603,6 +2509,7 @@ class TestEvaluatorDtTotalDays:
 
     def test_dt_total_days(self):
         from datetime import timedelta
+
         code = 'df = df.with_columns(pl.col("dur").dt.total_days().alias("days"))'
         result = evaluate_expression(code, "days", {"dur": timedelta(days=30)})
         assert result.result_value == 30
@@ -2670,10 +2577,7 @@ class TestControlFlowKeywordInWithColumns:
     """Cover keyword arg in with_columns inside control flow (lines 889-890)."""
 
     def test_keyword_target_in_for_loop(self):
-        code = (
-            'for i in range(1):\n'
-            '    df = df.with_columns(target=pl.col("x") + i)\n'
-        )
+        code = 'for i in range(1):\n    df = df.with_columns(target=pl.col("x") + i)\n'
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
@@ -2700,7 +2604,7 @@ class TestEvalExpressionBOM:
     def test_eval_parsed_none_fallback(self):
         """parsed is None fallback (line 1352)."""
         # Force a path where parsed could be None — empty with_columns
-        code = 'df = df.with_columns()'
+        code = "df = df.with_columns()"
         result = evaluate_expression(code, "r", {"r": 42})
         assert result is not None
 
@@ -2715,11 +2619,7 @@ class TestSubstituteNamesUnaryOp:
 
     def test_unaryop_substitution(self):
         """UnaryOp where operand is substituted."""
-        code = (
-            'val = pl.col("x")\n'
-            'neg = -val\n'
-            'df = df.with_columns(neg.alias("r"))'
-        )
+        code = 'val = pl.col("x")\nneg = -val\ndf = df.with_columns(neg.alias("r"))'
         expr = parse_expression(code, "r")
         assert "x" in expr.referenced_columns
         assert "-" in expr.expression_text
@@ -2732,9 +2632,9 @@ class TestSubstituteNamesKeyword:
         """Keyword value gets substituted from symbol table."""
         code = (
             'sep = "-"\n'
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.concat_str(pl.col("a"), pl.col("b"), separator=sep).alias("r")\n'
-            ')'
+            ")"
         )
         expr = parse_expression(code, "r")
         assert expr is not None
@@ -2746,7 +2646,7 @@ class TestSubstituteNamesAttribute:
     def test_attribute_substitution(self):
         code = (
             'base = pl.col("x")\n'
-            'result = base.str.to_lowercase()\n'
+            "result = base.str.to_lowercase()\n"
             'df = df.with_columns(result.alias("r"))'
         )
         expr = parse_expression(code, "r")
@@ -2758,7 +2658,7 @@ class TestSubstituteNamesCompareNode:
 
     def test_compare_substitution(self):
         code = (
-            'limit = 100\n'
+            "limit = 100\n"
             'cond = pl.col("x") > limit\n'
             'df = df.with_columns(pl.when(cond).then(1).otherwise(0).alias("r"))'
         )
@@ -2773,7 +2673,7 @@ class TestSubstituteNamesListNode:
         code = (
             'a = pl.col("x")\n'
             'b = pl.col("y")\n'
-            'exprs = [a, b]\n'
+            "exprs = [a, b]\n"
             'df = df.with_columns(pl.sum_horizontal(*exprs).alias("r"))'
         )
         expr = parse_expression(code, "r")
@@ -2784,10 +2684,7 @@ class TestSubstituteNamesStarredNode:
     """Cover Starred substitution where value changes (lines 1279-1285)."""
 
     def test_starred_substitution(self):
-        code = (
-            'items = [(pl.col("a") + 1).alias("a1")]\n'
-            'df = df.with_columns(*items)'
-        )
+        code = 'items = [(pl.col("a") + 1).alias("a1")]\ndf = df.with_columns(*items)'
         expr = parse_expression(code, "a1")
         assert expr is not None
         assert "a" in expr.referenced_columns
@@ -2804,11 +2701,11 @@ class TestSecondarySearchForTarget:
     def test_variable_list_match_in_secondary_search(self):
         """Variable holding list of expressions, matched in secondary search (lines 1095-1102)."""
         code = (
-            'stuff = [\n'
+            "stuff = [\n"
             '    (pl.col("a") * 2).alias("doubled_a"),\n'
             '    (pl.col("b") * 3).alias("tripled_b"),\n'
-            ']\n'
-            'df = df.with_columns(stuff)'
+            "]\n"
+            "df = df.with_columns(stuff)"
         )
         # First pass finds via _extract_expressions_from_with_columns → variable list
         expr = parse_expression(code, "doubled_a")
@@ -2824,10 +2721,7 @@ class TestSecondarySearchForTarget:
 
     def test_starred_in_final_search(self):
         """Starred in no-alias search is skipped (lines 1115-1116)."""
-        code = (
-            'exprs = [pl.col("x")]\n'
-            'df = df.with_columns(*exprs)'
-        )
+        code = 'exprs = [pl.col("x")]\ndf = df.with_columns(*exprs)'
         # x has no alias, so auto-name is "x"
         expr = parse_expression(code, "x")
         assert expr is not None
@@ -2844,10 +2738,10 @@ class TestEvaluatorBoolOpPaths:
     def test_bool_and_short_circuit_false(self):
         """And short-circuits on first falsy (line 1677-1678)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 and pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": -1, "y": 5})
         assert result is not None
@@ -2855,10 +2749,10 @@ class TestEvaluatorBoolOpPaths:
     def test_bool_and_all_true_returns_last(self):
         """And returns last truthy value (line 1679-1680)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 and pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 5, "y": 5})
         assert result is not None
@@ -2866,10 +2760,10 @@ class TestEvaluatorBoolOpPaths:
     def test_bool_or_first_truthy(self):
         """Or returns first truthy (line 1684-1685)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 or pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 5, "y": -1})
         assert result is not None
@@ -2877,10 +2771,10 @@ class TestEvaluatorBoolOpPaths:
     def test_bool_or_all_falsy(self):
         """Or returns False when all falsy (line 1686)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 or pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": -1, "y": -1})
         assert result is not None
@@ -2927,10 +2821,7 @@ class TestEvaluatorPlColVariable:
 
     def test_pl_col_variable_non_string_resolved(self):
         """pl.col(variable) resolved to non-string (line 1722-1725)."""
-        code = (
-            'col_idx = 42\n'
-            'df = df.with_columns(pl.col(col_idx).alias("r"))'
-        )
+        code = 'col_idx = 42\ndf = df.with_columns(pl.col(col_idx).alias("r"))'
         result = evaluate_expression(code, "r", {"r": 99})
         assert result is not None
 
@@ -2961,9 +2852,7 @@ class TestEvalClauseCollectionPaths:
         """then() without preceding when() breaks (line 1969)."""
         # This path is very hard to trigger directly
         code = (
-            'df = df.with_columns(\n'
-            '    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            'df = df.with_columns(\n    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n)'
         )
         result = evaluate_expression(code, "r", {"x": -5})
         assert result.result_value == 0
@@ -2975,8 +2864,7 @@ class TestChainImplNull:
     def test_chain_null_alias_skipped(self):
         """Expression with no alias and no auto-name is skipped (line 2192)."""
         code = (
-            'df = df.with_columns(pl.lit(42))\n'
-            'df = df.with_columns((pl.col("x") + 1).alias("r"))'
+            'df = df.with_columns(pl.lit(42))\ndf = df.with_columns((pl.col("x") + 1).alias("r"))'
         )
         chain = parse_expression_chain(code, "r")
         assert chain is not None
@@ -3004,27 +2892,27 @@ class TestEvaluatorNameLiteralsDirect:
     def test_when_then_lit_none(self):
         """then with lit(None) — evaluator hits None literal."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(pl.lit(None)).otherwise(1).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 5})
         assert result.result_value is None
 
     def test_when_then_lit_true(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(pl.lit(True)).otherwise(pl.lit(False)).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 5})
         assert result.result_value is True
 
     def test_when_then_lit_false(self):
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(pl.lit(True)).otherwise(pl.lit(False)).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": -5})
         assert result.result_value is False
@@ -3036,12 +2924,12 @@ class TestEvaluatorPlWhenDirect:
     def test_when_chain_eval(self):
         """When/then/otherwise where evaluator walks the full chain."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") < 0).then("neg")\n'
             '    .when(pl.col("x") == 0).then("zero")\n'
             '    .otherwise("pos")\n'
             '    .alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 0})
         assert result.result_value == "zero"
@@ -3128,14 +3016,14 @@ class TestBranchTrackingNested:
     def test_nested_when_detected_via_then(self):
         """_check_nested_when finds .then() (line 2121)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0)\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("b") > 0).then(10).otherwise(20)\n'
-            '    )\n'
-            '    .otherwise(30)\n'
+            "    )\n"
+            "    .otherwise(30)\n"
             '    .alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": 1, "b": -1})
         assert result.result_value == 20
@@ -3143,14 +3031,14 @@ class TestBranchTrackingNested:
     def test_nested_when_detected_via_pl_when(self):
         """_check_nested_when finds pl.when (line 2123-2124)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0)\n'
-            '    .then(\n'
+            "    .then(\n"
             '        pl.when(pl.col("b") > 0).then("yes").otherwise("no")\n'
-            '    )\n'
+            "    )\n"
             '    .otherwise("none")\n'
             '    .alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"a": 1, "b": 1})
         assert result.result_value == "yes"
@@ -3162,9 +3050,9 @@ class TestEvaluatorPlWhenAttr:
     def test_pl_when_in_evaluator(self):
         """Evaluator hits pl.when() which calls _eval_when_chain (line 1732)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(1).otherwise(-1).alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 10})
         assert result.result_value == 1
@@ -3175,9 +3063,7 @@ class TestConditionalBranchEvalSyntax:
 
     def test_branch_eval_with_valid_code(self):
         code = (
-            'df = df.with_columns(\n'
-            '    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n'
-            ')'
+            'df = df.with_columns(\n    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("r")\n)'
         )
         result = evaluate_expression(code, "r", {"x": 5})
         assert result.taken_branch == "then"
@@ -3185,9 +3071,9 @@ class TestConditionalBranchEvalSyntax:
     def test_branch_eval_target_not_found(self):
         """Branch eval target not found returns empty (line 1472-1473)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then(1).otherwise(0).alias("other")\n'
-            ')'
+            ")"
         )
         # Looking for "r" but only "other" exists
         result = evaluate_expression(code, "r", {"x": 5})
@@ -3199,10 +3085,7 @@ class TestFStringAliasNonConstantPart:
 
     def test_fstring_with_complex_expression(self):
         """f-string with expression that can't be evaluated returns None."""
-        code = (
-            'items = [1, 2]\n'
-            'df = df.with_columns((pl.col("x") + 1).alias(f"col_{items[0]}"))'
-        )
+        code = 'items = [1, 2]\ndf = df.with_columns((pl.col("x") + 1).alias(f"col_{items[0]}"))'
         # f-string with subscript can't be statically resolved
         expr = parse_expression(code, "col_1")
         assert expr is not None
@@ -3213,9 +3096,7 @@ class TestSubstitutionNoChange:
 
     def test_unaryop_no_substitution_needed(self):
         """UnaryOp with no names to substitute."""
-        code = (
-            'df = df.with_columns((-pl.col("x")).alias("r"))'
-        )
+        code = 'df = df.with_columns((-pl.col("x")).alias("r"))'
         expr = parse_expression(code, "r")
         assert "-x" in expr.expression_text
 
@@ -3226,9 +3107,9 @@ class TestEvalWhenChainMethod:
     def test_eval_when_chain_standalone(self):
         """pl.when() evaluated standalone returns None (line 1926)."""
         code = (
-            'df = df.with_columns(\n'
+            "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then("pos").otherwise("neg").alias("r")\n'
-            ')'
+            ")"
         )
         result = evaluate_expression(code, "r", {"x": 5})
         assert result.result_value == "pos"

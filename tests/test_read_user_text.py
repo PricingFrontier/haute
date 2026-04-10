@@ -110,9 +110,7 @@ class TestConfigEncodingRobustness:
         config_dir = pipeline_dir / "config" / "banding"
         config_dir.mkdir(parents=True)
         # JSON with 0x96 in a value — after replacement, JSON is still valid
-        (config_dir / "bands.json").write_bytes(
-            b'{"bands": [{"label": "20\x9627"}]}'
-        )
+        (config_dir / "bands.json").write_bytes(b'{"bands": [{"label": "20\x9627"}]}')
         (pipeline_dir / "main.py").write_text(
             "import haute\nimport polars as pl\n\n"
             'pipeline = haute.Pipeline("test")\n\n'

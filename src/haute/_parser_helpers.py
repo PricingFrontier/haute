@@ -369,6 +369,11 @@ def _extract_source_user_code(body_source: str) -> str:
     if not cleaned:
         return ""
 
+    # Skip leading import lines (e.g. ``from pathlib import Path``)
+    # that codegen adds before the data-load boilerplate.
+    while cleaned and cleaned[0].strip().startswith(("from ", "import ")):
+        cleaned.pop(0)
+
     # Skip the first statement — it's always the auto-generated load.
     # Detect the end of the first statement (handles multi-line
     # assignments like ``df = (\n    ...\n)``).

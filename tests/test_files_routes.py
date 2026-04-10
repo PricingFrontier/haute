@@ -274,6 +274,7 @@ class TestBrowseFilesSymlinkOutsideBase:
         outside = tmp_path_factory.mktemp("outside")
         secret = outside / "secret.parquet"
         import polars as pl
+
         pl.DataFrame({"a": [1]}).write_parquet(secret)
         link = work_dir / "linked.parquet"
         try:

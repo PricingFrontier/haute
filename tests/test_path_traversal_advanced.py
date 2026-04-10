@@ -442,8 +442,10 @@ class TestNullByteInjection:
                 lambda tmp_path: {
                     "args": ("config.json\x00../../etc/passwd",),
                     "kwargs": {"base_dir": tmp_path / "project"},
-                    "setup": lambda tp: (tp / "project").mkdir(exist_ok=True)
-                    or _write_json(tp / "project" / "config.json", {"ok": True}),
+                    "setup": lambda tp: (
+                        (tp / "project").mkdir(exist_ok=True)
+                        or _write_json(tp / "project" / "config.json", {"ok": True})
+                    ),
                 },
                 id="load_node_config",
             ),
@@ -498,21 +500,27 @@ class TestNullByteInjection:
 
         # Resolve the function from its module
         func_map = {
-            "load_node_config": lambda: __import__(
-                "haute._config_io", fromlist=["load_node_config"]
-            ).load_node_config,
-            "validate_safe_path": lambda: __import__(
-                "haute.routes._helpers", fromlist=["validate_safe_path"]
-            ).validate_safe_path,
-            "validate_project_path": lambda: __import__(
-                "haute._sandbox", fromlist=["validate_project_path"]
-            ).validate_project_path,
-            "config_path_for_node": lambda: __import__(
-                "haute._config_io", fromlist=["config_path_for_node"]
-            ).config_path_for_node,
-            "score_from_config": lambda: __import__(
-                "haute._model_scorer", fromlist=["score_from_config"]
-            ).score_from_config,
+            "load_node_config": lambda: (
+                __import__("haute._config_io", fromlist=["load_node_config"]).load_node_config
+            ),
+            "validate_safe_path": lambda: (
+                __import__(
+                    "haute.routes._helpers", fromlist=["validate_safe_path"]
+                ).validate_safe_path
+            ),
+            "validate_project_path": lambda: (
+                __import__(
+                    "haute._sandbox", fromlist=["validate_project_path"]
+                ).validate_project_path
+            ),
+            "config_path_for_node": lambda: (
+                __import__(
+                    "haute._config_io", fromlist=["config_path_for_node"]
+                ).config_path_for_node
+            ),
+            "score_from_config": lambda: (
+                __import__("haute._model_scorer", fromlist=["score_from_config"]).score_from_config
+            ),
         }
         func = func_map[func_name]()
 
@@ -543,9 +551,11 @@ class TestVeryLongPaths:
         [
             pytest.param(
                 "config_path_for_node builds path without error",
-                lambda: __import__(
-                    "haute._config_io", fromlist=["config_path_for_node"]
-                ).config_path_for_node,
+                lambda: (
+                    __import__(
+                        "haute._config_io", fromlist=["config_path_for_node"]
+                    ).config_path_for_node
+                ),
                 lambda tp: {
                     "args": (
                         __import__("haute._types", fromlist=["NodeType"]).NodeType.BANDING,
@@ -559,9 +569,9 @@ class TestVeryLongPaths:
             ),
             pytest.param(
                 "load_node_config raises OSError for very long path",
-                lambda: __import__(
-                    "haute._config_io", fromlist=["load_node_config"]
-                ).load_node_config,
+                lambda: (
+                    __import__("haute._config_io", fromlist=["load_node_config"]).load_node_config
+                ),
                 lambda tp: {
                     "args": ("/".join(["x" * 300] * 20) + "/config.json",),
                     "kwargs": {"base_dir": tp},
@@ -571,9 +581,11 @@ class TestVeryLongPaths:
             ),
             pytest.param(
                 "validate_safe_path handles very long path",
-                lambda: __import__(
-                    "haute.routes._helpers", fromlist=["validate_safe_path"]
-                ).validate_safe_path,
+                lambda: (
+                    __import__(
+                        "haute.routes._helpers", fromlist=["validate_safe_path"]
+                    ).validate_safe_path
+                ),
                 lambda tp: {
                     "args": (tp, "sub/" * 500 + "file.txt"),
                     "kwargs": {},
@@ -585,9 +597,7 @@ class TestVeryLongPaths:
             pytest.param(
                 "validate_project_path handles very long path",
                 lambda: (
-                    __import__(
-                        "haute._sandbox", fromlist=["set_project_root"]
-                    ).set_project_root,
+                    __import__("haute._sandbox", fromlist=["set_project_root"]).set_project_root,
                     __import__(
                         "haute._sandbox", fromlist=["validate_project_path"]
                     ).validate_project_path,
@@ -603,9 +613,9 @@ class TestVeryLongPaths:
             ),
             pytest.param(
                 "save_node_config raises OSError for long name",
-                lambda: __import__(
-                    "haute._config_io", fromlist=["save_node_config"]
-                ).save_node_config,
+                lambda: (
+                    __import__("haute._config_io", fromlist=["save_node_config"]).save_node_config
+                ),
                 lambda tp: {
                     "args": (
                         __import__("haute._types", fromlist=["NodeType"]).NodeType.BANDING,
@@ -619,9 +629,11 @@ class TestVeryLongPaths:
             ),
             pytest.param(
                 "score_from_config raises for very long path",
-                lambda: __import__(
-                    "haute._model_scorer", fromlist=["score_from_config"]
-                ).score_from_config,
+                lambda: (
+                    __import__(
+                        "haute._model_scorer", fromlist=["score_from_config"]
+                    ).score_from_config
+                ),
                 lambda tp: {
                     "args": (),
                     "kwargs": {

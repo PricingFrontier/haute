@@ -1572,7 +1572,9 @@ class TestExcludedTypeRoundTrips:
         expand_node = next(n for n in parsed.nodes if n.id == "expand")
         # Codegen indents user code and appends ``return df``; the parser
         # strips that to recover the original code.
-        assert 'df = df.filter(pl.col("discount") >= 1.0)' in expand_node.data.config.get("code", "")
+        assert 'df = df.filter(pl.col("discount") >= 1.0)' in expand_node.data.config.get(
+            "code", ""
+        )
 
 
 # ---------------------------------------------------------------------------

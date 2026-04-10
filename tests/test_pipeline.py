@@ -321,8 +321,11 @@ class TestPipeline:
 class TestNodeProperties:
     def test_is_deploy_input_true(self):
         n = Node(
-            name="inp", description="", fn=lambda: None,
-            is_source=True, config={"api_input": True},
+            name="inp",
+            description="",
+            fn=lambda: None,
+            is_source=True,
+            config={"api_input": True},
         )
         assert n.is_deploy_input is True
 
@@ -332,8 +335,11 @@ class TestNodeProperties:
 
     def test_is_live_switch_true(self):
         n = Node(
-            name="sw", description="", fn=lambda: None,
-            is_source=False, config={"live_switch": True},
+            name="sw",
+            description="",
+            fn=lambda: None,
+            is_source=False,
+            config={"live_switch": True},
         )
         assert n.is_live_switch is True
 

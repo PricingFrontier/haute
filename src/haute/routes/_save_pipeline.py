@@ -7,12 +7,13 @@ route handler stays thin.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 from fastapi import HTTPException
 
 from haute._logging import get_logger
-from haute.graph_utils import NodeType, PipelineGraph
+from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import mark_self_write, save_sidecar, validate_safe_path
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
@@ -56,6 +57,7 @@ class SavePipelineService:
         graph = body.graph
 
         self._validate_singletons(graph)
+        self._validate_unique_sanitized_names(graph)
         py_path = self._resolve_source_file(body.source_file)
 
         self._write_code(body, graph, py_path)
@@ -87,6 +89,28 @@ class SavePipelineService:
                     status_code=400,
                     detail=f"Only one {label} node is allowed per pipeline (found {count}).",
                 )
+
+    @staticmethod
+    def _validate_unique_sanitized_names(graph: PipelineGraph) -> None:
+        """Reject graphs where distinct node labels sanitize to the same function name."""
+        sanitized_to_labels: dict[str, list[str]] = defaultdict(list)
+        for node in graph.nodes:
+            sanitized = _sanitize_func_name(node.data.label)
+            sanitized_to_labels[sanitized].append(node.data.label)
+
+        collisions = {
+            name: labels for name, labels in sanitized_to_labels.items() if len(labels) > 1
+        }
+        if collisions:
+            parts = [f"  {name!r} <- {labels!r}" for name, labels in sorted(collisions.items())]
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Duplicate sanitized node names detected. "
+                    "The following node labels produce the same Python "
+                    "function name:\n" + "\n".join(parts)
+                ),
+            )
 
     def _resolve_source_file(self, source_file: str) -> Path:
         """Resolve and validate the main ``.py`` path."""

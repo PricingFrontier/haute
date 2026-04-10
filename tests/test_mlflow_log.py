@@ -596,12 +596,8 @@ class TestLogExperiment:
                         "std_metrics": {"rmse": 0.02},
                         "n_folds": 5,
                     },
-                    double_lift=[
-                        {"decile": 1, "actual": 0.1, "predicted": 0.12, "count": 100}
-                    ],
-                    loss_history=[
-                        {"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)
-                    ],
+                    double_lift=[{"decile": 1, "actual": 0.1, "predicted": 0.12, "count": 100}],
+                    loss_history=[{"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)],
                     ave_per_feature=[
                         {
                             "feature": "x1",
@@ -620,9 +616,7 @@ class TestLogExperiment:
                     actual_vs_predicted=[{"actual": 0.5, "predicted": 0.6, "weight": 1.0}],
                     lorenz_curve=[{"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}],
                     lorenz_curve_perfect=[{"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}],
-                    pdp_data=[
-                        {"feature": "x1", "grid": [{"value": 1, "avg_prediction": 0.5}]}
-                    ],
+                    pdp_data=[{"feature": "x1", "grid": [{"value": 1, "avg_prediction": 0.5}]}],
                     holdout_metrics={"rmse": 0.55, "gini": 0.65},
                 ),
                 metadata=ModelCardMetadata(
@@ -651,9 +645,7 @@ class TestLogExperiment:
                 assert expected in artifact_dirs, f"Missing artifact dir: {expected}"
 
             # Holdout metrics should be logged as individual metrics
-            holdout_calls = [
-                c for c in m_metric.call_args_list if c.args[0].startswith("holdout_")
-            ]
+            holdout_calls = [c for c in m_metric.call_args_list if c.args[0].startswith("holdout_")]
             assert len(holdout_calls) == 2
             # CV metrics should be logged
             cv_calls = [c for c in m_metric.call_args_list if c.args[0].startswith("cv_mean_")]

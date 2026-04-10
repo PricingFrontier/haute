@@ -81,13 +81,18 @@ class TestLogLevel:
         configure_logging()
         assert logging.getLogger().level == logging.INFO
 
-    @pytest.mark.parametrize("level_name,level_const", [
-        ("DEBUG", logging.DEBUG),
-        ("WARNING", logging.WARNING),
-        ("ERROR", logging.ERROR),
-        ("CRITICAL", logging.CRITICAL),
-    ])
-    def test_level_from_env(self, monkeypatch: pytest.MonkeyPatch, level_name: str, level_const: int) -> None:
+    @pytest.mark.parametrize(
+        "level_name,level_const",
+        [
+            ("DEBUG", logging.DEBUG),
+            ("WARNING", logging.WARNING),
+            ("ERROR", logging.ERROR),
+            ("CRITICAL", logging.CRITICAL),
+        ],
+    )
+    def test_level_from_env(
+        self, monkeypatch: pytest.MonkeyPatch, level_name: str, level_const: int
+    ) -> None:
         monkeypatch.setenv("HAUTE_LOG_LEVEL", level_name)
         monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
         configure_logging()
@@ -100,7 +105,9 @@ class TestLogLevel:
         assert logging.getLogger().level == logging.DEBUG
 
     @pytest.mark.parametrize("bad_value", ["NONEXISTENT", ""])
-    def test_invalid_level_falls_back_to_info(self, monkeypatch: pytest.MonkeyPatch, bad_value: str) -> None:
+    def test_invalid_level_falls_back_to_info(
+        self, monkeypatch: pytest.MonkeyPatch, bad_value: str
+    ) -> None:
         monkeypatch.setenv("HAUTE_LOG_LEVEL", bad_value)
         monkeypatch.delenv("HAUTE_LOG_FORMAT", raising=False)
         configure_logging()
@@ -315,9 +322,7 @@ class TestIntegration:
         logger = get_logger(service="test")
         logger.debug("debug_event", count=3)
 
-    def test_configure_json_then_reconfigure_console(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_configure_json_then_reconfigure_console(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAUTE_LOG_FORMAT", "json")
         configure_logging()
         renderer = logging.getLogger().handlers[0].formatter.processors[-1]

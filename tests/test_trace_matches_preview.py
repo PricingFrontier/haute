@@ -539,7 +539,8 @@ class TestPreviewMatchAggregation:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "agg", "df = df.group_by('region').agg(pl.col('premium').sum()).sort('region')"
+                        "agg",
+                        "df = df.group_by('region').agg(pl.col('premium').sum()).sort('region')",
                     ),
                 ],
                 "edges": [_edge("src", "agg")],

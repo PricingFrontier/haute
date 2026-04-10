@@ -201,8 +201,8 @@ class TestChainMixedExpressionsAndLiterals:
 
     def test_chain_with_keyword_column(self):
         code = (
-            "df = df.with_columns(base=pl.col(\"x\") + 1)\n"
-            "df = df.with_columns((pl.col(\"base\") * 2).alias(\"target\"))"
+            'df = df.with_columns(base=pl.col("x") + 1)\n'
+            'df = df.with_columns((pl.col("base") * 2).alias("target"))'
         )
         chain = parse_expression_chain(code, "target")
         assert len(chain) == 2
@@ -521,8 +521,8 @@ class TestNestedWhenThenOtherwise:
     def test_parse_nested_conditional(self):
         code = (
             "df = df.with_columns(\n"
-            "    pl.when(pl.col(\"a\") > 10)\n"
-            "    .then(pl.when(pl.col(\"b\") > 5).then(1).otherwise(2))\n"
+            '    pl.when(pl.col("a") > 10)\n'
+            '    .then(pl.when(pl.col("b") > 5).then(1).otherwise(2))\n'
             "    .otherwise(3)\n"
             '    .alias("result")\n'
             ")"
@@ -536,8 +536,8 @@ class TestNestedWhenThenOtherwise:
     def test_nested_conditional_has_sub_expressions(self):
         code = (
             "df = df.with_columns(\n"
-            "    pl.when(pl.col(\"x\") > 0)\n"
-            "    .then(pl.when(pl.col(\"y\") > 0).then(10).otherwise(20))\n"
+            '    pl.when(pl.col("x") > 0)\n'
+            '    .then(pl.when(pl.col("y") > 0).then(10).otherwise(20))\n'
             "    .otherwise(30)\n"
             '    .alias("result")\n'
             ")"
@@ -550,8 +550,8 @@ class TestNestedWhenThenOtherwise:
     def test_evaluate_nested_conditional_outer_true_inner_true(self):
         code = (
             "df = df.with_columns(\n"
-            "    pl.when(pl.col(\"a\") > 10)\n"
-            "    .then(pl.when(pl.col(\"b\") > 5).then(1).otherwise(2))\n"
+            '    pl.when(pl.col("a") > 10)\n'
+            '    .then(pl.when(pl.col("b") > 5).then(1).otherwise(2))\n'
             "    .otherwise(3)\n"
             '    .alias("result")\n'
             ")"
@@ -563,8 +563,8 @@ class TestNestedWhenThenOtherwise:
     def test_evaluate_nested_conditional_outer_false(self):
         code = (
             "df = df.with_columns(\n"
-            "    pl.when(pl.col(\"a\") > 10)\n"
-            "    .then(pl.when(pl.col(\"b\") > 5).then(1).otherwise(2))\n"
+            '    pl.when(pl.col("a") > 10)\n'
+            '    .then(pl.when(pl.col("b") > 5).then(1).otherwise(2))\n'
             "    .otherwise(3)\n"
             '    .alias("result")\n'
             ")"

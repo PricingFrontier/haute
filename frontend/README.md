@@ -1,73 +1,71 @@
-# React + TypeScript + Vite
+# Haute Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Visual node-based pipeline editor for [Haute](../README.md). Users build
+data-processing pipelines by dragging nodes onto a canvas, wiring them
+together, and inspecting live data previews -- all backed by a Python
+FastAPI server that executes the pipeline with Polars.
 
-Currently, two official plugins are available:
+## Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **React 19** with **TypeScript** (strict)
+- **Vite** -- dev server with HMR, proxies `/api` and `/ws` to the backend
+- **ReactFlow** (`@xyflow/react`) -- canvas, nodes, edges, layout (ELK)
+- **Zustand** -- lightweight stores for UI state, settings, node results, toasts
+- **Tailwind CSS v4** -- utility-first styling via the Vite plugin
+- **CodeMirror 6** -- embedded Python editor for node expressions
+- **Vitest** + **React Testing Library** -- unit / component tests
 
-## React Compiler
+## Getting Started
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+# From the frontend/ directory:
+npm install
+npm run dev      # starts Vite dev server (default http://localhost:5173)
+npm run build    # type-checks then builds into ../src/haute/static/
+npm run test     # runs Vitest in single-run mode
+npm run lint     # ESLint
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The dev server proxies `/api` requests to `http://127.0.0.1:8000` and
+`/ws` WebSocket connections to the same host, so start the Haute backend
+first.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Project Structure
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
 ```
+src/
+  App.tsx            Main FlowEditor component (ReactFlow canvas + panels)
+  nodes/             Custom ReactFlow node components (PipelineNode, SubmodelNode, ...)
+  panels/            Side panels: NodePanel, NodePalette, DataPreview, TracePanel, ...
+  components/        Shared UI: Toolbar, ContextMenu, BreadcrumbBar, Toast, ...
+  stores/            Zustand stores
+    useUIStore       Chrome layout (palette open, dialogs, dirty flag)
+    useSettingsStore MLflow config, persistent settings
+    useNodeResultsStore  Cached previews, background job results
+    useToastStore    Notification queue
+  hooks/             React hooks
+    usePipelineAPI   Load/save pipeline, fetch node previews
+    useWebSocketSync Real-time file-change sync from backend
+    useUndoRedo      Undo/redo over nodes + edges
+    useTracing       Cell-level data lineage tracing
+    useSubmodelNavigation  Drill-in/out of submodel groups
+    useKeyboardShortcuts   Global hotkeys (save, undo, copy/paste, ...)
+    useEdgeHandlers  Connect, delete, drag-drop edge logic
+    useNodeHandlers  Delete, duplicate, rename, auto-layout
+  api/               Typed fetch helpers for backend endpoints
+  types/             Shared TypeScript types (node data, configs)
+  utils/             Constants (node type registry), helpers
+  trace/             Lineage tracing logic
+```
+
+## Architecture Notes
+
+- **Stores over props.** Global UI state lives in Zustand stores so deeply
+  nested components can subscribe to individual slices without prop drilling.
+- **Hooks extract logic.** The main `FlowEditor` delegates to focused hooks
+  (`usePipelineAPI`, `useUndoRedo`, `useTracing`, etc.) to keep the
+  orchestrator readable.
+- **Build output** lands in `../src/haute/static/` so the Python package can
+  serve the frontend as static files in production.
+- **Version injection.** `vite.config.ts` reads the version from
+  `../pyproject.toml` and exposes it as `__APP_VERSION__`.

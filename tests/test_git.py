@@ -1762,9 +1762,7 @@ class TestRevertBackupTagTimestamp:
         result = revert_to(target_sha, repo)
 
         assert result.backup_tag.startswith("backup/")
-        timestamp_pattern = re.compile(
-            r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$"
-        )
+        timestamp_pattern = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$")
         tag_parts = result.backup_tag.split("/")
         timestamp_part = tag_parts[-1]
         assert timestamp_pattern.match(timestamp_part), (

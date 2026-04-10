@@ -177,6 +177,7 @@ function FlowEditor() {
   const lastSavedRef = useRef<string>("")
   const preambleRef = useRef("")
   const pipelineNameRef = useRef("main")
+  const descriptionRef = useRef("")
   const sourceFileRef = useRef("")
   const graphRefreshingRef = useRef(0)
   const nodeIdCounter = useRef(0)
@@ -227,7 +228,7 @@ function FlowEditor() {
     selectedNode,
     graphRef, parentGraphRef, submodelsRef, setNodes,
     setNodesRaw, setEdgesRaw, setPreamble,
-    preambleRef, pipelineNameRef, sourceFileRef, lastSavedRef,
+    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, lastSavedRef,
     nodeIdCounter,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
@@ -252,7 +253,7 @@ function FlowEditor() {
     graphRef, parentGraphRef, submodelsRef,
     setNodesRaw, setEdgesRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
-    preambleRef, sourceFileRef, pipelineNameRef,
+    preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
     fitView,
   })
 

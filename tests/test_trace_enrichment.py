@@ -43,8 +43,6 @@ from tests.conftest import (
 )
 
 
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1099,7 +1097,8 @@ class TestModelScoreSimulation:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "model", "df = df.with_columns(pred=pl.col('feature_a') + pl.col('feature_b'))"
+                        "model",
+                        "df = df.with_columns(pred=pl.col('feature_a') + pl.col('feature_b'))",
                     ),
                 ],
                 "edges": [_edge("src", "model")],
@@ -1120,8 +1119,12 @@ class TestModelScoreSimulation:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("model", "df = df.with_columns(raw_pred=pl.col('feature') * 2.0)"),
-                    _transform_node("clip", "df = df.with_columns(pred=pl.col('raw_pred').clip(0, 150))"),
+                    _transform_node(
+                        "model", "df = df.with_columns(raw_pred=pl.col('feature') * 2.0)"
+                    ),
+                    _transform_node(
+                        "clip", "df = df.with_columns(pred=pl.col('raw_pred').clip(0, 150))"
+                    ),
                 ],
                 "edges": [_edge("src", "model"), _edge("model", "clip")],
             }
@@ -1260,7 +1263,9 @@ class TestModelScoreSimulation:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node("raw", "df = df.with_columns(raw_pred=pl.col('x') * 0.3)"),
-                    _transform_node("adj", "df = df.with_columns(final_pred=pl.col('raw_pred') + 1.0)"),
+                    _transform_node(
+                        "adj", "df = df.with_columns(final_pred=pl.col('raw_pred') + 1.0)"
+                    ),
                 ],
                 "edges": [_edge("src", "raw"), _edge("raw", "adj")],
             }
@@ -1370,7 +1375,9 @@ class TestModelScoreSimulation:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("model", "df = df.with_columns(pred=pl.col('a') + pl.col('b'))"),
+                    _transform_node(
+                        "model", "df = df.with_columns(pred=pl.col('a') + pl.col('b'))"
+                    ),
                 ],
                 "edges": [_edge("src", "model")],
             }
@@ -1542,7 +1549,8 @@ class TestScenarioExpansion:
                     _source_node("scenarios", str(p_scenarios)),
                     _transform_node("expand", "df = data.join(scenarios, how='cross')"),
                     _transform_node(
-                        "calc", "df = df.with_columns(adjusted=pl.col('base') * pl.col('multiplier'))"
+                        "calc",
+                        "df = df.with_columns(adjusted=pl.col('base') * pl.col('multiplier'))",
                     ),
                 ],
                 "edges": [
@@ -2034,7 +2042,8 @@ class TestRowLineageAggregated:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "agg", "df = df.group_by('region').agg(pl.col('premium').sum()).sort('region')"
+                        "agg",
+                        "df = df.group_by('region').agg(pl.col('premium').sum()).sort('region')",
                     ),
                 ],
                 "edges": [_edge("src", "agg")],
@@ -2061,7 +2070,9 @@ class TestRowLineageAggregated:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("agg", "df = df.group_by('region').agg(pl.col('premium').sum())"),
+                    _transform_node(
+                        "agg", "df = df.group_by('region').agg(pl.col('premium').sum())"
+                    ),
                 ],
                 "edges": [_edge("src", "agg")],
             }

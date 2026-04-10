@@ -38,7 +38,6 @@ def _build(
 
 
 class TestResolveInstanceNode:
-
     def test_valid_instance_merges_original_config(self) -> None:
         original = _n(
             {
@@ -53,7 +52,13 @@ class TestResolveInstanceNode:
                                 "outputColumn": "age_band",
                                 "banding": "continuous",
                                 "rules": [
-                                    {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
+                                    {
+                                        "op1": ">=",
+                                        "val1": 0,
+                                        "op2": "<",
+                                        "val2": 50,
+                                        "assignment": "young",
+                                    },
                                 ],
                             }
                         ],
@@ -177,7 +182,6 @@ class TestResolveInstanceNode:
 
 
 class TestBuildConstantEdgeCases:
-
     def test_empty_values_produces_default_column(self) -> None:
         _, fn, _ = _build("constant", {"values": []})
         result = fn().collect()
@@ -241,7 +245,6 @@ class TestBuildConstantEdgeCases:
 
 
 class TestBuildOutputEdgeCases:
-
     def test_specified_fields_selects_only_those_columns(self) -> None:
         _, fn, _ = _build("output", {"fields": ["a", "c"]}, source_names=["up"])
         lf = pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy()
@@ -268,7 +271,6 @@ class TestBuildOutputEdgeCases:
 
 
 class TestBuildLiveSwitchEdgeCases:
-
     def test_live_scenario_selects_live_input(self) -> None:
         _, fn, _ = _build(
             "liveSwitch",
@@ -339,7 +341,6 @@ class TestBuildLiveSwitchEdgeCases:
 
 
 class TestBuildScenarioExpanderEdgeCases:
-
     def test_steps_less_than_one_raises(self) -> None:
         with pytest.raises(ValueError, match="steps >= 1"):
             _build(
@@ -391,7 +392,6 @@ class TestBuildScenarioExpanderEdgeCases:
 
 
 class TestBuildBandingEdgeCases:
-
     def test_empty_factors_passthrough(self) -> None:
         _, fn, _ = _build("banding", {"factors": []}, source_names=["up"])
         lf = pl.DataFrame({"age": [25, 50]}).lazy()
@@ -451,7 +451,6 @@ class TestBuildBandingEdgeCases:
 
 
 class TestBuildNodeFnDispatcher:
-
     def test_unknown_node_type_falls_back_to_passthrough(self) -> None:
         node = GraphNode(
             id="n1",
@@ -485,9 +484,7 @@ class TestBuildNodeFnDispatcher:
             }
         )
         node_map = {"orig": original, "inst": instance}
-        func_name, fn, is_source = _build_node_fn(
-            instance, source_names=[], node_map=node_map
-        )
+        func_name, fn, is_source = _build_node_fn(instance, source_names=[], node_map=node_map)
         assert is_source is True
         result = fn().collect()
         assert result["rate"].to_list() == [0.05]
@@ -503,11 +500,16 @@ class TestBuildNodeFnDispatcher:
 
 
 class TestBuildOutputEmptyDataFrame:
-
     def test_build_output_empty_dataframe(self) -> None:
         """A 0-row DataFrame with fields specified returns 0-row frame with correct columns."""
         _, fn, _ = _build("output", {"fields": ["a", "c"]}, source_names=["up"])
-        lf = pl.DataFrame({"a": pl.Series([], dtype=pl.Int64), "b": pl.Series([], dtype=pl.Int64), "c": pl.Series([], dtype=pl.Int64)}).lazy()
+        lf = pl.DataFrame(
+            {
+                "a": pl.Series([], dtype=pl.Int64),
+                "b": pl.Series([], dtype=pl.Int64),
+                "c": pl.Series([], dtype=pl.Int64),
+            }
+        ).lazy()
         result = fn(lf).collect()
         assert result.columns == ["a", "c"]
         assert result.shape == (0, 2)

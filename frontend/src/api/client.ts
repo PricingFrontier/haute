@@ -193,6 +193,7 @@ export function createSubmodel(
     preamble: string
     source_file: string
     pipeline_name: string
+    pipeline_description?: string
   },
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelCreateResponse> {
@@ -216,6 +217,7 @@ export function dissolveSubmodel(
     preamble: string
     source_file: string
     pipeline_name: string
+    pipeline_description?: string
   },
   options?: { signal?: AbortSignal },
 ): Promise<DissolveSubmodelResponse> {

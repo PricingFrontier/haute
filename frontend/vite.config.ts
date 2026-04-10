@@ -33,5 +33,29 @@ export default defineConfig({
   build: {
     outDir: "../src/haute/static",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes("node_modules")) return;
+          // React + ReactFlow share a chunk to avoid circular imports
+          if (
+            id.includes("/react-dom/") ||
+            id.includes("/react/") ||
+            id.includes("/scheduler/") ||
+            id.includes("/use-sync-external-store/") ||
+            id.includes("@xyflow/") ||
+            id.includes("/elkjs/")
+          ) {
+            return "vendor-react";
+          }
+          if (id.includes("@codemirror/") || id.includes("@lezer/")) {
+            return "vendor-codemirror";
+          }
+          if (id.includes("/lucide-react/")) {
+            return "vendor-ui";
+          }
+        },
+      },
+    },
   },
 })

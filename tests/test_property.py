@@ -625,7 +625,6 @@ class TestFingerprintDeterminism:
         assert fp1 != fp2, "Structurally different graphs should have different fingerprints"
 
 
-
 # ---------------------------------------------------------------------------
 # 8. Code validation consistency (cache correctness)
 # ---------------------------------------------------------------------------

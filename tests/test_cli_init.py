@@ -475,8 +475,7 @@ class TestEnsureHauteDependency:
     def test_does_not_duplicate_if_haute_already_present(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\nname = "foo"\nversion = "0.1.0"\n'
-            'dependencies = [\n    "haute",\n]\n'
+            '[project]\nname = "foo"\nversion = "0.1.0"\ndependencies = [\n    "haute",\n]\n'
         )
         _ensure_haute_dependency(pyproject, "foo")
         content = pyproject.read_text()
@@ -484,9 +483,7 @@ class TestEnsureHauteDependency:
 
     def test_adds_dependency_groups_dev_section(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "foo"\nversion = "0.1.0"\ndependencies = []\n'
-        )
+        pyproject.write_text('[project]\nname = "foo"\nversion = "0.1.0"\ndependencies = []\n')
         _ensure_haute_dependency(pyproject, "foo")
         content = pyproject.read_text()
         assert "[dependency-groups]" in content
@@ -507,9 +504,7 @@ class TestEnsureHauteDependency:
 
     def test_adds_tool_mypy_section(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "foo"\nversion = "0.1.0"\ndependencies = []\n'
-        )
+        pyproject.write_text('[project]\nname = "foo"\nversion = "0.1.0"\ndependencies = []\n')
         _ensure_haute_dependency(pyproject, "foo")
         content = pyproject.read_text()
         assert "[tool.mypy]" in content
@@ -521,7 +516,7 @@ class TestEnsureHauteDependency:
         pyproject.write_text(
             '[project]\nname = "foo"\nversion = "0.1.0"\n'
             'dependencies = [\n    "haute",\n]\n\n'
-            '[tool.mypy]\nignore_missing_imports = false\n'
+            "[tool.mypy]\nignore_missing_imports = false\n"
         )
         _ensure_haute_dependency(pyproject, "foo")
         content = pyproject.read_text()

@@ -7,6 +7,8 @@ verify the generated code compiles and contains expected fragments.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from haute.codegen import _build_extra_kwargs, _node_to_code, graph_to_code
 from tests.conftest import compile_node_code as _compile_node_code, make_graph as _g
 from tests.conftest import make_node as _n
@@ -87,7 +89,7 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/PolicyData.json"' in code
         assert "def PolicyData()" in code
-        assert 'scan_parquet("data/api_input.parquet")' in code
+        assert 'scan_parquet(Path(__file__).parent / "data/api_input.parquet")' in code
         _compile_node_code(code)
 
     def test_csv_api_input(self) -> None:
@@ -99,7 +101,7 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/CSVInput.json"' in code
         assert "def CSVInput()" in code
-        assert 'scan_csv("data/input.csv")' in code
+        assert 'scan_csv(Path(__file__).parent / "data/input.csv")' in code
         _compile_node_code(code)
 
     def test_json_api_input(self) -> None:
@@ -774,9 +776,10 @@ class TestCodegenExecValidation:
 
         Returns the result of calling the function with *input_df*.
         """
-        ns: dict = {}
+        ns: dict = {"__file__": str(Path.cwd() / "__exec_test__.py")}
         exec(
             "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
             "pipeline = haute.Pipeline('exec_test')\n\n"
             f"{code}\n",
             ns,
@@ -939,7 +942,7 @@ class TestGenDataSink:
         )
         code = _node_to_code(node, source_names=["scored"])
         assert "from haute._polars_utils import safe_sink" in code
-        assert 'safe_sink(scored, "output/results.parquet")' in code
+        assert 'safe_sink(scored, Path(__file__).parent / "output/results.parquet")' in code
         # Must NOT contain the old hardcoded pattern
         assert ".collect(engine=" not in code
         assert ".write_parquet(" not in code
@@ -954,7 +957,7 @@ class TestGenDataSink:
         )
         code = _node_to_code(node, source_names=["data"])
         assert "from haute._polars_utils import safe_sink" in code
-        assert 'safe_sink(data, "output/report.csv", fmt="csv")' in code
+        assert 'safe_sink(data, Path(__file__).parent / "output/report.csv", fmt="csv")' in code
         assert ".write_csv(" not in code
         _compile_node_code(code)
 

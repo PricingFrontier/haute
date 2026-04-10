@@ -18,6 +18,7 @@ interface SubmodelNavParams {
   setSelectedNode: (node: Node | null) => void
   setPreviewData: (data: null) => void
   preambleRef: React.MutableRefObject<string>
+  descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
   fitView: (options?: { padding?: number }) => void
@@ -35,7 +36,7 @@ export default function useSubmodelNavigation({
   graphRef, parentGraphRef, submodelsRef,
   setNodesRaw, setEdgesRaw,
   setSelectedNode, setPreviewData,
-  preambleRef, sourceFileRef, pipelineNameRef,
+  preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView,
 }: SubmodelNavParams): SubmodelNavReturn {
   const addToast = useToastStore((s) => s.addToast)
@@ -54,6 +55,7 @@ export default function useSubmodelNavigation({
         preamble: preambleRef.current,
         source_file: sourceFileRef.current,
         pipeline_name: pipelineNameRef.current,
+        pipeline_description: descriptionRef.current,
       })
       const newGraph = data.graph
       if (newGraph) {
@@ -67,7 +69,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, sourceFileRef, pipelineNameRef, fitView, addToast, setDirty])
+  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast, setDirty])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     const smName = nodeId.replace("submodel__", "")
@@ -196,6 +198,7 @@ export default function useSubmodelNavigation({
         preamble: preambleRef.current,
         source_file: sourceFileRef.current,
         pipeline_name: pipelineNameRef.current,
+        pipeline_description: descriptionRef.current,
       })
       const flat = data.graph
       if (flat) {
@@ -209,7 +212,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, sourceFileRef, pipelineNameRef, fitView, addToast, setDirty])
+  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast, setDirty])
 
   return {
     viewStack,

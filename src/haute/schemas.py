@@ -400,6 +400,7 @@ class CreateSubmodelRequest(BaseModel):
     preamble: str = ""
     source_file: str = ""
     pipeline_name: str = "main"
+    pipeline_description: str | None = None
 
 
 class CreateSubmodelResponse(BaseModel):
@@ -415,6 +416,7 @@ class DissolveSubmodelRequest(BaseModel):
     preamble: str = ""
     source_file: str = ""
     pipeline_name: str = "main"
+    pipeline_description: str | None = None
 
 
 class DissolveSubmodelResponse(BaseModel):

@@ -12,8 +12,10 @@ from haute.codegen import (
     _build_params,
     _generate_node_code,
     _instance_to_code,
+    _is_absolute_path,
     _make_passthrough_builder,
     _node_to_code,
+    _portable_path_expr,
     _sanitize_description,
     _submodel_node_to_code,
     _wrap_user_code,
@@ -48,6 +50,45 @@ class TestBuildParams:
 
 
 # ---------------------------------------------------------------------------
+# _is_absolute_path / _portable_path_expr
+# ---------------------------------------------------------------------------
+
+
+class TestPortablePath:
+    def test_unix_absolute(self):
+        assert _is_absolute_path("/home/user/data.parquet") is True
+
+    def test_windows_absolute(self):
+        assert _is_absolute_path("C:/Users/data.parquet") is True
+
+    def test_windows_backslash(self):
+        assert _is_absolute_path("C:\\Users\\data.parquet") is True
+
+    def test_relative(self):
+        assert _is_absolute_path("data/input.csv") is False
+
+    def test_empty(self):
+        assert _is_absolute_path("") is False
+
+    def test_dot_relative(self):
+        assert _is_absolute_path("../data/file.json") is False
+
+    def test_portable_relative_uses_file_parent(self):
+        result = _portable_path_expr("data/input.parquet")
+        assert "Path(__file__).parent" in result
+        assert '"data/input.parquet"' in result
+
+    def test_portable_absolute_stays_raw(self):
+        result = _portable_path_expr("/absolute/path.csv")
+        assert "Path(__file__)" not in result
+        assert '"/absolute/path.csv"' in result
+
+    def test_portable_empty_treated_as_relative(self):
+        result = _portable_path_expr("")
+        assert "Path(__file__).parent" in result
+
+
+# ---------------------------------------------------------------------------
 # _node_to_code
 # ---------------------------------------------------------------------------
 
@@ -61,7 +102,7 @@ class TestNodeToCode:
                 {"path": "data/input.parquet"},
                 [
                     "def Load_Data()",
-                    'scan_parquet("data/input.parquet")',
+                    'scan_parquet(Path(__file__).parent / "data/input.parquet")',
                     'config="config/data_source/Load_Data.json"',
                 ],
                 id="parquet",
@@ -70,7 +111,7 @@ class TestNodeToCode:
                 "CSV Source",
                 {"path": "data/input.csv"},
                 [
-                    'scan_csv("data/input.csv")',
+                    'scan_csv(Path(__file__).parent / "data/input.csv")',
                     "def CSV_Source()",
                     'config="config/data_source/CSV_Source.json"',
                 ],
@@ -80,7 +121,7 @@ class TestNodeToCode:
                 "JSON Source",
                 {"path": "data/input.json"},
                 [
-                    'read_json("data/input.json")',
+                    'read_json(Path(__file__).parent / "data/input.json")',
                     ".lazy()",
                     "def JSON_Source()",
                     'config="config/data_source/JSON_Source.json"',
@@ -91,7 +132,7 @@ class TestNodeToCode:
                 "JSONL Source",
                 {"path": "data/input.jsonl"},
                 [
-                    'scan_ndjson("data/input.jsonl")',
+                    'scan_ndjson(Path(__file__).parent / "data/input.jsonl")',
                     "def JSONL_Source()",
                     'config="config/data_source/JSONL_Source.json"',
                 ],
@@ -172,7 +213,8 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node)
-        assert "return pl.scan_parquet" in code
+        assert "df = pl.scan_parquet" in code
+        assert "return df" in code
         assert "# -- user code --" not in code
         _compile_node_code(code)
 
@@ -262,7 +304,7 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["transform"])
-        assert 'safe_sink(transform, "outputs/out.parquet")' in code
+        assert 'safe_sink(transform, Path(__file__).parent / "outputs/out.parquet")' in code
         assert "def Write(transform: pl.LazyFrame)" in code
         _compile_node_code(code)
 
@@ -278,7 +320,7 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node)
-        assert 'safe_sink(df, "outputs/out.csv", fmt="csv")' in code
+        assert 'safe_sink(df, Path(__file__).parent / "outputs/out.csv", fmt="csv")' in code
         _compile_node_code(code)
 
     def test_model_score(self):
@@ -1159,7 +1201,7 @@ class TestDataSourceJsonCodegen:
 
     def test_csv_uses_scan_csv(self):
         code = _node_to_code(self._make_ds_node("data/file.csv", "CSVSrc"))
-        assert 'scan_csv("data/file.csv")' in code
+        assert 'scan_csv(Path(__file__).parent / "data/file.csv")' in code
         assert "scan_parquet" not in code
         assert "read_json" not in code
         _compile_node_code(code)
@@ -1168,7 +1210,7 @@ class TestDataSourceJsonCodegen:
 
     def test_parquet_uses_scan_parquet(self):
         code = _node_to_code(self._make_ds_node("data/file.parquet", "ParqSrc"))
-        assert 'scan_parquet("data/file.parquet")' in code
+        assert 'scan_parquet(Path(__file__).parent / "data/file.parquet")' in code
         assert "scan_csv" not in code
         assert "read_json" not in code
         _compile_node_code(code)
@@ -1178,7 +1220,7 @@ class TestDataSourceJsonCodegen:
     def test_json_uses_read_json_lazy(self):
         """JSON data source should use pl.read_json(...).lazy(), matching _io.read_source."""
         code = _node_to_code(self._make_ds_node("data/quotes.json", "JSONSrc"))
-        assert 'read_json("data/quotes.json")' in code
+        assert 'read_json(Path(__file__).parent / "data/quotes.json")' in code
         assert ".lazy()" in code
         assert "scan_parquet" not in code
         assert "scan_csv" not in code
@@ -1204,7 +1246,7 @@ class TestDataSourceJsonCodegen:
     def test_jsonl_uses_scan_ndjson(self):
         """JSONL data source should use pl.scan_ndjson(...), matching _io.read_source."""
         code = _node_to_code(self._make_ds_node("data/events.jsonl", "JsonlSrc"))
-        assert 'scan_ndjson("data/events.jsonl")' in code
+        assert 'scan_ndjson(Path(__file__).parent / "data/events.jsonl")' in code
         assert "scan_parquet" not in code
         assert "scan_csv" not in code
         assert "read_json" not in code
@@ -1230,7 +1272,7 @@ class TestDataSourceJsonCodegen:
     def test_uppercase_json_extension(self):
         """Path with .JSON (uppercase) should still use the JSON template."""
         code = _node_to_code(self._make_ds_node("data/INPUT.JSON", "UpperJson"))
-        assert 'read_json("data/INPUT.JSON")' in code
+        assert 'read_json(Path(__file__).parent / "data/INPUT.JSON")' in code
         assert ".lazy()" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
@@ -1238,14 +1280,14 @@ class TestDataSourceJsonCodegen:
     def test_uppercase_jsonl_extension(self):
         """Path with .JSONL (uppercase) should still use the JSONL template."""
         code = _node_to_code(self._make_ds_node("data/EVENTS.JSONL", "UpperJsonl"))
-        assert 'scan_ndjson("data/EVENTS.JSONL")' in code
+        assert 'scan_ndjson(Path(__file__).parent / "data/EVENTS.JSONL")' in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_uppercase_csv_extension(self):
         """Path with .CSV (uppercase) should still use the CSV template."""
         code = _node_to_code(self._make_ds_node("data/FILE.CSV", "UpperCsv"))
-        assert 'scan_csv("data/FILE.CSV")' in code
+        assert 'scan_csv(Path(__file__).parent / "data/FILE.CSV")' in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -1254,7 +1296,7 @@ class TestDataSourceJsonCodegen:
     def test_json_with_dots_in_directory(self):
         """Dots in parent directory names must not confuse extension detection."""
         code = _node_to_code(self._make_ds_node("data/v2.1/quotes.json", "DotDir"))
-        assert 'read_json("data/v2.1/quotes.json")' in code
+        assert 'read_json(Path(__file__).parent / "data/v2.1/quotes.json")' in code
         assert ".lazy()" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
@@ -1262,14 +1304,14 @@ class TestDataSourceJsonCodegen:
     def test_jsonl_with_dots_in_directory(self):
         """Dots in parent directory names must not confuse extension detection."""
         code = _node_to_code(self._make_ds_node("data/v3.0.beta/events.jsonl", "DotDirL"))
-        assert 'scan_ndjson("data/v3.0.beta/events.jsonl")' in code
+        assert 'scan_ndjson(Path(__file__).parent / "data/v3.0.beta/events.jsonl")' in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_parquet_with_dots_in_directory(self):
         """Parquet path with dots in directory should still use scan_parquet."""
         code = _node_to_code(self._make_ds_node("data/v1.2/file.parquet", "DotDirP"))
-        assert 'scan_parquet("data/v1.2/file.parquet")' in code
+        assert 'scan_parquet(Path(__file__).parent / "data/v1.2/file.parquet")' in code
         _compile_node_code(code)
 
     # -- Consistency with _io.read_source -----------------------------------
@@ -1327,7 +1369,7 @@ class TestDataSourceJsonCodegen:
             }
         )
         code = graph_to_code(graph)
-        assert 'read_json("data.json")' in code
+        assert 'read_json(Path(__file__).parent / "data.json")' in code
         assert ".lazy()" in code
         assert "def Clean(JsonData: pl.LazyFrame)" in code
         compile(code, "<test>", "exec")
@@ -1358,7 +1400,7 @@ class TestDataSourceJsonCodegen:
             }
         )
         code = graph_to_code(graph)
-        assert 'scan_ndjson("events.jsonl")' in code
+        assert 'scan_ndjson(Path(__file__).parent / "events.jsonl")' in code
         assert "def Filter(EventLog: pl.LazyFrame)" in code
         compile(code, "<test>", "exec")
 
@@ -1386,14 +1428,14 @@ class TestDataSourceJsonCodegen:
     def test_mixed_case_json_extension(self):
         """Path with .Json (mixed case) should use the JSON template."""
         code = _node_to_code(self._make_ds_node("data/file.Json", "MixedJson"))
-        assert 'read_json("data/file.Json")' in code
+        assert 'read_json(Path(__file__).parent / "data/file.Json")' in code
         assert ".lazy()" in code
         _compile_node_code(code)
 
     def test_mixed_case_parquet_extension(self):
         """Path with .Parquet (mixed case) should use the parquet template."""
         code = _node_to_code(self._make_ds_node("data/file.Parquet", "MixedPq"))
-        assert 'scan_parquet("data/file.Parquet")' in code
+        assert 'scan_parquet(Path(__file__).parent / "data/file.Parquet")' in code
         _compile_node_code(code)
 
 
@@ -2307,71 +2349,83 @@ class TestWrapUserCodeEdgeCases:
 
 class TestGenConstantEdgeCases:
     def test_empty_values_list(self):
-        node = _n({
-            "id": "c",
-            "data": {
-                "label": "EmptyConst",
-                "nodeType": "constant",
-                "config": {"values": []},
-            },
-        })
+        node = _n(
+            {
+                "id": "c",
+                "data": {
+                    "label": "EmptyConst",
+                    "nodeType": "constant",
+                    "config": {"values": []},
+                },
+            }
+        )
         code = _node_to_code(node)
         assert "def EmptyConst()" in code
         assert '"constant": [0]' in code
         _compile_node_code(code)
 
     def test_none_values_coerced(self):
-        node = _n({
-            "id": "c",
-            "data": {
-                "label": "NoneConst",
-                "nodeType": "constant",
-                "config": {"values": None},
-            },
-        })
+        node = _n(
+            {
+                "id": "c",
+                "data": {
+                    "label": "NoneConst",
+                    "nodeType": "constant",
+                    "config": {"values": None},
+                },
+            }
+        )
         code = _node_to_code(node)
         assert '"constant": [0]' in code
         _compile_node_code(code)
 
     def test_nan_handling(self):
-        node = _n({
-            "id": "c",
-            "data": {
-                "label": "NanConst",
-                "nodeType": "constant",
-                "config": {"values": [{"name": "x", "value": "nan"}]},
-            },
-        })
+        node = _n(
+            {
+                "id": "c",
+                "data": {
+                    "label": "NanConst",
+                    "nodeType": "constant",
+                    "config": {"values": [{"name": "x", "value": "nan"}]},
+                },
+            }
+        )
         code = _node_to_code(node)
         assert "float('nan')" in code
         _compile_node_code(code)
 
     def test_numeric_values(self):
-        node = _n({
-            "id": "c",
-            "data": {
-                "label": "NumConst",
-                "nodeType": "constant",
-                "config": {"values": [
-                    {"name": "rate", "value": "3.14"},
-                    {"name": "count", "value": "42"},
-                ]},
-            },
-        })
+        node = _n(
+            {
+                "id": "c",
+                "data": {
+                    "label": "NumConst",
+                    "nodeType": "constant",
+                    "config": {
+                        "values": [
+                            {"name": "rate", "value": "3.14"},
+                            {"name": "count", "value": "42"},
+                        ]
+                    },
+                },
+            }
+        )
         code = _node_to_code(node)
         assert "3.14" in code
         assert "42" in code
         _compile_node_code(code)
 
     def test_string_values(self):
-        node = _n({
-            "id": "c",
-            "data": {
-                "label": "StrConst",
-                "nodeType": "constant",
-                "config": {"values": [{"name": "label", "value": "hello"}]},
-            },
-        })
+        node = _n(
+            {
+                "id": "c",
+                "data": {
+                    "label": "StrConst",
+                    "nodeType": "constant",
+                    "config": {"values": [{"name": "label", "value": "hello"}]},
+                },
+            }
+        )
         code = _node_to_code(node)
         assert '"hello"' in code
         _compile_node_code(code)
@@ -2379,45 +2433,51 @@ class TestGenConstantEdgeCases:
 
 class TestGenDataSourceEdgeCases:
     def test_unknown_file_extension_defaults_to_parquet(self):
-        node = _n({
-            "id": "src",
-            "data": {
-                "label": "WeirdSrc",
-                "nodeType": "dataSource",
-                "config": {"path": "data/file.xyz"},
-            },
-        })
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "WeirdSrc",
+                    "nodeType": "dataSource",
+                    "config": {"path": "data/file.xyz"},
+                },
+            }
+        )
         code = _node_to_code(node)
         assert "scan_parquet" in code
         _compile_node_code(code)
 
     def test_no_extension_defaults_to_parquet(self):
-        node = _n({
-            "id": "src",
-            "data": {
-                "label": "NoExtSrc",
-                "nodeType": "dataSource",
-                "config": {"path": "data/noext"},
-            },
-        })
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "NoExtSrc",
+                    "nodeType": "dataSource",
+                    "config": {"path": "data/noext"},
+                },
+            }
+        )
         code = _node_to_code(node)
         assert "scan_parquet" in code
         _compile_node_code(code)
 
     def test_databricks_config(self):
-        node = _n({
-            "id": "src",
-            "data": {
-                "label": "DBSrc",
-                "nodeType": "dataSource",
-                "config": {
-                    "sourceType": "databricks",
-                    "table": "catalog.schema.tbl",
-                    "http_path": "/sql/1.0/endpoints/abc",
-                    "query": "SELECT * FROM t",
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "DBSrc",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "sourceType": "databricks",
+                        "table": "catalog.schema.tbl",
+                        "http_path": "/sql/1.0/endpoints/abc",
+                        "query": "SELECT * FROM t",
+                    },
                 },
-            },
-        })
+            }
+        )
         code = _node_to_code(node)
         assert "read_cached_table" in code
         assert "catalog.schema.tbl" in code
@@ -2426,28 +2486,32 @@ class TestGenDataSourceEdgeCases:
 
 class TestGenOutputEdgeCases:
     def test_empty_fields_list(self):
-        node = _n({
-            "id": "out",
-            "data": {
-                "label": "EmptyOut",
-                "nodeType": "output",
-                "config": {"fields": []},
-            },
-        })
+        node = _n(
+            {
+                "id": "out",
+                "data": {
+                    "label": "EmptyOut",
+                    "nodeType": "output",
+                    "config": {"fields": []},
+                },
+            }
+        )
         code = _node_to_code(node, source_names=["src"])
         assert "return src" in code
         assert ".select" not in code
         _compile_node_code(code)
 
     def test_none_fields(self):
-        node = _n({
-            "id": "out",
-            "data": {
-                "label": "NoneOut",
-                "nodeType": "output",
-                "config": {"fields": None},
-            },
-        })
+        node = _n(
+            {
+                "id": "out",
+                "data": {
+                    "label": "NoneOut",
+                    "nodeType": "output",
+                    "config": {"fields": None},
+                },
+            }
+        )
         code = _node_to_code(node, source_names=["src"])
         assert "return src" in code
         assert ".select" not in code
@@ -2456,44 +2520,50 @@ class TestGenOutputEdgeCases:
 
 class TestGenTransformEdgeCases:
     def test_empty_code_passthrough(self):
-        node = _n({
-            "id": "t",
-            "data": {
-                "label": "NoOp",
-                "nodeType": "polars",
-                "config": {"code": ""},
-            },
-        })
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "NoOp",
+                    "nodeType": "polars",
+                    "config": {"code": ""},
+                },
+            }
+        )
         code = _node_to_code(node, source_names=["upstream"])
         assert "return upstream" in code
         _compile_node_code(code)
 
     def test_selected_columns_decorator_kwarg(self):
-        node = _n({
-            "id": "t",
-            "data": {
-                "label": "SelCol",
-                "nodeType": "polars",
-                "config": {
-                    "code": "df = src.with_columns(y=pl.col('x') * 2)",
-                    "selected_columns": ["x", "y"],
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "SelCol",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": "df = src.with_columns(y=pl.col('x') * 2)",
+                        "selected_columns": ["x", "y"],
+                    },
                 },
-            },
-        })
+            }
+        )
         code = _node_to_code(node, source_names=["src"])
         assert "selected_columns=" in code
         assert "@pipeline.polars(selected_columns=" in code
         _compile_node_code(code)
 
     def test_no_selected_columns_uses_bare_decorator(self):
-        node = _n({
-            "id": "t",
-            "data": {
-                "label": "Bare",
-                "nodeType": "polars",
-                "config": {"code": ""},
-            },
-        })
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Bare",
+                    "nodeType": "polars",
+                    "config": {"code": ""},
+                },
+            }
+        )
         code = _node_to_code(node, source_names=[])
         assert code.startswith("@pipeline.polars\n")
         _compile_node_code(code)
@@ -2505,17 +2575,19 @@ class TestGenLiveSwitchRoundTrip:
         from haute.parser import parse_pipeline_file
 
         scenario_map = {"src_a": "live", "src_b": "test_batch"}
-        node = _n({
-            "id": "sw",
-            "data": {
-                "label": "MySwitch",
-                "nodeType": "liveSwitch",
-                "config": {
-                    "input_scenario_map": scenario_map,
-                    "inputs": ["src_a", "src_b"],
+        node = _n(
+            {
+                "id": "sw",
+                "data": {
+                    "label": "MySwitch",
+                    "nodeType": "liveSwitch",
+                    "config": {
+                        "input_scenario_map": scenario_map,
+                        "inputs": ["src_a", "src_b"],
+                    },
                 },
-            },
-        })
+            }
+        )
         code = _node_to_code(node, source_names=["src_a", "src_b"])
         full_code = (
             "import polars as pl\nimport haute\n"
@@ -2549,28 +2621,32 @@ class TestGenLiveSwitchRoundTrip:
 
 class TestGenExternalFileEdgeCases:
     def test_empty_code_passthrough(self):
-        node = _n({
-            "id": "ext",
-            "data": {
-                "label": "ExtModel",
-                "nodeType": "externalFile",
-                "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
-            },
-        })
+        node = _n(
+            {
+                "id": "ext",
+                "data": {
+                    "label": "ExtModel",
+                    "nodeType": "externalFile",
+                    "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
+                },
+            }
+        )
         code = _node_to_code(node, source_names=["features"])
         assert "return df" in code
         assert "load_external_object" in code
         _compile_node_code(code)
 
     def test_none_code_passthrough(self):
-        node = _n({
-            "id": "ext",
-            "data": {
-                "label": "ExtNone",
-                "nodeType": "externalFile",
-                "config": {"path": "model.pkl", "fileType": "pickle", "code": None},
-            },
-        })
+        node = _n(
+            {
+                "id": "ext",
+                "data": {
+                    "label": "ExtNone",
+                    "nodeType": "externalFile",
+                    "config": {"path": "model.pkl", "fileType": "pickle", "code": None},
+                },
+            }
+        )
         code = _node_to_code(node, source_names=["features"])
         assert "return df" in code
         _compile_node_code(code)
@@ -2591,17 +2667,21 @@ class TestGraphToCodeEdgeCases:
         compile(code, "<test>", "exec")
 
     def test_single_node_pipeline_compiles(self):
-        graph = _g({
-            "nodes": [{
-                "id": "s",
-                "data": {
-                    "label": "OnlySource",
-                    "nodeType": "dataSource",
-                    "config": {"path": "data.parquet"},
-                },
-            }],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "s",
+                        "data": {
+                            "label": "OnlySource",
+                            "nodeType": "dataSource",
+                            "config": {"path": "data.parquet"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
         code = graph_to_code(graph, pipeline_name="single")
         assert "def OnlySource()" in code
         assert "pipeline.connect" not in code
@@ -2614,17 +2694,21 @@ class TestGraphToCodeEdgeCases:
         compile(code, "<test>", "exec")
 
     def test_preamble_positioned_before_pipeline_def(self):
-        graph = _g({
-            "nodes": [{
-                "id": "s",
-                "data": {
-                    "label": "S",
-                    "nodeType": "dataSource",
-                    "config": {"path": "d.parquet"},
-                },
-            }],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "s",
+                        "data": {
+                            "label": "S",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
         code = graph_to_code(graph, preamble="MY_CONST = 42")
         lines = code.splitlines()
         preamble_idx = next(i for i, l in enumerate(lines) if "MY_CONST" in l)
@@ -2635,14 +2719,16 @@ class TestGraphToCodeEdgeCases:
         from unittest.mock import patch
         from haute.codegen import _CODEGEN_BUILDERS
 
-        node = _n({
-            "id": "u",
-            "data": {
-                "label": "FutureType",
-                "nodeType": "banding",
-                "config": {"code": "df = src.drop_nulls()"},
-            },
-        })
+        node = _n(
+            {
+                "id": "u",
+                "data": {
+                    "label": "FutureType",
+                    "nodeType": "banding",
+                    "config": {"code": "df = src.drop_nulls()"},
+                },
+            }
+        )
         saved = _CODEGEN_BUILDERS.pop("banding", None)
         try:
             with patch("haute.codegen.logger") as mock_logger:
@@ -2667,30 +2753,40 @@ class TestGraphToCodeEdgeCases:
 
 class TestRoundTripEdgeCases:
     def test_banding_with_multiple_factors(self):
-        node = _n({
-            "id": "b",
-            "data": {
-                "label": "MultiBand",
-                "nodeType": "banding",
-                "config": {
-                    "factors": [
-                        {
-                            "banding": "continuous",
-                            "column": "age",
-                            "outputColumn": "age_factor",
-                            "rules": [{"op1": ">=", "val1": 0, "op2": "<", "val2": 100, "assignment": "1.0"}],
-                        },
-                        {
-                            "banding": "discrete",
-                            "column": "region",
-                            "outputColumn": "region_factor",
-                            "rules": [{"match": "North", "assignment": "1.2"}],
-                            "default": "1.0",
-                        },
-                    ],
+        node = _n(
+            {
+                "id": "b",
+                "data": {
+                    "label": "MultiBand",
+                    "nodeType": "banding",
+                    "config": {
+                        "factors": [
+                            {
+                                "banding": "continuous",
+                                "column": "age",
+                                "outputColumn": "age_factor",
+                                "rules": [
+                                    {
+                                        "op1": ">=",
+                                        "val1": 0,
+                                        "op2": "<",
+                                        "val2": 100,
+                                        "assignment": "1.0",
+                                    }
+                                ],
+                            },
+                            {
+                                "banding": "discrete",
+                                "column": "region",
+                                "outputColumn": "region_factor",
+                                "rules": [{"match": "North", "assignment": "1.2"}],
+                                "default": "1.0",
+                            },
+                        ],
+                    },
                 },
-            },
-        })
+            }
+        )
         raw_code = _generate_node_code(node, source_names=["data"])
         assert "factors=" in raw_code
         assert "def MultiBand(data: pl.LazyFrame)" in raw_code
@@ -2701,32 +2797,34 @@ class TestRoundTripEdgeCases:
         _compile_node_code(final_code)
 
     def test_rating_step_with_multiple_tables(self):
-        node = _n({
-            "id": "rs",
-            "data": {
-                "label": "MultiRate",
-                "nodeType": "ratingStep",
-                "config": {
-                    "tables": [
-                        {
-                            "name": "Region",
-                            "factors": ["region"],
-                            "outputColumn": "region_factor",
-                            "defaultValue": 1.0,
-                            "entries": [{"region": "North", "value": 1.1}],
-                        },
-                        {
-                            "name": "Age",
-                            "factors": ["age_band"],
-                            "outputColumn": "age_factor",
-                            "entries": [{"age_band": "18-25", "value": 1.5}],
-                        },
-                    ],
-                    "operation": "add",
-                    "combinedColumn": "total_factor",
+        node = _n(
+            {
+                "id": "rs",
+                "data": {
+                    "label": "MultiRate",
+                    "nodeType": "ratingStep",
+                    "config": {
+                        "tables": [
+                            {
+                                "name": "Region",
+                                "factors": ["region"],
+                                "outputColumn": "region_factor",
+                                "defaultValue": 1.0,
+                                "entries": [{"region": "North", "value": 1.1}],
+                            },
+                            {
+                                "name": "Age",
+                                "factors": ["age_band"],
+                                "outputColumn": "age_factor",
+                                "entries": [{"age_band": "18-25", "value": 1.5}],
+                            },
+                        ],
+                        "operation": "add",
+                        "combinedColumn": "total_factor",
+                    },
                 },
-            },
-        })
+            }
+        )
         raw_code = _generate_node_code(node, source_names=["base"])
         assert "tables=" in raw_code
         assert "operation='add'" in raw_code
@@ -2738,19 +2836,21 @@ class TestRoundTripEdgeCases:
         _compile_node_code(final_code)
 
     def test_data_source_with_databricks_config(self):
-        node = _n({
-            "id": "db",
-            "data": {
-                "label": "DBRead",
-                "nodeType": "dataSource",
-                "config": {
-                    "sourceType": "databricks",
-                    "table": "catalog.schema.my_table",
-                    "http_path": "/sql/1.0/endpoints/xyz",
-                    "query": "SELECT col1, col2 FROM t WHERE year = 2024",
+        node = _n(
+            {
+                "id": "db",
+                "data": {
+                    "label": "DBRead",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "sourceType": "databricks",
+                        "table": "catalog.schema.my_table",
+                        "http_path": "/sql/1.0/endpoints/xyz",
+                        "query": "SELECT col1, col2 FROM t WHERE year = 2024",
+                    },
                 },
-            },
-        })
+            }
+        )
         code = _node_to_code(node)
         assert "read_cached_table" in code
         assert "catalog.schema.my_table" in code

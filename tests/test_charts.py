@@ -659,16 +659,17 @@ class TestDualAxisChartExtra:
 
     def test_equal_line_values(self):
         """All same line values: y_min == y_max guard."""
-        data = [
-            {"decile": i + 1, "actual": 0.5, "predicted": 0.5, "count": 100} for i in range(5)
-        ]
+        data = [{"decile": i + 1, "actual": 0.5, "predicted": 0.5, "count": 100} for i in range(5)]
         svg = render_double_lift_svg(data)
         root = _parse_svg(svg)
         assert root.tag == "{http://www.w3.org/2000/svg}svg"
 
     def test_zero_bar_max(self):
         """All zero counts: max_bar == 0 guard."""
-        data = [{"decile": i + 1, "actual": i * 0.1, "predicted": i * 0.12, "count": 0} for i in range(3)]
+        data = [
+            {"decile": i + 1, "actual": i * 0.1, "predicted": i * 0.12, "count": 0}
+            for i in range(3)
+        ]
         svg = render_double_lift_svg(data)
         root = _parse_svg(svg)
         assert root.tag == "{http://www.w3.org/2000/svg}svg"
@@ -683,7 +684,12 @@ class TestAveFeatureSvgExtra:
     def test_categorical_with_long_labels(self):
         """Categorical bins with long labels should trigger label rotation."""
         bins = [
-            {"label": "long_category_name_here", "exposure": 100.0, "avg_actual": 0.5, "avg_predicted": 0.6}
+            {
+                "label": "long_category_name_here",
+                "exposure": 100.0,
+                "avg_actual": 0.5,
+                "avg_predicted": 0.6,
+            }
             for _ in range(3)
         ]
         svg = render_ave_feature_svg("feature", bins, is_categorical=True)
@@ -709,44 +715,53 @@ class TestAveFeatureSvgExtra:
 class TestHelperFunctions:
     def test_nice_ticks_non_finite_returns_empty(self):
         from haute.modelling._charts import _nice_ticks
+
         assert _nice_ticks(float("inf"), float("-inf")) == []
         assert _nice_ticks(float("nan"), 1.0) == []
 
     def test_nice_ticks_equal_min_max(self):
         from haute.modelling._charts import _nice_ticks
+
         result = _nice_ticks(5.0, 5.0)
         assert result == [5.0]
 
     def test_format_tick_zero(self):
         from haute.modelling._charts import _format_tick
+
         assert _format_tick(0) == "0"
 
     def test_format_tick_millions(self):
         from haute.modelling._charts import _format_tick
+
         result = _format_tick(1_500_000)
         assert "M" in result
 
     def test_format_tick_thousands(self):
         from haute.modelling._charts import _format_tick
+
         result = _format_tick(2_500)
         assert "k" in result
 
     def test_format_tick_small_decimal(self):
         from haute.modelling._charts import _format_tick
+
         result = _format_tick(0.00123)
         assert "0.00123" in result
 
     def test_truncate_label_short(self):
         from haute.modelling._charts import _truncate_label
+
         assert _truncate_label("short") == "short"
 
     def test_truncate_label_long(self):
         from haute.modelling._charts import _truncate_label
+
         result = _truncate_label("a" * 30, max_len=10)
         assert len(result) == 10
 
     def test_placeholder_svg_valid(self):
         from haute.modelling._charts import _placeholder_svg
+
         svg = _placeholder_svg(200, 100, "Test message")
         root = _parse_svg(svg)
         assert root.tag == "{http://www.w3.org/2000/svg}svg"

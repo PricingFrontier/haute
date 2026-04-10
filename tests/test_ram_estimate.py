@@ -545,7 +545,7 @@ class TestEstimateGpuVramEdgeCases:
 
     def test_depth_zero_caps_at_one_leaf(self) -> None:
         result = estimate_gpu_vram_bytes(1000, 50, depth=0)
-        n_leaves = 2 ** 0  # 1
+        n_leaves = 2**0  # 1
         expected_hist = 50 * 128 * n_leaves * 8
         feature_bytes = 1000 * 50 * 5
         per_row_bytes = 1000 * 12
@@ -1072,9 +1072,7 @@ class TestAncestorSourceMetadata:
         p1 = tmp_path / "small.parquet"
         pl.DataFrame({"a": range(100)}).write_parquet(str(p1))
         p2 = tmp_path / "big.parquet"
-        pl.DataFrame({"x": range(500), "y": range(500), "z": range(500)}).write_parquet(
-            str(p2)
-        )
+        pl.DataFrame({"x": range(500), "y": range(500), "z": range(500)}).write_parquet(str(p2))
 
         s1 = _make_source_node(
             node_id="s1",

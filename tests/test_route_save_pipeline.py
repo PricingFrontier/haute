@@ -110,6 +110,102 @@ class TestValidateSingletons:
 
 
 # ---------------------------------------------------------------------------
+# _validate_unique_sanitized_names
+# ---------------------------------------------------------------------------
+
+
+class TestValidateUniqueSanitizedNames:
+    def test_distinct_labels_pass(self) -> None:
+        """Nodes with distinct sanitized names pass validation."""
+        graph = _make_graph(
+            _make_node("a", "Alpha", "polars"),
+            _make_node("b", "Beta", "polars"),
+        )
+        SavePipelineService._validate_unique_sanitized_names(graph)
+
+    def test_dash_underscore_collision_raises_400(self) -> None:
+        """'my-node' and 'my_node' both sanitize to 'my_node'."""
+        graph = _make_graph(
+            _make_node("a", "my-node", "polars"),
+            _make_node("b", "my_node", "polars"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "my_node" in exc_info.value.detail
+
+    def test_identical_labels_raises_400(self) -> None:
+        """Two nodes with the exact same label collide."""
+        graph = _make_graph(
+            _make_node("a", "Transform", "polars"),
+            _make_node("b", "Transform", "polars"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "Transform" in exc_info.value.detail
+
+    def test_space_underscore_collision_raises_400(self) -> None:
+        """'my node' and 'my_node' both sanitize to 'my_node'."""
+        graph = _make_graph(
+            _make_node("a", "my node", "polars"),
+            _make_node("b", "my_node", "polars"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "my_node" in exc_info.value.detail
+
+    def test_three_way_collision_raises_400(self) -> None:
+        """Three labels that all sanitize to the same name."""
+        graph = _make_graph(
+            _make_node("a", "my-node", "polars"),
+            _make_node("b", "my_node", "polars"),
+            _make_node("c", "my node", "polars"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "my_node" in exc_info.value.detail
+
+    def test_unicode_stripping_collision_raises_400(self) -> None:
+        """Non-ASCII chars are stripped, so 'café' and 'caf_e' may collide."""
+        graph = _make_graph(
+            _make_node("a", "café", "polars"),
+            _make_node("b", "caf", "polars"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+
+    def test_empty_labels_collide(self) -> None:
+        """Multiple nodes with empty labels all sanitize to 'unnamed_node'."""
+        graph = _make_graph(
+            _make_node("a", "", "polars"),
+            _make_node("b", "", "polars"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "unnamed_node" in exc_info.value.detail
+
+    def test_mixed_node_types_collision_raises_400(self) -> None:
+        """Collision detection works across different node types."""
+        graph = _make_graph(
+            _make_node("a", "transform", "polars"),
+            _make_node("b", "transform", "dataSource"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+
+    def test_empty_graph_passes(self) -> None:
+        """An empty graph has no collisions."""
+        graph = _make_graph()
+        SavePipelineService._validate_unique_sanitized_names(graph)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_source_file
 # ---------------------------------------------------------------------------
 
@@ -730,9 +826,7 @@ class TestWriteSidecar:
         py_path = tmp_path / "pipe.py"
         py_path.write_text("# placeholder")
 
-        SavePipelineService._write_sidecar(
-            py_path, graph, sources=["s1", "s2"], active_source="s2"
-        )
+        SavePipelineService._write_sidecar(py_path, graph, sources=["s1", "s2"], active_source="s2")
 
         assert graph.sources == ["s1", "s2"]
         assert graph.active_source == "s2"

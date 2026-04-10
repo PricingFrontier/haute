@@ -192,10 +192,14 @@ class TestGraphBaseFingerprint:
         from haute._types import GraphNode, NodeData, PipelineGraph
 
         g1 = PipelineGraph(
-            nodes=[GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"x": 1}))],
+            nodes=[
+                GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"x": 1}))
+            ],
         )
         g2 = PipelineGraph(
-            nodes=[GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"x": 2}))],
+            nodes=[
+                GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"x": 2}))
+            ],
         )
         assert _graph_base_fingerprint(g1) != _graph_base_fingerprint(g2)
 
@@ -260,9 +264,7 @@ class TestWrapBuilderAdditional:
 
         hooks = NodeBuildHooks(before_build=capture)
         wrapped = wrap_builder(base, hooks)
-        node = make_node(
-            {"id": "t", "data": {"label": "t", "nodeType": "polars", "config": {}}}
-        )
+        node = make_node({"id": "t", "data": {"label": "t", "nodeType": "polars", "config": {}}})
         wrapped(node, source_names=["src_a", "src_b", "src_c"])
         assert received == [["src_a", "src_b", "src_c"]]
 
@@ -279,9 +281,7 @@ class TestWrapBuilderAdditional:
         override_fn = lambda df: df  # noqa: E731
         hooks = NodeBuildHooks(before_build=lambda n, s: ("override", override_fn, True))
         wrapped = wrap_builder(base, hooks)
-        node = make_node(
-            {"id": "t", "data": {"label": "t", "nodeType": "polars", "config": {}}}
-        )
+        node = make_node({"id": "t", "data": {"label": "t", "nodeType": "polars", "config": {}}})
         name, fn, is_source = wrapped(node, source_names=["a"])
         assert name == "override"
         assert fn is override_fn
@@ -575,7 +575,11 @@ class TestFindNode:
                 "nodes": [
                     {
                         "id": "src",
-                        "data": {"label": "src", "nodeType": "apiInput", "config": {"path": "/data"}},
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": "/data"},
+                        },
                     },
                     {
                         "id": "out",

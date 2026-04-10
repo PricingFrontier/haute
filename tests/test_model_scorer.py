@@ -720,8 +720,12 @@ class TestRunScorePipeline:
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         _run_score_pipeline(
-            sm, lf, task="regression", output_col="prediction",
-            source="batch", row_limit=100,
+            sm,
+            lf,
+            task="regression",
+            output_col="prediction",
+            source="batch",
+            row_limit=100,
         )
         mock_eager.assert_called_once()
 
@@ -733,9 +737,7 @@ class TestRunScorePipeline:
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         with pytest.raises(FeatureMismatchError) as exc_info:
-            _run_score_pipeline(
-                sm, lf, task="regression", output_col="prediction", source="live"
-            )
+            _run_score_pipeline(sm, lf, task="regression", output_col="prediction", source="live")
         assert exc_info.value.__cause__ is not None
         assert "CatBoost internal error" in str(exc_info.value.__cause__)
 
@@ -744,15 +746,15 @@ class TestRunScorePipeline:
         """FeatureMismatchError from scoring is re-raised without wrapping."""
         sm = _make_scoring_model(feature_names=["a", "b"])
         original_err = FeatureMismatchError(
-            expected=["a", "b"], available=["a", "b"], missing=[],
+            expected=["a", "b"],
+            available=["a", "b"],
+            missing=[],
         )
         mock_eager.side_effect = original_err
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         with pytest.raises(FeatureMismatchError) as exc_info:
-            _run_score_pipeline(
-                sm, lf, task="regression", output_col="prediction", source="live"
-            )
+            _run_score_pipeline(sm, lf, task="regression", output_col="prediction", source="live")
         # Should be the same error, not wrapped
         assert exc_info.value is original_err
         assert exc_info.value.__cause__ is None
@@ -767,8 +769,12 @@ class TestRunScorePipeline:
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         result = _run_score_pipeline(
-            sm, lf, task="regression", output_col="prediction",
-            source="live", code="result = result * 2",
+            sm,
+            lf,
+            task="regression",
+            output_col="prediction",
+            source="live",
+            code="result = result * 2",
             source_names=["df"],
         )
         mock_exec.assert_called_once()
@@ -786,8 +792,13 @@ class TestRunScorePipeline:
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         _run_score_pipeline(
-            sm, lf, task="regression", output_col="pred",
-            source="live", code="x=1", source_names=None,
+            sm,
+            lf,
+            task="regression",
+            output_col="pred",
+            source="live",
+            code="x=1",
+            source_names=None,
         )
         # The second positional arg to _exec_user_code should be []
         call_args = mock_exec.call_args[0]
@@ -886,7 +897,11 @@ class TestBatchScoreToParquetMultiBatch:
 
         try:
             out_path = _batch_score_to_parquet(
-                sm, input_path, ["a", "b"], "pred", "regression",
+                sm,
+                input_path,
+                ["a", "b"],
+                "pred",
+                "regression",
             )
             result = pl.read_parquet(out_path)
             assert len(result) == 5
@@ -924,7 +939,11 @@ class TestBatchScoreToParquetSeriesConversion:
 
         with patch("haute._model_scorer.pl.from_arrow", side_effect=patched_from_arrow):
             out_path = _batch_score_to_parquet(
-                sm, input_path, ["a"], "pred", "regression",
+                sm,
+                input_path,
+                ["a"],
+                "pred",
+                "regression",
             )
 
         try:
@@ -939,7 +958,9 @@ class TestBatchScoreToParquetEmpty:
     def test_empty_input_produces_empty_parquet_regression(self, tmp_path):
         """Empty input file produces valid empty parquet with correct schema."""
         input_path = str(tmp_path / "empty_input.parquet")
-        df = pl.DataFrame({"a": pl.Series([], dtype=pl.Float64), "b": pl.Series([], dtype=pl.Float64)})
+        df = pl.DataFrame(
+            {"a": pl.Series([], dtype=pl.Float64), "b": pl.Series([], dtype=pl.Float64)}
+        )
         df.write_parquet(input_path)
 
         sm = _make_scoring_model(
@@ -948,7 +969,11 @@ class TestBatchScoreToParquetEmpty:
         )
 
         out_path = _batch_score_to_parquet(
-            sm, input_path, ["a", "b"], "pred", "regression",
+            sm,
+            input_path,
+            ["a", "b"],
+            "pred",
+            "regression",
         )
 
         try:
@@ -962,7 +987,9 @@ class TestBatchScoreToParquetEmpty:
     def test_empty_input_classification_includes_proba_col(self, tmp_path):
         """Empty classification input produces empty parquet with proba column."""
         input_path = str(tmp_path / "empty_cls.parquet")
-        df = pl.DataFrame({"a": pl.Series([], dtype=pl.Float64), "b": pl.Series([], dtype=pl.Float64)})
+        df = pl.DataFrame(
+            {"a": pl.Series([], dtype=pl.Float64), "b": pl.Series([], dtype=pl.Float64)}
+        )
         df.write_parquet(input_path)
 
         sm = _make_scoring_model(
@@ -971,7 +998,11 @@ class TestBatchScoreToParquetEmpty:
         )
 
         out_path = _batch_score_to_parquet(
-            sm, input_path, ["a", "b"], "pred", "classification",
+            sm,
+            input_path,
+            ["a", "b"],
+            "pred",
+            "classification",
         )
 
         try:

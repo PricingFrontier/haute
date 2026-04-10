@@ -81,9 +81,7 @@ class TestBuildSubmodelPlaceholder:
 
     def test_description_with_special_characters(self):
         desc = 'Line1\nLine2\t"quoted" <tag> & symbol'
-        node = build_submodel_placeholder(
-            "sp", "f.py", ["a"], [], [], description=desc
-        )
+        node = build_submodel_placeholder("sp", "f.py", ["a"], [], [], description=desc)
         assert node.data.description == desc
 
 

@@ -823,7 +823,6 @@ class TestExecuteAndSinkCheckpointCleanup:
 
 
 class TestValidateConfig:
-
     def test_no_target_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
             TrainService._validate_config({"algorithm": "catboost"})
@@ -845,56 +844,68 @@ class TestValidateConfig:
 
     def test_glm_unknown_family_raises_with_suggestions(self):
         with pytest.raises(HTTPException) as exc_info:
-            TrainService._validate_config({
-                "target": "y",
-                "algorithm": "glm",
-                "family": "exponential",
-            })
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "exponential",
+                }
+            )
         assert exc_info.value.status_code == 400
         assert "exponential" in exc_info.value.detail
         assert "gaussian" in exc_info.value.detail
 
     def test_glm_invalid_link_for_family_raises_with_valid_options(self):
         with pytest.raises(HTTPException) as exc_info:
-            TrainService._validate_config({
-                "target": "y",
-                "algorithm": "glm",
-                "family": "poisson",
-                "link": "logit",
-            })
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "link": "logit",
+                }
+            )
         assert exc_info.value.status_code == 400
         assert "logit" in exc_info.value.detail
         assert "log" in exc_info.value.detail
 
     def test_valid_catboost_config_passes(self):
-        TrainService._validate_config({
-            "target": "y",
-            "algorithm": "catboost",
-            "params": {"iterations": 10},
-        })
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": "catboost",
+                "params": {"iterations": 10},
+            }
+        )
 
     def test_valid_glm_config_passes(self):
-        TrainService._validate_config({
-            "target": "y",
-            "algorithm": "glm",
-            "family": "poisson",
-            "link": "log",
-        })
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "link": "log",
+            }
+        )
 
     def test_glm_empty_family_passes(self):
-        TrainService._validate_config({
-            "target": "y",
-            "algorithm": "glm",
-            "family": "",
-        })
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "",
+            }
+        )
 
     def test_glm_empty_link_passes(self):
-        TrainService._validate_config({
-            "target": "y",
-            "algorithm": "glm",
-            "family": "gaussian",
-            "link": "",
-        })
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "gaussian",
+                "link": "",
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +914,6 @@ class TestValidateConfig:
 
 
 class TestValidateGlmFamilyLink:
-
     def test_unknown_family(self):
         with pytest.raises(HTTPException) as exc_info:
             _validate_glm_family_link("exponential", "log")
@@ -928,14 +938,12 @@ class TestValidateGlmFamilyLink:
         _validate_glm_family_link("poisson", "")
 
 
-
 # ---------------------------------------------------------------------------
 # /mlflow/check backend resolution tests
 # ---------------------------------------------------------------------------
 
 
 class TestMlflowCheckBackend:
-
     def test_mlflow_installed_detected(self, client):
         resp = client.get("/api/modelling/mlflow/check")
         assert resp.status_code == 200
@@ -973,7 +981,6 @@ class TestMlflowCheckBackend:
 
 
 class TestClearModelCache:
-
     def test_clears_cache_successfully(self, client):
         with patch(
             "haute._mlflow_io.clear_model_cache",

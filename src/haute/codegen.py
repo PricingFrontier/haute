@@ -50,6 +50,27 @@ def _safe_path(value: str) -> str:
     return _safe_str(value.replace("\\", "/"))
 
 
+def _is_absolute_path(path: str) -> bool:
+    """Check whether *path* looks absolute (Unix or Windows)."""
+    normalized = path.replace("\\", "/")
+    if normalized.startswith("/"):
+        return True
+    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
+        return True
+    return False
+
+
+def _portable_path_expr(path: str) -> str:
+    """Return a Python expression that resolves *path* relative to ``__file__``.
+
+    Absolute paths are left as-is (returned as a quoted string literal).
+    Relative paths become ``Path(__file__).parent / "rel/path"``.
+    """
+    if _is_absolute_path(path):
+        return _safe_path(path)
+    return f"Path(__file__).parent / {_safe_path(path)}"
+
+
 __all__ = [
     "graph_to_code",
     "graph_to_code_multi",
@@ -149,13 +170,14 @@ def _api_input_template(path: str) -> str:
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
         body = (
+            "    from pathlib import Path\n"
             "    from haute._json_flatten import read_json_flat\n"
-            "    return read_json_flat({path_repr}, config_path={config_path_repr})"
+            "    return read_json_flat({portable_path}, config_path={config_path_repr})"
         )
     elif lower.endswith(".csv"):
-        body = "    return pl.scan_csv({path_repr})"
+        body = "    from pathlib import Path\n    return pl.scan_csv({portable_path})"
     else:
-        body = "    return pl.scan_parquet({path_repr})"
+        body = "    from pathlib import Path\n    return pl.scan_parquet({portable_path})"
 
     return (
         "@pipeline.api_input(path={path_repr}{row_id_kw})\n"
@@ -205,20 +227,20 @@ def _data_source_parts(config: dict) -> tuple[str, str, str]:
         load_expr = f"read_cached_table({_safe_str(table)})"
     elif path.lower().endswith(".csv"):
         decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = ""
-        load_expr = f"pl.scan_csv({_safe_path(path)})"
+        imports = "    from pathlib import Path\n"
+        load_expr = f"pl.scan_csv({_portable_path_expr(path)})"
     elif path.lower().endswith(".jsonl"):
         decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = ""
-        load_expr = f"pl.scan_ndjson({_safe_path(path)})"
+        imports = "    from pathlib import Path\n"
+        load_expr = f"pl.scan_ndjson({_portable_path_expr(path)})"
     elif path.lower().endswith(".json"):
         decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = ""
-        load_expr = f"pl.read_json({_safe_path(path)}).lazy()"
+        imports = "    from pathlib import Path\n"
+        load_expr = f"pl.read_json({_portable_path_expr(path)}).lazy()"
     else:
         decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = ""
-        load_expr = f"pl.scan_parquet({_safe_path(path)})"
+        imports = "    from pathlib import Path\n"
+        load_expr = f"pl.scan_parquet({_portable_path_expr(path)})"
 
     return decorator, imports, load_expr
 
@@ -249,8 +271,9 @@ _SINK_PARQUET = '''\
 @pipeline.data_sink(path={path_repr}, format="parquet")
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
+    from pathlib import Path
     from haute._polars_utils import safe_sink
-    safe_sink({first}, {path_repr})
+    safe_sink({first}, {portable_path})
     return {first}
 '''
 
@@ -258,8 +281,9 @@ _SINK_CSV = '''\
 @pipeline.data_sink(path={path_repr}, format="csv")
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
+    from pathlib import Path
     from haute._polars_utils import safe_sink
-    safe_sink({first}, {path_repr}, fmt="csv")
+    safe_sink({first}, {portable_path}, fmt="csv")
     return {first}
 '''
 
@@ -302,8 +326,9 @@ _EXTERNAL = '''\
 @pipeline.external_file(path={path_repr}, file_type={file_type_repr}{extra_dec})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
+    from pathlib import Path
     from haute.graph_utils import load_external_object
-    obj = load_external_object({path_repr}, {file_type_repr}{extra_load})
+    obj = load_external_object({portable_path}, {file_type_repr}{extra_load})
 {body}
 '''
 
@@ -395,6 +420,7 @@ def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
         func_name=func_name,
         description=description,
         path_repr=_safe_path(path),
+        portable_path=_portable_path_expr(path),
         row_id_kw=row_id_kw,
         config_path=cfg_path,
         config_path_repr=_safe_path(cfg_path),
@@ -434,7 +460,8 @@ def _gen_data_source(node: GraphNode, source_names: list[str]) -> str:
             f"def {func_name}() -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
             f"{imports}"
-            f"    return {load_expr}\n"
+            f"    df = {load_expr}\n"
+            f"    return df\n"
         )
 
     user_body = _wrap_user_code(code, ["df"])
@@ -720,6 +747,7 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
         func_name=func_name,
         description=description,
         path_repr=_safe_path(path),
+        portable_path=_portable_path_expr(path),
         file_type_repr=_safe_str(file_type),
         params=params,
         body=body,
@@ -741,6 +769,7 @@ def _gen_data_sink(node: GraphNode, source_names: list[str]) -> str:
         func_name=func_name,
         description=description,
         path_repr=_safe_path(path),
+        portable_path=_portable_path_expr(path),
         params=params,
         first=first,
     )
@@ -1077,6 +1106,9 @@ def graph_to_code_multi(
 
     If the graph has no submodels, the result contains only the main file.
     """
+    # Fall back to graph-level description when caller doesn't supply one
+    if not description and graph.pipeline_description:
+        description = graph.pipeline_description
     submodels = graph.submodels or {}
 
     if not submodels:

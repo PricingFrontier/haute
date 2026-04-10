@@ -798,8 +798,6 @@ class TestUnboundedValidationCache:
         )
 
 
-
-
 class TestNonBlockedDunders:
     """Gap 8: Several potentially dangerous dunders are NOT in _BLOCKED_ATTRS:
     __init__, __closure__, __qualname__, __annotations__.
@@ -1325,7 +1323,6 @@ class TestStringManipulationEvasion:
 
 
 class TestValidateProjectPathEdgeCases:
-
     def test_relative_path_resolved_to_absolute(self, tmp_path: Path):
         set_project_root(tmp_path)
         subdir = tmp_path / "data"
@@ -1343,7 +1340,9 @@ class TestValidateProjectPathEdgeCases:
         assert result == tmp_path
 
     def test_empty_string_outside_root_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         other = tmp_path / "other"
         other.mkdir()
@@ -1375,13 +1374,38 @@ class TestValidateProjectPathEdgeCases:
 
 
 class TestSafeGlobalsBuiltinCoverage:
-
-    @pytest.mark.parametrize("name", [
-        "len", "range", "min", "max", "sum", "int", "float", "str",
-        "bool", "list", "dict", "tuple", "set", "sorted", "reversed",
-        "enumerate", "zip", "map", "filter", "any", "all", "abs",
-        "round", "isinstance", "issubclass", "print", "repr",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "len",
+            "range",
+            "min",
+            "max",
+            "sum",
+            "int",
+            "float",
+            "str",
+            "bool",
+            "list",
+            "dict",
+            "tuple",
+            "set",
+            "sorted",
+            "reversed",
+            "enumerate",
+            "zip",
+            "map",
+            "filter",
+            "any",
+            "all",
+            "abs",
+            "round",
+            "isinstance",
+            "issubclass",
+            "print",
+            "repr",
+        ],
+    )
     def test_common_builtin_available(self, name: str):
         ns = safe_globals()
         builtins_ns = ns.get("__builtins__", ns)
@@ -1421,8 +1445,7 @@ class TestSafeGlobalsBuiltinCoverage:
         ns = safe_globals(pl=pl)
         local = {}
         exec(
-            'df = pl.DataFrame({"a": [1, 2, 3]})\n'
-            'result = df.select(pl.col("a") * 2)\n',
+            'df = pl.DataFrame({"a": [1, 2, 3]})\nresult = df.select(pl.col("a") * 2)\n',
             ns,
             local,
         )
@@ -1430,7 +1453,6 @@ class TestSafeGlobalsBuiltinCoverage:
 
 
 class TestASTValidatorEdgeCases:
-
     def test_class_definition_blocked(self):
         with pytest.raises(UnsafeCodeError, match="class"):
             validate_user_code("class Foo:\n    x = 1")
@@ -1483,7 +1505,6 @@ class TestASTValidatorEdgeCases:
 
 
 class TestValidateUserCodeEdgeCases:
-
     def test_valid_polars_code_passes(self):
         validate_user_code('df.filter(pl.col("age") > 25)')
 
@@ -1548,7 +1569,6 @@ class TestValidateUserCodeEdgeCases:
 
 
 class TestSafeUnpickleEdgeCases:
-
     def test_safe_dict_unpickles(self, tmp_path: Path):
         set_project_root(tmp_path)
         f = tmp_path / "data.pkl"
@@ -1572,6 +1592,7 @@ class TestSafeUnpickleEdgeCases:
         class _Evil:
             def __reduce__(self):
                 import os
+
                 return (os.system, ("echo pwned",))
 
         f.write_bytes(pickle.dumps(_Evil()))
@@ -1592,6 +1613,7 @@ class TestSafeUnpickleEdgeCases:
         class _Evil:
             def __reduce__(self):
                 import subprocess
+
                 return (subprocess.check_output, (["echo", "pwned"],))
 
         f.write_bytes(pickle.dumps(_Evil()))
@@ -1605,7 +1627,6 @@ class TestSafeUnpickleEdgeCases:
 
 
 class TestPickleBombDeeplyNested:
-
     def test_deeply_nested_pickle_no_stack_overflow(self, tmp_path: Path):
         import sys
 
@@ -1635,7 +1656,6 @@ class TestPickleBombDeeplyNested:
 
 
 class TestPickleReduceExploit:
-
     def test_reduce_os_system_blocked(self, tmp_path: Path):
         import os
 
@@ -1652,7 +1672,6 @@ class TestPickleReduceExploit:
 
 
 class TestJoblibConcurrentLoadSafety:
-
     def test_ten_threads_same_file_no_corruption(self, tmp_path: Path):
         import threading
 
@@ -1687,7 +1706,6 @@ class TestJoblibConcurrentLoadSafety:
 
 
 class TestDeeplyNestedASTValidation:
-
     def test_deeply_nested_parens_no_crash(self):
         depth = 200
         code = "x = " + "(" * depth + "1" + ")" * depth
@@ -1705,7 +1723,6 @@ class TestDeeplyNestedASTValidation:
 
 
 class TestPreambleCacheEviction:
-
     def test_cache_does_not_exceed_max(self):
         from haute.executor import _PREAMBLE_CACHE_MAX, _compile_preamble, _preamble_cache
 
@@ -1723,7 +1740,6 @@ class TestPreambleCacheEviction:
 
 
 class TestValidationCacheDoesNotCacheUnsafe:
-
     def test_syntax_error_then_fixed_code_passes(self):
         import haute._sandbox
 

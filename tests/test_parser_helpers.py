@@ -948,11 +948,7 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_transform.json"
         cfg_file.write_text("{}")
 
-        body = (
-            '    """doc"""\n'
-            '    df = df.filter(pl.col("x") > 0)\n'
-            '    return df'
-        )
+        body = '    """doc"""\n    df = df.filter(pl.col("x") > 0)\n    return df'
 
         with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
             node_type, config = _resolve_node_config(
@@ -1529,10 +1525,7 @@ class TestExtractExternalUserCode:
 
     def test_only_boilerplate_returns_empty(self):
         body = (
-            "import pickle\n"
-            "with open('model.pkl', 'rb') as f:\n"
-            "    obj = pickle.load(f)\n"
-            "return df"
+            "import pickle\nwith open('model.pkl', 'rb') as f:\n    obj = pickle.load(f)\nreturn df"
         )
         result = _extract_external_user_code(body, ["df"])
         assert result == ""
@@ -1565,7 +1558,9 @@ class TestExtractFunctionBodiesZeroCov:
         assert "return msg" in bodies["greet"]
 
     def test_multiple_functions_isolated(self):
-        source = "def alpha():\n    return 1\n\ndef beta():\n    return 2\n\ndef gamma():\n    return 3"
+        source = (
+            "def alpha():\n    return 1\n\ndef beta():\n    return 2\n\ndef gamma():\n    return 3"
+        )
         bodies = _extract_function_bodies(source)
         assert set(bodies.keys()) == {"alpha", "beta", "gamma"}
         assert "return 1" in bodies["alpha"]

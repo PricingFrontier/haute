@@ -141,6 +141,29 @@ class TestCreateSubmodel:
         assert data["status"] == "ok"
         assert data["submodel_file"] == "modules/pricing.py"
 
+    def test_create_passes_pipeline_description(self, client: TestClient, tmp_path: Path) -> None:
+        """pipeline_description should be forwarded to graph_to_code_multi."""
+        mock_result = MagicMock()
+        mock_result.sm_file = "modules/pricing.py"
+        mock_result.graph = PipelineGraph(pipeline_name="main")
+
+        with patch("haute.routes._submodel_ops.create_submodel_graph", return_value=mock_result):
+            with patch("haute.codegen.graph_to_code_multi", return_value={}) as mock_codegen:
+                body = {
+                    "name": "pricing",
+                    "node_ids": ["calc"],
+                    "graph": _simple_graph(),
+                    "source_file": "pipeline.py",
+                    "pipeline_name": "main",
+                    "pipeline_description": "My pricing pipeline",
+                }
+                resp = client.post("/api/submodel/create", json=body)
+
+        assert resp.status_code == 200
+        mock_codegen.assert_called_once()
+        call_kwargs = mock_codegen.call_args
+        assert call_kwargs.kwargs.get("description") == "My pricing pipeline"
+
 
 # ---------------------------------------------------------------------------
 # GET /api/submodel/{name}
@@ -234,6 +257,34 @@ class TestDissolveSubmodel:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+
+    def test_dissolve_passes_pipeline_description(self, client: TestClient, tmp_path: Path) -> None:
+        """pipeline_description should be forwarded to graph_to_code."""
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        sm_file = modules_dir / "pricing.py"
+        sm_file.write_text("# submodel code\n")
+
+        pipeline_file = tmp_path / "pipeline.py"
+        pipeline_file.write_text("# main pipeline\n")
+
+        flat_graph = PipelineGraph(pipeline_name="main")
+
+        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
+            with patch("haute.codegen.graph_to_code", return_value="# code\n") as mock_codegen:
+                body = {
+                    "submodel_name": "pricing",
+                    "graph": _graph_with_submodel(),
+                    "source_file": "pipeline.py",
+                    "pipeline_name": "main",
+                    "pipeline_description": "Risk scoring pipeline",
+                }
+                resp = client.post("/api/submodel/dissolve", json=body)
+
+        assert resp.status_code == 200
+        mock_codegen.assert_called_once()
+        call_kwargs = mock_codegen.call_args
+        assert call_kwargs.kwargs.get("description") == "Risk scoring pipeline"
 
     def test_dissolve_deletes_submodel_file(self, client: TestClient, tmp_path: Path) -> None:
         """After dissolve, the submodel .py file should be deleted."""

@@ -196,9 +196,7 @@ class TestServe:
             patch("uvicorn.run"),
             patch("threading.Timer", return_value=mock_timer) as timer_cls,
         ):
-            result = runner.invoke(
-                cli, ["serve", "--host", "0.0.0.0", "--port", "9999"]
-            )
+            result = runner.invoke(cli, ["serve", "--host", "0.0.0.0", "--port", "9999"])
 
         assert result.exit_code == 0, result.output
         call_kwargs = timer_cls.call_args

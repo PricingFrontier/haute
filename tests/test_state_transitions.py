@@ -225,9 +225,7 @@ class TestRejectNonCompletedJob:
             "modelling": modelling_store,
             "optimiser": optimiser_store,
         }
-        self._snapshots = {
-            name: dict(store.jobs) for name, store in self._stores.items()
-        }
+        self._snapshots = {name: dict(store.jobs) for name, store in self._stores.items()}
         yield
         for name, store in self._stores.items():
             store.jobs.clear()
@@ -247,8 +245,7 @@ class TestRejectNonCompletedJob:
 
         resp = client.post(url, json=_make_payload(job_id, url))
         assert resp.status_code == 400, (
-            f"Expected 400 for {url} with status={status}, "
-            f"got {resp.status_code}: {resp.text}"
+            f"Expected 400 for {url} with status={status}, got {resp.status_code}: {resp.text}"
         )
         assert "not completed" in resp.json()["detail"].lower()
 

@@ -99,7 +99,10 @@ class TestFlattenAll:
                 "freq": {
                     "graph": {
                         "nodes": [
-                            {"id": "freq_child", "data": {"label": "freq_child", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "freq_child",
+                                "data": {"label": "freq_child", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [],
                     }
@@ -134,15 +137,26 @@ class TestFlattenAll:
             ],
             edges=[
                 _edge("data", "submodel__alpha", target_handle="in__alpha_child"),
-                _edge("submodel__alpha", "submodel__beta",
-                       source_handle="out__alpha_child", target_handle="in__beta_child"),
+                _edge(
+                    "submodel__alpha",
+                    "submodel__beta",
+                    source_handle="out__alpha_child",
+                    target_handle="in__beta_child",
+                ),
                 _edge("submodel__beta", "out", source_handle="out__beta_child"),
             ],
             submodels={
                 "alpha": {
                     "graph": {
                         "nodes": [
-                            {"id": "alpha_child", "data": {"label": "alpha_child", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "alpha_child",
+                                "data": {
+                                    "label": "alpha_child",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            },
                         ],
                         "edges": [],
                     }
@@ -150,7 +164,10 @@ class TestFlattenAll:
                 "beta": {
                     "graph": {
                         "nodes": [
-                            {"id": "beta_child", "data": {"label": "beta_child", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "beta_child",
+                                "data": {"label": "beta_child", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [],
                     }
@@ -197,7 +214,14 @@ class TestFlattenTargeted:
                 "alpha": {
                     "graph": {
                         "nodes": [
-                            {"id": "alpha_child", "data": {"label": "alpha_child", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "alpha_child",
+                                "data": {
+                                    "label": "alpha_child",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            },
                         ],
                         "edges": [],
                     }
@@ -205,7 +229,10 @@ class TestFlattenTargeted:
                 "beta": {
                     "graph": {
                         "nodes": [
-                            {"id": "beta_child", "data": {"label": "beta_child", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "beta_child",
+                                "data": {"label": "beta_child", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [],
                     }
@@ -248,7 +275,10 @@ class TestEdgeRewiring:
                 "sm": {
                     "graph": {
                         "nodes": [
-                            {"id": "inner", "data": {"label": "inner", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "inner",
+                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [],
                     }
@@ -276,7 +306,10 @@ class TestEdgeRewiring:
                 "sm": {
                     "graph": {
                         "nodes": [
-                            {"id": "inner", "data": {"label": "inner", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "inner",
+                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [],
                     }
@@ -325,8 +358,14 @@ class TestEdgeRewiring:
                 "sm": {
                     "graph": {
                         "nodes": [
-                            {"id": "child_a", "data": {"label": "a", "nodeType": "polars", "config": {}}},
-                            {"id": "child_b", "data": {"label": "b", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "child_a",
+                                "data": {"label": "a", "nodeType": "polars", "config": {}},
+                            },
+                            {
+                                "id": "child_b",
+                                "data": {"label": "b", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [
                             {"id": "e_ca_cb", "source": "child_a", "target": "child_b"},
@@ -357,14 +396,21 @@ class TestEdgeDeduplication:
             ],
             edges=[
                 # Two edges that will rewire to the same (upstream, inner) pair
-                GraphEdge(id="e1", source="upstream", target="submodel__sm", targetHandle="in__inner"),
-                GraphEdge(id="e2", source="upstream", target="submodel__sm", targetHandle="in__inner"),
+                GraphEdge(
+                    id="e1", source="upstream", target="submodel__sm", targetHandle="in__inner"
+                ),
+                GraphEdge(
+                    id="e2", source="upstream", target="submodel__sm", targetHandle="in__inner"
+                ),
             ],
             submodels={
                 "sm": {
                     "graph": {
                         "nodes": [
-                            {"id": "inner", "data": {"label": "inner", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "inner",
+                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [],
                     }
@@ -373,8 +419,11 @@ class TestEdgeDeduplication:
         )
         result = flatten_graph(graph)
         # Both edges rewire to (upstream, inner, None, None) — should be deduped to 1
-        matching = [(e.source, e.target) for e in result.edges
-                     if e.source == "upstream" and e.target == "inner"]
+        matching = [
+            (e.source, e.target)
+            for e in result.edges
+            if e.source == "upstream" and e.target == "inner"
+        ]
         assert len(matching) == 1
 
 
@@ -484,8 +533,14 @@ class TestChildNodeFormats:
                 "sm": {
                     "graph": {
                         "nodes": [
-                            {"id": "c1", "data": {"label": "c1", "nodeType": "polars", "config": {}}},
-                            {"id": "c2", "data": {"label": "c2", "nodeType": "polars", "config": {}}},
+                            {
+                                "id": "c1",
+                                "data": {"label": "c1", "nodeType": "polars", "config": {}},
+                            },
+                            {
+                                "id": "c2",
+                                "data": {"label": "c2", "nodeType": "polars", "config": {}},
+                            },
                         ],
                         "edges": [child_edge],
                     }

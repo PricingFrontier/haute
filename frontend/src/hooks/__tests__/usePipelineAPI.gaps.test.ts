@@ -67,6 +67,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
+    descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
     lastSavedRef: { current: "" },
     nodeIdCounter: { current: 0 },

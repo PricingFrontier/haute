@@ -147,12 +147,23 @@ export default function RatingStepEditor({
       )}
 
       {/* Tab bar */}
-      <div className="flex items-center gap-1 overflow-x-auto pb-1">
+      <div className="flex items-center gap-1 overflow-x-auto pb-1" role="tablist" aria-label="Rating tables">
         {tables.map((t, i) => {
           const tStats = tableStats(t.entries || [])
           return (
-            <button key={i} onClick={() => { setActiveTab(i); setSliceIdx(0) }}
-              className="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors"
+            <div key={i} role="tab" aria-selected={i === safeIdx} tabIndex={i === safeIdx ? 0 : -1}
+              onClick={() => { setActiveTab(i); setSliceIdx(0) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveTab(i); setSliceIdx(0) }
+                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                  e.preventDefault()
+                  const next = e.key === 'ArrowRight' ? (i + 1) % tables.length : (i - 1 + tables.length) % tables.length
+                  setActiveTab(next); setSliceIdx(0)
+                  const tablist = e.currentTarget.parentElement
+                  if (tablist) { const tabs = tablist.querySelectorAll<HTMLElement>('[role="tab"]'); tabs[next]?.focus() }
+                }
+              }}
+              className="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors cursor-pointer"
               style={{
                 background: i === safeIdx ? withAlpha(accentColor, 0.12) : 'var(--bg-surface)',
                 border: i === safeIdx ? `1px solid ${withAlpha(accentColor, 0.4)}` : '1px solid var(--border)',
@@ -170,7 +181,7 @@ export default function RatingStepEditor({
                   className="ml-0.5 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
                   style={{ color: 'var(--text-muted)' }}><X size={10} /></button>
               )}
-            </button>
+            </div>
           )
         })}
         <button onClick={addTable}

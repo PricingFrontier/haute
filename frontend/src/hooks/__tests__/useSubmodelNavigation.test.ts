@@ -31,6 +31,7 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     preambleRef: { current: "" },
+    descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
     pipelineNameRef: { current: "test" },
     fitView: vi.fn(),

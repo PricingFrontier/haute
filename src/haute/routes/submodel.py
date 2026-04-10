@@ -34,7 +34,10 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     and returns the updated parent graph with the submodel node.
     """
     from haute.codegen import graph_to_code_multi
+    from haute.routes._save_pipeline import SavePipelineService
     from haute.routes._submodel_ops import create_submodel_graph
+
+    SavePipelineService._validate_unique_sanitized_names(body.graph)
 
     try:
         result = create_submodel_graph(body.graph, body.node_ids, body.name)
@@ -57,6 +60,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     files = graph_to_code_multi(
         result.graph,
         pipeline_name=body.pipeline_name,
+        description=body.pipeline_description or "",
         preamble=body.preamble,
         source_file=body.source_file,
     )
@@ -131,6 +135,11 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
     # Remove the submodel from the graph metadata and flatten
     flat = flatten_graph(graph, target_name=sm_name)
 
+    # Validate name uniqueness on the flattened graph (post-inline)
+    from haute.routes._save_pipeline import SavePipelineService
+
+    SavePipelineService._validate_unique_sanitized_names(flat)
+
     # Write the updated main file
     from haute.codegen import graph_to_code
 
@@ -148,6 +157,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
     code = graph_to_code(
         flat,
         pipeline_name=body.pipeline_name,
+        description=body.pipeline_description or "",
         preamble=body.preamble,
     )
     py_path.write_text(code)

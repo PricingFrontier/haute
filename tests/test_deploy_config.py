@@ -297,9 +297,7 @@ class TestValidateTomlKeys:
 
     def test_unknown_key_in_deploy_databricks(self, tmp_path: Path) -> None:
         data = {"deploy": {"databricks": {"catalog": "main", "typo_key": "x"}}}
-        with pytest.raises(
-            ValueError, match=r"\[deploy\.databricks\] unknown key 'typo_key'"
-        ):
+        with pytest.raises(ValueError, match=r"\[deploy\.databricks\] unknown key 'typo_key'"):
             _validate_toml_keys(data, tmp_path / "haute.toml")
 
     def test_unknown_subsection_in_deploy(self, tmp_path: Path) -> None:
@@ -437,9 +435,7 @@ class TestValidateDeploy:
         errors = validate_deploy(resolved)
         assert any("db_src" in e and "Databricks dataSource" in e for e in errors)
 
-    def test_multiple_validation_errors_returned_together(
-        self, tmp_path: Path
-    ) -> None:
+    def test_multiple_validation_errors_returned_together(self, tmp_path: Path) -> None:
         db_src = _make_node(
             "db_src",
             node_type=NodeType.DATA_SOURCE,
@@ -467,30 +463,22 @@ class TestApplyEnvOverridesEdgeCases:
     def _make_config(self) -> DeployConfig:
         return DeployConfig(pipeline_file=Path("main.py"), model_name="base")
 
-    def test_scale_to_zero_false_capital_f(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_scale_to_zero_false_capital_f(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "False")
         config = _apply_env_overrides(self._make_config())
         assert config.databricks.serving_scale_to_zero is False
 
-    def test_scale_to_zero_true_all_caps(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_scale_to_zero_true_all_caps(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "TRUE")
         config = _apply_env_overrides(self._make_config())
         assert config.databricks.serving_scale_to_zero is True
 
-    def test_scale_to_zero_numeric_zero(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_scale_to_zero_numeric_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "0")
         config = _apply_env_overrides(self._make_config())
         assert config.databricks.serving_scale_to_zero is False
 
-    def test_empty_string_env_var_still_applied(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_empty_string_env_var_still_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAUTE_MODEL_NAME", "")
         config = _apply_env_overrides(self._make_config())
         assert config.model_name == ""

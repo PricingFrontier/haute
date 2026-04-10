@@ -339,13 +339,15 @@ class TestExecuteTraceColumnTracing:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2], "y": [10, 20]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
         result = execute_trace(graph, row_index=0, column="z")
 
         # z is added at t, src is an ancestor
@@ -359,14 +361,16 @@ class TestExecuteTraceColumnTracing:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1], "y": [10]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("mid"),  # passes x through
-                _transform_node("end"),  # also passes x through
-            ],
-            "edges": [_edge("src", "mid"), _edge("mid", "end")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("mid"),  # passes x through
+                    _transform_node("end"),  # also passes x through
+                ],
+                "edges": [_edge("src", "mid"), _edge("mid", "end")],
+            }
+        )
         result = execute_trace(graph, row_index=0, column="x")
         assert len(result.steps) == 3
         assert all(s.column_relevant for s in result.steps)
@@ -376,14 +380,16 @@ class TestExecuteTraceColumnTracing:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("mid"),
-                _transform_node("end"),
-            ],
-            "edges": [_edge("src", "mid"), _edge("mid", "end")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("mid"),
+                    _transform_node("end"),
+                ],
+                "edges": [_edge("src", "mid"), _edge("mid", "end")],
+            }
+        )
         result = execute_trace(graph, row_index=0, target_node_id="mid")
         assert result.target_node_id == "mid"
 
@@ -392,10 +398,12 @@ class TestExecuteTraceColumnTracing:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [10], "y": [20]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
         result = execute_trace(graph, row_index=0)
         assert isinstance(result.output_value, dict)
         assert result.output_value["x"] == 10
@@ -406,10 +414,12 @@ class TestExecuteTraceColumnTracing:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [42], "y": [99]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
         result = execute_trace(graph, row_index=0, column="x")
         assert result.output_value == 42
 
@@ -422,10 +432,12 @@ class TestExecuteTraceCaching:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
 
         r1 = execute_trace(graph, row_index=0)
         r2 = execute_trace(graph, row_index=1)
@@ -437,20 +449,24 @@ class TestExecuteTraceCaching:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [5]}).write_parquet(p)
 
-        g1 = _g({
-            "nodes": [_source_node("src", str(p)), _transform_node("t")],
-            "edges": [_edge("src", "t")],
-        })
+        g1 = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "edges": [_edge("src", "t")],
+            }
+        )
         r1 = execute_trace(g1, row_index=0)
         assert "y" not in r1.output_value
 
-        g2 = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", "df = df.with_columns(y=pl.col('x') * 3)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        g2 = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 3)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
         r2 = execute_trace(g2, row_index=0)
         assert r2.output_value["y"] == 15
 
@@ -472,10 +488,12 @@ class TestExecuteTraceEdgeCases:
     def test_row_index_out_of_range_raises(self, tmp_path):
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
         with pytest.raises(ValueError, match="out of range"):
             execute_trace(graph, row_index=999)
 
@@ -484,14 +502,16 @@ class TestExecuteTraceEdgeCases:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"a": [1, 2], "b": [10, 20]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t1", "df = df.with_columns(c=pl.col('a') + pl.col('b'))"),
-                _transform_node("t2", "df = df.with_columns(d=pl.col('c') * 2)"),
-            ],
-            "edges": [_edge("src", "t1"), _edge("t1", "t2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t1", "df = df.with_columns(c=pl.col('a') + pl.col('b'))"),
+                    _transform_node("t2", "df = df.with_columns(d=pl.col('c') * 2)"),
+                ],
+                "edges": [_edge("src", "t1"), _edge("t1", "t2")],
+            }
+        )
         result = execute_trace(graph, row_index=0)
         assert len(result.steps) == 3
         assert result.output_value["a"] == 1
@@ -502,10 +522,12 @@ class TestExecuteTraceEdgeCases:
         """Tracing a column that doesn't exist returns None output_value."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
         result = execute_trace(graph, row_index=0, column="nonexistent")
         assert result.output_value is None
 
@@ -521,10 +543,15 @@ class TestBuildWaterfall:
     def test_less_than_3_steps_returns_none(self):
         assert build_waterfall([]) is None
         assert build_waterfall([{"label": "a", "operation": "base", "value": 100}]) is None
-        assert build_waterfall([
-            {"label": "a", "operation": "base", "value": 100},
-            {"label": "b", "operation": "multiply", "value": 1.1},
-        ]) is None
+        assert (
+            build_waterfall(
+                [
+                    {"label": "a", "operation": "base", "value": 100},
+                    {"label": "b", "operation": "multiply", "value": 1.1},
+                ]
+            )
+            is None
+        )
 
     def test_base_multiply_add(self):
         steps = [
@@ -746,16 +773,18 @@ class TestExportTrace:
                 columns_modified=s.get("modified", []),
                 columns_passed=s.get("passed", []),
             )
-            mock_steps.append(MockTraceStep(
-                node_id=s.get("node_id", "n"),
-                node_name=s.get("node_name", "Node"),
-                node_type=s.get("node_type", "polars"),
-                schema_diff=sd,
-                input_values=s.get("input_values", {}),
-                output_values=s.get("output_values", {}),
-                expression=s.get("expression"),
-                calculation=s.get("calculation"),
-            ))
+            mock_steps.append(
+                MockTraceStep(
+                    node_id=s.get("node_id", "n"),
+                    node_name=s.get("node_name", "Node"),
+                    node_type=s.get("node_type", "polars"),
+                    schema_diff=sd,
+                    input_values=s.get("input_values", {}),
+                    output_values=s.get("output_values", {}),
+                    expression=s.get("expression"),
+                    calculation=s.get("calculation"),
+                )
+            )
 
         return MockTraceResult(
             column=column,
@@ -778,15 +807,17 @@ class TestExportTrace:
     def test_formula_from_expression(self):
         tr = self._make_trace_result(
             column="premium",
-            steps=[{
-                "node_id": "t",
-                "added": ["premium"],
-                "expression": {
-                    "expression_text": "base * factor",
-                    "referenced_columns": ["base", "factor"],
-                },
-                "calculation": None,
-            }],
+            steps=[
+                {
+                    "node_id": "t",
+                    "added": ["premium"],
+                    "expression": {
+                        "expression_text": "base * factor",
+                        "referenced_columns": ["base", "factor"],
+                    },
+                    "calculation": None,
+                }
+            ],
         )
         result = export_trace(tr)
         assert result["formula"]["expression"] == "base * factor"
@@ -795,15 +826,17 @@ class TestExportTrace:
     def test_formula_from_calculation(self):
         tr = self._make_trace_result(
             column="premium",
-            steps=[{
-                "node_id": "t",
-                "added": ["premium"],
-                "expression": None,
-                "calculation": {
-                    "expression_text": "base * factor",
-                    "substituted_text": "100 * 1.5",
-                },
-            }],
+            steps=[
+                {
+                    "node_id": "t",
+                    "added": ["premium"],
+                    "expression": None,
+                    "calculation": {
+                        "expression_text": "base * factor",
+                        "substituted_text": "100 * 1.5",
+                    },
+                }
+            ],
         )
         result = export_trace(tr)
         assert result["formula"]["expression"] == "base * factor"
@@ -812,12 +845,14 @@ class TestExportTrace:
     def test_formula_with_both_expression_and_calculation(self):
         tr = self._make_trace_result(
             column="premium",
-            steps=[{
-                "node_id": "t",
-                "added": ["premium"],
-                "expression": {"expression_text": "x + y"},
-                "calculation": {"substituted_text": "1 + 2", "expression_text": "x + y"},
-            }],
+            steps=[
+                {
+                    "node_id": "t",
+                    "added": ["premium"],
+                    "expression": {"expression_text": "x + y"},
+                    "calculation": {"substituted_text": "1 + 2", "expression_text": "x + y"},
+                }
+            ],
         )
         result = export_trace(tr)
         assert result["formula"]["expression"] == "x + y"
@@ -826,12 +861,14 @@ class TestExportTrace:
     def test_formula_with_no_expression_or_calculation(self):
         tr = self._make_trace_result(
             column="premium",
-            steps=[{
-                "node_id": "t",
-                "added": ["premium"],
-                "expression": None,
-                "calculation": None,
-            }],
+            steps=[
+                {
+                    "node_id": "t",
+                    "added": ["premium"],
+                    "expression": None,
+                    "calculation": None,
+                }
+            ],
         )
         result = export_trace(tr)
         assert result["formula"]["expression"] == ""
@@ -841,11 +878,13 @@ class TestExportTrace:
         """When no step adds/modifies the target column, formula is empty."""
         tr = self._make_trace_result(
             column="premium",
-            steps=[{
-                "node_id": "t",
-                "added": ["other_col"],  # not premium
-                "expression": {"expression_text": "something"},
-            }],
+            steps=[
+                {
+                    "node_id": "t",
+                    "added": ["other_col"],  # not premium
+                    "expression": {"expression_text": "something"},
+                }
+            ],
         )
         result = export_trace(tr)
         assert result["formula"]["expression"] == ""
@@ -855,12 +894,14 @@ class TestExportTrace:
         """Target step found via columns_modified."""
         tr = self._make_trace_result(
             column="premium",
-            steps=[{
-                "node_id": "t",
-                "modified": ["premium"],
-                "expression": {"expression_text": "old_val * 2"},
-                "calculation": {"substituted_text": "50 * 2"},
-            }],
+            steps=[
+                {
+                    "node_id": "t",
+                    "modified": ["premium"],
+                    "expression": {"expression_text": "old_val * 2"},
+                    "calculation": {"substituted_text": "50 * 2"},
+                }
+            ],
         )
         result = export_trace(tr)
         assert result["formula"]["expression"] == "old_val * 2"
@@ -987,9 +1028,12 @@ class TestExportTrace:
 
     def test_no_column_set(self):
         """When column is None, no target_step is found."""
-        tr = self._make_trace_result(column=None, steps=[
-            {"node_id": "t", "added": ["x"]},
-        ])
+        tr = self._make_trace_result(
+            column=None,
+            steps=[
+                {"node_id": "t", "added": ["x"]},
+            ],
+        )
         result = export_trace(tr)
         assert result["formula"]["expression"] == ""
         assert result["sources"] == []
@@ -1015,14 +1059,22 @@ class TestWaterfallIntegration:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"premium": [100], "factor1": [1.5], "loading": [20]}).write_parquet(p)
 
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("step1", "df = df.with_columns(premium=pl.col('premium') * pl.col('factor1'))"),
-                _transform_node("step2", "df = df.with_columns(premium=pl.col('premium') + pl.col('loading'))"),
-            ],
-            "edges": [_edge("src", "step1"), _edge("step1", "step2")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "step1",
+                        "df = df.with_columns(premium=pl.col('premium') * pl.col('factor1'))",
+                    ),
+                    _transform_node(
+                        "step2",
+                        "df = df.with_columns(premium=pl.col('premium') + pl.col('loading'))",
+                    ),
+                ],
+                "edges": [_edge("src", "step1"), _edge("step1", "step2")],
+            }
+        )
         result = execute_trace(graph, row_index=0, column="premium")
         # Waterfall may or may not be built depending on whether
         # there are >= 3 column-relevant steps with the column
@@ -1033,10 +1085,12 @@ class TestWaterfallIntegration:
         """Without column param, waterfall is None."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
-        graph = _g({
-            "nodes": [_source_node("src", str(p))],
-            "edges": [],
-        })
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p))],
+                "edges": [],
+            }
+        )
         result = execute_trace(graph, row_index=0)
         assert result.waterfall is None
 
@@ -1044,13 +1098,15 @@ class TestWaterfallIntegration:
         """With fewer than 3 steps, waterfall is None."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
-        graph = _g({
-            "nodes": [
-                _source_node("src", str(p)),
-                _transform_node("t", "df = df.with_columns(x=pl.col('x') * 2)"),
-            ],
-            "edges": [_edge("src", "t")],
-        })
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = df.with_columns(x=pl.col('x') * 2)"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
         result = execute_trace(graph, row_index=0, column="x")
         # Only 2 steps, waterfall needs >= 3
         assert result.waterfall is None

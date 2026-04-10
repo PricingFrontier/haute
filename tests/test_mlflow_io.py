@@ -831,12 +831,12 @@ class TestFindModelArtifact:
         # _find_model_artifact pyfunc check: list_artifacts(run_id) → [subdir] (not "model")
         #   then iterate dirs: list_artifacts(run_id, "custom_model") → sub_contents (has MLmodel)
         client.list_artifacts.side_effect = [
-            [subdir],        # cbm: top level
-            sub_contents,    # cbm: subdir (no .cbm)
-            [subdir],        # rsglm: top level
-            sub_contents,    # rsglm: subdir (no .rsglm)
-            [subdir],        # pyfunc: top level "model" dir check
-            sub_contents,    # pyfunc: subdir listing with MLmodel
+            [subdir],  # cbm: top level
+            sub_contents,  # cbm: subdir (no .cbm)
+            [subdir],  # rsglm: top level
+            sub_contents,  # rsglm: subdir (no .rsglm)
+            [subdir],  # pyfunc: top level "model" dir check
+            sub_contents,  # pyfunc: subdir listing with MLmodel
         ]
         path, flavor = _find_model_artifact(client, "run1")
         assert path == "custom_model"
@@ -1439,9 +1439,7 @@ class TestScoreEager:
 
         raw_model = MagicMock()
         raw_model.predict.return_value = np.array([0, 1, 0])
-        raw_model.predict_proba.return_value = np.array(
-            [[0.8, 0.2], [0.3, 0.7], [0.9, 0.1]]
-        )
+        raw_model.predict_proba.return_value = np.array([[0.8, 0.2], [0.3, 0.7], [0.9, 0.1]])
         sm = ScoringModel(raw_model, ["a"], frozenset(), "pyfunc")
 
         df = pl.DataFrame({"a": [1.0, 2.0, 3.0]})

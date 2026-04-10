@@ -533,9 +533,7 @@ class TestBuildAndPushImage:
         tmp_path: Path,
     ) -> None:
         """With registry: builds and pushes."""
-        resolved = self._make_resolved_with_artifacts(
-            tmp_path, registry="myregistry.io/models"
-        )
+        resolved = self._make_resolved_with_artifacts(tmp_path, registry="myregistry.io/models")
 
         with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
             result = build_and_push_image(resolved)
@@ -673,9 +671,7 @@ class TestBuildAndPushImage:
         tmp_path: Path,
     ) -> None:
         """Trailing slash on registry is stripped from image tag."""
-        resolved = self._make_resolved_with_artifacts(
-            tmp_path, registry="myregistry.io/"
-        )
+        resolved = self._make_resolved_with_artifacts(tmp_path, registry="myregistry.io/")
 
         with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
             result = build_and_push_image(resolved)
@@ -754,9 +750,7 @@ class TestDeployToPlatformContainer:
         assert isinstance(result, DeployResult)
         assert result.endpoint_url == "https://my-service.example.com"
         assert result.model_uri == "registry/model:abc"
-        mock_update.assert_called_once_with(
-            "azure-container-apps", "registry/model:abc", resolved
-        )
+        mock_update.assert_called_once_with("azure-container-apps", "registry/model:abc", resolved)
 
     @patch("haute.deploy._container._update_service")
     @patch("haute.deploy._container.build_and_push_image")

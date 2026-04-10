@@ -125,6 +125,7 @@ def source(config):
 #   - A string means: patch that target with side_effect=RuntimeError(error_message)
 #   - A callable means: call it to get the context manager(s) for patching
 
+
 def _databricks_client_patch(attr_chain: str, error_msg: str):
     """Return a context-manager that patches _get_databricks_client so that
     traversing *attr_chain* (e.g. 'warehouses.list') raises."""
@@ -155,7 +156,9 @@ def _mlflow_tracking_patch(attr: str, error_msg: str, on_client: bool = False):
 _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
     # Databricks routes
     pytest.param(
-        "get", "/api/databricks/warehouses", None,
+        "get",
+        "/api/databricks/warehouses",
+        None,
         lambda err: _databricks_client_patch("warehouses.list", err),
         "/home/user/.databricks/token: permission denied",
         500,
@@ -163,7 +166,9 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         id="databricks-warehouses",
     ),
     pytest.param(
-        "get", "/api/databricks/catalogs", None,
+        "get",
+        "/api/databricks/catalogs",
+        None,
         lambda err: _databricks_client_patch("catalogs.list", err),
         "AuthenticationError: invalid token xyz-secret",
         500,
@@ -171,7 +176,9 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         id="databricks-catalogs",
     ),
     pytest.param(
-        "get", "/api/databricks/schemas", {"catalog": "main"},
+        "get",
+        "/api/databricks/schemas",
+        {"catalog": "main"},
         lambda err: _databricks_client_patch("schemas.list", err),
         "SDK internal: /var/run/secrets/token read failure",
         500,
@@ -179,7 +186,9 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         id="databricks-schemas",
     ),
     pytest.param(
-        "get", "/api/databricks/tables", {"catalog": "cat", "schema": "sch"},
+        "get",
+        "/api/databricks/tables",
+        {"catalog": "cat", "schema": "sch"},
         lambda err: _databricks_client_patch("tables.list", err),
         "Connection to host 10.0.0.5:443 refused",
         500,
@@ -187,7 +196,8 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         id="databricks-tables",
     ),
     pytest.param(
-        "post", "/api/databricks/fetch",
+        "post",
+        "/api/databricks/fetch",
         {"json": {"table": "cat.sch.tbl", "http_path": "/sql/wh"}},
         lambda err: patch("haute._databricks_io.fetch_and_cache", side_effect=RuntimeError(err)),
         "OSError: /mnt/data/cache full",
@@ -197,7 +207,9 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
     ),
     # JSON cache
     pytest.param(
-        "post", "/api/json-cache/build", {"json": {"path": "data.jsonl"}},
+        "post",
+        "/api/json-cache/build",
+        {"json": {"path": "data.jsonl"}},
         lambda err: patch("haute._json_flatten.build_json_cache", side_effect=RuntimeError(err)),
         "OSError: [Errno 28] No space left on device: '/tmp/x'",
         500,
@@ -206,7 +218,9 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
     ),
     # MLflow discovery routes (502)
     pytest.param(
-        "get", "/api/mlflow/experiments", None,
+        "get",
+        "/api/mlflow/experiments",
+        None,
         lambda err: _mlflow_tracking_patch("search_experiments", err),
         "ConnectionError: https://internal-mlflow.corp:5000/api refused",
         502,
@@ -214,7 +228,9 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         id="mlflow-experiments",
     ),
     pytest.param(
-        "get", "/api/mlflow/runs", {"experiment_id": "1"},
+        "get",
+        "/api/mlflow/runs",
+        {"experiment_id": "1"},
         lambda err: _mlflow_tracking_patch("search_runs", err),
         "SSLError: certificate verify failed for host mlflow.internal",
         502,
@@ -222,7 +238,9 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         id="mlflow-runs",
     ),
     pytest.param(
-        "get", "/api/mlflow/models", None,
+        "get",
+        "/api/mlflow/models",
+        None,
         lambda err: _mlflow_tracking_patch("search_registered_models", err, on_client=True),
         "PermissionDenied: access token for service-account@corp expired",
         502,
@@ -292,9 +310,7 @@ class TestSafeDetailOnError:
 
     # -- Pipeline routes need the pipeline_graph fixture --
 
-    def test_pipeline_trace_500_no_leak(
-        self, client: TestClient, pipeline_graph
-    ) -> None:
+    def test_pipeline_trace_500_no_leak(self, client: TestClient, pipeline_graph) -> None:
         with patch(
             "haute.trace.execute_trace",
             side_effect=RuntimeError("traceback: File /home/user/secret.py line 42"),
@@ -308,9 +324,7 @@ class TestSafeDetailOnError:
         assert "/home/user/secret.py" not in detail
         assert detail == _SAFE_DETAIL
 
-    def test_pipeline_preview_500_no_leak(
-        self, client: TestClient, pipeline_graph
-    ) -> None:
+    def test_pipeline_preview_500_no_leak(self, client: TestClient, pipeline_graph) -> None:
         node_id = pipeline_graph.nodes[0].id
         with patch(
             "haute.executor.execute_graph",
@@ -325,22 +339,22 @@ class TestSafeDetailOnError:
         assert "0x7fff" not in detail
         assert detail == _SAFE_DETAIL
 
-    def test_pipeline_sink_500_no_leak(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_pipeline_sink_500_no_leak(self, client: TestClient, tmp_path: Path) -> None:
         data_path = tmp_path / "data" / "input.parquet"
         graph = _minimal_source_graph(str(data_path))
         # Add a sink node
-        graph["nodes"].append({
-            "id": "sink",
-            "type": "pipelineNode",
-            "position": {"x": 300, "y": 0},
-            "data": {
-                "label": "sink",
-                "nodeType": "dataSink",
-                "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
-            },
-        })
+        graph["nodes"].append(
+            {
+                "id": "sink",
+                "type": "pipelineNode",
+                "position": {"x": 300, "y": 0},
+                "data": {
+                    "label": "sink",
+                    "nodeType": "dataSink",
+                    "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                },
+            }
+        )
         graph["edges"] = [{"id": "e1", "source": "src", "target": "sink"}]
         with patch(
             "haute.executor.execute_sink",
@@ -521,32 +535,43 @@ class TestModellingRoutesSafeDetail:
 
 _LOG_ON_ERROR_CASES: list[tuple] = [
     pytest.param(
-        "get", "/api/databricks/warehouses", None,
+        "get",
+        "/api/databricks/warehouses",
+        None,
         lambda err: _databricks_client_patch("warehouses.list", err),
         "haute.routes.databricks",
-        "secret-err", 500,
+        "secret-err",
+        500,
         id="databricks-warehouses-log",
     ),
     pytest.param(
-        "post", "/api/databricks/fetch",
+        "post",
+        "/api/databricks/fetch",
         {"json": {"table": "cat.sch.tbl", "http_path": "/sql/wh"}},
         lambda err: patch("haute._databricks_io.fetch_and_cache", side_effect=RuntimeError(err)),
         "haute.routes.databricks",
-        "internal-boom", 500,
+        "internal-boom",
+        500,
         id="databricks-fetch-log",
     ),
     pytest.param(
-        "post", "/api/json-cache/build", {"json": {"path": "data.jsonl"}},
+        "post",
+        "/api/json-cache/build",
+        {"json": {"path": "data.jsonl"}},
         lambda err: patch("haute._json_flatten.build_json_cache", side_effect=RuntimeError(err)),
         "haute.routes.json_cache",
-        "internal-json-error", 500,
+        "internal-json-error",
+        500,
         id="json-cache-build-log",
     ),
     pytest.param(
-        "get", "/api/mlflow/experiments", None,
+        "get",
+        "/api/mlflow/experiments",
+        None,
         lambda err: _mlflow_tracking_patch("search_experiments", err),
         "haute.routes.mlflow",
-        "secret-mlflow-err", 502,
+        "secret-mlflow-err",
+        502,
         id="mlflow-experiments-log",
     ),
 ]
@@ -591,9 +616,7 @@ class TestLogOnError:
 
     # -- Pipeline routes need the pipeline_graph fixture --
 
-    def test_pipeline_trace_logs_error(
-        self, client: TestClient, pipeline_graph
-    ) -> None:
+    def test_pipeline_trace_logs_error(self, client: TestClient, pipeline_graph) -> None:
         mock_logger = MagicMock()
         with (
             patch(
@@ -610,9 +633,7 @@ class TestLogOnError:
         mock_logger.error.assert_called()
         assert "real-trace-error" in str(mock_logger.error.call_args)
 
-    def test_pipeline_preview_logs_error(
-        self, client: TestClient, pipeline_graph
-    ) -> None:
+    def test_pipeline_preview_logs_error(self, client: TestClient, pipeline_graph) -> None:
         mock_logger = MagicMock()
         node_id = pipeline_graph.nodes[0].id
         with (
@@ -858,7 +879,9 @@ class TestMlflowMissingStatusInconsistency:
 _LEAKAGE_CASES: list[tuple] = [
     # GAP 1: File path leakage
     pytest.param(
-        "get", "/api/schema", None,
+        "get",
+        "/api/schema",
+        None,
         "haute.graph_utils.read_source",
         "ArrowInvalid: /srv/app/data/cache/data.csv: invalid magic bytes",
         500,
@@ -866,7 +889,9 @@ _LEAKAGE_CASES: list[tuple] = [
         id="file-path-schema-read-oserror",
     ),
     pytest.param(
-        "get", "/api/schema", None,
+        "get",
+        "/api/schema",
+        None,
         "haute.graph_utils.read_source",
         "ImportError: /usr/local/lib/python3.11/lib-dynload/"
         "_csv.cpython-311-x86_64-linux-gnu.so: undefined symbol: PyFloat_Type",
@@ -876,7 +901,9 @@ _LEAKAGE_CASES: list[tuple] = [
     ),
     # GAP 2: Stack trace leakage -- git status
     pytest.param(
-        "get", "/api/git/status", None,
+        "get",
+        "/api/git/status",
+        None,
         "haute.routes.git.get_status",
         "subprocess.CalledProcessError: Command git status returned "
         "non-zero exit status 128.\n"
@@ -887,7 +914,9 @@ _LEAKAGE_CASES: list[tuple] = [
     ),
     # GAP 3: Environment variable leakage
     pytest.param(
-        "get", "/api/databricks/warehouses", None,
+        "get",
+        "/api/databricks/warehouses",
+        None,
         lambda err: _databricks_client_patch("warehouses.list", err),
         "AuthenticationError: invalid token dapi_test_token "
         "for host https://test.cloud.databricks.com",
@@ -896,7 +925,8 @@ _LEAKAGE_CASES: list[tuple] = [
         id="env-var-warehouses",
     ),
     pytest.param(
-        "post", "/api/databricks/fetch",
+        "post",
+        "/api/databricks/fetch",
         {"json": {"table": "cat.sch.tbl", "http_path": "/sql/wh"}},
         lambda err: patch("haute._databricks_io.fetch_and_cache", side_effect=RuntimeError(err)),
         "ConnectionError: HTTPSConnectionPool(host=test.cloud.databricks.com, "
@@ -907,7 +937,9 @@ _LEAKAGE_CASES: list[tuple] = [
     ),
     # GAP 4: Database connection string / MLflow tracking URI leakage
     pytest.param(
-        "get", "/api/mlflow/experiments", None,
+        "get",
+        "/api/mlflow/experiments",
+        None,
         lambda err: _mlflow_tracking_patch("search_experiments", err),
         "OperationalError: unable to open database file: sqlite:////home/user/mlruns/mlflow.db",
         502,
@@ -1046,9 +1078,7 @@ class TestSensitiveInfoLeakage:
         assert "Traceback" not in detail
         assert detail == _SAFE_DETAIL
 
-    def test_preview_traceback_string_no_leak(
-        self, client: TestClient, pipeline_graph
-    ) -> None:
+    def test_preview_traceback_string_no_leak(self, client: TestClient, pipeline_graph) -> None:
         """POST /api/pipeline/preview -- traceback-containing error must not leak."""
         node_id = pipeline_graph.nodes[0].id
         with patch(
@@ -1088,9 +1118,7 @@ class TestSensitiveInfoLeakage:
         assert "GCC" not in detail
         assert detail == _SAFE_DETAIL
 
-    def test_optimiser_mlflow_log_tracking_uri_no_leak(
-        self, client: TestClient
-    ) -> None:
+    def test_optimiser_mlflow_log_tracking_uri_no_leak(self, client: TestClient) -> None:
         """POST /api/optimiser/mlflow/log -- databricks:// URI must not leak."""
         from haute.routes.optimiser import _store
 
@@ -1125,9 +1153,7 @@ class TestSensitiveInfoLeakage:
             _store.jobs.clear()
             _store.jobs.update(snapshot)
 
-    def test_modelling_mlflow_log_postgres_uri_no_leak(
-        self, client: TestClient
-    ) -> None:
+    def test_modelling_mlflow_log_postgres_uri_no_leak(self, client: TestClient) -> None:
         """POST /api/modelling/mlflow/log -- postgres connection string must not leak."""
         from haute.routes.modelling import _store
 
@@ -1222,9 +1248,7 @@ class TestUserCodeErrorSanitization:
         assert "_sandbox" not in error_msg
         assert "safe_globals" not in error_msg
 
-    def test_preview_node_error_shows_user_msg_not_internals(
-        self, client: TestClient
-    ) -> None:
+    def test_preview_node_error_shows_user_msg_not_internals(self, client: TestClient) -> None:
         from haute.schemas import NodeResult
 
         graph = _source_and_transform_graph(

@@ -429,10 +429,7 @@ class TestResourceExhaustionTopoSort:
     def test_10k_node_linear_chain(self):
         n = 10_000
         node_ids = [f"n{i}" for i in range(n)]
-        edges = [
-            GraphEdge(id=f"e{i}", source=f"n{i}", target=f"n{i+1}")
-            for i in range(n - 1)
-        ]
+        edges = [GraphEdge(id=f"e{i}", source=f"n{i}", target=f"n{i + 1}") for i in range(n - 1)]
         result = topo_sort_ids(node_ids, edges)
         assert len(result) == n
         assert result[0] == "n0"
@@ -441,10 +438,7 @@ class TestResourceExhaustionTopoSort:
     def test_10k_node_wide_fan_out(self):
         n = 10_000
         node_ids = ["root"] + [f"leaf{i}" for i in range(n - 1)]
-        edges = [
-            GraphEdge(id=f"e{i}", source="root", target=f"leaf{i}")
-            for i in range(n - 1)
-        ]
+        edges = [GraphEdge(id=f"e{i}", source="root", target=f"leaf{i}") for i in range(n - 1)]
         result = topo_sort_ids(node_ids, edges)
         assert len(result) == n
         assert result[0] == "root"
@@ -452,10 +446,7 @@ class TestResourceExhaustionTopoSort:
     def test_10k_node_wide_fan_in(self):
         n = 10_000
         node_ids = [f"src{i}" for i in range(n - 1)] + ["sink"]
-        edges = [
-            GraphEdge(id=f"e{i}", source=f"src{i}", target="sink")
-            for i in range(n - 1)
-        ]
+        edges = [GraphEdge(id=f"e{i}", source=f"src{i}", target="sink") for i in range(n - 1)]
         result = topo_sort_ids(node_ids, edges)
         assert len(result) == n
         assert result[-1] == "sink"
@@ -475,8 +466,8 @@ class TestResourceExhaustionTopoSort:
             b = f"b{i}"
             node_ids.extend([a, b])
             if i > 0:
-                prev_a = f"a{i-1}"
-                prev_b = f"b{i-1}"
+                prev_a = f"a{i - 1}"
+                prev_b = f"b{i - 1}"
                 edges.append(GraphEdge(id=f"ea{i}", source=prev_a, target=a))
                 edges.append(GraphEdge(id=f"eb{i}", source=prev_a, target=b))
                 edges.append(GraphEdge(id=f"ec{i}", source=prev_b, target=a))
@@ -650,7 +641,9 @@ class TestSymlinkTraversalBrowse:
             pytest.skip("Cannot create symlinks (requires privileges on Windows)")
         return project
 
-    def test_symlink_traversal_blocked(self, dir_with_symlink: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_symlink_traversal_blocked(
+        self, dir_with_symlink: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         from fastapi import HTTPException
         from haute.routes._helpers import validate_safe_path
 
@@ -675,7 +668,7 @@ class TestSecondOrderCodeInjection:
         [
             "__import__('os').system('echo pwned')",
             "__import__('subprocess').call(['rm', '-rf', '/'])",
-            "eval('__import__(\"os\").system(\"id\")')",
+            'eval(\'__import__("os").system("id")\')',
             "exec('import socket')",
             "getattr(__builtins__, '__import__')('os')",
             "type('X', (), {'__del__': lambda s: None})()",

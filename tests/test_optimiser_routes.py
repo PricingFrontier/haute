@@ -1764,9 +1764,7 @@ class TestValidateConfig:
         from haute.routes._optimiser_service import OptimiserSolveService
 
         with pytest.raises(HTTPException) as exc_info:
-            OptimiserSolveService._validate_config(
-                {"objective": "income", "mode": "quantum"}
-            )
+            OptimiserSolveService._validate_config({"objective": "income", "mode": "quantum"})
         assert exc_info.value.status_code == 400
         assert "quantum" in exc_info.value.detail
 
@@ -1785,9 +1783,7 @@ class TestValidateConfig:
     def test_valid_online_config_passes(self):
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        mode = OptimiserSolveService._validate_config(
-            {"objective": "income", "mode": "online"}
-        )
+        mode = OptimiserSolveService._validate_config({"objective": "income", "mode": "online"})
         assert mode == "online"
 
     def test_valid_online_config_default_mode(self):
@@ -1845,9 +1841,7 @@ class TestValidateConfig:
 
 class TestComputeScenarioValueStatsExtended:
     def test_empty_dataframe_returns_n_zero(self):
-        df = pl.DataFrame(
-            {"optimal_scenario_value": pl.Series([], dtype=pl.Float64)}
-        )
+        df = pl.DataFrame({"optimal_scenario_value": pl.Series([], dtype=pl.Float64)})
         result = SimpleNamespace(dataframe=df)
         stats, hist = _compute_scenario_value_stats(result)
         assert stats == {"n": 0}
@@ -1877,9 +1871,7 @@ class TestComputeScenarioValueStatsExtended:
 
 class TestFinalizeSolveResult:
     def _make_solve_result(self, *, converged=True):
-        df = pl.DataFrame(
-            {"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]}
-        )
+        df = pl.DataFrame({"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]})
         return SimpleNamespace(
             dataframe=df,
             total_objective=100.0,
@@ -1895,9 +1887,7 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_service import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job(
-            {"status": "running", "config": {"constraints": {}}}
-        )
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
         solve_result = self._make_solve_result(converged=False)
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -1921,9 +1911,7 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_service import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job(
-            {"status": "running", "config": {"constraints": {}}}
-        )
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
         solve_result = self._make_solve_result(converged=True)
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -1946,9 +1934,7 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_service import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job(
-            {"status": "running", "config": {"constraints": {}}}
-        )
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -2330,9 +2316,7 @@ class TestSelectFrontierPointResolve:
             baseline_constraints={"volume": 0.90},
             lambdas={"volume": 0.7},
             converged=converged,
-            dataframe=pl.DataFrame(
-                {"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]}
-            ),
+            dataframe=pl.DataFrame({"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]}),
         )
         mock_solver.solve.return_value = new_result
         clean_job_store.jobs["fsel"] = {
@@ -2584,7 +2568,10 @@ class TestBuildArtifactPayloadExtended:
             "frontier_data": {"n_points": 3},
         }
         solve_result = SimpleNamespace(
-            lambdas={}, total_objective=0.0, total_constraints={}, converged=True,
+            lambdas={},
+            total_objective=0.0,
+            total_constraints={},
+            converged=True,
         )
         # selected_idx is None so frontier_selection should not be added
         payload = _build_artifact_payload(job, solve_result)
@@ -2599,7 +2586,10 @@ class TestBuildArtifactPayloadExtended:
             # no frontier_data key
         }
         solve_result = SimpleNamespace(
-            lambdas={}, total_objective=0.0, total_constraints={}, converged=True,
+            lambdas={},
+            total_objective=0.0,
+            total_constraints={},
+            converged=True,
         )
         payload = _build_artifact_payload(job, solve_result)
         assert "frontier_selection" not in payload
@@ -2609,7 +2599,9 @@ class TestMlflowLogExtended:
     """Extended tests for /mlflow/log — frontier data logging, tags, artifacts."""
 
     @staticmethod
-    def _make_mlflow_job(clean_job_store, job_id, *, frontier_data=None, selected_frontier_point=None):
+    def _make_mlflow_job(
+        clean_job_store, job_id, *, frontier_data=None, selected_frontier_point=None
+    ):
         mock_solver = MagicMock()
         mock_solver.summary.return_value = {
             "params": {"mode": "online"},
@@ -2662,7 +2654,8 @@ class TestMlflowLogExtended:
             "constraint_names": ["volume"],
         }
         self._make_mlflow_job(
-            clean_job_store, "mlf_ok",
+            clean_job_store,
+            "mlf_ok",
             frontier_data=frontier_data,
             selected_frontier_point=1,
         )
@@ -2724,10 +2717,7 @@ class TestMlflowLogExtended:
 
         assert resp.status_code == 200
         # No frontier tags should be set when no frontier data
-        frontier_calls = [
-            c for c in mock_mlflow.set_tag.call_args_list
-            if "frontier" in str(c)
-        ]
+        frontier_calls = [c for c in mock_mlflow.set_tag.call_args_list if "frontier" in str(c)]
         assert len(frontier_calls) == 0
 
     def test_mlflow_log_artifacts_skips_none(self, client, clean_job_store):
@@ -2855,13 +2845,15 @@ class TestSolveOnlineUnit:
         from haute.routes._optimiser_service import _solve_online
 
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {
-                "constraints": {"volume": {"min": 0.9}},
-                "objective": "expected_income",
-            },
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "objective": "expected_income",
+                },
+            }
+        )
 
         mock_grid = MagicMock()
         mock_result = SimpleNamespace(
@@ -2914,10 +2906,12 @@ class TestSolveOnlineUnit:
         from haute.routes._optimiser_service import _solve_online
 
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {"constraints": {}, "objective": "income"},
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {"constraints": {}, "objective": "income"},
+            }
+        )
 
         mock_grid = MagicMock()
         mock_result = SimpleNamespace(
@@ -2989,18 +2983,22 @@ class TestSolveRatebookUnit:
         from haute.routes._optimiser_service import _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {"constraints": {}},
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {"constraints": {}},
+            }
+        )
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3"]
 
-        factors_df = pl.DataFrame({
-            "quote_id": ["q1", "q2", "q3"],
-            "region": ["North", "South", "East"],
-        })
+        factors_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q3"],
+                "region": ["North", "South", "East"],
+            }
+        )
 
         mock_result = SimpleNamespace(
             total_objective=100.0,
@@ -3036,18 +3034,22 @@ class TestSolveRatebookUnit:
         from haute.routes._optimiser_service import _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {"constraints": {}},
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {"constraints": {}},
+            }
+        )
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
 
-        factors_df = pl.DataFrame({
-            "policy_id": ["q1", "q2"],
-            "region": ["North", "South"],
-        })
+        factors_df = pl.DataFrame(
+            {
+                "policy_id": ["q1", "q2"],
+                "region": ["North", "South"],
+            }
+        )
 
         mock_result = SimpleNamespace(
             total_objective=100.0,
@@ -3131,6 +3133,7 @@ class TestExecutePipelineExtended:
 
         def fake_execute_lazy(*args, **kwargs):
             import polars as pl
+
             captured_chunk_sizes.append(pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE"))
             return ({"opt": MagicMock()}, [], {}, {})
 
@@ -3193,12 +3196,14 @@ class TestValidateAndProject:
         job_id = store.create_job({"status": "running"})
 
         # LazyFrame missing 'volume' column
-        source_lf = pl.LazyFrame({
-            "quote_id": ["q1"],
-            "scenario_index": [0],
-            "scenario_value": [1.0],
-            "expected_income": [100.0],
-        })
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": ["q1"],
+                "scenario_index": [0],
+                "scenario_value": [1.0],
+                "expected_income": [100.0],
+            }
+        )
 
         config = {
             "objective": "expected_income",
@@ -3223,13 +3228,15 @@ class TestValidateAndProject:
         job_id = store.create_job({"status": "running"})
 
         # Include a null quote_id row
-        source_lf = pl.LazyFrame({
-            "quote_id": ["q1", None, "q3"],
-            "scenario_index": [0, 1, 2],
-            "scenario_value": [1.0, 1.1, 1.2],
-            "expected_income": [100.0, 110.0, 120.0],
-            "volume": [0.9, 0.95, 0.88],
-        })
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": ["q1", None, "q3"],
+                "scenario_index": [0, 1, 2],
+                "scenario_value": [1.0, 1.1, 1.2],
+                "expected_income": [100.0, 110.0, 120.0],
+                "volume": [0.9, 0.95, 0.88],
+            }
+        )
 
         config = {
             "objective": "expected_income",
@@ -3257,12 +3264,14 @@ class TestValidateAndProject:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
 
-        source_lf = pl.LazyFrame({
-            "quote_id": ["q1"],
-            "scenario_index": [0],
-            "scenario_value": [1.0],
-            "expected_income": [100.0],
-        })
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": ["q1"],
+                "scenario_index": [0],
+                "scenario_value": [1.0],
+                "expected_income": [100.0],
+            }
+        )
 
         config = {
             "objective": "expected_income",
@@ -3288,13 +3297,15 @@ class TestBuildGrid:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
 
-        scored_lf = pl.LazyFrame({
-            "quote_id": pl.Series(["q1", "q1", "q2", "q2"], dtype=pl.Utf8),
-            "scenario_index": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
-            "scenario_value": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
-            "expected_income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
-            "volume": pl.Series([0.9, 0.85, 0.95, 0.90], dtype=pl.Float32),
-        })
+        scored_lf = pl.LazyFrame(
+            {
+                "quote_id": pl.Series(["q1", "q1", "q2", "q2"], dtype=pl.Utf8),
+                "scenario_index": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
+                "scenario_value": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
+                "expected_income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
+                "volume": pl.Series([0.9, 0.85, 0.95, 0.90], dtype=pl.Float32),
+            }
+        )
 
         config = {
             "objective": "expected_income",
@@ -3312,6 +3323,7 @@ class TestBuildGrid:
             # Make safe_sink actually write the file
             def do_sink(lf, path, **kw):
                 lf.collect().write_parquet(path)
+
             mock_sink.side_effect = do_sink
 
             result = service._build_grid(scored_lf, ["volume"], config, "opt", job_id)
@@ -3322,6 +3334,7 @@ class TestBuildGrid:
         build_call_args = mock_build.call_args
         parquet_path = build_call_args[0][0]
         import os
+
         assert not os.path.exists(parquet_path)
 
     def test_build_grid_failure_updates_job_store(self, tmp_path):
@@ -3335,12 +3348,14 @@ class TestBuildGrid:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
 
-        scored_lf = pl.LazyFrame({
-            "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
-            "scenario_index": pl.Series([0], dtype=pl.Int32),
-            "scenario_value": pl.Series([1.0], dtype=pl.Float32),
-            "expected_income": pl.Series([100.0], dtype=pl.Float32),
-        })
+        scored_lf = pl.LazyFrame(
+            {
+                "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
+                "scenario_index": pl.Series([0], dtype=pl.Int32),
+                "scenario_value": pl.Series([1.0], dtype=pl.Float32),
+                "expected_income": pl.Series([100.0], dtype=pl.Float32),
+            }
+        )
 
         config = {
             "objective": "expected_income",
@@ -3451,12 +3466,16 @@ class TestApplyException:
     def test_apply_exception_returns_500(self, client, clean_job_store):
         """When solve_result.dataframe raises, apply returns 500."""
         mock_solve_result = MagicMock()
-        mock_solve_result.dataframe = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+        mock_solve_result.dataframe = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+
         # Use a SimpleNamespace with a property that raises
         class FailingResult:
             @property
             def dataframe(self):
                 raise RuntimeError("boom")
+
             total_objective = 100.0
             total_constraints = {"volume": 0.92}
 
@@ -3566,7 +3585,10 @@ class TestMlflowLogExceptionPath:
         mock_solver = MagicMock()
         mock_solver.summary.side_effect = RuntimeError("summary boom")
         mock_solve_result = SimpleNamespace(
-            lambdas={}, total_objective=0, total_constraints={}, converged=True,
+            lambdas={},
+            total_objective=0,
+            total_constraints={},
+            converged=True,
         )
         clean_job_store.jobs["mlf_err"] = {
             "status": "completed",
@@ -3594,19 +3616,23 @@ class TestSolveRatebookFallbackQuoteId:
         from haute.routes._optimiser_service import _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({
-            "status": "running",
-            "config": {"constraints": {}},
-        })
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {"constraints": {}},
+            }
+        )
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
 
         # factors_df has 'quote_id' but config says 'policy_id' which is NOT in the df
-        factors_df = pl.DataFrame({
-            "quote_id": ["q1", "q2"],
-            "region": ["North", "South"],
-        })
+        factors_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["North", "South"],
+            }
+        )
 
         mock_result = SimpleNamespace(
             total_objective=100.0,
@@ -3682,12 +3708,14 @@ class TestBuildGridHTTPExceptionPassthrough:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
 
-        scored_lf = pl.LazyFrame({
-            "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
-            "scenario_index": pl.Series([0], dtype=pl.Int32),
-            "scenario_value": pl.Series([1.0], dtype=pl.Float32),
-            "expected_income": pl.Series([100.0], dtype=pl.Float32),
-        })
+        scored_lf = pl.LazyFrame(
+            {
+                "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
+                "scenario_index": pl.Series([0], dtype=pl.Int32),
+                "scenario_value": pl.Series([1.0], dtype=pl.Float32),
+                "expected_income": pl.Series([100.0], dtype=pl.Float32),
+            }
+        )
 
         config = {
             "objective": "expected_income",

@@ -187,7 +187,7 @@ describe("RatingStepEditor", () => {
     expect(screen.getByText("Table B")).toBeTruthy()
 
     // Find the remove button (X icon) inside Table A tab
-    const tableATab = screen.getByText("Table A").closest("button")!
+    const tableATab = screen.getByText("Table A").closest("[role='tab']")!
     const removeBtn = tableATab.querySelector("button[aria-label='Remove table']")
     expect(removeBtn).toBeTruthy()
     fireEvent.click(removeBtn!)
@@ -214,8 +214,8 @@ describe("RatingStepEditor", () => {
       />,
     )
     // The X remove icon should not be rendered when only 1 table
-    const tableTab = screen.getByText("Only Table").closest("button")!
-    const removeSpan = tableTab.querySelector("span[class*='cursor-pointer']")
+    const tableTab = screen.getByText("Only Table").closest("[role='tab']")!
+    const removeSpan = tableTab.querySelector("button[aria-label='Remove table']")
     expect(removeSpan).toBeNull()
   })
 

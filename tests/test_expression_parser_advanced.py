@@ -806,20 +806,14 @@ class TestFStringAlias:
         assert set(expr.referenced_columns) == {"x", "y"}
 
     def test_fstring_alias_numeric_suffix(self):
-        code = (
-            "version = 2\n"
-            'df = df.with_columns((pl.col("a") * 3).alias(f"col_v{version}"))'
-        )
+        code = 'version = 2\ndf = df.with_columns((pl.col("a") * 3).alias(f"col_v{version}"))'
         expr = parse_expression(code, "col_v2")
         assert expr is not None
         assert expr.target_column == "col_v2"
         assert "a" in expr.referenced_columns
 
     def test_fstring_alias_evaluate(self):
-        code = (
-            'suffix = "out"\n'
-            'df = df.with_columns((pl.col("x") + 1).alias(f"result_{suffix}"))'
-        )
+        code = 'suffix = "out"\ndf = df.with_columns((pl.col("x") + 1).alias(f"result_{suffix}"))'
         result = evaluate_expression(code, "result_out", {"x": 10})
         assert result is not None
         assert result.result_value in (11, None)
@@ -842,10 +836,7 @@ class TestStarredExpressions:
         assert expr is not None
 
     def test_starred_list_parse(self):
-        code = (
-            'exprs = [(pl.col("a") + 1).alias("result")]\n'
-            "df = df.with_columns(*exprs)"
-        )
+        code = 'exprs = [(pl.col("a") + 1).alias("result")]\ndf = df.with_columns(*exprs)'
         expr = parse_expression(code, "result")
         assert expr is not None
         assert "a" in expr.referenced_columns

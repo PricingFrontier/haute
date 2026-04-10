@@ -381,9 +381,14 @@ class TestBuildReportExtended:
         prd = [{"price": 100.0}, {"price": 200.0}]
         inp = pl.DataFrame({"x": ["a", "b"]})
         report = build_report(
-            stg, prd, inp,
-            pipeline_name="t", staging_endpoint="s", prod_endpoint="p",
-            dataset_path="d", total_rows=2,
+            stg,
+            prd,
+            inp,
+            pipeline_name="t",
+            staging_endpoint="s",
+            prod_endpoint="p",
+            dataset_path="d",
+            total_rows=2,
         )
         assert report.scored_rows == 1
         assert report.failed_rows == 1
@@ -393,9 +398,14 @@ class TestBuildReportExtended:
         prd = [{"a": 100.0, "b": 50.0}]
         inp = pl.DataFrame({"x": ["z"]})
         report = build_report(
-            stg, prd, inp,
-            pipeline_name="t", staging_endpoint="s", prod_endpoint="p",
-            dataset_path="d", total_rows=1,
+            stg,
+            prd,
+            inp,
+            pipeline_name="t",
+            staging_endpoint="s",
+            prod_endpoint="p",
+            dataset_path="d",
+            total_rows=1,
         )
         assert len(report.column_stats) == 2
         names = {cs.name for cs in report.column_stats}
@@ -407,9 +417,14 @@ class TestBuildReportExtended:
         prd = [{"price": 100.0, "fee": 10.0}]
         inp = pl.DataFrame({"x": ["z"]})
         report = build_report(
-            stg, prd, inp,
-            pipeline_name="t", staging_endpoint="s", prod_endpoint="p",
-            dataset_path="d", total_rows=1,
+            stg,
+            prd,
+            inp,
+            pipeline_name="t",
+            staging_endpoint="s",
+            prod_endpoint="p",
+            dataset_path="d",
+            total_rows=1,
         )
         assert report.column_stats[0].name == "price"
 
@@ -419,9 +434,14 @@ class TestBuildReportExtended:
         prd = [{"price": 100.0}] * n + [{"price": 200.0}] * n
         inp = pl.DataFrame({"region": ["A"] * n + ["B"] * n})
         report = build_report(
-            stg, prd, inp,
-            pipeline_name="t", staging_endpoint="s", prod_endpoint="p",
-            dataset_path="d", total_rows=n * 2,
+            stg,
+            prd,
+            inp,
+            pipeline_name="t",
+            staging_endpoint="s",
+            prod_endpoint="p",
+            dataset_path="d",
+            total_rows=n * 2,
         )
         assert len(report.segments) > 0
 
@@ -518,9 +538,7 @@ class TestScoreHttpEndpointBatched:
 
         with patch("urllib.request.urlopen", side_effect=mock_urlopen):
             records = [{"x": 1}, {"x": 2}]
-            preds = score_http_endpoint_batched(
-                "http://example.com/api", records, batch_size=10
-            )
+            preds = score_http_endpoint_batched("http://example.com/api", records, batch_size=10)
 
         assert len(captured_requests) == 1
         assert captured_requests[0].full_url == "http://example.com/api/quote"
@@ -535,17 +553,13 @@ class TestScoreHttpEndpointBatched:
 
         def mock_urlopen(req, timeout=120):
             cm = MagicMock()
-            cm.__enter__ = lambda s: MagicMock(
-                read=lambda: json.dumps([10, 20, 30]).encode()
-            )
+            cm.__enter__ = lambda s: MagicMock(read=lambda: json.dumps([10, 20, 30]).encode())
             cm.__exit__ = lambda s, *a: None
             return cm
 
         with patch("urllib.request.urlopen", side_effect=mock_urlopen):
             records = [{"x": i} for i in range(3)]
-            preds = score_http_endpoint_batched(
-                "http://example.com", records, batch_size=10
-            )
+            preds = score_http_endpoint_batched("http://example.com", records, batch_size=10)
 
         assert preds == [10, 20, 30]
 
@@ -554,14 +568,10 @@ class TestScoreHttpEndpointBatched:
         from unittest.mock import patch
 
         def mock_urlopen(req, timeout=120):
-            exc = urllib.error.HTTPError(
-                req.full_url, 500, "Internal Server Error", {}, None
-            )
+            exc = urllib.error.HTTPError(req.full_url, 500, "Internal Server Error", {}, None)
             exc.read = lambda: b"server error details"
             raise exc
 
         with patch("urllib.request.urlopen", side_effect=mock_urlopen):
             with pytest.raises(RuntimeError, match="HTTP 500"):
-                score_http_endpoint_batched(
-                    "http://example.com", [{"x": 1}], batch_size=10
-                )
+                score_http_endpoint_batched("http://example.com", [{"x": 1}], batch_size=10)

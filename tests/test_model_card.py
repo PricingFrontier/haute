@@ -61,18 +61,21 @@ class TestModelCardContainsMetrics:
 
 
 class TestModelCardOmitsEmptySections:
-    @pytest.mark.parametrize("header", [
-        "SHAP Summary",
-        "Cross-Validation",
-        "Double Lift",
-        "Loss Curve",
-        "Actual vs Expected",
-        "Lorenz Curve",
-        "Residuals",
-        "Actual vs Predicted",
-        "Partial Dependence",
-        "Holdout Metrics",
-    ])
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "SHAP Summary",
+            "Cross-Validation",
+            "Double Lift",
+            "Loss Curve",
+            "Actual vs Expected",
+            "Lorenz Curve",
+            "Residuals",
+            "Actual vs Predicted",
+            "Partial Dependence",
+            "Holdout Metrics",
+        ],
+    )
     def test_section_omitted_when_empty(self, header):
         html = generate_model_card(**_minimal_kwargs())
         assert header not in html
@@ -286,15 +289,15 @@ class TestHtmlTable:
         from haute.modelling._model_card import _html_table
 
         result = _html_table(["Left", "Right"], [["a", "b"]], align=["left", "right"])
-        assert 'text-align:left' in result
-        assert 'text-align:right' in result
+        assert "text-align:left" in result
+        assert "text-align:right" in result
 
     def test_default_alignment(self):
         from haute.modelling._model_card import _html_table
 
         result = _html_table(["A", "B"], [["1", "2"]])
         # Default is left for all columns
-        assert 'text-align:left' in result
+        assert "text-align:left" in result
 
     def test_escaping_in_cells(self):
         from haute.modelling._model_card import _html_table
@@ -322,7 +325,12 @@ class TestModelCardCategoricalAvE:
                     "feature": "vehicle_type",
                     "type": "categorical",
                     "bins": [
-                        {"label": "sedan", "exposure": 100, "avg_actual": 0.3, "avg_predicted": 0.35},
+                        {
+                            "label": "sedan",
+                            "exposure": 100,
+                            "avg_actual": 0.3,
+                            "avg_predicted": 0.35,
+                        },
                         {"label": "suv", "exposure": 80, "avg_actual": 0.5, "avg_predicted": 0.48},
                     ],
                 },

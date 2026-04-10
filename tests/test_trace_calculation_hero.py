@@ -186,7 +186,8 @@ class TestSimpleFormulaDisplay:
                 "nodes": [
                     _source_node("src", str(p)),
                     _transform_node(
-                        "t", "df = df.with_columns(result=(pl.col('a') + pl.col('b')) * pl.col('c'))"
+                        "t",
+                        "df = df.with_columns(result=(pl.col('a') + pl.col('b')) * pl.col('c'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1957,7 +1958,9 @@ class TestCalculationValueVerification:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(total=pl.col('price') * pl.col('qty'))"),
+                    _transform_node(
+                        "t", "df = df.with_columns(total=pl.col('price') * pl.col('qty'))"
+                    ),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2056,7 +2059,9 @@ class TestCalculationValueVerification:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(tax=pl.col('price') * pl.col('tax_rate'))"),
+                    _transform_node(
+                        "t", "df = df.with_columns(tax=pl.col('price') * pl.col('tax_rate'))"
+                    ),
                 ],
                 "edges": [_edge("src", "t")],
             }

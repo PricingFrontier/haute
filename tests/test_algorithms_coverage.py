@@ -31,8 +31,9 @@ class TestGetRssMb:
         from haute.modelling._algorithms import _get_rss_mb
 
         fake_status = "Name:\tpython\nVmRSS:\t102400 kB\nVmSize:\t200000 kB\n"
-        with patch.object(sys, "platform", "linux"), patch(
-            "builtins.open", mock_open(read_data=fake_status)
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch("builtins.open", mock_open(read_data=fake_status)),
         ):
             result = _get_rss_mb()
         assert result == pytest.approx(102400 / 1024, rel=1e-6)
@@ -40,8 +41,9 @@ class TestGetRssMb:
     def test_linux_oserror_returns_zero(self):
         from haute.modelling._algorithms import _get_rss_mb
 
-        with patch.object(sys, "platform", "linux"), patch(
-            "builtins.open", side_effect=OSError("no /proc")
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch("builtins.open", side_effect=OSError("no /proc")),
         ):
             assert _get_rss_mb() == 0.0
 
@@ -50,8 +52,9 @@ class TestGetRssMb:
         from haute.modelling._algorithms import _get_rss_mb
 
         fake_status = "Name:\tpython\nVmSize:\t200000 kB\n"
-        with patch.object(sys, "platform", "linux"), patch(
-            "builtins.open", mock_open(read_data=fake_status)
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch("builtins.open", mock_open(read_data=fake_status)),
         ):
             result = _get_rss_mb()
         assert result == 0.0
@@ -64,8 +67,9 @@ class TestGetRssMb:
         mock_resource.getrusage.return_value = usage
         mock_resource.RUSAGE_SELF = 0
 
-        with patch.object(sys, "platform", "darwin"), patch.dict(
-            sys.modules, {"resource": mock_resource}
+        with (
+            patch.object(sys, "platform", "darwin"),
+            patch.dict(sys.modules, {"resource": mock_resource}),
         ):
             result = _get_rss_mb()
         assert result == pytest.approx(100.0, rel=1e-6)
@@ -73,9 +77,7 @@ class TestGetRssMb:
     def test_darwin_import_error_returns_zero(self):
         from haute.modelling._algorithms import _get_rss_mb
 
-        with patch.object(sys, "platform", "darwin"), patch.dict(
-            sys.modules, {"resource": None}
-        ):
+        with patch.object(sys, "platform", "darwin"), patch.dict(sys.modules, {"resource": None}):
             # When module is None, import will raise ImportError
             result = _get_rss_mb()
         # On darwin with import failure the function falls through
@@ -97,9 +99,10 @@ class TestGetRssMb:
         """Windows ctypes branch returns 0.0 on OSError."""
         from haute.modelling._algorithms import _get_rss_mb
 
-        with patch.object(sys, "platform", "win32"), patch(
-            "ctypes.windll", create=True
-        ) as mock_windll:
+        with (
+            patch.object(sys, "platform", "win32"),
+            patch("ctypes.windll", create=True) as mock_windll,
+        ):
             mock_windll.psapi.GetProcessMemoryInfo.side_effect = OSError("fail")
             # Also need to handle GetCurrentProcess
             mock_windll.kernel32.GetCurrentProcess.return_value = 1234
@@ -122,7 +125,9 @@ class TestGetAvailableMb:
     def test_delegates_to_available_ram_bytes(self):
         from haute.modelling._algorithms import _get_available_mb
 
-        with patch("haute.modelling._algorithms.available_ram_bytes", return_value=1024 * 1024 * 512):
+        with patch(
+            "haute.modelling._algorithms.available_ram_bytes", return_value=1024 * 1024 * 512
+        ):
             result = _get_available_mb()
         assert result == pytest.approx(512.0, rel=1e-6)
 
@@ -148,9 +153,11 @@ class TestMemCheckpoint:
         from haute.modelling import _algorithms as alg_mod
 
         log_path = tmp_path / "test_mem.log"
-        with patch.object(alg_mod, "_MEM_LOG", log_path), patch.object(
-            alg_mod, "_get_rss_mb", return_value=123.4
-        ), patch.object(alg_mod, "_get_available_mb", return_value=567.8):
+        with (
+            patch.object(alg_mod, "_MEM_LOG", log_path),
+            patch.object(alg_mod, "_get_rss_mb", return_value=123.4),
+            patch.object(alg_mod, "_get_available_mb", return_value=567.8),
+        ):
             alg_mod._mem_checkpoint("test label")
 
         content = log_path.read_text()
@@ -163,9 +170,11 @@ class TestMemCheckpoint:
 
         log_path = tmp_path / "test_mem.log"
         log_path.write_text("existing\n")
-        with patch.object(alg_mod, "_MEM_LOG", log_path), patch.object(
-            alg_mod, "_get_rss_mb", return_value=0.0
-        ), patch.object(alg_mod, "_get_available_mb", return_value=0.0):
+        with (
+            patch.object(alg_mod, "_MEM_LOG", log_path),
+            patch.object(alg_mod, "_get_rss_mb", return_value=0.0),
+            patch.object(alg_mod, "_get_available_mb", return_value=0.0),
+        ):
             alg_mod._mem_checkpoint("second line")
 
         content = log_path.read_text()
@@ -176,10 +185,11 @@ class TestMemCheckpoint:
         from haute.modelling import _algorithms as alg_mod
 
         log_path = tmp_path / "test_mem.log"
-        with patch.object(alg_mod, "_MEM_LOG", log_path), patch.object(
-            alg_mod, "_get_rss_mb", return_value=0.0
-        ), patch.object(alg_mod, "_get_available_mb", return_value=0.0), patch(
-            "os.fsync", side_effect=OSError("fsync not supported")
+        with (
+            patch.object(alg_mod, "_MEM_LOG", log_path),
+            patch.object(alg_mod, "_get_rss_mb", return_value=0.0),
+            patch.object(alg_mod, "_get_available_mb", return_value=0.0),
+            patch("os.fsync", side_effect=OSError("fsync not supported")),
         ):
             # Should not raise
             alg_mod._mem_checkpoint("fsync fail")
@@ -191,9 +201,11 @@ class TestMemCheckpoint:
         from haute.modelling import _algorithms as alg_mod
 
         log_path = tmp_path / "custom.log"
-        with patch.object(alg_mod, "_MEM_LOG", log_path), patch.object(
-            alg_mod, "_get_rss_mb", return_value=1.0
-        ), patch.object(alg_mod, "_get_available_mb", return_value=2.0):
+        with (
+            patch.object(alg_mod, "_MEM_LOG", log_path),
+            patch.object(alg_mod, "_get_rss_mb", return_value=1.0),
+            patch.object(alg_mod, "_get_available_mb", return_value=2.0),
+        ):
             alg_mod._mem_checkpoint("env var test")
 
         assert log_path.exists()
@@ -297,9 +309,7 @@ class TestBuildPool:
         """Test _build_pool with numeric features only."""
         from haute.modelling._algorithms import _build_pool
 
-        df = pl.DataFrame(
-            {"f1": [1.0, 2.0, 3.0], "f2": [4.0, 5.0, 6.0], "y": [0.0, 1.0, 0.0]}
-        )
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "f2": [4.0, 5.0, 6.0], "y": [0.0, 1.0, 0.0]})
         pool = _build_pool(df, ["f1", "f2"], [], target="y")
         assert pool.num_row() == 3
 
@@ -307,9 +317,7 @@ class TestBuildPool:
         """Test _build_pool with categorical features."""
         from haute.modelling._algorithms import _build_pool
 
-        df = pl.DataFrame(
-            {"f1": [1.0, 2.0, 3.0], "cat": ["a", "b", "c"], "y": [0.0, 1.0, 0.0]}
-        )
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "cat": ["a", "b", "c"], "y": [0.0, 1.0, 0.0]})
         pool = _build_pool(df, ["f1", "cat"], ["cat"], target="y")
         assert pool.num_row() == 3
 
@@ -430,9 +438,11 @@ class TestCatBoostAlgorithmFitCoverage:
         mock_model.best_iteration_ = 5
         mock_model.evals_result_ = {}
 
-        with patch("catboost.CatBoostRegressor", return_value=mock_model), patch(
-            "haute.modelling._algorithms._build_pool"
-        ) as mock_pool, patch("haute.modelling._algorithms._mem_checkpoint"):
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
             mock_pool.return_value = MagicMock()
             result = algo.fit(
                 df,
@@ -462,10 +472,10 @@ class TestCatBoostAlgorithmFitCoverage:
             captured_params.update(kwargs)
             return mock_model
 
-        with patch(
-            "catboost.CatBoostRegressor", side_effect=capture_regressor
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "haute.modelling._algorithms._mem_checkpoint"
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
         ):
             mock_pool.return_value = MagicMock()
             algo.fit(
@@ -489,10 +499,10 @@ class TestCatBoostAlgorithmFitCoverage:
         algo = CatBoostAlgorithm()
         mock_model = MagicMock()
 
-        with patch(
-            "catboost.CatBoostClassifier", return_value=mock_model
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "haute.modelling._algorithms._mem_checkpoint"
+        with (
+            patch("catboost.CatBoostClassifier", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
         ):
             mock_pool.return_value = MagicMock()
             result = algo.fit(
@@ -520,10 +530,10 @@ class TestCatBoostAlgorithmFitCoverage:
             captured_params.update(kwargs)
             return mock_model
 
-        with patch(
-            "catboost.CatBoostRegressor", side_effect=capture_regressor
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "haute.modelling._algorithms._mem_checkpoint"
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
         ):
             mock_pool.return_value = MagicMock()
             algo.fit(
@@ -552,10 +562,10 @@ class TestCatBoostAlgorithmFitCoverage:
             captured_params.update(kwargs)
             return mock_model
 
-        with patch(
-            "catboost.CatBoostRegressor", side_effect=capture_regressor
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "haute.modelling._algorithms._mem_checkpoint"
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
         ):
             mock_pool.return_value = MagicMock()
             algo.fit(
@@ -584,10 +594,10 @@ class TestCatBoostAlgorithmFitCoverage:
             "learn": {"RMSE": [0.4, 0.3, 0.2]},
         }
 
-        with patch(
-            "catboost.CatBoostRegressor", return_value=mock_model
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "haute.modelling._algorithms._mem_checkpoint"
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
         ):
             mock_pool.return_value = MagicMock()
             result = algo.fit(
@@ -714,9 +724,11 @@ class TestCrossValidateCoverage:
 
         df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "y": [0.0, 1.0, 0.0]})
 
-        with patch("catboost.cv", return_value=mock_cv_result), patch(
-            "haute.modelling._algorithms._build_pool", return_value=MagicMock()
-        ), patch("haute.modelling._algorithms._mem_checkpoint"):
+        with (
+            patch("catboost.cv", return_value=mock_cv_result),
+            patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
             result = algo.cross_validate(
                 df,
                 features=["f1"],
@@ -747,12 +759,12 @@ class TestCrossValidateCoverage:
 
         df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "y": [0, 1, 0]})
 
-        with patch("catboost.cv", side_effect=mock_cv), patch(
-            "haute.modelling._algorithms._build_pool", return_value=MagicMock()
-        ), patch("haute.modelling._algorithms._mem_checkpoint"):
-            algo.cross_validate(
-                df, ["f1"], [], "y", None, {"iterations": 3}, "classification", 3
-            )
+        with (
+            patch("catboost.cv", side_effect=mock_cv),
+            patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            algo.cross_validate(df, ["f1"], [], "y", None, {"iterations": 3}, "classification", 3)
 
         assert captured_params["loss_function"] == "Logloss"
 
@@ -893,9 +905,7 @@ class TestDeriveFeaturesCoverage:
     def test_no_features_raises(self):
         from haute.modelling._training_job import TrainingJob
 
-        job = TrainingJob(
-            name="t", data=pl.DataFrame({"y": [1]}), target="y", exclude=["x"]
-        )
+        job = TrainingJob(name="t", data=pl.DataFrame({"y": [1]}), target="y", exclude=["x"])
         df = pl.DataFrame({"y": [1], "x": [2]})
         with pytest.raises(ValueError, match="No feature columns"):
             job._derive_features(df)
@@ -1037,9 +1047,7 @@ class TestLogToMlflowCoverage:
             glm_regularization_path=None,
         )
 
-        with patch(
-            "haute.modelling._mlflow_log.log_experiment"
-        ) as mock_log:
+        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
             job._log_to_mlflow(result)
 
         mock_log.assert_called_once()
@@ -1239,9 +1247,7 @@ class TestFitResult:
     def test_with_values(self):
         from haute.modelling._algorithms import FitResult
 
-        result = FitResult(
-            model="dummy", best_iteration=42, loss_history=[{"iteration": 1}]
-        )
+        result = FitResult(model="dummy", best_iteration=42, loss_history=[{"iteration": 1}])
         assert result.best_iteration == 42
         assert len(result.loss_history) == 1
 
@@ -1295,10 +1301,11 @@ class TestGPUOnIterationPath:
 
         mock_model.fit = fake_fit
 
-        with patch("catboost.CatBoostRegressor", return_value=mock_model), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "tempfile.mkdtemp", return_value=real_tempdir
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("tempfile.mkdtemp", return_value=real_tempdir),
         ):
             mock_pool.return_value = MagicMock()
             result = algo.fit(
@@ -1333,10 +1340,11 @@ class TestGPUOnIterationPath:
 
         real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_err_")
 
-        with patch("catboost.CatBoostRegressor", return_value=mock_model), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "tempfile.mkdtemp", return_value=real_tempdir
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("tempfile.mkdtemp", return_value=real_tempdir),
         ):
             mock_pool.return_value = MagicMock()
             with pytest.raises(RuntimeError, match="GPU training failed"):
@@ -1367,9 +1375,11 @@ class TestGPUOnIterationPath:
             captured_params.update(kwargs)
             return mock_model
 
-        with patch("catboost.CatBoostRegressor", side_effect=capture_regressor), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool:
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
             mock_pool.return_value = MagicMock()
             algo.fit(
                 None,
@@ -1393,11 +1403,12 @@ class TestGPUOnIterationPath:
         mock_model.best_iteration_ = 1
         mock_model.evals_result_ = {}
 
-        with patch("catboost.CatBoostRegressor", return_value=mock_model), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool, patch(
-            "tempfile.mkdtemp"
-        ) as mock_mkdtemp:
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("tempfile.mkdtemp") as mock_mkdtemp,
+        ):
             mock_pool.return_value = MagicMock()
             algo.fit(
                 None,
@@ -1431,9 +1442,11 @@ class TestGPUEvalsResultReconstruction:
             "validation": {"RMSE": [0.5, 0.4]},
         }
 
-        with patch("catboost.CatBoostRegressor", return_value=mock_model), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool:
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
             mock_pool.return_value = MagicMock()
             result = algo.fit(
                 None,
@@ -1463,9 +1476,11 @@ class TestGPUEvalsResultReconstruction:
             "learn": {"RMSE": [0.4, 0.3, 0.2, 0.1]},  # Longer than validation
         }
 
-        with patch("catboost.CatBoostRegressor", return_value=mock_model), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool:
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
             mock_pool.return_value = MagicMock()
             result = algo.fit(
                 None,
@@ -1504,9 +1519,11 @@ class TestGPUAllowWritingFiles:
             captured_params.update(kwargs)
             return mock_model
 
-        with patch("catboost.CatBoostRegressor", side_effect=capture_regressor), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool:
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
             mock_pool.return_value = MagicMock()
             algo.fit(
                 None,
@@ -1535,9 +1552,11 @@ class TestGPUAllowWritingFiles:
             captured_params.update(kwargs)
             return mock_model
 
-        with patch("catboost.CatBoostRegressor", side_effect=capture_regressor), patch(
-            "haute.modelling._algorithms._mem_checkpoint"
-        ), patch("haute.modelling._algorithms._build_pool") as mock_pool:
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
             mock_pool.return_value = MagicMock()
             algo.fit(
                 None,
@@ -1663,9 +1682,11 @@ class TestFitEvalDfAutoPool:
             pool_calls.append(("build_pool", args, kwargs))
             return MagicMock()
 
-        with patch("catboost.CatBoostRegressor", return_value=mock_model), patch(
-            "haute.modelling._algorithms._build_pool", side_effect=mock_build_pool
-        ), patch("haute.modelling._algorithms._mem_checkpoint"):
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool", side_effect=mock_build_pool),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
             result = algo.fit(
                 train_df,
                 features=["x1"],

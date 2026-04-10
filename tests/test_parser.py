@@ -670,7 +670,7 @@ pipeline.connect("source", "transform")
 
 class TestCircularSubmodelReferences:
     def test_circular_submodel_refs_terminate(self, tmp_path):
-        main_code = '''\
+        main_code = """\
 import polars as pl
 import haute
 
@@ -683,8 +683,8 @@ def src() -> pl.DataFrame:
 
 
 pipeline.submodel("sub_b.py")
-'''
-        sub_b_code = '''\
+"""
+        sub_b_code = """\
 import polars as pl
 import haute
 
@@ -695,7 +695,7 @@ pipeline.submodel("test_pipeline.py")
 @pipeline.data_source(path="d.parquet")
 def b_node() -> pl.DataFrame:
     return pl.DataFrame()
-'''
+"""
         (tmp_path / "test_pipeline.py").write_text(main_code)
         (tmp_path / "sub_b.py").write_text(sub_b_code)
 
@@ -707,7 +707,7 @@ def b_node() -> pl.DataFrame:
 
 class TestNonExistentSubmodelFilePath:
     def test_nonexistent_submodel_skipped(self, tmp_path):
-        code = '''\
+        code = """\
 import polars as pl
 import haute
 
@@ -720,7 +720,7 @@ def src() -> pl.DataFrame:
 
 
 pipeline.submodel("nonexistent.py")
-'''
+"""
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
 
@@ -754,7 +754,7 @@ def node_a() -> pl.DataFrame:
 
 class TestSubmodelNameCollision:
     def test_same_submodel_name_is_deterministic(self, tmp_path):
-        sub_a_code = '''\
+        sub_a_code = """\
 import polars as pl
 import haute
 
@@ -764,8 +764,8 @@ submodel = haute.Submodel("shared_name", description="first")
 @submodel.polars
 def step_from_a() -> pl.DataFrame:
     return pl.DataFrame()
-'''
-        sub_b_code = '''\
+"""
+        sub_b_code = """\
 import polars as pl
 import haute
 
@@ -775,8 +775,8 @@ submodel = haute.Submodel("shared_name", description="second")
 @submodel.polars
 def step_from_b() -> pl.DataFrame:
     return pl.DataFrame()
-'''
-        main_code = '''\
+"""
+        main_code = """\
 import polars as pl
 import haute
 
@@ -790,7 +790,7 @@ def src() -> pl.DataFrame:
 
 pipeline.submodel("sub_a.py")
 pipeline.submodel("sub_b.py")
-'''
+"""
         (tmp_path / "sub_a.py").write_text(sub_a_code)
         (tmp_path / "sub_b.py").write_text(sub_b_code)
         p = _write_pipeline(tmp_path, main_code)
@@ -802,7 +802,7 @@ pipeline.submodel("sub_b.py")
 
 class TestEmptySubmodelFile:
     def test_empty_submodel_handled_gracefully(self, tmp_path):
-        main_code = '''\
+        main_code = """\
 import polars as pl
 import haute
 
@@ -815,7 +815,7 @@ def src() -> pl.DataFrame:
 
 
 pipeline.submodel("empty_sub.py")
-'''
+"""
         (tmp_path / "empty_sub.py").write_text("")
         p = _write_pipeline(tmp_path, main_code)
         graph = parse_pipeline_file(p)
@@ -827,7 +827,7 @@ pipeline.submodel("empty_sub.py")
 
 class TestSubmodelFileWithSyntaxError:
     def test_syntax_error_submodel_no_crash(self, tmp_path):
-        broken_sub_code = '''\
+        broken_sub_code = """\
 import polars as pl
 import haute
 
@@ -837,8 +837,8 @@ submodel = haute.Submodel("broken_sub")
 @submodel.polars
 def broken_step() -> pl.DataFrame:
     return pl.DataFrame(
-'''
-        main_code = '''\
+"""
+        main_code = """\
 import polars as pl
 import haute
 
@@ -851,7 +851,7 @@ def src() -> pl.DataFrame:
 
 
 pipeline.submodel("broken_sub.py")
-'''
+"""
         (tmp_path / "broken_sub.py").write_text(broken_sub_code)
         p = _write_pipeline(tmp_path, main_code)
         graph = parse_pipeline_file(p)

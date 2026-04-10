@@ -320,12 +320,14 @@ class TestReadParquetMetadata:
 
     def test_multiple_column_types(self, tmp_path: Path):
         p = tmp_path / "multi.parquet"
-        df = pl.DataFrame({
-            "int_col": [1, 2],
-            "float_col": [1.5, 2.5],
-            "str_col": ["a", "b"],
-            "bool_col": [True, False],
-        })
+        df = pl.DataFrame(
+            {
+                "int_col": [1, 2],
+                "float_col": [1.5, 2.5],
+                "str_col": ["a", "b"],
+                "bool_col": [True, False],
+            }
+        )
         df.write_parquet(p)
 
         meta = read_parquet_metadata(p)
@@ -335,11 +337,13 @@ class TestReadParquetMetadata:
 
     def test_empty_multi_column(self, tmp_path: Path):
         p = tmp_path / "empty_multi.parquet"
-        df = pl.DataFrame({
-            "a": pl.Series([], dtype=pl.Int64),
-            "b": pl.Series([], dtype=pl.Utf8),
-            "c": pl.Series([], dtype=pl.Float64),
-        })
+        df = pl.DataFrame(
+            {
+                "a": pl.Series([], dtype=pl.Int64),
+                "b": pl.Series([], dtype=pl.Utf8),
+                "c": pl.Series([], dtype=pl.Float64),
+            }
+        )
         df.write_parquet(p)
 
         meta = read_parquet_metadata(p)
@@ -363,7 +367,6 @@ class TestReadParquetMetadata:
 
 
 class TestSafeSinkEdgeCases:
-
     def test_fast_checkpoint_uses_lz4(self, tmp_path: Path):
         lf = pl.LazyFrame({"x": list(range(1000))})
         lz4_path = tmp_path / "lz4.parquet"
@@ -411,11 +414,13 @@ class TestSafeSinkEdgeCases:
         assert result["age"].to_list() == [30, 25]
 
     def test_empty_lazyframe(self, tmp_path: Path):
-        lf = pl.LazyFrame({
-            "a": pl.Series([], dtype=pl.Int64),
-            "b": pl.Series([], dtype=pl.Utf8),
-            "c": pl.Series([], dtype=pl.Float64),
-        })
+        lf = pl.LazyFrame(
+            {
+                "a": pl.Series([], dtype=pl.Int64),
+                "b": pl.Series([], dtype=pl.Utf8),
+                "c": pl.Series([], dtype=pl.Float64),
+            }
+        )
         out = tmp_path / "empty.parquet"
         safe_sink(lf, out)
 
@@ -486,14 +491,12 @@ class TestSafeSinkEdgeCases:
             safe_sink(lf, out)
 
 
-
 # ---------------------------------------------------------------------------
 # atomic_write edge cases
 # ---------------------------------------------------------------------------
 
 
 class TestAtomicWriteEdgeCases:
-
     def test_creates_deeply_nested_parents(self, tmp_path: Path):
         dest = tmp_path / "a" / "b" / "c" / "d" / "out.parquet"
         with atomic_write(dest) as tmp:
@@ -545,7 +548,6 @@ class TestAtomicWriteEdgeCases:
 
 
 class TestMallocTrimEdgeCases:
-
     def test_returns_none(self):
         assert _malloc_trim() is None
 

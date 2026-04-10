@@ -23,6 +23,7 @@ interface PipelineAPIParams {
   setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
+  descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
   lastSavedRef: React.MutableRefObject<string>
   nodeIdCounter: React.MutableRefObject<number>
@@ -74,7 +75,7 @@ export default function usePipelineAPI({
   selectedNode,
   graphRef, parentGraphRef, submodelsRef, setNodes,
   setNodesRaw, setEdgesRaw, setPreamble,
-  preambleRef, pipelineNameRef, sourceFileRef, lastSavedRef,
+  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, lastSavedRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
@@ -151,6 +152,7 @@ export default function usePipelineAPI({
           preambleRef.current = data.preamble || ""
         }
         if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
+        if (data.pipeline_description !== undefined) descriptionRef.current = data.pipeline_description || ""
         if (data.source_file) sourceFileRef.current = data.source_file
         if (data.submodels) submodelsRef.current = data.submodels
         // Populate source state from backend sidecar
@@ -169,7 +171,7 @@ export default function usePipelineAPI({
         addToast("error", `Failed to load pipeline: ${err.message}`)
         setLoading(false)
       })
-  }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, sourceFileRef, submodelsRef, nodeIdCounterRef, lastSavedRef, addToast])
+  }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, lastSavedRef, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node) => {
     // Abort any in-flight preview request
@@ -286,7 +288,7 @@ export default function usePipelineAPI({
     const { sources: sc, activeSource: as_ } = useSettingsStore.getState()
     savePipeline({
       name: pipelineNameRef.current,
-      description: "",
+      description: descriptionRef.current,
       graph: { nodes: n, edges: e, submodels: submodelsRef.current },
       preamble: preambleRef.current,
       source_file: sourceFileRef.current,
@@ -302,7 +304,7 @@ export default function usePipelineAPI({
         console.warn("Pipeline save failed:", err)
         addToast("error", "Failed to save pipeline")
       })
-  }, [graphRef, submodelsRef, preambleRef, sourceFileRef, pipelineNameRef, lastSavedRef, setDirty, addToast])
+  }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, lastSavedRef, setDirty, addToast])
 
   // Clear node statuses when selected node changes (including deselect)
   // so statuses from a previous node don't bleed into the next selection.
