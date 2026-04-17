@@ -37,6 +37,8 @@ _FIELDS: tuple[str, ...] = (
 )
 _ALL_KEYS: frozenset[str] = frozenset((*_FIELDS, "contract_hash"))
 
+CONTRACT_FILENAME = "feature_contract.json"
+
 
 @dataclasses.dataclass(frozen=True)
 class FeatureContract:
@@ -125,25 +127,38 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
     )
 
 
-def load_contract(path: Path | str) -> FeatureContract:
-    """Read and validate a contract written by :func:`save_contract`."""
+def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContract:
+    """Read and validate a contract written by :func:`save_contract`.
+
+    When ``verify_hash`` is True (the default), recomputes the canonical
+    payload hash and raises :class:`FeatureMismatchError` if it disagrees
+    with the stored ``contract_hash`` — catching hand-edited or partially-
+    corrupted artifacts. Pass ``verify_hash=False`` only when rehydrating
+    a contract you just modified in memory.
+    """
     path = Path(path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise FeatureMismatchError(
-            f"contract file {path} must contain a JSON object, got {type(raw).__name__}",
+            f"contract file must contain a JSON object",
+            path=str(path),
+            actual_type=type(raw).__name__,
         )
 
     keys = set(raw)
     missing = _ALL_KEYS - keys
     if missing:
         raise FeatureMismatchError(
-            f"contract file {path} is missing required field(s): {sorted(missing)}",
+            "contract file missing required field(s)",
+            path=str(path),
+            missing=sorted(missing),
         )
     unknown = keys - _ALL_KEYS
     if unknown:
         raise FeatureMismatchError(
-            f"contract file {path} has unknown top-level field(s): {sorted(unknown)}",
+            "contract file has unknown top-level field(s)",
+            path=str(path),
+            unknown=sorted(unknown),
         )
 
     _check_type(raw, "features", list, path)
@@ -153,6 +168,27 @@ def load_contract(path: Path | str) -> FeatureContract:
     _check_type(raw, "target_type", str, path)
     _check_type(raw, "task", str, path)
     _check_type(raw, "contract_hash", str, path)
+
+    if verify_hash:
+        recomputed = _hash_payload(
+            _canonical_payload(
+                raw["features"],
+                raw["feature_types"],
+                raw["categorical_features"],
+                raw["target_name"],
+                raw["target_type"],
+                raw["task"],
+            )
+        )
+        stored = raw["contract_hash"]
+        if recomputed != stored:
+            raise FeatureMismatchError(
+                "contract file hash does not match its content; "
+                "file has been edited or corrupted",
+                path=str(path),
+                expected_hash=stored,
+                actual_hash=recomputed,
+            )
 
     return FeatureContract(
         features=list(raw["features"]),
@@ -167,10 +203,12 @@ def load_contract(path: Path | str) -> FeatureContract:
 
 def _check_type(payload: dict[str, Any], key: str, expected: type, path: Path) -> None:
     if not isinstance(payload[key], expected):
-        actual = type(payload[key]).__name__
         raise FeatureMismatchError(
-            f"contract file {path}: field {key!r} must be "
-            f"{expected.__name__}, got {actual}",
+            f"contract field {key!r} has wrong type",
+            path=str(path),
+            field=key,
+            expected_type=expected.__name__,
+            actual_type=type(payload[key]).__name__,
         )
 
 
@@ -178,7 +216,9 @@ def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -
     """Raise :class:`FeatureMismatchError` if any contract field differs.
 
     The error message names the offending field and shows expected vs
-    actual values so the operator can act on the diff directly.
+    actual values so the operator can act on the diff directly. Structured
+    ``field`` / ``expected`` / ``actual`` context is also attached so log
+    consumers and tests can introspect without parsing the message.
     """
     for field in _FIELDS:
         exp_val = getattr(expected, field)
@@ -187,6 +227,9 @@ def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -
             raise FeatureMismatchError(
                 f"contract mismatch: {field}: expected={_show(exp_val)}, "
                 f"actual={_show(act_val)}",
+                field=field,
+                expected=_normalise(exp_val),
+                actual=_normalise(act_val),
             )
 
 

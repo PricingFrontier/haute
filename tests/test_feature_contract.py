@@ -386,3 +386,169 @@ class TestFrozenContract:
         """Frozen dataclasses also reject brand-new attribute assignment."""
         with pytest.raises(dataclasses.FrozenInstanceError):
             basic_contract.surprise = "value"  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# 16. Tamper-evidence (verify_hash) + structured context kwargs
+# ---------------------------------------------------------------------------
+
+
+class TestTamperEvidence:
+    def test_load_detects_tampered_json(self, tmp_path: Path) -> None:
+        """A contract file with stale contract_hash after hand-editing must
+        raise on load by default — the whole point of the artifact.
+        """
+        from haute.modelling._feature_contract import save_contract
+
+        contract = build_contract(**_basic_kwargs())
+        path = tmp_path / "tampered.json"
+        save_contract(contract, path)
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["features"] = ["xxx_tampered"] + raw["features"]
+        path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
+
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            load_contract(path)
+        err = exc_info.value
+        assert "hash" in str(err).lower()
+        assert err.context.get("path") == str(path)
+        assert err.context.get("expected_hash")
+        assert err.context.get("actual_hash")
+
+    def test_load_verify_hash_false_skips_check(self, tmp_path: Path) -> None:
+        """verify_hash=False is the documented opt-out for rehydrating a
+        contract that was deliberately modified in memory.
+        """
+        from haute.modelling._feature_contract import save_contract
+
+        contract = build_contract(**_basic_kwargs())
+        path = tmp_path / "tampered.json"
+        save_contract(contract, path)
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["features"] = ["xxx_tampered"] + raw["features"]
+        path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
+
+        loaded = load_contract(path, verify_hash=False)
+        assert "xxx_tampered" in loaded.features
+
+
+def _raw_from_contract(contract: FeatureContract) -> dict:
+    return {
+        "features": contract.features,
+        "feature_types": contract.feature_types,
+        "categorical_features": contract.categorical_features,
+        "target_name": contract.target_name,
+        "target_type": contract.target_type,
+        "task": contract.task,
+        "contract_hash": contract.contract_hash,
+    }
+
+
+class TestStructuredContext:
+    def test_missing_field_error_has_context(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.json"
+        raw = _raw_from_contract(build_contract(**_basic_kwargs()))
+        raw.pop("target_name")
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            load_contract(path)
+        err = exc_info.value
+        assert err.context.get("path") == str(path)
+        assert "target_name" in err.context.get("missing", [])
+
+    def test_unknown_field_error_has_context(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.json"
+        raw = _raw_from_contract(build_contract(**_basic_kwargs()))
+        raw["surprise"] = 1
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            load_contract(path)
+        assert "surprise" in exc_info.value.context.get("unknown", [])
+
+    def test_wrong_type_error_has_context(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.json"
+        raw = _raw_from_contract(build_contract(**_basic_kwargs()))
+        raw["features"] = "not_a_list"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            load_contract(path, verify_hash=False)
+        ctx = exc_info.value.context
+        assert ctx.get("field") == "features"
+        assert ctx.get("expected_type") == "list"
+        assert ctx.get("actual_type") == "str"
+
+    def test_assert_mismatch_has_context(self) -> None:
+        expected = build_contract(**_basic_kwargs())
+        actual_kwargs = _basic_kwargs()
+        actual_kwargs["target_type"] = "Float64"
+        actual = build_contract(**actual_kwargs)
+
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            assert_contracts_match(expected, actual)
+        ctx = exc_info.value.context
+        assert ctx.get("field") == "target_type"
+        assert ctx.get("expected") == "Int64"
+        assert ctx.get("actual") == "Float64"
+
+
+# ---------------------------------------------------------------------------
+# 17. Additional coverage gaps (target_type diff, pure-reorder hash)
+# ---------------------------------------------------------------------------
+
+
+class TestAssertContractsMatchTargetType:
+    def test_target_type_difference_raises(self) -> None:
+        expected = build_contract(**_basic_kwargs())
+        actual_kwargs = _basic_kwargs()
+        actual_kwargs["target_type"] = "Float64"
+        actual = build_contract(**actual_kwargs)
+
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            assert_contracts_match(expected, actual)
+        assert "target_type" in str(exc_info.value)
+
+
+class TestHashPureReorder:
+    def test_feature_pure_reorder_changes_hash(self) -> None:
+        """Pure reorder of features (no add/remove) must change the hash —
+        feature order is part of the training contract.
+        """
+        a = build_contract(**_basic_kwargs())
+        kwargs_b = _basic_kwargs()
+        kwargs_b["features"] = list(reversed(kwargs_b["features"]))
+        b = build_contract(**kwargs_b)
+        assert a.contract_hash != b.contract_hash
+
+    def test_categorical_pure_reorder_changes_hash(self) -> None:
+        kwargs_a = _basic_kwargs()
+        kwargs_a["features"] = ["age", "region", "vehicle_class", "vehicle_value"]
+        kwargs_a["feature_types"] = {
+            "age": "Int64",
+            "region": "String",
+            "vehicle_class": "String",
+            "vehicle_value": "Float64",
+        }
+        kwargs_a["categorical_features"] = ["region", "vehicle_class"]
+        a = build_contract(**kwargs_a)
+
+        kwargs_b = dict(kwargs_a)
+        kwargs_b["categorical_features"] = ["vehicle_class", "region"]
+        b = build_contract(**kwargs_b)
+        assert a.contract_hash != b.contract_hash
+
+
+# ---------------------------------------------------------------------------
+# 18. Contract filename constant
+# ---------------------------------------------------------------------------
+
+
+class TestContractFilename:
+    def test_filename_constant_exported(self) -> None:
+        from haute.modelling._feature_contract import CONTRACT_FILENAME
+
+        assert CONTRACT_FILENAME == "feature_contract.json"
