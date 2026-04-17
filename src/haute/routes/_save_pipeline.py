@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import mark_self_write, save_sidecar, validate_safe_path
@@ -158,7 +159,7 @@ class SavePipelineService:
                 preamble=body.preamble or "",
                 preserved_blocks=body.preserved_blocks or None,
             )
-            py_path.write_text(code)
+            atomic_write_text(py_path, code)
 
     # ------------------------------------------------------------------
     # JSON flatten schema inference
