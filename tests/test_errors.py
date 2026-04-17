@@ -400,3 +400,88 @@ class TestInstanceBehavior:
     def test_args_tuple_with_no_kwargs(self):
         err = ConfigError("plain")
         assert err.args == ("plain",)
+
+
+# ===========================================================================
+# Pickle round-trip + public-alias catchability
+# ===========================================================================
+
+
+class TestPickleAndPublicAlias:
+    def test_pickle_roundtrip_preserves_context_and_message(self):
+        import pickle
+
+        from haute.errors import FeatureMismatchError
+
+        err = FeatureMismatchError("mismatch", missing=["age"], extras=["x"])
+        restored = pickle.loads(pickle.dumps(err))
+        assert type(restored) is FeatureMismatchError
+        assert restored.message == "mismatch"
+        assert restored.context == {"missing": ["age"], "extras": ["x"]}
+        assert str(restored) == str(err)
+
+    def test_public_haute_hauteerror_catches_all_typed_errors(self):
+        """haute.HauteError (re-exported via __init__) must catch every
+        error class in haute.errors — the hierarchy is unified, not split.
+        """
+        import haute
+        from haute.errors import (
+            ConfigError,
+            DeployError,
+            ExecutionError,
+            FeatureMismatchError,
+            ParseError,
+        )
+
+        for cls in (ConfigError, ParseError, ExecutionError, DeployError, FeatureMismatchError):
+            with pytest.raises(haute.HauteError):
+                raise cls("x")
+
+    def test_public_haute_hauteerror_is_errors_hauteerror(self):
+        """The public alias and the new hierarchy root must be the same class."""
+        import haute
+        from haute.errors import HauteError as NewRoot
+
+        assert haute.HauteError is NewRoot
+
+    def test_legacy_subclasses_still_catchable_via_public_alias(self):
+        """Pre-existing subclasses (PreambleError, GitError, CycleError, etc.)
+        that inherit from the legacy _types.HauteError must still be catchable
+        via haute.HauteError after hierarchy unification.
+        """
+        import haute
+        from haute._git import GitError
+        from haute._sandbox import UnsafeCodeError
+        from haute._topo import CycleError
+        from haute.executor import PreambleError
+
+        for cls in (PreambleError, GitError, CycleError, UnsafeCodeError):
+            with pytest.raises(haute.HauteError):
+                raise cls("x")
+
+    def test_logging_exception_shows_rendered_form(self):
+        """logging.exception must show the rendered "msg (k=v)" form, not
+        just the bare message — this is what the args=(str(err),) pattern
+        is for.
+        """
+        import logging
+        from io import StringIO
+
+        from haute.errors import ConfigError
+
+        buf = StringIO()
+        handler = logging.StreamHandler(buf)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger = logging.getLogger("test_errors_logging_probe")
+        logger.addHandler(handler)
+        logger.setLevel(logging.ERROR)
+        try:
+            try:
+                raise ConfigError("boom", path="/x", node_id="n1")
+            except ConfigError:
+                logger.exception("caught")
+        finally:
+            logger.removeHandler(handler)
+
+        output = buf.getvalue()
+        assert "boom (path=/x, node_id=n1)" in output

@@ -19,8 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 _Frame = pl.LazyFrame
 
 
-class HauteError(Exception):
-    """Base exception for all Haute-specific errors."""
+from haute.errors import HauteError as HauteError
 
 
 class NodeType(StrEnum):
