@@ -59,11 +59,12 @@ def get_project_root(start: Path | None = None) -> Path:
 
     if not start.exists():
         raise ConfigError(
-            "start path does not exist; cannot locate haute.toml",
+            "start path does not exist; check the path or cd to a Haute project",
             start=str(start),
         )
 
     current = start.resolve()
+    # First haute.toml walking up wins — nested projects inner-win.
     for candidate in [current, *current.parents]:
         if (candidate / "haute.toml").exists():
             if not _has_git(candidate):
