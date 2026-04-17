@@ -360,13 +360,15 @@ class TestInferInputSchema:
             infer_input_schema(graph, "src")
 
     def test_node_not_found_raises(self):
-        """Non-existent node must raise ValueError."""
+        """Non-existent node must raise ConfigError naming the missing node."""
         from haute.deploy._schema import infer_input_schema
+        from haute.errors import ConfigError
 
         graph = _g({"nodes": []})
 
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ConfigError, match="not found") as exc_info:
             infer_input_schema(graph, "nonexistent")
+        assert exc_info.value.context["node_id"] == "nonexistent"
 
     def test_valid_parquet_schema(self, tmp_path):
         """Valid parquet file returns correct schema dict."""

@@ -14,68 +14,63 @@ from typing import Any
 import polars as pl
 
 from haute._logging import get_logger
-from haute._types import HauteError, _Frame
+from haute._types import _Frame
+from haute.errors import FeatureMismatchError as FeatureMismatchError
 
 logger = get_logger(component="model_scorer")
 
 
-# ---------------------------------------------------------------------------
-# Feature mismatch error
-# ---------------------------------------------------------------------------
+def _format_feature_mismatch(
+    expected: list[str],
+    available: list[str],
+    missing: list[str],
+    type_mismatches: list[tuple[str, str, str]] | None = None,
+) -> str:
+    """Build the multi-line diagnostic that replaces cryptic CatBoost errors."""
+    type_mismatches = type_mismatches or []
+    n_expected = len(expected)
+    n_available = len(available)
+    n_missing = len(missing)
+
+    lines: list[str] = [
+        f"Feature mismatch: model expects {n_expected} feature(s) "
+        f"but the input data has {n_available} column(s).",
+        "",
+    ]
+
+    if missing:
+        lines.append(f"Missing feature(s) ({n_missing}):")
+        for name in missing[:20]:
+            lines.append(f"  - {name}")
+        if n_missing > 20:
+            lines.append(f"  ... and {n_missing - 20} more")
+        lines.append("")
+
+    if type_mismatches:
+        lines.append("Type mismatch(es):")
+        for col, expected_type, actual_type in type_mismatches[:10]:
+            lines.append(f"  - '{col}': model expects {expected_type}, got {actual_type}")
+        lines.append("")
+
+    lines.append(
+        "These features were expected by the model but are not in the current input data."
+    )
+    return "\n".join(lines)
 
 
-class FeatureMismatchError(HauteError):
-    """Raised when input columns don't match model feature expectations.
-
-    Provides a human-readable message listing missing features, type
-    mismatches, and actionable guidance — replacing cryptic library-internal
-    errors like CatBoost's ``"Invalid cat_features[2] = 10 value: index
-    must be < 9"``.
-    """
-
-    def __init__(
-        self,
-        *,
-        expected: list[str],
-        available: list[str],
-        missing: list[str],
-        type_mismatches: list[tuple[str, str, str]] | None = None,
-    ) -> None:
-        self.expected = expected
-        self.available = available
-        self.missing = missing
-        self.type_mismatches = type_mismatches or []
-        super().__init__(self._format_message())
-
-    def _format_message(self) -> str:
-        n_expected = len(self.expected)
-        n_available = len(self.available)
-        n_missing = len(self.missing)
-
-        lines: list[str] = [
-            f"Feature mismatch: model expects {n_expected} feature(s) "
-            f"but the input data has {n_available} column(s).",
-            "",
-        ]
-
-        if self.missing:
-            lines.append(f"Missing feature(s) ({n_missing}):")
-            for name in self.missing[:20]:
-                lines.append(f"  - {name}")
-            if n_missing > 20:
-                lines.append(f"  ... and {n_missing - 20} more")
-            lines.append("")
-
-        if self.type_mismatches:
-            lines.append("Type mismatch(es):")
-            for col, expected_type, actual_type in self.type_mismatches[:10]:
-                lines.append(f"  - '{col}': model expects {expected_type}, got {actual_type}")
-            lines.append("")
-
-        lines.append(
-            "These features were expected by the model but are not in the current input data."
-        )
-        return "\n".join(lines)
+def _raise_feature_mismatch(
+    expected: list[str],
+    available: list[str],
+    missing: list[str],
+    type_mismatches: list[tuple[str, str, str]] | None = None,
+) -> None:
+    raise FeatureMismatchError(
+        _format_feature_mismatch(expected, available, missing, type_mismatches),
+        expected=expected,
+        available=available,
+        missing=missing,
+        type_mismatches=type_mismatches or [],
+    )
 
 
 def _validate_features(
@@ -105,7 +100,7 @@ def _validate_features(
                     type_mismatches.append((col, "categorical (String)", str(actual_dtype)))
 
     if not usable:
-        raise FeatureMismatchError(
+        _raise_feature_mismatch(
             expected=expected,
             available=sorted(available),
             missing=missing,
@@ -113,7 +108,7 @@ def _validate_features(
         )
 
     if missing:
-        raise FeatureMismatchError(
+        _raise_feature_mismatch(
             expected=expected,
             available=sorted(available),
             missing=missing,
@@ -210,10 +205,18 @@ def _run_score_pipeline(
     except FeatureMismatchError:
         raise
     except Exception as exc:
+        available_set = set(schema.names())
+        expected_names = scoring_model.feature_names
+        missing_names = [f for f in expected_names if f not in available_set]
         raise FeatureMismatchError(
-            expected=scoring_model.feature_names,
-            available=sorted(schema.names()),
-            missing=[f for f in scoring_model.feature_names if f not in set(schema.names())],
+            _format_feature_mismatch(
+                expected=expected_names,
+                available=sorted(available_set),
+                missing=missing_names,
+            ),
+            expected=expected_names,
+            available=sorted(available_set),
+            missing=missing_names,
         ) from exc
 
     if code:

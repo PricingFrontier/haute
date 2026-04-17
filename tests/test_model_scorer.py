@@ -29,6 +29,7 @@ from haute._model_scorer import (
     FeatureMismatchError,
     ModelScorer,
     _batch_score_to_parquet,
+    _format_feature_mismatch,
     _register_temp_cleanup,
     _run_score_pipeline,
     _sink_to_temp,
@@ -186,9 +187,9 @@ class TestModelScorerScore:
             scorer.score(lf)
 
         err = exc_info.value
-        assert err.missing == ["missing_col"]
-        assert "a" in err.available
-        assert "b" in err.available
+        assert err.context["missing"] == ["missing_col"]
+        assert "a" in err.context["available"]
+        assert "b" in err.context["available"]
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
@@ -575,13 +576,12 @@ class TestScoreFromConfig:
 
 class TestFeatureMismatchError:
     def test_basic_missing_features_message(self):
-        """Error message lists missing features."""
-        err = FeatureMismatchError(
+        """Diagnostic message lists missing features."""
+        msg = _format_feature_mismatch(
             expected=["a", "b", "c"],
             available=["a"],
             missing=["b", "c"],
         )
-        msg = str(err)
         assert "3 feature(s)" in msg
         assert "1 column(s)" in msg
         assert "Missing feature(s) (2):" in msg
@@ -591,37 +591,34 @@ class TestFeatureMismatchError:
     def test_truncation_at_20_missing(self):
         """When more than 20 features are missing, message truncates with '... and N more'."""
         missing = [f"feat_{i}" for i in range(25)]
-        err = FeatureMismatchError(
+        msg = _format_feature_mismatch(
             expected=missing,
             available=[],
             missing=missing,
         )
-        msg = str(err)
         assert "  - feat_0" in msg
         assert "  - feat_19" in msg
-        assert "feat_20" not in msg.split("... and")[0]  # feat_20 not listed individually
+        assert "feat_20" not in msg.split("... and")[0]
         assert "... and 5 more" in msg
 
     def test_type_mismatches_in_message(self):
         """Type mismatch section appears when type_mismatches are provided."""
-        err = FeatureMismatchError(
+        msg = _format_feature_mismatch(
             expected=["a", "b"],
             available=["a", "b"],
             missing=[],
             type_mismatches=[("a", "categorical (String)", "Int64")],
         )
-        msg = str(err)
         assert "Type mismatch(es):" in msg
         assert "'a': model expects categorical (String), got Int64" in msg
 
     def test_no_missing_no_type_mismatch(self):
         """Message is clean when no missing features and no type mismatches."""
-        err = FeatureMismatchError(
+        msg = _format_feature_mismatch(
             expected=["a"],
             available=["a", "b"],
             missing=[],
         )
-        msg = str(err)
         assert "Missing feature(s)" not in msg
         assert "Type mismatch" not in msg
         assert "These features were expected" in msg
@@ -647,7 +644,7 @@ class TestValidateFeatures:
         schema = pl.Schema({"a": pl.Float64, "b": pl.Float64})
         with pytest.raises(FeatureMismatchError) as exc_info:
             _validate_features(sm, schema)
-        assert exc_info.value.missing == ["c"]
+        assert exc_info.value.context["missing"] == ["c"]
 
     def test_no_usable_features_raises(self):
         """Raises FeatureMismatchError when no features match at all."""
@@ -655,7 +652,7 @@ class TestValidateFeatures:
         schema = pl.Schema({"a": pl.Float64, "b": pl.Float64})
         with pytest.raises(FeatureMismatchError) as exc_info:
             _validate_features(sm, schema)
-        assert exc_info.value.missing == ["x", "y"]
+        assert exc_info.value.context["missing"] == ["x", "y"]
 
     def test_cat_feature_type_mismatch_warns(self):
         """Categorical feature with numeric dtype produces a type mismatch warning."""

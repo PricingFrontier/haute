@@ -7,6 +7,7 @@ from pathlib import Path
 
 from haute._cache import graph_fingerprint
 from haute._logging import get_logger
+from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, PipelineGraph, read_source
 
 logger = get_logger(component="deploy.schema")
@@ -126,4 +127,4 @@ def _find_node(graph: PipelineGraph, node_id: str) -> GraphNode:
     try:
         return graph.node_map[node_id]
     except KeyError:
-        raise ValueError(f"Node '{node_id}' not found in graph") from None
+        raise ConfigError("Node not found in graph", node_id=node_id) from None

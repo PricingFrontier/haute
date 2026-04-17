@@ -594,20 +594,23 @@ class TestFindNode:
         assert node.data.config.get("path") == "/data"
 
     def test_raises_for_missing_node(self):
-        """_find_node raises ValueError for non-existent node ID."""
+        """_find_node raises ConfigError for non-existent node ID."""
         from haute.deploy._schema import _find_node
+        from haute.errors import ConfigError
 
         graph = _g({"nodes": []})
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ConfigError, match="not found"):
             _find_node(graph, "nonexistent")
 
     def test_raises_message_includes_node_id(self):
-        """ValueError message includes the missing node ID."""
+        """ConfigError carries the missing node ID in context."""
         from haute.deploy._schema import _find_node
+        from haute.errors import ConfigError
 
         graph = _g({"nodes": []})
-        with pytest.raises(ValueError, match="my_missing_node"):
+        with pytest.raises(ConfigError) as exc_info:
             _find_node(graph, "my_missing_node")
+        assert exc_info.value.context["node_id"] == "my_missing_node"
 
 
 class TestInferOutputSchemaEdgeCases:
