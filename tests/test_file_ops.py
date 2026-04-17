@@ -30,6 +30,7 @@ Writer contract (F6):
 
 from __future__ import annotations
 
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -448,6 +449,17 @@ class TestWriterEdgeCases:
 
         assert target.read_bytes() == b"\xde\xad\xbe\xef final bytes"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "Win32 MoveFileExW is not atomic under contention: a concurrent "
+            "rename to the same target can fail with ERROR_ACCESS_DENIED / "
+            "ERROR_SHARING_VIOLATION. Production impl deliberately does not "
+            "retry (no silent fallback), so loser threads fail loudly on "
+            "Windows. POSIX rename(2) is atomic, so the test's premise holds "
+            "there."
+        ),
+    )
     def test_concurrent_writers_final_state_is_one_of_two(self, tmp_path: Path) -> None:
         """Two threads each running a Writer on the same path must not
         crash, and the final file content must exactly equal one of
