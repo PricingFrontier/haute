@@ -4,6 +4,7 @@ from pathlib import Path
 
 import click
 
+from haute._project import get_project_root
 from haute.cli._helpers import _load_deploy_config, resolve_transport
 
 
@@ -44,6 +45,7 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
     )
 
     config = _load_deploy_config(require_toml=True)
+    project_root = get_project_root()
 
     # Determine endpoint names
     staging_suffix = endpoint_suffix or config.ci.staging_endpoint_suffix or "_staging"
@@ -62,7 +64,7 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
 
     import polars as pl
 
-    dataset_file = (Path.cwd() / impact_path).resolve()
+    dataset_file = (project_root / impact_path).resolve()
     if not dataset_file.exists():
         click.echo(f"Error: Impact dataset not found: {dataset_file}", err=True)
         raise SystemExit(1)
@@ -134,7 +136,7 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
 
     # Always write portable markdown artifact (works on any CI platform)
     md = format_markdown(report)
-    report_path = Path.cwd() / "impact_report.md"
+    report_path = project_root / "impact_report.md"
     report_path.write_text(md, encoding="utf-8")
     click.echo(f"  \u2192 Report written to {report_path}")
 

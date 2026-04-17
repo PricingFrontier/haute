@@ -37,6 +37,7 @@ def _setup_impact_project(
         f'[ci.production]\nendpoint_url = "{prod_url}"\n'
     )
     (tmp_path / "haute.toml").write_text(toml)
+    (tmp_path / ".git").mkdir()
 
     # Write impact dataset
     data_dir = tmp_path / "data"
@@ -75,6 +76,7 @@ class TestImpact:
             '[deploy]\nmodel_name = "m"\n'
             '[safety]\nimpact_dataset = ""\n',
         )
+        (tmp_path / ".git").mkdir()
         result = runner.invoke(cli, ["impact"])
         assert result.exit_code == 1
         assert "impact_dataset" in result.output.lower()
@@ -91,6 +93,7 @@ class TestImpact:
             '[deploy]\nmodel_name = "m"\n'
             '[safety]\nimpact_dataset = "missing.parquet"\n',
         )
+        (tmp_path / ".git").mkdir()
         result = runner.invoke(cli, ["impact"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
