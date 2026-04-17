@@ -164,12 +164,18 @@ class TestFileBytesRoundTrip:
         )
 
     def test_round_trip_for_text_file(self, tmp_path: Path) -> None:
-        """Text content (with newlines) must round-trip byte-for-byte."""
-        text = "line 1\nline 2\nline 3\n"
-        p = tmp_path / "text.txt"
-        p.write_text(text, encoding="utf-8")
+        """Text content (with newlines) must round-trip byte-for-byte.
 
-        assert content_hash(p) == content_hash_bytes(text.encode("utf-8"))
+        Use write_bytes to pin the exact on-disk bytes — Path.write_text does
+        universal-newline translation on Windows (\\n -> \\r\\n), which would
+        hash to a different digest than the in-memory utf-8 encoding of \\n.
+        """
+        text = "line 1\nline 2\nline 3\n"
+        payload = text.encode("utf-8")
+        p = tmp_path / "text.txt"
+        p.write_bytes(payload)
+
+        assert content_hash(p) == content_hash_bytes(payload)
 
     def test_round_trip_for_binary_with_nulls(self, tmp_path: Path) -> None:
         """Binary data with embedded nulls must not be truncated."""
