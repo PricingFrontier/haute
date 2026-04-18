@@ -10,7 +10,7 @@
  * disappears — without leaving a dimmed, empty panel referring to a dead id.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, cleanup, fireEvent } from "@testing-library/react"
+import { render, screen, cleanup } from "@testing-library/react"
 
 // Mock ReactFlow (same pattern as existing App.test.tsx)
 vi.mock("@xyflow/react", () => ({
@@ -120,11 +120,9 @@ vi.mock("../panels/NodePalette", () => ({ default: () => <div data-testid="palet
 // after the `.find()` call in App.tsx. We record what was passed so tests
 // can assert that a deleted lastSelectedId resolves to node=null.
 let passedNode: unknown = undefined
-let panelRenderCount = 0
 vi.mock("../panels/NodePanel", () => ({
   default: ({ node }: { node: unknown }) => {
     passedNode = node
-    panelRenderCount++
     if (node === undefined) {
       // Would be the bug: undefined means the find returned undefined
       // without being coerced to null — downstream code may crash.
@@ -174,7 +172,6 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
   beforeEach(() => {
     mockNodes = []
     passedNode = undefined
-    panelRenderCount = 0
     useUIStore.setState({
       paletteOpen: true,
       shortcutsOpen: false,

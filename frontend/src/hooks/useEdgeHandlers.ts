@@ -16,6 +16,7 @@ import {
 } from "@xyflow/react"
 import { nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import useToastStore from "../stores/useToastStore"
 
 /** Check whether the target node has reached its maxInputs limit. */
 function wouldExceedMaxInputs(
@@ -67,6 +68,8 @@ export default function useEdgeHandlers({
   screenToFlowPosition,
   graphRefreshingRef,
 }: UseEdgeHandlersParams) {
+  const addToast = useToastStore((s) => s.addToast)
+
   const onConnect: OnConnect = useCallback(
     (params) => {
       if (params.source === params.target) return
@@ -141,10 +144,24 @@ export default function useEdgeHandlers({
       const type = event.dataTransfer.getData("application/reactflow-type")
       if (!type) return
 
-      let config = {}
+      // Parse the drag-config JSON. Malformed payloads must fail loudly
+      // (Issue #35) — silently swallowing the error would create a node
+      // with an empty config, which violates downstream node-type
+      // invariants and is invisible to the user.
+      const rawConfig = event.dataTransfer.getData("application/reactflow-config") || "{}"
+      let config: Record<string, unknown>
       try {
-        config = JSON.parse(event.dataTransfer.getData("application/reactflow-config") || "{}")
-      } catch { /* ignore */ }
+        const parsed = JSON.parse(rawConfig)
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          addToast("error", "Drop rejected: node config must be a JSON object")
+          return
+        }
+        config = parsed as Record<string, unknown>
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        addToast("error", `Drop rejected: invalid node config JSON (${message})`)
+        return
+      }
 
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
       nodeIdCounterRef.current += 1
@@ -168,7 +185,7 @@ export default function useEdgeHandlers({
       ])
       setSelectedNode(newNode)
     },
-    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode],
+    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, addToast],
   )
 
   return {

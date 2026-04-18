@@ -98,10 +98,19 @@ export default function usePipelineAPI({
   // ─── Downstream column propagation ──────────────────────────────
   // After a node's preview returns changed columns, cascade to downstream
   // nodes so their _columns (and thus editor dropdowns) stay fresh.
+  //
+  // Issues #33/#34: both `rowLimit` and `activeSource` are captured ONCE
+  // at cascade start and threaded through every recursive propagation
+  // call.  Reading the refs lazily (i.e. per-node inside the cascade)
+  // would let a mid-cascade store change (user flips the source /
+  // bumps the row limit while a long root preview is still resolving)
+  // produce a heterogeneous set of previews — downstream node columns
+  // would disagree with the root's columns because they used a
+  // different source.
   const propagatingRef = useRef(new Set<string>())
-  const propagateRef = useRef<(changedNodeId: string) => void>(() => {})
+  const propagateRef = useRef<(changedNodeId: string, rowLimit: number, source: string) => void>(() => {})
 
-  const propagateDownstream = useCallback((changedNodeId: string) => {
+  const propagateDownstream = useCallback((changedNodeId: string, rowLimit: number, source: string) => {
     const { edges, nodes } = graphRef.current
     const downstreamIds = edges
       .filter((e) => e.source === changedNodeId)
@@ -118,7 +127,7 @@ export default function usePipelineAPI({
       const dsNode = nodes.find((n) => n.id === dsId)
       const oldColumns = (dsNode?.data as Record<string, unknown>)?._columns as ColumnDef[] | undefined
 
-      previewNode(graph, dsId, rowLimitRef.current, activeSourceRef.current)
+      previewNode(graph, dsId, rowLimit, source)
         .then((result) => {
           if (result.columns) {
             const newColumns = result.columns as ColumnDef[]
@@ -128,7 +137,7 @@ export default function usePipelineAPI({
                 : n,
             ))
             if (!columnsEqual(oldColumns, newColumns)) {
-              propagateRef.current(dsId)
+              propagateRef.current(dsId, rowLimit, source)
             }
           }
         })
@@ -182,6 +191,15 @@ export default function usePipelineAPI({
     const label = nodeLabel(node)
     const { getPreview, setPreview: storePreview, graphVersion } = useNodeResultsStore.getState()
 
+    // Capture settings at the moment the fetch starts so the whole
+    // cascade (this preview + any downstream propagation) uses a
+    // consistent snapshot (Issues #33/#34).  Reading these refs again
+    // later would let a concurrent user action (e.g. flipping the
+    // active source while the root preview is still in flight) split
+    // the cascade across two different sources.
+    const snapshotRowLimit = rowLimitRef.current
+    const snapshotSource = activeSourceRef.current
+
     // Cache-first: show cached data immediately if available
     const cached = getPreview(node.id)
     if (cached) {
@@ -195,7 +213,7 @@ export default function usePipelineAPI({
 
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
-    previewNode(graph, node.id, rowLimitRef.current, activeSourceRef.current, { signal: controller.signal })
+    previewNode(graph, node.id, snapshotRowLimit, snapshotSource, { signal: controller.signal })
       .then((result) => {
         const preview = resultToPreview(node.id, label, result)
         setPreviewData(preview)
@@ -208,9 +226,11 @@ export default function usePipelineAPI({
           const oldColumns = (node.data as Record<string, unknown>)?._columns as ColumnDef[] | undefined
           const newColumns = result.columns as ColumnDef[]
           setNodes((nds) => nds.map((n) => n.id === node.id ? { ...n, data: { ...n.data, _columns: newColumns, _availableColumns: result.available_columns ?? newColumns, _schemaWarnings: result.schema_warnings ?? [] } } : n))
-          // Cascade to downstream nodes if columns changed
+          // Cascade to downstream nodes if columns changed — using the
+          // snapshot so every node in the cascade sees the same source
+          // and row limit as the root.
           if (!columnsEqual(oldColumns, newColumns)) {
-            propagateDownstream(node.id)
+            propagateDownstream(node.id, snapshotRowLimit, snapshotSource)
           }
         }
       })
@@ -258,10 +278,15 @@ export default function usePipelineAPI({
 
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
+    // Capture settings once so every upstream preview in this refresh
+    // uses the same snapshot (Issues #33/#34).
+    const snapshotRowLimit = rowLimitRef.current
+    const snapshotSource = activeSourceRef.current
+
     // Preview stale upstream nodes in parallel, then the target node
     Promise.all(
       staleUpstream.map((upstream) =>
-        previewNode(graph, upstream.id, rowLimitRef.current, activeSourceRef.current)
+        previewNode(graph, upstream.id, snapshotRowLimit, snapshotSource)
           .then((result) => {
             if (result.columns) {
               setNodes((nds) => nds.map((n) =>

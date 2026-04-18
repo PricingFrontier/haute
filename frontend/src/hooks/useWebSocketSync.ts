@@ -84,6 +84,25 @@ export default function useWebSocketSync({
               setSyncBanner(null)
               // The GUI is now in sync with the file on disk — not dirty.
               useUIStore.getState().setDirty(false)
+
+              // Issue #39: clear any open dialog whose target node was
+              // removed by this graph update.  Leaving an orphaned
+              // renameDialog / submodelDialog means onConfirm would fire
+              // with a nodeId that no longer exists in the graph.
+              const newNodeIds = new Set<string>(
+                (newNodes as Array<{ id: string }>).map((n) => n.id),
+              )
+              const ui = useUIStore.getState()
+              if (ui.renameDialog && !newNodeIds.has(ui.renameDialog.nodeId)) {
+                ui.setRenameDialog(null)
+              }
+              if (
+                ui.submodelDialog &&
+                ui.submodelDialog.nodeIds.some((id) => !newNodeIds.has(id))
+              ) {
+                ui.setSubmodelDialog(null)
+              }
+
               addToast("info", "Pipeline updated from file")
               if (g.warning) addToast("warning", g.warning)
               setTimeout(() => fitView({ padding: 0.8 }), 100)

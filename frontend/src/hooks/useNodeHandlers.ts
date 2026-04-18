@@ -47,7 +47,13 @@ export default function useNodeHandlers({
     setEdges(() => e.filter((edge) => edge.source !== id && edge.target !== id))
     setSelectedNode((prev) => (prev?.id === id ? null : prev))
     setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
-    clearNode(id)
+    // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
+    // fires synchronously here, any downstream component reading the store
+    // during the same render cycle (before React has committed the
+    // setNodes update that removes the node from the graph) will see a
+    // state where the node still exists in the graph but its cached result
+    // has already been wiped — producing a flicker-crash.
+    setTimeout(() => { clearNode(id) }, 0)
     if (lastSelectedNodeRef.current?.id === id) lastSelectedNodeRef.current = null
 
     // Clear UI dialogs that reference the deleted node (Issues #8, #14)
