@@ -253,15 +253,20 @@ class TestImpactDatabricks:
 
 
 class TestImpactHttp:
-    def test_prod_not_reachable(self) -> None:
-        """If prod endpoint is unreachable, should mark as first deploy."""
+    def test_prod_404_marks_first_deploy(self) -> None:
+        """A 404 on the prod URL is the only 'unreachable' signal that
+        should be treated as 'no production yet'. Other transport errors
+        (connection refused, timeout, 5xx) must propagate — see
+        ``test_cli_fail_loudly.py::TestImpactProdExistsFailsLoudly`` for
+        the full contract.
+        """
         from haute.cli._impact import _impact_http
 
         with patch(
             "haute.deploy._impact.score_http_endpoint_batched",
             side_effect=[
                 [{"p": 1.0}],  # staging succeeds
-                ConnectionError("refused"),  # prod fails
+                RuntimeError("HTTP 404 from http://prod/quote: not found"),
             ],
         ):
             staging, prod, exists = _impact_http(

@@ -148,13 +148,59 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
         click.echo("  \u2192 Report written to GitHub Step Summary")
 
 
+# Exception class names the Databricks SDK raises when an endpoint is not
+# found. These indicate "production has never been deployed" and are the
+# only shapes that should flip ``prod_exists`` to False — every other
+# exception (timeout, 5xx, connection error) is a real failure and must
+# propagate.
+_DATABRICKS_NOT_FOUND_CLASSES: frozenset[str] = frozenset(
+    {"NotFound", "ResourceDoesNotExist"}
+)
+
+
+def _is_databricks_not_found(exc: BaseException) -> bool:
+    """Return ``True`` iff *exc* represents a 'endpoint does not exist' signal.
+
+    The Databricks SDK uses the exception class name (``NotFound`` or
+    ``ResourceDoesNotExist``) to communicate 404-style errors. We look at
+    the class name across the MRO so that subclassed exceptions — and the
+    dynamically-constructed test doubles in the test suite — both count.
+    """
+    for klass in type(exc).__mro__:
+        if klass.__name__ in _DATABRICKS_NOT_FOUND_CLASSES:
+            return True
+    return False
+
+
+def _is_http_not_found(exc: BaseException) -> bool:
+    """Return ``True`` iff *exc* is an HTTP 404 wrapped by ``score_http_*``.
+
+    ``haute.deploy._impact.score_http_endpoint_batched`` turns urllib
+    ``HTTPError`` into a ``RuntimeError`` whose message embeds ``HTTP 404``.
+    We inspect the message for that exact token so that other status codes
+    (5xx) and transport-level exceptions (``TimeoutError``,
+    ``ConnectionRefusedError``, …) remain genuine failures and propagate
+    to the caller.
+    """
+    if not isinstance(exc, RuntimeError):
+        return False
+    return "HTTP 404" in str(exc)
+
+
 def _impact_databricks(
     staging_name: str,
     prod_name: str,
     records: list[dict],
     batch_size: int,
 ) -> tuple[list, list, bool]:
-    """Score through Databricks endpoints for impact analysis."""
+    """Score through Databricks endpoints for impact analysis.
+
+    Only ``NotFound`` / ``ResourceDoesNotExist`` from the prod endpoint
+    lookup are classified as "first deploy" — every other exception
+    (timeout, 5xx, connection refused, etc.) is re-raised so the caller
+    sees the real failure rather than silently treating transient issues
+    as "no prod yet".
+    """
     from haute.deploy._config import _load_env
     from haute.deploy._impact import score_endpoint_batched
 
@@ -162,7 +208,7 @@ def _impact_databricks(
         from databricks.sdk import WorkspaceClient
     except ImportError:
         click.echo(
-            "Error: databricks-sdk not installed. Install with: uv add haute[databricks]",
+            "Error: databricks-sdk not installed. Install with: uv add 'haute[databricks]'",
             err=True,
         )
         raise SystemExit(1)
@@ -170,17 +216,19 @@ def _impact_databricks(
     _load_env(Path.cwd())
     ws = WorkspaceClient()
 
-    # Check if prod endpoint exists
+    # Check if prod endpoint exists. Only 'does not exist' signals flip
+    # prod_exists to False; anything else propagates.
     prod_exists = True
     try:
         ws.serving_endpoints.get(prod_name)
     except Exception as exc:
-        not_found_names = ("NotFound", "ResourceDoesNotExist")
-        if type(exc).__name__ in not_found_names:
-            click.echo(f"  First deployment - production endpoint '{prod_name}' not found")
+        if _is_databricks_not_found(exc):
+            click.echo(
+                f"  First deployment - production endpoint '{prod_name}' not found"
+            )
+            prod_exists = False
         else:
-            click.echo(f"  \u26a0 Could not reach production endpoint '{prod_name}': {exc}")
-        prod_exists = False
+            raise
 
     # Score staging
     click.echo(f"  Scoring through staging ({staging_name})...")
@@ -201,7 +249,14 @@ def _impact_http(
     records: list[dict],
     batch_size: int,
 ) -> tuple[list, list, bool]:
-    """Score through HTTP endpoints (container target) for impact analysis."""
+    """Score through HTTP endpoints (container target) for impact analysis.
+
+    Only an HTTP 404 on the prod URL (surfaced as ``RuntimeError('HTTP 404 ...')``
+    by :mod:`haute.deploy._impact`) is treated as 'no prod yet'. Every other
+    exception — timeouts, 5xx, ``ConnectionRefusedError``, and so on — is
+    re-raised so transport failures are never silently misclassified as
+    first-deploy scenarios.
+    """
     from haute.deploy._impact import score_http_endpoint_batched
 
     # Score staging
@@ -226,7 +281,14 @@ def _impact_http(
                 click.echo,
             )
         except Exception as exc:
-            click.echo(f"  First deployment - production endpoint not reachable: {exc}")
-            prod_exists = False
+            if _is_http_not_found(exc):
+                click.echo(
+                    "  First deployment - production endpoint not yet available "
+                    f"(404 at {prod_url})"
+                )
+                prod_exists = False
+                prod_preds = []
+            else:
+                raise
 
     return staging_preds, prod_preds, prod_exists

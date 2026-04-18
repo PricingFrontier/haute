@@ -1,6 +1,7 @@
 """``haute serve`` command."""
 
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,32 @@ from pathlib import Path
 import click
 
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
+
+
+def _port_is_available(host: str, port: int) -> bool:
+    """Return ``True`` iff a TCP socket can bind to ``(host, port)``.
+
+    Opens and immediately closes a socket so the port is released before
+    uvicorn tries to take it.
+
+    On Windows we set ``SO_EXCLUSIVEADDRUSE`` so that the OS reports a
+    conflict even when the peer socket was bound with ``SO_REUSEADDR``;
+    without this, two sockets can silently share the same port, defeating
+    the pre-flight check. On POSIX, the default behaviour is already
+    strict enough.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # On Windows the default allows a second bind to succeed when the
+        # first socket used SO_REUSEADDR. SO_EXCLUSIVEADDRUSE asks the OS to
+        # reject any overlapping bind, matching what uvicorn will observe a
+        # few milliseconds later.
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
 
 
 @click.command()
@@ -19,6 +46,15 @@ def serve(host: str, port: int, no_browser: bool) -> None:
     import uvicorn
 
     from haute.server import STATIC_DIR
+
+    # Pre-flight: fail loudly if the port is already taken rather than
+    # letting uvicorn crash with a cryptic OSError.
+    if not _port_is_available(host, port):
+        click.echo(
+            f"Error: port {port} already in use. Use --port to choose another.",
+            err=True,
+        )
+        raise SystemExit(1)
 
     frontend_dir = _find_frontend_dir()
     dev_mode = frontend_dir is not None and (frontend_dir / "node_modules").exists()

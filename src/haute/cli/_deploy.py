@@ -1,10 +1,44 @@
 """``haute deploy`` command."""
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from pathlib import Path
 
 import click
 
 from haute.cli._helpers import _load_deploy_config
+
+# Map of provider-name → env var set by that provider when a job is running.
+# Each provider is recognised explicitly so detection is obvious to anyone
+# reading the code, and so that individual providers can be enabled/disabled
+# without affecting others. The generic ``CI`` variable is checked last as a
+# fallback for unknown providers.
+_CI_PROVIDER_ENV_VARS: tuple[str, ...] = (
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "CIRCLECI",
+    "TF_BUILD",  # Azure DevOps
+    "BUILDKITE",
+    "CI",
+)
+
+
+def _detect_ci_env(env: Mapping[str, str]) -> bool:
+    """Return ``True`` iff *env* contains a recognised CI marker variable.
+
+    A variable counts as set when its value is non-empty and not obviously
+    falsy (``"0"``, ``"false"``). This matches the convention used by the
+    major providers (GitHub Actions, GitLab, CircleCI, Azure DevOps,
+    Buildkite), each of which sets its marker to a truthy value while a job
+    is running.
+    """
+    falsy = {"", "0", "false", "False", "FALSE", "no", "No", "NO"}
+    for var in _CI_PROVIDER_ENV_VARS:
+        value = env.get(var)
+        if value is not None and value not in falsy:
+            return True
+    return False
 
 
 @click.command()
@@ -36,8 +70,10 @@ def deploy(
     # 1. Load config
     config = _load_deploy_config(pipeline_file=pipeline_file, model_name=model_name)
 
-    # Block local deploys - production changes must go through CI/CD
-    is_ci = os.environ.get("CI") or os.environ.get("TF_BUILD") or os.environ.get("GITLAB_CI")
+    # Block local deploys - production changes must go through CI/CD.
+    # We check a named set of well-known CI env vars so each provider is
+    # recognised explicitly, plus the generic ``CI`` as a catch-all.
+    is_ci = _detect_ci_env(os.environ)
     if not dry_run and not is_ci:
         click.echo(
             "Error: Deploys must go through CI/CD.",
