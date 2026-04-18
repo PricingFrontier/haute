@@ -6,6 +6,7 @@ from pathlib import Path
 
 import polars as pl
 
+from haute._hashing import content_hash
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 
@@ -67,7 +68,7 @@ def read_source(path: str) -> pl.LazyFrame:
     raise ValueError(f"Unsupported file type: .{suffix}")
 
 
-_object_cache: LRUCache[tuple[str, float, str, str], object] = LRUCache(
+_object_cache: LRUCache[tuple[str, str, str, str], object] = LRUCache(
     max_size=_OBJECT_CACHE_MAX_SIZE,
 )
 
@@ -77,26 +78,23 @@ def load_external_object(path: str, file_type: str, model_class: str = "classifi
 
     Shared by the development executor and the deploy scoring engine.
 
-    Results are cached by ``(path, mtime, file_type, model_class)`` so
-    repeated calls (preview clicks, API scoring requests) skip disk I/O.
-    The cache auto-invalidates when the file is modified on disk.
+    Results are cached by ``(path, content_hash, file_type, model_class)``
+    so repeated calls (preview clicks, API scoring requests) skip disk
+    parse/deserialisation cost.  Keying on the xxh64 content hash closes
+    the TOCTOU hole where a same-second overwrite keeps ``mtime``
+    unchanged and the cache would otherwise serve stale content.
     Bounded to ``_OBJECT_CACHE_MAX_SIZE`` entries (LRU eviction).
 
     All paths are validated to be within the project root before loading.
     Pickle files are deserialized with a restricted unpickler that only
     allows known-safe classes.
     """
-    import os
-
     from haute._sandbox import validate_project_path
 
     validate_project_path(path)
 
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        mtime = 0.0
-    key = (path, mtime, file_type, model_class)
+    digest = content_hash(Path(path))
+    key = (path, digest, file_type, model_class)
 
     cached = _object_cache.get(key)
     if cached is not None:

@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import copy
 import json
-import os
+from pathlib import Path
 from typing import Any
 
+from haute._hashing import content_hash
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._mlflow_utils import resolve_mlflow_source
@@ -26,27 +27,24 @@ from haute._mlflow_utils import resolve_mlflow_source
 logger = get_logger(component="optimiser_io")
 
 _ARTIFACT_CACHE_MAX_SIZE = 8
-_artifact_cache: LRUCache[tuple[str, float], dict[str, Any]] = LRUCache(
+_artifact_cache: LRUCache[tuple[str, str], dict[str, Any]] = LRUCache(
     max_size=_ARTIFACT_CACHE_MAX_SIZE,
 )
 
 
 def load_optimiser_artifact(path: str) -> dict[str, Any]:
-    """Load an optimiser artifact JSON file with mtime-based caching.
+    """Load an optimiser artifact JSON file with content-hash caching.
 
-    The cache key is ``(path, mtime)`` so edits to the file on disk are
-    picked up automatically.  Bounded to ``_ARTIFACT_CACHE_MAX_SIZE``
-    entries with oldest-eviction.
+    The cache key is ``(path, content_hash)`` so edits to the file on
+    disk are picked up automatically — including same-second overwrites
+    where ``mtime`` would not change (a TOCTOU hazard).  Bounded to
+    ``_ARTIFACT_CACHE_MAX_SIZE`` entries with oldest-eviction.
 
     Returns the full parsed JSON dict (mode, lambdas, constraints,
     factor_tables, version, etc.).
     """
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        mtime = 0.0
-
-    key = (path, mtime)
+    digest = content_hash(Path(path))
+    key = (path, digest)
 
     cached = _artifact_cache.get(key)
     if cached is not None:
