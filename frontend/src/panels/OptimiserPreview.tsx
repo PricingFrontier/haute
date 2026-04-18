@@ -10,18 +10,21 @@
  */
 
 import { useState, useMemo, useCallback, useEffect } from "react"
-import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Loader2, Target, Save, Upload } from "lucide-react"
+import { ChevronDown, ChevronUp, Loader2, Target, Save, Upload } from "lucide-react"
 import {
   selectFrontierPoint as selectFrontierPointAPI,
   saveOptimiser,
   logOptimiserToMlflow,
 } from "../api/client"
 import { formatNumber } from "../utils/formatValue"
-import { formatAxisLabel, yTicks } from "../utils/chartHelpers"
 import { useDragResize } from "../hooks/useDragResize"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import type { FrontierData } from "../api/types"
+import FrontierChart from "./optimiser/FrontierChart"
+import ConvergenceChart from "./optimiser/ConvergenceChart"
+import SummaryTab from "./optimiser/SummaryTab"
+import DetailCard from "./optimiser/DetailCard"
 
 // ─── Types (shared with OptimiserConfig) ─────────────────────────
 
@@ -73,20 +76,9 @@ export type OptimiserPreviewData = {
   selectedPointIndex: number | null
 }
 
-// ─── Chart constants ─────────────────────────────────────────────
-
-const CHART_W = 380
-const CHART_H = 220
-const CHART_PX = 50
-const CHART_PX_RIGHT = 16
-const CHART_PY = 16
-const CHART_PY_BOTTOM = 28
-const INNER_W = CHART_W - CHART_PX - CHART_PX_RIGHT
-const INNER_H = CHART_H - CHART_PY - CHART_PY_BOTTOM
-
 // ─── Constraint-met helper ────────────────────────────────────────
 
-function isConstraintMet(thresholdType: string, ratio: number, absValue: number, thresholdVal: number): boolean {
+export function isConstraintMet(thresholdType: string, ratio: number, absValue: number, thresholdVal: number): boolean {
   if (thresholdType === "min") return ratio >= thresholdVal
   if (thresholdType === "max") return ratio <= thresholdVal
   if (thresholdType === "min_abs") return absValue >= thresholdVal
@@ -315,7 +307,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
         {/* ── Convergence Tab ── */}
         {tab === "convergence" && result.history && result.history.length > 0 && (
-          <ConvergenceTab result={result} />
+          <ConvergenceChart result={result} />
         )}
 
         {/* ── Export Tab ── */}
@@ -444,7 +436,7 @@ function FrontierTab({
       {/* RIGHT: Detail card */}
       {selectedIdx != null && points[selectedIdx] && (
         <div className="flex-[45] min-w-[200px] max-w-[320px]">
-          <FrontierDetailCard
+          <DetailCard
             points={points}
             selectedIdx={selectedIdx}
             result={result}
@@ -458,463 +450,6 @@ function FrontierTab({
             mlflowAvailable={mlflowAvailable}
             actionMsg={actionMsg}
           />
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Frontier Chart (SVG scatter) ────────────────────────────────
-
-interface FrontierChartProps {
-  points: Record<string, unknown>[]
-  xKey: string
-  yKey: string
-  xLabel: string
-  selectedIdx: number | null
-  currentX: number | null
-  currentY: number
-  onPointClick: (index: number) => void
-}
-
-function FrontierChart({
-  points,
-  xKey,
-  yKey,
-  xLabel,
-  selectedIdx,
-  currentX,
-  currentY,
-  onPointClick,
-}: FrontierChartProps) {
-  const { xScale, yScale, xTicks, yTickVals } = useMemo(() => {
-    const xs = points.map(p => p[xKey] as number).filter(v => typeof v === "number" && Number.isFinite(v))
-    const ys = points.map(p => p[yKey] as number).filter(v => typeof v === "number" && Number.isFinite(v))
-
-    // Include current solve point in domain calculation
-    if (currentX != null && Number.isFinite(currentX)) xs.push(currentX)
-    if (Number.isFinite(currentY)) ys.push(currentY)
-
-    let xMin = Math.min(...xs), xMax = Math.max(...xs)
-    let yMin = Math.min(...ys), yMax = Math.max(...ys)
-
-    // Add 5% padding
-    const xPad = (xMax - xMin) * 0.05 || 0.01
-    const yPad = (yMax - yMin) * 0.05 || 0.01
-    xMin -= xPad; xMax += xPad
-    yMin -= yPad; yMax += yPad
-
-    const xRange = xMax - xMin || 1
-    const yRange = yMax - yMin || 1
-
-    return {
-      xScale: (v: number) => CHART_PX + ((v - xMin) / xRange) * INNER_W,
-      yScale: (v: number) => CHART_PY + INNER_H - ((v - yMin) / yRange) * INNER_H,
-      xTicks: yTicks(xMin + xPad, xMax - xPad, 4),
-      yTickVals: yTicks(yMin + yPad, yMax - yPad, 4),
-    }
-  }, [points, xKey, yKey, currentX, currentY])
-
-  return (
-    <svg width={CHART_W} height={CHART_H} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
-      {/* Grid lines + Y axis labels */}
-      {yTickVals.map(t => (
-        <g key={`y-${t}`}>
-          <line x1={CHART_PX} y1={yScale(t)} x2={CHART_PX + INNER_W} y2={yScale(t)} stroke="var(--border)" strokeWidth={0.5} />
-          <text x={CHART_PX - 4} y={yScale(t) + 3} textAnchor="end" fontSize={9} fill="var(--text-muted)">{formatAxisLabel(t)}</text>
-        </g>
-      ))}
-      {/* X axis labels */}
-      {xTicks.map(t => (
-        <text key={`x-${t}`} x={xScale(t)} y={CHART_H - CHART_PY_BOTTOM + 14} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{formatAxisLabel(t)}</text>
-      ))}
-      {/* Axis labels */}
-      <text x={CHART_PX + INNER_W / 2} y={CHART_H - 3} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{xLabel}</text>
-      <text x={6} y={CHART_PY + INNER_H / 2} textAnchor="middle" fontSize={9} fill="var(--text-muted)" transform={`rotate(-90,6,${CHART_PY + INNER_H / 2})`}>objective</text>
-
-      {/* Frontier points */}
-      {points.map((p, i) => {
-        const x = p[xKey] as number
-        const y = p[yKey] as number
-        if (typeof x !== "number" || typeof y !== "number") return null
-        const isSel = selectedIdx === i
-        return (
-          <circle
-            key={i}
-            cx={xScale(x)}
-            cy={yScale(y)}
-            r={isSel ? 6 : 4}
-            fill={isSel ? "#f59e0b" : "var(--accent)"}
-            stroke={isSel ? "#fff" : "none"}
-            strokeWidth={isSel ? 2 : 0}
-            opacity={isSel ? 1 : 0.7}
-            style={{ cursor: "pointer" }}
-            onClick={() => onPointClick(i)}
-            tabIndex={0}
-            role="button"
-            aria-label={`Select frontier point ${i + 1}`}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPointClick(i) } }}
-          />
-        )
-      })}
-
-      {/* Current solve result marker (diamond ring) */}
-      {currentX != null && Number.isFinite(currentX) && Number.isFinite(currentY) && (
-        <g>
-          <circle
-            cx={xScale(currentX)}
-            cy={yScale(currentY)}
-            r={6}
-            fill="none"
-            stroke="#f59e0b"
-            strokeWidth={2}
-          />
-          <circle
-            cx={xScale(currentX)}
-            cy={yScale(currentY)}
-            r={2.5}
-            fill="#f59e0b"
-          />
-        </g>
-      )}
-    </svg>
-  )
-}
-
-// ─── Frontier Detail Card ────────────────────────────────────────
-
-interface FrontierDetailCardProps {
-  points: Record<string, unknown>[]
-  selectedIdx: number
-  result: SolveResult
-  constraints: Record<string, Record<string, number>>
-  constraintNames: string[]
-  onStepPoint: (delta: number) => void
-  onSave: () => void
-  onLogMlflow: () => void
-  saving: boolean
-  logging: boolean
-  mlflowAvailable: boolean
-  actionMsg: string | null
-}
-
-function FrontierDetailCard({
-  points,
-  selectedIdx,
-  result,
-  constraints,
-  constraintNames,
-  onStepPoint,
-  onSave,
-  onLogMlflow,
-  saving,
-  logging,
-  mlflowAvailable,
-  actionMsg,
-}: FrontierDetailCardProps) {
-  const point = points[selectedIdx]
-  if (!point) return null
-
-  const objValue = Number(point.total_objective ?? 0)
-  const baselineObj = result.baseline_objective
-  const objVsBaseline = baselineObj !== 0 ? ((objValue / baselineObj - 1) * 100) : null
-
-  return (
-    <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
-      {/* Header with stepper */}
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>
-          Point {selectedIdx + 1} of {points.length}
-        </span>
-        <div className="flex items-center gap-0.5">
-          <button
-            onClick={() => onStepPoint(-1)}
-            disabled={selectedIdx <= 0}
-            aria-label="Previous point"
-            className="p-0.5 rounded transition-colors"
-            style={{ color: selectedIdx <= 0 ? "var(--text-muted)" : "var(--text-secondary)", opacity: selectedIdx <= 0 ? 0.4 : 1 }}
-          >
-            <ChevronLeft size={14} />
-          </button>
-          <button
-            onClick={() => onStepPoint(1)}
-            disabled={selectedIdx >= points.length - 1}
-            aria-label="Next point"
-            className="p-0.5 rounded transition-colors"
-            style={{ color: selectedIdx >= points.length - 1 ? "var(--text-muted)" : "var(--text-secondary)", opacity: selectedIdx >= points.length - 1 ? 0.4 : 1 }}
-          >
-            <ChevronRight size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Objective */}
-      <div>
-        <label className="text-[10px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Objective</label>
-        <div className="mt-0.5 flex items-baseline justify-between text-xs font-mono gap-2">
-          <span style={{ color: "var(--text-primary)" }}>{formatNumber(objValue)}</span>
-          {objVsBaseline != null && (
-            <span style={{ color: "#f59e0b" }}>{objVsBaseline >= 0 ? "+" : ""}{objVsBaseline.toFixed(2)}% vs baseline</span>
-          )}
-        </div>
-      </div>
-
-      {/* Constraints */}
-      {constraintNames.length > 0 && (
-        <div>
-          <label className="text-[10px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Constraints</label>
-          <div className="mt-0.5 space-y-0.5">
-            {constraintNames.map(name => {
-              const totalKey = `total_${name}`
-              const value = Number(point[totalKey] ?? 0)
-              const baseline = result.baseline_constraints[name]
-              const ratio = baseline ? value / baseline : 0
-              const spec = constraints[name] || {}
-              const thresholdType = Object.keys(spec)[0]
-              const thresholdVal = spec[thresholdType] ?? 0
-              const met = isConstraintMet(thresholdType, ratio, value, thresholdVal)
-              return (
-                <div key={name} className="flex items-center justify-between text-xs font-mono gap-2">
-                  <span className="flex items-center gap-1.5">
-                    <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: met ? "#22c55e" : "#ef4444" }} />
-                    <span style={{ color: "var(--text-secondary)" }}>{name}</span>
-                  </span>
-                  <span>
-                    <span style={{ color: "var(--text-primary)" }}>{formatNumber(value)}</span>
-                    {baseline != null && baseline !== 0 && (
-                      <span style={{ color: "var(--text-muted)" }}> ({(ratio * 100).toFixed(1)}%)</span>
-                    )}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Lambdas */}
-      {(() => {
-        const lambdaKeys = Object.keys(point).filter(k => k.startsWith("lambda_"))
-        if (lambdaKeys.length === 0) return null
-        return (
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Lambdas</label>
-            <div className="mt-0.5 space-y-0.5">
-              {lambdaKeys.map(k => {
-                const displayName = k.replace(/^lambda_/, "")
-                const v = point[k] as number
-                return (
-                  <div key={k} className="flex justify-between text-xs font-mono gap-2">
-                    <span style={{ color: "var(--text-secondary)" }}>{displayName}</span>
-                    <span style={{ color: "var(--text-primary)" }}>{typeof v === "number" ? v.toFixed(6) : String(v)}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )
-      })()}
-
-      {/* Action buttons */}
-      <div className="flex gap-2 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
-        <button
-          onClick={onSave}
-          disabled={saving || logging}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
-          style={{
-            background: saving || logging ? "var(--chrome-hover)" : "rgba(245,158,11,.12)",
-            color: saving || logging ? "var(--text-muted)" : "#f59e0b",
-            border: "1px solid rgba(245,158,11,.25)",
-          }}
-        >
-          {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-          Save Result
-        </button>
-        {mlflowAvailable && (
-          <button
-            onClick={onLogMlflow}
-            disabled={saving || logging}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
-            style={{
-              background: saving || logging ? "var(--chrome-hover)" : "rgba(168,85,247,.12)",
-              color: saving || logging ? "var(--text-muted)" : "#a855f7",
-              border: "1px solid rgba(168,85,247,.25)",
-            }}
-          >
-            {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-            Log to MLflow
-          </button>
-        )}
-      </div>
-
-      {/* Action feedback */}
-      {actionMsg && (
-        <div className="text-[10px] font-mono px-1" style={{ color: "var(--text-muted)", wordBreak: "break-all" }}>
-          {actionMsg}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Summary Tab (inline, unchanged) ─────────────────────────────
-
-function SummaryTab({
-  result,
-  constraints,
-}: {
-  result: SolveResult
-  constraints: Record<string, Record<string, number>>
-}) {
-  return (
-    <div className="flex gap-6 flex-wrap">
-      {/* Left column: objective + constraints */}
-      <div className="space-y-3 min-w-[200px]">
-        <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Objective</label>
-          <div className="mt-1 space-y-0.5">
-            <div className="flex justify-between text-xs font-mono gap-4">
-              <span style={{ color: "var(--text-secondary)" }}>Optimised</span>
-              <span style={{ color: "var(--text-primary)" }}>{formatNumber(result.total_objective)}</span>
-            </div>
-            <div className="flex justify-between text-xs font-mono gap-4">
-              <span style={{ color: "var(--text-secondary)" }}>Baseline</span>
-              <span style={{ color: "var(--text-muted)" }}>{formatNumber(result.baseline_objective)}</span>
-            </div>
-            {result.baseline_objective !== 0 && (
-              <div className="flex justify-between text-xs font-mono gap-4">
-                <span style={{ color: "var(--text-secondary)" }}>Uplift</span>
-                <span style={{ color: "#f59e0b" }}>
-                  {((result.total_objective / result.baseline_objective - 1) * 100).toFixed(2)}%
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Constraints with binding indicators */}
-        {Object.keys(result.constraints).length > 0 && (
-          <div>
-            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Constraints</label>
-            <div className="mt-1 space-y-0.5">
-              {Object.entries(result.constraints).map(([name, value]) => {
-                const baseline = result.baseline_constraints[name]
-                const ratio = baseline ? value / baseline : 0
-                const spec = constraints[name] || {}
-                const thresholdType = Object.keys(spec)[0]
-                const thresholdVal = spec[thresholdType] ?? 0
-                const met = isConstraintMet(thresholdType, ratio, value, thresholdVal)
-                return (
-                  <div key={name} className="flex items-center justify-between text-xs font-mono gap-4">
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: met ? "#22c55e" : "#ef4444" }} />
-                      <span style={{ color: "var(--text-secondary)" }}>{name}</span>
-                    </span>
-                    <span>
-                      <span style={{ color: "var(--text-primary)" }}>{formatNumber(value)}</span>
-                      {baseline !== undefined && (
-                        <span style={{ color: "var(--text-muted)" }}> ({(ratio * 100).toFixed(1)}%)</span>
-                      )}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Lambdas (online) / Factor tables (ratebook) */}
-        {result.mode !== "ratebook" && Object.keys(result.lambdas).length > 0 && (
-          <div>
-            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Lambdas</label>
-            <div className="mt-1 space-y-0.5">
-              {Object.entries(result.lambdas).map(([name, value]) => (
-                <div key={name} className="flex justify-between text-xs font-mono gap-4">
-                  <span style={{ color: "var(--text-secondary)" }}>{name}</span>
-                  <span style={{ color: "var(--text-primary)" }}>{value.toFixed(6)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {result.mode === "ratebook" && result.clamp_rate != null && (
-          <div className="flex justify-between text-xs font-mono">
-            <span style={{ color: "var(--text-muted)" }}>Clamp rate</span>
-            <span style={{ color: "#f59e0b" }}>{(result.clamp_rate * 100).toFixed(1)}%</span>
-          </div>
-        )}
-
-      </div>
-
-      {/* Middle column: histogram + stats */}
-      {result.scenario_value_histogram && (() => {
-        const { counts, edges } = result.scenario_value_histogram
-        if (!counts || counts.length === 0) return null
-        const maxCount = Math.max(...counts)
-        const w = 320, h = 100, px = 2, py = 2
-        const chartW = w - px * 2, chartH = h - py * 2
-        const barW = chartW / counts.length
-        const eMin = edges[0], eMax = edges[edges.length - 1]
-        const oneX = eMax > eMin ? px + ((1.0 - eMin) / (eMax - eMin)) * chartW : null
-        return (
-          <div className="min-w-[200px]">
-            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Scenario Value Distribution</label>
-            <svg width={w} height={h} className="mt-1" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
-              {counts.map((c, i) => {
-                const barH = maxCount > 0 ? (c / maxCount) * chartH : 0
-                return (
-                  <rect key={i} x={px + i * barW + 0.5} y={py + chartH - barH} width={Math.max(barW - 1, 1)} height={barH} fill="#f59e0b" opacity={0.7} />
-                )
-              })}
-              {oneX != null && oneX >= px && oneX <= px + chartW && (
-                <line x1={oneX} y1={py} x2={oneX} y2={py + chartH} stroke="#ef4444" strokeWidth={1} strokeDasharray="3,2" />
-              )}
-            </svg>
-            <div className="flex gap-3 mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              <span>{eMin.toFixed(2)}</span>
-              <span className="flex-1" />
-              {oneX != null && <span><span style={{ color: "#ef4444" }}>|</span> 1.0</span>}
-              <span className="flex-1" />
-              <span>{eMax.toFixed(2)}</span>
-            </div>
-
-            {/* Stats grid */}
-            {result.scenario_value_stats && (
-              <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-0.5 text-xs font-mono">
-                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>Mean</span><span style={{ color: "var(--text-primary)" }}>{result.scenario_value_stats.mean.toFixed(4)}</span></div>
-                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>Std</span><span style={{ color: "var(--text-primary)" }}>{result.scenario_value_stats.std.toFixed(4)}</span></div>
-                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>P5-P95</span><span style={{ color: "var(--text-primary)" }}>{result.scenario_value_stats.p5.toFixed(3)}-{result.scenario_value_stats.p95.toFixed(3)}</span></div>
-                <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>Min-Max</span><span style={{ color: "var(--text-primary)" }}>{result.scenario_value_stats.min.toFixed(3)}-{result.scenario_value_stats.max.toFixed(3)}</span></div>
-                <div className="flex justify-between"><span style={{ color: "#22c55e" }}>Increase</span><span style={{ color: "#22c55e" }}>{(result.scenario_value_stats.pct_increase * 100).toFixed(1)}%</span></div>
-                <div className="flex justify-between"><span style={{ color: "#ef4444" }}>Decrease</span><span style={{ color: "#ef4444" }}>{(result.scenario_value_stats.pct_decrease * 100).toFixed(1)}%</span></div>
-              </div>
-            )}
-          </div>
-        )
-      })()}
-
-      {/* Factor tables (ratebook) */}
-      {result.mode === "ratebook" && result.factor_tables && (
-        <div className="min-w-[180px]">
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Factor Tables</label>
-          {Object.entries(result.factor_tables).map(([factorName, rows]) => (
-            <div key={factorName} className="mt-1.5">
-              <div className="text-[11px] font-medium mb-1" style={{ color: "var(--text-secondary)" }}>{factorName}</div>
-              <div className="space-y-0.5">
-                {rows.map((row, i) => {
-                  const levelName = row.__factor_group__ as string ?? row[Object.keys(row)[0]] as string ?? `Level ${i}`
-                  const mult = row.optimal_scenario_value as number
-                  return (
-                    <div key={i} className="flex justify-between text-xs font-mono gap-4">
-                      <span style={{ color: "var(--text-secondary)" }}>{levelName}</span>
-                      <span style={{ color: "var(--text-primary)" }}>{typeof mult === "number" ? mult.toFixed(2) : "?"}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
         </div>
       )}
     </div>
@@ -1015,65 +550,6 @@ function ExportTab({
               <span style={{ color: "var(--text-primary)" }}>{result.n_quotes.toLocaleString()}</span>
             </div>
           )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Convergence Tab (inline, unchanged) ─────────────────────────
-
-function ConvergenceTab({ result }: { result: SolveResult }) {
-  const hist = result.history ?? []
-  if (!hist.length) return null
-  const w = 400, h = 140, px = 6, py = 6
-  const chartW = w - px * 2, chartH = h - py * 2
-
-  const objVals = hist.map(e => e.total_objective)
-  const lcVals = hist.map(e => e.max_lambda_change)
-  const objMin = Math.min(...objVals), objMax = Math.max(...objVals)
-  const lcMin = Math.min(...lcVals), lcMax = Math.max(...lcVals)
-  const objRange = objMax - objMin || 1, lcRange = lcMax - lcMin || 1
-
-  const xScale = (i: number) => px + (i / Math.max(hist.length - 1, 1)) * chartW
-  const yObj = (v: number) => py + chartH - ((v - objMin) / objRange) * chartH
-  const yLc = (v: number) => py + chartH - ((v - lcMin) / lcRange) * chartH
-
-  const objPath = hist.map((e, i) => `${i === 0 ? "M" : "L"}${xScale(i).toFixed(1)},${yObj(e.total_objective).toFixed(1)}`).join(" ")
-  const lcPath = hist.map((e, i) => `${i === 0 ? "M" : "L"}${xScale(i).toFixed(1)},${yLc(e.max_lambda_change).toFixed(1)}`).join(" ")
-
-  return (
-    <div className="flex gap-6 flex-wrap">
-      <div>
-        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Convergence</label>
-        <svg width={w} height={h} className="mt-1" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
-          <path d={objPath} fill="none" stroke="#f59e0b" strokeWidth={1.5} />
-          <path d={lcPath} fill="none" stroke="#3b82f6" strokeWidth={1.5} />
-        </svg>
-        <div className="flex gap-3 mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-          <span><span style={{ color: "#f59e0b" }}>--</span> Objective</span>
-          <span><span style={{ color: "#3b82f6" }}>--</span> Lambda change</span>
-        </div>
-      </div>
-
-      {/* Iteration table */}
-      <div className="min-w-[280px]">
-        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Iterations</label>
-        <div className="mt-1 max-h-48 overflow-y-auto">
-          <div className="flex text-[10px] font-bold py-0.5 sticky top-0" style={{ color: "var(--text-muted)", background: "var(--bg-panel)" }}>
-            <span className="w-8 text-center">#</span>
-            <span className="flex-1 text-right">Objective</span>
-            <span className="flex-1 text-right">Max dLambda</span>
-            <span className="w-10 text-center">OK</span>
-          </div>
-          {hist.map(e => (
-            <div key={e.iteration} className="flex text-[10px] font-mono py-0.5" style={{ color: "var(--text-secondary)" }}>
-              <span className="w-8 text-center">{e.iteration}</span>
-              <span className="flex-1 text-right">{formatNumber(e.total_objective)}</span>
-              <span className="flex-1 text-right">{e.max_lambda_change.toExponential(2)}</span>
-              <span className="w-10 text-center">{e.all_constraints_satisfied ? "Y" : "N"}</span>
-            </div>
-          ))}
         </div>
       </div>
     </div>
