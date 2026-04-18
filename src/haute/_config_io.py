@@ -21,7 +21,8 @@ from typing import Any
 
 from haute._io import read_user_text
 from haute._logging import get_logger
-from haute._types import NodeType, PipelineGraph, _sanitize_func_name
+from haute._graph_utils import _sanitize_func_name
+from haute._types import NodeType, PipelineGraph
 
 logger = get_logger(component="config_io")
 

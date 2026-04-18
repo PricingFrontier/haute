@@ -5,7 +5,8 @@ from __future__ import annotations
 import heapq
 from collections import deque
 
-from haute._types import GraphEdge, HauteError, build_parents_of
+from haute._graph_utils import build_parents_of
+from haute._types import GraphEdge, HauteError
 
 
 class CycleError(HauteError):

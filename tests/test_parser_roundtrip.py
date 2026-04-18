@@ -29,13 +29,13 @@ import hypothesis.strategies as st
 from hypothesis import HealthCheck, assume, given, settings
 
 from haute._config_io import collect_node_configs
+from haute._graph_utils import _sanitize_func_name
 from haute._types import (
     GraphEdge,
     GraphNode,
     NodeData,
     NodeType,
     PipelineGraph,
-    _sanitize_func_name,
 )
 from haute.codegen import graph_to_code
 from haute.parser import parse_pipeline_source

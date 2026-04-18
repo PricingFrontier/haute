@@ -35,7 +35,8 @@ import polars as pl
 import pytest
 
 from haute._parser_helpers import _resolve_node_config
-from haute._types import NodeType, build_instance_mapping
+from haute._graph_utils import build_instance_mapping
+from haute._types import NodeType
 from haute.codegen import _gen_transform, _instance_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.executor import execute_graph

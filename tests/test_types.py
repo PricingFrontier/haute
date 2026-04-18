@@ -19,6 +19,12 @@ import math
 import pytest
 from pydantic import ValidationError
 
+from haute._graph_utils import (
+    _resolve_sink_path,
+    _sanitize_func_name,
+    build_instance_mapping,
+    resolve_orig_source_names,
+)
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -26,10 +32,6 @@ from haute._types import (
     NodeData,
     NodeType,
     PipelineGraph,
-    _resolve_sink_path,
-    _sanitize_func_name,
-    build_instance_mapping,
-    resolve_orig_source_names,
 )
 
 # ===========================================================================

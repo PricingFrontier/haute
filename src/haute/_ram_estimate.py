@@ -24,7 +24,7 @@ from typing import NamedTuple
 
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
-from haute._types import build_parents_of
+from haute._graph_utils import build_parents_of
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="ram_estimate")

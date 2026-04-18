@@ -313,7 +313,7 @@ class TestSaveSidecar:
             ],
         )
         save_sidecar(py_path, graph)
-        from haute._types import _sanitize_func_name
+        from haute._graph_utils import _sanitize_func_name
 
         data = json.loads((tmp_path / "pipeline.haute.json").read_text())
         expected_key = _sanitize_func_name("My Node")
