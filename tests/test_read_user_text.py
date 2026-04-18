@@ -128,16 +128,14 @@ class TestConfigEncodingRobustness:
         config = graph.nodes[0].data.config
         assert "_load_error" not in config
 
-    def test_end_to_end_corrupt_config_shows_warning(self, tmp_path, monkeypatch):
+    def test_end_to_end_corrupt_config_raises_config_error(self, tmp_path, monkeypatch):
         """Full parse with a config that has broken JSON structure after
-        replacement shows graph.warning and still loads the node."""
+        replacement must raise ``ConfigError`` (post Item #18 fail-loudly)."""
         monkeypatch.chdir(tmp_path)
         pipeline_dir = tmp_path / "project"
         pipeline_dir.mkdir()
         config_dir = pipeline_dir / "config" / "banding"
         config_dir.mkdir(parents=True)
-        # 0x96 placed where it will corrupt JSON structure after replacement
-        # (the replacement char U+FFFD breaks the key)
         (config_dir / "bands.json").write_bytes(b'{\x96: "value"}')
         (pipeline_dir / "main.py").write_text(
             "import haute\nimport polars as pl\n\n"
@@ -147,9 +145,8 @@ class TestConfigEncodingRobustness:
             "    return df\n"
         )
 
+        from haute.errors import ConfigError
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "main.py")
-        assert len(graph.nodes) == 1
-        assert graph.warning is not None
-        assert "bands" in graph.warning
+        with pytest.raises(ConfigError):
+            parse_pipeline_file(pipeline_dir / "main.py")

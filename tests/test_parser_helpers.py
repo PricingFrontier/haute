@@ -929,17 +929,23 @@ class TestResolveNodeConfig:
         assert loaded.get("code", "") == ""
 
     def test_external_config_file_not_found(self, tmp_path):
-        """Missing config file falls back gracefully to empty config."""
+        """Missing config file must fail loudly with ``ConfigError``.
+
+        The previous silent-recovery behaviour masked genuine path
+        mistakes; post Item #18 fix a missing config raises instead.
+        """
+        from haute.errors import ConfigError
+
         with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
-            node_type, config = _resolve_node_config(
-                {"config": "config/data_source/missing.json"},
-                "",
-                [],
-                0,
-                tmp_path,
-                explicit_node_type=NodeType.DATA_SOURCE,
-            )
-        assert node_type == NodeType.DATA_SOURCE
+            with pytest.raises(ConfigError):
+                _resolve_node_config(
+                    {"config": "config/data_source/missing.json"},
+                    "",
+                    [],
+                    0,
+                    tmp_path,
+                    explicit_node_type=NodeType.DATA_SOURCE,
+                )
 
     def test_banding_type_from_explicit_decorator(self, tmp_path):
         """Explicit decorator type is used directly for config resolution."""
@@ -992,31 +998,33 @@ class TestResolveNodeConfig:
                 _resolve_node_config(kwargs, "", [], 0, None)
         assert kwargs == original
 
-    def test_mangled_config_path_recovered_by_func_name(self, tmp_path):
-        """When the config path is mangled (e.g. Windows backslash escapes),
-        _resolve_node_config should recover by scanning config folders for
-        a JSON file matching the function name."""
-        # Write a valid config file for a banding node
+    def test_mangled_config_path_raises_config_error(self, tmp_path):
+        """A Windows-mangled config path must fail loudly.
+
+        Prior behaviour silently recovered via a func-name scan, which
+        could load the wrong file if another folder happened to hold a
+        matching name.  Post Item #18 the default is fail-loudly.
+        """
+        from haute.errors import ConfigError
+
         cfg = {"factors": [{"column": "age", "banding": "continuous"}]}
         cfg_dir = tmp_path / "config" / "banding"
         cfg_dir.mkdir(parents=True)
         cfg_file = cfg_dir / "age_band.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        # Simulate a mangled path (e.g. \b interpreted as backspace)
         mangled_path = "config/\x08anding/age_band.json"
         with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
-            node_type, loaded = _resolve_node_config(
-                {"config": mangled_path},
-                "",
-                ["df"],
-                1,
-                tmp_path,
-                func_name="age_band",
-                explicit_node_type=NodeType.BANDING,
-            )
-        assert node_type == NodeType.BANDING
-        assert loaded.get("factors") == cfg["factors"]
+            with pytest.raises(ConfigError):
+                _resolve_node_config(
+                    {"config": mangled_path},
+                    "",
+                    ["df"],
+                    1,
+                    tmp_path,
+                    func_name="age_band",
+                    explicit_node_type=NodeType.BANDING,
+                )
 
 
 # ===========================================================================

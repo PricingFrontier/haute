@@ -370,12 +370,14 @@ def my_step() -> pl.DataFrame:
 class TestMissingConfigJsonFile:
     """Decorator references config="config/foo.json" that doesn't exist.
 
-    Production failure: user renames or deletes a config file. Parser
-    must not crash; it should log a warning and return a node with
-    empty/default config.
+    Post Item #18: a missing config file raises ``ConfigError`` with the
+    original path so the user learns about the broken reference loudly
+    rather than getting a silently empty-config node.
     """
 
-    def test_missing_config_file_no_crash(self, tmp_path):
+    def test_missing_config_file_raises_config_error(self, tmp_path):
+        from haute.errors import ConfigError
+
         code = '''\
 import polars as pl
 import haute
@@ -389,11 +391,8 @@ def broken_ref() -> pl.DataFrame:
     return pl.DataFrame()
 '''
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
-
-        assert len(graph.nodes) == 1
-        assert graph.nodes[0].id == "broken_ref"
-        # Should not crash; config is either empty or partially filled.
+        with pytest.raises(ConfigError):
+            parse_pipeline_file(p)
 
 
 class TestMalformedDecoratorKwargs:
@@ -624,6 +623,8 @@ class TestParsePipelineRoundtrip:
     """Test that parse -> codegen -> parse produces consistent results."""
 
     def test_roundtrip_preserves_structure(self, tmp_path):
+        import json
+
         from haute.codegen import graph_to_code
 
         code = '''\
@@ -649,6 +650,15 @@ pipeline.connect("source", "transform")
 '''
         p = _write_pipeline(tmp_path, code)
         graph1 = parse_pipeline_file(p)
+
+        # Codegen emits @pipeline.data_source(config="config/data_source/source.json")
+        # for data-source nodes.  Write the sidecar JSON so the reparse path
+        # resolves the config fail-loudly contract (Item #18).
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "source.json").write_text(
+            json.dumps({"path": "data.parquet", "sourceType": "flat_file"})
+        )
 
         generated = graph_to_code(graph1, pipeline_name="roundtrip")
         p2 = tmp_path / "roundtrip2.py"

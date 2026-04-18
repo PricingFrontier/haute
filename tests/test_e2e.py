@@ -132,18 +132,27 @@ class TestEndToEnd:
         new_types = sorted(n.data.nodeType for n in reparsed.nodes)
         assert orig_types == new_types
 
-    def test_codegen_roundtrip_preserves_node_count(self):
+    def test_codegen_roundtrip_preserves_node_count(self, tmp_path):
         """Re-parsed graph has the same number of nodes."""
         graph = parse_pipeline_file(PIPELINE_FILE)
         code = graph_to_code(graph, pipeline_name="roundtrip")
-        reparsed = parse_pipeline_source(code)
+        # Post Item #18: parser requires config sidecar files to exist.
+        for rel_path, content in collect_node_configs(graph).items():
+            cfg_file = tmp_path / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content)
+        reparsed = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(reparsed.nodes) == len(graph.nodes)
 
-    def test_codegen_roundtrip_preserves_edge_count(self):
+    def test_codegen_roundtrip_preserves_edge_count(self, tmp_path):
         """Re-parsed graph has the same number of edges."""
         graph = parse_pipeline_file(PIPELINE_FILE)
         code = graph_to_code(graph, pipeline_name="roundtrip")
-        reparsed = parse_pipeline_source(code)
+        for rel_path, content in collect_node_configs(graph).items():
+            cfg_file = tmp_path / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content)
+        reparsed = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(reparsed.edges) == len(graph.edges)
 
     def test_full_lifecycle(self, tmp_path):
@@ -343,7 +352,10 @@ class TestAllNodeTypesRoundtrip:
                     "input_scenario_map": {"ds": "test_batch", "api": "live"},
                 },
             ),
-            _make_node("transform", "transform", NodeType.POLARS, {"code": ""}),
+            # Transform has two upstreams (switch + const). Post Item #22
+            # codegen forbids empty code + multiple sources, so explicitly
+            # name which input to forward.
+            _make_node("transform", "transform", NodeType.POLARS, {"code": "df = switch"}),
             _make_node(
                 "band",
                 "band",

@@ -227,16 +227,16 @@ class TestCodegenEmitsPreservedBlocks:
 
 
 class TestPreservedBlocksRoundTrip:
-    def test_single_block_survives_roundtrip(self):
+    def test_single_block_survives_roundtrip(self, tmp_path):
         source = _make_pipeline(
             preserved=("# haute:preserve-start\nCUSTOM_CONSTANT = 42\n# haute:preserve-end"),
         )
-        code = _roundtrip(source)
-        graph2 = parse_pipeline_source(code)
+        code = _roundtrip(source, base_dir=tmp_path)
+        graph2 = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(graph2.preserved_blocks) == 1
         assert "CUSTOM_CONSTANT = 42" in graph2.preserved_blocks[0]
 
-    def test_multiple_blocks_survive_roundtrip(self):
+    def test_multiple_blocks_survive_roundtrip(self, tmp_path):
         source = _make_pipeline(
             preserved=(
                 "# haute:preserve-start\n"
@@ -248,13 +248,13 @@ class TestPreservedBlocksRoundTrip:
                 "# haute:preserve-end"
             ),
         )
-        code = _roundtrip(source)
-        graph2 = parse_pipeline_source(code)
+        code = _roundtrip(source, base_dir=tmp_path)
+        graph2 = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(graph2.preserved_blocks) == 2
         assert "FIRST = 1" in graph2.preserved_blocks[0]
         assert "SECOND = 2" in graph2.preserved_blocks[1]
 
-    def test_function_survives_roundtrip(self):
+    def test_function_survives_roundtrip(self, tmp_path):
         source = _make_pipeline(
             preserved=(
                 "# haute:preserve-start\n"
@@ -263,13 +263,13 @@ class TestPreservedBlocksRoundTrip:
                 "# haute:preserve-end"
             ),
         )
-        code = _roundtrip(source)
-        graph2 = parse_pipeline_source(code)
+        code = _roundtrip(source, base_dir=tmp_path)
+        graph2 = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(graph2.preserved_blocks) == 1
         assert "def my_custom_helper():" in graph2.preserved_blocks[0]
         assert "return 42" in graph2.preserved_blocks[0]
 
-    def test_mixed_content_survives_roundtrip(self):
+    def test_mixed_content_survives_roundtrip(self, tmp_path):
         block = (
             "# haute:preserve-start\n"
             "# Custom lookup table\n"
@@ -280,20 +280,20 @@ class TestPreservedBlocksRoundTrip:
             "# haute:preserve-end"
         )
         source = _make_pipeline(preserved=block)
-        code = _roundtrip(source)
-        graph2 = parse_pipeline_source(code)
+        code = _roundtrip(source, base_dir=tmp_path)
+        graph2 = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(graph2.preserved_blocks) == 1
         assert "REGIONS" in graph2.preserved_blocks[0]
         assert "def get_factor(region):" in graph2.preserved_blocks[0]
 
-    def test_roundtrip_without_markers_still_works(self):
+    def test_roundtrip_without_markers_still_works(self, tmp_path):
         source = _make_pipeline()
-        code = _roundtrip(source)
-        graph2 = parse_pipeline_source(code)
+        code = _roundtrip(source, base_dir=tmp_path)
+        graph2 = parse_pipeline_source(code, _base_dir=tmp_path)
         assert graph2.preserved_blocks == []
         assert len(graph2.nodes) == 1
 
-    def test_preamble_and_preserved_blocks_coexist(self):
+    def test_preamble_and_preserved_blocks_coexist(self, tmp_path):
         source = _make_pipeline(
             preamble="import numpy as np",
             preserved=("# haute:preserve-start\nCUSTOM = True\n# haute:preserve-end"),
@@ -302,8 +302,8 @@ class TestPreservedBlocksRoundTrip:
         assert "numpy" in (graph.preamble or "")
         assert len(graph.preserved_blocks) == 1
 
-        code = _roundtrip(source)
-        graph2 = parse_pipeline_source(code)
+        code = _roundtrip(source, base_dir=tmp_path)
+        graph2 = parse_pipeline_source(code, _base_dir=tmp_path)
         assert "numpy" in (graph2.preamble or "")
         assert len(graph2.preserved_blocks) == 1
         assert "CUSTOM = True" in graph2.preserved_blocks[0]

@@ -424,11 +424,13 @@ def execute_graph(
                 )
             )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-            # Keep cached DataFrames for nodes that were already computed.
-            # Overriding them with fresh outputs from a different execution
-            # would introduce non-deterministic row ordering from Polars
-            # joins, breaking trace row identity.
-            merged = {**eager_outputs, **prev_outputs}
+            # Fresh eager outputs win over prev_outputs for any overlap:
+            # the prev_outputs may contain stale entries for nodes that were
+            # re-executed (e.g. delete-then-re-add with same id) and serving
+            # the stale DataFrame would hide legitimate config changes from
+            # the caller.  The extend-path only needs prev_outputs for nodes
+            # the current execution did NOT recompute.
+            merged = {**prev_outputs, **eager_outputs}
             merged_errors = {**cached["errors"], **errors}
             merged_timings = {**cached["timings"], **timings}
             merged_memory = {**cached["memory_bytes"], **memory_bytes}

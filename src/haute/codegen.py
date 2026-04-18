@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._logging import get_logger
+from haute.errors import ConfigError, ParseError
 from haute._types import (
     MODELLING_CONFIG_KEYS,
     NODE_TYPE_TO_DECORATOR,
@@ -811,12 +812,27 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
         decorator = "@pipeline.polars"
 
     if not code:
-        body = _wrap_user_code(code, source_names)
+        if not source_names:
+            raise ConfigError(
+                "polars transform has no user code and no upstream sources; "
+                "either connect an input or provide code.",
+                node_id=node.id,
+                label=node.data.label,
+            )
+        if len(source_names) > 1:
+            raise ConfigError(
+                "polars transform has no user code but multiple upstream "
+                "sources; add code that explicitly combines the inputs or "
+                "reduce to a single upstream.",
+                node_id=node.id,
+                label=node.data.label,
+                sources=list(source_names),
+            )
         return (
             f"{decorator}\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
-            f"{body}\n"
+            f"    return {source_names[0]}\n"
         )
 
     body = _wrap_user_code(code, ["df"])
@@ -1178,15 +1194,41 @@ def graph_to_code_multi(
         sm_id_to_func = _build_id_to_func(sorted_sm_nodes)
         sm_node_sources = _build_node_sources(sm_edges, sm_id_to_func)
 
-        # Also include cross-boundary inputs from parent graph edges
+        # Also include cross-boundary inputs from parent graph edges.
+        # Every edge targeting the submodel placeholder must carry a valid
+        # ``in__<child_id>`` handle — anything else indicates a malformed
+        # edge and we fail loudly rather than silently dropping it.
         sm_node_id = f"submodel__{sm_name}"
         sm_child_ids = {n.id for n in sm_nodes}
         for edge in edges:
-            if edge.target == sm_node_id and edge.targetHandle:
-                child_id = edge.targetHandle.removeprefix("in__")
-                if child_id in sm_child_ids:
-                    src_name = root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
-                    sm_node_sources.setdefault(child_id, []).append(src_name)
+            if edge.target != sm_node_id:
+                continue
+            handle = edge.targetHandle
+            if not handle or not handle.startswith("in__"):
+                raise ParseError(
+                    "Submodel cross-boundary edge has missing or malformed "
+                    "targetHandle; expected 'in__<child_id>'.",
+                    edge_id=edge.id,
+                    handle=handle,
+                    submodel=sm_name,
+                    source=edge.source,
+                    target=edge.target,
+                )
+            child_id = handle[len("in__") :]
+            if child_id not in sm_child_ids:
+                raise ParseError(
+                    "Submodel cross-boundary edge references a child node "
+                    "that does not exist in the submodel.",
+                    edge_id=edge.id,
+                    handle=handle,
+                    child_id=child_id,
+                    submodel=sm_name,
+                    known_children=sorted(sm_child_ids),
+                )
+            src_name = root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
+            existing = sm_node_sources.setdefault(child_id, [])
+            if src_name not in existing:
+                existing.append(src_name)
 
         # Build connect pairs from internal edges
         sm_connect_pairs = [

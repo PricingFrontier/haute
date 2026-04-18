@@ -262,7 +262,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description='"""',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_six_quotes_description(self):
@@ -272,7 +272,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description='""""""',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_triple_quote_at_start(self):
@@ -282,7 +282,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description='"""Starts with quotes',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_triple_quote_at_end(self):
@@ -292,7 +292,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description='Ends with quotes"""',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_single_quotes_in_description_unchanged(self):
@@ -302,7 +302,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description="Has 'single' and \"double\" quotes",
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         assert "single" in code
         assert "double" in code
@@ -394,7 +394,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description="ends with backslash\\",
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         _ast_parse_node_code(code)
 
@@ -405,7 +405,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description="""Has ''' and \"\"\", both""",
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         _ast_parse_node_code(code)
 
@@ -416,7 +416,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description='ends with a quote"',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         _ast_parse_node_code(code)
 
@@ -438,7 +438,7 @@ class TestTripleQuoteInjection:
             {"code": ""},
             description='path is C:\\"',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         _ast_parse_node_code(code)
 
@@ -590,7 +590,7 @@ class TestCurlyBracesInValues:
             {"code": ""},
             description="Transform {step_1} output",
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         assert "{step_1}" in code
 
@@ -753,13 +753,13 @@ class TestDescriptionRegression:
             {"code": ""},
             description="Normal description text",
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         assert "Normal description text" in code
         _compile_node_code(code)
 
     def test_default_description_uses_label(self):
         node = _make_node("polars", {"code": ""}, label="MyLabel")
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         assert "MyLabel node" in code
         _compile_node_code(code)
 
@@ -770,7 +770,7 @@ class TestDescriptionRegression:
             {"code": ""},
             description="Line 1\nLine 2",
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_description_with_single_double_quote(self):
@@ -780,7 +780,7 @@ class TestDescriptionRegression:
             {"code": ""},
             description='Has a "quoted" word',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         assert "quoted" in code
 
@@ -791,5 +791,5 @@ class TestDescriptionRegression:
             {"code": ""},
             description='Has "" empty quotes',
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)

@@ -603,9 +603,34 @@ def build_instance_mapping(
     Priority: explicit mapping → exact name match → substring match → positional.
     Used by the executor (alias injection) and codegen (kwarg generation).
     The frontend mirrors this algorithm in NodePanel.tsx (InstanceConfig auto-mapping).
+
+    Raises
+    ------
+    ConfigError
+        If *explicit* contains stale entries — keys that do not appear in
+        *orig_names* or non-empty values that do not appear in *inst_names*.
+        Stale entries indicate the UI-stored ``inputMapping`` is out of
+        sync with the current graph and would silently corrupt wiring.
     """
+    from haute.errors import ConfigError
+
     mapping: dict[str, str] = {}
     if explicit:
+        orig_set = set(orig_names)
+        inst_set = set(inst_names)
+        stale_keys = [k for k in explicit if k not in orig_set]
+        stale_values = [
+            (k, v) for k, v in explicit.items() if v and v not in inst_set
+        ]
+        if stale_keys or stale_values:
+            raise ConfigError(
+                "inputMapping contains stale entries that no longer match the "
+                "current graph; remove or update them in the node config.",
+                stale_keys=stale_keys,
+                stale_values=stale_values,
+                orig_names=list(orig_names),
+                inst_names=list(inst_names),
+            )
         mapping = {k: v for k, v in explicit.items() if v}
 
     used: set[int] = set()

@@ -247,17 +247,20 @@ class TestNodeToCode:
         assert "return upstream" in code
         _compile_node_code(code)
 
-    def test_transform_without_code_no_sources_returns_df(self):
+    def test_transform_without_code_no_sources_raises(self):
+        """Post Item #22: an orphan polars transform (no code, no inputs)
+        is incoherent — must raise ``ConfigError`` rather than emit
+        ``return df`` where ``df`` is unbound."""
+        from haute.errors import ConfigError
+
         node = _n(
             {
                 "id": "t",
                 "data": {"label": "Pass", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node, source_names=[])
-        assert "def Pass(df: pl.LazyFrame)" in code
-        assert "return df" in code
-        _compile_node_code(code)
+        with pytest.raises(ConfigError):
+            _node_to_code(node, source_names=[])
 
     def test_output_with_fields(self):
         node = _n(
@@ -792,7 +795,8 @@ class TestSelectedColumnsCodegen:
                 },
             }
         )
-        code = _node_to_code(node, [])
+        # Post Item #22: empty code + no inputs raises, so pass a source.
+        code = _node_to_code(node, ["upstream"])
         assert code.startswith("@pipeline.polars\n")
 
 
@@ -852,7 +856,9 @@ class TestCodegenEdgeCases:
                 },
             }
         )
-        code = _node_to_code(node)
+        # Post Item #22: a polars node with no code requires at least one
+        # source to be wired (otherwise it raises); pass one here.
+        code = _node_to_code(node, source_names=["upstream"])
         assert "def EmptyConfig(" in code
         _compile_node_code(code)
 
@@ -2174,7 +2180,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "it's a node", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         assert "def " in code
 
@@ -2185,7 +2191,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": 'say "hello"', "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_label_with_newline(self):
@@ -2196,7 +2202,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "line1\nline2", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_label_with_unicode_emoji(self):
@@ -2206,7 +2212,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "price_update_\u2705", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_label_all_special_chars(self):
@@ -2217,7 +2223,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "!@#$%", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         # Must have a def with some valid identifier
         assert "def " in code
         _compile_node_code(code)
@@ -2564,7 +2570,8 @@ class TestGenTransformEdgeCases:
                 },
             }
         )
-        code = _node_to_code(node, source_names=[])
+        # Post Item #22: empty code + no sources raises, so supply one.
+        code = _node_to_code(node, source_names=["upstream"])
         assert code.startswith("@pipeline.polars\n")
         _compile_node_code(code)
 

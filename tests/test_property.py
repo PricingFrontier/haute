@@ -286,12 +286,30 @@ def _pipeline_graph_strategy():
 
 
 def _roundtrip(graph: PipelineGraph) -> PipelineGraph:
-    """Helper: codegen → write to temp file → parse back."""
+    """Helper: codegen → write to temp file → parse back.
+
+    Post Item #18 the parser fails loudly on missing sidecar configs.
+    Codegen emits ``@pipeline.<type>(config="config/<type>/<name>.json")``
+    for node types with a config folder; we materialise those sidecar
+    JSON files from each node's config dict so the reparse finds them.
+    """
+    import json
     import tempfile
+
+    from haute._config_io import config_path_for_node, has_config_folder
+    from haute.graph_utils import _sanitize_func_name
 
     code = graph_to_code(graph, pipeline_name="gen_pipeline")
     with tempfile.TemporaryDirectory() as td:
-        py_file = Path(td) / "gen_pipeline.py"
+        root = Path(td)
+        for n in graph.nodes:
+            if not has_config_folder(n.data.nodeType):
+                continue
+            func_name = _sanitize_func_name(n.data.label)
+            cfg_path = root / config_path_for_node(n.data.nodeType, func_name)
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            cfg_path.write_text(json.dumps(n.data.config))
+        py_file = root / "gen_pipeline.py"
         py_file.write_text(code)
         return parse_pipeline_file(py_file)
 

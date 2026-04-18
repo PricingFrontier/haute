@@ -629,8 +629,9 @@ class TestPolarsConfigSafety:
 class TestParserConfigLoadWarning:
     """Verify the parser surfaces config load errors via graph.warning."""
 
-    def test_warning_set_when_config_missing(self, tmp_path, monkeypatch):
-        """Parsing a pipeline with a missing config file should set graph.warning."""
+    def test_raises_when_config_missing(self, tmp_path, monkeypatch):
+        """Parsing a pipeline with a missing config file raises ``ConfigError``
+        (post Item #18 fail-loudly contract)."""
         monkeypatch.chdir(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
@@ -641,13 +642,12 @@ class TestParserConfigLoadWarning:
             "def missing() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("")\n'
         )
-        # No config file created — it's missing
 
+        from haute.errors import ConfigError
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "main.py")
-        assert graph.warning is not None
-        assert "missing" in graph.warning
+        with pytest.raises(ConfigError):
+            parse_pipeline_file(pipeline_dir / "main.py")
 
     def test_no_warning_when_config_exists(self, tmp_path, monkeypatch):
         """Parsing a pipeline with a valid config file should not set graph.warning."""

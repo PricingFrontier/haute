@@ -17,12 +17,12 @@ from pathlib import Path
 from typing import Any
 
 from haute._config_io import (
-    find_config_by_func_name,
     load_node_config,
 )
 from haute._config_validation import warn_unrecognized_config_keys
 from haute._logging import get_logger
 from haute._types import DECORATOR_TO_NODE_TYPE
+from haute.errors import ConfigError
 from haute.graph_utils import (
     MODEL_SCORE_CONFIG_KEYS,
     MODELLING_CONFIG_KEYS,
@@ -978,25 +978,20 @@ def _resolve_node_config(
     node_type = explicit_node_type or NodeType.POLARS
     config_ref = decorator_kwargs.pop("config", None)
     if config_ref:
-        config_ref = config_ref.replace("\\", "/")
+        normalised_ref = config_ref.replace("\\", "/")
         base = base_dir or Path.cwd()
         try:
-            loaded = load_node_config(config_ref, base_dir=base)
+            loaded = load_node_config(normalised_ref, base_dir=base)
         except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
-            logger.warning("config_path_fallback", original_path=config_ref, func_name=func_name)
-            # On Windows the config path may be mangled by backslash
-            # escape interpretation (e.g. \b→backspace, \r→CR).  Recover
-            # by scanning config folders for a file matching func_name.
-            loaded = {}
-            if func_name:
-                recovered = find_config_by_func_name(func_name, base)
-                if recovered is not None:
-                    loaded, _recovered_type = recovered
-            if not loaded:
-                # Mark the node so the save pathway preserves the
-                # original config file on disk instead of overwriting
-                # it with an empty dict.
-                loaded["_load_error"] = f"{config_ref}: {exc}"
+            raise ConfigError(
+                "Failed to load node config; check that the path exists and "
+                "contains valid JSON, or create the file.",
+                original_path=config_ref,
+                normalised_path=normalised_ref,
+                func_name=func_name,
+                base_dir=str(base),
+                cause=str(exc),
+            ) from exc
         config = dict(loaded)
         # Code lives in the .py function body, not in the JSON file
         if node_type == NodeType.MODEL_SCORE:
