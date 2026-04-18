@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,9 +17,51 @@ from haute.deploy._pruner import (
     find_source_nodes,
     prune_for_deploy,
 )
+from haute.errors import DeployError
 from haute.graph_utils import PipelineGraph
 
 logger = get_logger(component="deploy.config")
+
+
+# ---------------------------------------------------------------------------
+# Base image pinning — reject floating tags
+# ---------------------------------------------------------------------------
+#
+# Deployed containers must start from a deterministic base image.  Floating
+# tags (``python:3.11-slim``, ``python:3.11``, ``python:latest``, or no tag at
+# all) silently drift to whatever "latest" means at build time, which means
+# the image bytes you test against today are not the image bytes your users
+# hit tomorrow.  The two acceptable forms are:
+#
+# * **Explicit patch version** — the full ``MAJOR.MINOR.PATCH`` triple
+#   appears somewhere in the tag (e.g. ``python:3.11.9-slim``,
+#   ``docker.io/library/python:3.11.9-slim``).
+# * **Digest pin** — the image is pinned by content hash
+#   (``python@sha256:<64-hex>``), the strongest form of pinning.
+
+_PATCH_PINNED_RE = re.compile(r"^[^:]+:[^@]*\d+\.\d+\.\d+[^@]*$")
+_DIGEST_PINNED_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+
+def _validate_base_image_pinning(base_image: str) -> None:
+    """Ensure ``base_image`` is pinned to a concrete, reproducible release.
+
+    Accepts either a patch-version pin (``<image>:...M.m.p...``) or a digest
+    pin (``<image>@sha256:<64-hex>``).  Raises :class:`DeployError` for every
+    other form — including the empty string, floating tags, missing tags, and
+    major- or minor-only tags.  The error message names the offending
+    ``base_image`` value so users can diff it against their config.
+    """
+    if _PATCH_PINNED_RE.match(base_image) or _DIGEST_PINNED_RE.search(base_image):
+        return
+    raise DeployError(
+        "container.base_image is not pinned to a concrete release. "
+        "Use either a patch-version pin (e.g. 'python:3.11.9-slim') or a "
+        "digest pin (e.g. 'python@sha256:<64-hex>'). "
+        "Floating tags like 'python:3.11-slim' drift across rebuilds and are "
+        "rejected to guarantee reproducible deployments.",
+        base_image=base_image,
+    )
 
 
 @dataclass
@@ -34,11 +77,18 @@ class DatabricksConfig:
 
 @dataclass
 class ContainerConfig:
-    """Container-specific settings from [deploy.container] in haute.toml."""
+    """Container-specific settings from [deploy.container] in haute.toml.
+
+    ``base_image`` has no usable default: users must explicitly set it to a
+    patch- or digest-pinned image (see :func:`_validate_base_image_pinning`).
+    The empty-string default here keeps ``ContainerConfig`` constructible
+    without arguments; :meth:`DeployConfig.__post_init__` refuses to deploy
+    when ``target == "container"`` and the image is unpinned.
+    """
 
     registry: str = ""
     port: int = 8080
-    base_image: str = "python:3.11-slim"
+    base_image: str = ""
 
 
 @dataclass
@@ -186,6 +236,19 @@ class DeployConfig:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     ci: CIConfig = field(default_factory=CIConfig)
 
+    def __post_init__(self) -> None:
+        """Validate fields that must be correct at construction time.
+
+        Container-target deploys require a reproducibly pinned base image;
+        see :func:`_validate_base_image_pinning`.  We only validate when
+        ``target == "container"`` because non-container deploys (Databricks,
+        etc.) never consume ``container.base_image`` — validating in those
+        cases would be noise that forces users to set an image they do not
+        use.
+        """
+        if self.target == "container":
+            _validate_base_image_pinning(self.container.base_image)
+
     @property
     def effective_endpoint_name(self) -> str | None:
         """Endpoint name with optional suffix applied (e.g. for staging).
@@ -246,10 +309,14 @@ class DeployConfig:
             serving_scale_to_zero=db_raw.get("serving_scale_to_zero", True),
         )
 
+        # ``base_image`` has no implicit default — the empty string flows
+        # through to the post-init validator, which refuses to deploy an
+        # unpinned image for container targets.  Users must explicitly set a
+        # patch- or digest-pinned image in [deploy.container].
         ct_config = ContainerConfig(
             registry=ct_raw.get("registry", ""),
             port=ct_raw.get("port", 8080),
-            base_image=ct_raw.get("base_image", "python:3.11-slim"),
+            base_image=ct_raw.get("base_image", ""),
         )
 
         aca_config = AzureContainerAppsConfig(
@@ -398,6 +465,15 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     from haute.deploy._bundler import collect_artifacts
     from haute.deploy._schema import infer_input_schema, infer_output_schema
     from haute.parser import parse_pipeline_file
+
+    # Re-run base-image pinning validation here.  ``__post_init__`` ran at
+    # construction time, but ``target`` and ``container.base_image`` can be
+    # mutated later via env overrides, ``override(target="container")``, or
+    # direct attribute writes — all of which bypass ``__post_init__``.
+    # Any container-target deploy funnels through ``resolve_config``, so this
+    # is the last chokepoint before we commit to a build.
+    if config.target == "container":
+        _validate_base_image_pinning(config.container.base_image)
 
     # Ensure .env is loaded (idempotent — also called in from_toml, but
     # needed here for programmatic DeployConfig construction).

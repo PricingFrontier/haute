@@ -60,7 +60,7 @@ DOCKER_PASSWORD=
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 """
         ),
     },
@@ -87,7 +87,7 @@ AZURE_CLIENT_SECRET=
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.azure-container-apps]
 resource_group = ""
@@ -117,7 +117,7 @@ AWS_DEFAULT_REGION=eu-west-1
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.aws-ecs]
 region = "eu-west-1"
@@ -145,7 +145,7 @@ GCP_SERVICE_ACCOUNT_KEY=
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.gcp-run]
 project = ""

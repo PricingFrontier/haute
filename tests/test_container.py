@@ -50,12 +50,16 @@ def _make_resolved(
     """Build a minimal ResolvedDeploy for container unit tests.
 
     Delegates to the shared helper with container-specific defaults.
+    ``ContainerConfig`` uses a patch-pinned base image so the post-init
+    check in ``DeployConfig`` accepts the target-``container`` config;
+    tests that exercise image validation itself pass an explicit
+    ``container=ContainerConfig(base_image=...)`` override.
     """
     return make_resolved_deploy(
         pipeline_file=Path("main.py"),
         model_name=model_name,
         target=target,
-        container=container or ContainerConfig(),
+        container=container or ContainerConfig(base_image="python:3.11.9-slim"),
         pruned_graph=PipelineGraph(nodes=[GraphNode(id="n1", data=NodeData(label="n1"))]),
         artifacts=artifacts or {},
         input_schema={"age": "int", "region": "str"},
@@ -479,7 +483,11 @@ class TestBuildAndPushImage:
         artifact_file.write_text("fake model data")
         return _make_resolved(
             artifacts={"model.cbm": artifact_file},
-            container=ContainerConfig(registry=registry, port=8080),
+            container=ContainerConfig(
+                registry=registry,
+                port=8080,
+                base_image="python:3.11.9-slim",
+            ),
         )
 
     @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")

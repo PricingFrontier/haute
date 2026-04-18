@@ -110,19 +110,43 @@ def collect_artifacts(
 
 
 def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:
-    """Resolve a possibly-relative path against the pipeline directory."""
+    """Resolve ``raw_path`` to an absolute path at bundle time (Item #48).
+
+    Resolution order:
+
+    1. Absolute paths are returned :meth:`~Path.resolve`-ed.
+    2. Relative paths are first resolved against ``pipeline_dir`` — the
+       directory containing the pipeline source file.  When the
+       pipeline-relative file exists, that absolute path is returned.
+    3. Only if the pipeline-relative path does not exist on disk do we
+       fall back to ``Path.cwd() / raw_path``.  This preserves backward
+       compatibility with pipelines that reference artifacts via
+       project-root-relative paths.
+
+    The key invariant — enforced by the test in
+    ``test_deploy_config_and_bundle`` — is that a file existing under
+    ``pipeline_dir`` **always wins** over a same-named file elsewhere.  The
+    old code preferred CWD when both existed, which baked the caller's
+    working directory into the manifest; the deployed container then failed
+    because CWD in the container is ``/``.
+
+    Every path returned is already absolute, so the manifest stores a
+    deterministic, re-resolution-free pointer into the bundle.  Missing
+    files surface loudly via :func:`_check_exists`.
+    """
     p = Path(raw_path)
     if p.is_absolute():
-        return p
-    # Try relative to CWD first (matches runtime behavior), then pipeline dir
-    cwd_path = Path.cwd() / p
-    if cwd_path.exists():
-        return cwd_path.resolve()
-    pipe_path = pipeline_dir / p
-    if pipe_path.exists():
-        return pipe_path.resolve()
-    # Return CWD-relative (will be caught by _check_exists)
-    return cwd_path.resolve()
+        return p.resolve()
+    pipeline_abs = (pipeline_dir / p).resolve()
+    if pipeline_abs.exists():
+        return pipeline_abs
+    cwd_abs = (Path.cwd() / p).resolve()
+    if cwd_abs.exists():
+        return cwd_abs
+    # Neither exists — return the pipeline-relative absolute so the
+    # subsequent ``_check_exists`` error points at where the user would
+    # expect the file to live given their pipeline layout.
+    return pipeline_abs
 
 
 def _artifact_name(node_id: str, path: Path) -> str:
