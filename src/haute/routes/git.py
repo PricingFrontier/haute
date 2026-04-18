@@ -108,7 +108,7 @@ def git_status() -> GitStatusResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_status_failed", error=str(e))
+        logger.error("git_status_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return _dc_to_pydantic(s, GitStatusResponse)
 
@@ -126,7 +126,7 @@ def git_branches() -> GitBranchListResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_branches_failed", error=str(e))
+        logger.error("git_branches_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return _dc_to_pydantic(result, GitBranchListResponse)
 
@@ -146,7 +146,7 @@ def git_create_branch(body: GitCreateBranchRequest) -> GitCreateBranchResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_create_branch_failed", error=str(e))
+        logger.error("git_create_branch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return GitCreateBranchResponse(branch=branch)
 
@@ -164,7 +164,7 @@ def git_switch(body: GitSwitchBranchRequest) -> dict[str, str]:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_switch_failed", error=str(e))
+        logger.error("git_switch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return {"status": "ok", "branch": body.branch}
 
@@ -182,7 +182,7 @@ def git_save() -> GitSaveResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_save_failed", error=str(e))
+        logger.error("git_save_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return _dc_to_pydantic(result, GitSaveResponse)
 
@@ -200,7 +200,7 @@ def git_submit() -> GitSubmitResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_submit_failed", error=str(e))
+        logger.error("git_submit_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return _dc_to_pydantic(result, GitSubmitResponse)
 
@@ -218,7 +218,7 @@ def git_history(limit: int = Query(20, ge=1, le=500)) -> GitHistoryResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_history_failed", error=str(e))
+        logger.error("git_history_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return GitHistoryResponse(
         entries=[_dc_to_pydantic(e, GitHistoryEntry) for e in entries],
@@ -238,7 +238,7 @@ def git_revert(body: GitRevertRequest) -> GitRevertResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_revert_failed", error=str(e))
+        logger.error("git_revert_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return _dc_to_pydantic(result, GitRevertResponse)
 
@@ -256,7 +256,7 @@ def git_pull() -> GitPullResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_pull_failed", error=str(e))
+        logger.error("git_pull_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return _dc_to_pydantic(result, GitPullResponse)
 
@@ -274,7 +274,7 @@ def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_archive_failed", error=str(e))
+        logger.error("git_archive_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return GitArchiveResponse(archived_as=archived_as)
 
@@ -292,6 +292,6 @@ def git_delete_branch(body: GitDeleteBranchRequest) -> dict[str, str]:
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_delete_branch_failed", error=str(e))
+        logger.error("git_delete_branch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return {"status": "ok", "branch": body.branch}

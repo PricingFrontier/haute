@@ -110,7 +110,6 @@ class SavePipelineService:
             self._write_code(body, graph, py_path, touched)
             self._infer_flatten_schemas(graph)
             self._write_config_files(graph, touched)
-            self._remove_stale_config_files(graph)
             warnings.extend(
                 self._write_sidecar(
                     py_path, graph, body.sources, body.active_source, touched
@@ -119,6 +118,12 @@ class SavePipelineService:
         except BaseException:
             self._rollback(touched)
             raise
+
+        # Stale-config removal is NOT part of the transaction: these deletions
+        # are non-recoverable once committed, so run them only after every
+        # write has succeeded.  If sidecar write fails mid-save, stale configs
+        # remain on disk and will be cleaned up on the next successful save.
+        self._remove_stale_config_files(graph)
 
         # Final save-level self-write marker keeps the existing behaviour
         # for callers that wait on the cooldown rather than per-file

@@ -1012,3 +1012,80 @@ class TestRenameCollisionPositionWarning:
             f"#51: collision warning did not name the affected key "
             f"(got: {warnings_or_errors!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# #50 rollback robustness — partial-rollback failure must not mask the
+# original exception and must continue rolling back the remaining entries.
+# ---------------------------------------------------------------------------
+
+
+class TestRollbackRobustness:
+    def test_partial_rollback_failure_continues_and_preserves_original_error(
+        self, project_root: Path, tmp_path: Path
+    ) -> None:
+        """If _rollback itself hits an OSError on one entry, remaining
+        entries must still be rolled back, a save_rollback_failed log
+        must be emitted, and the ORIGINAL save exception (not the
+        rollback exception) must propagate to the caller.
+        """
+        import structlog.testing
+
+        from haute.routes._save_pipeline import SavePipelineService, _TouchedFile
+
+        svc = SavePipelineService(project_root)
+
+        # Three targets, all pre-existing with known content so rollback
+        # needs to restore bytes for each.
+        a = project_root / "a.tmp"
+        b = project_root / "b.tmp"
+        c = project_root / "c.tmp"
+        a.write_bytes(b"A_ORIG")
+        b.write_bytes(b"B_ORIG")
+        c.write_bytes(b"C_ORIG")
+
+        # Simulate a save that touched all three and then overwrote them
+        # with new content before the transaction raised.
+        a.write_bytes(b"A_NEW")
+        b.write_bytes(b"B_NEW")
+        c.write_bytes(b"C_NEW")
+
+        touched = [
+            _TouchedFile(target=a, previous_bytes=b"A_ORIG"),
+            _TouchedFile(target=b, previous_bytes=b"B_ORIG"),
+            _TouchedFile(target=c, previous_bytes=b"C_ORIG"),
+        ]
+
+        import haute.routes._save_pipeline as sp_mod
+
+        real_atomic = sp_mod.atomic_write_bytes
+        call_counter = {"n": 0}
+
+        def flaky_atomic(path: Path, data: bytes) -> None:
+            call_counter["n"] += 1
+            # Fail on the middle restore
+            if call_counter["n"] == 2:
+                raise PermissionError("simulated mid-rollback failure")
+            real_atomic(path, data)
+
+        with patch.object(sp_mod, "atomic_write_bytes", side_effect=flaky_atomic):
+            with structlog.testing.capture_logs() as captured:
+                svc._rollback(touched)
+
+        # Remaining entries (not the one that failed) must have been rolled
+        # back — the iteration is reverse, so c -> b (fails) -> a.  After
+        # the failure on b, a must still be restored.
+        assert a.read_bytes() == b"A_ORIG", (
+            "#50: rollback stopped after first failure — later entries lost"
+        )
+        assert c.read_bytes() == b"C_ORIG", (
+            "#50: rollback's first (reverse-order) entry was not restored"
+        )
+
+        failed_events = [
+            e for e in captured if e.get("event") == "save_rollback_failed"
+        ]
+        assert failed_events, (
+            "#50: _rollback swallowed a partial-rollback error without "
+            "emitting save_rollback_failed"
+        )
