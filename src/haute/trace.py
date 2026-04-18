@@ -30,6 +30,7 @@ import polars as pl
 
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
+from haute.errors import ExecutionError
 from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
 from haute.graph_utils import (
     NodeType,
@@ -110,8 +111,11 @@ class TraceResult:
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
 
-    # Waterfall summary for sequential multiplicative/additive rating chains
-    waterfall: list[dict[str, Any]] | None = None
+    # Waterfall summary for sequential multiplicative/additive rating chains.
+    # On the happy path this is a list of entry dicts.  If waterfall
+    # construction fails, the field carries a structured
+    # ``{"error": "..."}`` payload instead — never a silent ``None``.
+    waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -564,47 +568,21 @@ def execute_trace(
             effective_preamble = dict(compiled_preamble_ns or {})
             if preamble_ns:
                 effective_preamble.update(preamble_ns)
-            try:
-                result = _execute_eager_core(
-                    graph,
-                    _build_node_fn,
-                    target_node_id=target_node_id,
-                    row_limit=row_limit,
-                    swallow_errors=False,
-                    preamble_ns=effective_preamble or None,
-                    source=source,
-                )
-            except Exception as exc:
-                # Retry with swallow_errors ONLY for intra-node dependency
-                # errors (column referenced is defined in same with_columns).
-                exc_str = str(exc)
-                is_intra_dep = False
-                if "unable to find column" in exc_str:
-                    # Extract the missing column name
-                    col_match = re.search(r'unable to find column "(\w+)"', exc_str)
-                    if col_match:
-                        missing_col = col_match.group(1)
-                        # Check if any node's code defines this column in with_columns
-                        for n in nodes:
-                            cfg = n.data.config if isinstance(n.data.config, dict) else {}
-                            nc = cfg.get("code", "") or ""
-                            if nc and ".with_columns(" in nc:
-                                if re.search(rf"\b{re.escape(missing_col)}\s*=", nc):
-                                    is_intra_dep = True
-                                    break
-
-                if is_intra_dep:
-                    result = _execute_eager_core(
-                        graph,
-                        _build_node_fn,
-                        target_node_id=target_node_id,
-                        row_limit=row_limit,
-                        swallow_errors=True,
-                        preamble_ns=effective_preamble or None,
-                        source=source,
-                    )
-                else:
-                    raise
+            # Run the graph — if it fails, let the original exception
+            # propagate unchanged.  Previous versions of this code
+            # regex-matched "unable to find column" in the error message
+            # and silently retried with swallow_errors=True, which masked
+            # genuine column-name typos whenever another node in the graph
+            # happened to define the same kwarg name.  Fail loudly instead.
+            result = _execute_eager_core(
+                graph,
+                _build_node_fn,
+                target_node_id=target_node_id,
+                row_limit=row_limit,
+                swallow_errors=False,
+                preamble_ns=effective_preamble or None,
+                source=source,
+            )
             eager_outputs = {nid: df for nid, df in result.outputs.items() if df is not None}
             order = result.order
             parents_of = result.parents_of
@@ -835,7 +813,7 @@ def execute_trace(
 
     # Build waterfall from trace steps — looks for sequential steps where
     # the traced column is modified by a multiplicative/additive operation.
-    waterfall_data: list[dict[str, Any]] | None = None
+    waterfall_data: list[dict[str, Any]] | dict[str, Any] | None = None
     if column and len(steps) >= 3:
         try:
             from haute._trace_waterfall import build_waterfall
@@ -869,8 +847,23 @@ def execute_trace(
                     }
                     for e in wf_result.entries
                 ]
-        except Exception:
-            logger.debug("waterfall_build_failed", exc_info=True)
+        except Exception as exc:
+            # Surface the waterfall build failure as a structured payload
+            # on TraceResult.waterfall so the user can see what went wrong,
+            # and log at WARNING level.  Previously this swallowed the
+            # failure silently and returned waterfall=None.
+            logger.warning(
+                "waterfall_build_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                target=target_node_id,
+                column=column,
+                exc_info=True,
+            )
+            waterfall_data = {
+                "error": f"waterfall build failed: {exc}",
+                "error_type": type(exc).__name__,
+            }
 
     return TraceResult(
         target_node_id=target_node_id,
@@ -962,8 +955,20 @@ def _fix_upstream_values(
                 if len(matched) > 0:
                     new_row = _jsonify_row(matched.row(0, named=True))
                     s.output_values[col_name] = new_row.get(col_name)
-            except Exception:
-                logger.debug("fix_upstream_row_failed", node_id=s.node_id, column=col_name)
+            except Exception as exc:
+                # Row-fixup is opportunistic — it patches upstream rows
+                # that the post-hoc correlator got wrong.  If the filter
+                # itself errors (type mismatch, non-comparable value),
+                # log visibly so the user can see the fixup was skipped
+                # rather than silently leaving the wrong row in place.
+                logger.warning(
+                    "fix_upstream_row_failed",
+                    node_id=s.node_id,
+                    column=col_name,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    exc_info=True,
+                )
             break
 
         # Recurse into nested input_sources
@@ -1053,7 +1058,21 @@ def _build_input_sources(
                     if ev is not None:
                         source_info["substituted_text"] = ev.substituted_text
                         source_info["result_value"] = ev.result_value
-            except Exception:
+            except Exception as exc:
+                # Surface the derivation failure on the source entry so
+                # the caller can see why an input column's value/
+                # expression is missing, rather than silently falling
+                # back to the raw cell value.
+                logger.warning(
+                    "input_source_derivation_failed",
+                    node_id=other_step.node_id,
+                    column=ref_col,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    exc_info=True,
+                )
+                source_info["error"] = f"input-source derivation failed: {exc}"
+                source_info["error_type"] = type(exc).__name__
                 source_info.setdefault("result_value", other_combined.get(ref_col))
 
             # If no expression was found (source node with no code),
@@ -1177,12 +1196,31 @@ def _enrich_steps(
                                 )
                                 if ev is not None:
                                     step.calculation = dataclasses.asdict(ev)
-                            except Exception:
-                                logger.debug(
+                            except Exception as exc:
+                                logger.warning(
                                     "upstream_expression_failed",
                                     node_id=upstream.node_id,
                                     column=column,
+                                    error=str(exc),
+                                    error_type=type(exc).__name__,
+                                    exc_info=True,
                                 )
+                                err_payload: dict[str, Any] = {
+                                    "error": f"upstream expression lookup failed: {exc}",
+                                    "error_type": type(exc).__name__,
+                                    "upstream_node_id": upstream.node_id,
+                                }
+                                # Surface the error on both enrichment
+                                # fields so downstream consumers see it
+                                # regardless of which one they inspect.
+                                if step.expression is None:
+                                    step.expression = dict(err_payload)
+                                else:
+                                    step.expression.setdefault("error", err_payload["error"])
+                                if step.calculation is None:
+                                    step.calculation = dict(err_payload)
+                                else:
+                                    step.calculation.setdefault("error", err_payload["error"])
                         break
             _col_in_code = False
             if column and raw_code and ".with_columns(" in raw_code:
@@ -1193,8 +1231,23 @@ def _enrich_steps(
                     parsed = parse_expression(code, column)
                     if parsed is not None:
                         step.expression = dataclasses.asdict(parsed)
-                except Exception:
-                    logger.debug("expression_parse_failed", node_id=step.node_id)
+                except Exception as exc:
+                    logger.warning(
+                        "expression_parse_failed",
+                        node_id=step.node_id,
+                        column=column,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    # Surface the parse failure on the enrichment field
+                    # so downstream consumers see it instead of an
+                    # unexplained missing expression.
+                    step.expression = {
+                        "error": f"parse_expression failed: {exc}",
+                        "error_type": type(exc).__name__,
+                        "target_column": column,
+                    }
                 try:
                     evaluated = evaluate_expression(
                         code,
@@ -1213,8 +1266,23 @@ def _enrich_steps(
                         if evaluated.expression_type == "window" and column in step.output_values:
                             calc_dict["result_value"] = step.output_values[column]
                         step.calculation = calc_dict
-                except Exception:
-                    logger.debug("expression_eval_failed", node_id=step.node_id)
+                except Exception as exc:
+                    logger.warning(
+                        "expression_eval_failed",
+                        node_id=step.node_id,
+                        column=column,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    # Seed calculation with a visible error marker that
+                    # persists even if later enrichment stages (chain,
+                    # input_sources) add more fields to the dict.
+                    step.calculation = {
+                        "error": f"evaluate_expression failed: {exc}",
+                        "error_type": type(exc).__name__,
+                        "target_column": column,
+                    }
 
                 # --- Expression chain (intra-node dependencies) ---
                 try:
@@ -1237,14 +1305,51 @@ def _enrich_steps(
                                 if ev is not None:
                                     entry["substituted_text"] = ev.substituted_text
                                     entry["result_value"] = ev.result_value
-                            except Exception:
+                            except Exception as inner_exc:
+                                logger.warning(
+                                    "chain_entry_eval_failed",
+                                    node_id=step.node_id,
+                                    column=p.target_column,
+                                    error=str(inner_exc),
+                                    error_type=type(inner_exc).__name__,
+                                    exc_info=True,
+                                )
+                                entry["error"] = (
+                                    f"chain entry evaluation failed: {inner_exc}"
+                                )
+                                entry["error_type"] = type(inner_exc).__name__
                                 entry.setdefault("substituted_text", p.expression_text)
                                 fallback = combined_values.get(p.target_column)
                                 entry.setdefault("result_value", fallback)
                             enriched_chain.append(entry)
                         step.calculation["expression_chain"] = enriched_chain
-                except Exception:
-                    logger.debug("expression_chain_failed", node_id=step.node_id)
+                except Exception as exc:
+                    logger.warning(
+                        "expression_chain_failed",
+                        node_id=step.node_id,
+                        column=column,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    # Surface a visible failure on the chain sub-field so
+                    # the user can see why intra-node dependencies were
+                    # not analysed, rather than it looking like "no chain
+                    # detected".  Also seed an outer ``error`` key on the
+                    # calculation dict (without overwriting a more
+                    # specific evaluate-expression error) so generic
+                    # consumers that inspect only the outer dict still
+                    # see the failure.
+                    if step.calculation is None:
+                        step.calculation = {}
+                    chain_error_msg = f"parse_expression_chain failed: {exc}"
+                    chain_error_type = type(exc).__name__
+                    step.calculation["expression_chain"] = {
+                        "error": chain_error_msg,
+                        "error_type": chain_error_type,
+                    }
+                    step.calculation.setdefault("error", chain_error_msg)
+                    step.calculation.setdefault("error_type", chain_error_type)
 
                 # --- Input sources (recursive upstream derivations) ---
                 try:
@@ -1258,10 +1363,14 @@ def _enrich_steps(
                     if step.expression and step.expression.get("referenced_columns"):
                         all_ref_cols.extend(step.expression["referenced_columns"])
                     if step.calculation and step.calculation.get("expression_chain"):
-                        for chain_entry in step.calculation["expression_chain"]:
-                            for rc in chain_entry.get("referenced_columns", []):
-                                if rc not in all_ref_cols:
-                                    all_ref_cols.append(rc)
+                        chain_val = step.calculation["expression_chain"]
+                        if isinstance(chain_val, list):
+                            for chain_entry in chain_val:
+                                if not isinstance(chain_entry, dict):
+                                    continue
+                                for rc in chain_entry.get("referenced_columns", []):
+                                    if rc not in all_ref_cols:
+                                        all_ref_cols.append(rc)
                     if all_ref_cols:
                         input_sources = _build_input_sources(
                             all_ref_cols,
@@ -1288,15 +1397,43 @@ def _enrich_steps(
                                 steps,
                                 eager_outputs,
                             )
-                except Exception:
-                    logger.debug("input_sources_failed", node_id=step.node_id)
+                except Exception as exc:
+                    logger.warning(
+                        "input_sources_failed",
+                        node_id=step.node_id,
+                        column=column,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    if step.calculation is None:
+                        step.calculation = {}
+                    step.calculation.setdefault(
+                        "error", f"input_sources build failed: {exc}"
+                    )
+                    step.calculation.setdefault(
+                        "error_type", type(exc).__name__
+                    )
 
             # --- Rename detection ---
             if _HAS_EXPRESSION_PARSER and column:
                 try:
                     _detect_rename(step, code, raw_code, column, steps, node_map)
-                except Exception:
-                    logger.debug("rename_detection_failed", node_id=step.node_id)
+                except Exception as exc:
+                    logger.warning(
+                        "rename_detection_failed",
+                        node_id=step.node_id,
+                        column=column,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    if step.calculation is None:
+                        step.calculation = {}
+                    step.calculation.setdefault(
+                        "rename_detection_error",
+                        f"rename detection failed: {exc}",
+                    )
 
             # --- Node-type enrichment ---
             if _HAS_TRACE_ENRICHMENT:
@@ -1319,8 +1456,20 @@ def _enrich_steps(
                         detail = enrich_live_switch(cfg, source)
                     if detail is not None:
                         step.node_detail = detail
-                except Exception:
-                    logger.debug("node_enrichment_failed", node_id=step.node_id)
+                except Exception as exc:
+                    logger.warning(
+                        "node_enrichment_failed",
+                        node_id=step.node_id,
+                        node_type=str(node_type),
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    step.node_detail = {
+                        "error": f"node enrichment failed: {exc}",
+                        "error_type": type(exc).__name__,
+                        "node_type": str(node_type),
+                    }
 
                 # --- Row lineage type ---
                 try:
@@ -1356,10 +1505,44 @@ def _enrich_steps(
                         node_type=node_type,
                         operation_type=operation_type,
                     )
-                except Exception:
-                    logger.debug("row_lineage_detection_failed", node_id=step.node_id)
-        except Exception:
-            logger.debug("trace_enrichment_step_failed", node_id=step.node_id)
+                except Exception as exc:
+                    logger.warning(
+                        "row_lineage_detection_failed",
+                        node_id=step.node_id,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    # row_lineage_type is a plain string; encode the
+                    # error visibly so UI consumers see "error: ..."
+                    # rather than a silent None.
+                    step.row_lineage_type = (
+                        f"error: row lineage detection failed: {exc}"
+                    )
+        except Exception as exc:
+            # Outer catch-all for any enrichment step.  Surface the
+            # failure on the step so downstream consumers can see it,
+            # then continue with the next step rather than aborting the
+            # whole trace.  Raising here would poison every trace if a
+            # single step hits an unforeseen bug — instead we emit a
+            # WARNING log and annotate the step with an error marker.
+            logger.warning(
+                "trace_enrichment_step_failed",
+                node_id=step.node_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
+            if step.node_detail is None:
+                step.node_detail = {
+                    "error": f"trace enrichment step failed: {exc}",
+                    "error_type": type(exc).__name__,
+                }
+            else:
+                step.node_detail.setdefault(
+                    "error", f"trace enrichment step failed: {exc}"
+                )
+                step.node_detail.setdefault("error_type", type(exc).__name__)
             continue
 
 
@@ -1464,12 +1647,20 @@ def _build_rename_chain(
                                     chain.insert(0, refs[0])
                                     current_name = refs[0]
                                     continue
-            except Exception:
-                logger.debug(
-                    "fix_upstream_row_failed",
+            except Exception as exc:
+                # Walking the rename chain is best-effort — if parsing a
+                # prior step's code blows up we stop walking and return
+                # what we have so far.  Log loudly rather than silently
+                # truncate the chain.
+                logger.warning(
+                    "rename_chain_walk_failed",
                     node_id=prev_step.node_id,
                     column=current_name,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    exc_info=True,
                 )
+                break
 
     # Remove duplicates while preserving order
     seen = set()

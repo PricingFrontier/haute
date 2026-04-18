@@ -504,7 +504,14 @@ class TestIntraNodeDependencyChain:
         assert chain[0].target_column == "x"
 
     def test_chain_in_trace_step(self, tmp_path):
-        """Full trace: verify step has expression_chain field."""
+        """Full trace: verify step has expression_chain field.
+
+        Uses two sequential ``.with_columns()`` calls because Polars
+        cannot resolve forward references within a single
+        ``.with_columns()`` call.  The chain enrichment still detects the
+        dependency because ``parse_expression_chain`` walks backward
+        through sequential ``with_columns`` statements in the node code.
+        """
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {
@@ -516,6 +523,7 @@ class TestIntraNodeDependencyChain:
         code = (
             "df = df.with_columns(\n"
             "    exposure=pl.col('months') / 12,\n"
+            ").with_columns(\n"
             "    earned_premium=pl.col('written_premium') * pl.col('exposure'),\n"
             ")"
         )
