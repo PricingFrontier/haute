@@ -1,27 +1,28 @@
 import React, { useState, useCallback, useEffect, useRef } from "react"
+import WaterfallChart, {
+  buildWaterfallSteps,
+  resolveWaterfallProp,
+  WaterfallErrorAlert,
+  type WaterfallEntryProp,
+  type WaterfallStep,
+} from "./WaterfallChart"
+import ExpressionChainRow, {
+  buildChainEntries,
+  type ExpressionChainEntry,
+} from "./ExpressionChain"
+import InputSourceTree, {
+  buildInputSourceEntries,
+  type InputSourceEntry,
+} from "./InputSourceTree"
+import {
+  formatSmartValue,
+  formatResultValueFull,
+  formatDisplayExpression,
+  tabularNums,
+} from "./traceFormatting"
 
-export interface WaterfallEntryProp {
-  label: string
-  operation: string
-  value: number
-  delta: number
-  cumulative: number
-}
-
-export interface ExpressionChainEntry {
-  expression_text: string
-  target_column: string
-  substituted_text?: string
-  result_value?: unknown
-}
-
-export interface InputSourceEntry {
-  node_name: string
-  expression_text?: string
-  substituted_text?: string
-  result_value?: unknown
-  input_sources?: Record<string, InputSourceEntry> | null
-}
+// Re-export the entry types so existing importers of CalculationHero keep working.
+export type { ExpressionChainEntry, InputSourceEntry, WaterfallEntryProp }
 
 export interface CalculationHeroProps {
   column: string
@@ -41,112 +42,6 @@ export interface CalculationHeroProps {
   stepCount?: number
   nodeName?: string
   waterfall?: WaterfallEntryProp[] | null
-}
-
-// ---------------------------------------------------------------------------
-// Value formatting
-// ---------------------------------------------------------------------------
-
-function formatSmartValue(v: unknown): string {
-  if (v === null || v === undefined) return "null"
-  if (typeof v !== "number") return String(v)
-  if (Number.isNaN(v)) return "NaN"
-  if (!Number.isFinite(v)) return String(v)
-  if (Number.isInteger(v)) return v.toLocaleString("en-US")
-  const abs = Math.abs(v)
-  if (abs < 10 && abs > 0) {
-    return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-  }
-  return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function formatResultValue(v: unknown, precision?: number): string {
-  if (v === null || v === undefined) return "null"
-  if (typeof v === "number") {
-    if (Number.isNaN(v)) return "NaN"
-    if (!Number.isFinite(v)) return String(v)
-    if (Number.isInteger(v)) return v.toLocaleString("en-US")
-    if (precision !== undefined) {
-      return v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: precision })
-    }
-    return String(v)
-  }
-  if (typeof v === "string") return `"${v}"`
-  if (typeof v === "object") return JSON.stringify(v)
-  return String(v)
-}
-
-function formatResultValueFull(v: unknown): string {
-  return formatResultValue(v)
-}
-
-function formatResultValue2dp(v: unknown): string {
-  return formatResultValue(v, 2)
-}
-
-function formatDisplayExpression(
-  expr: string,
-  maxLen = 60,
-): { text: string; truncated: boolean } {
-  const replaced = expr.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-  if (replaced.length > maxLen) {
-    return { text: replaced.slice(0, maxLen) + "\u2026", truncated: true }
-  }
-  return { text: replaced, truncated: false }
-}
-
-// ---------------------------------------------------------------------------
-// Waterfall logic
-// ---------------------------------------------------------------------------
-
-interface WaterfallStep {
-  name: string
-  factor: number
-  runningValue: number
-  prevValue: number
-  direction: "positive" | "negative" | "neutral"
-}
-
-function buildWaterfallSteps(
-  inputValues: Record<string, unknown>,
-  expressionText: string,
-): WaterfallStep[] | null {
-  const parts = expressionText.split(/\s*\*\s*/)
-  if (parts.length < 3) return null
-
-  const names = parts.map((p) => p.trim())
-  const allNumeric = names.every(
-    (n) => n in inputValues && typeof inputValues[n] === "number",
-  )
-  if (!allNumeric) return null
-
-  const steps: WaterfallStep[] = []
-  let running = inputValues[names[0]] as number
-
-  steps.push({
-    name: names[0],
-    factor: running,
-    runningValue: running,
-    prevValue: 0,
-    direction: "neutral",
-  })
-
-  for (let i = 1; i < names.length; i++) {
-    const factor = inputValues[names[i]] as number
-    const prev = running
-    running = running * factor
-    const dir =
-      factor > 1 ? "positive" : factor < 1 ? "negative" : "neutral"
-    steps.push({
-      name: names[i],
-      factor,
-      runningValue: running,
-      prevValue: prev,
-      direction: dir,
-    })
-  }
-
-  return steps
 }
 
 // ---------------------------------------------------------------------------
@@ -188,134 +83,6 @@ function parseBranches(text: string): Branch[] {
   }
 
   return branches
-}
-
-// ---------------------------------------------------------------------------
-// Tabular nums style constant (Fix 7)
-// ---------------------------------------------------------------------------
-
-const tabularNums: React.CSSProperties = { fontVariantNumeric: "tabular-nums" }
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-function WaterfallDisplay({
-  steps,
-  resultValue,
-}: {
-  steps: WaterfallStep[]
-  resultValue: unknown
-}) {
-  const maxVal = Math.max(
-    ...steps.map((s) => Math.abs(s.runningValue)),
-    1,
-  )
-  const formatted = formatResultValue2dp(resultValue)
-  const formattedFull = formatResultValueFull(resultValue)
-  const isNull = resultValue === null || resultValue === undefined
-
-  // Fix 6: Animated waterfall bars
-  const [animated, setAnimated] = useState(false)
-  const mountedRef = useRef(false)
-  const rafRef = useRef<number>(0)
-
-  useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true
-      rafRef.current = requestAnimationFrame(() => {
-        setAnimated(true)
-      })
-    }
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    }
-  }, [])
-
-  return (
-    <div className="waterfall-display">
-      {steps.map((step, idx) => {
-        const barWidth = Math.max(
-          (Math.abs(step.runningValue) / maxVal) * 100,
-          2,
-        )
-        const isLast = idx === steps.length - 1
-        return (
-          <div
-            key={idx}
-            className={`waterfall-bar ${step.direction === "positive" ? "positive increase" : step.direction === "negative" ? "negative decrease" : "neutral"}`}
-            data-testid="waterfall-bar"
-            data-direction={step.direction}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              marginBottom: 4,
-            }}
-          >
-            <span
-              className="waterfall-label"
-              style={{ minWidth: 120, fontSize: 12 }}
-            >
-              {step.name}
-            </span>
-            <span
-              className="waterfall-factor"
-              style={{ minWidth: 50, fontSize: 12, ...tabularNums }}
-            >
-              {idx === 0
-                ? String(step.factor)
-                : `\u00d7${step.factor}`}
-            </span>
-            <div
-              style={{
-                height: 16,
-                width: animated ? `${barWidth}%` : "0%",
-                backgroundColor:
-                  step.direction === "positive"
-                    ? "var(--color-positive, #4caf50)"
-                    : step.direction === "negative"
-                      ? "var(--color-negative, #f44336)"
-                      : "var(--color-neutral, #9e9e9e)",
-                borderRadius: 2,
-                minWidth: animated ? 2 : 0,
-                transition: `width 400ms cubic-bezier(0.22, 1, 0.36, 1)`,
-                transitionDelay: `${idx * 60}ms`,
-              }}
-            />
-            {!isLast && (
-              <span style={{ marginLeft: 4, fontSize: 12, ...tabularNums }}>
-                {typeof step.runningValue === "number"
-                  ? step.runningValue.toFixed(1)
-                  : String(step.runningValue)}
-              </span>
-            )}
-          </div>
-        )
-      })}
-      <div
-        className="waterfall-total total final"
-        data-testid="waterfall-total"
-        style={{ fontWeight: "bold", marginTop: 4 }}
-      >
-        <span
-          className={
-            isNull
-              ? "result-value muted null-value"
-              : "result-value accent"
-          }
-          data-accent={!isNull || undefined}
-          data-muted={isNull || undefined}
-          style={{
-            ...tabularNums,
-            ...(isNull ? { opacity: 0.5 } : {}),
-          }}
-          title={formattedFull !== formatted ? formattedFull : undefined}
-        >
-          {formatted}
-        </span>
-      </div>
-    </div>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -377,25 +144,11 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
 
   // Waterfall: prefer backend-computed waterfall data, fallback to
   // frontend parsing for arithmetic with 3+ multiplicative factors.
-  const { waterfall: waterfallProp } = props
-  let waterfallSteps: WaterfallStep[] | null = null
-  const waterfallError =
-    waterfallProp && !Array.isArray(waterfallProp) && "error" in waterfallProp
-      ? waterfallProp
-      : null
-
-  if (Array.isArray(waterfallProp) && waterfallProp.length >= 3) {
-    waterfallSteps = waterfallProp.map((entry, i) => {
-      const prevCumulative = i > 0 ? waterfallProp[i - 1].cumulative : 0
-      return {
-        name: entry.label,
-        factor: entry.value,
-        runningValue: entry.cumulative,
-        prevValue: prevCumulative,
-        direction: (entry.delta > 0 ? "positive" : entry.delta < 0 ? "negative" : "neutral") as "positive" | "negative" | "neutral",
-      }
-    })
-  } else if (
+  const { steps: backendSteps, error: waterfallError } = resolveWaterfallProp(props.waterfall)
+  let waterfallSteps: WaterfallStep[] | null = backendSteps
+  if (
+    waterfallSteps === null &&
+    waterfallError === null &&
     expression?.expression_type === "arithmetic" &&
     calculation &&
     hasExpressionText
@@ -422,7 +175,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
 
 
   // ---------------------------------------------------------------------------
-  // Line 1: Column name + Result (Fix 2: result value prominence)
+  // Line 1: Column name + Result
   // ---------------------------------------------------------------------------
   const renderLine1 = () => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -477,59 +230,60 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   // Unified calculation box — all entries top-down in one well
   // ---------------------------------------------------------------------------
   const renderUnifiedBox = (formulaText: string | null, subText: string) => {
-    if (!calculation) return null
+    // Reached the default render path with no calculation data. Prior to
+    // review item #85 this silently returned null; now we surface the gap
+    // loudly so the user knows trace data is missing rather than seeing an
+    // empty pane.
+    if (!calculation) {
+      return (
+        <div
+          role="alert"
+          style={{
+            padding: "8px 12px",
+            border: "1px solid var(--accent-error, #d97706)",
+            borderRadius: 4,
+            background: "var(--bg-error-subtle, rgba(217, 119, 6, 0.08))",
+            color: "var(--text-error, #b45309)",
+            fontSize: 12,
+            marginTop: 4,
+          }}
+        >
+          Calculation data not available for this step.
+        </div>
+      )
+    }
 
-    // Collect all derivation entries
-    interface BoxEntry {
+    // Gather rows from both sources (intra-node chain first, then upstream
+    // input-sources deduped by column). The row-builders live alongside
+    // their respective render components so the orchestrator stays focused
+    // on merge + sort + final-row composition.
+    const chainEntries = buildChainEntries(
+      calculation.expression_chain,
+      column,
+      calculation.input_values,
+    )
+    const chainColumns = new Set(chainEntries.map((e) => e.column))
+    const sourceEntries = buildInputSourceEntries(
+      calculation.input_sources,
+      calculation.input_values,
+      chainColumns,
+    )
+    // Sort: entries without formulas (raw inputs) first, then computed ones
+    // This gives a natural top-down flow: sources → derived → result. We
+    // still need subSources on only the source-derived rows (chain rows
+    // never have nested sub-sources), so carry them through as an optional
+    // field on a single merged list.
+    const entries: Array<{
       column: string
       formulaText: string | null
       substitutedText: string | null
       value: unknown
       source: string | null
       subSources: Record<string, InputSourceEntry> | null
-    }
-    const entries: BoxEntry[] = []
-
-    // 1. Intra-node chain entries (excluding the target column)
-    if (calculation.expression_chain && calculation.expression_chain.length > 1) {
-      for (const entry of calculation.expression_chain) {
-        if (entry.target_column === column) continue
-        const eFormula = entry.expression_text ? formatDisplayExpression(entry.expression_text).text : null
-        const eSub = entry.substituted_text
-          ? entry.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-          : null
-        entries.push({
-          column: entry.target_column,
-          formulaText: eFormula,
-          substitutedText: eSub,
-          value: entry.result_value ?? calculation.input_values[entry.target_column],
-          source: null,
-          subSources: null,
-        })
-      }
-    }
-
-    // 2. Upstream input sources
-    if (calculation.input_sources) {
-      for (const [colName, src] of Object.entries(calculation.input_sources)) {
-        if (entries.some((e) => e.column === colName)) continue
-        const sFormula = src.expression_text ? formatDisplayExpression(src.expression_text).text : null
-        const sSub = src.substituted_text
-          ? src.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-          : null
-        entries.push({
-          column: colName,
-          formulaText: sFormula,
-          substitutedText: sSub,
-          value: src.result_value ?? calculation.input_values[colName],
-          source: src.node_name,
-          subSources: src.input_sources ?? null,
-        })
-      }
-    }
-
-    // Sort: entries without formulas (raw inputs) first, then computed ones
-    // This gives a natural top-down flow: sources → derived → result
+    }> = [
+      ...chainEntries.map((e) => ({ ...e, subSources: null })),
+      ...sourceEntries,
+    ]
     entries.sort((a, b) => {
       const aHasFormula = a.formulaText ? 1 : 0
       const bHasFormula = b.formulaText ? 1 : 0
@@ -549,106 +303,20 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
         fontSize: 12,
       }}>
         {/* Input/intermediate entries — top-down */}
-        {entries.map((entry) => {
-          const val = entry.value
-          const fVal = formatSmartValue(val)
-          return (
-            <div key={entry.column} style={{ position: "relative", paddingLeft: 24, marginBottom: 6 }}>
-              {/* Vertical line */}
-              <div style={{
-                position: "absolute", left: 6, top: 0, bottom: -6,
-                width: 1, background: "rgba(96,165,250,.15)",
-              }} />
-              {/* Horizontal connector */}
-              <div style={{
-                position: "absolute", left: 6, top: 9, width: 14, height: 1,
-                background: "rgba(96,165,250,.15)",
-              }} />
-              {/* Dot */}
-              <div style={{
-                position: "absolute", left: 4, top: 7, width: 5, height: 5,
-                borderRadius: "50%", background: "rgba(96,165,250,.25)",
-                border: "1px solid rgba(96,165,250,.4)",
-              }} />
-              {/* Content — line 1: symbolic, line 2: numeric */}
-              {entry.formulaText ? (
-                <>
-                  {/* Line 1: column = formula */}
-                  <div style={{ color: "var(--text-primary)" }}>
-                    <span style={{ fontWeight: 600 }}>{entry.column}</span>
-                    <span style={{ color: "var(--text-secondary)" }}> = {entry.formulaText}</span>
-                    {entry.source && (
-                      <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({entry.source})</span>
-                    )}
-                  </div>
-                  {/* Line 2: result = substituted values */}
-                  <div style={{ color: "var(--text-secondary)", ...tabularNums }}>
-                    <span style={{ color: "var(--text-primary)", fontWeight: 600 }} title={formatResultValueFull(val)}>
-                      {fVal}
-                    </span>
-                    {entry.substitutedText ? (
-                      <span> = {entry.substitutedText}</span>
-                    ) : null}
-                  </div>
-                </>
-              ) : (
-                /* No formula — single line: column = value (source) */
-                <div style={{ color: "var(--text-primary)" }}>
-                  <span style={{ fontWeight: 600 }}>{entry.column}</span>
-                  <span> = </span>
-                  <span
-                    style={{ ...tabularNums }}
-                    title={formatResultValueFull(val)}
-                  >
-                    {fVal}
-                  </span>
-                  {entry.source && (
-                    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({entry.source})</span>
-                  )}
-                </div>
-              )}
-              {/* Sub-sources */}
-              {entry.subSources && Object.keys(entry.subSources).length > 0 && (
-                <div style={{ marginTop: 4 }}>
-                  {Object.entries(entry.subSources).map(([subCol, subSrc]) => {
-                    const sv = subSrc.result_value
-                    const sf = formatSmartValue(sv)
-                    const sfm = subSrc.expression_text ? formatDisplayExpression(subSrc.expression_text).text : null
-                    const ssub = subSrc.substituted_text
-                      ? subSrc.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-                      : null
-                    return (
-                      <div key={subCol} style={{ position: "relative", paddingLeft: 24, marginBottom: 4 }}>
-                        <div style={{ position: "absolute", left: 6, top: 9, width: 14, height: 1, background: "rgba(96,165,250,.15)" }} />
-                        <div style={{ position: "absolute", left: 4, top: 7, width: 5, height: 5, borderRadius: "50%", background: "rgba(96,165,250,.25)", border: "1px solid rgba(96,165,250,.4)" }} />
-                        {sfm ? (
-                          <>
-                            <div style={{ color: "var(--text-primary)" }}>
-                              <span style={{ fontWeight: 600 }}>{subCol}</span>
-                              <span style={{ color: "var(--text-secondary)" }}> = {sfm}</span>
-                              {subSrc.node_name && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({subSrc.node_name})</span>}
-                            </div>
-                            <div style={{ color: "var(--text-secondary)", ...tabularNums }}>
-                              <span style={{ color: "var(--text-primary)", fontWeight: 600 }} title={formatResultValueFull(sv)}>{sf}</span>
-                              {ssub ? <span> = {ssub}</span> : null}
-                            </div>
-                          </>
-                        ) : (
-                          <div style={{ color: "var(--text-primary)" }}>
-                            <span style={{ fontWeight: 600 }}>{subCol}</span>
-                            <span> = </span>
-                            <span style={{ ...tabularNums }} title={formatResultValueFull(sv)}>{sf}</span>
-                            {subSrc.node_name && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({subSrc.node_name})</span>}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          )
-        })}
+        {entries.map((entry) => (
+          <ExpressionChainRow
+            key={entry.column}
+            column={entry.column}
+            formulaText={entry.formulaText}
+            substitutedText={entry.substitutedText}
+            value={entry.value}
+            source={entry.source}
+          >
+            {entry.subSources && Object.keys(entry.subSources).length > 0 && (
+              <InputSourceTree subSources={entry.subSources} />
+            )}
+          </ExpressionChainRow>
+        ))}
 
         {/* Final: the target formula + substituted + result */}
         <div style={{
@@ -797,6 +465,9 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
                 />
               )
             }
+            // Not applicable — result value wasn't found verbatim inside any
+            // branch text (e.g. numeric result vs textual branch labels), so
+            // the hidden a11y sentinel is intentionally skipped.
             return null
           })()}
         </div>
@@ -806,30 +477,14 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     // Waterfall build failed on the backend — surface the error loudly
     // rather than rendering a silently-empty trace.
     if (waterfallError) {
-      return (
-        <div style={{ marginTop: 4 }}>
-          <div
-            role="alert"
-            style={{
-              padding: "8px 12px",
-              border: "1px solid var(--accent-error, #d97706)",
-              borderRadius: 4,
-              background: "var(--bg-error-subtle, rgba(217, 119, 6, 0.08))",
-              color: "var(--text-error, #b45309)",
-              fontSize: 12,
-            }}
-          >
-            <strong>Waterfall could not be built:</strong> {waterfallError.error}
-          </div>
-        </div>
-      )
+      return <WaterfallErrorAlert error={waterfallError.error} />
     }
 
     // Waterfall mode: takes precedence for 3+ multiplicative factors
     if (waterfallSteps && calculation) {
       return (
         <div style={{ marginTop: 4 }}>
-          <WaterfallDisplay
+          <WaterfallChart
             steps={waterfallSteps}
             resultValue={calculation.result_value}
           />
