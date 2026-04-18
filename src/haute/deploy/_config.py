@@ -27,6 +27,14 @@ logger = get_logger(component="deploy.config")
 # Base image pinning — reject floating tags
 # ---------------------------------------------------------------------------
 #
+# Targets that build a Docker image and push it to a registry. Every one
+# of these consumes ``container.base_image`` via build_and_push_image, so
+# all of them must gate on a pinned image.
+_CONTAINER_BASED_TARGETS: frozenset[str] = frozenset(
+    {"container", "azure-container-apps", "aws-ecs", "gcp-run"}
+)
+
+
 # Deployed containers must start from a deterministic base image.  Floating
 # tags (``python:3.11-slim``, ``python:3.11``, ``python:latest``, or no tag at
 # all) silently drift to whatever "latest" means at build time, which means
@@ -239,14 +247,13 @@ class DeployConfig:
     def __post_init__(self) -> None:
         """Validate fields that must be correct at construction time.
 
-        Container-target deploys require a reproducibly pinned base image;
-        see :func:`_validate_base_image_pinning`.  We only validate when
-        ``target == "container"`` because non-container deploys (Databricks,
-        etc.) never consume ``container.base_image`` — validating in those
-        cases would be noise that forces users to set an image they do not
-        use.
+        Container-based deploys (``container``, ``azure-container-apps``,
+        ``aws-ecs``, ``gcp-run``) all funnel through ``build_and_push_image``
+        and pin ``container.base_image`` into the generated Dockerfile, so
+        all of them require a reproducibly pinned image. Non-container
+        targets (Databricks, etc.) never consume ``container.base_image``.
         """
-        if self.target == "container":
+        if self.target in _CONTAINER_BASED_TARGETS:
             _validate_base_image_pinning(self.container.base_image)
 
     @property
@@ -470,9 +477,10 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     # construction time, but ``target`` and ``container.base_image`` can be
     # mutated later via env overrides, ``override(target="container")``, or
     # direct attribute writes — all of which bypass ``__post_init__``.
-    # Any container-target deploy funnels through ``resolve_config``, so this
-    # is the last chokepoint before we commit to a build.
-    if config.target == "container":
+    # Any container-based deploy (container / azure-container-apps / aws-ecs /
+    # gcp-run) funnels through ``resolve_config``, so this is the last
+    # chokepoint before we commit to a build.
+    if config.target in _CONTAINER_BASED_TARGETS:
         _validate_base_image_pinning(config.container.base_image)
 
     # Ensure .env is loaded (idempotent — also called in from_toml, but

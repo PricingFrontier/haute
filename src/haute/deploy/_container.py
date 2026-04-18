@@ -35,14 +35,7 @@ def _validate_model_name(model_name: str) -> None:
 
 # ── Targets that share container build+push ────────────────────────
 
-_CONTAINER_BASED_TARGETS = frozenset(
-    {
-        "container",
-        "azure-container-apps",
-        "aws-ecs",
-        "gcp-run",
-    }
-)
+from haute.deploy._config import _CONTAINER_BASED_TARGETS as _CONTAINER_BASED_TARGETS
 
 
 @dataclass
