@@ -54,5 +54,10 @@ export interface TraceResult {
   total_nodes_in_pipeline: number
   nodes_in_trace: number
   execution_ms: number
-  waterfall?: WaterfallEntry[] | null
+  waterfall?: WaterfallEntry[] | WaterfallError | null
+}
+
+export interface WaterfallError {
+  error: string
+  error_type: string
 }

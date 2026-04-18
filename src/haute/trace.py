@@ -30,7 +30,6 @@ import polars as pl
 
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
-from haute.errors import ExecutionError
 from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
 from haute.graph_utils import (
     NodeType,

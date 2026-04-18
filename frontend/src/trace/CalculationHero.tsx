@@ -379,8 +379,12 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   // frontend parsing for arithmetic with 3+ multiplicative factors.
   const { waterfall: waterfallProp } = props
   let waterfallSteps: WaterfallStep[] | null = null
+  const waterfallError =
+    waterfallProp && !Array.isArray(waterfallProp) && "error" in waterfallProp
+      ? waterfallProp
+      : null
 
-  if (waterfallProp && waterfallProp.length >= 3) {
+  if (Array.isArray(waterfallProp) && waterfallProp.length >= 3) {
     waterfallSteps = waterfallProp.map((entry, i) => {
       const prevCumulative = i > 0 ? waterfallProp[i - 1].cumulative : 0
       return {
@@ -795,6 +799,28 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
             }
             return null
           })()}
+        </div>
+      )
+    }
+
+    // Waterfall build failed on the backend — surface the error loudly
+    // rather than rendering a silently-empty trace.
+    if (waterfallError) {
+      return (
+        <div style={{ marginTop: 4 }}>
+          <div
+            role="alert"
+            style={{
+              padding: "8px 12px",
+              border: "1px solid var(--accent-error, #d97706)",
+              borderRadius: 4,
+              background: "var(--bg-error-subtle, rgba(217, 119, 6, 0.08))",
+              color: "var(--text-error, #b45309)",
+              fontSize: 12,
+            }}
+          >
+            <strong>Waterfall could not be built:</strong> {waterfallError.error}
+          </div>
         </div>
       )
     }
