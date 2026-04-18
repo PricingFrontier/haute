@@ -26,10 +26,16 @@ def _setup_impact_project(
 ) -> None:
     """Set up a tmp project with haute.toml and impact dataset."""
     monkeypatch.chdir(tmp_path)
+    container_section = (
+        '[deploy.container]\nbase_image = "python:3.11.9-slim"\n'
+        if target in {"container", "azure-container-apps", "aws-ecs", "gcp-run"}
+        else ""
+    )
     toml = (
         f'[project]\nname = "t"\npipeline = "main.py"\n'
         f'[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
         f'target = "{target}"\n'
+        f'{container_section}'
         f'[safety]\nimpact_dataset = "{impact_dataset}"\n'
         f'[ci]\nprovider = "github"\n'
         f'[ci.staging]\nendpoint_suffix = "-staging"\n'

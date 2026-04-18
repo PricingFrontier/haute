@@ -7,7 +7,8 @@ import tomllib
 from pathlib import Path
 
 import click
-from packaging.requirements import InvalidRequirement, Requirement
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from haute._io import read_user_text
 
@@ -42,18 +43,79 @@ def _dependencies_contain_haute(deps: list[str]) -> bool:
     for dep in deps:
         if not isinstance(dep, str):
             continue
-        try:
-            req = Requirement(dep)
-        except InvalidRequirement:
-            continue
-        if req.name == "haute":
+        req = Requirement(dep)
+        if canonicalize_name(req.name) == "haute":
             return True
     return False
 
 
-# Matches the start of a TOML table header like ``[project]`` or ``[tool.x]``
-# (but NOT array-of-tables ``[[...]]``). Anchored at line start.
-_TABLE_HEADER_RE = re.compile(r"^\[(?!\[)([^\]]+)\]\s*$", re.MULTILINE)
+def _scan_table_headers(text: str) -> list[tuple[int, int, str]]:
+    """Yield ``(line_start, line_end, header_name)`` for every TOML table
+    header in *text* that lives OUTSIDE any string, comment, or
+    array-of-tables section.
+
+    ``line_start`` is the offset of the ``[`` at column 0. ``line_end`` is
+    the offset just past the closing ``\\n`` (or len(text)). The regex-based
+    scanner it replaces was fooled by ``[foo]`` lines inside triple-quoted
+    string bodies — this walker tracks string state so the same content
+    inside a string is ignored.
+    """
+    headers: list[tuple[int, int, str]] = []
+    i = 0
+    n = len(text)
+    at_line_start = True
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            at_line_start = True
+            i += 1
+            continue
+        if c == "#":
+            nl = text.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        if c == '"' or c == "'":
+            quote = c
+            if text[i : i + 3] == quote * 3:
+                end = text.find(quote * 3, i + 3)
+                if end == -1:
+                    return headers
+                i = end + 3
+                at_line_start = False
+                continue
+            i += 1
+            while i < n and text[i] != quote and text[i] != "\n":
+                if quote == '"' and text[i] == "\\":
+                    i += 2
+                    continue
+                i += 1
+            if i < n and text[i] == quote:
+                i += 1
+            at_line_start = False
+            continue
+        if at_line_start and c == "[":
+            if text[i : i + 2] == "[[":
+                i += 2
+                at_line_start = False
+                continue
+            close = text.find("]", i)
+            nl = text.find("\n", i)
+            if close == -1:
+                return headers
+            if nl != -1 and close > nl:
+                i = nl + 1
+                at_line_start = True
+                continue
+            header = text[i + 1 : close].strip()
+            line_end = n if nl == -1 else nl + 1
+            headers.append((i, line_end, header))
+            i = line_end
+            at_line_start = True
+            continue
+        if not c.isspace():
+            at_line_start = False
+        i += 1
+    return headers
 
 
 def _find_project_table_bounds(text: str) -> tuple[int, int] | None:
@@ -64,20 +126,16 @@ def _find_project_table_bounds(text: str) -> tuple[int, int] | None:
     if ``[project]`` is the final table). Returns ``None`` if no ``[project]``
     table is present.
     """
+    headers = _scan_table_headers(text)
     project_start: int | None = None
     project_end: int | None = None
-    for match in _TABLE_HEADER_RE.finditer(text):
-        header_name = match.group(1).strip()
-        if project_start is None:
-            if header_name == "project":
-                project_start = match.end()
-                # Advance past the trailing newline so we start at the body.
-                if project_start < len(text) and text[project_start] == "\n":
-                    project_start += 1
-        else:
-            # We've already found [project]; this is the next table, so it
-            # marks the end of [project]'s body.
-            project_end = match.start()
+    for idx, (line_start, line_end, name) in enumerate(headers):
+        if name == "project":
+            project_start = line_end
+            if idx + 1 < len(headers):
+                project_end = headers[idx + 1][0]
+            else:
+                project_end = len(text)
             break
     if project_start is None:
         return None

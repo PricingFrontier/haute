@@ -43,6 +43,7 @@ dependencies = [
     "price-contour==0.2.7",
     "rustystats>=0.6.1",
     "xxhash>=3.0.0",
+    "packaging>=24.0",
 ]
 
 [project.urls]
