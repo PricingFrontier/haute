@@ -437,15 +437,26 @@ class TestHandleGitErrorStatusCodes:
     """_handle_git_error must return 400 for GitError and 403 for GitGuardrailError."""
 
     def test_git_error_raises_400(self) -> None:
+        """Phase 1C #11: ``GitError`` messages may contain raw git stderr
+        (absolute paths, remote URLs, SSL errors, credentials) so they
+        are no longer echoed to the HTTP body.  The handler returns a
+        400 with the sanitized ``_INTERNAL_ERROR_DETAIL`` constant; the
+        full exception text stays in the structured log.
+        """
         from haute._git import GitError
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
         from haute.routes.git import _handle_git_error
 
         with pytest.raises(HTTPException) as exc_info:
             _handle_git_error(GitError("bad ref"))
         assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == "bad ref"
+        assert exc_info.value.detail == _INTERNAL_ERROR_DETAIL
 
     def test_guardrail_error_raises_403(self) -> None:
+        """Guardrail errors are hand-written, user-facing, and preserved
+        verbatim (they describe intentional blocks rather than internal
+        failures).
+        """
         from haute._git import GitGuardrailError
         from haute.routes.git import _handle_git_error
 
@@ -570,8 +581,12 @@ class TestGitErrorEndpointResponses:
         else:
             raise AssertionError(f"Unknown method {method}")
 
+        # Phase 1C #11: raw GitError detail is sanitized to a constant
+        # before reaching the HTTP body.  Full detail is logged.
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
         assert res.status_code == 400
-        assert res.json()["detail"] == "invalid operation"
+        assert res.json()["detail"] == _INTERNAL_ERROR_DETAIL
 
     @pytest.mark.parametrize(
         "git_func,method,path,body",

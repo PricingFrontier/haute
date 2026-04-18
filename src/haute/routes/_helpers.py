@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as _json
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -168,27 +169,66 @@ def is_self_write() -> bool:
 # ---------------------------------------------------------------------------
 # WebSocket connections for live sync
 # ---------------------------------------------------------------------------
+# ``ws_clients`` is mutated from FastAPI's async handlers (ws_sync) AND from
+# the synchronous file-watcher callback path (broadcast is awaited but its
+# cleanup loop mutates the set).  On multi-worker deployments and on
+# free-threaded CPython (3.13 --disable-gil) ``set.add`` / ``set.discard``
+# are no longer GIL-atomic, so every add/discard must go through the
+# explicit lock below.
 ws_clients: set[WebSocket] = set()
+ws_clients_lock = threading.Lock()
+
+
+def ws_clients_add(ws: WebSocket) -> None:
+    """Thread-safe ``ws_clients.add(ws)``."""
+    with ws_clients_lock:
+        ws_clients.add(ws)
+
+
+def ws_clients_discard(ws: WebSocket) -> None:
+    """Thread-safe ``ws_clients.discard(ws)``."""
+    with ws_clients_lock:
+        ws_clients.discard(ws)
+
+
+def ws_clients_snapshot() -> list[WebSocket]:
+    """Return a consistent snapshot of the current clients under the lock."""
+    with ws_clients_lock:
+        return list(ws_clients)
 
 
 async def broadcast(data: dict[str, Any]) -> None:
-    """Push a message to all connected WebSocket clients."""
+    """Push a message to all connected WebSocket clients.
+
+    Iterates a lock-protected snapshot of ``ws_clients`` so concurrent
+    connects/disconnects cannot corrupt the set.  Dead clients discovered
+    during the iteration are removed under the same lock.
+    """
     try:
         payload = _json.dumps(data)
     except (TypeError, ValueError) as exc:
         logger.error("broadcast_serialization_failed", error=str(exc))
         return
 
+    snapshot = ws_clients_snapshot()
+
     dead: list[WebSocket] = []
-    for ws in list(ws_clients):
+    for ws in snapshot:
         try:
             await ws.send_text(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # Any ``send_text`` failure (connection closed, transport
+            # error, ASGI shutdown, or a custom test double raising a
+            # plain ``Exception``) marks the client dead so the next
+            # broadcast doesn't waste a round-trip on it.  Narrowing
+            # this except causes flaky behaviour with ASGI clients
+            # that raise generic Exception subclasses.
             dead.append(ws)
     if dead:
         logger.debug("broadcast_cleaned_dead_clients", count=len(dead))
-        for ws in dead:
-            ws_clients.discard(ws)
+        with ws_clients_lock:
+            for ws in dead:
+                ws_clients.discard(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -305,12 +345,43 @@ def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
     return dict(result) if isinstance(result, dict) else {}
 
 
-def save_sidecar(py_path: Path, graph: PipelineGraph) -> None:
+def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     """Write node positions + source state to the sidecar .haute.json file.
 
     Keys are the sanitised function names (which the parser uses as node IDs
     on re-parse), so positions survive label renames.
+
+    When two distinct labels sanitize to the same function name only one
+    position can survive — which one is arbitrary.  We detect this here
+    rather than silently overwrite, emit a structured ``warning`` log
+    event, and return a human-readable warnings list so callers can
+    surface the collision to the UI.  The save itself still proceeds so
+    users can recover once they rename the offender; the dropped
+    position is simply flagged.
     """
+    # Detect sanitized-name collisions BEFORE collapsing them into the
+    # positions dict.  A collision would let the second node's position
+    # silently overwrite the first.
+    sanitized_to_labels: dict[str, list[str]] = {}
+    for node in graph.nodes:
+        key = _sanitize_func_name(node.data.label)
+        sanitized_to_labels.setdefault(key, []).append(node.data.label)
+
+    warnings: list[str] = []
+    for sanitized, labels in sanitized_to_labels.items():
+        if len(labels) <= 1:
+            continue
+        logger.warning(
+            "sidecar_position_collision",
+            sanitized=sanitized,
+            labels=labels,
+            file=py_path.name,
+        )
+        warnings.append(
+            f"Position for node {labels[-1]!r} replaces node {labels[0]!r} "
+            f"because both sanitize to {sanitized!r}"
+        )
+
     positions = {_sanitize_func_name(node.data.label): node.position for node in graph.nodes}
     sidecar_data: dict[str, Any] = {"positions": positions}
     # Persist source state
@@ -320,6 +391,7 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> None:
         sidecar_data["active_source"] = graph.active_source
     sidecar = py_path.with_suffix(".haute.json")
     sidecar.write_text(_json.dumps(sidecar_data, indent=2) + "\n")
+    return warnings
 
 
 def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:

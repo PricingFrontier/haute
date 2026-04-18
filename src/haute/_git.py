@@ -35,6 +35,10 @@ _ARCHIVE_PREFIX = "archive"
 _FETCH_COOLDOWN_SECONDS: float = 30.0
 _last_fetch_time: float = 0.0
 _fetch_time_lock = threading.Lock()
+# Serialises the actual ``git fetch`` subprocess — two concurrent callers
+# that both pass the cooldown window must not launch parallel fetches
+# because git races on the local .git/objects index.
+_fetch_exec_lock = threading.Lock()
 
 # Characters that have no business in a branch name or SHA — used by
 # ``_validate_ref_name`` to block argument injection.
@@ -47,11 +51,40 @@ _BAD_REF_CHARS = re.compile(r"[\x00-\x1f\x7f~^:?*\[\]\\]")
 
 
 class GitError(HauteError):
-    """User-facing git operation error."""
+    """Raw ``git`` operation error — unsafe to surface to HTTP.
+
+    By default any ``GitError`` that bubbles to the HTTP layer may
+    embed raw subprocess stderr (absolute paths, remote URLs, SSL
+    errors, credentials) and is therefore sanitized before reaching
+    the client (item #11 — the full detail remains in the structured
+    log).
+
+    Hand-written, user-facing messages (missing repo, duplicate
+    branch, "no changes to save") use :class:`GitDomainError` so the
+    HTTP handler can pass them through verbatim.  Guardrail blocks
+    (protected branches) use :class:`GitGuardrailError`.
+    """
 
 
-class GitGuardrailError(GitError):
-    """Blocked by a safety guardrail (e.g. writing to main)."""
+class GitDomainError(GitError):
+    """Hand-written user-facing git error; HTTP layer keeps it verbatim.
+
+    Use this for any message we author ourselves (e.g. "Not a git
+    repository", "Branch already exists", "No changes to save") that
+    should surface to the user unchanged.  Never pass raw subprocess
+    stderr into this class — it bypasses the sanitization performed
+    for plain :class:`GitError`.
+    """
+
+
+class GitGuardrailError(GitDomainError):
+    """Blocked by a safety guardrail (e.g. writing to main).
+
+    Inherits from :class:`GitDomainError` — the message is
+    hand-written and surfaces verbatim — and is distinguished from
+    plain domain errors so the HTTP layer can return 403 rather than
+    400.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +161,14 @@ class SubmitResult:
 
 
 def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
-    """Run a git command and return stdout.  Raises ``GitError`` on failure."""
+    """Run a git command and return stdout.  Raises ``GitError`` on failure.
+
+    The raw subprocess stderr is wrapped in a plain :class:`GitError`
+    (the sanitize-by-default class) so the HTTP handler collapses the
+    detail to ``_INTERNAL_ERROR_DETAIL`` — raw stderr commonly contains
+    absolute paths, remote URLs, SSL errors, and credentials (item #11).
+    Full detail is retained in the ``git_command_failed`` structured log.
+    """
     cmd = ["git"] + list(args)
     result = subprocess.run(
         cmd,
@@ -223,11 +263,11 @@ def _validate_ref_name(name: str) -> None:
     branch names or SHAs are passed to git CLI commands.
     """
     if not name:
-        raise GitError("Ref name cannot be empty.")
+        raise GitDomainError("Ref name cannot be empty.")
     if name.startswith("-"):
-        raise GitError(f"Invalid ref name: {name!r} (must not start with '-').")
+        raise GitDomainError(f"Invalid ref name: {name!r} (must not start with '-').")
     if _BAD_REF_CHARS.search(name):
-        raise GitError(f"Invalid ref name: {name!r} (contains forbidden characters).")
+        raise GitDomainError(f"Invalid ref name: {name!r} (contains forbidden characters).")
 
 
 def _is_protected(branch: str) -> bool:
@@ -243,7 +283,7 @@ def _assert_not_protected(branch: str) -> None:
 
 def _assert_git_repo(cwd: Path | None = None) -> None:
     if not _is_git_repo(cwd):
-        raise GitError("Not a git repository. Run 'git init' first.")
+        raise GitDomainError("Not a git repository. Run 'git init' first.")
 
 
 def _is_own_branch(branch: str, user_slug: str) -> bool:
@@ -363,7 +403,10 @@ def get_status(cwd: Path | None = None) -> GitStatus:
                 _last_fetch_time = now
                 should_fetch = True
         if should_fetch:
-            _run_git_ok("fetch", "origin", default, "--quiet", cwd=cwd)
+            # Serialise the actual subprocess — git fetch races on the
+            # local object store if two processes run concurrently.
+            with _fetch_exec_lock:
+                _run_git_ok("fetch", "origin", default, "--quiet", cwd=cwd)
 
         ok_count, count_str = _run_git_ok(
             "rev-list",
@@ -401,11 +444,11 @@ def create_branch(description: str, cwd: Path | None = None) -> str:
     _assert_git_repo(cwd)
 
     if not description.strip():
-        raise GitError("Branch description cannot be empty.")
+        raise GitDomainError("Branch description cannot be empty.")
 
     slug = _slugify(description)
     if not slug:
-        raise GitError("Branch description cannot be empty.")
+        raise GitDomainError("Branch description cannot be empty.")
 
     user_slug = _get_user_slug(cwd)
     branch_name = f"{_BRANCH_PREFIX}/{user_slug}/{slug}"
@@ -414,7 +457,7 @@ def create_branch(description: str, cwd: Path | None = None) -> str:
     # Check it doesn't already exist
     ok, _ = _run_git_ok("rev-parse", "--verify", branch_name, cwd=cwd)
     if ok:
-        raise GitError(
+        raise GitDomainError(
             f"Branch '{branch_name}' already exists. "
             "Choose a different description or switch to the existing branch."
         )
@@ -539,7 +582,7 @@ def save_progress(cwd: Path | None = None) -> SaveResult:
     # Check if there's actually anything to commit
     ok, status = _run_git_ok("diff", "--cached", "--name-only", cwd=cwd)
     if not ok or not status.strip():
-        raise GitError("No changes to save.")
+        raise GitDomainError("No changes to save.")
 
     changed = status.strip().splitlines()
     message = _generate_commit_message(changed)
@@ -651,7 +694,7 @@ def revert_to(sha: str, cwd: Path | None = None) -> RevertResult:
     # from git options, preventing argument injection.
     ok, _ = _run_git_ok("cat-file", "-t", "--", sha, cwd=cwd)
     if not ok:
-        raise GitError(f"Commit '{sha}' not found.")
+        raise GitDomainError(f"Commit '{sha}' not found.")
 
     # Create a backup tag before resetting
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
@@ -683,7 +726,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
     default = _get_default_branch(cwd)
 
     if not _has_remote(cwd):
-        raise GitError("No remote configured. Cannot pull latest changes.")
+        raise GitDomainError("No remote configured. Cannot pull latest changes.")
 
     # Auto-commit pending changes first
     ok, status = _run_git_ok("status", "--porcelain", cwd=cwd)
@@ -776,7 +819,7 @@ def archive_branch(branch: str, cwd: Path | None = None) -> str:
     _assert_not_protected(branch)
 
     if branch.startswith(f"{_ARCHIVE_PREFIX}/"):
-        raise GitError(f"Branch '{branch}' is already archived.")
+        raise GitDomainError(f"Branch '{branch}' is already archived.")
 
     current = _get_current_branch(cwd)
     default = _get_default_branch(cwd)

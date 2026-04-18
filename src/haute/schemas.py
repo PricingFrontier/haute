@@ -42,6 +42,10 @@ class SavePipelineResponse(BaseModel):
     status: str = "saved"
     file: str
     pipeline_name: str
+    # Non-fatal warnings surfaced to the UI (e.g. sanitized-name
+    # collisions that dropped a node position).  An empty list means
+    # "no issues" and callers can rely on truthiness for UX branches.
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

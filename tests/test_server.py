@@ -456,12 +456,20 @@ class TestCreateSubmodel:
         client: TestClient,
         three_node_graph: dict,
     ):
+        """Phase 1C #11: the handler now returns a sanitized 400 detail
+        so raw ValueError text from ``create_submodel_graph`` (which
+        may embed graph walk internals) never reaches the client.  The
+        full "at least 2 nodes" message is recorded in the
+        ``submodel_create_invalid`` structured log with ``exc_info=True``.
+        """
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
         # Only 1 node — must be at least 2
         node_ids = [three_node_graph["nodes"][0]["id"]]
         payload = self._create_payload(three_node_graph, node_ids)
         resp = client.post("/api/submodel/create", json=payload)
         assert resp.status_code == 400
-        assert "at least 2" in resp.json()["detail"]
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
 
     def test_create_submodel_missing_source_file_returns_400(
         self,

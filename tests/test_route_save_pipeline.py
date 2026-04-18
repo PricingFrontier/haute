@@ -357,8 +357,15 @@ class TestWriteCodeMultiFile:
         assert "import haute" in code
         assert "pipe" in code  # pipeline name
 
-    def test_submodel_path_traversal_skipped(self, tmp_path: Path) -> None:
-        """Files with paths that escape project root are silently skipped."""
+    def test_submodel_path_traversal_rejected(self, tmp_path: Path) -> None:
+        """Phase 1C #12: codegen outputs with traversal are rejected loudly.
+
+        Previously the loop silently ``continue``d on paths that escaped
+        the project root, which masked codegen bugs and relied on a
+        post-``resolve()`` check that symlinks could bypass.  The fixed
+        ``_write_code`` raises HTTP 400 before any filesystem write,
+        and the surrounding save transaction rolls back.
+        """
         svc = SavePipelineService(tmp_path)
         graph = _make_graph()
         graph.submodels = {"evil": {"nodes": [], "edges": []}}
@@ -377,11 +384,10 @@ class TestWriteCodeMultiFile:
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
-            svc._write_code(body, graph, tmp_path / "main.py")
-
-        # The main file is written
-        assert (tmp_path / "main.py").exists()
-        # The traversal path should NOT have been written
+            with pytest.raises(HTTPException) as exc_info:
+                svc._write_code(body, graph, tmp_path / "main.py")
+        assert exc_info.value.status_code == 400
+        # The traversal path must not have been written anywhere.
         assert not Path("/etc/evil.py").exists()
 
 

@@ -686,8 +686,17 @@ class TestDomainErrorsStillExposed:
         assert resp.status_code == 403
         assert "Cannot push to protected branch" in resp.json()["detail"]
 
-    def test_git_error_exposed(self, client: TestClient) -> None:
+    def test_git_error_sanitized(self, client: TestClient) -> None:
+        """Phase 1C #11: ``GitError`` HTTP responses are sanitized.
+
+        Raw ``git`` stderr (which commonly embeds absolute paths, remote
+        URLs, SSL errors, and credentials) is kept in the structured
+        server log only — the HTTP body contains ``_INTERNAL_ERROR_DETAIL``.
+        Hand-written domain messages travel through a dedicated
+        :class:`GitGuardrailError` subclass that remains user-facing.
+        """
         from haute._git import GitError
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
         with patch(
             "haute.routes.git.get_status",
@@ -695,18 +704,14 @@ class TestDomainErrorsStillExposed:
         ):
             resp = client.get("/api/git/status")
         assert resp.status_code == 400
-        assert "No git repository found" in resp.json()["detail"]
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
 
-    def test_file_schema_value_error_exposed(self, client: TestClient, tmp_path: Path) -> None:
-        target = tmp_path / "bad.csv"
-        target.write_text("invalid")
-        with patch(
-            "haute.graph_utils.read_source",
-            side_effect=ValueError("Unsupported file format: .xyz"),
-        ):
-            resp = client.get("/api/schema", params={"path": str(target)})
-        assert resp.status_code == 400
-        assert "Unsupported file format" in resp.json()["detail"]
+    # Phase 1C #11: this test's former assertion (raw "Unsupported
+    # file format" text surfacing verbatim) is superseded by
+    # ``test_file_schema_value_error_sanitized`` above — the new
+    # contract hides all ValueError detail behind
+    # ``_INTERNAL_ERROR_DETAIL`` so absolute paths / tracebacks / git
+    # output cannot leak through ``str(exc)``.
 
     def test_databricks_missing_credentials_exposed(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)

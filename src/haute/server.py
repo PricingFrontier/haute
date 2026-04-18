@@ -35,6 +35,9 @@ from haute.routes._helpers import (
     pipeline_dir,
     pipelines_importing_module,
     ws_clients,
+    ws_clients_add,
+    ws_clients_discard,
+    ws_clients_lock,
 )
 from haute.routes.databricks import router as databricks_router
 from haute.routes.files import router as files_router
@@ -166,16 +169,20 @@ app.include_router(git_router)
 async def ws_sync(websocket: WebSocket) -> None:
     """WebSocket endpoint for live code ↔ GUI sync."""
     await websocket.accept()
-    ws_clients.add(websocket)
-    logger.info("ws_connected", total_clients=len(ws_clients))
+    ws_clients_add(websocket)
+    with ws_clients_lock:
+        total = len(ws_clients)
+    logger.info("ws_connected", total_clients=total)
     try:
         while True:
             await websocket.receive_text()  # keep-alive / client messages
     except WebSocketDisconnect:
         pass
     finally:
-        ws_clients.discard(websocket)
-        logger.info("ws_disconnected", remaining_clients=len(ws_clients))
+        ws_clients_discard(websocket)
+        with ws_clients_lock:
+            remaining = len(ws_clients)
+        logger.info("ws_disconnected", remaining_clients=remaining)
 
 
 # ---------------------------------------------------------------------------

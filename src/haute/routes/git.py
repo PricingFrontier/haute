@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from haute._git import (
+    GitDomainError,
     GitError,
     GitGuardrailError,
     archive_branch,
@@ -59,12 +60,30 @@ router = APIRouter(prefix="/api/git", tags=["git"])
 
 
 def _handle_git_error(e: GitError) -> NoReturn:
-    """Convert git errors to appropriate HTTP responses."""
+    """Convert git errors to appropriate HTTP responses.
+
+    Three error families are distinguished (item #11):
+
+    * :class:`GitGuardrailError` — hand-written guardrail block
+      (protected branch, already-archived branch) → 403 with verbatim
+      message.
+    * :class:`GitDomainError` — other hand-written user-facing messages
+      (missing repo, duplicate branch, no changes to save) → 400 with
+      verbatim message.  Safe because we author the text and never
+      forward raw subprocess stderr through this class.
+    * Plain :class:`GitError` — raw ``git`` subprocess stderr from
+      :func:`_run_git`.  Unsafe: may embed absolute paths, remote
+      URLs, SSL error text, or credential fragments.  Full detail is
+      logged server-side, HTTP body gets the sanitized constant → 400.
+    """
     if isinstance(e, GitGuardrailError):
         logger.warning("git_guardrail_error", error=str(e))
         raise HTTPException(status_code=403, detail=str(e))
+    if isinstance(e, GitDomainError):
+        logger.warning("git_domain_error", error=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     logger.warning("git_error", error=str(e))
-    raise HTTPException(status_code=400, detail=str(e))
+    raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL)
 
 
 def _dc_to_pydantic(dc_instance: Any, model: type[_M]) -> _M:

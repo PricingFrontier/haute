@@ -805,22 +805,29 @@ class TestOutOfMemoryDuringCollect:
 class TestSavePipelinePartialFailureIntegration:
     """End-to-end tests where real files are written then a step fails."""
 
-    def test_code_written_but_sidecar_fails_leaves_code_intact(self, tmp_path: Path) -> None:
-        """If sidecar write fails, the .py file should still be valid.
+    def test_code_written_but_sidecar_fails_rolls_back_new_code(
+        self, tmp_path: Path
+    ) -> None:
+        """Phase 1C #50 flipped the contract: a failed save is atomic.
 
-        Catches: cleanup logic that deletes the .py file when the sidecar
-        fails, losing the user's work entirely.
+        Previously a sidecar-write failure left the newly-written .py
+        on disk (the assumption being "at least the code survived").
+        The new contract is full rollback: if any step fails, every
+        file the save service touched is restored to its pre-save
+        state (or deleted for files that did not exist before).  This
+        is strictly safer — the user is never left with a half-saved
+        pipeline whose sidecar disagrees with its code.
         """
+        from haute.routes._save_pipeline import _TouchedFile
+
         svc = SavePipelineService(tmp_path)
         req = _make_save_request("pipeline.py")
         py_path = tmp_path / "pipeline.py"
 
-        code_written = False
-
-        def fake_write_code(body, graph, path):
-            nonlocal code_written
+        def fake_write_code(body, graph, path, touched=None):
             path.write_text("# generated code")
-            code_written = True
+            if touched is not None:
+                touched.append(_TouchedFile(target=path, previous_bytes=None))
 
         with (
             patch.object(svc, "_write_code", side_effect=fake_write_code),
@@ -835,21 +842,30 @@ class TestSavePipelinePartialFailureIntegration:
             with pytest.raises(OSError):
                 svc.save(req)
 
-        assert code_written
-        assert py_path.exists(), "Code file should survive sidecar failure"
-        assert py_path.read_text() == "# generated code"
+        # Previously-nonexistent file must be deleted by rollback.
+        assert not py_path.exists(), (
+            "Transactional save must roll back the new .py when a "
+            "later step fails."
+        )
 
-    def test_config_write_failure_does_not_delete_code(self, tmp_path: Path) -> None:
-        """Config write failure after code write preserves the code file.
+    def test_config_write_failure_restores_pre_existing_code(
+        self, tmp_path: Path
+    ) -> None:
+        """Phase 1C #50: when ``_write_code`` overwrote a pre-existing
+        file and a later step fails, rollback restores the original
+        bytes (not "leave the new bytes and hope")."""
+        from haute.routes._save_pipeline import _TouchedFile
 
-        Catches: overly aggressive rollback that removes the .py file
-        when only config writing failed.
-        """
         svc = SavePipelineService(tmp_path)
         req = _make_save_request("pipeline.py")
         py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# ORIGINAL")
 
-        def fake_write_code(body, graph, path):
+        def fake_write_code(body, graph, path, touched=None):
+            if touched is not None:
+                touched.append(
+                    _TouchedFile(target=path, previous_bytes=path.read_bytes())
+                )
             path.write_text("# good code")
 
         with (
@@ -865,4 +881,7 @@ class TestSavePipelinePartialFailureIntegration:
                 svc.save(req)
 
         assert py_path.exists()
-        assert py_path.read_text() == "# good code"
+        assert py_path.read_text() == "# ORIGINAL", (
+            "Rollback must restore the pre-save bytes of any file the "
+            "save service overwrote."
+        )

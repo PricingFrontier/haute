@@ -6,6 +6,7 @@ evicted on each ``create_job`` / ``get_job`` call to bound memory usage.
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from typing import Any
@@ -16,16 +17,20 @@ _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
 
 class JobStore:
-    """Thread-safe-enough dict-backed job store with TTL eviction.
+    """Thread-safe dict-backed job store with TTL eviction.
 
     Each route module creates its own instance so job-ID namespaces stay
     independent (a training job ID will never collide with an optimiser
     job ID, just as before the refactor).
+
+    Mutations linearise on ``_write_lock`` so concurrent ``atomic_update``
+    calls cannot lose writes when two threads merge disjoint keys.
     """
 
     def __init__(self, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._ttl_seconds = ttl_seconds
+        self._write_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -66,11 +71,17 @@ class JobStore:
         return self._jobs.get(job_id)
 
     def update_job(self, job_id: str, **fields: Any) -> None:
-        """Merge *fields* into the stored job dict.
+        """Merge *fields* into the stored job dict — atomic swap.
+
+        Delegates to :meth:`atomic_update` so callers never expose a
+        partially-updated dict to concurrent readers.  The existing dict
+        object is replaced wholesale via a single GIL-atomic
+        ``dict.__setitem__``; a reader holding the previous reference
+        continues to see the pre-update state.
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
-        self._jobs[job_id].update(fields)
+        self.atomic_update(job_id, fields)
 
     def atomic_update(
         self,
@@ -87,17 +98,25 @@ class JobStore:
         ``dict.__setitem__`` is atomic, so a reader will always see
         either the old dict or the new one — never a half-updated state.
 
+        Read-merge-swap is itself serialised on ``_write_lock`` so two
+        concurrent writers updating disjoint keys cannot lose each
+        other's writes — a hazard that bare ``{**old, **fields}`` still
+        has because the read of ``old`` and the write of the new dict
+        are not atomic as a unit.
+
         When *expected_status* is provided, the update is skipped if the
         current status does not match (prevents timeout from overwriting
         a completed job).
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
-        old = self._jobs[job_id]
-        if expected_status is not None and old.get("status") != expected_status:
-            return old
-        self._jobs[job_id] = {**old, **fields}
-        return self._jobs[job_id]
+        with self._write_lock:
+            old = self._jobs[job_id]
+            if expected_status is not None and old.get("status") != expected_status:
+                return old
+            merged = {**old, **fields}
+            self._jobs[job_id] = merged
+        return merged
 
     def require_job(self, job_id: str) -> dict[str, Any]:
         """Return the job dict for *job_id*, or raise HTTP 404 if not found.

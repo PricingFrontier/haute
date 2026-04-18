@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from haute._logging import get_logger
 from haute.routes._helpers import (
+    _INTERNAL_ERROR_DETAIL,
     load_sidecar_positions,
     mark_self_write,
     save_sidecar,
@@ -41,8 +42,19 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
 
     try:
         result = create_submodel_graph(body.graph, body.node_ids, body.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError:
+        # The ValueError message may embed graph walk details, absolute
+        # paths, or internal identifiers — all unsafe for the HTTP body.
+        # Log full detail server-side, emit a sanitized 400 to the client.
+        logger.warning(
+            "submodel_create_invalid",
+            name=body.name,
+            node_count=len(body.node_ids or []),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=400, detail=_INTERNAL_ERROR_DETAIL
+        ) from None
 
     if not body.source_file:
         raise HTTPException(
@@ -69,6 +81,25 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(code)
 
+    # Also materialise the per-node config sidecar JSON files so a
+    # subsequent reparse of the submodel .py file can resolve
+    # @pipeline.<type>(config="...") references.  Without this the
+    # parser (post fail-loudly contract, Item #18) raises ConfigError.
+    # Walk both the parent graph and every nested submodel graph so
+    # child-node configs are written alongside their parent's.
+    from haute._config_io import collect_node_configs
+    from haute._types import PipelineGraph as _PG
+
+    configs: dict[str, str] = dict(collect_node_configs(result.graph))
+    for sm_meta in (result.graph.submodels or {}).values():
+        sm_graph_dict = sm_meta.get("graph", {})
+        nested = _PG.model_validate({"nodes": sm_graph_dict.get("nodes", []), "edges": []})
+        configs.update(collect_node_configs(nested))
+    for rel_path, json_content in configs.items():
+        cfg_path = validate_safe_path(cwd, rel_path)
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json_content)
+
     # Save sidecar
     save_sidecar(py_path, result.graph)
 
@@ -90,7 +121,10 @@ async def get_submodel(name: str) -> SubmodelGraphResponse:
     if not sm_path.is_file():
         raise HTTPException(status_code=404, detail=f"Submodel '{name}' not found")
 
-    sm_graph = parse_submodel_file(sm_path)
+    # Config sidecar files live at project-root ``config/<type>/<name>.json``
+    # not inside ``modules/``, so pass cwd (not the default sm_path.parent)
+    # so the parser resolves them correctly.
+    sm_graph = parse_submodel_file(sm_path, _base_dir=cwd)
 
     # Load sidecar positions if available
     positions = load_sidecar_positions(sm_path)
