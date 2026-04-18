@@ -417,6 +417,83 @@ def clear_model_cache(run_id: str | None = None) -> int:
 # ---------------------------------------------------------------------------
 
 
+# Maximum total attempts for loading an MLflow-backed model.  One fresh
+# attempt plus one retry after deleting a suspected-corrupt cache.  Higher
+# ceilings turn persistent corruption into an invisible loop; lower is
+# friendly to truly transient read errors without masking real problems.
+_LOAD_MAX_ATTEMPTS = 2
+# Initial backoff before the retry (seconds).  Exponential growth applied
+# if _LOAD_MAX_ATTEMPTS is ever raised.
+_LOAD_BACKOFF_BASE_S = 0.1
+_LOAD_BACKOFF_JITTER_S = 0.1
+
+
+def _load_with_bounded_retry(
+    *,
+    mlflow_mod: Any,
+    run_id: str,
+    artifact: str,
+    flavor: str,
+    task: str,
+) -> ScoringModel:
+    """Resolve artifact and load the model with a bounded retry window.
+
+    On failure deletes the suspect cached file, sleeps for a brief
+    exponential-backoff interval with jitter, re-downloads, and retries.
+    After :data:`_LOAD_MAX_ATTEMPTS` total attempts, propagates the final
+    failure with a diagnostic message noting that the retry was exhausted —
+    an operator can then act on truly corrupt artifacts instead of watching
+    a silent loop re-download the same bad bytes.
+    """
+    import random
+    import time
+
+    last_err: BaseException | None = None
+    for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
+        local_path = _resolve_artifact_local(
+            mlflow_mod,
+            run_id,
+            artifact,
+        )
+        try:
+            if flavor == "catboost":
+                raw = _load_catboost_model(local_path, task)
+                return _wrap_catboost(raw)
+            return _load_rustystats_model(local_path)
+        except Exception as err:
+            last_err = err
+            logger.warning(
+                "model_load_failed",
+                attempt=attempt,
+                max_attempts=_LOAD_MAX_ATTEMPTS,
+                path=local_path,
+                error=str(err),
+            )
+            # Delete suspected-corrupt cache so the next attempt
+            # re-downloads from scratch.
+            cached_file = Path(local_path)
+            if cached_file.is_file():
+                cached_file.unlink()
+            if attempt >= _LOAD_MAX_ATTEMPTS:
+                break
+            # Exponential backoff with jitter between attempts.
+            delay = (
+                _LOAD_BACKOFF_BASE_S * (2 ** (attempt - 1))
+                + random.uniform(0, _LOAD_BACKOFF_JITTER_S)
+            )
+            time.sleep(delay)
+
+    # Exhausted the retry budget — surface a diagnostic that names the
+    # artifact so on-call engineers don't need to spelunk debug logs.
+    assert last_err is not None  # loop always sets last_err on failure
+    raise RuntimeError(
+        f"Persistently corrupt or unloadable model artifact "
+        f"(run_id={run_id!r}, artifact={artifact!r}, flavor={flavor}): "
+        f"retry exhausted after {_LOAD_MAX_ATTEMPTS} attempt(s). "
+        f"Last error: {last_err}"
+    ) from last_err
+
+
 def load_mlflow_model(
     *,
     source_type: str,
@@ -498,39 +575,18 @@ def load_mlflow_model(
 
     # Load model based on detected flavor.
     # If loading fails (corrupt/truncated cache), delete the cached file
-    # and re-download once before giving up.
+    # and re-download exactly once before giving up.  The retry uses a
+    # small exponential backoff with jitter so transient upstream hiccups
+    # (tracking-server flaps) get a moment to recover — but the total
+    # retry budget is bounded so persistent corruption surfaces loudly.
     if flavor in ("catboost", "rustystats"):
-        local_path = _resolve_artifact_local(
-            mlflow_mod,
-            resolved_run_id,
-            resolved_artifact,
+        scoring_model = _load_with_bounded_retry(
+            mlflow_mod=mlflow_mod,
+            run_id=resolved_run_id,
+            artifact=resolved_artifact,
+            flavor=flavor,
+            task=task,
         )
-        try:
-            if flavor == "catboost":
-                raw_model = _load_catboost_model(local_path, task)
-                scoring_model = _wrap_catboost(raw_model)
-            else:
-                scoring_model = _load_rustystats_model(local_path)
-        except Exception as first_err:
-            # Corrupt cache — delete and retry with a fresh download
-            logger.warning(
-                "model_load_failed_retrying",
-                path=local_path,
-                error=str(first_err),
-            )
-            cached_file = Path(local_path)
-            if cached_file.is_file():
-                cached_file.unlink()
-            local_path = _resolve_artifact_local(
-                mlflow_mod,
-                resolved_run_id,
-                resolved_artifact,
-            )
-            if flavor == "catboost":
-                raw_model = _load_catboost_model(local_path, task)
-                scoring_model = _wrap_catboost(raw_model)
-            else:
-                scoring_model = _load_rustystats_model(local_path)
     else:
         raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
         scoring_model = _wrap_pyfunc(raw_model)

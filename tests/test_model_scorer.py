@@ -654,18 +654,22 @@ class TestValidateFeatures:
             _validate_features(sm, schema)
         assert exc_info.value.context["missing"] == ["x", "y"]
 
-    def test_cat_feature_type_mismatch_warns(self):
-        """Categorical feature with numeric dtype produces a type mismatch warning."""
+    def test_cat_feature_type_mismatch_raises(self):
+        """Item #13: categorical feature with numeric dtype must raise —
+        silent cast would let wrong predictions through."""
         sm = _make_scoring_model(
             feature_names=["a", "b"],
             cat_feature_names=frozenset({"a"}),
         )
         # 'a' is expected categorical but schema has it as Int64 (numeric)
         schema = pl.Schema({"a": pl.Int64, "b": pl.Float64})
-        usable, missing = _validate_features(sm, schema)
-        # Should succeed (all features present) but log a warning
-        assert usable == ["a", "b"]
-        assert missing == []
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            _validate_features(sm, schema)
+        # Context must surface the offending column so log consumers can act.
+        ctx = exc_info.value.context
+        assert ctx.get("type_mismatches")
+        offenders = [col for col, *_ in ctx["type_mismatches"]]
+        assert "a" in offenders
 
     def test_cat_feature_string_type_no_mismatch(self):
         """Categorical feature with String dtype does not trigger mismatch."""

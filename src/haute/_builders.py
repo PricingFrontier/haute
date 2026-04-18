@@ -581,25 +581,47 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
         return produced, None
 
     # Feature columns are only known after loading the model.
-    # Try to load (cached) to extract them.
     source_type = config.get("sourceType", "")
     if not source_type:
+        # Unconfigured node (dev UX: blank modelScore dragged onto canvas).
         return produced, None
-    try:
-        from haute._mlflow_io import load_mlflow_model
 
-        scoring_model = load_mlflow_model(
-            source_type=source_type,
-            run_id=config.get("run_id", ""),
-            artifact_path=config.get("artifact_path", ""),
-            registered_model=config.get("registered_model", ""),
-            version=config.get("version", "latest"),
-            task=config.get("task", "regression"),
+    # Validate required fields per sourceType on the spot; a blank
+    # required field is a config bug, not a reason to silently fall
+    # back to opaque-column detection and confuse downstream nodes.
+    from haute.errors import ConfigError
+
+    run_id = config.get("run_id", "")
+    registered_model = config.get("registered_model", "")
+    if source_type == "run" and not run_id:
+        raise ConfigError(
+            "modelScore node is misconfigured: sourceType='run' but run_id is empty",
+            sourceType=source_type,
+            missing_field="run_id",
         )
-        if scoring_model.feature_names:
-            return produced, set(scoring_model.feature_names)
-    except Exception:
-        logger.debug("model_score_column_detection_failed", exc_info=True)
+    if source_type == "registered" and not registered_model:
+        raise ConfigError(
+            "modelScore node is misconfigured: sourceType='registered' but "
+            "registered_model is empty",
+            sourceType=source_type,
+            missing_field="registered_model",
+        )
+
+    # With required config present, attempt the MLflow load.  Failures here
+    # (run not found, artifact missing, MLflow down) propagate — the old
+    # debug-log swallow hid real config/infra problems from downstream nodes.
+    from haute._mlflow_io import load_mlflow_model
+
+    scoring_model = load_mlflow_model(
+        source_type=source_type,
+        run_id=run_id,
+        artifact_path=config.get("artifact_path", ""),
+        registered_model=registered_model,
+        version=config.get("version", "latest"),
+        task=config.get("task", "regression"),
+    )
+    if scoring_model.feature_names:
+        return produced, set(scoring_model.feature_names)
     return produced, None
 
 

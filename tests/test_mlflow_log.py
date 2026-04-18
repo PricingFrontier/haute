@@ -311,6 +311,11 @@ class TestLogExperiment:
             patch("mlflow.log_artifact") as m_artifact,
             patch("mlflow.log_metric") as m_metric,
             patch("mlflow.register_model"),
+            # Item #2: log_experiment now attaches a signature via the
+            # flavor-typed logger for .cbm files.  Patch so the fake
+            # bytes don't trigger a real CatBoost save.
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -341,9 +346,6 @@ class TestLogExperiment:
             ]
             for expected in ("shap", "importance", "cv", "model_card"):
                 assert expected in artifact_dirs, f"Missing artifact dir: {expected}"
-            # model artifact logged without artifact_path subdir
-            artifact_files = [call.args[0] for call in m_artifact.call_args_list]
-            assert any(str(model_file) in str(f) for f in artifact_files)
             # CV mean metric logged
             m_metric.assert_called_once_with("cv_mean_rmse", 0.45)
 
@@ -369,6 +371,8 @@ class TestLogExperiment:
             patch("mlflow.log_metrics"),
             patch("mlflow.log_artifact"),
             patch("mlflow.register_model") as m_register,
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -413,6 +417,8 @@ class TestLogExperiment:
             patch("mlflow.log_artifact") as m_artifact,
             patch("mlflow.log_metric"),
             patch("mlflow.register_model"),
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -536,6 +542,8 @@ class TestLogExperiment:
             patch("mlflow.log_metrics"),
             patch("mlflow.log_artifact"),
             patch("mlflow.register_model") as m_register,
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -575,6 +583,8 @@ class TestLogExperiment:
             patch("mlflow.log_artifact") as m_artifact,
             patch("mlflow.log_metric") as m_metric,
             patch("mlflow.register_model"),
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)

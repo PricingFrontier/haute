@@ -80,7 +80,9 @@ def _validate_features(
     """Compare model features against available schema columns.
 
     Returns ``(usable_features, missing_features)``.
-    Raises :class:`FeatureMismatchError` when any features are missing.
+    Raises :class:`FeatureMismatchError` when any features are missing,
+    their relative order disagrees with training, or a categorical column
+    was supplied with a numeric dtype.
 
     Cost: O(n) set operations on column names — no data materialisation.
     """
@@ -116,10 +118,41 @@ def _validate_features(
         )
 
     if type_mismatches:
-        logger.warning(
-            "Feature type mismatch(es) detected — scoring will proceed but "
-            "results may be affected: %s",
-            type_mismatches,
+        # A categorical column passed to the scorer with a numeric dtype
+        # will be encoded differently from how the model was trained.
+        # Silently casting or warning-only is a recipe for invisible
+        # prediction drift — raise so the operator can fix the upstream
+        # schema or re-train.
+        _raise_feature_mismatch(
+            expected=expected,
+            available=sorted(available),
+            missing=missing,
+            type_mismatches=type_mismatches,
+        )
+
+    # Feature order check: CatBoost treats the categorical set as positional
+    # indices into the feature vector, so a reorder of training features
+    # silently misaligns every categorical column.  Enforce that the input
+    # schema presents the model's features in the same relative order as
+    # training — extra columns elsewhere in the schema are fine.
+    schema_order = schema.names()
+    feature_positions = [
+        (name, schema_order.index(name)) for name in expected if name in available
+    ]
+    actual_order_by_position = [
+        name for name, _ in sorted(feature_positions, key=lambda p: p[1])
+    ]
+    if actual_order_by_position != list(expected):
+        raise FeatureMismatchError(
+            "Feature order mismatch between training and scoring: the "
+            "input data presents the model's features in a different order. "
+            f"Expected order: {list(expected)}; actual relative order in "
+            f"the input schema: {actual_order_by_position}. "
+            "CatBoost categorical indices are positional — reordering features "
+            "at score time silently misaligns categorical columns.",
+            expected=list(expected),
+            actual=actual_order_by_position,
+            schema_order=list(schema_order),
         )
 
     return usable, missing

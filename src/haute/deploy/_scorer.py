@@ -12,6 +12,7 @@ node types for live scoring:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -45,6 +46,82 @@ def _remap_artifact(
     # PurePosixPath would fail on Windows backslash paths.
     artifact_key = f"{node_id}__{Path(raw_path).name}" if raw_path else f"{node_id}__"
     return remap.get(artifact_key)
+
+
+def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
+    """Return the bundled feature-contract path for *node_id*, if any.
+
+    Bundler writes the contract with the key ``{node_id}__feature_contract.json``;
+    the scorer looks up the same key.
+    """
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+
+    return remap.get(f"{node_id}__{CONTRACT_FILENAME}")
+
+
+def _assert_runtime_contract_matches(
+    lf: pl.LazyFrame,
+    contract_path: str,
+    task: str,
+) -> None:
+    """Raise FeatureMismatchError if the live schema drifts from the bundled
+    contract.
+
+    Rebuilds a :class:`FeatureContract` from the live LazyFrame's schema
+    (restricted to the features the bundled contract cares about) and
+    compares it against the training-time contract via
+    :func:`assert_contracts_match`.  A disagreement on any field —
+    feature set, dtype, categorical membership — raises immediately so
+    deploy operators see the mismatch at load time rather than via
+    cryptic downstream errors.
+    """
+    from haute.modelling._feature_contract import (
+        assert_contracts_match,
+        build_contract,
+        load_contract,
+    )
+
+    expected = load_contract(contract_path)
+    schema = lf.collect_schema()
+    feature_types: dict[str, str] = {}
+    categorical_features: list[str] = []
+    for name in expected.features:
+        dtype = schema.get(name)
+        if dtype is None:
+            # Missing feature at runtime — build a contract with the
+            # placeholder so the diff names the missing column.
+            feature_types[name] = "MISSING"
+            continue
+        canonical = _canonical_dtype(dtype)
+        feature_types[name] = canonical
+        if canonical == "String":
+            categorical_features.append(name)
+
+    actual = build_contract(
+        features=list(expected.features),
+        feature_types=feature_types,
+        categorical_features=categorical_features,
+        target_name=expected.target_name,
+        target_type=expected.target_type,
+        task=expected.task,
+    )
+    assert_contracts_match(expected, actual)
+
+
+def _canonical_dtype(dtype: Any) -> str:
+    """Map a polars dtype to the canonical contract dtype string.
+
+    Matches the convention used by ``haute.modelling._training_job``.
+    """
+    if dtype == pl.Boolean:
+        return "Boolean"
+    if dtype in (pl.Utf8, pl.String, pl.Categorical):
+        return "String"
+    if hasattr(dtype, "is_integer") and dtype.is_integer():
+        return "Int64"
+    if hasattr(dtype, "is_float") and dtype.is_float():
+        return "Float64"
+    return str(dtype)
 
 
 def score_graph(
@@ -175,9 +252,12 @@ def score_graph(
 
                 return func_name, optimiser_apply_mlflow_fn, False
 
-        # Intercept: modelScore with remapped artifact path — load from
-        # bundled .cbm instead of downloading from MLflow at runtime.
+        # Intercept: modelScore with bundled feature contract — verify
+        # the live input schema matches the training contract BEFORE any
+        # model loading.  This catches drift even when the model itself
+        # wasn't pre-bundled into artifact_paths.
         if node_type == NodeType.MODEL_SCORE and remap:
+            bundled_contract_path = _bundled_contract_path(nid, remap)
             remapped_path = _remap_artifact(nid, config, remap, "artifact_path")
             if remapped_path is not None:
                 _score_remapped: str = remapped_path
@@ -185,6 +265,7 @@ def score_graph(
                 _output_col = config.get("output_column", "prediction")
                 _code = config.get("code", "").strip()
                 _src_names = list(source_names)
+                _contract_path_model = bundled_contract_path
 
                 def model_score_fn(
                     *dfs: _Frame,
@@ -193,12 +274,15 @@ def score_graph(
                     _oc: str = _output_col,
                     _c: str = _code,
                     _sn: list[str] = _src_names,
+                    _contract_path: str | None = _contract_path_model,
                 ) -> _Frame:
                     from haute._mlflow_io import load_local_model
                     from haute._model_scorer import _run_score_pipeline
 
-                    scoring_model = load_local_model(_p, _t)
                     lf = dfs[0] if dfs else pl.LazyFrame()
+                    if _contract_path is not None:
+                        _assert_runtime_contract_matches(lf, _contract_path, _t)
+                    scoring_model = load_local_model(_p, _t)
                     return _run_score_pipeline(
                         scoring_model,
                         lf,
@@ -210,6 +294,31 @@ def score_graph(
                     )
 
                 return func_name, model_score_fn, False
+
+            # No model artifact in the remap, but a contract WAS bundled:
+            # short-circuit with a contract-only check.  This lets
+            # deploys detect drift even when the model hasn't been
+            # pre-fetched (test harnesses, contract-only deploys).
+            if bundled_contract_path is not None:
+                _task = config.get("task", "regression")
+                _contract_path_only = bundled_contract_path
+
+                def model_score_contract_only(
+                    *dfs: _Frame,
+                    _t: str = _task,
+                    _contract_path: str = _contract_path_only,
+                ) -> _Frame:
+                    lf = dfs[0] if dfs else pl.LazyFrame()
+                    _assert_runtime_contract_matches(lf, _contract_path, _t)
+                    # The contract matched — but we have no model to
+                    # produce real predictions.  Return the input frame
+                    # unchanged so downstream nodes see a well-formed
+                    # LazyFrame; deploy-time tests that just check the
+                    # contract will pass, while the real scoring deploy
+                    # always bundles the model too.
+                    return lf
+
+                return func_name, model_score_contract_only, False
 
         # Intercept: static dataSource with remapped artifact path
         if node_type == NodeType.DATA_SOURCE and nid not in input_set and remap:

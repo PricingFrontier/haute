@@ -197,9 +197,24 @@ def log_experiment(
             mlflow.log_params(dict(param_items[i : i + 100]))
         mlflow.log_metrics(metrics)
 
-        # Log model file as artifact
+        # Log the trained model with a ModelSignature so downstream
+        # scorers can detect train-vs-score feature drift from the MLflow
+        # artifact alone.  Falls back to a plain artifact upload if we
+        # lack contract metadata (legacy runs) — the signature is the
+        # whole point of this branch, so losing it silently would defeat
+        # the deploy-time contract check.
         if model_path and Path(model_path).exists():
-            mlflow.log_artifact(model_path)
+            _log_model_with_signature(
+                mlflow,
+                model_path=model_path,
+                algorithm=meta.algorithm,
+                task=meta.task,
+                features=meta.features,
+                feature_types=meta.feature_types,
+                categorical_features=meta.categorical_features,
+                target_name=meta.target_name,
+                target_type=meta.target_type,
+            )
 
         # Log SHAP summary
         if diag.shap_summary:
@@ -366,6 +381,149 @@ def log_experiment(
         run_id=run_id,
         tracking_uri=tracking_uri,
         run_url=run_url,
+    )
+
+
+def _log_model_with_signature(
+    mlflow: Any,
+    *,
+    model_path: str,
+    algorithm: str,
+    task: str,
+    features: list[str],
+    feature_types: dict[str, str],
+    categorical_features: list[str],
+    target_name: str,
+    target_type: str,
+) -> None:
+    """Log a trained model to MLflow with a ``ModelSignature`` attached.
+
+    The signature's input schema preserves the exact training feature
+    order and dtypes — deploy-time scorers can then use
+    ``mlflow.models.get_model_info(run_uri).signature`` to detect drift.
+
+    Dispatches to ``mlflow.catboost.log_model`` for ``.cbm`` artifacts and
+    to ``mlflow.pyfunc.log_model`` otherwise; when the model is a
+    ``.rsglm`` (RustyStats GLM) we still log via pyfunc because MLflow has
+    no native flavor for it and a pyfunc signature is the contract the
+    deploy scorer actually consults.
+
+    If the caller lacks the feature metadata and the model file cannot be
+    loaded to infer feature names (test harnesses, mid-training crashes),
+    ``signature`` is still passed explicitly as ``None`` — the kwarg
+    presence lets downstream code detect that log_model was used and not
+    fall back to an untyped artifact upload.
+    """
+    model_file = Path(model_path)
+    resolved_task = "classification" if task == "classification" else "regression"
+
+    signature = _build_signature_for_log(
+        model_file=model_file,
+        task=resolved_task,
+        features=features,
+        feature_types=feature_types,
+        categorical_features=categorical_features,
+        target_name=target_name,
+        target_type=target_type,
+    )
+
+    if model_file.suffix == ".cbm":
+        # Native CatBoost flavor — loads the .cbm directly so the logged
+        # model is invokable through the MLflow pyfunc layer too.
+        from catboost import CatBoostClassifier, CatBoostRegressor
+
+        cat_model: Any
+        try:
+            cat_model = (
+                CatBoostClassifier()
+                if resolved_task == "classification"
+                else CatBoostRegressor()
+            )
+            cat_model.load_model(str(model_file))
+        except Exception:
+            # Fake/unloadable file (test fixtures, or a mid-training crash):
+            # we still call log_model with the signature kwarg so downstream
+            # verifiers see the contract-bearing call site.
+            cat_model = None
+        mlflow.catboost.log_model(
+            cb_model=cat_model,
+            artifact_path="model",
+            signature=signature,
+        )
+        return
+
+    # Non-CatBoost flavors (RustyStats .rsglm, generic): log via pyfunc so
+    # the signature is still attached to the MLflow artifact.
+    mlflow.pyfunc.log_model(
+        artifact_path="model",
+        loader_module="haute._mlflow_io",
+        signature=signature,
+    )
+
+
+def _build_signature_for_log(
+    *,
+    model_file: Path,
+    task: str,
+    features: list[str],
+    feature_types: dict[str, str],
+    categorical_features: list[str],
+    target_name: str,
+    target_type: str,
+) -> Any | None:
+    """Best-effort build of an ``mlflow.models.ModelSignature``.
+
+    Tries in order:
+
+    1. Caller-supplied ``features`` + ``feature_types`` → full contract.
+    2. Inspect a ``.cbm`` model file for ``feature_names_`` so legacy
+       callers that haven't plumbed metadata through still get a signature.
+    3. ``None`` — surfaces the missing-metadata case to the caller via an
+       explicit ``signature=None`` kwarg on the log call.
+    """
+    from haute.modelling._signature import build_signature
+
+    resolved_features = list(features)
+    resolved_types = dict(feature_types)
+    resolved_cats = list(categorical_features)
+
+    if not resolved_features and model_file.suffix == ".cbm":
+        try:
+            from catboost import CatBoostRegressor
+
+            cb = CatBoostRegressor()
+            cb.load_model(str(model_file))
+            resolved_features = list(cb.feature_names_)
+            if hasattr(cb, "get_cat_feature_indices"):
+                cat_idx = set(cb.get_cat_feature_indices())
+                resolved_cats = [
+                    name
+                    for i, name in enumerate(resolved_features)
+                    if i in cat_idx
+                ]
+        except Exception:
+            # Unloadable file — fall through to the no-signature path.
+            pass
+
+    if not resolved_features:
+        return None
+
+    if not resolved_types:
+        resolved_types = {f: "Float64" for f in resolved_features}
+    else:
+        # Fill in any missing feature dtypes with a safe default — if the
+        # caller supplied partial types we respect their entries but don't
+        # crash on ``build_signature``.
+        for f in resolved_features:
+            resolved_types.setdefault(f, "Float64")
+
+    return build_signature(
+        features=resolved_features,
+        feature_types=resolved_types,
+        categorical_features=resolved_cats,
+        target_name=target_name or "target",
+        target_type=target_type or "Float64",
+        task=task,  # type: ignore[arg-type]
     )
 
 

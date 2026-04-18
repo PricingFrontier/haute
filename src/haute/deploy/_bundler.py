@@ -97,6 +97,13 @@ def collect_artifacts(
             artifact_name = _artifact_name(nid, local_path)
             artifacts[artifact_name] = local_path
 
+            # Item #17: bundle the feature contract alongside the model so
+            # the deploy scorer can verify train-vs-score drift at load time.
+            # The training pipeline writes ``feature_contract.json`` into
+            # the same cache directory; when present, include it as an
+            # explicit artifact keyed to this node.
+            _bundle_feature_contract(nid, local_path, artifacts)
+
         elif node_type == NodeType.DATA_SOURCE and nid not in input_set:
             raw_path = config.get("path", "")
             if not raw_path:
@@ -104,9 +111,95 @@ def collect_artifacts(
             abs_path = _resolve_path(raw_path, pipeline_dir)
             artifact_name = _artifact_name(nid, abs_path)
             _check_exists(abs_path, nid, "dataSource (static)")
+            # Item #14: when the pipeline declares an expected column
+            # order for the static source, verify the file agrees.  A
+            # silent reorder leads to wrong joins at runtime.
+            _verify_static_source_schema(nid, abs_path, config)
             artifacts[artifact_name] = abs_path
 
     return artifacts
+
+
+def _bundle_feature_contract(
+    node_id: str,
+    model_path: Path,
+    artifacts: dict[str, Path],
+) -> None:
+    """Add the model's feature contract (if present) to the bundle.
+
+    Looks for ``feature_contract.json`` sitting next to the model file
+    (that's where ``TrainingJob._save_artifacts`` writes it at train
+    time and where the MLflow cache keeps it after download).  The
+    artifact is keyed with the same ``<node>__<filename>`` scheme the
+    deploy scorer uses to discover bundled files.
+    """
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+
+    contract_path = model_path.parent / CONTRACT_FILENAME
+    if not contract_path.is_file():
+        logger.info(
+            "model_score_no_feature_contract",
+            node_id=node_id,
+            looked_at=str(contract_path),
+        )
+        return
+    artifact_name = _artifact_name(node_id, contract_path)
+    artifacts[artifact_name] = contract_path
+
+
+def _verify_static_source_schema(
+    node_id: str,
+    abs_path: Path,
+    config: dict,
+) -> None:
+    """Check that a static dataSource file matches its declared schema.
+
+    Compares the file's actual column order (inferred via a cheap
+    ``pl.scan_*`` schema read) against ``config['expected_columns']``.
+    Disagreement raises :class:`DeployError` naming the node — the
+    deploy layer refuses to bundle a file whose shape drifted from the
+    contract the rest of the pipeline was designed against.
+    """
+    expected = config.get("expected_columns")
+    if not expected:
+        return
+
+    import polars as pl
+
+    from haute.errors import DeployError
+
+    suffix = abs_path.suffix.lower()
+    try:
+        if suffix == ".csv":
+            actual = pl.scan_csv(str(abs_path)).collect_schema().names()
+        elif suffix == ".parquet":
+            actual = list(pl.read_parquet_schema(str(abs_path)).keys())
+        elif suffix in (".json", ".jsonl"):
+            actual = pl.scan_ndjson(str(abs_path)).collect_schema().names()
+        else:
+            # Unknown extension — we can't validate, so pass through.  The
+            # deploy manifest still records the file, but schema drift on
+            # custom formats is a pipeline-level concern.
+            return
+    except Exception as exc:  # pragma: no cover — malformed-file path
+        raise DeployError(
+            f"Could not read schema for static dataSource node {node_id!r} "
+            f"to verify its expected_columns contract.",
+            node_id=node_id,
+            path=str(abs_path),
+            error=str(exc),
+        ) from exc
+
+    if list(expected) != list(actual):
+        raise DeployError(
+            f"Static dataSource {node_id!r} column order does not match the "
+            f"expected_columns declared in the pipeline: "
+            f"expected={list(expected)}, actual={list(actual)}.",
+            node_id=node_id,
+            path=str(abs_path),
+            expected_columns=list(expected),
+            actual_columns=list(actual),
+        )
 
 
 def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:

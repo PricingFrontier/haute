@@ -75,6 +75,7 @@ def _model_score_node(
     output_column: str = "prediction",
     code: str = "",
     source_type: str = "",
+    run_id: str = "",
 ) -> GraphNode:
     return _node(
         nid,
@@ -82,6 +83,7 @@ def _model_score_node(
         output_column=output_column,
         code=code,
         sourceType=source_type,
+        run_id=run_id,
     )
 
 
@@ -215,12 +217,15 @@ class TestGetColumnContract:
         assert referenced == {"feat_a", "feat_b", "feat_c"}
 
     def test_model_score_model_load_fails(self):
+        """Item #25 (fail-loud policy): a real MLflow load error must
+        propagate — previously the contract-detection silently swallowed
+        it and returned opaque columns, masking config/infra problems."""
         with patch("haute._mlflow_io.load_mlflow_model", side_effect=Exception("fail")):
-            _, referenced = get_column_contract(
-                NodeType.MODEL_SCORE,
-                {"sourceType": "run", "run_id": "abc123", "task": "regression"},
-            )
-        assert referenced is None
+            with pytest.raises(Exception):
+                get_column_contract(
+                    NodeType.MODEL_SCORE,
+                    {"sourceType": "run", "run_id": "abc123", "task": "regression"},
+                )
 
     # -- SCENARIO_EXPANDER ----------------------------------------------
 
@@ -422,7 +427,12 @@ class TestComputeNeededColumns:
 
         nodes = [
             _source_node("src"),
-            _model_score_node("ms", output_column="pred", source_type="run"),
+            _model_score_node(
+                "ms",
+                output_column="pred",
+                source_type="run",
+                run_id="abc123",  # required after Item #25 fail-loud check
+            ),
             _output_node("out", fields=["pred", "extra_col"]),
         ]
         node_map = {n.id: n for n in nodes}

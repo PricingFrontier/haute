@@ -34,9 +34,18 @@ def load_test_quote_file(path: Path) -> list[dict]:
 def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
     """Run all pre-deploy validations.
 
-    Returns a list of error strings. An empty list means the deployment
-    is safe to proceed.
+    Returns a list of structural error strings on the *happy* path — an
+    empty list means the deployment is safe to proceed.
+
+    Item #16 — fail-loud policy: any failing test quote (when
+    ``resolved.config.test_quotes_dir`` is populated) is treated as a
+    fatal error.  Both structural errors and test-quote failures are
+    collected first, then aggregated into a single :class:`DeployError`
+    so the operator sees the full picture in one report rather than a
+    trickle of "fix this, rerun, fix that, rerun" cycles.
     """
+    from haute.errors import DeployError
+
     errors: list[str] = []
 
     # 1. Output node exists in pruned graph
@@ -78,6 +87,62 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
     # 7. Output schema is non-empty
     if not resolved.output_schema:
         errors.append("Output schema is empty - dry-run produced no output columns.")
+
+    # 8. Test-quote scoring — any failure here is a fatal deploy error.
+    #    We collect them alongside structural errors so the aggregated
+    #    report surfaces everything at once.  Two failure modes:
+    #      * The quote is missing required input columns → shape-level
+    #        fail before any scoring happens.
+    #      * The scorer raised an exception → surfaced via the result dict.
+    test_quote_errors: list[str] = []
+    tq_dir = resolved.config.test_quotes_dir
+    if tq_dir is not None and tq_dir.is_dir():
+        # Pre-check each quote against the declared input schema; a
+        # silently missing column won't be caught by a passthrough graph
+        # and would deploy an API that accepts garbage quotes.
+        required_cols = set(resolved.input_schema or {})
+        for jf in sorted(tq_dir.glob("*.json")):
+            try:
+                cleaned = load_test_quote_file(jf)
+            except Exception as exc:
+                test_quote_errors.append(
+                    f"test quote {jf.name!r} failed: could not parse ({exc})"
+                )
+                continue
+            for row in cleaned:
+                missing = sorted(required_cols - set(row))
+                if missing:
+                    test_quote_errors.append(
+                        f"test quote {jf.name!r} failed: missing required input "
+                        f"column(s) {missing}; provided columns {sorted(row)}."
+                    )
+                    break
+
+        # Actual scoring pass — surfaces runtime errors.
+        quote_results = score_test_quotes(resolved, tq_dir)
+        for q in quote_results:
+            if q.get("status") == "error":
+                test_quote_errors.append(
+                    f"test quote {q.get('file', '<unknown>')!r} failed: {q.get('error', '')}"
+                )
+
+    # When a test-quotes directory is configured the function raises on
+    # any failure (structural or quote) so the operator sees the full
+    # aggregated diagnostic in one go.  With no test quotes configured,
+    # fall back to the legacy return-a-list contract for structural
+    # errors — callers in the older deploy path still consume that form.
+    if test_quote_errors or (tq_dir is not None and errors):
+        logger.warning(
+            "validation_failed",
+            structural_errors=len(errors),
+            test_quote_errors=len(test_quote_errors),
+        )
+        combined = errors + test_quote_errors
+        raise DeployError(
+            "Deploy validation failed:\n  - " + "\n  - ".join(combined),
+            structural_errors=errors,
+            test_quote_errors=test_quote_errors,
+        )
 
     if errors:
         logger.warning("validation_failed", error_count=len(errors))
