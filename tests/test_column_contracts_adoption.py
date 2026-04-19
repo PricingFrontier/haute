@@ -1,0 +1,780 @@
+"""Column-contract adoption tests — Phase 2 Wave 4, Item #57.
+
+These tests are the **specification** for extending the column-contract
+system so that:
+
+- Every ``NodeType`` declares a contract (concrete or ``OPAQUE``).
+- Codegen emits the contract into the generated pipeline source.
+- The parser validates user-supplied contracts against builder-declared
+  ones at parse time.
+- The executor asserts input/output column contracts at each node
+  boundary during execution.
+- Contract enforcement costs <5% wall-clock on a realistic pipeline.
+
+The tests fail today — the production code still needs the work.
+The matching target API is described in :mod:`tests.fixtures.expected_contracts`.
+"""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Any
+
+import polars as pl
+import pytest
+
+from haute import errors as haute_errors
+from haute._builders import (
+    _COLUMN_CONTRACTS,
+    _NODE_BUILDERS,
+    get_column_contract,
+)
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests.fixtures.expected_contracts import (
+    ALL_NODE_KINDS,
+    ALLOWED_OPAQUE_NODE_TYPES,
+    CONTRACT_MISMATCH_ERROR_NAME,
+    OPAQUE_SENTINEL,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _e(src: str, tgt: str) -> GraphEdge:
+    """Convenience edge constructor."""
+    return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+
+
+def _node(nid: str, nt: NodeType, **cfg: Any) -> GraphNode:
+    """Convenience node constructor."""
+    return GraphNode(id=nid, data=NodeData(label=nid, nodeType=nt, config=cfg))
+
+
+# ---------------------------------------------------------------------------
+# Section 1: Every builder declares a contract.
+# ---------------------------------------------------------------------------
+
+
+class TestEveryBuilderHasContract:
+    """Every ``NodeType`` in the registry must declare a column contract.
+
+    Today 4 of 17 types silently fall through to ``(None, None)``.  The
+    end-state requires each to be explicit — either a concrete contract
+    function or an ``OPAQUE`` declaration.  An absent registration is a
+    bug, not a "fallback to opaque".
+    """
+
+    def test_every_node_type_has_a_builder(self):
+        """Sanity: ``_NODE_BUILDERS`` covers every ``NodeType`` value.
+
+        This already holds today — we assert it so the contract-adoption
+        tests below can rely on it.  If a future dev adds a ``NodeType``
+        without a builder, the failure will point here before the
+        contract tests fail mysteriously.
+        """
+        missing = ALL_NODE_KINDS - set(_NODE_BUILDERS.keys())
+        assert missing == set(), (
+            f"NodeType(s) without a registered builder: {sorted(missing)}. "
+            "Every NodeType must have a builder in _builders.py."
+        )
+
+    def test_every_node_type_has_a_contract(self):
+        """Every ``NodeType`` has an entry in ``_COLUMN_CONTRACTS``.
+
+        Today only 13 of 17 do.  After adoption, all 17 must — concrete
+        for structured nodes, ``OPAQUE_CONTRACT`` for ``API_INPUT`` /
+        ``DATA_SOURCE`` / ``POLARS`` / ``EXTERNAL_FILE``.
+        """
+        missing = ALL_NODE_KINDS - set(_COLUMN_CONTRACTS.keys())
+        assert missing == set(), (
+            f"NodeType(s) with no explicit contract registration: "
+            f"{sorted(missing)}. Concrete contracts are preferred; if the "
+            "columns truly cannot be determined, register OPAQUE_CONTRACT "
+            "explicitly so 'unknown' is a declared state rather than a "
+            "fallback from absence."
+        )
+
+    @pytest.mark.parametrize("node_type", sorted(ALLOWED_OPAQUE_NODE_TYPES))
+    def test_allowlisted_opaque_types_return_opaque(self, node_type: NodeType):
+        """Allowlist kinds report ``(None, None)`` — but *declared*."""
+        assert node_type in _COLUMN_CONTRACTS, (
+            f"{node_type} must appear in _COLUMN_CONTRACTS with an explicit "
+            "OPAQUE_CONTRACT registration, even though its columns cannot be "
+            "determined statically."
+        )
+        produced, referenced = get_column_contract(node_type, {})
+        assert produced is None and referenced is None, (
+            f"{node_type} is on the opaque allowlist and must return "
+            "(None, None) — concrete contracts on these node types would "
+            f"be wrong because the columns are data-dependent. Got "
+            f"({produced!r}, {referenced!r})."
+        )
+
+    def test_non_allowlisted_types_return_concrete_contract(self):
+        """All non-allowlisted kinds return concrete sets (not None).
+
+        A "pass-through" node (``OUTPUT``, ``DATA_SINK``, etc.) counts as
+        concrete because its contract is ``(set(), set())`` — it creates
+        nothing, reads nothing.  ``None`` would mean "can't tell" which
+        is only acceptable for the allowlisted kinds.
+        """
+        concrete_types = ALL_NODE_KINDS - ALLOWED_OPAQUE_NODE_TYPES
+        for nt in sorted(concrete_types):
+            # Use minimal but representative config per type so the
+            # contract function can produce concrete output.
+            cfg = _minimal_config_for(nt)
+            produced, referenced = get_column_contract(nt, cfg)
+            assert produced is not None and referenced is not None, (
+                f"{nt} is NOT on the opaque allowlist, so its contract "
+                "must be concrete (both sides non-None) when given a "
+                "minimal valid config. Opaque here suggests a missing "
+                "registration; add one to _builders.py or put this type "
+                "on the ALLOWED_OPAQUE_NODE_TYPES allowlist with "
+                "justification in the fixture docstring."
+            )
+
+
+def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
+    """Return a minimal config that exercises each concrete contract.
+
+    Kept in sync with the fixtures in ``_builders.py`` — if a builder's
+    contract function needs particular keys to produce concrete output,
+    add them here.  The aim is a config that would pass parser
+    validation for that node type.
+    """
+    if nt == NodeType.CONSTANT:
+        return {"values": [{"name": "rate", "value": "1.0"}]}
+    if nt == NodeType.BANDING:
+        return {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [{"max": 25, "value": "0"}],
+                }
+            ]
+        }
+    if nt == NodeType.RATING_STEP:
+        return {
+            "tables": [
+                {
+                    "name": "age",
+                    "factors": ["age_band"],
+                    "outputColumn": "age_factor",
+                    "entries": [],
+                }
+            ]
+        }
+    if nt == NodeType.MODEL_SCORE:
+        # Unconfigured model-score nodes are OPAQUE (referenced=None)
+        # because feature names come from the model — acceptable
+        # because the outcome is "don't know yet", but we still
+        # expect a *produced* column that isn't None (prediction).
+        return {"output_column": "prediction"}
+    if nt == NodeType.SCENARIO_EXPANDER:
+        return {
+            "column_name": "multiplier",
+            "min_value": 0.8,
+            "max_value": 1.2,
+            "steps": 21,
+        }
+    if nt == NodeType.OPTIMISER_APPLY:
+        # Produces at minimum the version column; referenced is opaque
+        # by design (artifact-driven) — we accept None on referenced
+        # but require produced to be a concrete set.
+        return {"version_column": "__optimiser_version__"}
+    # Pass-through types — empty config is fine.
+    return {}
+
+
+class TestModelScoreContractIsPartiallyAllowed:
+    """``MODEL_SCORE`` is a nuanced case worth an explicit test.
+
+    The feature list comes from the model.  Today the contract returns
+    ``(produced, None)`` when the model can't be loaded, which is
+    acceptable — the *produced* side is concrete, the *referenced* side
+    is honestly opaque.  This codifies that nuance.
+    """
+
+    def test_model_score_produced_always_concrete(self):
+        produced, _ = get_column_contract(
+            NodeType.MODEL_SCORE, {"output_column": "score"}
+        )
+        assert produced == {"score"}, (
+            "model_score must always declare its produced column "
+            "concretely — it is literally the output_column config value."
+        )
+
+    def test_model_score_unconfigured_referenced_is_opaque(self):
+        _, referenced = get_column_contract(NodeType.MODEL_SCORE, {})
+        assert referenced is None, (
+            "An unconfigured model_score node has no loadable model, so "
+            "its referenced columns can only be honestly reported as "
+            "None (opaque). That is distinct from 'forgot to register' "
+            "because produced is still a concrete set."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 2: Codegen emits the contract into the generated pipeline source.
+# ---------------------------------------------------------------------------
+
+
+class TestCodegenEmitsContractMetadata:
+    """``graph_to_code`` must include the contract in decorator kwargs.
+
+    Today codegen ignores the contract entirely — the generated
+    pipeline source has no way to communicate the expected column
+    shape to a reviewer or to the parser.  After adoption, every
+    generated decorator carries a ``contract=...`` kwarg.
+    """
+
+    def test_banding_codegen_includes_contract_kwarg(self):
+        """A banding node with a concrete contract emits ``contract=...``."""
+        from haute.codegen import graph_to_code
+
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_SOURCE, path="x.parquet"),
+                _node(
+                    "band",
+                    NodeType.BANDING,
+                    factors=[
+                        {
+                            "column": "age",
+                            "outputColumn": "age_band",
+                            "banding": "continuous",
+                            "rules": [{"max": 25, "value": "0"}],
+                        }
+                    ],
+                ),
+            ],
+            edges=[_e("src", "band")],
+        )
+        code = graph_to_code(graph, pipeline_name="t")
+        assert "contract=" in code, (
+            "Generated code does not mention 'contract=' on any decorator. "
+            "After adoption, every @pipeline.<type>(...) call must declare "
+            "its expected input/output columns so a human reviewer (and "
+            "the parser) can cross-check without running the pipeline."
+        )
+        # The specific banding contract must round-trip: age -> age_band
+        assert "age" in code and "age_band" in code
+
+    def test_opaque_node_emits_opaque_sentinel(self):
+        """A polars node codegens ``contract=\"opaque\"`` (or equivalent)."""
+        from haute.codegen import graph_to_code
+
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_SOURCE, path="x.parquet"),
+                _node("t", NodeType.POLARS, code="df = df.with_columns(pl.lit(1).alias('z'))"),
+            ],
+            edges=[_e("src", "t")],
+        )
+        code = graph_to_code(graph, pipeline_name="t")
+        assert OPAQUE_SENTINEL in code, (
+            f'Opaque contract must be emitted as ``contract="{OPAQUE_SENTINEL}"`` '
+            "(or a Contract.OPAQUE equivalent) so round-trip parsing "
+            "preserves the distinction between 'declared opaque' and "
+            "'forgot to declare'."
+        )
+
+    def test_codegen_parse_roundtrip_preserves_contract(self, tmp_path: Path):
+        """parse → codegen → parse produces the same contract annotation.
+
+        This is the acid test: if codegen emits a contract, the parser
+        must round-trip it without drift.  Drift here means silent loss
+        of the contract between saves.
+        """
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        src_code = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("roundtrip")
+
+
+@pipeline.data_source(path="x.parquet")
+def src() -> pl.LazyFrame:
+    """Source."""
+    return pl.scan_parquet("x.parquet")
+
+
+@pipeline.banding(
+    factors=[{
+        "column": "age",
+        "output_column": "age_band",
+        "banding": "continuous",
+        "rules": [{"max": 25, "value": "0"}],
+    }],
+)
+def band(src: pl.LazyFrame) -> pl.LazyFrame:
+    """Band age."""
+    return src
+
+
+pipeline.connect("src", "band")
+'''
+        g1 = parse_pipeline_source(src_code, source_file=str(tmp_path / "p.py"))
+        gen = graph_to_code(g1, pipeline_name="roundtrip")
+        g2 = parse_pipeline_source(gen, source_file=str(tmp_path / "p2.py"))
+
+        # The banding node must have the same contract on both sides.
+        band1 = next(n for n in g1.nodes if n.id.endswith("band") or n.data.label == "band")
+        band2 = next(n for n in g2.nodes if n.id.endswith("band") or n.data.label == "band")
+        c1 = get_column_contract(band1.data.nodeType, band1.data.config)
+        c2 = get_column_contract(band2.data.nodeType, band2.data.config)
+        assert c1 == c2, (
+            f"Contract drifted through codegen round-trip: {c1!r} != {c2!r}. "
+            "After adoption, the contract metadata in the generated file "
+            "must be re-read faithfully by the parser."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 3: Parser validates user-declared contracts.
+# ---------------------------------------------------------------------------
+
+
+class TestParserValidatesUserDeclaredContracts:
+    """When a user writes an explicit ``contract=...`` kwarg in a
+    pipeline source file, the parser must cross-check it against the
+    builder-derived contract and raise ``ContractMismatchError`` on
+    disagreement.
+    """
+
+    def test_contract_mismatch_error_is_importable(self):
+        """``ContractMismatchError`` exists in :mod:`haute.errors`.
+
+        The test deliberately imports by name rather than directly so
+        that a missing class produces a crisp AttributeError rather than
+        an ImportError inside this test module's import block.
+        """
+        assert hasattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME), (
+            f"haute.errors.{CONTRACT_MISMATCH_ERROR_NAME} must exist. "
+            "The parser and executor both raise it; having it in the "
+            "shared error module lets callers catch the whole family "
+            "with `except HauteError`."
+        )
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME)
+        assert issubclass(cls, haute_errors.HauteError), (
+            f"{CONTRACT_MISMATCH_ERROR_NAME} must inherit from HauteError "
+            "so existing 'except HauteError' handlers catch it without "
+            "modification."
+        )
+
+    def test_parser_raises_on_explicit_contract_mismatch(self, tmp_path: Path):
+        """User declares contract that disagrees with the builder's.
+
+        This is the payoff for the feature: a typo in an explicit
+        contract is caught at parse time, not at the first runtime
+        execution or — worse — silently at deploy.
+        """
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
+        if cls is None:
+            pytest.skip("ContractMismatchError not yet defined (covered by test above)")
+        from haute.parser import parse_pipeline_source
+
+        # Banding factor says column='age', outputColumn='age_band',
+        # but the user's explicit contract says 'height' / 'height_band'.
+        # The parser must detect the disagreement and raise.
+        bad_src = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("bad")
+
+
+@pipeline.data_source(path="x.parquet")
+def src() -> pl.LazyFrame:
+    """Source."""
+    return pl.scan_parquet("x.parquet")
+
+
+@pipeline.banding(
+    factors=[{
+        "column": "age",
+        "output_column": "age_band",
+        "banding": "continuous",
+        "rules": [{"max": 25, "value": "0"}],
+    }],
+    contract={"inputs": ["height"], "outputs": ["height_band"]},
+)
+def band(src: pl.LazyFrame) -> pl.LazyFrame:
+    """Band age but declare height."""
+    return src
+
+
+pipeline.connect("src", "band")
+'''
+        with pytest.raises(cls) as excinfo:
+            parse_pipeline_source(bad_src, source_file=str(tmp_path / "bad.py"))
+        msg = str(excinfo.value)
+        # The error message must identify *which* node and *what* differs.
+        assert "band" in msg or "banding" in msg.lower(), (
+            "ContractMismatchError must name the offending node/builder so "
+            f"a user can fix the issue. Got: {msg!r}"
+        )
+
+    def test_parser_accepts_matching_user_contract(self, tmp_path: Path):
+        """Matching user contracts parse cleanly (no false positives)."""
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
+        if cls is None:
+            pytest.skip("ContractMismatchError not yet defined")
+        from haute.parser import parse_pipeline_source
+
+        good_src = '''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("good")
+
+
+@pipeline.data_source(path="x.parquet")
+def src() -> pl.LazyFrame:
+    """Source."""
+    return pl.scan_parquet("x.parquet")
+
+
+@pipeline.banding(
+    factors=[{
+        "column": "age",
+        "output_column": "age_band",
+        "banding": "continuous",
+        "rules": [{"max": 25, "value": "0"}],
+    }],
+    contract={"inputs": ["age"], "outputs": ["age_band"]},
+)
+def band(src: pl.LazyFrame) -> pl.LazyFrame:
+    """Band age."""
+    return src
+
+
+pipeline.connect("src", "band")
+'''
+        # Should not raise
+        g = parse_pipeline_source(good_src, source_file=str(tmp_path / "good.py"))
+        assert any(n.data.label == "band" for n in g.nodes), (
+            "Parser should accept a matching contract and still produce "
+            "a node — this confirms the validation path isn't over-eager."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 4: Executor asserts contracts at node boundaries.
+# ---------------------------------------------------------------------------
+
+
+class TestExecutorAssertsContractsAtBoundaries:
+    """At each node, the executor validates:
+    - input columns present on the incoming LazyFrame, and
+    - output columns present on the result after the node runs.
+
+    A contract violation raises ``ContractMismatchError`` — NOT a warning,
+    NOT a silent drop.
+    """
+
+    def test_missing_input_column_raises_contract_mismatch(self, tmp_path: Path):
+        """Banding config expects 'age' but upstream doesn't produce it.
+
+        This is the most common real-world failure mode: a column
+        renamed upstream but not updated downstream.  Today the
+        executor lets Polars raise a cryptic ColumnNotFound deep in
+        the query plan; after adoption the check fires *before*
+        node execution with a crisp Haute error.
+        """
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
+        if cls is None:
+            pytest.skip("ContractMismatchError not yet defined")
+        from haute.executor import execute_graph
+
+        # Source produces 'height' only; banding references 'age'.
+        # Write the parquet so read_source finds real columns.
+        import polars as pl_
+
+        pq = tmp_path / "x.parquet"
+        pl_.DataFrame({"height": [170.0, 180.0]}).write_parquet(pq)
+
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node(
+                    "band",
+                    NodeType.BANDING,
+                    factors=[
+                        {
+                            "column": "age",  # not present upstream!
+                            "outputColumn": "age_band",
+                            "banding": "continuous",
+                            "rules": [{"max": 25, "value": "0"}],
+                        }
+                    ],
+                ),
+            ],
+            edges=[_e("src", "band")],
+        )
+        with pytest.raises(cls) as excinfo:
+            execute_graph(graph)
+        assert "age" in str(excinfo.value), (
+            "Contract error must name the missing column so the user "
+            "knows what to fix. Got: " + str(excinfo.value)
+        )
+
+    def test_declared_output_missing_raises_contract_mismatch(self, tmp_path: Path):
+        """Polars node claims to produce a column but doesn't.
+
+        This catches the "declared contract in user code is a lie"
+        scenario — the parser can't fully verify opaque Polars nodes,
+        but the executor can.
+        """
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
+        if cls is None:
+            pytest.skip("ContractMismatchError not yet defined")
+        from haute.executor import execute_graph
+
+        import polars as pl_
+
+        pq = tmp_path / "x.parquet"
+        pl_.DataFrame({"a": [1, 2, 3]}).write_parquet(pq)
+
+        # User declares the transform outputs {'new_col'} but their code
+        # forgets to create it — executor must notice.
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node(
+                    "t",
+                    NodeType.POLARS,
+                    code="df = df.select(pl.col('a'))",
+                    # Explicit user-declared contract on a polars node.
+                    contract={"inputs": ["a"], "outputs": ["new_col"]},
+                ),
+            ],
+            edges=[_e("src", "t")],
+        )
+        with pytest.raises(cls) as excinfo:
+            execute_graph(graph)
+        assert "new_col" in str(excinfo.value), (
+            "Contract error on output-side must name the missing promised "
+            f"column. Got: {excinfo.value!r}"
+        )
+
+    def test_contract_check_does_not_raise_on_clean_pipeline(self, tmp_path: Path):
+        """Well-formed pipelines execute end-to-end without spurious errors."""
+        from haute.executor import execute_graph
+
+        import polars as pl_
+
+        pq = tmp_path / "x.parquet"
+        pl_.DataFrame({"age": [20.0, 30.0]}).write_parquet(pq)
+
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node(
+                    "band",
+                    NodeType.BANDING,
+                    factors=[
+                        {
+                            "column": "age",
+                            "outputColumn": "age_band",
+                            "banding": "continuous",
+                            "rules": [{"max": 25, "value": "0"}],
+                            "default": "1",
+                        }
+                    ],
+                ),
+            ],
+            edges=[_e("src", "band")],
+        )
+        # Should not raise — the contract is consistent and inputs present.
+        result = execute_graph(graph)
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Section 5: Benchmark — contract overhead must be <5%.
+# ---------------------------------------------------------------------------
+
+
+class TestContractOverheadBenchmark:
+    """Contract enforcement must not regress pipeline throughput >5%.
+
+    The dev can toggle enforcement via an env var, a module flag, or a
+    ``enforce=False`` kwarg on ``execute_graph`` — whatever is cleanest.
+    These tests only require that *some* way exists to measure the
+    overhead.
+    """
+
+    def _build_chain_graph(self, n_nodes: int, data_path: str) -> PipelineGraph:
+        """Build a linear pipeline of ``n_nodes`` banding + transform steps.
+
+        Each banding node consumes one column and produces another;
+        this is a realistic shape for a scoring pipeline.
+        """
+        nodes: list[GraphNode] = [
+            _node("src", NodeType.DATA_SOURCE, path=data_path),
+        ]
+        edges: list[GraphEdge] = []
+        prev = "src"
+        # Alternate banding and polars so both concrete and opaque
+        # contracts are exercised.
+        for i in range(n_nodes):
+            nid = f"n{i}"
+            if i % 2 == 0:
+                nodes.append(
+                    _node(
+                        nid,
+                        NodeType.BANDING,
+                        factors=[
+                            {
+                                "column": "age",
+                                "outputColumn": f"band_{i}",
+                                "banding": "continuous",
+                                "rules": [{"max": 25, "value": "0"}],
+                                "default": "1",
+                            }
+                        ],
+                    )
+                )
+            else:
+                nodes.append(
+                    _node(
+                        nid,
+                        NodeType.POLARS,
+                        code=f"df = df.with_columns(pl.col('age').alias('alias_{i}'))",
+                    )
+                )
+            edges.append(_e(prev, nid))
+            prev = nid
+        return PipelineGraph(nodes=nodes, edges=edges)
+
+    def _execute(self, graph: PipelineGraph, *, enforce: bool) -> None:
+        """Execute with or without contract enforcement.
+
+        The dev MUST expose ``enforce_contracts`` (or an equivalent
+        kwarg) on ``execute_graph`` so overhead can be measured.  If
+        neither the kwarg nor a module-level flag exists, the test
+        fails — we cannot measure overhead without the ability to
+        toggle enforcement.
+        """
+        from haute.executor import execute_graph
+
+        import inspect as _inspect
+
+        sig = _inspect.signature(execute_graph)
+        if "enforce_contracts" in sig.parameters:
+            execute_graph(graph, enforce_contracts=enforce)
+            return
+
+        # Module-level toggle fallback — must exist for the benchmark to
+        # meaningfully distinguish the two paths.  If neither exists we
+        # fail loudly rather than silently measuring "same code twice".
+        import haute.executor as _ex
+
+        if hasattr(_ex, "ENFORCE_CONTRACTS"):
+            prev = _ex.ENFORCE_CONTRACTS
+            _ex.ENFORCE_CONTRACTS = enforce
+            try:
+                execute_graph(graph)
+            finally:
+                _ex.ENFORCE_CONTRACTS = prev
+            return
+
+        pytest.fail(
+            "execute_graph has no 'enforce_contracts' kwarg and "
+            "haute.executor has no 'ENFORCE_CONTRACTS' module toggle. "
+            "The dev must expose one so the <5% overhead bound can "
+            "actually be measured — without a toggle the benchmark is "
+            "meaningless because both runs execute identical code."
+        )
+
+    def test_overhead_under_five_percent(self, tmp_path: Path):
+        """~100-node pipeline with contracts is <5% slower than without.
+
+        Uses a realistic-shape pipeline alternating banding (concrete
+        contract) and polars (opaque contract) to exercise both paths.
+        The threshold is the <5% target named in the plan.
+        """
+        import polars as pl_
+
+        pq = tmp_path / "bench.parquet"
+        # 10k rows is large enough to dominate the per-node overhead and
+        # small enough to keep the test under a second on CI.
+        pl_.DataFrame({"age": [float(i) for i in range(10_000)]}).write_parquet(pq)
+        graph = self._build_chain_graph(100, str(pq))
+
+        # Warm-up run (caches, imports, JIT) — also fails fast if the
+        # enforcement toggle isn't wired up yet.
+        self._execute(graph, enforce=False)
+
+        # Measure without enforcement
+        t0 = time.perf_counter()
+        for _ in range(3):
+            self._execute(graph, enforce=False)
+        t_without = (time.perf_counter() - t0) / 3
+
+        # Measure with enforcement
+        t0 = time.perf_counter()
+        for _ in range(3):
+            self._execute(graph, enforce=True)
+        t_with = (time.perf_counter() - t0) / 3
+
+        overhead = (t_with - t_without) / t_without if t_without > 0 else 0.0
+        assert overhead < 0.05, (
+            f"Contract enforcement overhead is {overhead:.1%} "
+            f"({t_without * 1000:.1f}ms → {t_with * 1000:.1f}ms), exceeds "
+            "the 5% threshold from the plan. Either the boundary check "
+            "is too expensive (consider caching schema fingerprints) or "
+            "the plan's threshold needs to be renegotiated."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Section 6: Sentinels / API shape checks (fast-fail sanity).
+# ---------------------------------------------------------------------------
+
+
+class TestContractAPIShape:
+    """Lightweight checks that the public API the tests depend on exists."""
+
+    def test_opaque_contract_constant_importable(self):
+        """``OPAQUE_CONTRACT`` must be importable from :mod:`haute._builders`.
+
+        The tests above assume this sentinel exists so builder registrations
+        can spell opacity explicitly.
+        """
+        import haute._builders as b
+
+        assert hasattr(b, "OPAQUE_CONTRACT"), (
+            "haute._builders.OPAQUE_CONTRACT must exist as the sentinel "
+            "for builder-level 'honestly opaque' registrations."
+        )
+        # Shape: (None, None) tuple-compatible with existing ColumnContract.
+        assert b.OPAQUE_CONTRACT == (None, None), (
+            "OPAQUE_CONTRACT must equal (None, None) so existing code "
+            "that destructures ColumnContract keeps working."
+        )
+
+    def test_contract_class_exported_from_builders(self):
+        """A ``Contract`` dataclass is available for builders and users.
+
+        The current tuple-based contract is fine internally but users
+        writing ``contract={"inputs": [...], "outputs": [...]}`` in
+        pipeline source files need a corresponding runtime type so the
+        decorator kwarg doesn't silently drift from a typed object.
+        """
+        import haute._builders as b
+
+        assert hasattr(b, "Contract"), (
+            "haute._builders.Contract must exist — a small dataclass "
+            "with 'inputs' and 'outputs' fields that normalises the "
+            "user-facing form and the builder-derived tuple form."
+        )
