@@ -23,6 +23,7 @@ import type {
   TrainEstimate,
   MlflowLogResponse,
   SolveOptimiserResponse,
+  OptimiserEstimate,
   ApplyOptimiserResponse,
   SaveOptimiserResponse,
   FrontierResponse,
@@ -48,7 +49,7 @@ import type {
 } from "./types"
 
 // Re-export types so existing consumers importing from client.ts still work
-export type { TrainEstimate, UtilityFile, UtilityWriteResult, GitStatus, GitHistoryEntry } from "./types"
+export type { TrainEstimate, OptimiserEstimate, UtilityFile, UtilityWriteResult, GitStatus, GitHistoryEntry } from "./types"
 /** @deprecated Import GitBranchInfo from api/types instead. */
 export type GitBranch = GitBranchInfo
 
@@ -290,6 +291,17 @@ export function solveOptimiser(
   options?: { signal?: AbortSignal },
 ): Promise<SolveOptimiserResponse> {
   return post("/api/optimiser/solve", payload, { timeout: 300_000, ...options })
+}
+
+export function estimateOptimiserSolve(
+  payload: { graph: GraphPayload; node_id: string; source?: string },
+  options?: { signal?: AbortSignal },
+): Promise<OptimiserEstimate> {
+  return post(
+    "/api/optimiser/estimate",
+    { ...payload, source: payload.source ?? "live" },
+    { timeout: 30_000, ...options },
+  )
 }
 
 export function getOptimiserStatus<T = unknown>(

@@ -102,7 +102,10 @@ describe("useConfigEstimate", () => {
   })
 
   it("aborts the in-flight fetch when configHash changes mid-request", async () => {
-    let firstSignal: AbortSignal | null = null
+    // `as AbortSignal | null` annotation here — without it, the TS control
+    // flow analyser can't tell the mock callback mutates the local and
+    // narrows the type to `never` after the initial `null` assignment.
+    let firstSignal = null as AbortSignal | null
     const endpoint = vi
       .fn<(payload: unknown, opts: { signal: AbortSignal }) => Promise<FakeEstimate>>()
       .mockImplementationOnce((_p, opts) => {
@@ -126,7 +129,8 @@ describe("useConfigEstimate", () => {
 
   it("aborts the in-flight request on unmount and does not toast AbortError", async () => {
     const abortError = new DOMException("The operation was aborted.", "AbortError")
-    let captured: AbortSignal | null = null
+    // Same narrowing workaround as above — see that test for the rationale.
+    let captured = null as AbortSignal | null
     const endpoint = vi
       .fn<(payload: unknown, opts: { signal: AbortSignal }) => Promise<FakeEstimate>>()
       .mockImplementation((_p, opts) => {

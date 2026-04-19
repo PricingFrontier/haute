@@ -17,6 +17,7 @@ import { GLMCoefficientsTab } from "../modelling/GLMCoefficientsTab"
 import { GLMRelativitiesTab } from "../modelling/GLMRelativitiesTab"
 import { SummaryTab } from "../modelling/SummaryTab"
 import ModellingConfig from "../ModellingConfig"
+import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
@@ -766,13 +767,13 @@ describe("SummaryTab (GLM extensions)", () => {
 describe("ModellingConfig (GLM routing)", () => {
   it("algorithm picker shows GLM option", () => {
     render(
-      <ModellingConfig
-        config={{ _nodeId: "n1" }}
-        onUpdate={vi.fn()}
-        upstreamColumns={defaultColumns}
-        allNodes={[]}
-        edges={[]}
-      />,
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig
+          config={{ _nodeId: "n1" }}
+          onUpdate={vi.fn()}
+          upstreamColumns={defaultColumns}
+        />
+      </GraphProvider>,
     )
     expect(screen.getByText("GLM")).toBeTruthy()
     expect(screen.getByText(/Generalised linear model/)).toBeTruthy()
@@ -781,13 +782,13 @@ describe("ModellingConfig (GLM routing)", () => {
   it("clicking GLM sets algorithm", () => {
     const onUpdate = vi.fn()
     render(
-      <ModellingConfig
-        config={{ _nodeId: "n1" }}
-        onUpdate={onUpdate}
-        upstreamColumns={defaultColumns}
-        allNodes={[]}
-        edges={[]}
-      />,
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig
+          config={{ _nodeId: "n1" }}
+          onUpdate={onUpdate}
+          upstreamColumns={defaultColumns}
+        />
+      </GraphProvider>,
     )
     fireEvent.click(screen.getByText("GLM"))
     expect(onUpdate).toHaveBeenCalledWith("algorithm", "glm")
@@ -795,13 +796,13 @@ describe("ModellingConfig (GLM routing)", () => {
 
   it("GLM config renders target, factors, regularization sections", () => {
     render(
-      <ModellingConfig
-        config={{ _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }}
-        onUpdate={vi.fn()}
-        upstreamColumns={defaultColumns}
-        allNodes={[]}
-        edges={[]}
-      />,
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig
+          config={{ _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }}
+          onUpdate={vi.fn()}
+          upstreamColumns={defaultColumns}
+        />
+      </GraphProvider>,
     )
     // GLM-specific sections
     expect(screen.getByText("Target & Weight")).toBeTruthy()
@@ -816,13 +817,13 @@ describe("ModellingConfig (GLM routing)", () => {
 
   it("GLM config still renders shared sections (split, train actions)", () => {
     render(
-      <ModellingConfig
-        config={{ _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }}
-        onUpdate={vi.fn()}
-        upstreamColumns={defaultColumns}
-        allNodes={[]}
-        edges={[]}
-      />,
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig
+          config={{ _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }}
+          onUpdate={vi.fn()}
+          upstreamColumns={defaultColumns}
+        />
+      </GraphProvider>,
     )
     // Shared sections
     expect(screen.getByRole("button", { name: /Train Model/ })).toBeTruthy()

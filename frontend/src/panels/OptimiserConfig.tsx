@@ -1,18 +1,21 @@
 import { useState, useCallback, useEffect, useMemo } from "react"
 import { Loader2, ChevronDown, ChevronRight, AlertTriangle, Plus, X, Target, Layers, RefreshCw } from "lucide-react"
 import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
-import { solveOptimiser } from "../api/client"
+import { solveOptimiser, estimateOptimiserSolve } from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
+import { useConfigEstimate } from "../hooks/useConfigEstimate"
+import { useConfigStaleness } from "../hooks/useConfigStaleness"
 import type { SolveResult } from "./OptimiserPreview"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
+import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { formatElapsed } from "../utils/formatValue"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import { withAlpha } from "../utils/color"
 import { extractBandingLevelsForNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
+import { useGraph } from "./useGraph"
 
 // ─── Banding factor extraction ───
 
@@ -48,9 +51,6 @@ type OptimiserConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
-  allNodes: SimpleNode[]
-  edges: SimpleEdge[]
-  submodels?: Record<string, unknown>
   accentColor: string
 }
 
@@ -61,7 +61,8 @@ const CONSTRAINT_TYPES = [
   { value: "max_abs", label: "Max (absolute)" },
 ]
 
-export default function OptimiserConfig({ config, onUpdate, allNodes, edges, submodels, accentColor }: OptimiserConfigProps) {
+export default function OptimiserConfig({ config, onUpdate, accentColor }: OptimiserConfigProps) {
+  const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
   const nodeId = config._nodeId as string
   const solveJob = useNodeResultsStore((s) => s.solveJobs[nodeId])
@@ -75,9 +76,8 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
   const solveProgress = solveJob?.progress ?? null
   const solveError = solveJob?.error ?? null
   const solveResult: SolveResult | null = cachedResult?.result ?? null
-  // Staleness detection: has config changed since last solve?
-  const currentConfigHash = useMemo(() => hashConfig(config), [config])
-  const isStale = !!cachedResult && cachedResult.configHash !== currentConfigHash
+  // Staleness + hash derived by the shared hook (shared with ModellingConfig).
+  const { configHash: currentConfigHash, isStale } = useConfigStaleness(config, cachedResult)
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
   const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
@@ -115,6 +115,29 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
   const buildGraphCb = useCallback(
     () => buildGraph(allNodes, edges, submodels),
     [allNodes, edges, submodels],
+  )
+
+  // ── Solve-cost estimate, via the shared config-estimate hook ──
+  // Previews source row/column counts read from parquet metadata so the
+  // user knows what volume of scored data the solver will process.
+  // The hook owns the abort / toast / loading lifecycle.
+  const solveEstimateEndpoint = useCallback(
+    (_payload: void, { signal }: { signal: AbortSignal }) =>
+      estimateOptimiserSolve(
+        {
+          graph: buildGraphCb(),
+          node_id: nodeId,
+          source: useSettingsStore.getState().activeSource,
+        },
+        { signal },
+      ),
+    [buildGraphCb, nodeId],
+  )
+  const { estimate: solveEstimate } = useConfigEstimate(
+    nodeId,
+    currentConfigHash,
+    solveEstimateEndpoint,
+    { toastLabel: "Solve estimate failed" },
   )
 
   // --- Constraints helpers ---
@@ -579,6 +602,16 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
           >
             Re-run
           </button>
+        </div>
+      )}
+
+      {/* Source size preview (hidden when unreadable — metadata isn't available for live data) */}
+      {solveEstimate && solveEstimate.total_rows != null && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-[11px]" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
+          <span style={{ color: "var(--text-muted)" }}>Source rows</span>
+          <span className="font-mono ml-auto" style={{ color: "var(--text-primary)" }}>
+            {solveEstimate.total_rows.toLocaleString()}
+          </span>
         </div>
       )}
 

@@ -1,12 +1,12 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from "react"
-import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
+import { useState, useCallback } from "react"
+import type { OnUpdateConfig } from "./editors"
 import { trainModel, estimateTrainingRam } from "../api/client"
-import type { TrainEstimate } from "../api/client"
-import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
+import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useToastStore from "../stores/useToastStore"
 import { configField } from "../utils/configField"
 import { buildGraph } from "../utils/buildGraph"
+import { useConfigEstimate } from "../hooks/useConfigEstimate"
+import { useConfigStaleness } from "../hooks/useConfigStaleness"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { FeatureAndAlgorithmConfig } from "./modelling/FeatureAndAlgorithmConfig"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
@@ -14,20 +14,18 @@ import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
 import { GLMFactorConfig } from "./modelling/GLMFactorConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
+import { useGraph } from "./useGraph"
 
 type ModellingConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
-  allNodes: SimpleNode[]
-  edges: SimpleEdge[]
-  submodels?: Record<string, unknown>
-  preamble?: string
 }
 
 import type { TrainResult, TrainProgress } from "../stores/useNodeResultsStore"
 
-export default function ModellingConfig({ config, onUpdate, upstreamColumns, allNodes, edges, submodels, preamble }: ModellingConfigProps) {
+export default function ModellingConfig({ config, onUpdate, upstreamColumns }: ModellingConfigProps) {
+  const { allNodes, edges, submodels, preamble } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
   const nodeId = config._nodeId as string
   const trainJob = useNodeResultsStore((s) => s.trainJobs[nodeId])
@@ -39,56 +37,35 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns, all
   const trainProgress: TrainProgress | null = trainJob?.progress ?? null
   const trainResult: TrainResult | null = cachedResult?.result ?? null
 
-  // Staleness detection
-  const currentConfigHash = useMemo(() => hashConfig(config), [config])
-  const isStale = !!cachedResult && cachedResult.configHash !== currentConfigHash
+  // Staleness detection — also re-triggers the RAM estimate when anything in
+  // the config changes (GPU toggle, excludes, etc.) via its hash.
+  const { configHash: currentConfigHash, isStale } = useConfigStaleness(config, cachedResult)
 
-  // ── RAM + VRAM estimate (re-fetched when GPU is toggled) ──
-  const [ramEstimate, setRamEstimate] = useState<TrainEstimate | null>(null)
-  const [ramEstimateLoading, setRamEstimateLoading] = useState(false)
-  const [ramEstimateError, setRamEstimateError] = useState<string | null>(null)
-  const estimateAbortRef = useRef<AbortController | null>(null)
-  const addToast = useToastStore((s) => s.addToast)
-  // Ref to capture latest graph inputs without re-triggering the effect
-  const graphInputsRef = useRef({ allNodes, edges, submodels, preamble })
-  graphInputsRef.current = { allNodes, edges, submodels, preamble }
-
-  // Track config that affects the estimate so it re-fetches
-  const isGpu = String((config.params as Record<string, unknown>)?.task_type ?? "").toUpperCase() === "GPU"
-  const excludeCount = (configField<string[]>(config, "exclude", [])).length
-
-  useEffect(() => {
-    if (!nodeId) return
-    // Cancel any in-flight estimate
-    estimateAbortRef.current?.abort()
-    const controller = new AbortController()
-    estimateAbortRef.current = controller
-
-    setRamEstimateLoading(true)
-    setRamEstimate(null)
-    setRamEstimateError(null)
-
-    const { allNodes: n, edges: e, submodels: s, preamble: p } = graphInputsRef.current
-    estimateTrainingRam(
-      { graph: buildGraph(n, e, s, p), node_id: nodeId, source: useSettingsStore.getState().activeSource },
-      { signal: controller.signal },
-    )
-      .then((est) => {
-        if (!controller.signal.aborted) setRamEstimate(est)
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          const msg = err instanceof Error ? err.message : String(err)
-          setRamEstimateError(msg)
-          addToast("warning", `RAM estimate failed: ${msg}`)
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setRamEstimateLoading(false)
-      })
-
-    return () => controller.abort()
-  }, [nodeId, isGpu, excludeCount, addToast])
+  // ── RAM + VRAM estimate, via the shared config-estimate hook ──
+  // The hook owns the AbortController, loading/error state, and toast
+  // emission; this panel only tells it *what* to fetch.
+  const estimateEndpoint = useCallback(
+    (_payload: void, { signal }: { signal: AbortSignal }) =>
+      estimateTrainingRam(
+        {
+          graph: buildGraph(allNodes, edges, submodels, preamble),
+          node_id: nodeId,
+          source: useSettingsStore.getState().activeSource,
+        },
+        { signal },
+      ),
+    [allNodes, edges, submodels, preamble, nodeId],
+  )
+  const {
+    estimate: ramEstimate,
+    loading: ramEstimateLoading,
+    error: ramEstimateError,
+  } = useConfigEstimate(
+    nodeId,
+    currentConfigHash,
+    estimateEndpoint,
+    { toastLabel: "RAM estimate failed" },
+  )
 
   // Collapse state from UI store (persisted)
   const featuresOpen = useSettingsStore((s) => s.isSectionOpen("modelling.features"))

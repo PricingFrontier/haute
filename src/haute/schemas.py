@@ -607,6 +607,31 @@ class OptimiserSolveResponse(BaseModel):
     error: str | None = None
 
 
+class OptimiserEstimateRequest(BaseModel):
+    """Body for the lightweight optimiser-cost estimate.
+
+    Used by the frontend to preview source size / RAM availability before
+    kicking off a solve.  Symmetric with :class:`TrainEstimateRequest`
+    except that the pre-flight for the optimiser only needs row and column
+    counts from ancestor data sources — there's no fitting phase to size.
+    """
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+
+
+class OptimiserEstimateResponse(BaseModel):
+    """Result shape for ``POST /api/optimiser/estimate``."""
+
+    total_rows: int | None = None
+    """Max row count across ancestor data sources, if readable."""
+    estimated_mb: float = 0.0
+    """Rough byte size (rows × cols × 8) of the scored frame, in megabytes."""
+    available_mb: float = 0.0
+    """System RAM currently available, in megabytes."""
+
+
 class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]]

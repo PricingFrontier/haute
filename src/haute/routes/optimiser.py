@@ -23,6 +23,8 @@ from haute.routes._optimiser_service import (
 from haute.schemas import (
     OptimiserApplyRequest,
     OptimiserApplyResponse,
+    OptimiserEstimateRequest,
+    OptimiserEstimateResponse,
     OptimiserFrontierRequest,
     OptimiserFrontierResponse,
     OptimiserFrontierSelectRequest,
@@ -55,6 +57,44 @@ def solve(body: OptimiserSolveRequest) -> OptimiserSolveResponse:
     scored DataFrame, then runs the solver in a background thread.
     """
     return _solve_service.start(body)
+
+
+@router.post("/estimate", response_model=OptimiserEstimateResponse)
+def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
+    """Preview the data volume the solver will see for a given optimiser node.
+
+    Reads parquet metadata from ancestor source nodes to report row/column
+    counts without running the pipeline. Mirrors the modelling RAM estimate
+    but is simpler — there's no training pool construction to size, and no
+    GPU path to check. Returns an empty response if metadata isn't
+    available (e.g. live data without parquet backing).
+    """
+    from haute._ram_estimate import (
+        _ancestor_source_metadata,
+        available_ram_bytes,
+    )
+
+    try:
+        total_rows, max_cols = _ancestor_source_metadata(
+            body.graph,
+            body.node_id,
+            body.source,
+        )
+    except Exception as exc:
+        logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
+        return OptimiserEstimateResponse()
+
+    # Rough scored-frame size: rows × cols × 8 bytes (Float64).  Good
+    # enough for a "will this fit" sanity check — the solver works in
+    # chunks so peak memory is bounded further.
+    estimated_bytes = (total_rows or 0) * max_cols * 8
+    available_bytes = available_ram_bytes()
+
+    return OptimiserEstimateResponse(
+        total_rows=total_rows,
+        estimated_mb=round(estimated_bytes / 1024**2, 1),
+        available_mb=round(available_bytes / 1024**2, 1),
+    )
 
 
 @router.get("/solve/status/{job_id}", response_model=OptimiserStatusResponse)

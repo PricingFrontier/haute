@@ -287,6 +287,39 @@ class TestStatusRoute:
         assert resp.status_code == 404
 
 
+class TestEstimateRoute:
+    """Exercises ``POST /api/optimiser/estimate`` — the lightweight cost
+    preview consumed by the frontend's shared ``useConfigEstimate`` hook."""
+
+    def test_estimate_returns_available_mb(self, client, scored_data):
+        graph = _make_optimiser_graph(scored_data)
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "opt"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        # Source metadata may or may not resolve depending on the test
+        # fixture, but the endpoint must always report available RAM so
+        # the frontend can render the "available headroom" line.
+        assert "available_mb" in data
+        assert data["available_mb"] > 0
+        assert "estimated_mb" in data
+        assert "total_rows" in data
+
+    def test_estimate_gracefully_handles_unknown_node(self, client, scored_data):
+        graph = _make_optimiser_graph(scored_data)
+        # Unknown node id — the estimate engine can't find sources, so
+        # total_rows is None but the response is still shaped correctly.
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "nonexistent"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_rows"] is None
+
+
 class TestApplyRoute:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_apply_after_solve(self, client, scored_data):
