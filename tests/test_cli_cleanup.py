@@ -178,12 +178,7 @@ class TestNodeEnvFailsLoudlyWithoutNode:
         """
         import click
 
-        with (
-            patch("haute.cli._helpers.shutil.which", return_value=None),
-            patch("haute.cli._helpers.sys") as mock_sys,
-        ):
-            mock_sys.platform = "win32"
-
+        with patch("haute.cli._helpers.shutil.which", return_value=None):
             from haute.cli._helpers import _node_env
 
             with pytest.raises((click.ClickException, RuntimeError, FileNotFoundError)) as exc_info:
@@ -207,25 +202,13 @@ class TestNodeEnvFailsLoudlyWithoutNode:
         """
         import click
 
-        # Patch Path so ``(nodejs_dir / 'node.exe').exists()`` would return
-        # True if the old code path ever ran — this forces the old branch
-        # to trigger and return a dict. The fix must either raise or
-        # ignore this branch entirely.
-        fake_node_exe = MagicMock()
-        fake_node_exe.exists.return_value = True
-        fake_nodejs_dir = MagicMock()
-        fake_nodejs_dir.__truediv__ = lambda self, other: fake_node_exe
-
-        with (
-            patch("haute.cli._helpers.shutil.which", return_value=None),
-            patch("haute.cli._helpers.sys") as mock_sys,
-            patch("haute.cli._helpers.Path", return_value=fake_nodejs_dir),
-        ):
-            mock_sys.platform = "win32"
-
+        # The correct implementation never branches on platform at all —
+        # it just uses shutil.which and raises on miss.  No Path.exists
+        # check exists to trick anymore, so the assertion is simply
+        # "missing node raises, full stop".
+        with patch("haute.cli._helpers.shutil.which", return_value=None):
             from haute.cli._helpers import _node_env
 
-            # Fixed behaviour: must raise (not return a silent dict).
             with pytest.raises((click.ClickException, RuntimeError, FileNotFoundError)):
                 _node_env()
 
@@ -252,18 +235,17 @@ class TestOpenBrowserSingleCall:
     def test_uses_single_webbrowser_open_on_success(self) -> None:
         """Happy path: one call to ``webbrowser.open``, no subprocess hack.
 
-        Pre-fix, on Linux this hits ``subprocess.call(['xdg-open'])`` — so
-        we pin ``sys.platform`` to ``'linux'`` to force the old code down
-        the subprocess branch. A correctly-refactored implementation must
-        route to :func:`webbrowser.open` regardless of platform and must
-        never call ``subprocess.*``.
+        The correctly-refactored implementation routes to
+        :func:`webbrowser.open` regardless of platform and must never
+        touch ``subprocess.*``.  The old cascade's platform branch is
+        gone entirely, so this test no longer needs to pin
+        ``sys.platform`` — any platform it runs on should take the same
+        single-call path.
         """
         with (
             patch("haute.cli._helpers.webbrowser") as mock_wb,
             patch("haute.cli._helpers.subprocess") as mock_sub,
-            patch("haute.cli._helpers.sys") as mock_sys,
         ):
-            mock_sys.platform = "linux"
             mock_wb.open.return_value = True
 
             from haute.cli._helpers import _open_browser
@@ -312,10 +294,21 @@ class TestOpenBrowserSingleCall:
     def test_no_platform_dispatch(self) -> None:
         """The function must not read ``sys.platform``.
 
-        ``webbrowser.open`` is already platform-aware. Any reference to
-        ``sys.platform`` in ``_open_browser`` is leftover cruft from the
-        cascade implementation.
+        ``webbrowser.open`` is already platform-aware.  The correct
+        implementation doesn't even import ``sys`` in this module, so
+        asserting ``subprocess`` is never called (plus ``sys`` not being
+        present at ``haute.cli._helpers.sys``) together pin the cascade
+        cruft as gone.
         """
+        import haute.cli._helpers as helpers_mod
+
+        # ``sys`` must not be imported at module scope — the platform
+        # branch is gone entirely, so the import would be dead weight.
+        assert not hasattr(helpers_mod, "sys"), (
+            "`sys` is still imported in haute.cli._helpers — "
+            "platform dispatch should be handled by webbrowser.open() alone."
+        )
+
         with (
             patch("haute.cli._helpers.webbrowser") as mock_wb,
             patch("haute.cli._helpers.subprocess") as mock_sub,
@@ -324,12 +317,7 @@ class TestOpenBrowserSingleCall:
 
             from haute.cli._helpers import _open_browser
 
-            # The platform-specific branches must be gone — so subprocess
-            # must never be touched regardless of sys.platform value.
-            for platform_name in ("linux", "darwin", "win32"):
-                with patch("haute.cli._helpers.sys") as mock_sys:
-                    mock_sys.platform = platform_name
-                    _open_browser("http://example.com")
+            _open_browser("http://example.com")
 
             mock_sub.call.assert_not_called()
             mock_sub.Popen.assert_not_called()

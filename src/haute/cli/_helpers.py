@@ -10,7 +10,6 @@ import shutil
 # code does not use subprocess anywhere in this module —
 # :func:`_open_browser` delegates to :mod:`webbrowser` exclusively.
 import subprocess  # noqa: F401
-import sys
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -114,14 +113,16 @@ def _node_env() -> dict[str, str] | None:
 
 
 def _npm() -> str:
-    """Return the npm executable, resolving common Windows install paths."""
+    """Return the npm executable from PATH, or fail loud if it's missing.
+
+    Same contract as :func:`_node_env`: no hardcoded Windows install path
+    fallback.  If :func:`shutil.which` can't find ``npm`` the user gets a
+    clear install hint rather than a silent guess at a specific machine
+    layout that hides the real problem (npm isn't on PATH).
+    """
     found = shutil.which("npm")
     if found:
         return found
-    if sys.platform == "win32":
-        candidate = Path(r"C:\Program Files\nodejs\npm.cmd")
-        if candidate.exists():
-            return str(candidate)
     msg = (
         "npm not found on PATH. Install Node.js from https://nodejs.org and restart your terminal."
     )
