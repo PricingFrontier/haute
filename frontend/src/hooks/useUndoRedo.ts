@@ -43,8 +43,8 @@ export default function useUndoRedo(initialNodes: Node[] = [], initialEdges: Edg
   const pushSnapshot = useCallback(() => {
     // Shallow-clone each node/edge so in-place mutations (e.g. React Flow
     // updating `position` during drag) don't corrupt historical snapshots.
-    // This is O(n) in node count and only runs on structural changes, not
-    // on every drag pixel — drags are batched via the isDragging guard.
+    // This is O(n) in node count and only runs on structural changes and
+    // at drag-start, not on every drag pixel.
     past.current = [
       ...past.current.slice(-(MAX_HISTORY - 1)),
       {
@@ -57,34 +57,26 @@ export default function useUndoRedo(initialNodes: Node[] = [], initialEdges: Edg
     setCanRedo(false)
   }, [])
 
-  // Wrap onNodesChange to detect structural changes vs drag
-  const isDragging = useRef(false)
-
+  // Wrap onNodesChange to snapshot before structural changes and drag-starts.
+  //
+  // Drag-start detection is per-batch: a position change with `dragging:true`
+  // is a drag-start only when the targeted node isn't already being dragged.
+  // React Flow stores the `dragging` flag on the node itself (see
+  // @xyflow/react `applyChange`), so `nodesRef.current` is the authoritative
+  // source — no cross-effect ref required.
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const hasStructural = changes.some(
         (c) => c.type === "add" || c.type === "remove" || c.type === "replace"
       )
-      const hasDragStart = changes.some(
-        (c) => c.type === "position" && c.dragging === true
-      )
-      const hasDragEnd = changes.some(
-        (c) => c.type === "position" && c.dragging === false
-      )
+      const hasDragStart = changes.some((c) => {
+        if (c.type !== "position" || c.dragging !== true) return false
+        const node = nodesRef.current.find((n) => n.id === c.id)
+        return !node?.dragging
+      })
 
-      // Push snapshot before a structural change
-      if (hasStructural) {
+      if (hasStructural || hasDragStart) {
         pushSnapshot()
-      }
-
-      // Push snapshot at drag start (so we can undo back to pre-drag position)
-      if (hasDragStart && !isDragging.current) {
-        isDragging.current = true
-        pushSnapshot()
-      }
-
-      if (hasDragEnd) {
-        isDragging.current = false
       }
 
       onNodesChangeBase(changes)
