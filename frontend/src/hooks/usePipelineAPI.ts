@@ -95,59 +95,6 @@ export default function usePipelineAPI({
   const activeSourceRef = useRef(activeSource)
   useEffect(() => { activeSourceRef.current = activeSource }, [activeSource])
 
-  // ─── Downstream column propagation ──────────────────────────────
-  // After a node's preview returns changed columns, cascade to downstream
-  // nodes so their _columns (and thus editor dropdowns) stay fresh.
-  //
-  // Issues #33/#34: both `rowLimit` and `activeSource` are captured ONCE
-  // at cascade start and threaded through every recursive propagation
-  // call.  Reading the refs lazily (i.e. per-node inside the cascade)
-  // would let a mid-cascade store change (user flips the source /
-  // bumps the row limit while a long root preview is still resolving)
-  // produce a heterogeneous set of previews — downstream node columns
-  // would disagree with the root's columns because they used a
-  // different source.
-  const propagatingRef = useRef(new Set<string>())
-  const propagateRef = useRef<(changedNodeId: string, rowLimit: number, source: string) => void>(() => {})
-
-  const propagateDownstream = useCallback((changedNodeId: string, rowLimit: number, source: string) => {
-    const { edges, nodes } = graphRef.current
-    const downstreamIds = edges
-      .filter((e) => e.source === changedNodeId)
-      .map((e) => e.target)
-
-    if (downstreamIds.length === 0) return
-
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
-
-    for (const dsId of downstreamIds) {
-      if (propagatingRef.current.has(dsId)) continue
-      propagatingRef.current.add(dsId)
-
-      const dsNode = nodes.find((n) => n.id === dsId)
-      const oldColumns = (dsNode?.data as Record<string, unknown>)?._columns as ColumnDef[] | undefined
-
-      previewNode(graph, dsId, rowLimit, source)
-        .then((result) => {
-          if (result.columns) {
-            const newColumns = result.columns as ColumnDef[]
-            setNodes((nds) => nds.map((n) =>
-              n.id === dsId
-                ? { ...n, data: { ...n.data, _columns: newColumns, _availableColumns: result.available_columns ?? newColumns, _schemaWarnings: result.schema_warnings ?? [] } }
-                : n,
-            ))
-            if (!columnsEqual(oldColumns, newColumns)) {
-              propagateRef.current(dsId, rowLimit, source)
-            }
-          }
-        })
-        .catch((e) => { console.warn("propagation_failed", dsId, e); addToast("warning", `Preview propagation failed for "${dsId}"`) })
-        .finally(() => { propagatingRef.current.delete(dsId) })
-    }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
-
-  useEffect(() => { propagateRef.current = propagateDownstream }, [propagateDownstream])
-
   // Initial pipeline load
   useEffect(() => {
     loadPipeline()
@@ -213,6 +160,37 @@ export default function usePipelineAPI({
 
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
+    // Recursively cascade downstream when a node's columns change.  The
+    // snapshotted rowLimit/source are closed over so every node in the
+    // cascade uses the same values as the root preview (Issues #33/#34).
+    const propagate = (changedNodeId: string) => {
+      const { edges, nodes: currentNodes } = graphRef.current
+      const downstreamIds = edges
+        .filter((e) => e.source === changedNodeId)
+        .map((e) => e.target)
+      if (downstreamIds.length === 0) return
+      const cascadeGraph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+      for (const dsId of downstreamIds) {
+        const dsNode = currentNodes.find((n) => n.id === dsId)
+        const oldColumns = (dsNode?.data as Record<string, unknown>)?._columns as ColumnDef[] | undefined
+        previewNode(cascadeGraph, dsId, snapshotRowLimit, snapshotSource)
+          .then((result) => {
+            if (result.columns) {
+              const newColumns = result.columns as ColumnDef[]
+              setNodes((nds) => nds.map((n) =>
+                n.id === dsId
+                  ? { ...n, data: { ...n.data, _columns: newColumns, _availableColumns: result.available_columns ?? newColumns, _schemaWarnings: result.schema_warnings ?? [] } }
+                  : n,
+              ))
+              if (!columnsEqual(oldColumns, newColumns)) {
+                propagate(dsId)
+              }
+            }
+          })
+          .catch((e) => { console.warn("propagation_failed", dsId, e); addToast("warning", `Preview propagation failed for "${dsId}"`) })
+      }
+    }
+
     previewNode(graph, node.id, snapshotRowLimit, snapshotSource, { signal: controller.signal })
       .then((result) => {
         const preview = resultToPreview(node.id, label, result)
@@ -226,11 +204,9 @@ export default function usePipelineAPI({
           const oldColumns = (node.data as Record<string, unknown>)?._columns as ColumnDef[] | undefined
           const newColumns = result.columns as ColumnDef[]
           setNodes((nds) => nds.map((n) => n.id === node.id ? { ...n, data: { ...n.data, _columns: newColumns, _availableColumns: result.available_columns ?? newColumns, _schemaWarnings: result.schema_warnings ?? [] } } : n))
-          // Cascade to downstream nodes if columns changed — using the
-          // snapshot so every node in the cascade sees the same source
-          // and row limit as the root.
+          // Cascade to downstream nodes if columns changed.
           if (!columnsEqual(oldColumns, newColumns)) {
-            propagateDownstream(node.id, snapshotRowLimit, snapshotSource)
+            propagate(node.id)
           }
         }
       })
@@ -240,7 +216,7 @@ export default function usePipelineAPI({
           setNodeStatuses({})
         }
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, propagateDownstream])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
 
   const fetchPreview = useCallback((node: Node) => {
     if (previewDebounce.current) clearTimeout(previewDebounce.current)
