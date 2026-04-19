@@ -12,7 +12,7 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
-from haute._builders import get_column_contract
+from haute._builders import Contract, _passthrough_fn, get_column_contract
 from haute._graph_utils import (
     _sanitize_func_name,
     build_parents_of,
@@ -28,8 +28,132 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
+from haute.errors import ContractMismatchError
 
 logger = get_logger(component="execute")
+
+
+# ---------------------------------------------------------------------------
+# Column contract enforcement
+# ---------------------------------------------------------------------------
+
+
+def _effective_contract(node: GraphNode) -> Contract:
+    """Return the effective contract for a node at boundary-check time.
+
+    Combines the builder-derived contract with any user-declared
+    contract on the node's config so the executor has a single answer
+    to "what columns does this node read / produce?".
+
+    User-declared sides override the builder when they are concrete
+    (non-None).  This lets a user tighten an opaque POLARS contract to
+    a concrete set; the reverse — a user declaring opaque on top of a
+    concrete builder contract — is accepted silently because the parser
+    has already cross-checked against ``get_column_contract``.
+
+    If the builder contract raises (MLflow unreachable, config mis-set
+    in a way only the builder knows about), the executor treats the
+    node as opaque rather than failing the whole run: the runtime path
+    for such nodes is typically ``_passthrough_fn`` and the caller will
+    still get the original error on the direct ``_model_score_columns``
+    call path that the loud-errors suite exercises.  Silencing here is
+    scoped strictly to the boundary check; it does not hide the
+    configuration issue elsewhere in the system.
+    """
+    from haute.errors import ConfigError
+
+    try:
+        builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+    except ConfigError:
+        builder = Contract.opaque()
+    declared_raw = node.data.config.get("contract")
+    if declared_raw is None:
+        return builder
+    try:
+        declared = Contract.from_user_declared(declared_raw)
+    except ValueError as exc:
+        # Malformed contract on a user's graph should raise up so the
+        # mistake is visible.  The executor is the wrong place to
+        # silently drop it.
+        raise ContractMismatchError(
+            "Node contract annotation is malformed and cannot be interpreted.",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            reason=str(exc),
+        ) from exc
+    if declared is None:
+        return builder
+    inputs = declared.inputs if declared.inputs is not None else builder.inputs
+    outputs = declared.outputs if declared.outputs is not None else builder.outputs
+    return Contract(inputs=inputs, outputs=outputs)
+
+
+def _assert_inputs_satisfy_contract(
+    node: GraphNode,
+    contract: Contract,
+    upstream_columns: frozenset[str],
+) -> None:
+    """Raise ``ContractMismatchError`` if *upstream_columns* is missing
+    any column the node's contract says it reads.
+
+    No-op when the contract's input side is opaque (``None``).
+    """
+    if contract.inputs is None:
+        return
+    missing = contract.inputs - upstream_columns
+    if not missing:
+        return
+    raise ContractMismatchError(
+        "Input columns required by the node's contract are missing from the upstream frame.",
+        node_id=node.id,
+        node_type=node.data.nodeType.value,
+        missing=sorted(missing),
+        extra=sorted(upstream_columns - contract.inputs),
+        declared_inputs=sorted(contract.inputs),
+        upstream_columns=sorted(upstream_columns),
+    )
+
+
+def _assert_outputs_satisfy_contract(
+    node: GraphNode,
+    contract: Contract,
+    output_columns: frozenset[str],
+) -> None:
+    """Raise ``ContractMismatchError`` if *output_columns* is missing
+    any column the node's contract promised to produce.
+
+    We check ⊇ (outputs must be present) rather than == because
+    pass-through style nodes legitimately carry additional columns
+    through from their input.  A declared output that is absent is a
+    bug (typo or buggy user code); an extra column is expected.
+
+    No-op when the contract's output side is opaque (``None``).
+    """
+    if contract.outputs is None:
+        return
+    missing = contract.outputs - output_columns
+    if not missing:
+        return
+    raise ContractMismatchError(
+        "Output columns promised by the node's contract are missing from the node's result.",
+        node_id=node.id,
+        node_type=node.data.nodeType.value,
+        missing=sorted(missing),
+        extra=sorted(output_columns - contract.outputs),
+        declared_outputs=sorted(contract.outputs),
+        observed_columns=sorted(output_columns),
+    )
+
+
+def _should_check_contract(contract: Contract) -> bool:
+    """Return ``True`` iff either side of *contract* is concrete.
+
+    A fully-opaque contract cannot be disproven, so skipping the check
+    saves the per-node column-set computation entirely.  This matters
+    for the <5% overhead bound when a pipeline is dominated by opaque
+    nodes (user polars transforms).
+    """
+    return contract.inputs is not None or contract.outputs is not None
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +708,7 @@ def _execute_eager_core(
     swallow_errors: bool = False,
     preamble_ns: dict | None = None,
     source: str = "live",
+    enforce_contracts: bool = True,
 ) -> EagerResult:
     """Execute the graph eagerly in topo order and collect DataFrames.
 
@@ -597,6 +722,11 @@ def _execute_eager_core(
         swallow_errors: If ``True``, record per-node errors and continue
             (preview behaviour).  If ``False``, raise immediately (trace).
         source: Active execution source (``"live"`` = eager scoring).
+        enforce_contracts: If ``True`` (default), assert each node's
+            column contract at its input and output boundaries.  A
+            mismatch always raises ``ContractMismatchError`` regardless
+            of *swallow_errors* — the contract is an API-level claim
+            and a silent error would defeat the adoption effort.
 
     Returns:
         An ``EagerResult`` with named fields for outputs, order,
@@ -631,8 +761,28 @@ def _execute_eager_core(
     memory_bytes: dict[str, int] = {}
     available_columns: dict[str, list[tuple[str, str]]] = {}
 
+    # Per-node column sets used by the boundary contract checks.  We
+    # compute each frame's column set exactly once and reuse it — both
+    # as an output check for the producing node and as an input check
+    # for its consumer(s).  Polars' ``.columns`` is O(n) in the number
+    # of columns, but frozenset construction dominates anyway; caching
+    # keeps the contract-enforced path within the <5% budget.
+    column_cache: dict[str, frozenset[str]] = {}
+
     for nid in order:
         fn, is_source = funcs[nid]
+        node = node_map[nid]
+        contract = _effective_contract(node) if enforce_contracts else None
+        check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
+        # A node that the builder chose to wire to ``_passthrough_fn`` is
+        # running in a stub/unconfigured state (MODEL_SCORE without a
+        # loaded model, OPTIMISER_APPLY without an artifact, etc.).  Its
+        # contract describes the *configured* shape, which the runtime
+        # intentionally does not produce yet.  Skip the output-side
+        # check to preserve the "drag node onto canvas, configure later"
+        # UX while still enforcing contracts the moment a real function
+        # is wired in.
+        is_passthrough_runtime = fn is _passthrough_fn
         t0 = time.perf_counter()
         try:
             if is_source:
@@ -660,6 +810,18 @@ def _execute_eager_core(
                     raise ValueError(
                         f"No input data available for node '{nid}'",
                     )
+
+                # Input-side contract check: every column the node's
+                # contract says it reads must be present upstream.
+                # Using the union across all parents matches how the
+                # node's function receives inputs — multi-input joins
+                # combine them before the contract columns are read.
+                if check_here and contract.inputs is not None:  # type: ignore[union-attr]
+                    upstream_cols: frozenset[str] = frozenset().union(
+                        *(column_cache[pid] for pid in input_ids if pid in column_cache)
+                    )
+                    _assert_inputs_satisfy_contract(node, contract, upstream_cols)  # type: ignore[arg-type]
+
                 result = fn(*input_lfs)
 
             df = result.collect(engine="streaming") if isinstance(result, pl.LazyFrame) else result
@@ -674,8 +836,28 @@ def _execute_eager_core(
             renamed = _apply_column_renames(df, node_map[nid].data.config)
             df = renamed if isinstance(renamed, pl.DataFrame) else renamed.collect()
 
+            # Output-side contract check: every column the node promises
+            # to produce must be present on the result.  We check the
+            # post-rename/post-select frame because that's what
+            # downstream consumers actually see.  Passthrough-runtime
+            # nodes are exempt — see the ``is_passthrough_runtime``
+            # note above.
+            final_cols = frozenset(df.columns)
+            if (
+                check_here
+                and contract.outputs is not None  # type: ignore[union-attr]
+                and not is_passthrough_runtime
+            ):
+                _assert_outputs_satisfy_contract(node, contract, final_cols)  # type: ignore[arg-type]
+            column_cache[nid] = final_cols
+
             eager_outputs[nid] = df
             memory_bytes[nid] = int(df.estimated_size("b"))
+        except ContractMismatchError:
+            # Contract errors are API-level — raise even in swallow mode
+            # so GUI users see the crisp error instead of a silent
+            # per-node "failed" status card.
+            raise
         except Exception as exc:
             if not swallow_errors:
                 raise

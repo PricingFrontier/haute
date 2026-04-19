@@ -93,14 +93,20 @@ class TestModelScoreColumnDetectionLoud:
         """An *unconfigured* node (blank sourceType) must still be OK —
         this is the dev-UX case of dragging an empty model-score node
         onto the canvas.  Silent passthrough here is correct.
+
+        Post column-contract adoption the referenced side is ``set()``
+        (not ``None``) when ``output_column`` is set: the runtime path
+        is a passthrough that reads nothing, so ``set()`` is more
+        honest than opaque.  The fully-blank config stays opaque on
+        referenced — tested in the ``test_column_contracts_adoption``
+        suite as ``test_model_score_unconfigured_referenced_is_opaque``.
         """
         from haute._builders import _model_score_columns
 
         config: dict[str, Any] = {"sourceType": "", "output_column": "pred"}
         produced, referenced = _model_score_columns(config)
         assert produced == {"pred"}
-        # Without sourceType the features cannot be known — opaque is OK.
-        assert referenced is None
+        assert referenced == set()
 
     def test_post_processing_code_keeps_referenced_opaque(self) -> None:
         """When the node has user post-processing code, ``referenced`` is

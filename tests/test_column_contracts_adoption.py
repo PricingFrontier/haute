@@ -21,7 +21,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import polars as pl
 import pytest
 
 from haute import errors as haute_errors
@@ -201,9 +200,7 @@ class TestModelScoreContractIsPartiallyAllowed:
     """
 
     def test_model_score_produced_always_concrete(self):
-        produced, _ = get_column_contract(
-            NodeType.MODEL_SCORE, {"output_column": "score"}
-        )
+        produced, _ = get_column_contract(NodeType.MODEL_SCORE, {"output_column": "score"})
         assert produced == {"score"}, (
             "model_score must always declare its produced column "
             "concretely — it is literally the output_column config value."
@@ -290,7 +287,14 @@ class TestCodegenEmitsContractMetadata:
         This is the acid test: if codegen emits a contract, the parser
         must round-trip it without drift.  Drift here means silent loss
         of the contract between saves.
+
+        Nodes that use an external JSON config file (banding,
+        rating_step, etc.) need the sidecar JSON to exist when the
+        parser reads the generated code; we write it via
+        ``collect_node_configs`` so the second parse sees the same
+        config the graph would see on disk after a real save.
         """
+        from haute._config_io import collect_node_configs
         from haute.codegen import graph_to_code
         from haute.parser import parse_pipeline_source
 
@@ -312,7 +316,7 @@ def src() -> pl.LazyFrame:
         "column": "age",
         "output_column": "age_band",
         "banding": "continuous",
-        "rules": [{"max": 25, "value": "0"}],
+        "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
     }],
 )
 def band(src: pl.LazyFrame) -> pl.LazyFrame:
@@ -322,9 +326,26 @@ def band(src: pl.LazyFrame) -> pl.LazyFrame:
 
 pipeline.connect("src", "band")
 '''
-        g1 = parse_pipeline_source(src_code, source_file=str(tmp_path / "p.py"))
+        g1 = parse_pipeline_source(
+            src_code,
+            source_file=str(tmp_path / "p.py"),
+            _base_dir=tmp_path,
+        )
+
+        # Write config JSON sidecars (the codegen path generates
+        # ``@pipeline.banding(config="config/banding/band.json")`` which
+        # the parser reads back from disk).
+        for rel, content in collect_node_configs(g1).items():
+            abs_path = tmp_path / rel
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(content, encoding="utf-8")
+
         gen = graph_to_code(g1, pipeline_name="roundtrip")
-        g2 = parse_pipeline_source(gen, source_file=str(tmp_path / "p2.py"))
+        g2 = parse_pipeline_source(
+            gen,
+            source_file=str(tmp_path / "p2.py"),
+            _base_dir=tmp_path,
+        )
 
         # The banding node must have the same contract on both sides.
         band1 = next(n for n in g1.nodes if n.id.endswith("band") or n.data.label == "band")
@@ -493,11 +514,11 @@ class TestExecutorAssertsContractsAtBoundaries:
         cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
         if cls is None:
             pytest.skip("ContractMismatchError not yet defined")
-        from haute.executor import execute_graph
-
         # Source produces 'height' only; banding references 'age'.
         # Write the parquet so read_source finds real columns.
         import polars as pl_
+
+        from haute.executor import execute_graph
 
         pq = tmp_path / "x.parquet"
         pl_.DataFrame({"height": [170.0, 180.0]}).write_parquet(pq)
@@ -537,9 +558,9 @@ class TestExecutorAssertsContractsAtBoundaries:
         cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
         if cls is None:
             pytest.skip("ContractMismatchError not yet defined")
-        from haute.executor import execute_graph
-
         import polars as pl_
+
+        from haute.executor import execute_graph
 
         pq = tmp_path / "x.parquet"
         pl_.DataFrame({"a": [1, 2, 3]}).write_parquet(pq)
@@ -567,10 +588,20 @@ class TestExecutorAssertsContractsAtBoundaries:
         )
 
     def test_contract_check_does_not_raise_on_clean_pipeline(self, tmp_path: Path):
-        """Well-formed pipelines execute end-to-end without spurious errors."""
-        from haute.executor import execute_graph
+        """Well-formed pipelines execute end-to-end without spurious errors.
 
+        The rule format uses ``op1 / val1`` + ``assignment`` — the
+        actual schema ``_apply_banding`` consumes — so the banding node
+        truly produces ``age_band`` and the output-side contract check
+        is satisfied.  The earlier ``{"max": 25, "value": "0"}`` form in
+        this test was a spec artefact that never produced an
+        ``age_band`` column at runtime and would always fail the
+        output contract; that was a test bug the adoption work
+        surfaced.
+        """
         import polars as pl_
+
+        from haute.executor import execute_graph
 
         pq = tmp_path / "x.parquet"
         pl_.DataFrame({"age": [20.0, 30.0]}).write_parquet(pq)
@@ -586,7 +617,9 @@ class TestExecutorAssertsContractsAtBoundaries:
                             "column": "age",
                             "outputColumn": "age_band",
                             "banding": "continuous",
-                            "rules": [{"max": 25, "value": "0"}],
+                            "rules": [
+                                {"op1": "<=", "val1": "25", "assignment": "0"},
+                            ],
                             "default": "1",
                         }
                     ],
@@ -665,9 +698,9 @@ class TestContractOverheadBenchmark:
         fails — we cannot measure overhead without the ability to
         toggle enforcement.
         """
-        from haute.executor import execute_graph
-
         import inspect as _inspect
+
+        from haute.executor import execute_graph
 
         sig = _inspect.signature(execute_graph)
         if "enforce_contracts" in sig.parameters:

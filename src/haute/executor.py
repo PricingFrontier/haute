@@ -55,6 +55,17 @@ logger = get_logger(component="executor")
 # ── Default constants ─────────────────────────────────────────────
 _MAX_PREVIEW_ROWS = 10_000  # safety cap for execute_graph JSON payload
 
+# Module-level toggle for column-contract enforcement.  ``True`` by
+# default: contract mismatches should fail loudly.  Benchmarks and
+# legacy integration tests may temporarily flip this to ``False`` to
+# measure the overhead or keep behaviour stable during a ratcheting
+# migration.  ``execute_graph(..., enforce_contracts=...)`` is the
+# preferred switch for normal code paths; the module flag is the
+# fallback for callers (like the overhead benchmark in
+# ``test_column_contracts_adoption.py``) that need to toggle it
+# without threading the kwarg through their call chain.
+ENFORCE_CONTRACTS: bool = True
+
 # Lock to prevent concurrent module eviction + re-import in _compile_preamble.
 # Without this, two threads (e.g. preview + estimate) can race: one evicts
 # "utility" from sys.modules while the other is mid-import, causing a KeyError
@@ -357,6 +368,7 @@ def execute_graph(
     row_limit: int | None = None,
     max_preview_rows: int = _MAX_PREVIEW_ROWS,
     source: str = "live",
+    enforce_contracts: bool | None = None,
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -369,6 +381,14 @@ def execute_graph(
         row_limit: If set, apply .head(row_limit) to source nodes so only
                    that many rows flow through the pipeline.
         max_preview_rows: Max rows to include in the JSON preview payload.
+        enforce_contracts: If ``True``, every node's column contract is
+            asserted at the input and output boundaries.  Default
+            (``None``) falls back to the module-level
+            :data:`ENFORCE_CONTRACTS` flag (itself ``True`` by default),
+            so contract violations surface as ``ContractMismatchError``.
+            Pass ``False`` to run without the check — the benchmark
+            uses this to measure overhead; production callers should
+            leave it at the default.
 
     Returns:
         Dict mapping node_id → {
@@ -379,6 +399,8 @@ def execute_graph(
             "error": str | None,
         }
     """
+    if enforce_contracts is None:
+        enforce_contracts = ENFORCE_CONTRACTS
     if not graph.nodes:
         return {}
 
@@ -421,6 +443,7 @@ def execute_graph(
                     target_node_id,
                     row_limit,
                     source=source,
+                    enforce_contracts=enforce_contracts,
                 )
             )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
@@ -468,6 +491,7 @@ def execute_graph(
             target_node_id,
             row_limit,
             source=source,
+            enforce_contracts=enforce_contracts,
         )
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
         _preview_cache.store(
@@ -581,6 +605,7 @@ def _eager_execute(
     target_node_id: str | None,
     row_limit: int | None,
     source: str = "live",
+    enforce_contracts: bool = True,
 ) -> tuple[
     dict[str, pl.DataFrame | None],
     list[str],
@@ -622,6 +647,7 @@ def _eager_execute(
         swallow_errors=True,
         preamble_ns=preamble_ns or None,
         source=source,
+        enforce_contracts=enforce_contracts,
     )
     errors = result.errors
     if preamble_error:

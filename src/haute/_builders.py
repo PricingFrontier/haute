@@ -6,11 +6,16 @@ Each builder receives a ``NodeBuildContext`` and returns
 
 Extracted from ``executor.py`` to keep the orchestration module focused
 on ``execute_graph``, ``_eager_execute``, and ``execute_sink``.
+
+Exec-side registrations write into :data:`haute._registry.NODE_REGISTRY` —
+the single source of truth shared with ``_codegen_builders.py``.  A legacy
+``_NODE_BUILDERS`` dict mirror is maintained for backward compatibility
+with tests that inspected the old standalone table.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +29,12 @@ from haute._rating import (
     _apply_rating_table,
     _combine_rating_columns,
     _normalise_banding_factors,
+)
+from haute._registry import (
+    NODE_REGISTRY,
+)
+from haute._registry import (
+    register_exec as _register_exec_in_registry,
 )
 from haute._types import GraphNode, NodeType, _Frame
 
@@ -106,6 +117,142 @@ _NODE_BUILDERS: dict[NodeType, NodeBuilder] = {}
 ColumnContract = tuple[set[str] | None, set[str] | None]
 ColumnContractFn = Callable[[dict[str, Any]], ColumnContract]
 
+#: Sentinel for builders that are genuinely opaque — user code, external
+#: file schemas, etc.  Registering this explicitly (rather than omitting
+#: a contract registration altogether) lets the system distinguish
+#: "declared opaque" from "forgot to declare", which is important for
+#: adoption tracking and the codegen/parser/executor contract pipeline.
+OPAQUE_CONTRACT: ColumnContract = (None, None)
+
+#: String sentinel emitted by codegen for opaque contracts.  Kept in
+#: sync with ``tests.fixtures.expected_contracts.OPAQUE_SENTINEL``.
+OPAQUE_CONTRACT_SENTINEL = "opaque"
+
+
+@dataclass(frozen=True, slots=True)
+class Contract:
+    """Small dataclass mirror of the tuple-based ``ColumnContract``.
+
+    Used by the user-facing decorator kwarg (``contract=Contract(...)``
+    or ``contract={"inputs": [...], "outputs": [...]}``) and by the
+    parser/executor boundary checks.  The tuple form remains the
+    builder-internal representation so existing code keeps working;
+    ``Contract`` is the normalised shape that carries the distinction
+    between "opaque" and a concrete empty set cleanly.
+
+    ``inputs``  — columns the node reads from its upstream frame(s).
+                  ``None`` means "opaque; can't determine statically".
+    ``outputs`` — columns the node creates on its output frame.
+                  ``None`` means "opaque; can't determine statically".
+    """
+
+    inputs: frozenset[str] | None
+    outputs: frozenset[str] | None
+
+    @classmethod
+    def opaque(cls) -> Contract:
+        """Return the canonical opaque contract (both sides unknown)."""
+        return cls(inputs=None, outputs=None)
+
+    @classmethod
+    def from_tuple(cls, tup: ColumnContract) -> Contract:
+        """Lift a ``(produced, referenced)`` tuple to a ``Contract``.
+
+        Note the swap: the tuple uses ``(produced, referenced)`` — i.e.
+        ``(outputs, inputs)`` — while ``Contract`` names them
+        ``inputs`` then ``outputs``.  This is deliberate: the
+        user-facing form mirrors Python conventions (inputs first), but
+        the internal tuple was defined earlier with produced first for
+        historical reasons.  The conversion is centralised here.
+        """
+        produced, referenced = tup
+        inputs = _freeze(referenced)
+        outputs = _freeze(produced)
+        return cls(inputs=inputs, outputs=outputs)
+
+    def to_tuple(self) -> ColumnContract:
+        """Return the ``(produced, referenced)`` tuple form."""
+        produced = set(self.outputs) if self.outputs is not None else None
+        referenced = set(self.inputs) if self.inputs is not None else None
+        return produced, referenced
+
+    @classmethod
+    def from_user_declared(cls, value: Any) -> Contract | None:
+        """Normalise the many user-facing forms into a ``Contract``.
+
+        Accepts:
+          - ``None``                           → ``None`` (no contract declared)
+          - ``Contract(...)``                  → returned as-is
+          - ``"opaque"`` (case-insensitive)    → ``Contract.opaque()``
+          - ``(None, None)``                   → ``Contract.opaque()``
+          - ``{"inputs": [...], "outputs": [...]}``  → ``Contract(...)``
+          - ``(inputs, outputs)`` tuple of iterables  → ``Contract(...)``
+
+        Anything else raises ``ValueError``.  Failing loud is better than
+        silently accepting an ill-formed declaration — a typo'd key in
+        the pipeline source is precisely the kind of error this feature
+        exists to catch.
+        """
+        if value is None:
+            return None
+        if isinstance(value, Contract):
+            return value
+        if isinstance(value, str):
+            if value.strip().lower() == OPAQUE_CONTRACT_SENTINEL:
+                return cls.opaque()
+            raise ValueError(
+                f"Invalid contract declaration: unknown string {value!r}. "
+                f"The only accepted string form is {OPAQUE_CONTRACT_SENTINEL!r}.",
+            )
+        if isinstance(value, dict):
+            inputs_raw = value.get("inputs", ...)
+            outputs_raw = value.get("outputs", ...)
+            if inputs_raw is ... or outputs_raw is ...:
+                raise ValueError(
+                    "Invalid contract dict: expected both 'inputs' and "
+                    f"'outputs' keys, got {sorted(value)}.",
+                )
+            return cls(
+                inputs=_freeze(inputs_raw),
+                outputs=_freeze(outputs_raw),
+            )
+        if isinstance(value, tuple) and len(value) == 2:
+            a, b = value
+            # Tuple form is (inputs, outputs) on the user-facing side to
+            # match Contract's field order.
+            return cls(inputs=_freeze(a), outputs=_freeze(b))
+        raise ValueError(
+            f"Invalid contract declaration: unsupported type {type(value).__name__}; "
+            "expected Contract, dict(inputs=..., outputs=...), 'opaque', or None.",
+        )
+
+
+def _freeze(value: Any) -> frozenset[str] | None:
+    """Coerce an iterable of column names to ``frozenset[str]`` or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, frozenset):
+        return value  # type: ignore[return-value]
+    if isinstance(value, (set, list, tuple)) or (
+        isinstance(value, Iterable) and not isinstance(value, (str, bytes))
+    ):
+        out: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"Contract column names must be strings; got {type(item).__name__} ({item!r}).",
+                )
+            out.add(item)
+        return frozenset(out)
+    raise ValueError(
+        f"Contract column set must be iterable; got {type(value).__name__}.",
+    )
+
+
+#: Legacy mirror of the exec side of ``NODE_REGISTRY``.  Kept as a real dict
+#: (not a proxy) so tests that mutate the mirror with ``.pop(...)`` / ``[] =``
+#: to simulate missing-builder error paths still work.  The unified registry
+#: remains the canonical source of truth for all production dispatch.
 _COLUMN_CONTRACTS: dict[NodeType, ColumnContractFn] = {}
 
 
@@ -113,19 +260,49 @@ def _register(
     node_type: NodeType,
     *,
     columns: ColumnContractFn | None = None,
+    opaque: bool = False,
 ) -> Callable[[NodeBuilder], NodeBuilder]:
     """Decorator to register a node builder for a given NodeType.
+
+    Writes the builder into the unified :data:`haute._registry.NODE_REGISTRY`
+    (primary) and the legacy ``_NODE_BUILDERS`` / ``_COLUMN_CONTRACTS`` mirrors.
 
     The optional *columns* callback declares the node's column contract —
     which columns it creates and which input columns it reads — given its
     config dict.  This is used by the checkpoint projection pass to avoid
     writing unneeded columns to intermediate parquet files.
+
+    Passing ``opaque=True`` explicitly registers the builder as producing
+    an ``OPAQUE_CONTRACT``.  The two ways of declaring opacity exist so
+    that callers can either spell out "I don't know, and that's by
+    design" (``opaque=True``) or provide a callback that might return a
+    concrete contract in some configurations and opaque in others (e.g.
+    ``MODEL_SCORE``).  Either way, the entry ends up in
+    ``_COLUMN_CONTRACTS``, so "forgot to register" is distinct from
+    "declared opaque".
     """
 
+    if columns is not None and opaque:
+        raise ValueError(
+            f"_register({node_type!r}): pass either columns= or opaque=True, not both.",
+        )
+
+    # Resolve the contract callback eagerly so both the registry entry and
+    # the legacy mirror reference the *same* callable (test_column_contracts
+    # asserts identity across mirrors).
+    contract_fn: ColumnContractFn | None
+    if opaque:
+        contract_fn = _opaque_columns
+    else:
+        contract_fn = columns
+
+    registrar = _register_exec_in_registry(node_type, column_contract=contract_fn)
+
     def decorator(fn: NodeBuilder) -> NodeBuilder:
+        registrar(fn)
         _NODE_BUILDERS[node_type] = fn
-        if columns is not None:
-            _COLUMN_CONTRACTS[node_type] = columns
+        if contract_fn is not None:
+            _COLUMN_CONTRACTS[node_type] = contract_fn
         return fn
 
     return decorator
@@ -135,11 +312,33 @@ def get_column_contract(
     node_type: NodeType,
     config: dict[str, Any],
 ) -> ColumnContract:
-    """Return the column contract for a node type, or ``(None, None)`` if opaque."""
-    fn = _COLUMN_CONTRACTS.get(node_type)
-    if fn is None:
-        return (None, None)
-    return fn(config)
+    """Return the column contract for a node type.
+
+    Every registered ``NodeType`` has an entry in ``_COLUMN_CONTRACTS``.
+    If a future ``NodeType`` is added without a contract, this function
+    raises — silently falling back to opaque would hide the omission.
+
+    Reads from the unified registry so that the contract registration and
+    lookup share a single source of truth.
+    """
+    entry = NODE_REGISTRY.get(node_type)
+    if entry is None or entry.column_contract is None:
+        raise KeyError(
+            f"NodeType {node_type!r} has no column contract registered. "
+            "Every builder in _NODE_BUILDERS must also register a contract "
+            "in _COLUMN_CONTRACTS (pass columns=... or opaque=True to "
+            "_register).",
+        )
+    # The registry stores the contract fn as ``Callable[[dict], Any]`` for
+    # cross-module generality; every registration in this module passes a
+    # ``ColumnContractFn``, so the cast is safe by construction.
+    result: ColumnContract = entry.column_contract(config)
+    return result
+
+
+def _opaque_columns(_config: dict[str, Any]) -> ColumnContract:
+    """Column contract for explicitly opaque nodes: (None, None)."""
+    return OPAQUE_CONTRACT
 
 
 def _passthrough_columns(_config: dict[str, Any]) -> ColumnContract:
@@ -152,7 +351,7 @@ def _passthrough_fn(*dfs: _Frame) -> _Frame:
     return dfs[0] if dfs else pl.LazyFrame()
 
 
-@_register(NodeType.API_INPUT)
+@_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     path = config.get("path", "")
@@ -183,7 +382,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, api_source_fn, True
 
 
-@_register(NodeType.DATA_SOURCE)
+@_register(NodeType.DATA_SOURCE, opaque=True)
 def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     path = config.get("path", "")
@@ -287,7 +486,7 @@ def _build_data_sink(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.EXTERNAL_FILE)
+@_register(NodeType.EXTERNAL_FILE, opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = config.get("code", "").strip()
@@ -510,8 +709,21 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> ColumnContract:
     # Produced: version column is always added.
     vcol = config.get("version_column", "__optimiser_version__")
     produced = {vcol} if vcol else set()
-    # Referenced: column dependencies come from a runtime artifact
-    # (quote_id, scenario_index, objective, constraints) — opaque.
+
+    # Mirror the "do we have a source configured?" check in
+    # _build_optimiser_apply: without an artifact path or a valid
+    # MLflow source the builder returns _passthrough_fn, meaning the
+    # node reads nothing from its input.  Report that honestly.  Only
+    # once a source is configured do the referenced columns become
+    # artifact-driven and therefore opaque.
+    source_type = config.get("sourceType", "")
+    has_file = bool(config.get("artifact_path", "")) and source_type in ("", "file")
+    has_mlflow = source_type in ("run", "registered") and (
+        (source_type == "run" and config.get("run_id"))
+        or (source_type == "registered" and config.get("registered_model"))
+    )
+    if not has_file and not has_mlflow:
+        return produced, set()
     return produced, None
 
 
@@ -579,7 +791,22 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
     # Feature columns are only known after loading the model.
     source_type = config.get("sourceType", "")
     if not source_type:
-        # Unconfigured node (dev UX: blank modelScore dragged onto canvas).
+        # Distinguish two sub-cases cleanly:
+        #
+        # 1. ``output_column`` missing entirely and no source configured
+        #    — the node is a freshly-dragged placeholder from the UI
+        #    with no information at all.  We cannot claim anything
+        #    concrete about its referenced columns; return ``None``
+        #    (opaque).
+        #
+        # 2. ``output_column`` present but no source configured — the
+        #    builder will return ``_passthrough_fn``.  The executor
+        #    detects the passthrough wiring and skips the output-side
+        #    boundary assertion, so reporting
+        #    ``produced={output_column}`` here is forward-looking
+        #    documentation rather than a runtime lie.
+        if "output_column" in config:
+            return produced, set()
         return produced, None
 
     # Validate required fields per sourceType on the spot; a blank
@@ -660,7 +887,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, scorer.score, False
 
 
-@_register(NodeType.POLARS)
+@_register(NodeType.POLARS, opaque=True)
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = config.get("code", "").strip()
@@ -688,8 +915,14 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
 
-# SUBMODEL and SUBMODEL_PORT are pass-through types with no special logic.
-# Register them explicitly so _build_node_fn doesn't raise on unknown types.
+# SUBMODEL and SUBMODEL_PORT are placeholder/port node types used by the
+# submodel boundary machinery.  For execution they pass through because
+# ``_flatten.flatten_graph`` removes the placeholder before the executor
+# runs — but that's a defensive passthrough: if an unflatted graph ever
+# reaches the executor, returning an empty LazyFrame beats a cryptic
+# KeyError.  Codegen takes the strict stance (see
+# ``_codegen_builders._gen_submodel``): by the time codegen dispatches, the
+# submodel must have been split into its own file via ``graph_to_code_multi``.
 @_register(NodeType.SUBMODEL, columns=_passthrough_columns)
 def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
@@ -741,12 +974,19 @@ def _build_node_fn(
         source=source,
     )
 
-    builder = _NODE_BUILDERS.get(node.data.nodeType)
-    if builder is not None:
-        return builder(ctx)
-
-    # Fallback for any unrecognised node type: pass-through
-    return ctx.func_name, _passthrough_fn, False
+    # Dispatch through the unified registry — the single source of truth.
+    # Missing entries are a registration bug, not a condition to silently
+    # paper over: the previous passthrough fallback hid typos and drift
+    # between the exec and codegen tables.  Every ``NodeType`` is validated
+    # at import time (:func:`validate_registry_complete`), so reaching this
+    # branch means someone added a NodeType without wiring it in.
+    entry = NODE_REGISTRY.get(node.data.nodeType)
+    if entry is None or entry.exec is None:
+        raise KeyError(
+            f"no exec builder registered for {node.data.nodeType!r} "
+            f"(node id={node.id!r} label={node.data.label!r})"
+        )
+    return entry.exec(ctx)
 
 
 # ---------------------------------------------------------------------------

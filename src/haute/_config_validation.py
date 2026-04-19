@@ -60,12 +60,14 @@ _TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
 # Keys that any node type may carry (set by the parser / executor, not by config authors).
 # ``selected_columns`` is applied by the executor for *all* node types (column
 # filtering for downstream propagation), so it must be universally accepted.
+# ``contract`` is the column-contract annotation — may appear on any type.
 _UNIVERSAL_KEYS: frozenset[str] = frozenset(
     {
         "instanceOf",
         "inputMapping",
         "selected_columns",
         "column_renames",
+        "contract",
     }
 )
 

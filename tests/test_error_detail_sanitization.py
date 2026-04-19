@@ -101,11 +101,14 @@ def pipeline_graph(tmp_path: Path):
     data_path = data_dir / "input.parquet"
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data_path)
 
+    # ``as_posix`` ensures the path emitted into the f-string stays
+    # parseable on Windows, where ``C:\Users\...`` would otherwise be
+    # read as a ``\U`` unicode escape.
     code = f"""\
 import haute
 pipeline = haute.Pipeline("test")
 
-@pipeline.data_source(path="{data_path}")
+@pipeline.data_source(path="{data_path.as_posix()}")
 def source(config):
     pass
 """

@@ -26,6 +26,12 @@ def project_dir(tmp_path: Path) -> Path:
     data.mkdir()
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data / "input.parquet")
 
+    # ``as_posix`` is required on Windows: the raw string form contains
+    # ``C:\Users\...`` which Python's parser sees as an invalid
+    # ``\U``-prefixed escape.  Forward slashes are accepted by both
+    # Polars and os.path on every platform, so the generated pipeline
+    # file loads without a ``SyntaxError`` cross-platform.
+    input_path = (data / "input.parquet").as_posix()
     code = f'''\
 import polars as pl
 import haute
@@ -33,10 +39,10 @@ import haute
 pipeline = haute.Pipeline("test_cli", description="CLI test pipeline")
 
 
-@pipeline.data_source(path="{data / "input.parquet"}")
+@pipeline.data_source(path="{input_path}")
 def source() -> pl.DataFrame:
     """Read data."""
-    return pl.scan_parquet("{data / "input.parquet"}")
+    return pl.scan_parquet("{input_path}")
 
 
 @pipeline.polars
@@ -389,6 +395,10 @@ class TestRun:
         data.mkdir()
         pl.DataFrame({"x": [1]}).write_parquet(data / "d.parquet")
 
+        # Forward slashes keep the generated pipeline cross-platform:
+        # a raw Windows path in an f-string produces ``C:\Users\...``
+        # which the Python parser then misreads as a ``\U`` escape.
+        path = (data / "d.parquet").as_posix()
         code = f'''\
 import polars as pl
 import haute
@@ -396,9 +406,9 @@ import haute
 pipeline = haute.Pipeline("broken")
 
 
-@pipeline.data_source(path="{data / "d.parquet"}")
+@pipeline.data_source(path="{path}")
 def source() -> pl.DataFrame:
-    return pl.scan_parquet("{data / "d.parquet"}")
+    return pl.scan_parquet("{path}")
 
 
 @pipeline.polars

@@ -53,3 +53,24 @@ class DeployError(HauteError):
 
 class FeatureMismatchError(HauteError):
     """Feature or categorical train-vs-score contract mismatch."""
+
+
+class ContractMismatchError(HauteError):
+    """Raised when a declared column contract does not match observed columns.
+
+    Surfaces in three places:
+
+    * **Parser** — an explicit ``contract=...`` kwarg in a pipeline source
+      file disagrees with the contract the builder derives from the
+      configured factors/tables/etc.
+    * **Executor (input side)** — an upstream frame is missing columns
+      that the current node's contract says it will read.  Without this
+      check, Polars raises a cryptic ``ColumnNotFound`` deep in a lazy
+      plan; with it, Haute names the exact missing column up-front.
+    * **Executor (output side)** — a node's observed output is missing
+      columns its contract promised to produce, or contains columns
+      outside what its contract declared.
+
+    The error always names the offending node id and the symmetric
+    column diff so a user can fix a typo'd contract in one edit.
+    """

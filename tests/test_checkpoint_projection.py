@@ -254,17 +254,36 @@ class TestGetColumnContract:
 
     # -- OPTIMISER_APPLY ------------------------------------------------
 
-    def test_optimiser_apply_produced_and_opaque_referenced(self):
+    def test_optimiser_apply_unconfigured_reads_nothing(self):
+        # An unconfigured optimiser_apply node is a pass-through at
+        # runtime (``_build_optimiser_apply`` returns ``_passthrough_fn``
+        # when no artifact source is set), so the contract reports the
+        # read side as ``set()`` rather than opaque.  This distinguishes
+        # "declared pass-through, truly reads nothing" from "opaque
+        # because the schema comes from a runtime artifact" (tested
+        # below).
         produced, referenced = get_column_contract(NodeType.OPTIMISER_APPLY, {})
         assert produced == {"__optimiser_version__"}
-        assert referenced is None
+        assert referenced == set()
 
-    def test_optimiser_apply_custom_version_column(self):
+    def test_optimiser_apply_custom_version_column_unconfigured(self):
         produced, referenced = get_column_contract(
             NodeType.OPTIMISER_APPLY,
             {"version_column": "opt_ver"},
         )
         assert produced == {"opt_ver"}
+        assert referenced == set()
+
+    def test_optimiser_apply_with_artifact_source_is_opaque(self):
+        # Once an artifact source is configured the read side is
+        # honestly opaque — the column dependencies come from the
+        # artifact at runtime (quote_id, scenario_index, constraints,
+        # etc.) which is not introspectable without loading it.
+        produced, referenced = get_column_contract(
+            NodeType.OPTIMISER_APPLY,
+            {"artifact_path": "/tmp/opt.json", "sourceType": "file"},
+        )
+        assert produced == {"__optimiser_version__"}
         assert referenced is None
 
     # -- Passthrough types ----------------------------------------------
