@@ -121,10 +121,72 @@ The `_container.py` re-export of `_CONTAINER_BASED_TARGETS` is preserved with `_
 ## Preflight results after this audit
 
 ```
-uv run --no-sync ruff check src/       → All checks passed!
-uv run --no-sync ruff format --check src/ → clean
-uv run --no-sync mypy src/haute        → Success: no issues found in 102 source files
+uv run --no-sync ruff check src/ tests/      → All checks passed!
+uv run --no-sync ruff format --check src/ tests/ → 254 files already formatted
+uv run --no-sync mypy src/haute              → Success: no issues found in 102 source files
+cd frontend && npx tsc --noEmit              → clean
+cd frontend && npx eslint src/               → clean (0 errors, 0 warnings)
 ```
+
+## Second-pass compliance audit (all 51 commits, every standard)
+
+Run after commit `43d43b3`, against the full COMMIT_STANDARDS.md checklist:
+
+| Standard | Status | Evidence |
+|---|---|---|
+| **Design Philosophy** — code-as-truth, single execution path, Polars-native, GUI never crashes, etc. | ✓ | No parallel implementations added; no premature `.collect()`; no pandas introduced (the one pandas usage in `deploy/_model_code.py` is MLflow's required pyfunc contract, immediately converted to polars). |
+| §1 DRY | ✓ | Frontend `sanitizeName.ts` documents sync with backend `_graph_utils._sanitize_func_name` (via the `graph_utils.py` facade re-export). |
+| §2 KISS | ✓ | Reviewer gates rejected speculative abstractions at every package (`_autodetect_batch` removed in 2C-3+4 fix, `actions` prop dropped in 2D-3 polish). |
+| §3 Single Responsibility | ✓ | Every new module (`haute.errors`, `_hashing`, `_file_ops`, `_project`, `_graph_utils`, `_trace_correlation`, `modelling/_signature`, `modelling/_feature_contract`, `trace/traceHelpers`, `optimiser/optimiserHelpers`) has a single-sentence purpose. |
+| §4 Type Safety (PEP 563/585/604, Pydantic fields) | ✓ | All 8 new modules have `from __future__ import annotations`. Zero `Optional[`/`List[`/`Dict[` imports from typing. Zero `any` in new TS. |
+| §5 Linter Clean | ✓ | Ruff + mypy + tsc + eslint all clean. 3 `# noqa: BLE001` I introduced (in `routes/files.py` and `routes/_helpers.py`) each have a WHY block-comment directly below. |
+| §6 No Dead Code | ✓ | F401 clean; no commented-out code; no empty files. Audit also deleted `ScoringModel.__getattr__`, `_autodetect_batch`, `cv_folds` plumbing, `cross_validate` methods, and 10 obsolete tests. |
+| §7 No Stale Docs | ✓ | `cv_folds` cleanup landed in `docs/building-models/nodes/model-training.md` + `docs/GLM_INTEGRATION_DESIGN.md` during 2C-5 review fixes. |
+| §8 Dependency Discipline | ✓ | 2 deps added: `xxhash>=3.0.0` (F3, justified in commit) and `packaging>=24.0` (1F canonicalize_name). Both minimum-pinned. |
+| §9 No Resource Leaks | ✓ | All new file I/O uses `Writer` context manager or `atomic_write_*`; no bare `open()`. |
+| §10 Single Execution Path | ✓ | 2C-3+4 unified the dual scoring paths. Trace still uses the single `execute_trace` → `execute_graph` path. |
+| §11 Correct Data Structures | ✓ | `set` used for membership (sanitized-name collision detection, container-target predicate). `LazyFrame` preserved throughout. |
+| §12 Error Handling | ✓ | AST audit: zero `HTTPException` raise sites inside a `try/except Exception` without a preceding `except HTTPException: raise`. Zero frontend `.catch(() => {})` silent suppressions (Phase 1H removed the ones that existed). |
+| §13 Consistent Naming | ✓ | All API fields snake_case. N814 `_PG` alias removed in earlier audit. No `camelCase` on Python boundary. |
+| §14 Idiomatic React | ✓ | No module-level mutable state added. Phase 2D-6 specifically removed cross-effect `isDragging` ref, simplifying to per-batch inspection. |
+| §15 Security Basics | ✓ | Every new route path operation uses `validate_safe_path` or `is_relative_to`. 182 tests reference path-traversal scenarios. Item #12 added an explicit allowlist in `_save_pipeline.py` beyond `is_relative_to`. |
+| §16 Test Coverage | ✓ | 10 new test files written TDD-first across Phase 1/2. Every bug fix has a regression test. |
+| §17 Commit Hygiene (atomic, conventional prefix) | ✓ atomic; ⚠ prefixes | Every commit is one logical change; no generated files. 38 historical commits use custom prefixes (`Phase 2A-1:`, `Implement Phase 1 Package 1A`), documented as **resolved by squash-merge policy at PR time**; all 13 commits from `0d9b39c` onward use conventional prefixes. |
+| §18 Design Before Code | ✓ | `docs/CODEBASE_REVIEW_PLAN.md` for the overall plan; `docs/CODEBASE_REVIEW_SUBSYSTEMS.md` with one note per new subsystem (problem/approach/alternatives/open questions). |
+| §19 Elegance | ✓ | Reviewer gates rejected over-engineering at each step. Wave 2 saw -24 LOC on usePipelineAPI, -8 LOC on useUndoRedo, -472 LOC deleted for GLM CV. |
+| §20 Canonical Data Types | ✓ | Grep shows zero `.data["...` dict-access on Pydantic models in src. `FeatureContract`, `TraceResult`, `DeployConfig`, etc. are all Pydantic / dataclass. |
+| §21 Minimal API Surface | ✓ | All new helpers underscored. `haute.errors` adds 5 public error classes (used across modules). `haute/__init__.py` still exports only `HauteError`, `Pipeline`, `Submodel`. |
+| §22 Test Quality | ✓ deterministic/focused/independent/readable; ⚠ fast | Phase 1/2 tests all sub-second. Full suite remains at ~5min because of CatBoost training (documented divergence — ML pipeline libraries can't hit the <10s target). |
+| §23 Module Boundaries | ✓ | No new circular imports. 2A-1 used `TYPE_CHECKING` for the one backward-pointing type reference in `_graph_utils`. |
+| §24 Logging | ✓ | Every new module that does work has `logger = get_logger(component=...)`. Phase 1B systematically replaced silent debug-level catches with structured `logger.warning(..., exc_info=True)` + visible failure markers. One `print()` remains in a docstring example block (not runtime code). |
+| §25 Background Job Pattern | n/a | No new background routes added. |
+| §26 Fix It If You See It | ✓ | Audit cleared 147 legacy test ruff errors + 7 pre-existing structlog test-ordering flakes + 5 new react-refresh eslint errors + 4 react-hooks warnings + format drift in 10 files + 3 obsolete test-model-scorer references to the deleted `__getattr__` proxy. |
+| §27 Formatted Lookup Tables | n/a | No lookup tables added. |
+
+### LLM watchlist audit
+
+| Pattern | Status |
+|---|---|
+| Dangerous fallbacks masking errors | ✓ Zero `return pl.DataFrame()` on error; Phase 1 removed the existing ones. |
+| Broad `except Exception: pass` | ✓ Zero hits in src/haute. |
+| `HTTPException` inside generic try/except | ✓ Zero real violations (AST audit with precedence-aware handler-list check). |
+| Hallucinated APIs | ✓ Reviewer gates caught two potential issues during Phase 0 (`ModelSignature` location, `mark_self_write` signature) and both were corrected. |
+| Stale library patterns (old typing, on_event, pandas) | ✓ Zero `from typing import List/Dict/Optional`; zero `@app.on_event`. |
+| Chained `.get()` on required keys | Pre-existing hits only (all in legitimate TOML-config parsing where the top-level section is genuinely optional). No new chains introduced. |
+| Redundant validation | ✓ No duplicate validation introduced. |
+| Premature abstraction | ✓ `_autodetect_batch` and `actions` prop were reviewer-flagged and removed. |
+| Comments that restate code | ✓ New docstrings explain WHY (fail-loudly rationale, monkeypatch-surface contract, cache-invalidation windows). |
+| Untested edge cases | ✓ Phase 1 tests specifically cover edge cases (`empty pipeline`, `single node`, `pathological docstrings`, `WebSocket sync during undo`). |
+| HTTPException swallowed by generic except | ✓ Same as §12 — AST audit clean. |
+| Frontend silent catches | ✓ Zero `.catch(() => {})` hits. |
+| Import bloat | ✓ F401 clean. |
+
+### Backward Compatibility audit
+
+| Check | Status |
+|---|---|
+| No compat shims / version flags / migration | ✓ Audit explicitly deleted the one shim found (`_types.py` backward-compat re-exports from `_graph_utils`) |
+| Bad APIs replaced, not versioned | ✓ `ScoringModel.__getattr__` deleted rather than deprecated; `cv_folds` field removed rather than soft-nullified. |
 
 Frontend checks (run pre-audit):
 
