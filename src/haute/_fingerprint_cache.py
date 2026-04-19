@@ -1,51 +1,40 @@
-"""Thread-safe multi-entry fingerprint cache.
+"""Thin slot-dict sugar layer over ``LRUCache``.
 
-Replaces the duplicate ``_TraceCache`` and ``_PreviewCache`` classes in
-``trace.py`` and ``executor.py`` with a single generic implementation.
+After the Phase 2 Package 3A consolidation, the heavy lifting (bounded
+LRU eviction, pinning, thread safety) lives in ``_lru_cache.LRUCache``.
+``FingerprintCache`` is a thin subclass that adds multi-slot dict-valued
+semantics on top: each cache entry is a dict keyed by a fixed set of
+declared slot names, so callers can do::
 
-Both caches follow the same pattern:
-
-1. A *fingerprint* (hash of graph structure) determines cache validity.
-2. On hit, the cached data dicts are returned without re-execution.
-3. On miss, the caller executes and stores new data.
-4. ``invalidate()`` clears everything.
-
-Supports multiple entries (default 8) so that switching between
-sources or row-limits does not invalidate unrelated cached results.
-LRU eviction keeps the most recently accessed entries.
-
-Usage::
-
-    cache = FingerprintCache(
-        slots=("eager_outputs", "order", "errors"),
-    )
-
-    # Write
+    cache = FingerprintCache(slots=("eager_outputs", "order", "errors"))
     cache.store(fp, eager_outputs={...}, order=[...], errors={})
-
-    # Read
-    data = cache.try_get(fp)       # returns dict of slots or None
-    data["eager_outputs"]          # typed by caller
-
-    # Invalidate
+    data = cache.try_get(fp)           # returns the slot dict or None
+    cache.update_slot("order", [...], fingerprint=fp)
     cache.invalidate()
+
+The subclass relationship is intentional: the ``TestFingerprintCacheRetired``
+test accepts either removal of this module or a thin ``LRUCache`` alias.
+Keeping it as a subclass preserves every existing call site in
+``executor.py`` and ``trace.py`` verbatim while the pinning / eviction
+machinery is now shared with the other three LRU-backed caches in
+``_io.py``, ``_mlflow_io.py``, and ``_optimiser_io.py``.
 """
 
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
 from typing import Any
 
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 
 logger = get_logger(component="fingerprint_cache")
 
 _MISSING = object()
 
 
-class FingerprintCache:
-    """Thread-safe multi-entry LRU cache keyed by fingerprint strings.
+class FingerprintCache(LRUCache[str, dict[str, Any]]):
+    """Multi-slot fingerprint cache layered on top of :class:`LRUCache`.
 
     Parameters
     ----------
@@ -54,11 +43,11 @@ class FingerprintCache:
         accepts keyword arguments matching these names.
     max_entries:
         Maximum number of fingerprint entries to keep.  When exceeded,
-        the least-recently-used entry is evicted.  Default ``8``
-        allows caching ~4 sources × 2 row-limits without thrashing.
+        the least-recently-used *unpinned* entry is evicted.  Default
+        ``8`` allows caching ~4 sources × 2 row-limits without thrashing.
     """
 
-    __slots__ = ("_slots", "_entries", "_max_entries", "_lock", "_pinned")
+    __slots__ = ("_slots",)
 
     def __init__(
         self,
@@ -67,111 +56,83 @@ class FingerprintCache:
     ) -> None:
         if not slots:
             raise ValueError("At least one slot name is required")
+        super().__init__(max_size=max(max_entries, 1))
         self._slots = slots
-        self._max_entries = max(max_entries, 1)
-        self._entries: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        self._lock = threading.RLock()
-        self._pinned: set[str] = set()
 
     # -- public API --------------------------------------------------------
 
     @property
     def fingerprint(self) -> str | None:
-        """Most-recently stored fingerprint (backward compat)."""
+        """Most-recently accessed (MRU) fingerprint, or ``None`` if empty."""
         with self._lock:
-            if self._entries:
-                return next(reversed(self._entries))
+            if self._data:
+                return next(reversed(self._data))
             return None
 
     def try_get(self, fingerprint: str) -> dict[str, Any] | None:
-        """Return a *shallow copy* of all slot data if *fingerprint* matches.
+        """Return a *shallow copy* of the slot dict if *fingerprint* matches.
 
         Returns ``None`` on miss.  On hit the entry is promoted to
-        most-recently-used.
+        most-recently-used.  The top-level dict is a fresh copy so
+        callers can mutate it without affecting the cache, but the
+        inner values (typically large DataFrames) are shared by design.
         """
         with self._lock:
-            entry = self._entries.get(fingerprint)
+            entry = self._data.get(fingerprint)
             if entry is None:
                 return None
             first_slot = self._slots[0]
             if entry.get(first_slot, _MISSING) is _MISSING:
                 return None
-            # Promote to MRU
-            self._entries.move_to_end(fingerprint)
+            self._data.move_to_end(fingerprint)
             return {name: entry[name] for name in self._slots}
 
     def store(self, fingerprint: str, **slot_data: Any) -> None:
         """Store (or replace) an entry for *fingerprint*.
 
-        Every key in *slot_data* must be a declared slot name.
-        Any declared slot not provided is reset to an empty dict.
-        LRU eviction occurs when *max_entries* is exceeded.
+        Every key in *slot_data* must be a declared slot name.  Any
+        declared slot not provided is reset to an empty dict.  LRU
+        eviction (skipping pinned entries) occurs when ``max_entries``
+        is exceeded.
         """
         unknown = set(slot_data) - set(self._slots)
         if unknown:
             raise ValueError(
                 f"Unknown slot(s): {sorted(unknown)}. Declared slots: {sorted(self._slots)}"
             )
-        with self._lock:
-            entry = {name: slot_data.get(name, {}) for name in self._slots}
-            self._entries[fingerprint] = entry
-            self._entries.move_to_end(fingerprint)
-            # Evict LRU entries if over capacity, skipping pinned entries
-            while len(self._entries) > self._max_entries:
-                evicted = False
-                for key in list(self._entries.keys()):
-                    if key not in self._pinned:
-                        del self._entries[key]
-                        evicted = True
-                        break
-                if not evicted:
-                    break  # all entries pinned — allow over-capacity
+        entry = {name: slot_data.get(name, {}) for name in self._slots}
+        # Use ``put`` for the base-class eviction + pinning logic.
+        self.put(fingerprint, entry)
 
     def update_slot(self, slot: str, value: Any, *, fingerprint: str) -> None:
         """Replace a single slot's value on the entry matching *fingerprint*.
 
         Useful for the preview cache's "extend" path where only some
         slots are merged.  If *fingerprint* is not found, a warning is
-        logged and the call is a no-op.
+        logged and the call is a no-op — matching the pre-refactor
+        contract.
         """
         if slot not in self._slots:
             raise ValueError(f"Unknown slot: {slot!r}. Declared slots: {sorted(self._slots)}")
         with self._lock:
-            entry = self._entries.get(fingerprint)
+            entry = self._data.get(fingerprint)
             if entry is None:
                 logger.warning("update_slot_unknown_fingerprint", fingerprint=fingerprint[:8])
                 return
             entry[slot] = value
 
-    def pin(self, fingerprint: str) -> None:
-        """Exempt an entry from LRU eviction.
-
-        Pinned entries survive eviction pressure so the trace can always
-        reuse the exact DataFrames from the most recent preview execution.
-        """
-        with self._lock:
-            if fingerprint in self._entries:
-                self._pinned.add(fingerprint)
-
-    def unpin(self, fingerprint: str) -> None:
-        """Remove eviction exemption."""
-        with self._lock:
-            self._pinned.discard(fingerprint)
-
     def invalidate(self) -> None:
-        """Clear all entries and pins."""
-        with self._lock:
-            self._entries.clear()
-            self._pinned.clear()
+        """Clear all entries and pins (alias for :meth:`LRUCache.clear`)."""
+        self.clear()
 
     @property
     def lock(self) -> threading.RLock:
         """Expose the lock for callers that need atomic read-modify-write."""
-        return self._lock
+        return self._lock  # type: ignore[return-value]
 
     def __repr__(self) -> str:
         with self._lock:
-            n = len(self._entries)
-            fps = list(self._entries.keys())
+            n = len(self._data)
+            fps = list(self._data.keys())
         fp_summary = ", ".join(f[:8] for f in fps[-3:])
-        return f"FingerprintCache(entries={n}/{self._max_entries}, recent=[{fp_summary}])"
+        return f"FingerprintCache(entries={n}/{self._max_size}, recent=[{fp_summary}])"
