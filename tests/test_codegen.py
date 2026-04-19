@@ -787,7 +787,11 @@ class TestSelectedColumnsCodegen:
         assert not any(".select(" in line for line in body_lines)
 
     def test_transform_no_decorator_kwarg_when_empty(self):
-        """Transform without selected_columns uses bare @pipeline.polars."""
+        """Transform without selected_columns uses ``@pipeline.polars`` with no
+        ``selected_columns=`` kwarg.  Contract kwargs are a separate adoption
+        (see :mod:`tests.test_column_contracts_adoption`) and may appear, but
+        there must be no ``selected_columns=`` attribute when the config lacks it.
+        """
         node = _n(
             {
                 "id": "t1",
@@ -800,7 +804,9 @@ class TestSelectedColumnsCodegen:
         )
         # Post Item #22: empty code + no inputs raises, so pass a source.
         code = _node_to_code(node, ["upstream"])
-        assert code.startswith("@pipeline.polars\n")
+        first_line = code.splitlines()[0]
+        assert first_line.startswith("@pipeline.polars"), first_line
+        assert "selected_columns" not in first_line
 
 
 class TestCodegenEdgeCases:
@@ -1737,18 +1743,25 @@ def {func_name}({params}) -> pl.LazyFrame:
 
 
 # ---------------------------------------------------------------------------
-# E10: Unknown node type logs warning and falls back to transform
+# E10: Missing codegen builder fails loudly (no silent fallback)
 # ---------------------------------------------------------------------------
 
 
 class TestUnknownNodeTypeFallback:
-    def test_unknown_type_logs_warning(self) -> None:
-        """When a node type has no registered builder, log a warning and fall back to transform."""
-        from unittest.mock import patch
+    """Post-Package-4B: codegen dispatch reads a unified registry that must
+    have an entry for every ``NodeType``.  A missing entry is a registration
+    bug and raises ``KeyError`` — the old silent fallback to ``_gen_transform``
+    was removed because it hid misregistered types (CLAUDE.md: fail loudly)."""
 
-        from haute.codegen import _CODEGEN_BUILDERS
+    def test_missing_codegen_builder_raises_keyerror(self) -> None:
+        """Temporarily evict a NodeType from the registry to simulate a
+        missing registration; dispatch must raise KeyError identifying the
+        offending NodeType, not silently emit transform code."""
+        import pytest as _pytest
 
-        # Use a valid nodeType but temporarily remove its builder to trigger fallback
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
+
         node = _n(
             {
                 "id": "n_unknown",
@@ -1760,39 +1773,34 @@ class TestUnknownNodeTypeFallback:
             }
         )
 
-        original_builder = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger") as mock_logger:
-                code = _node_to_code(node, source_names=["src"])
-
-            mock_logger.warning.assert_any_call(
-                "unknown_node_type_fallback",
-                node_type="banding",
-                node_id="n_unknown",
-                label="Mystery",
-            )
-            # Falls back to transform — should still produce valid code
-            assert "def Mystery" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _node_to_code(node, source_names=["src"])
         finally:
-            if original_builder is not None:
-                _CODEGEN_BUILDERS["banding"] = original_builder
+            entry.codegen = saved
 
 
 # ---------------------------------------------------------------------------
-# Gap 1: Unknown node type fallback produces compilable transform code
+# Gap 1: Missing codegen builder — dispatch raises instead of silently
+#       generating a transform.  Deployed pipelines with future node types
+#       must fail at codegen time, not at import time of the generated file.
 # ---------------------------------------------------------------------------
 
 
 class TestUnknownNodeTypeFallbackCode:
-    """Catch: if fallback silently generates broken code for unknown types,
-    deployed pipelines with future node types would fail at import time."""
+    """The old fallback-to-transform was a silent workaround for the two-table
+    drift era.  With a unified registry and one entry per NodeType, a missing
+    codegen builder is a registration bug; raise immediately."""
 
-    def test_fallback_generates_compilable_transform_with_code(self):
-        """Unknown type with user code still wraps it like a polars transform."""
-        from unittest.mock import patch
+    def test_missing_builder_raises_with_code(self):
+        """Missing registration raises even when user code is provided."""
+        import pytest as _pytest
 
-        from haute.codegen import _CODEGEN_BUILDERS
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
 
         node = _n(
             {
@@ -1804,23 +1812,21 @@ class TestUnknownNodeTypeFallbackCode:
                 },
             }
         )
-        saved = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger"):
-                code = _generate_node_code(node, source_names=["upstream"])
-            assert "def FutureNode(upstream: pl.LazyFrame)" in code
-            assert "filter" in code
-            assert "return df" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _generate_node_code(node, source_names=["upstream"])
         finally:
-            if saved is not None:
-                _CODEGEN_BUILDERS["banding"] = saved
+            entry.codegen = saved
 
-    def test_fallback_without_code_returns_first_source(self):
-        """Unknown type with no user code produces passthrough returning first source."""
-        from unittest.mock import patch
+    def test_missing_builder_raises_without_code(self):
+        """Missing registration raises regardless of user code presence."""
+        import pytest as _pytest
 
-        from haute.codegen import _CODEGEN_BUILDERS
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
 
         node = _n(
             {
@@ -1832,15 +1838,14 @@ class TestUnknownNodeTypeFallbackCode:
                 },
             }
         )
-        saved = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger"):
-                code = _generate_node_code(node, source_names=["src"])
-            assert "return src" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _generate_node_code(node, source_names=["src"])
         finally:
-            if saved is not None:
-                _CODEGEN_BUILDERS["banding"] = saved
+            entry.codegen = saved
 
 
 # ---------------------------------------------------------------------------
@@ -2577,7 +2582,13 @@ class TestGenTransformEdgeCases:
         )
         # Post Item #22: empty code + no sources raises, so supply one.
         code = _node_to_code(node, source_names=["upstream"])
-        assert code.startswith("@pipeline.polars\n")
+        # ``@pipeline.polars`` decorator with no ``selected_columns=``.
+        # Contract kwargs may appear (see test_column_contracts_adoption),
+        # but the ``selected_columns=`` attribute must be absent when the
+        # node config lacks it.
+        first_line = code.splitlines()[0]
+        assert first_line.startswith("@pipeline.polars"), first_line
+        assert "selected_columns" not in first_line
         _compile_node_code(code)
 
 
@@ -2728,10 +2739,14 @@ class TestGraphToCodeEdgeCases:
         pipeline_idx = next(i for i, line in enumerate(lines) if "haute.Pipeline(" in line)
         assert preamble_idx < pipeline_idx
 
-    def test_unknown_node_type_falls_back_gracefully(self):
-        from unittest.mock import patch
+    def test_unknown_node_type_raises_rather_than_falling_back(self):
+        """Post-Package-4B: missing codegen builder is a registration bug.
+        The old silent fallback to ``_gen_transform`` was removed because it
+        masked misregistered NodeTypes — see TestUnknownNodeTypeFallback."""
+        import pytest as _pytest
 
-        from haute.codegen import _CODEGEN_BUILDERS
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
 
         node = _n(
             {
@@ -2743,21 +2758,14 @@ class TestGraphToCodeEdgeCases:
                 },
             }
         )
-        saved = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger") as mock_logger:
-                code = _generate_node_code(node, source_names=["src"])
-            mock_logger.warning.assert_any_call(
-                "unknown_node_type_fallback",
-                node_type="banding",
-                node_id="u",
-                label="FutureType",
-            )
-            assert "def FutureType(src: pl.LazyFrame)" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _generate_node_code(node, source_names=["src"])
         finally:
-            if saved is not None:
-                _CODEGEN_BUILDERS["banding"] = saved
+            entry.codegen = saved
 
 
 # ---------------------------------------------------------------------------

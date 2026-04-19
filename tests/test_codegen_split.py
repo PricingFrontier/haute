@@ -351,9 +351,7 @@ class TestUnifiedRegistry:
                     or getattr(entry, "builder", None)
                     or getattr(entry, "build_fn", None)
                 )
-                codegen_fn = getattr(entry, "codegen", None) or getattr(
-                    entry, "codegen_fn", None
-                )
+                codegen_fn = getattr(entry, "codegen", None) or getattr(entry, "codegen_fn", None)
             assert callable(exec_fn), (
                 f"Registry entry for {node_type!r} has no callable exec builder; "
                 f"got entry={entry!r}"
@@ -392,8 +390,8 @@ class TestUnifiedRegistry:
         # registry is mutated, execution changes, no parallel table left
         # over.
         legacy = getattr(b, "_NODE_BUILDERS", None)
-        assert legacy is None or legacy is reg or all(
-            legacy.get(k) is _get_exec(reg[k]) for k in reg
+        assert (
+            legacy is None or legacy is reg or all(legacy.get(k) is _get_exec(reg[k]) for k in reg)
         ), (
             "haute._builders still maintains _NODE_BUILDERS as a separate "
             "table. It must either be removed or bound to the unified "
@@ -409,8 +407,10 @@ class TestUnifiedRegistry:
         assert reg is not None
 
         legacy = getattr(codegen, "_CODEGEN_BUILDERS", None)
-        assert legacy is None or legacy is reg or all(
-            legacy.get(k) is _get_codegen(reg[k]) for k in reg
+        assert (
+            legacy is None
+            or legacy is reg
+            or all(legacy.get(k) is _get_codegen(reg[k]) for k in reg)
         ), (
             "haute.codegen still maintains _CODEGEN_BUILDERS as a separate "
             "table. It must either be removed or bound to the unified "
@@ -628,16 +628,12 @@ class TestBehaviourPreservation:
         byte-for-byte equality is required."""
         import json
 
-        legacy_outputs = {
-            label: _current_code_for(fn) for label, fn in _PINNED_GRAPHS.items()
-        }
+        legacy_outputs = {label: _current_code_for(fn) for label, fn in _PINNED_GRAPHS.items()}
 
         # ``graph_to_code`` logs via structlog to stdout. When we run a
         # subprocess we need clean stdout for JSON, so write the result to
         # a file rather than piping through stdout.
-        payload = {
-            label: fn().model_dump(mode="json") for label, fn in _PINNED_GRAPHS.items()
-        }
+        payload = {label: fn().model_dump(mode="json") for label, fn in _PINNED_GRAPHS.items()}
         input_path = tmp_path / "graphs.json"
         output_path = tmp_path / "results.json"
         input_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -667,8 +663,7 @@ class TestBehaviourPreservation:
             text=True,
         )
         assert proc.returncode == 0, (
-            f"Subprocess codegen failed:\nstdout:\n{proc.stdout}\n"
-            f"stderr:\n{proc.stderr}"
+            f"Subprocess codegen failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
         fresh_outputs = json.loads(output_path.read_text(encoding="utf-8"))
         for label, expected in legacy_outputs.items():
