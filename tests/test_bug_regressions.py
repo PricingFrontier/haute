@@ -117,7 +117,6 @@ class TestBugB15EmptyDatabricksFetch:
     def test_empty_fetch_writes_valid_parquet(self, tmp_path: Path) -> None:
         """Fetching a table with zero rows should produce valid empty parquet."""
 
-        out_path = tmp_path / "output.parquet"
         tmp_file = tmp_path / "output.parquet.tmp"
 
         # Simulate: writer is None (no rows fetched), tmp_path doesn't exist
@@ -139,20 +138,27 @@ class TestBugB15EmptyDatabricksFetch:
 
 class TestBugB17WsClientsSetIteration:
     def test_broadcast_uses_snapshot(self) -> None:
-        """broadcast() should iterate a snapshot of ws_clients, not the live set."""
-        # The fix is: for ws in list(ws_clients): instead of for ws in ws_clients:
+        """broadcast() should iterate a snapshot of ws_clients, not the live set.
+
+        Post Package 1C the snapshot is taken by ``ws_clients_snapshot()``,
+        a lock-protected helper in routes/_helpers.py.  Accept any of the
+        known snapshot mechanisms.
+        """
         import inspect
 
         from haute.routes._helpers import broadcast
 
         source = inspect.getsource(broadcast)
-        # After fix, should iterate over list(ws_clients) or similar snapshot
-        assert (
-            "list(ws_clients)" in source
-            or "set(ws_clients)" in source
-            or "ws_clients.copy()" in source
-        ), (
-            "broadcast() should iterate a snapshot of ws_clients to prevent RuntimeError during concurrent mutation"
+        snapshot_patterns = (
+            "list(ws_clients)",
+            "set(ws_clients)",
+            "ws_clients.copy()",
+            "ws_clients_snapshot()",
+        )
+        assert any(pat in source for pat in snapshot_patterns), (
+            "broadcast() must iterate a snapshot of ws_clients (one of "
+            f"{snapshot_patterns}) to prevent RuntimeError during concurrent "
+            "mutation"
         )
 
 

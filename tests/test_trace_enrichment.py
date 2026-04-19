@@ -119,7 +119,8 @@ class TestRatingStepSingleFactor:
                     _source_node("rates", str(p_rate)),
                     _transform_node(
                         "lookup",
-                        "df = policies.join(rates, on='region', how='left')\ndf = df.with_columns(pl.col('rate').fill_null(1.0))",
+                        "df = policies.join(rates, on='region', how='left')\n"
+                        "df = df.with_columns(pl.col('rate').fill_null(1.0))",
                     ),
                 ],
                 "edges": [_edge("policies", "lookup"), _edge("rates", "lookup")],
@@ -165,7 +166,6 @@ class TestRatingStepSingleFactor:
         assert "rate" in step_match.output_values
 
         result_no_match = execute_trace(graph, row_index=1, target_node_id="lookup")
-        step_no_match = _step_by_id(result_no_match, "lookup")
         # At least one row should have a null rate (unmatched left join)
         # Check that both rows are traceable and the unmatched one has null
         rates = [
@@ -250,7 +250,8 @@ class TestRatingStepMultipleFactors:
                     _transform_node("join_region", "df = join_age.join(region_rates, on='region')"),
                     _transform_node(
                         "calc",
-                        "df = df.with_columns(premium=pl.col('base_premium') * pl.col('age_rate') * pl.col('region_rate'))",
+                        "df = df.with_columns(premium="
+                        "pl.col('base_premium') * pl.col('age_rate') * pl.col('region_rate'))",
                     ),
                 ],
                 "edges": [
@@ -501,7 +502,8 @@ class TestRatingStepEdgeCases:
                     _transform_node("j2", "df = j1.join(b, on='key_b', how='left')"),
                     _transform_node(
                         "calc",
-                        "df = df.with_columns(total=pl.col('rate_a') + pl.col('rate_b').fill_null(0.0))",
+                        "df = df.with_columns("
+                        "total=pl.col('rate_a') + pl.col('rate_b').fill_null(0.0))",
                     ),
                 ],
                 "edges": [
@@ -533,7 +535,8 @@ class TestRatingStepEdgeCases:
                     _source_node("rates", str(p_rate)),
                     _transform_node(
                         "lookup",
-                        "df = data.join(rates, on='key', how='left')\ndf = df.with_columns(pl.col('rate').fill_null(1.0))",
+                        "df = data.join(rates, on='key', how='left')\n"
+                        "df = df.with_columns(pl.col('rate').fill_null(1.0))",
                     ),
                 ],
                 "edges": [_edge("data", "lookup"), _edge("rates", "lookup")],
@@ -872,8 +875,10 @@ class TestBandingEdgeCases:
 
         code = (
             "df = df.with_columns("
-            "pl.when(pl.col('age') < 25).then(pl.lit('young')).otherwise(pl.lit('adult')).alias('age_band'),"
-            "pl.when(pl.col('fuel') == 'diesel').then(pl.lit(1.2)).otherwise(pl.lit(1.0)).alias('fuel_factor')"
+            "pl.when(pl.col('age') < 25)"
+            ".then(pl.lit('young')).otherwise(pl.lit('adult')).alias('age_band'),"
+            "pl.when(pl.col('fuel') == 'diesel')"
+            ".then(pl.lit(1.2)).otherwise(pl.lit(1.0)).alias('fuel_factor')"
             ")"
         )
         graph = _g(
@@ -966,7 +971,11 @@ class TestBandingEdgeCases:
         p = tmp_path / "data.parquet"
         pl.DataFrame({"id": [1], "val": [30]}).write_parquet(p)
 
-        code = "df = df.with_columns(pl.when(pl.lit(False)).then(pl.lit('never')).otherwise(pl.lit('always')).alias('band'))"
+        code = (
+            "df = df.with_columns("
+            "pl.when(pl.lit(False))"
+            ".then(pl.lit('never')).otherwise(pl.lit('always')).alias('band'))"
+        )
         graph = _g(
             {
                 "nodes": [_source_node("src", str(p)), _transform_node("band", code)],
@@ -985,7 +994,8 @@ class TestBandingEdgeCases:
 
         code = (
             "df = df.with_columns("
-            "pl.when(pl.col('age') < 30).then(pl.lit('young')).otherwise(pl.lit('old')).alias('band')"
+            "pl.when(pl.col('age') < 30)"
+            ".then(pl.lit('young')).otherwise(pl.lit('old')).alias('band')"
             ")"
         )
         graph = _g(
@@ -1072,7 +1082,8 @@ class TestModelScoreSimulation:
                     _source_node("src", str(p)),
                     _transform_node(
                         "model",
-                        "df = df.with_columns(prediction=pl.col('feature_a') * 0.5 + pl.col('feature_b') * 0.1)",
+                        "df = df.with_columns("
+                        "prediction=pl.col('feature_a') * 0.5 + pl.col('feature_b') * 0.1)",
                     ),
                 ],
                 "edges": [_edge("src", "model")],

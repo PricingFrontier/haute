@@ -51,7 +51,7 @@ pipeline = haute.Pipeline("test")
 @pytest.fixture()
 def _structlog_to_caplog(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+):
     """Bridge structlog output through stdlib logging so ``caplog`` sees it.
 
     The discovery module creates ``logger = get_logger(component="discovery")``
@@ -61,20 +61,28 @@ def _structlog_to_caplog(
     has already emitted through it, the cached logger may predate our
     configuration.  We therefore:
 
-    1. Reset structlog defaults.
-    2. Call ``configure_logging`` to install the stdlib ``LoggerFactory``.
+    1. Snapshot the current structlog global config so we can restore it.
+    2. Reset structlog defaults and call ``configure_logging`` to install the
+       stdlib ``LoggerFactory`` for this test.
     3. Replace ``haute.discovery.logger`` with a fresh proxy bound to the new
        configuration — this guarantees emissions route through stdlib logging.
-
-    ``monkeypatch`` undoes step 3 after the test; step 2's global config is
-    harmless between tests and cheap to re-apply.
+    4. On teardown restore the previous structlog config so subsequent tests
+       that use ``structlog.testing.capture_logs`` can still intercept cached
+       loggers bound to the default processor chain (prevents test-ordering
+       pollution that previously caused flakes in trace / server / save tests).
     """
     import haute.discovery as _discovery_mod
+
+    previous_config = structlog.get_config()
 
     structlog.reset_defaults()
     configure_logging()
     fresh = structlog.get_logger(component="discovery")
     monkeypatch.setattr(_discovery_mod, "logger", fresh)
+
+    yield
+
+    structlog.configure(**previous_config)
 
 
 # ---------------------------------------------------------------------------

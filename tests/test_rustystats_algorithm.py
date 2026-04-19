@@ -15,7 +15,7 @@ import pytest
 rs = pytest.importorskip("rustystats", reason="rustystats not installed")
 
 
-from haute.modelling._rustystats import (
+from haute.modelling._rustystats import (  # noqa: E402 - import after importorskip guard
     GLMAlgorithm,
     _auto_terms,
     _build_interactions,
@@ -253,7 +253,9 @@ class TestGLMFit:
     def test_fit_calls_on_iteration(self, algo, sample_df):
         """Verify iteration callback is called at start and end."""
         calls = []
-        callback = lambda it, total, metrics: calls.append((it, total))
+
+        def callback(it, total, metrics):
+            calls.append((it, total))
 
         algo.fit(
             train_df=sample_df,

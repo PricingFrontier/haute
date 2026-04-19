@@ -200,7 +200,7 @@ class TestModelScorerScore:
 
         scorer = ModelScorer(source_type="run", run_id="abc", source="live")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = scorer.score(lf)
+        scorer.score(lf)
 
         mock_score_eager.assert_called_once()
         call_args = mock_score_eager.call_args
@@ -707,7 +707,7 @@ class TestRunScorePipeline:
         mock_batched.return_value = pl.DataFrame({"a": [1]}).lazy()
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _run_score_pipeline(
+        _run_score_pipeline(
             sm, lf, task="regression", output_col="prediction", source="batch"
         )
         mock_batched.assert_called_once()
@@ -768,7 +768,7 @@ class TestRunScorePipeline:
         mock_exec.return_value = pl.DataFrame({"result": [42]}).lazy()
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _run_score_pipeline(
+        _run_score_pipeline(
             sm,
             lf,
             task="regression",
@@ -915,7 +915,7 @@ class TestBatchScoreToParquetMultiBatch:
 
 class TestBatchScoreToParquetSeriesConversion:
     def test_single_column_arrow_batch_handled(self, tmp_path):
-        """When a parquet has a single column, pl.from_arrow may return Series; it gets converted."""
+        """Parquet with one column: pl.from_arrow may return Series; it gets converted."""
         input_path = str(tmp_path / "single_col.parquet")
         df = pl.DataFrame({"a": [1.0, 2.0, 3.0]})
         df.write_parquet(input_path)

@@ -425,7 +425,7 @@ class TestRatingStepCodegen:
         assert rn.data.config["combinedColumn"] == "total"
 
     def test_codegen_multiply_default_omitted(self, tmp_path):
-        """Multiply (default) operation is not emitted in decorator; config file has combinedColumn."""
+        """Multiply (default) is not emitted in decorator; config file has combinedColumn."""
         import json
 
         from haute._config_io import collect_node_configs

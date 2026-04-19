@@ -328,7 +328,7 @@ class TestBuildNodeConfigProducesValidKeys:
         bad = warn_unrecognized_config_keys(node_type, config)
         assert bad == [], f"Unrecognized keys in {node_type}: {bad}"
 
-    def test_model_score_source_type_maps_to_sourceType(self):
+    def test_model_score_source_type_maps_to_sourceType(self):  # noqa: N802 - references camelCase config key `sourceType`
         """Parser should map snake_case source_type to camelCase sourceType."""
         from haute._parser_helpers import _build_node_config
 
@@ -416,7 +416,7 @@ class TestConfigKeyTupleAlignment:
                 f"MODEL_SCORE_CONFIG_KEYS has '{key}' but ModelScoreConfig does not"
             )
 
-    def test_model_score_keys_use_camelCase_sourceType(self):
+    def test_model_score_keys_use_camelCase_sourceType(self):  # noqa: N802 - references camelCase config key `sourceType`
         """MODEL_SCORE_CONFIG_KEYS should use 'sourceType' (camelCase), not 'source_type'."""
         assert "sourceType" in MODEL_SCORE_CONFIG_KEYS
         assert "source_type" not in MODEL_SCORE_CONFIG_KEYS

@@ -1,10 +1,10 @@
-"""Advanced path traversal tests covering gaps not addressed by test_path_traversal_fixes.py.
+"""Advanced path traversal tests covering gaps beyond test_path_traversal_fixes.py.
 
 Each test class targets a specific module or attack vector:
 
 1. ConfigIOTraversal        -- _config_io.load_node_config / config_path_for_node have no
-                               path validation; attacker-controlled config paths read arbitrary files.
-2. ModelScorerTraversal     -- _model_scorer.score_from_config reads JSON from an unvalidated path.
+                               path validation; attacker-controlled paths read arbitrary files.
+2. ModelScorerTraversal     -- _model_scorer.score_from_config reads JSON from unvalidated path.
 3. SymlinkTraversal         -- is_relative_to is bypassed when a symlink inside the project root
                                points to a directory outside it.
 4. WindowsMixedSeparators   -- Backslash-based traversal (..\\..\\etc\\passwd) on Windows.

@@ -1,4 +1,4 @@
-"""Tests for parse_expression_chain and missing edge cases in parse_expression / evaluate_expression."""
+"""Tests for parse_expression_chain and edge cases in parse_expression/evaluate_expression."""
 
 from __future__ import annotations
 
@@ -33,7 +33,9 @@ class TestChainSingleWithColumns:
     def test_single_with_columns_conditional(self):
         code = (
             "df = df.with_columns(\n"
-            '    pl.when(pl.col("age") > 65).then(pl.lit("senior")).otherwise(pl.lit("standard")).alias("tier")\n'
+            '    pl.when(pl.col("age") > 65)'
+            '.then(pl.lit("senior")).otherwise(pl.lit("standard"))'
+            '.alias("tier")\n'
             ")"
         )
         chain = parse_expression_chain(code, "tier")
@@ -186,7 +188,9 @@ class TestChainMixedExpressionsAndLiterals:
     def test_chain_with_conditional_and_arithmetic(self):
         code = (
             "df = df.with_columns(\n"
-            '    pl.when(pl.col("age") > 25).then(pl.lit(1.0)).otherwise(pl.lit(1.5)).alias("age_factor")\n'
+            '    pl.when(pl.col("age") > 25)'
+            '.then(pl.lit(1.0)).otherwise(pl.lit(1.5))'
+            '.alias("age_factor")\n'
             ")\n"
             'df = df.with_columns((pl.col("premium") * pl.col("age_factor")).alias("adjusted"))'
         )

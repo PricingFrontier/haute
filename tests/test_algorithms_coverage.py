@@ -460,7 +460,6 @@ class TestCatBoostAlgorithmFitCoverage:
         from haute.modelling._algorithms import CatBoostAlgorithm
 
         algo = CatBoostAlgorithm()
-        df = self._make_df()
 
         mock_model = MagicMock()
         mock_model.best_iteration_ = 8
@@ -1683,7 +1682,7 @@ class TestFitEvalDfAutoPool:
             patch("haute.modelling._algorithms._build_pool", side_effect=mock_build_pool),
             patch("haute.modelling._algorithms._mem_checkpoint"),
         ):
-            result = algo.fit(
+            algo.fit(
                 train_df,
                 features=["x1"],
                 cat_features=[],
@@ -1986,7 +1985,7 @@ class TestMlflowExperimentTrigger:
         )
 
         with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            result = job.run()
+            job.run()
 
         mock_log.assert_called_once()
 

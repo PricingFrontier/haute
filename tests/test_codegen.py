@@ -783,8 +783,8 @@ class TestSelectedColumnsCodegen:
         assert "selected_columns=" in code
         # .select() should NOT be in the function body (only in decorator)
         lines = code.split("\n")
-        body_lines = [l for l in lines if not l.startswith("@")]
-        assert not any(".select(" in l for l in body_lines)
+        body_lines = [line for line in lines if not line.startswith("@")]
+        assert not any(".select(" in line for line in body_lines)
 
     def test_transform_no_decorator_kwarg_when_empty(self):
         """Transform without selected_columns uses bare @pipeline.polars."""
@@ -2724,8 +2724,8 @@ class TestGraphToCodeEdgeCases:
         )
         code = graph_to_code(graph, preamble="MY_CONST = 42")
         lines = code.splitlines()
-        preamble_idx = next(i for i, l in enumerate(lines) if "MY_CONST" in l)
-        pipeline_idx = next(i for i, l in enumerate(lines) if "haute.Pipeline(" in l)
+        preamble_idx = next(i for i, line in enumerate(lines) if "MY_CONST" in line)
+        pipeline_idx = next(i for i, line in enumerate(lines) if "haute.Pipeline(" in line)
         assert preamble_idx < pipeline_idx
 
     def test_unknown_node_type_falls_back_gracefully(self):

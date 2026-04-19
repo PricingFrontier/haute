@@ -164,7 +164,8 @@ class TestConditionalBranchIndication:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
+                        "df = df.with_columns("
+                        "factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],

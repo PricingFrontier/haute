@@ -223,7 +223,7 @@ class TestServe:
             patch("uvicorn.run", side_effect=KeyboardInterrupt),
             patch("signal.signal"),
         ):
-            result = runner.invoke(cli, ["serve", "--no-browser"])
+            runner.invoke(cli, ["serve", "--no-browser"])
 
         # The finally block should have called terminate on the vite process
         mock_proc.terminate.assert_called()

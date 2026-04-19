@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -18,6 +19,9 @@ from haute.routes._train_service import (
     _validate_glm_family_link,
 )
 from tests.conftest import make_edge, make_graph
+
+if TYPE_CHECKING:
+    from fastapi.testclient import TestClient
 
 
 def _make_modelling_graph(
@@ -434,13 +438,12 @@ class TestOutputDirDefault:
         assert p_dir is None
 
     def test_training_job_default_is_outputs(self):
-        from haute.modelling._training_job import TrainingJob
-
-        job = TrainingJob.__init__.__defaults__  # noqa: B009
-        # output_dir parameter default (7th keyword-only param after name...model_name)
-        # Verify via signature instead
         import inspect
 
+        from haute.modelling._training_job import TrainingJob
+
+        # output_dir parameter default (7th keyword-only param after name...model_name)
+        # Verify via signature
         sig = inspect.signature(TrainingJob.__init__)
         assert sig.parameters["output_dir"].default == "outputs"
 
@@ -645,8 +648,7 @@ class TestMlflowCheckImportError:
         """Simulate mlflow not being installed via sys.modules patch."""
         import sys
 
-        # Temporarily hide mlflow from the import system
-        real_mlflow = sys.modules.get("mlflow")
+        # patch.dict automatically restores sys.modules on exit
         with patch.dict(sys.modules, {"mlflow": None}):
             resp = client.get("/api/modelling/mlflow/check")
         assert resp.status_code == 200

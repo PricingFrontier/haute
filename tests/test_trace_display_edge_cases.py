@@ -992,7 +992,8 @@ class TestExpressionParserIntegration:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.when(pl.col('x') > 5).then(pl.lit(1)).otherwise(pl.lit(0)))",
+                        "df = df.with_columns("
+                        "y=pl.when(pl.col('x') > 5).then(pl.lit(1)).otherwise(pl.lit(0)))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1015,7 +1016,8 @@ class TestExpressionParserIntegration:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
+                        "df = df.with_columns("
+                        "y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1278,7 +1280,8 @@ class TestCalculationAccuracy:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.when(pl.col('x') > 5).then(pl.lit(100)).otherwise(pl.lit(0)))",
+                        "df = df.with_columns("
+                        "y=pl.when(pl.col('x') > 5).then(pl.lit(100)).otherwise(pl.lit(0)))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],

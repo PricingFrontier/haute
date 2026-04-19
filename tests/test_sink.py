@@ -222,7 +222,6 @@ class TestExecuteSinkScenario:
         )
 
         captured_kwargs = {}
-        original_execute_lazy = None
 
         def mock_execute_lazy(graph, build_fn, **kwargs):
             captured_kwargs.update(kwargs)

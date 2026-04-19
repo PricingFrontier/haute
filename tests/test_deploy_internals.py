@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -26,6 +27,9 @@ import pytest
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
+
+if TYPE_CHECKING:
+    from haute.deploy._model_code import HauteModel
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -907,7 +911,10 @@ class TestScoreGraphBadInput:
                             "label": "calc",
                             "nodeType": "polars",
                             "config": {
-                                "code": 'df = df.with_columns(result=pl.col("VehPower").cast(pl.Float64) * 2)'
+                                "code": (
+                                    "df = df.with_columns("
+                                    'result=pl.col("VehPower").cast(pl.Float64) * 2)'
+                                ),
                             },
                         },
                     },

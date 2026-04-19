@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -17,6 +18,9 @@ from haute.graph_utils import NodeType
 from haute.routes._optimiser_service import _compute_scenario_value_stats
 from haute.routes.optimiser import _build_artifact_payload
 from tests.conftest import make_edge, make_graph
+
+if TYPE_CHECKING:
+    from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
@@ -1248,7 +1252,7 @@ class TestExecutePipelineArgs:
     """Verify _execute_pipeline passes scenario, preamble_ns, and checkpoint_dir."""
 
     def test_execute_pipeline_passes_scenario_and_checkpoint(self, scored_data, tmp_path):
-        """_execute_lazy receives scenario != 'live', the caller's checkpoint_dir, and preamble_ns."""
+        """_execute_lazy receives scenario != 'live', caller's checkpoint_dir, and preamble_ns."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -2877,14 +2881,14 @@ class TestSolveOnlineUnit:
             "record_history": True,
         }
 
-        with patch("price_contour.OnlineOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.OnlineOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             # Also mock frontier to return None (to avoid error)
-            MockSolver.return_value.frontier.side_effect = Exception("skip")
+            mock_solver.return_value.frontier.side_effect = Exception("skip")
 
             _solve_online(mock_grid, config, store, job_id, time.monotonic())
 
-        MockSolver.assert_called_once_with(
+        mock_solver.assert_called_once_with(
             objective="expected_income",
             constraints={"volume": {"min": 0.9}},
             max_iter=20,
@@ -2932,8 +2936,8 @@ class TestSolveOnlineUnit:
             "record_history": False,
         }
 
-        with patch("price_contour.OnlineOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.OnlineOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_online(mock_grid, config, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)
@@ -3016,8 +3020,8 @@ class TestSolveRatebookUnit:
             "quote_id": "quote_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)
@@ -3067,8 +3071,8 @@ class TestSolveRatebookUnit:
             "quote_id": "policy_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)
@@ -3650,8 +3654,8 @@ class TestSolveRatebookFallbackQuoteId:
             "quote_id": "policy_id",  # not in factors_df
         }
 
-        with patch("price_contour.RatebookOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)

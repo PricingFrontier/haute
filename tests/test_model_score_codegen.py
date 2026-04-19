@@ -194,7 +194,10 @@ class TestModelScoreCodegen:
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
                                 "output_column": "prediction",
-                                "code": 'result = result.with_columns(doubled=pl.col("prediction") * 2)',
+                                "code": (
+                                    "result = result.with_columns("
+                                    'doubled=pl.col("prediction") * 2)'
+                                ),
                             },
                         },
                     },

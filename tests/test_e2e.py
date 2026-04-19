@@ -167,7 +167,6 @@ class TestEndToEnd:
         output_result = results["output"]
         assert output_result.status == "ok"
         orig_row_count = output_result.row_count
-        orig_columns = sorted(c.name for c in output_result.columns)
 
         # Step 3: Trace
         trace = execute_trace(graph, row_index=0, target_node_id="output")

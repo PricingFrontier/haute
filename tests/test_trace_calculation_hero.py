@@ -356,7 +356,8 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
+                        "df = df.with_columns("
+                        "factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -415,7 +416,8 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(result=pl.when(pl.col('x').is_null()).then(99.0).otherwise(pl.col('x')))",
+                        "df = df.with_columns("
+                        "result=pl.when(pl.col('x').is_null()).then(99.0).otherwise(pl.col('x')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -532,7 +534,8 @@ class TestConditionalExpressions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
+                        "df = df.with_columns("
+                        "factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -620,7 +623,8 @@ class TestHorizontalFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(mn=pl.min_horizontal(pl.col('a'), pl.col('b'), pl.col('c')))",
+                        "df = df.with_columns("
+                        "mn=pl.min_horizontal(pl.col('a'), pl.col('b'), pl.col('c')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -671,7 +675,8 @@ class TestHorizontalFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(best=pl.max_horizontal(pl.col('x') * 1.1, pl.col('y')))",
+                        "df = df.with_columns("
+                        "best=pl.max_horizontal(pl.col('x') * 1.1, pl.col('y')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -697,7 +702,8 @@ class TestHorizontalFunctions:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(premium=pl.max_horizontal(pl.col('calculated'), pl.col('minimum')))",
+                        "df = df.with_columns("
+                        "premium=pl.max_horizontal(pl.col('calculated'), pl.col('minimum')))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1389,7 +1395,8 @@ class TestOpaquePatterns:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
+                        "df = df.with_columns("
+                        "y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1684,7 +1691,6 @@ class TestNodeDetailEnrichment:
 
         result = execute_trace(graph, row_index=0, target_node_id="t2", column="b")
         step_src = _step_by_id(result, "src")
-        step_t1 = _step_by_id(result, "t1")
         step_t2 = _step_by_id(result, "t2")
 
         # src has no expression (source node)
@@ -1930,7 +1936,8 @@ class TestEdgeCases:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(total=pl.col('\u00e9l\u00e8ve') + pl.col('\u00e9cole'))",
+                        "df = df.with_columns("
+                        "total=pl.col('\u00e9l\u00e8ve') + pl.col('\u00e9cole'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],

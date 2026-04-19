@@ -220,7 +220,8 @@ class TestLinearPipelineMultipleWithColumns:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.col('x') * 3)\ndf = df.with_columns(z=pl.col('y') + pl.col('x'))",
+                        "df = df.with_columns(y=pl.col('x') * 3)\n"
+                        "df = df.with_columns(z=pl.col('y') + pl.col('x'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -475,7 +476,8 @@ class TestRatingStepSingleTable:
                     _transform_node(
                         "rated",
                         "df = data.join(rates, on='region')\n"
-                        "df = df.with_columns(rated_premium=pl.col('base') * pl.col('region_factor'))",
+                        "df = df.with_columns("
+                        "rated_premium=pl.col('base') * pl.col('region_factor'))",
                     ),
                 ],
                 "edges": [_edge("data", "rated"), _edge("rates", "rated")],
@@ -533,8 +535,8 @@ class TestRatingStepMultiplyTables:
                     _transform_node("join_region", "df = join_age.join(region_tbl, on='region')"),
                     _transform_node(
                         "calc",
-                        "df = df.with_columns("
-                        "final_premium=pl.col('base_premium') * pl.col('age_factor') * pl.col('region_factor'))",
+                        "df = df.with_columns(final_premium="
+                        "pl.col('base_premium') * pl.col('age_factor') * pl.col('region_factor'))",
                     ),
                 ],
                 "edges": [
@@ -801,11 +803,13 @@ class TestScenarioExpanderTrace:
                     # Simulate scenario expansion: cross-join with multipliers
                     _transform_node(
                         "expand",
-                        "df = df.join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),how='cross')",
+                        "df = df.join("
+                        "pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),how='cross')",
                     ),
                     _transform_node(
                         "calc",
-                        "df = df.with_columns(scenario_premium=pl.col('premium') * pl.col('multiplier'))",
+                        "df = df.with_columns("
+                        "scenario_premium=pl.col('premium') * pl.col('multiplier'))",
                     ),
                 ],
                 "edges": [_edge("src", "expand"), _edge("expand", "calc")],
@@ -840,7 +844,8 @@ class TestOptimiserApplyTrace:
                     _source_node("src", str(p)),
                     _transform_node(
                         "opt",
-                        "df = df.with_columns(optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
+                        "df = df.with_columns("
+                        "optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
                     ),
                 ],
                 "edges": [_edge("src", "opt")],
@@ -1381,7 +1386,8 @@ class TestRowCorrelationScenarioExpansion:
                     _source_node("src", str(p)),
                     _transform_node(
                         "expand",
-                        "df = df.join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
+                        "df = df.join("
+                        "pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
                     ),
                 ],
                 "edges": [_edge("src", "expand")],
