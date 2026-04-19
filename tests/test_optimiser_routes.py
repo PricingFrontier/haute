@@ -291,7 +291,7 @@ class TestEstimateRoute:
     """Exercises ``POST /api/optimiser/estimate`` — the lightweight cost
     preview consumed by the frontend's shared ``useConfigEstimate`` hook."""
 
-    def test_estimate_returns_available_mb(self, client, scored_data):
+    def test_estimate_returns_total_rows(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/estimate",
@@ -300,11 +300,9 @@ class TestEstimateRoute:
         assert resp.status_code == 200
         data = resp.json()
         # Source metadata may or may not resolve depending on the test
-        # fixture, but the endpoint must always report available RAM so
-        # the frontend can render the "available headroom" line.
-        assert "available_mb" in data
-        assert data["available_mb"] > 0
-        assert "estimated_mb" in data
+        # fixture; the response must always include total_rows (possibly
+        # null) so the frontend's shared useConfigEstimate hook has a
+        # stable shape to render against.
         assert "total_rows" in data
 
     def test_estimate_gracefully_handles_unknown_node(self, client, scored_data):

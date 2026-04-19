@@ -69,13 +69,10 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     GPU path to check. Returns an empty response if metadata isn't
     available (e.g. live data without parquet backing).
     """
-    from haute._ram_estimate import (
-        _ancestor_source_metadata,
-        available_ram_bytes,
-    )
+    from haute._ram_estimate import _ancestor_source_metadata
 
     try:
-        total_rows, max_cols = _ancestor_source_metadata(
+        total_rows, _max_cols = _ancestor_source_metadata(
             body.graph,
             body.node_id,
             body.source,
@@ -84,17 +81,7 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
         logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
         return OptimiserEstimateResponse()
 
-    # Rough scored-frame size: rows × cols × 8 bytes (Float64).  Good
-    # enough for a "will this fit" sanity check — the solver works in
-    # chunks so peak memory is bounded further.
-    estimated_bytes = (total_rows or 0) * max_cols * 8
-    available_bytes = available_ram_bytes()
-
-    return OptimiserEstimateResponse(
-        total_rows=total_rows,
-        estimated_mb=round(estimated_bytes / 1024**2, 1),
-        available_mb=round(available_bytes / 1024**2, 1),
-    )
+    return OptimiserEstimateResponse(total_rows=total_rows)
 
 
 @router.get("/solve/status/{job_id}", response_model=OptimiserStatusResponse)

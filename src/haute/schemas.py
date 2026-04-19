@@ -626,10 +626,6 @@ class OptimiserEstimateResponse(BaseModel):
 
     total_rows: int | None = None
     """Max row count across ancestor data sources, if readable."""
-    estimated_mb: float = 0.0
-    """Rough byte size (rows × cols × 8) of the scored frame, in megabytes."""
-    available_mb: float = 0.0
-    """System RAM currently available, in megabytes."""
 
 
 class OptimiserFrontierRequest(BaseModel):

@@ -154,10 +154,6 @@ export interface SolveOptimiserResponse {
 export interface OptimiserEstimate {
   /** Source row count from parquet metadata, or null when unreadable. */
   total_rows?: number | null
-  /** Approximate scored-frame size, in megabytes. */
-  estimated_mb: number
-  /** Available system RAM, in megabytes. */
-  available_mb: number
 }
 
 export interface ApplyOptimiserResponse {
