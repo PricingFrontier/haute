@@ -9,7 +9,8 @@
 
 import { ChevronLeft, ChevronRight, Loader2, Save, Upload } from "lucide-react"
 import { formatNumber } from "../../utils/formatValue"
-import { isConstraintMet, type SolveResult } from "../OptimiserPreview"
+import type { SolveResult } from "../OptimiserPreview"
+import { isConstraintMet } from "./optimiserHelpers"
 
 interface DetailCardProps {
   points: Record<string, unknown>[]

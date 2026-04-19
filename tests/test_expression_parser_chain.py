@@ -189,7 +189,7 @@ class TestChainMixedExpressionsAndLiterals:
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("age") > 25)'
-            '.then(pl.lit(1.0)).otherwise(pl.lit(1.5))'
+            ".then(pl.lit(1.0)).otherwise(pl.lit(1.5))"
             '.alias("age_factor")\n'
             ")\n"
             'df = df.with_columns((pl.col("premium") * pl.col("age_factor")).alias("adjusted"))'

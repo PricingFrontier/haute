@@ -7,7 +7,8 @@
  */
 
 import { formatNumber } from "../../utils/formatValue"
-import { isConstraintMet, type SolveResult } from "../OptimiserPreview"
+import type { SolveResult } from "../OptimiserPreview"
+import { isConstraintMet } from "./optimiserHelpers"
 
 interface SummaryTabProps {
   result: SolveResult

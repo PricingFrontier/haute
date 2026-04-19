@@ -173,7 +173,7 @@ class TestNameResolution:
     def test_none_name(self):
         """Name 'None' recognised as constant (line 284–285)."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("x") > 0).then(pl.col("x")).otherwise(None).alias("r"))'
         )
         expr = parse_expression(code, "r")
@@ -182,7 +182,7 @@ class TestNameResolution:
     def test_true_false_name(self):
         """Name 'True'/'False' recognised (lines 286–289)."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("flag"))'
         )
         expr = parse_expression(code, "flag")
@@ -593,7 +593,7 @@ class TestHorizontalFuncEdges:
     def test_horizontal_with_keyword(self):
         """Keyword arg like separator= (lines 548–549)."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.concat_str(pl.col("a"), pl.col("b"), separator="-").alias("joined"))'
         )
         expr = parse_expression(code, "joined")
@@ -2060,7 +2060,7 @@ class TestEvaluatorNameLiterals:
     def test_eval_name_none(self):
         """Name 'None' (line 1690–1691)."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("x") > 0).then(pl.col("x")).otherwise(None).alias("r"))'
         )
         result = evaluate_expression(code, "r", {"x": -1})
@@ -2253,7 +2253,7 @@ class TestSubstituteNamesCompare:
         """Cover keyword substitution (lines 1233–1238)."""
         code = (
             'sep_char = "-"\n'
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.concat_str(pl.col("a"), pl.col("b"), separator=sep_char).alias("r"))'
         )
         expr = parse_expression(code, "r")
@@ -2565,7 +2565,7 @@ class TestEvaluatorUnknownHorizontal:
     def test_concat_str_eval(self):
         """concat_str is in _HORIZONTAL_FUNCS but not in eval switch."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.concat_str(pl.col("a"), pl.col("b"), separator="-").alias("r"))'
         )
         result = evaluate_expression(code, "r", {"a": "hello", "b": "world"})

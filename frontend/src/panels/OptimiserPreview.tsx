@@ -76,16 +76,6 @@ export type OptimiserPreviewData = {
   selectedPointIndex: number | null
 }
 
-// ─── Constraint-met helper ────────────────────────────────────────
-
-export function isConstraintMet(thresholdType: string, ratio: number, absValue: number, thresholdVal: number): boolean {
-  if (thresholdType === "min") return ratio >= thresholdVal
-  if (thresholdType === "max") return ratio <= thresholdVal
-  if (thresholdType === "min_abs") return absValue >= thresholdVal
-  if (thresholdType === "max_abs") return absValue <= thresholdVal
-  return true
-}
-
 // ─── Component ───────────────────────────────────────────────────
 
 interface OptimiserPreviewProps {

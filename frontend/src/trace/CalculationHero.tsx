@@ -1,19 +1,17 @@
 import React, { useState, useCallback, useEffect, useRef } from "react"
-import WaterfallChart, {
+import WaterfallChart, { WaterfallErrorAlert } from "./WaterfallChart"
+import ExpressionChainRow from "./ExpressionChain"
+import InputSourceTree from "./InputSourceTree"
+import {
+  buildChainEntries,
+  buildInputSourceEntries,
   buildWaterfallSteps,
   resolveWaterfallProp,
-  WaterfallErrorAlert,
+  type ExpressionChainEntry,
+  type InputSourceEntry,
   type WaterfallEntryProp,
   type WaterfallStep,
-} from "./WaterfallChart"
-import ExpressionChainRow, {
-  buildChainEntries,
-  type ExpressionChainEntry,
-} from "./ExpressionChain"
-import InputSourceTree, {
-  buildInputSourceEntries,
-  type InputSourceEntry,
-} from "./InputSourceTree"
+} from "./traceHelpers"
 import {
   formatSmartValue,
   formatResultValueFull,

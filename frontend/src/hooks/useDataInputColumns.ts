@@ -76,13 +76,14 @@ export function useDataInputColumns(
     const json = JSON.stringify(cachedColumns)
     if (json !== prevCacheJson.current) {
       prevCacheJson.current = json
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing store-owned cache into local state only when content actually changes (ref-equal but value-different arrays are skipped via JSON compare)
       setDataInputColumns(cachedColumns)
     }
   }, [cachedColumns])
 
   useEffect(() => {
     if (!dataInput) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- cleanup path: clear columns when no data input selected
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- cleanup path: clear stale columns when the data input is removed
       setDataInputColumns([])
       return
     }
@@ -116,11 +117,10 @@ export function useDataInputColumns(
         if (!cachedColumnsRef.current) setDataInputColumns([])
       })
     return () => controller.abort()
-  // cachedColumns and isCacheFresh intentionally read via refs to break the
-  // store-update → effect-refire loop.  The effect should only re-run when
-  // the *inputs* change (dataInput, graph structure, source), not when the
-  // *output* (cached columns) changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // cachedColumns and isCacheFresh intentionally read via refs to break the
+    // store-update → effect-refire loop.  The effect should only re-run when
+    // the *inputs* change (dataInput, graph structure, source), not when the
+    // *output* (cached columns) changes.
   }, [dataInput, graphFingerprint, submodels, preamble, activeSource, setColumnsCache, addToast])
 
   return dataInputColumns

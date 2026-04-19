@@ -1269,7 +1269,6 @@ class TestGPUOnIterationPath:
 
         mock_model.fit = failing_fit
 
-
         real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_err_")
 
         with (

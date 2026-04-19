@@ -69,7 +69,7 @@ class TestActuarialMultiplicativeRatingChain:
 class TestActuarialLossRatio:
     def test_simple_loss_ratio(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("claims_incurred") / pl.col("earned_premium")).alias("loss_ratio"))'
         )
         expr = parse_expression(code, "loss_ratio")
@@ -78,7 +78,7 @@ class TestActuarialLossRatio:
 
     def test_loss_ratio_evaluation(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("claims_incurred") / pl.col("earned_premium")).alias("loss_ratio"))'
         )
         result = evaluate_expression(
@@ -117,7 +117,7 @@ class TestActuarialBurnCost:
 class TestActuarialFrequencySeverity:
     def test_freq_sev_model(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("freq_prediction") * pl.col("sev_prediction") * pl.col("exposure"))'
             '.alias("expected_loss"))'
         )
@@ -126,7 +126,7 @@ class TestActuarialFrequencySeverity:
 
     def test_freq_sev_evaluation(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("freq_prediction") * pl.col("sev_prediction") * pl.col("exposure"))'
             '.alias("expected_loss"))'
         )
@@ -267,7 +267,7 @@ class TestActuarialNCDDiscount:
 class TestActuarialMinimumPremium:
     def test_minimum_premium_floor(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.max_horizontal(pl.col("calculated_premium"), pl.col("minimum_premium"))'
             '.alias("final_premium"))'
         )
@@ -277,7 +277,7 @@ class TestActuarialMinimumPremium:
 
     def test_minimum_premium_evaluation_above(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.max_horizontal(pl.col("calculated_premium"), pl.col("minimum_premium"))'
             '.alias("final_premium"))'
         )
@@ -288,7 +288,7 @@ class TestActuarialMinimumPremium:
 
     def test_minimum_premium_evaluation_below(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.max_horizontal(pl.col("calculated_premium"), pl.col("minimum_premium"))'
             '.alias("final_premium"))'
         )
@@ -319,7 +319,7 @@ class TestActuarialIPT:
 class TestActuarialProportionalReinsurance:
     def test_proportional_reinsurance(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("gross_premium") * pl.col("retention_pct")).alias("net_of_ri"))'
         )
         expr = parse_expression(code, "net_of_ri")
@@ -330,7 +330,7 @@ class TestActuarialProportionalReinsurance:
 class TestActuarialAggregateDeductible:
     def test_aggregate_deductible(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.max_horizontal(pl.col("incurred") - pl.col("deductible"), pl.lit(0))'
             '.alias("net_incurred"))'
         )
@@ -340,7 +340,7 @@ class TestActuarialAggregateDeductible:
 
     def test_aggregate_deductible_evaluation_positive(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.max_horizontal(pl.col("incurred") - pl.col("deductible"), pl.lit(0))'
             '.alias("net_incurred"))'
         )
@@ -351,7 +351,7 @@ class TestActuarialAggregateDeductible:
 
     def test_aggregate_deductible_evaluation_negative_clipped(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.max_horizontal(pl.col("incurred") - pl.col("deductible"), pl.lit(0))'
             '.alias("net_incurred"))'
         )
@@ -373,7 +373,7 @@ class TestActuarialAgeBandPricing:
             "    .otherwise(1.8)\n"
             '    .alias("age_factor")\n'
             ")\n"
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("base_premium") * pl.col("age_factor")).alias("adjusted_premium"))'
         )
         expr = parse_expression(code, "adjusted_premium")
@@ -476,7 +476,7 @@ class TestPolarsIsNull:
 class TestPolarsBooleanToInt:
     def test_is_not_null_cast_int(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("opt_field").is_not_null().cast(pl.Int32).alias("has_opt"))'
         )
         expr = parse_expression(code, "has_opt")
@@ -486,7 +486,7 @@ class TestPolarsBooleanToInt:
 class TestPolarsReplace:
     def test_replace_strict_dict(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("grade").replace_strict({"A": 4.0, "B": 3.0, "C": 2.0}, default=0.0)'
             '.alias("gpa"))'
         )
@@ -556,7 +556,7 @@ class TestPolarsAggregationMethods:
 class TestPolarsMapBatches:
     def test_map_batches_is_opaque(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("values").map_batches(lambda s: s.to_numpy()).alias("as_numpy"))'
         )
         expr = parse_expression(code, "as_numpy")
@@ -567,7 +567,7 @@ class TestPolarsMapBatches:
 class TestPolarsConcatStr:
     def test_concat_str_with_string_column_names(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.concat_str(["first_name", "last_name"], separator="-").alias("full_name"))'
         )
         expr = parse_expression(code, "full_name")
@@ -576,7 +576,7 @@ class TestPolarsConcatStr:
 
     def test_concat_str_with_pl_col(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.concat_str(pl.col("city"), pl.col("state"), separator=", ").alias("location"))'
         )
         expr = parse_expression(code, "location")
@@ -593,7 +593,7 @@ class TestPolarsFormat:
 class TestPolarsCoalesce:
     def test_coalesce_columns(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.coalesce(["primary", "secondary", "fallback"]).alias("resolved"))'
         )
         expr = parse_expression(code, "resolved")

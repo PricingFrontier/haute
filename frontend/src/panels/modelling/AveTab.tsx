@@ -56,7 +56,7 @@ export function AveTab({ result }: AveTabProps) {
         setSelectedFeature(names[0])
       }
     }
-  }, [featureKey, selectedFeature])
+  }, [featureKey, selectedFeature, featureItems.length])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleSelect = useCallback((feature: string) => {

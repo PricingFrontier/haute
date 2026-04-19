@@ -259,12 +259,18 @@ class TestModelScorePostProcessing:
         assert "doubled" in cols
 
     def test_model_accessible_in_postprocessing_scope(self, sample_data):
-        """User post-processing code can access the loaded model object."""
+        """User post-processing code can access the loaded model object.
+
+        The model is exposed to user code as a ``ScoringModel`` carrier with
+        declared attributes (``feature_names``, ``cat_feature_names``,
+        ``flavor``, ``raw_model``).  Flavor-native attribute names (e.g.
+        CatBoost's ``feature_names_``) are reachable via ``model.raw_model``.
+        """
         mock_model = _make_mock_model("regression")
 
         graph = _make_model_score_graph(
             data_path=sample_data,
-            code="df = df.with_columns(n_features=pl.lit(len(model.feature_names_)))",
+            code="df = df.with_columns(n_features=pl.lit(len(model.feature_names)))",
         )
         with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
             results = execute_graph(graph, target_node_id="score", row_limit=100)

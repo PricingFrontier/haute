@@ -1,60 +1,14 @@
 import React from "react"
-import { formatSmartValue, formatResultValueFull, formatDisplayExpression, tabularNums } from "./traceFormatting"
+import { formatSmartValue, formatResultValueFull, tabularNums } from "./traceFormatting"
+import type { ChainBoxEntry } from "./traceHelpers"
 
 // ---------------------------------------------------------------------------
 // ExpressionChain — the "intra-node" chain of derivations that lead up to the
 // target column inside a single step. The data comes from
 // `calculation.expression_chain` and represents columns computed earlier in
-// the same node (not upstream input sources from prior nodes). Extracted from
-// CalculationHero as part of the 2B-2 split.
+// the same node (not upstream input sources from prior nodes). Pure helpers
+// + types live in ./traceHelpers; this file only exports components.
 // ---------------------------------------------------------------------------
-
-export interface ExpressionChainEntry {
-  expression_text: string
-  target_column: string
-  substituted_text?: string
-  result_value?: unknown
-}
-
-export interface ChainBoxEntry {
-  column: string
-  formulaText: string | null
-  substitutedText: string | null
-  value: unknown
-  source: string | null
-}
-
-/**
- * Normalise raw expression-chain entries into the render-ready shape used
- * inside the unified calculation box. Skips the target column (its row is
- * rendered by the orchestrator as the final line). Returns an empty array
- * when the chain is absent or trivial (<= 1 entry).
- */
-export function buildChainEntries(
-  chain: ExpressionChainEntry[] | null | undefined,
-  targetColumn: string,
-  inputValues: Record<string, unknown>,
-): ChainBoxEntry[] {
-  if (!chain || chain.length <= 1) return []
-  const out: ChainBoxEntry[] = []
-  for (const entry of chain) {
-    if (entry.target_column === targetColumn) continue
-    const formulaText = entry.expression_text
-      ? formatDisplayExpression(entry.expression_text).text
-      : null
-    const substitutedText = entry.substituted_text
-      ? entry.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-      : null
-    out.push({
-      column: entry.target_column,
-      formulaText,
-      substitutedText,
-      value: entry.result_value ?? inputValues[entry.target_column],
-      source: null,
-    })
-  }
-  return out
-}
 
 /**
  * Renders the inner content of a chain row (formula line + substituted line,
@@ -109,7 +63,7 @@ export function ExpressionChainRowContentView({
   )
 }
 
-export interface ExpressionChainRowProps extends ChainBoxEntry {
+interface ExpressionChainRowProps extends ChainBoxEntry {
   /** Optional children rendered beneath the row (used for nested sub-sources). */
   children?: React.ReactNode
 }

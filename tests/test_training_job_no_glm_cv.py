@@ -45,11 +45,7 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src" / "haute"
 
 def _iter_src_py_files() -> list[Path]:
     """Every ``.py`` file under ``src/haute/`` (excluding ``__pycache__``)."""
-    return [
-        p
-        for p in SRC_DIR.rglob("*.py")
-        if "__pycache__" not in p.parts
-    ]
+    return [p for p in SRC_DIR.rglob("*.py") if "__pycache__" not in p.parts]
 
 
 def _tiny_glm_df(n: int = 120, seed: int = 42) -> pl.DataFrame:
@@ -330,9 +326,7 @@ class TestTrainResultHasNoCvFields:
                 # dataclass default can live on ``f.default`` or on a
                 # ``field(default_factory=...)``; both must produce a
                 # falsy value so the field never surfaces real CV data.
-                if f.default is not None and not callable(
-                    getattr(f, "default_factory", None)
-                ):
+                if f.default is not None and not callable(getattr(f, "default_factory", None)):
                     pytest.fail(
                         f"TrainResult.{f.name} survives but has a non-None "
                         f"default ({f.default!r}) — after the CV delete it "
@@ -340,9 +334,7 @@ class TestTrainResultHasNoCvFields:
                         "on it."
                     )
 
-    def test_trainresult_instance_has_no_cv_data_after_run(
-        self, tmp_path
-    ) -> None:
+    def test_trainresult_instance_has_no_cv_data_after_run(self, tmp_path) -> None:
         """A fresh ``TrainResult`` from a real run must not carry CV data,
         *even when the caller asks for it*.
 
@@ -370,17 +362,14 @@ class TestTrainResultHasNoCvFields:
         # request.
         cv_results = getattr(result, "cv_results", None)
         assert cv_results in (None, {}, []), (
-            f"TrainResult.cv_results should be empty after the delete, "
-            f"got: {cv_results!r}"
+            f"TrainResult.cv_results should be empty after the delete, got: {cv_results!r}"
         )
 
         # Guard against a CV diagnostic error being surfaced — the
         # silent-swallow ``_record_diag_error(..., 'cv', ...)`` call is
         # the exact anti-pattern the delete removes.
         cv_diag_entries = [
-            entry
-            for entry in result.diagnostics_errors
-            if entry.get("diagnostic") == "cv"
+            entry for entry in result.diagnostics_errors if entry.get("diagnostic") == "cv"
         ]
         assert not cv_diag_entries, (
             f"TrainResult.diagnostics_errors contains CV entries "

@@ -142,7 +142,7 @@ class TestChainedOperations:
     def test_three_factor_multiplication(self):
         """a * b * c -- common in rating: base * factor1 * factor2."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("base") * pl.col("age_factor") * pl.col("region_factor")).alias("rate"))'
         )
         expr = parse_expression(code, "rate")
@@ -151,7 +151,7 @@ class TestChainedOperations:
 
     def test_four_factor_multiplication(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("base") * pl.col("f1") * pl.col("f2") * pl.col("f3")).alias("rate"))'
         )
         expr = parse_expression(code, "rate")
@@ -168,7 +168,7 @@ class TestChainedOperations:
 
     def test_chained_same_operator_addition(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("a") + pl.col("b") + pl.col("c") + pl.col("d")).alias("total"))'
         )
         expr = parse_expression(code, "total")
@@ -191,7 +191,7 @@ class TestMixedOperatorsAndPrecedence:
     def test_complex_mixed_expression(self):
         """(a - b) / c + d * e."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '((pl.col("a") - pl.col("b")) / pl.col("c") + pl.col("d") * pl.col("e"))'
             '.alias("result"))'
         )
@@ -200,7 +200,7 @@ class TestMixedOperatorsAndPrecedence:
 
     def test_nested_parentheses(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '((pl.col("a") + pl.col("b")) * (pl.col("c") - pl.col("d"))).alias("result"))'
         )
         expr = parse_expression(code, "result")
@@ -253,7 +253,7 @@ class TestWhenThenOtherwise:
 
     def test_simple_condition_lt(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("x") < 0).then(0).otherwise(pl.col("x")).alias("clipped"))'
         )
         expr = parse_expression(code, "clipped")
@@ -262,7 +262,7 @@ class TestWhenThenOtherwise:
 
     def test_condition_gte(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("score") >= 80).then("pass").otherwise("fail").alias("grade"))'
         )
         expr = parse_expression(code, "grade")
@@ -270,7 +270,7 @@ class TestWhenThenOtherwise:
 
     def test_condition_lte(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("temp") <= 0).then("freeze").otherwise("normal").alias("state"))'
         )
         expr = parse_expression(code, "state")
@@ -278,7 +278,7 @@ class TestWhenThenOtherwise:
 
     def test_condition_eq(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("status") == "active").then(1).otherwise(0).alias("is_active"))'
         )
         expr = parse_expression(code, "is_active")
@@ -286,7 +286,7 @@ class TestWhenThenOtherwise:
 
     def test_condition_ne(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.when(pl.col("type") != "excluded")'
             '.then(pl.col("amount")).otherwise(0).alias("included_amount"))'
         )
@@ -474,7 +474,7 @@ class TestHorizontalFunctions:
 
     def test_sum_horizontal(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.sum_horizontal(pl.col("x"), pl.col("y"), pl.col("z")).alias("total"))'
         )
         expr = parse_expression(code, "total")
@@ -491,7 +491,7 @@ class TestHorizontalFunctions:
     def test_horizontal_with_expression_arg(self):
         """pl.max_horizontal(pl.col("a") * 1.1, pl.col("b"))."""
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.max_horizontal(pl.col("a") * 1.1, pl.col("b")).alias("capped"))'
         )
         expr = parse_expression(code, "capped")
@@ -501,7 +501,7 @@ class TestHorizontalFunctions:
 
     def test_concat_str(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.concat_str(pl.col("first"), pl.col("last"), separator=" ").alias("full_name"))'
         )
         expr = parse_expression(code, "full_name")
@@ -549,7 +549,7 @@ class TestFillNullMethod:
 
     def test_fill_null_with_column(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("primary").fill_null(pl.col("fallback")).alias("resolved"))'
         )
         expr = parse_expression(code, "resolved")
@@ -593,7 +593,7 @@ class TestNumericMethods:
 
     def test_clip_both_bounds(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("val").clip(lower_bound=0, upper_bound=100).alias("clipped"))'
         )
         expr = parse_expression(code, "clipped")
@@ -664,7 +664,7 @@ class TestDatetimeMethods:
 
     def test_dt_total_days(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("end") - pl.col("start")).dt.total_days().alias("duration_days"))'
         )
         expr = parse_expression(code, "duration_days")
@@ -706,7 +706,7 @@ class TestWindowFunctions:
 
     def test_over_multiple_partitions(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("premium").mean().over("region", "year").alias("avg_prem"))'
         )
         expr = parse_expression(code, "avg_prem")
@@ -714,7 +714,7 @@ class TestWindowFunctions:
 
     def test_over_with_expression(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             '(pl.col("premium") / pl.col("premium").sum().over("region"))'
             '.alias("prem_share"))'
         )
@@ -752,7 +752,7 @@ class TestMethodChaining:
 
     def test_fill_null_then_clip(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("val").fill_null(0).clip(lower_bound=0, upper_bound=1000).alias("cleaned"))'
         )
         expr = parse_expression(code, "cleaned")
@@ -910,7 +910,7 @@ class TestMultiExpressionCodeBlocks:
 class TestOpaquePatterns:
     def test_map_elements_with_lambda(self):
         code = (
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("x").map_elements(lambda v: v ** 2, return_dtype=pl.Float64).alias("x_sq"))'
         )
         expr = parse_expression(code, "x_sq")
@@ -978,7 +978,7 @@ class TestOpaquePatterns:
     def test_apply_with_numpy(self):
         code = (
             "import numpy as np\n"
-            'df = df.with_columns('
+            "df = df.with_columns("
             'pl.col("x").map_batches(lambda s: np.log1p(s.to_numpy())).alias("log1p_x"))'
         )
         expr = parse_expression(code, "log1p_x")

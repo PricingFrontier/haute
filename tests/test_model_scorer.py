@@ -701,9 +701,7 @@ class TestRunScorePipeline:
         mock_batched.return_value = pl.DataFrame({"a": [1]}).lazy()
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        _run_score_pipeline(
-            sm, lf, task="regression", output_col="prediction", source="batch"
-        )
+        _run_score_pipeline(sm, lf, task="regression", output_col="prediction", source="batch")
         mock_batched.assert_called_once()
 
     @patch("haute._mlflow_io._score_eager")

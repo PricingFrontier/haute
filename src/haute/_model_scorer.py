@@ -26,6 +26,7 @@ logger = get_logger(component="model_scorer")
 # typo in the flavor string must not silently fall through to pyfunc).
 _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystats"})
 
+
 def _format_feature_mismatch(
     expected: list[str],
     available: list[str],
@@ -361,9 +362,7 @@ def score_frame(
         return _score_batched_unified(
             model, lf, features, cat_feature_names, flavor, task, output_col
         )
-    return _score_eager_unified(
-        model, lf, features, cat_feature_names, flavor, task, output_col
-    )
+    return _score_eager_unified(model, lf, features, cat_feature_names, flavor, task, output_col)
 
 
 def _run_score_pipeline(

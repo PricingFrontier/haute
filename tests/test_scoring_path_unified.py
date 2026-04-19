@@ -98,8 +98,7 @@ def _get_unified_scorer() -> Any:
             return fn
     pytest.skip(
         "Unified scorer entry point not yet implemented. "
-        "Expected one of: "
-        + ", ".join(f"{m}.{a}" for m, a in candidates)
+        "Expected one of: " + ", ".join(f"{m}.{a}" for m, a in candidates)
     )
 
 
@@ -233,9 +232,7 @@ class TestExplicitFlavorDispatch:
 
         preds = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
         pyfunc_model = _make_pyfunc_like_model(["a", "b"], preds)
-        df = pl.DataFrame(
-            {"a": [1.0, 2.0, 3.0, 4.0, 5.0], "b": [6.0, 7.0, 8.0, 9.0, 10.0]}
-        )
+        df = pl.DataFrame({"a": [1.0, 2.0, 3.0, 4.0, 5.0], "b": [6.0, 7.0, 8.0, 9.0, 10.0]})
 
         result_lf = score(
             model=pyfunc_model,
@@ -320,9 +317,7 @@ class TestExplicitFlavorDispatch:
         model = MagicMock()
         model.metadata.signature.inputs.input_names.return_value = ["a"]
         model.predict.return_value = np.array([0, 1, 0])
-        model.predict_proba.return_value = np.array(
-            [[0.8, 0.2], [0.3, 0.7], [0.9, 0.1]]
-        )
+        model.predict_proba.return_value = np.array([[0.8, 0.2], [0.3, 0.7], [0.9, 0.1]])
         df = pl.DataFrame({"a": [1.0, 2.0, 3.0]})
 
         result_lf = score(
@@ -427,9 +422,7 @@ class TestScoringRegressionGuards:
         model.predict.return_value = np.array([0.1, 0.2, 0.3, 0.4])
         sm = ScoringModel(model, ["a", "b"], frozenset(), "pyfunc")
 
-        df = pl.DataFrame(
-            {"a": [1.0, 2.0, 3.0, 4.0], "b": [5.0, 6.0, 7.0, 8.0]}
-        )
+        df = pl.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [5.0, 6.0, 7.0, 8.0]})
 
         # Eager path
         eager_result = _run_score_pipeline(
@@ -690,9 +683,7 @@ class TestRefactorStructuralInvariants:
                 source="live",
             )
 
-        assert "region" in str(exc_info.value), (
-            "Type mismatch error must name the offending column"
-        )
+        assert "region" in str(exc_info.value), "Type mismatch error must name the offending column"
 
 
 # ===========================================================================

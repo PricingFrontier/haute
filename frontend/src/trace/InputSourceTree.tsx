@@ -1,60 +1,17 @@
 import React from "react"
-import { ExpressionChainRowContentView, type ChainBoxEntry } from "./ExpressionChain"
+import { ExpressionChainRowContentView } from "./ExpressionChain"
 import { formatDisplayExpression } from "./traceFormatting"
+import type { InputSourceEntry } from "./traceHelpers"
 
 // ---------------------------------------------------------------------------
 // InputSourceTree — the upstream input-sources tree attached to a calculation.
 // Data comes from `calculation.input_sources`, which maps column name ->
 // InputSourceEntry (and may itself contain nested input_sources one level
-// deep). Extracted from CalculationHero as part of the 2B-2 split.
+// deep). Pure helpers + types live in ./traceHelpers; this file only exports
+// components.
 // ---------------------------------------------------------------------------
 
-export interface InputSourceEntry {
-  node_name: string
-  expression_text?: string
-  substituted_text?: string
-  result_value?: unknown
-  input_sources?: Record<string, InputSourceEntry> | null
-}
-
-export interface InputSourceBoxEntry extends ChainBoxEntry {
-  subSources: Record<string, InputSourceEntry> | null
-}
-
-/**
- * Normalise raw input_sources entries into the render-ready shape used
- * inside the unified calculation box. Skips any column whose name already
- * appears in `alreadyPresent` so expression-chain rows take precedence over
- * duplicate input-source rows for the same column.
- */
-export function buildInputSourceEntries(
-  inputSources: Record<string, InputSourceEntry> | null | undefined,
-  inputValues: Record<string, unknown>,
-  alreadyPresent: ReadonlySet<string>,
-): InputSourceBoxEntry[] {
-  if (!inputSources) return []
-  const out: InputSourceBoxEntry[] = []
-  for (const [column, src] of Object.entries(inputSources)) {
-    if (alreadyPresent.has(column)) continue
-    const formulaText = src.expression_text
-      ? formatDisplayExpression(src.expression_text).text
-      : null
-    const substitutedText = src.substituted_text
-      ? src.substituted_text.replace(/\*/g, "\u00d7").replace(/\//g, "\u00f7")
-      : null
-    out.push({
-      column,
-      formulaText,
-      substitutedText,
-      value: src.result_value ?? inputValues[column],
-      source: src.node_name,
-      subSources: src.input_sources ?? null,
-    })
-  }
-  return out
-}
-
-export interface InputSourceTreeProps {
+interface InputSourceTreeProps {
   /** Sub-sources keyed by column name. */
   subSources: Record<string, InputSourceEntry>
 }

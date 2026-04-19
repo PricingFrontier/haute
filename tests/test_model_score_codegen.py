@@ -195,8 +195,7 @@ class TestModelScoreCodegen:
                                 "task": "regression",
                                 "output_column": "prediction",
                                 "code": (
-                                    "result = result.with_columns("
-                                    'doubled=pl.col("prediction") * 2)'
+                                    'result = result.with_columns(doubled=pl.col("prediction") * 2)'
                                 ),
                             },
                         },
