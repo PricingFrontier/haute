@@ -11,13 +11,28 @@ import os
 import threading
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
 from haute._types import _Frame
+from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
 logger = get_logger(component="model_scorer")
+
+# Supported scoring flavors for explicit dispatch.
+# Unknown flavor → ConfigError at the scoring entry point (fail loudly: a
+# typo in the flavor string must not silently fall through to pyfunc).
+_SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystats"})
+
+# Auto-detect threshold for batch-vs-eager when ``batch=None``.
+# Below this row count we score in-memory (one predict call, no disk IO).
+# Above this we sink to parquet and stream through batches (lower peak memory).
+# Chosen so test / preview flows stay eager while production-size data (> 1K rows)
+# exercises the batched path.  Explicit ``batch=True/False`` overrides the
+# auto-detect — operators who know their data profile can always opt in/out.
+_BATCH_AUTO_THRESHOLD: int = 1000
 
 
 def _format_feature_mismatch(
@@ -186,6 +201,194 @@ def _register_temp_cleanup(path: str) -> None:
             _atexit_registered = True
 
 
+# ---------------------------------------------------------------------------
+# Unified scoring entry point — explicit flavor dispatch, single batch/eager
+# path.  The two legacy helpers (``_score_eager`` in ``_mlflow_io``,
+# ``_score_batched_standalone`` below) are now thin delegates onto this.
+# ---------------------------------------------------------------------------
+
+
+def _autodetect_batch(lf: pl.LazyFrame) -> bool:
+    """Decide whether to batch a LazyFrame based on its row count.
+
+    Uses ``pl.len()`` over the lazy plan — for Polars-native sources
+    (``scan_parquet``, ``DataFrame.lazy()``) this is metadata-only; for
+    complex chains it may have to execute the plan, but that cost is
+    bounded by the same work the scorer itself would do.  Operators who
+    know their data profile should pass ``batch=True/False`` explicitly
+    to skip this probe.
+    """
+    n_rows = lf.select(pl.len()).collect(engine="streaming").item()
+    return bool(n_rows > _BATCH_AUTO_THRESHOLD)
+
+
+def _predict_positive_proba(raw_model: Any, x_data: Any) -> np.ndarray | None:
+    """Return the positive-class probability vector, or ``None`` if unsupported.
+
+    Explicit branch on the raw model's ``predict_proba`` attribute — no
+    proxying, no silent fallback.  If the model does not expose
+    ``predict_proba`` we return ``None`` and the caller skips the proba
+    column (the predict-only path still runs).
+    """
+    fn = getattr(raw_model, "predict_proba", None)
+    if fn is None:
+        return None
+    probas = np.asarray(fn(x_data))
+    if probas.ndim == 2:
+        probas = probas[:, 1]
+    return np.asarray(probas).flatten()
+
+
+def _score_eager_unified(
+    model: Any,
+    lf: pl.LazyFrame,
+    features: list[str],
+    cat_feature_names: frozenset[str],
+    flavor: str,
+    task: str,
+    output_col: str,
+) -> pl.LazyFrame:
+    """Eager in-memory scoring for a pre-validated flavor.
+
+    Collects the LazyFrame via streaming (bounded memory), prepares the
+    flavor-specific input via :func:`_prepare_predict_frame`, and calls
+    the raw model's ``predict``.  For classification tasks the
+    positive-class probability is appended when ``predict_proba`` is
+    available; otherwise only the point prediction is written.
+    """
+    from haute._mlflow_io import _prepare_predict_frame
+
+    df_eager = lf.collect(engine="streaming")
+    x_data = _prepare_predict_frame(
+        df_eager,
+        features,
+        cat_feature_names=cat_feature_names,
+        flavor=flavor,
+    )
+    preds = np.asarray(model.predict(x_data)).flatten()
+    df_eager = df_eager.with_columns(pl.Series(output_col, preds))
+    if task == "classification":
+        probas = _predict_positive_proba(model, x_data)
+        if probas is not None:
+            df_eager = df_eager.with_columns(pl.Series(f"{output_col}_proba", probas))
+    return df_eager.lazy()
+
+
+def _score_batched_unified(
+    model: Any,
+    lf: pl.LazyFrame,
+    features: list[str],
+    cat_feature_names: frozenset[str],
+    flavor: str,
+    task: str,
+    output_col: str,
+) -> pl.LazyFrame:
+    """Sink → batch score → lazy scan (low-memory path) for the unified API.
+
+    Wraps the raw model in a short-lived :class:`ScoringModel` so it can
+    flow through :func:`_batch_score_to_parquet` — that helper is still
+    directly tested by ``test_model_scorer.py`` and its signature is
+    load-bearing.  Using ``ScoringModel`` here is a scoped compatibility
+    shim, not a return of the ``__getattr__`` proxy pattern.
+    """
+    from haute._mlflow_io import ScoringModel
+
+    carrier = ScoringModel(
+        model=model,
+        feature_names=features,
+        cat_feature_names=cat_feature_names,
+        flavor=flavor,
+    )
+    input_path = _sink_to_temp(lf)
+    scored_path = _batch_score_to_parquet(
+        carrier,
+        input_path,
+        features,
+        output_col,
+        task,
+    )
+    _register_temp_cleanup(scored_path)
+    os.unlink(input_path)
+    return pl.scan_parquet(scored_path)
+
+
+def score_frame(
+    *,
+    model: Any,
+    lf: pl.LazyFrame,
+    features: list[str],
+    cat_feature_names: frozenset[str],
+    flavor: str,
+    task: str = "regression",
+    output_col: str = "prediction",
+    batch: bool | None = None,
+) -> pl.LazyFrame:
+    """Unified scoring entry point with explicit flavor dispatch.
+
+    Parameters
+    ----------
+    model
+        A flavor-specific model object (``CatBoostRegressor``, MLflow
+        ``PyFuncModel``, RustyStats ``GLMModel``).  Called as
+        ``model.predict(x_data)`` (and ``model.predict_proba`` for
+        classification when available).
+    lf
+        Input LazyFrame.
+    features
+        Ordered feature names the model expects.  Passed through to the
+        flavor-specific preprocessor.
+    cat_feature_names
+        Categorical feature set.  Used by the CatBoost path to keep
+        columns as ``pl.Categorical`` (and route through pandas), and
+        ignored by pyfunc / rustystats paths.
+    flavor
+        One of ``"catboost"``, ``"pyfunc"``, ``"rustystats"``.  Unknown
+        flavors raise :class:`~haute.errors.ConfigError` — silent
+        fallback to pyfunc would produce subtly wrong predictions on a
+        typo.
+    task
+        ``"regression"`` or ``"classification"``.  The latter appends a
+        ``<output_col>_proba`` column when ``predict_proba`` is
+        available.
+    output_col
+        Name of the prediction column written to the result frame.
+    batch
+        * ``True``  → sink + batched parquet scoring (low peak memory).
+        * ``False`` → eager in-memory scoring (one ``predict`` call).
+        * ``None``  → auto-detect from the LazyFrame's row count
+          (threshold :data:`_BATCH_AUTO_THRESHOLD`).
+
+    Returns
+    -------
+    pl.LazyFrame
+        The input columns plus the prediction column (and
+        ``<output_col>_proba`` for classification when supported).
+
+    Raises
+    ------
+    ConfigError
+        If *flavor* is not one of the supported dispatch targets.
+    """
+    if flavor not in _SUPPORTED_FLAVORS:
+        raise ConfigError(
+            f"Unsupported scoring flavor: {flavor!r}. "
+            f"Expected one of: {sorted(_SUPPORTED_FLAVORS)}.",
+            flavor=flavor,
+            supported=sorted(_SUPPORTED_FLAVORS),
+        )
+
+    if batch is None:
+        batch = _autodetect_batch(lf)
+
+    if batch:
+        return _score_batched_unified(
+            model, lf, features, cat_feature_names, flavor, task, output_col
+        )
+    return _score_eager_unified(
+        model, lf, features, cat_feature_names, flavor, task, output_col
+    )
+
+
 def _run_score_pipeline(
     scoring_model: Any,
     lf: pl.LazyFrame,
@@ -266,19 +469,22 @@ def _score_batched_standalone(
     output_col: str,
     task: str,
 ) -> pl.LazyFrame:
-    """Sink → batch score → lazy scan (low-memory path)."""
-    input_path = _sink_to_temp(lf)
-    scored_path = _batch_score_to_parquet(
-        scoring_model,
-        input_path,
-        features,
-        output_col,
-        task,
-    )
+    """Sink → batch score → lazy scan (low-memory path).
 
-    _register_temp_cleanup(scored_path)
-    os.unlink(input_path)
-    return pl.scan_parquet(scored_path)
+    Thin delegate onto :func:`score_frame` with ``batch=True`` — keeps
+    the legacy symbol callable for any code still referring to it while
+    the actual scoring logic lives in the unified entry point.
+    """
+    return score_frame(
+        model=scoring_model.raw_model,
+        lf=lf,
+        features=features,
+        cat_feature_names=scoring_model.cat_feature_names,
+        flavor=scoring_model.flavor,
+        task=task,
+        output_col=output_col,
+        batch=True,
+    )
 
 
 class ModelScorer:
@@ -399,19 +605,18 @@ class ModelScorer:
         lf: pl.LazyFrame,
         features: list[str],
     ) -> pl.LazyFrame:
-        """Sink -> batch score -> lazy scan -- low-memory path."""
-        input_path = _sink_to_temp(lf)
-        scored_path = _batch_score_to_parquet(
+        """Sink -> batch score -> lazy scan -- low-memory path.
+
+        Thin delegate onto :func:`_score_batched_standalone`, which in
+        turn delegates onto :func:`score_frame` with ``batch=True``.
+        """
+        return _score_batched_standalone(
             scoring_model,
-            input_path,
+            lf,
             features,
             self.output_col,
             self.task,
         )
-
-        _register_temp_cleanup(scored_path)
-        os.unlink(input_path)
-        return pl.scan_parquet(scored_path)
 
 
 # ----------------------------------------------------------------------

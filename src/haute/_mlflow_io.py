@@ -676,24 +676,21 @@ def _score_eager(
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
-    Shared between the dev executor and the deploy scorer.
+    Thin delegate onto :func:`haute._model_scorer.score_frame` with
+    ``batch=False`` — the unified scoring entry point owns the flavor
+    dispatch and the batch/eager fork.  This symbol stays exported so
+    existing call sites (dev executor, deploy scorer) and direct-patch
+    tests keep working.
     """
-    df_eager = lf.collect(engine="streaming")
-    x_data = _prepare_predict_frame(
-        df_eager,
-        features,
+    from haute._model_scorer import score_frame
+
+    return score_frame(
+        model=scoring_model.raw_model,
+        lf=lf,
+        features=features,
         cat_feature_names=scoring_model.cat_feature_names,
         flavor=scoring_model.flavor,
+        task=task,
+        output_col=output_col,
+        batch=False,
     )
-    preds = scoring_model.predict(x_data)
-    df_eager = df_eager.with_columns(
-        pl.Series(output_col, preds),
-    )
-    if task == "classification":
-        df_eager = _append_classification_proba(
-            df_eager,
-            scoring_model,
-            x_data,
-            output_col,
-        )
-    return df_eager.lazy()
