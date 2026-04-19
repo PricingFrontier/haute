@@ -1,14 +1,27 @@
 /**
- * `useGraph()` hook — reads the graph context populated by `<GraphProvider>`.
+ * `useGraph()` hook + the context it consumes.
  *
- * Split from `GraphContext.tsx` so the `.tsx` file exports only the provider
- * component, keeping react-refresh happy (the plugin warns when a `.tsx`
- * file exports both a component and a non-component).  See GraphContext.tsx
- * for the provider and the rationale for the refactor.
+ * The provider component lives in `GraphContext.tsx` so that `.tsx` file only
+ * exports a component (react-refresh/only-export-components).  Because this
+ * file is `.ts` (no component export), it's free to export the raw context
+ * and the hook together — they're inseparable in practice.
  */
 
-import { useContext } from "react"
-import { GraphContext, type GraphContextValue } from "./graphContextInternal"
+import { createContext, useContext } from "react"
+import type { SimpleNode, SimpleEdge } from "./editors"
+
+/** Shape exposed by `useGraph()`. */
+export type GraphContextValue = {
+  allNodes: SimpleNode[]
+  edges: SimpleEdge[]
+  submodels?: Record<string, unknown>
+  preamble?: string
+}
+
+// `undefined` distinguishes "no provider" from "provider with empty graph".
+// Consumers outside a provider get a loud error from useGraph() instead of a
+// silent empty graph.
+export const GraphContext = createContext<GraphContextValue | undefined>(undefined)
 
 /**
  * Reads graph data from the nearest `GraphProvider`.

@@ -1,25 +1,15 @@
 /**
- * GraphContext — provides graph data (allNodes, edges, submodels, preamble)
- * to NodePanel and all of its descendants without prop drilling.
+ * `<GraphProvider>` — provides graph data (allNodes, edges, submodels,
+ * preamble) to NodePanel and its descendants without prop drilling.
  *
- * Before this context: `allNodes`, `edges`, `submodels`, `preamble` were
- * threaded through NodePanel → InstancePanel / SinkEditor / OutputEditor /
- * RatingStepEditor / ModellingConfig / OptimiserConfig as explicit props.
- * That cost ~15 prop declarations and made every new consumer a rewrite
- * of the entire chain.  With `GraphProvider` at the app boundary, any
- * descendant calls `useGraph()` to read the current graph directly.
- *
- * Module layout (split to satisfy react-refresh):
- *   - `graphContextInternal.ts` — the raw `React.Context` + value type.
- *   - `useGraph.ts`             — the consumer hook.
- *   - `GraphContext.tsx` (this) — the `<GraphProvider>` component only.
- *
- * The provider's value is memoised on its input props so consumers only
- * re-render when graph data actually changes, not on every parent render.
+ * The raw `React.Context`, its value type, and the `useGraph()` consumer
+ * hook all live in `useGraph.ts` so that this `.tsx` file exports only a
+ * component (react-refresh/only-export-components).  Value is memoised on
+ * its inputs so unrelated parent re-renders don't cascade into consumers.
  */
 
 import { useMemo, type ReactNode } from "react"
-import { GraphContext, type GraphContextValue } from "./graphContextInternal"
+import { GraphContext, type GraphContextValue } from "./useGraph"
 
 /**
  * Wraps a subtree so `useGraph()` resolves to the given graph.
