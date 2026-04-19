@@ -1,7 +1,6 @@
 import { Package } from "lucide-react"
 import { CodeEditor } from "./editors"
 import PanelShell from "./PanelShell"
-import PanelHeader from "./PanelHeader"
 
 interface ImportsPanelProps {
   preamble: string
@@ -11,18 +10,16 @@ interface ImportsPanelProps {
 
 export default function ImportsPanel({ preamble, onPreambleChange, onClose }: ImportsPanelProps) {
   return (
-    <PanelShell>
-      <PanelHeader
-        title="Pipeline Imports"
-        onClose={onClose}
-        icon={<Package size={14} style={{ color: 'var(--accent)' }} />}
-        subtitle={
-          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            Import statements for utility modules and third-party libraries.
-          </span>
-        }
-      />
-
+    <PanelShell
+      title="Pipeline Imports"
+      onClose={onClose}
+      icon={<Package size={14} style={{ color: 'var(--accent)' }} />}
+      subtitle={
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          Import statements for utility modules and third-party libraries.
+        </span>
+      }
+    >
       {/* Info */}
       <div className="px-3 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         <p className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>

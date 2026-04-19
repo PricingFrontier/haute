@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, type ReactNode } from "react"
 import useUIStore from "../stores/useUIStore"
+import PanelHeader from "./PanelHeader"
 
 const MIN_PANEL_W = 320
 const LEFT_PALETTE_W = 180
@@ -26,6 +27,21 @@ interface PanelShellProps {
   children: ReactNode
   /** Additional opacity/transition styles (e.g. dimmed NodePanel) */
   style?: React.CSSProperties
+  /**
+   * Optional header title.  When provided, PanelShell renders a PanelHeader
+   * above the children — `onClose` is then required.  This replaces the
+   * previous pattern of manually wrapping `<PanelHeader>` inside
+   * `<PanelShell>` at every caller.
+   */
+  title?: string | ReactNode
+  /** Close handler for the rendered header.  Required when `title` is set. */
+  onClose?: () => void
+  /** Optional icon rendered before the header title. */
+  icon?: ReactNode
+  /** Optional subtitle rendered below the header title. */
+  subtitle?: ReactNode
+  /** Optional action buttons rendered in the header before the close button. */
+  actions?: ReactNode
 }
 
 /**
@@ -35,8 +51,18 @@ interface PanelShellProps {
  * - A visible left-edge drag handle for resizing
  * - Slide-in animation
  * - Consistent background color
+ * - Optional inlined header (title/icon/subtitle/actions/close) so callers
+ *   don't repeat the `<PanelShell><PanelHeader ...>` boilerplate.
  */
-export default function PanelShell({ children, style }: PanelShellProps) {
+export default function PanelShell({
+  children,
+  style,
+  title,
+  onClose,
+  icon,
+  subtitle,
+  actions,
+}: PanelShellProps) {
   const storedWidth = useUIStore((s) => s.nodePanelWidth)
   const setNodePanelWidth = useUIStore((s) => s.setNodePanelWidth)
   // 0 = sentinel: use dynamic default (50% of available space)
@@ -87,6 +113,15 @@ export default function PanelShell({ children, style }: PanelShellProps) {
     [panelWidth],
   )
 
+  // When a title is passed, the shell takes ownership of rendering the
+  // standard PanelHeader.  Developer ergonomics: `onClose` is required by
+  // TypeScript in practice because callers always need a way to close the
+  // panel — we assert at runtime to catch any stragglers early rather than
+  // silently rendering a header without a working close button.
+  if (title !== undefined && onClose === undefined) {
+    throw new Error("PanelShell: `onClose` is required when `title` is provided")
+  }
+
   return (
     <div
       ref={panelRef}
@@ -106,6 +141,15 @@ export default function PanelShell({ children, style }: PanelShellProps) {
         }}
       />
       <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+        {title !== undefined && (
+          <PanelHeader
+            title={title}
+            onClose={onClose!}
+            icon={icon}
+            subtitle={subtitle}
+            actions={actions}
+          />
+        )}
         {children}
       </div>
     </div>

@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
 import { CodeEditor } from "./editors"
 import PanelShell from "./PanelShell"
-import PanelHeader from "./PanelHeader"
 import useClickOutside from "../hooks/useClickOutside"
 import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
 import {
@@ -166,14 +165,11 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   }, [activeModule, loadFiles])
 
   return (
-    <PanelShell>
-      {/* Header */}
-      <PanelHeader
-        title="Utility Scripts"
-        onClose={onClose}
-        icon={<FileCode2 size={14} style={{ color: 'var(--accent)' }} />}
-      />
-
+    <PanelShell
+      title="Utility Scripts"
+      onClose={onClose}
+      icon={<FileCode2 size={14} style={{ color: 'var(--accent)' }} />}
+    >
       {/* File selector */}
       <div className="px-3 py-2 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         {creating ? (

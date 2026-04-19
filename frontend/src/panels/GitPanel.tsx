@@ -4,7 +4,6 @@ import {
   ExternalLink, Archive, Trash2, RotateCcw, AlertTriangle,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
-import PanelHeader from "./PanelHeader"
 import useClickOutside from "../hooks/useClickOutside"
 import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
 import {
@@ -237,14 +236,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // ---------------------------------------------------------------------------
 
   return (
-    <PanelShell>
-      {/* Header */}
-      <PanelHeader
-        title="Git"
-        onClose={onClose}
-        icon={<GitFork size={14} style={{ color: '#22c55e' }} />}
-      />
-
+    <PanelShell
+      title="Git"
+      onClose={onClose}
+      icon={<GitFork size={14} style={{ color: '#22c55e' }} />}
+    >
       {/* Error banner */}
       {error && (
         <div className="px-3 py-2 text-[11px] flex items-start gap-2 shrink-0" style={{ color: '#ef4444', background: 'rgba(239,68,68,.08)', borderBottom: '1px solid var(--border)' }}>
