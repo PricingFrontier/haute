@@ -23,26 +23,34 @@ function maxPanelWidth(): number {
   return Math.max(MIN_PANEL_W, Math.floor(availableSpace() * 0.75))
 }
 
-interface PanelShellProps {
+interface PanelShellBaseProps {
   children: ReactNode
   /** Additional opacity/transition styles (e.g. dimmed NodePanel) */
   style?: React.CSSProperties
-  /**
-   * Optional header title.  When provided, PanelShell renders a PanelHeader
-   * above the children — `onClose` is then required.  This replaces the
-   * previous pattern of manually wrapping `<PanelHeader>` inside
-   * `<PanelShell>` at every caller.
-   */
-  title?: string | ReactNode
-  /** Close handler for the rendered header.  Required when `title` is set. */
-  onClose?: () => void
-  /** Optional icon rendered before the header title. */
-  icon?: ReactNode
-  /** Optional subtitle rendered below the header title. */
-  subtitle?: ReactNode
-  /** Optional action buttons rendered in the header before the close button. */
-  actions?: ReactNode
 }
+
+/**
+ * Either no header at all (children render raw, suitable for panels like
+ * TracePanel/NodePanel that build their own bespoke header), OR a full
+ * header with both a title and an onClose handler.  The discriminated union
+ * makes it impossible to pass `title` without `onClose` — TypeScript catches
+ * the mistake at compile time, no runtime guard needed.
+ */
+type PanelShellHeaderProps =
+  | {
+      title?: undefined
+      onClose?: undefined
+      icon?: undefined
+      subtitle?: undefined
+    }
+  | {
+      title: string | ReactNode
+      onClose: () => void
+      icon?: ReactNode
+      subtitle?: ReactNode
+    }
+
+type PanelShellProps = PanelShellBaseProps & PanelShellHeaderProps
 
 /**
  * Shared wrapper for all right-side panels (NodePanel, UtilityPanel,
@@ -61,7 +69,6 @@ export default function PanelShell({
   onClose,
   icon,
   subtitle,
-  actions,
 }: PanelShellProps) {
   const storedWidth = useUIStore((s) => s.nodePanelWidth)
   const setNodePanelWidth = useUIStore((s) => s.setNodePanelWidth)
@@ -113,15 +120,6 @@ export default function PanelShell({
     [panelWidth],
   )
 
-  // When a title is passed, the shell takes ownership of rendering the
-  // standard PanelHeader.  Developer ergonomics: `onClose` is required by
-  // TypeScript in practice because callers always need a way to close the
-  // panel — we assert at runtime to catch any stragglers early rather than
-  // silently rendering a header without a working close button.
-  if (title !== undefined && onClose === undefined) {
-    throw new Error("PanelShell: `onClose` is required when `title` is provided")
-  }
-
   return (
     <div
       ref={panelRef}
@@ -144,10 +142,9 @@ export default function PanelShell({
         {title !== undefined && (
           <PanelHeader
             title={title}
-            onClose={onClose!}
+            onClose={onClose}
             icon={icon}
             subtitle={subtitle}
-            actions={actions}
           />
         )}
         {children}
