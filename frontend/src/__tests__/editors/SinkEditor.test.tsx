@@ -6,8 +6,10 @@
  * placeholder changes based on format selection.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
+import { render as rtlRender, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import SinkEditor from "../../panels/editors/SinkEditor"
+import { GraphProvider } from "../../panels/GraphContext"
+import type { SimpleNode, SimpleEdge } from "../../panels/editors"
 
 // Mock API client
 const mockExecuteSink = vi.fn()
@@ -32,9 +34,28 @@ const DEFAULT_PROPS = {
   config: {} as Record<string, unknown>,
   onUpdate: vi.fn(),
   nodeId: "sink_1",
-  allNodes: [] as { id: string; type?: string; data: { label: string; description: string; nodeType: string; config?: Record<string, unknown> } }[],
-  edges: [] as { id: string; source: string; target: string }[],
   accentColor: "#60a5fa",
+}
+
+/**
+ * Renders SinkEditor wrapped in a GraphProvider seeded with the given graph.
+ * Post Phase 2 Package 3C, SinkEditor reads allNodes/edges/submodels/preamble
+ * from the graph context rather than as drilled props.
+ */
+function render(
+  element: React.ReactElement,
+  opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[]; submodels?: Record<string, unknown>; preamble?: string } = {},
+) {
+  return rtlRender(
+    <GraphProvider
+      allNodes={opts.allNodes ?? []}
+      edges={opts.edges ?? []}
+      submodels={opts.submodels}
+      preamble={opts.preamble}
+    >
+      {element}
+    </GraphProvider>,
+  )
 }
 
 describe("SinkEditor", () => {

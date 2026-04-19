@@ -25,16 +25,13 @@ import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
 import ColumnsTab from "./editors/ColumnsTab"
 import GroupedColumnsTab from "./editors/GroupedColumnsTab"
 import PanelShell from "./PanelShell"
+import { useGraph } from "./useGraph"
 
 // Re-export types (preserve public API for App.tsx)
 export type { SimpleNode, SimpleEdge } from "./editors"
 
 type NodePanelProps = {
   node: SimpleNode | null
-  edges: SimpleEdge[]
-  allNodes: SimpleNode[]
-  submodels?: Record<string, unknown>
-  preamble?: string
   onClose: () => void
   onUpdateNode?: (id: string, data: Record<string, unknown>) => void
   onDeleteEdge?: (edgeId: string) => void
@@ -61,18 +58,26 @@ const NO_COLUMNS_TAB = new Set<string>([
 function InstancePanel({
   node,
   config,
-  edges,
-  allNodes,
   nodeMap,
   handleConfigUpdate,
 }: {
   node: SimpleNode
   config: Record<string, unknown>
-  edges: SimpleEdge[]
-  allNodes: SimpleNode[]
   nodeMap: Record<string, SimpleNode>
   handleConfigUpdate: (keyOrUpdates: string | Record<string, unknown>, value?: unknown) => void
 }) {
+  const { edges } = useGraph()
+  const origId = config.instanceOf as string
+  // Fail loud (#84): a broken reference must surface in the ErrorBoundary
+  // rather than rendering the stringified id as a silent fallback.
+  const orig = nodeMap[origId]
+  if (!orig) {
+    throw new Error(
+      `InstancePanel: referenced original node "${origId}" not found in graph. ` +
+        `Either the original was deleted or the instanceOf id is stale; ` +
+        `fix the node's config or recreate the instance.`,
+    )
+  }
   return (
     <div className="px-4 py-3 flex flex-col gap-3">
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-soft)', border: '1px solid rgba(96,165,250,.15)' }}>
@@ -80,10 +85,7 @@ function InstancePanel({
         <div className="min-w-0">
           <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--accent)' }}>Instance of</div>
           <div className="text-[13px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
-            {(() => {
-              const orig = allNodes.find((n) => n.id === config.instanceOf)
-              return orig ? orig.data.label : String(config.instanceOf)
-            })()}
+            {orig.data.label}
           </div>
         </div>
       </div>
@@ -93,7 +95,6 @@ function InstancePanel({
 
       {/* Input Mapping */}
       {(() => {
-        const origId = config.instanceOf as string
         const origInputs = edges
           .filter((e) => e.target === origId)
           .map((e) => {
@@ -231,7 +232,8 @@ function hasUpstreamApiInput(nodeId: string, edges: SimpleEdge[], nodeMap: Recor
 
 // ─── NodePanel ────────────────────────────────────────────────────
 
-export default function NodePanel({ node, edges, allNodes, submodels, preamble, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine, previewRows }: NodePanelProps) {
+export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine, previewRows }: NodePanelProps) {
+  const { allNodes, edges } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
 
@@ -285,8 +287,6 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         <InstancePanel
           node={node}
           config={config}
-          edges={edges}
-          allNodes={allNodes}
           nodeMap={nodeMap}
           handleConfigUpdate={handleConfigUpdate}
         />
@@ -304,13 +304,13 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         return <DataSourceEditor config={config} onUpdate={handleConfigUpdate} onRefreshPreview={onRefreshPreview} accentColor={accentColor} errorLine={errorLine} />
 
       case NODE_TYPES.DATA_SINK:
-        return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble} accentColor={accentColor} />
+        return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} accentColor={accentColor} />
 
       case NODE_TYPES.EXTERNAL_FILE:
         return <ExternalFileEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
 
       case NODE_TYPES.OUTPUT:
-        return <OutputEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} allNodes={allNodes} edges={edges} />
+        return <OutputEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} />
 
       case NODE_TYPES.BANDING:
         return (
@@ -338,7 +338,7 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         )
 
       case NODE_TYPES.RATING_STEP:
-        return <RatingStepEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} allNodes={allNodes} accentColor={accentColor} />
+        return <RatingStepEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />
 
       case NODE_TYPES.MODEL_SCORE:
         return <ModelScoreEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
@@ -353,10 +353,6 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
           <ModellingConfig
             config={configWithNodeId}
             onUpdate={handleConfigUpdate}
-            allNodes={allNodes}
-            edges={edges}
-            submodels={submodels}
-            preamble={preamble}
             upstreamColumns={effectiveCols}
           />
         )
@@ -371,9 +367,6 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
           <OptimiserConfig
             config={configWithNodeId}
             onUpdate={handleConfigUpdate}
-            allNodes={allNodes}
-            edges={edges}
-            submodels={submodels}
             upstreamColumns={effectiveCols}
             accentColor={accentColor}
           />

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { HardDriveDownload } from "lucide-react"
-import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./_shared"
+import type { OnUpdateConfig } from "./_shared"
 import { executeSink } from "../../api/client"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
@@ -8,26 +8,20 @@ import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { EditorLabel } from "../../components/form"
+import { useGraph } from "../useGraph"
 
 export default function SinkEditor({
   config,
   onUpdate,
   nodeId,
-  allNodes,
-  edges,
-  submodels,
-  preamble,
   accentColor,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   nodeId: string
-  allNodes: SimpleNode[]
-  edges: SimpleEdge[]
-  submodels?: Record<string, unknown>
-  preamble?: string
   accentColor: string
 }) {
+  const { allNodes, edges, submodels, preamble } = useGraph()
   const format = configField(config, "format", "parquet")
   const [writing, setWriting] = useState(false)
   const [writeResult, setWriteResult] = useState<{ status: string; message: string } | null>(null)

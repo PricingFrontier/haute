@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { X, Plus, Table2 } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
-import type { InputSource, SimpleNode, OnUpdateConfig } from "./_shared"
+import type { InputSource, OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import { extractBandingLevels } from "../../utils/banding"
@@ -9,6 +9,7 @@ import type { RatingTable } from "./rating/ratingTableUtils"
 import { normaliseRatingTables, buildCartesianEntries, tableStats } from "./rating/ratingTableUtils"
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
+import { useGraph } from "../useGraph"
 
 // ─── Main Editor ──────────────────────────────────────────────────
 
@@ -17,16 +18,15 @@ export default function RatingStepEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
-  allNodes,
   accentColor,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
-  allNodes: SimpleNode[]
   accentColor: string
 }) {
+  const { allNodes } = useGraph()
   const [activeTab, setActiveTab] = useState(0)
   const [sliceIdx, setSliceIdx] = useState(0)
   const tables = normaliseRatingTables(config)

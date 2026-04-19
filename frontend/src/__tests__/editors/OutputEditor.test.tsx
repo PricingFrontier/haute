@@ -5,8 +5,10 @@
  * checkbox interactions, and JSON preview.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render as rtlRender, screen, fireEvent, cleanup } from "@testing-library/react"
 import OutputEditor from "../../panels/editors/OutputEditor"
+import { GraphProvider } from "../../panels/GraphContext"
+import type { SimpleNode, SimpleEdge } from "../../panels/editors"
 
 afterEach(cleanup)
 
@@ -16,7 +18,7 @@ const UPSTREAM_COLUMNS = [
   { name: "power", dtype: "Int64" },
 ]
 
-const allNodes = [
+const allNodes: SimpleNode[] = [
   {
     id: "upstream",
     data: {
@@ -28,14 +30,28 @@ const allNodes = [
   },
 ]
 
-const edges = [{ id: "e1", source: "upstream", target: "output_1" }]
+const edges: SimpleEdge[] = [{ id: "e1", source: "upstream", target: "output_1" }]
 
 const DEFAULT_PROPS = {
   config: {},
   onUpdate: vi.fn(),
   nodeId: "output_1",
-  allNodes: [],
-  edges: [],
+}
+
+/**
+ * Renders OutputEditor wrapped in a GraphProvider.  Accepts `allNodes` and
+ * `edges` overrides that flow through the provider rather than as component
+ * props (post Phase 2 Package 3C — graph data lives in context).
+ */
+function render(
+  element: React.ReactElement,
+  opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
+) {
+  return rtlRender(
+    <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
+      {element}
+    </GraphProvider>,
+  )
 }
 
 describe("OutputEditor", () => {
@@ -50,7 +66,7 @@ describe("OutputEditor", () => {
   })
 
   it("shows empty state when there are no edges", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={allNodes} edges={[]} />)
+    render(<OutputEditor {...DEFAULT_PROPS}  />, { allNodes: allNodes, edges: [] })
     expect(screen.getByText("Preview or run the upstream node to see columns")).toBeTruthy()
   })
 
@@ -58,39 +74,39 @@ describe("OutputEditor", () => {
     const noColumnsNodes = [
       { id: "upstream", data: { label: "Empty", description: "", nodeType: "polars" } },
     ]
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={noColumnsNodes} edges={edges} />)
+    render(<OutputEditor {...DEFAULT_PROPS}  />, { allNodes: noColumnsNodes, edges: edges })
     expect(screen.getByText("Preview or run the upstream node to see columns")).toBeTruthy()
   })
 
   it("renders column table when upstream has _columns data", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={allNodes} edges={edges} />)
+    render(<OutputEditor {...DEFAULT_PROPS}  />, { allNodes: allNodes, edges: edges })
     expect(screen.getByText("Column")).toBeTruthy()
     expect(screen.getByText("Type")).toBeTruthy()
     expect(screen.queryByText("Preview or run the upstream node to see columns")).toBeNull()
   })
 
   it("shows all upstream column names in the table", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={allNodes} edges={edges} />)
+    render(<OutputEditor {...DEFAULT_PROPS}  />, { allNodes: allNodes, edges: edges })
     expect(screen.getByText("premium")).toBeTruthy()
     expect(screen.getByText("area")).toBeTruthy()
     expect(screen.getByText("power")).toBeTruthy()
   })
 
   it("shows dtype for each upstream column", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={allNodes} edges={edges} />)
+    render(<OutputEditor {...DEFAULT_PROPS}  />, { allNodes: allNodes, edges: edges })
     expect(screen.getByText("Float64")).toBeTruthy()
     expect(screen.getByText("String")).toBeTruthy()
     expect(screen.getByText("Int64")).toBeTruthy()
   })
 
   it("renders a checkbox for each upstream column", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={allNodes} edges={edges} />)
+    render(<OutputEditor {...DEFAULT_PROPS}  />, { allNodes: allNodes, edges: edges })
     const checkboxes = screen.getAllByRole("checkbox")
     expect(checkboxes.length).toBe(3)
   })
 
   it("checkboxes are unchecked by default when no fields in config", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={allNodes} edges={edges} />)
+    render(<OutputEditor {...DEFAULT_PROPS}  />, { allNodes: allNodes, edges: edges })
     const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[]
     checkboxes.forEach((cb) => {
       expect(cb.checked).toBe(false)
@@ -102,9 +118,8 @@ describe("OutputEditor", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{ fields: ["premium", "power"] }}
-        allNodes={allNodes}
-        edges={edges}
       />,
+      { allNodes, edges },
     )
     const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[]
     // Order: premium, area, power
@@ -119,9 +134,8 @@ describe("OutputEditor", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         onUpdate={onUpdate}
-        allNodes={allNodes}
-        edges={edges}
       />,
+      { allNodes, edges },
     )
     const checkboxes = screen.getAllByRole("checkbox")
     fireEvent.click(checkboxes[0]) // premium
@@ -135,9 +149,8 @@ describe("OutputEditor", () => {
         {...DEFAULT_PROPS}
         config={{ fields: ["premium", "area"] }}
         onUpdate={onUpdate}
-        allNodes={allNodes}
-        edges={edges}
       />,
+      { allNodes, edges },
     )
     const checkboxes = screen.getAllByRole("checkbox")
     fireEvent.click(checkboxes[0]) // uncheck premium
@@ -151,9 +164,8 @@ describe("OutputEditor", () => {
         {...DEFAULT_PROPS}
         config={{ fields: ["premium"] }}
         onUpdate={onUpdate}
-        allNodes={allNodes}
-        edges={edges}
       />,
+      { allNodes, edges },
     )
     const checkboxes = screen.getAllByRole("checkbox")
     fireEvent.click(checkboxes[2]) // add power
@@ -161,7 +173,7 @@ describe("OutputEditor", () => {
   })
 
   it("does not show JSON Preview when no fields are selected", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} allNodes={allNodes} edges={edges} />)
+    render(<OutputEditor {...DEFAULT_PROPS} />, { allNodes, edges })
     expect(screen.queryByText("JSON Preview")).toBeNull()
   })
 
@@ -170,9 +182,8 @@ describe("OutputEditor", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{ fields: ["premium"] }}
-        allNodes={allNodes}
-        edges={edges}
       />,
+      { allNodes, edges },
     )
     expect(screen.getByText("JSON Preview")).toBeTruthy()
   })
@@ -182,9 +193,8 @@ describe("OutputEditor", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{ fields: ["premium", "area"] }}
-        allNodes={allNodes}
-        edges={edges}
       />,
+      { allNodes, edges },
     )
     expect(screen.getByText("JSON Preview")).toBeTruthy()
     const pre = container.querySelector("pre")!
@@ -197,9 +207,8 @@ describe("OutputEditor", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{ fields: ["premium"] }}
-        allNodes={allNodes}
-        edges={edges}
       />,
+      { allNodes, edges },
     )
     const pre = container.querySelector("pre")!
     expect(pre.textContent).toContain('"premium"')

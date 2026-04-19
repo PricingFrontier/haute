@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import NodePanel from "../NodePanel"
+import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
@@ -43,18 +44,35 @@ function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
   }
 }
 
-function renderPanel(overrides: Partial<Parameters<typeof NodePanel>[0]> = {}) {
+type RenderPanelOverrides = Partial<Parameters<typeof NodePanel>[0]> & {
+  edges?: SimpleEdge[]
+  allNodes?: SimpleNode[]
+  submodels?: Record<string, unknown>
+  preamble?: string
+}
+
+function renderPanel(overrides: RenderPanelOverrides = {}) {
+  const {
+    edges = [] as SimpleEdge[],
+    allNodes = [] as SimpleNode[],
+    submodels,
+    preamble,
+    ...panelOverrides
+  } = overrides
   const props = {
     node: makeNode(),
-    edges: [] as SimpleEdge[],
-    allNodes: [] as SimpleNode[],
     onClose: vi.fn(),
     onUpdateNode: vi.fn(),
     onDeleteEdge: vi.fn(),
     onRefreshPreview: vi.fn(),
-    ...overrides,
+    ...panelOverrides,
   }
-  return { ...render(<NodePanel {...props} />), props }
+  const result = render(
+    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble}>
+      <NodePanel {...props} />
+    </GraphProvider>,
+  )
+  return { ...result, props }
 }
 
 describe("NodePanel", () => {
@@ -487,15 +505,15 @@ describe("NodePanel", () => {
 
       const onUpdateNode = vi.fn()
       const { rerender } = render(
-        <NodePanel
-          node={instanceNode1}
-          edges={edges}
-          allNodes={allNodes}
-          onClose={vi.fn()}
-          onUpdateNode={onUpdateNode}
-          onDeleteEdge={vi.fn()}
-          onRefreshPreview={vi.fn()}
-        />,
+        <GraphProvider allNodes={allNodes} edges={edges}>
+          <NodePanel
+            node={instanceNode1}
+            onClose={vi.fn()}
+            onUpdateNode={onUpdateNode}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
       )
 
       // Now re-render with updated config (simulating external update)
@@ -510,15 +528,15 @@ describe("NodePanel", () => {
       })
 
       rerender(
-        <NodePanel
-          node={instanceNode2}
-          edges={edges}
-          allNodes={[origNode, upOrig, upInst, instanceNode2]}
-          onClose={vi.fn()}
-          onUpdateNode={onUpdateNode}
-          onDeleteEdge={vi.fn()}
-          onRefreshPreview={vi.fn()}
-        />,
+        <GraphProvider allNodes={[origNode, upOrig, upInst, instanceNode2]} edges={edges}>
+          <NodePanel
+            node={instanceNode2}
+            onClose={vi.fn()}
+            onUpdateNode={onUpdateNode}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
       )
 
       // Trigger handleConfigUpdate via mapping dropdown change

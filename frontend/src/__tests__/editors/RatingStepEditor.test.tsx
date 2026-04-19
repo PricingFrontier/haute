@@ -6,9 +6,26 @@
  * adding/removing tables, operation select for 2+ tables, rebuild button.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render as rtlRender, screen, fireEvent, cleanup } from "@testing-library/react"
 import RatingStepEditor from "../../panels/editors/RatingStepEditor"
-import type { SimpleNode } from "../../panels/editors/_shared"
+import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
+import { GraphProvider } from "../../panels/GraphContext"
+
+/**
+ * Renders RatingStepEditor wrapped in a GraphProvider.  Accepts `allNodes` /
+ * `edges` overrides that flow via context rather than direct props (post
+ * Phase 2 Package 3C — graph data lives in context).
+ */
+function render(
+  element: React.ReactElement,
+  opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
+) {
+  return rtlRender(
+    <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
+      {element}
+    </GraphProvider>,
+  )
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -49,9 +66,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     expect(screen.getByText("Rating Tables · 1 table")).toBeTruthy()
     // Table 1 tab should be visible
@@ -67,9 +85,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     expect(screen.getByText("Select at least one factor to populate the rating table")).toBeTruthy()
   })
@@ -93,9 +112,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     // OneWayEditor renders "age_band" column header and "Relativity" header
     expect(screen.getByText("age_band")).toBeTruthy()
@@ -126,9 +146,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     // Factors count should show 2/3
     expect(screen.getByText("Factors (2/3)")).toBeTruthy()
@@ -144,9 +165,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     // Find the "+" button for adding a table
     const addButtons = screen.getAllByRole("button")
@@ -178,9 +200,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     // Both tabs should be visible
     expect(screen.getByText("Table A")).toBeTruthy()
@@ -209,9 +232,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     // The X remove icon should not be rendered when only 1 table
     const tableTab = screen.getByText("Only Table").closest("[role='tab']")!
@@ -231,9 +255,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     expect(screen.getByText("Combine")).toBeTruthy()
     // The operation select should have all 4 options
@@ -252,9 +277,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     expect(screen.queryByText("Combine")).toBeNull()
   })
@@ -272,9 +298,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     const operationSelect = screen.getByDisplayValue("× Multiply (relativities)")
     fireEvent.change(operationSelect, { target: { value: "add" } })
@@ -296,9 +323,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     expect(screen.getByText(/Rebuild from banding levels/)).toBeTruthy()
   })
@@ -309,9 +337,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     expect(screen.queryByText(/Rebuild from banding levels/)).toBeNull()
   })
@@ -332,9 +361,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     fireEvent.click(screen.getByText(/Rebuild from banding levels/))
     // Should call onUpdate with tables containing rebuilt entries
@@ -362,9 +392,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     expect(screen.getByText("Table A")).toBeTruthy()
     expect(screen.getByText("Table B")).toBeTruthy()
@@ -376,9 +407,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     expect(screen.getByText("Factors (0/3)")).toBeTruthy()
   })
@@ -389,9 +421,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     const addSelect = screen.getByRole("combobox") as HTMLSelectElement
     const options = Array.from(addSelect.options).map(o => o.textContent)
@@ -418,9 +451,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     expect(screen.getByText("age_factor")).toBeTruthy()
     expect(screen.getByText(/2 entries/)).toBeTruthy()
@@ -432,9 +466,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[{ varName: "source_data", sourceLabel: "Source Data", edgeId: "e1" }]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     expect(screen.getByText("source_data")).toBeTruthy()
   })
@@ -453,9 +488,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={[]}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: [] }
     )
     // Formula should show: combined = age_factor x region_factor
     const bodyText = document.body.textContent || ""
@@ -471,9 +507,10 @@ describe("RatingStepEditor", () => {
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     const addSelect = screen.getByRole("combobox")
     fireEvent.change(addSelect, { target: { value: "age_band" } })
@@ -505,9 +542,10 @@ describe("RatingStepEditor", () => {
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
-        allNodes={BANDING_NODES}
+
         accentColor="#14b8a6"
       />,
+      { allNodes: BANDING_NODES }
     )
     // Factors count should show 3/3
     expect(screen.getByText("Factors (3/3)")).toBeTruthy()

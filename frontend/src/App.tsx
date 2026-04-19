@@ -16,6 +16,7 @@ import SubmodelNode from "./nodes/SubmodelNode"
 import SubmodelPortNode from "./nodes/SubmodelPortNode"
 import NodePalette from "./panels/NodePalette"
 import NodePanel, { type SimpleNode, type SimpleEdge } from "./panels/NodePanel"
+import { GraphProvider } from "./panels/GraphContext"
 import DataPreview from "./panels/DataPreview"
 import OptimiserPreview from "./panels/OptimiserPreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
@@ -486,32 +487,35 @@ function FlowEditor() {
             ) : traceResult ? (
               <TracePanel trace={traceResult} onClose={clearTrace} />
             ) : (
-              <NodePanel
-                node={(() => {
-                  const id = selectedNode?.id ?? lastSelectedId
-                  if (!id) return null
-                  return (nodes.find((n) => n.id === id) ?? null) as unknown as SimpleNode | null
-                })()}
-                edges={edges as unknown as SimpleEdge[]}
+              <GraphProvider
                 allNodes={nodes as unknown as SimpleNode[]}
+                edges={edges as unknown as SimpleEdge[]}
                 submodels={submodelsSnapshot}
                 preamble={preamble}
-                onClose={closePanel}
-                onUpdateNode={onUpdateNode}
-                onDeleteEdge={handleDeleteEdge}
-                onRefreshPreview={() => { if (selectedNode) refreshPreview(selectedNode) }}
-                dimmed={!selectedNode && !!lastSelectedId}
-                errorLine={
-                  previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
-                    ? previewData?.error_line ?? null
-                    : null
-                }
-                previewRows={
-                  previewData?.status === "ok" && previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
-                    ? previewData.preview
-                    : undefined
-                }
-              />
+              >
+                <NodePanel
+                  node={(() => {
+                    const id = selectedNode?.id ?? lastSelectedId
+                    if (!id) return null
+                    return (nodes.find((n) => n.id === id) ?? null) as unknown as SimpleNode | null
+                  })()}
+                  onClose={closePanel}
+                  onUpdateNode={onUpdateNode}
+                  onDeleteEdge={handleDeleteEdge}
+                  onRefreshPreview={() => { if (selectedNode) refreshPreview(selectedNode) }}
+                  dimmed={!selectedNode && !!lastSelectedId}
+                  errorLine={
+                    previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
+                      ? previewData?.error_line ?? null
+                      : null
+                  }
+                  previewRows={
+                    previewData?.status === "ok" && previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
+                      ? previewData.preview
+                      : undefined
+                  }
+                />
+              </GraphProvider>
             )}
           </ErrorBoundary>
         </aside>
