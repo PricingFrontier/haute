@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
+
+# ``subprocess`` is intentionally imported at module scope so tests enforcing
+# the cascade-free contract (codebase-review #79) can patch it and assert
+# ``subprocess.call`` / ``subprocess.Popen`` are never invoked. The runtime
+# code does not use subprocess anywhere in this module —
+# :func:`_open_browser` delegates to :mod:`webbrowser` exclusively.
+import subprocess  # noqa: F401
 import sys
 import webbrowser
 from pathlib import Path
@@ -70,39 +75,42 @@ def _discover_or_default() -> Path:
 
 
 def _open_browser(url: str) -> None:
-    """Open *url* in the default browser, suppressing noisy stderr from gio."""
+    """Open *url* in the default browser.
+
+    Delegates to :func:`webbrowser.open` which already handles platform
+    detection internally.  When the browser cannot be launched the URL is
+    printed to stdout so the user can paste it themselves — that is the
+    only sensible fallback.
+    """
     try:
-        if sys.platform == "linux":
-            rc = subprocess.call(
-                ["xdg-open", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if rc != 0:
-                webbrowser.open(url)
-        elif sys.platform == "darwin":
-            subprocess.Popen(
-                ["open", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            webbrowser.open(url)
-    except Exception:
-        webbrowser.open(url)
+        opened = webbrowser.open(url)
+    except Exception as exc:
+        click.echo(
+            f"Could not open browser ({exc}). Open this URL manually: {url}",
+        )
+        return
+    if not opened:
+        click.echo(f"Could not open browser. Open this URL manually: {url}")
 
 
 def _node_env() -> dict[str, str] | None:
-    """Return an env dict with Node.js on PATH, or *None* if already available."""
+    """Return ``None`` when Node is on PATH, or raise if it's missing.
+
+    Node is required for the dev-mode frontend.  When :func:`shutil.which`
+    finds ``node`` nothing extra is needed and ``None`` is returned (the
+    caller then inherits the ambient environment).  When Node is absent
+    this function fails loudly with a clear install hint rather than
+    silently injecting the default MSI path — that silent fallback only
+    works on a specific machine layout and hides the real problem (Node
+    isn't installed) from the user.
+    """
     if shutil.which("node"):
-        return None  # already on PATH, no override needed
-    if sys.platform == "win32":
-        nodejs_dir = Path(r"C:\Program Files\nodejs")
-        if (nodejs_dir / "node.exe").exists():
-            env = os.environ.copy()
-            env["PATH"] = f"{nodejs_dir};{env.get('PATH', '')}"
-            return env
-    return None
+        return None
+    msg = (
+        "Node.js is required but was not found on PATH. "
+        "Install Node.js from https://nodejs.org and restart your terminal."
+    )
+    raise click.ClickException(msg)
 
 
 def _npm() -> str:
@@ -120,14 +128,24 @@ def _npm() -> str:
     raise click.ClickException(msg)
 
 
-def _find_frontend_dir() -> Path | None:
-    """Walk up from cwd looking for a frontend/ directory with package.json."""
+def _find_frontend_dir() -> Path:
+    """Walk up from cwd looking for a ``frontend/`` dir with ``package.json``.
+
+    Raises :class:`FileNotFoundError` when no such directory exists anywhere
+    in the ancestor chain.  Callers are expected to catch the exception
+    when a missing frontend is acceptable (e.g. production mode serves
+    built static files).  Making the absence explicit removes the silent
+    ``None`` that previously forced every call-site to implement its own
+    "dev-vs-prod" check.
+    """
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
         candidate = parent / "frontend"
         if (candidate / "package.json").exists():
             return candidate
-    return None
+    raise FileNotFoundError(
+        f"No frontend/ directory with package.json found in {cwd} or any parent."
+    )
 
 
 # ---------------------------------------------------------------------------

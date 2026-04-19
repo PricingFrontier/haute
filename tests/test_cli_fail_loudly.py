@@ -464,7 +464,10 @@ class TestServePortConflictDetection:
 
         # uvicorn.run must never be called — the pre-flight check must fire first.
         with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=None),
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_uvicorn_run,
         ):
@@ -510,7 +513,10 @@ class TestServePortConflictDetection:
         s.close()
 
         with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=None),
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_uvicorn_run,
         ):

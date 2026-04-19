@@ -66,7 +66,7 @@ def _write_smoke_toml(
         if target in {"container", "azure-container-apps", "aws-ecs", "gcp-run"}
         else ""
     )
-    deploy_lines = ['[deploy]', 'model_name = "test-model"', f'target = "{target}"']
+    deploy_lines = ["[deploy]", 'model_name = "test-model"', f'target = "{target}"']
     if with_endpoint_name:
         deploy_lines.append('endpoint_name = "test-ep"')
     if with_endpoint_suffix:
@@ -108,7 +108,9 @@ def _write_impact_project(
         else ""
     )
     ci_suffix_line = (
-        f'endpoint_suffix = "{staging_suffix_in_toml}"\n' if staging_suffix_in_toml is not None else ""
+        f'endpoint_suffix = "{staging_suffix_in_toml}"\n'
+        if staging_suffix_in_toml is not None
+        else ""
     )
     toml = (
         f'[project]\nname = "t"\npipeline = "main.py"\n'
@@ -117,7 +119,7 @@ def _write_impact_project(
         f"{container_section}"
         f'[safety]\nimpact_dataset = "data/impact.parquet"\n'
         f'[ci]\nprovider = "github"\n'
-        f'[ci.staging]\n'
+        f"[ci.staging]\n"
         f"{ci_suffix_line}"
         f'endpoint_url = "{staging_url}"\n'
     )
@@ -387,9 +389,7 @@ class TestFindFrontendDirRaisesWhenAbsent:
                 _find_frontend_dir()
 
             msg = str(exc_info.value).lower()
-            assert "frontend" in msg, (
-                f"Error must name 'frontend' directory: {exc_info.value}"
-            )
+            assert "frontend" in msg, f"Error must name 'frontend' directory: {exc_info.value}"
 
     def test_serve_handles_missing_frontend_in_prod_mode(
         self,
@@ -561,8 +561,7 @@ class TestSmokeErrorStyleIsProjectConvention:
             f"Output must flag an error condition. Output:\n{result.output}"
         )
         assert "endpoint" in output_lower, (
-            f"Error must name 'endpoint' so the user knows what's missing. "
-            f"Output:\n{result.output}"
+            f"Error must name 'endpoint' so the user knows what's missing. Output:\n{result.output}"
         )
 
 
@@ -605,17 +604,14 @@ class TestImpactStagingSuffixSingleSource:
             patch("haute.deploy._impact.format_markdown", return_value="# Report"),
         ):
             mock_db.return_value = ([], [], False)
-            result = runner.invoke(
-                cli, ["impact", "--endpoint-suffix", "-from-cli"]
-            )
+            result = runner.invoke(cli, ["impact", "--endpoint-suffix", "-from-cli"])
 
         assert result.exit_code == 0, result.output
         # The staging endpoint name passed into the transport must have
         # used the CLI-provided suffix, not the TOML one.
         staging_name_arg = mock_db.call_args[0][0]  # 1st positional = staging_name
         assert staging_name_arg.endswith("-from-cli"), (
-            f"Expected staging name to end with CLI suffix '-from-cli', "
-            f"got {staging_name_arg!r}"
+            f"Expected staging name to end with CLI suffix '-from-cli', got {staging_name_arg!r}"
         )
         assert "-from-toml" not in staging_name_arg, (
             f"CLI flag must override TOML value, but '-from-toml' leaked into "
@@ -644,8 +640,7 @@ class TestImpactStagingSuffixSingleSource:
         assert result.exit_code == 0, result.output
         staging_name_arg = mock_db.call_args[0][0]
         assert staging_name_arg.endswith("-from-toml"), (
-            f"Expected staging name to end with TOML suffix '-from-toml', "
-            f"got {staging_name_arg!r}"
+            f"Expected staging name to end with TOML suffix '-from-toml', got {staging_name_arg!r}"
         )
 
     def test_no_hardcoded_underscore_staging_fallback(
@@ -724,9 +719,7 @@ class TestImpactStagingSuffixSingleSource:
             patch("haute.deploy._impact.format_markdown", return_value="# Report"),
         ):
             mock_db.return_value = ([], [], False)
-            result = runner.invoke(
-                cli, ["impact", "--endpoint-suffix", "-override"]
-            )
+            result = runner.invoke(cli, ["impact", "--endpoint-suffix", "-override"])
 
         assert result.exit_code == 0, result.output
         staging_name_arg = mock_db.call_args[0][0]

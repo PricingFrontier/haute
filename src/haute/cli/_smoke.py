@@ -46,9 +46,12 @@ def smoke(endpoint_suffix: str | None) -> None:
 
     if transport.kind == "databricks":
         if not endpoint_name:
-            raise click.UsageError(
-                "No endpoint name configured. Set endpoint_name or endpoint_suffix in haute.toml."
+            click.echo(
+                "Error: No endpoint name configured. "
+                "Set endpoint_name or endpoint_suffix in haute.toml.",
+                err=True,
             )
+            raise SystemExit(1)
         all_ok = _smoke_databricks(endpoint_name, json_files)
     elif transport.kind == "http":
         all_ok = _smoke_http(transport.staging_url, json_files)

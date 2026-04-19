@@ -25,7 +25,10 @@ class TestServe:
         monkeypatch.chdir(tmp_path)
 
         with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=None),
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
             patch("haute.server.STATIC_DIR", tmp_path / "nonexistent"),
         ):
             result = runner.invoke(cli, ["serve", "--no-browser"])
@@ -45,7 +48,10 @@ class TestServe:
         static.mkdir()
 
         with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=None),
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
         ):
@@ -65,7 +71,10 @@ class TestServe:
         static.mkdir()
 
         with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=None),
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
         ):
@@ -162,7 +171,10 @@ class TestServe:
         mock_timer = MagicMock()
 
         with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=None),
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run"),
             patch("threading.Timer", return_value=mock_timer) as timer_cls,
@@ -191,7 +203,10 @@ class TestServe:
         mock_timer = MagicMock()
 
         with (
-            patch("haute.cli._serve._find_frontend_dir", return_value=None),
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run"),
             patch("threading.Timer", return_value=mock_timer) as timer_cls,
@@ -250,13 +265,19 @@ class TestServe:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """_find_frontend_dir returns None when no frontend/ exists."""
+        """_find_frontend_dir raises FileNotFoundError when no frontend/ exists.
+
+        Per codebase-review #80 the "missing frontend" signal is made
+        explicit via an exception rather than a silent ``None`` return,
+        so each caller decides whether a missing frontend is an error
+        (dev-only commands) or a fall-through (``serve`` → prod mode).
+        """
         from haute.cli._helpers import _find_frontend_dir
 
         monkeypatch.chdir(tmp_path)
 
-        result = _find_frontend_dir()
-        assert result is None
+        with pytest.raises(FileNotFoundError):
+            _find_frontend_dir()
 
     def test_dev_mode_echoes_dev_info(
         self,

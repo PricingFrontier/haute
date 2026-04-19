@@ -47,8 +47,22 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
     config = _load_deploy_config(require_toml=True)
     project_root = get_project_root()
 
-    # Determine endpoint names
-    staging_suffix = endpoint_suffix or config.ci.staging_endpoint_suffix or "_staging"
+    # Resolve staging suffix with exactly one canonical fall-through:
+    # CLI flag wins when given, otherwise the TOML-loaded
+    # ``config.ci.staging_endpoint_suffix`` is authoritative. No literal
+    # fallback — a blank suffix would produce ``staging_name == prod_name``
+    # which silently invalidates the impact comparison, so we fail loudly
+    # and point the user at the config key they need to set.
+    staging_suffix = endpoint_suffix if endpoint_suffix else config.ci.staging_endpoint_suffix
+    if not staging_suffix:
+        click.echo(
+            "Error: No staging endpoint suffix configured. "
+            "Set [ci.staging] endpoint_suffix in haute.toml "
+            "or pass --endpoint-suffix.",
+            err=True,
+        )
+        raise SystemExit(1)
+
     base_name = config.endpoint_name or config.model_name
     staging_name = base_name + staging_suffix
     prod_name = base_name

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -13,31 +13,21 @@ import pytest
 
 
 class TestOpenBrowser:
-    def test_linux_xdg_open_success(self) -> None:
+    """:func:`_open_browser` delegates to :mod:`webbrowser` once.
+
+    Post codebase-review #79, the platform-dispatched cascade
+    (``xdg-open`` -> ``open`` -> ``webbrowser`` -> ``webbrowser``) was
+    collapsed into a single :func:`webbrowser.open` call. When the
+    browser can't be launched the URL is printed to the user so they
+    can click it themselves.
+    """
+
+    def test_delegates_to_webbrowser_open(self) -> None:
+        """The only path is :func:`webbrowser.open` — no subprocess."""
         with (
-            patch("haute.cli._helpers.sys") as mock_sys,
-            patch("haute.cli._helpers.subprocess") as mock_sub,
-        ):
-            mock_sys.platform = "linux"
-            mock_sub.call.return_value = 0
-            mock_sub.DEVNULL = -1
-
-            from haute.cli._helpers import _open_browser
-
-            _open_browser("http://localhost:8000")
-
-            mock_sub.call.assert_called_once()
-            assert "xdg-open" in mock_sub.call.call_args[0][0]
-
-    def test_linux_xdg_open_failure_falls_back_to_webbrowser(self) -> None:
-        with (
-            patch("haute.cli._helpers.sys") as mock_sys,
-            patch("haute.cli._helpers.subprocess") as mock_sub,
             patch("haute.cli._helpers.webbrowser") as mock_wb,
         ):
-            mock_sys.platform = "linux"
-            mock_sub.call.return_value = 1
-            mock_sub.DEVNULL = -1
+            mock_wb.open.return_value = True
 
             from haute.cli._helpers import _open_browser
 
@@ -45,49 +35,38 @@ class TestOpenBrowser:
 
             mock_wb.open.assert_called_once_with("http://localhost:8000")
 
-    def test_darwin_uses_open_command(self) -> None:
-        with (
-            patch("haute.cli._helpers.sys") as mock_sys,
-            patch("haute.cli._helpers.subprocess") as mock_sub,
-        ):
-            mock_sys.platform = "darwin"
-            mock_sub.DEVNULL = -1
-            mock_sub.Popen.return_value = MagicMock()
+    def test_failure_prints_url(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When :func:`webbrowser.open` raises, the URL is printed so the
+        user can paste it manually — and the exception does not escape."""
+        url = "http://localhost:8000"
+        with patch("haute.cli._helpers.webbrowser") as mock_wb:
+            mock_wb.open.side_effect = RuntimeError("no display")
 
             from haute.cli._helpers import _open_browser
 
-            _open_browser("http://localhost:8000")
+            _open_browser(url)  # must not raise
 
-            mock_sub.Popen.assert_called_once()
-            assert "open" in mock_sub.Popen.call_args[0][0]
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert url in combined, f"Expected URL in output. out={captured.out!r} err={captured.err!r}"
 
-    def test_windows_uses_webbrowser(self) -> None:
-        with (
-            patch("haute.cli._helpers.sys") as mock_sys,
-            patch("haute.cli._helpers.webbrowser") as mock_wb,
-        ):
-            mock_sys.platform = "win32"
-
-            from haute.cli._helpers import _open_browser
-
-            _open_browser("http://localhost:8000")
-
-            mock_wb.open.assert_called_once_with("http://localhost:8000")
-
-    def test_exception_falls_back_to_webbrowser(self) -> None:
-        with (
-            patch("haute.cli._helpers.sys") as mock_sys,
-            patch("haute.cli._helpers.subprocess") as mock_sub,
-            patch("haute.cli._helpers.webbrowser") as mock_wb,
-        ):
-            mock_sys.platform = "linux"
-            mock_sub.call.side_effect = FileNotFoundError("xdg-open not found")
+    def test_failure_returning_false_also_prints_url(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """:func:`webbrowser.open` returns ``False`` on silent failure — the
+        URL must still be surfaced so the user sees it."""
+        url = "http://localhost:8000"
+        with patch("haute.cli._helpers.webbrowser") as mock_wb:
+            mock_wb.open.return_value = False
 
             from haute.cli._helpers import _open_browser
 
-            _open_browser("http://localhost:8000")
+            _open_browser(url)
 
-            mock_wb.open.assert_called_once_with("http://localhost:8000")
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert url in combined, f"Expected URL in output. out={captured.out!r} err={captured.err!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -126,15 +105,18 @@ class TestFindFrontendDir:
 
         assert result == fe
 
-    def test_not_found_returns_none(self, tmp_path: Path) -> None:
+    def test_not_found_raises(self, tmp_path: Path) -> None:
+        """Post codebase-review #80, a missing frontend/ raises
+        :class:`FileNotFoundError` so callers make an explicit choice about
+        dev-vs-prod rather than treating ``None`` as an implicit signal.
+        """
         with patch("haute.cli._helpers.Path") as mock_path:
             mock_path.cwd.return_value = tmp_path
 
             from haute.cli._helpers import _find_frontend_dir
 
-            result = _find_frontend_dir()
-
-        assert result is None
+            with pytest.raises(FileNotFoundError):
+                _find_frontend_dir()
 
 
 # ---------------------------------------------------------------------------

@@ -56,10 +56,18 @@ def serve(host: str, port: int, no_browser: bool) -> None:
         )
         raise SystemExit(1)
 
-    frontend_dir = _find_frontend_dir()
+    # Dev mode requires a frontend/ directory with node_modules already
+    # installed. When no frontend/ is checked out (e.g. running from a
+    # wheel install), _find_frontend_dir raises — we catch that here and
+    # fall through to production mode (serve built static files).
+    try:
+        frontend_dir: Path | None = _find_frontend_dir()
+    except FileNotFoundError:
+        frontend_dir = None
     dev_mode = frontend_dir is not None and (frontend_dir / "node_modules").exists()
 
     if dev_mode:
+        assert frontend_dir is not None  # narrowed by dev_mode guard
         click.echo("[dev] Dev mode: starting Vite dev server + FastAPI backend")
         click.echo("  Frontend -> http://localhost:5173  (open this)")
         click.echo(f"  Backend  -> http://{host}:{port}   (API only)")
