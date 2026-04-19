@@ -36,15 +36,14 @@ _model_cache: LRUCache[tuple[str, str, str, str], ScoringModel] = LRUCache(
 
 
 class ScoringModel:
-    """Uniform scoring interface wrapping any MLflow-loaded model.
+    """Carrier for a loaded model plus the metadata scoring needs.
 
-    Provides a consistent API regardless of model flavor (CatBoost,
-    pyfunc, etc.), abstracting away flavor-specific details like
-    categorical feature handling and prediction output format.
-
-    Attribute access is proxied to the underlying model for backward
-    compatibility with code that accesses CatBoost-specific attributes
-    (e.g. ``model.feature_names_``, ``model.get_cat_feature_indices()``).
+    Holds the raw flavor-specific model object (CatBoost / pyfunc /
+    RustyStats GLM) together with the declared ``feature_names``,
+    ``cat_feature_names``, and ``flavor`` string.  All scoring internals
+    dispatch explicitly on ``flavor``; there is no ``__getattr__``
+    proxying — callers must go through the declared ``predict`` /
+    ``predict_proba`` / ``raw_model`` surface.
     """
 
     __slots__ = ("_model", "feature_names", "cat_feature_names", "flavor")
@@ -77,10 +76,6 @@ class ScoringModel:
         if fn is None:
             return None
         return np.asarray(fn(x_data))
-
-    def __getattr__(self, name: str) -> Any:
-        """Proxy attribute access to the underlying model for backward compat."""
-        return getattr(self._model, name)
 
 
 # ---------------------------------------------------------------------------

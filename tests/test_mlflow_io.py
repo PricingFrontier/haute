@@ -874,13 +874,6 @@ class TestScoringModelDirect:
         sm = ScoringModel(raw, ["a"], frozenset(), "pyfunc")
         assert sm.predict_proba(np.array([[1]])) is None
 
-    def test_getattr_proxies_to_raw_model(self):
-        """Attribute access is proxied to the underlying model."""
-        raw = MagicMock()
-        raw.some_custom_attr = "hello"
-        sm = ScoringModel(raw, ["a"], frozenset(), "catboost")
-        assert sm.some_custom_attr == "hello"
-
 
 # ---------------------------------------------------------------------------
 # _load_rustystats_model — feature_names fallback (line 130)

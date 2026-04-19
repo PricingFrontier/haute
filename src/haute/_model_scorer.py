@@ -26,15 +26,6 @@ logger = get_logger(component="model_scorer")
 # typo in the flavor string must not silently fall through to pyfunc).
 _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystats"})
 
-# Auto-detect threshold for batch-vs-eager when ``batch=None``.
-# Below this row count we score in-memory (one predict call, no disk IO).
-# Above this we sink to parquet and stream through batches (lower peak memory).
-# Chosen so test / preview flows stay eager while production-size data (> 1K rows)
-# exercises the batched path.  Explicit ``batch=True/False`` overrides the
-# auto-detect — operators who know their data profile can always opt in/out.
-_BATCH_AUTO_THRESHOLD: int = 1000
-
-
 def _format_feature_mismatch(
     expected: list[str],
     available: list[str],
@@ -208,20 +199,6 @@ def _register_temp_cleanup(path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _autodetect_batch(lf: pl.LazyFrame) -> bool:
-    """Decide whether to batch a LazyFrame based on its row count.
-
-    Uses ``pl.len()`` over the lazy plan — for Polars-native sources
-    (``scan_parquet``, ``DataFrame.lazy()``) this is metadata-only; for
-    complex chains it may have to execute the plan, but that cost is
-    bounded by the same work the scorer itself would do.  Operators who
-    know their data profile should pass ``batch=True/False`` explicitly
-    to skip this probe.
-    """
-    n_rows = lf.select(pl.len()).collect(engine="streaming").item()
-    return bool(n_rows > _BATCH_AUTO_THRESHOLD)
-
-
 def _predict_positive_proba(raw_model: Any, x_data: Any) -> np.ndarray | None:
     """Return the positive-class probability vector, or ``None`` if unsupported.
 
@@ -321,7 +298,7 @@ def score_frame(
     flavor: str,
     task: str = "regression",
     output_col: str = "prediction",
-    batch: bool | None = None,
+    batch: bool = False,
 ) -> pl.LazyFrame:
     """Unified scoring entry point with explicit flavor dispatch.
 
@@ -355,8 +332,11 @@ def score_frame(
     batch
         * ``True``  → sink + batched parquet scoring (low peak memory).
         * ``False`` → eager in-memory scoring (one ``predict`` call).
-        * ``None``  → auto-detect from the LazyFrame's row count
-          (threshold :data:`_BATCH_AUTO_THRESHOLD`).
+
+        Callers choose per-path: the preview / live-API caller passes
+        ``False``; the batch-scoring caller passes ``True``.  No
+        auto-detect — that would force a row-count probe on a potentially
+        expensive ``scan_ndjson`` / filtered chain.
 
     Returns
     -------
@@ -376,9 +356,6 @@ def score_frame(
             flavor=flavor,
             supported=sorted(_SUPPORTED_FLAVORS),
         )
-
-    if batch is None:
-        batch = _autodetect_batch(lf)
 
     if batch:
         return _score_batched_unified(

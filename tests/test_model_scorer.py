@@ -414,12 +414,6 @@ class TestScoringModel:
         assert result is not None
         assert isinstance(result, np.ndarray)
 
-    def test_getattr_proxies_to_raw_model(self):
-        """Attribute access falls through to the underlying model."""
-        sm = _make_scoring_model()
-        # Access CatBoost-specific attribute via proxy
-        assert sm.feature_names_ == ["a", "b"]
-
     def test_raw_model_property(self):
         """raw_model exposes the underlying model object."""
         sm = _make_scoring_model()
