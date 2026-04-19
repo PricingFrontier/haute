@@ -187,7 +187,10 @@ export default function usePipelineAPI({
               }
             }
           })
-          .catch(() => { addToast("warning", `Preview propagation failed for "${dsId}"`) })
+          .catch((err: unknown) => {
+            const detail = err instanceof Error ? err.message : String(err)
+            addToast("warning", `Preview propagation failed for "${dsId}": ${detail}`)
+          })
       }
     }
 
@@ -272,7 +275,10 @@ export default function usePipelineAPI({
               ))
             }
           })
-          .catch(() => { addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}"`) }),
+          .catch((err: unknown) => {
+            const detail = err instanceof Error ? err.message : String(err)
+            addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}": ${detail}`)
+          }),
       ),
     ).then(() => {
       fetchPreviewImmediate(node)

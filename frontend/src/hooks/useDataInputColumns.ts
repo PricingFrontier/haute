@@ -112,7 +112,8 @@ export function useDataInputColumns(
       })
       .catch((e) => {
         if (e instanceof DOMException && e.name === "AbortError") return
-        addToast("warning", `Column fetch failed for "${dataInput}"`)
+        const detail = e instanceof Error ? e.message : String(e)
+        addToast("warning", `Column fetch failed for "${dataInput}": ${detail}`)
         if (!cachedColumnsRef.current) setDataInputColumns([])
       })
     return () => controller.abort()
