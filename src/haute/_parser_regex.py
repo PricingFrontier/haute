@@ -47,19 +47,6 @@ _RE_CONNECT = re.compile(
     r'pipeline\.connect\(\s*["\']([^"\']+)["\']\s*,\s*["\']([^"\']+)["\']\s*\)',
 )
 
-_RE_DECORATOR_KWARG = re.compile(
-    r'(\w+)\s*=\s*["\']([^"\']*)["\']',
-)
-
-_RE_DECORATOR_BOOL_KWARG = re.compile(
-    r"(\w+)\s*=\s*(True|False)",
-)
-
-_RE_DECORATOR_NUM_KWARG = re.compile(
-    r"(\w+)\s*=\s*(-?[\d.]+(?:e[+-]?\d+)?)\b",
-    re.IGNORECASE,
-)
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -134,21 +121,41 @@ def _find_function_blocks(source: str) -> list[dict]:
 
 
 def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
-    """Extract keyword arguments from a decorator using regex."""
-    # Strip the @pipeline.<method>( ... ) wrapper
-    if "(" in decorator_text:
-        inner = decorator_text.split("(", 1)[1].rstrip(")")
-        result: dict[str, Any] = dict(_RE_DECORATOR_KWARG.findall(inner))
-        # Also capture boolean kwargs (e.g. output=True)
-        for key, val in _RE_DECORATOR_BOOL_KWARG.findall(inner):
-            if key not in result:
-                result[key] = val == "True"
-        # Also capture numeric kwargs (e.g. steps=10, default=1.05)
-        for key, val in _RE_DECORATOR_NUM_KWARG.findall(inner):
-            if key not in result:
-                result[key] = float(val) if "." in val or "e" in val.lower() else int(val)
-        return result
-    return {}
+    """Extract keyword arguments from a decorator.
+
+    The decorator-shape detection (``@pipeline.<method>(...)``) stays regex-
+    driven — it has to, because we're in the regex fallback path for files
+    ``ast.parse`` already rejected.  The *kwarg body* itself, however, is
+    almost always a valid Python expression even when the surrounding file
+    is broken, so we delegate to :func:`ast.parse` to recover structured
+    literals (lists, dicts, tuples, ``None``, booleans) that the previous
+    hand-rolled regex silently dropped or mangled.
+
+    Malformed kwargs (e.g. ``percent=50%``) surface as ``SyntaxError`` /
+    ``ValueError`` rather than being silently truncated — a wrong-but-
+    plausible answer is strictly worse than a loud failure.
+    """
+    if "(" not in decorator_text:
+        return {}
+    # Strip the @pipeline.<method>( ... ) wrapper.  ``rpartition`` on the
+    # trailing ``)`` lets us keep any nested parens inside the kwargs body
+    # intact (e.g. ``tuple_val=(1, 2)``).
+    _, _, inner = decorator_text.partition("(")
+    inner = inner.rstrip()
+    if inner.endswith(")"):
+        inner = inner[:-1]
+    inner = inner.strip()
+    if not inner:
+        return {}
+
+    # Wrap in a synthetic call so ast.parse produces an ast.Call we can
+    # walk — this handles every shape ``ast.literal_eval`` supports, plus
+    # multi-line bodies and nested structures, in one pass.
+    tree = ast.parse(f"f({inner})", mode="eval")
+    call = tree.body
+    if not isinstance(call, ast.Call):
+        raise ValueError(f"decorator kwargs body is not a call expression: {inner!r}")
+    return {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords if kw.arg is not None}
 
 
 # ---------------------------------------------------------------------------

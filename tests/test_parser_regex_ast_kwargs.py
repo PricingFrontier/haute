@@ -30,7 +30,6 @@ import pytest
 
 from haute._parser_regex import _parse_decorator_kwargs_regex
 
-
 # ---------------------------------------------------------------------------
 # Scalars — strings, ints, floats, booleans, None
 # ---------------------------------------------------------------------------
@@ -99,15 +98,11 @@ class TestScalarKwargs:
 
 class TestCompoundKwargs:
     def test_list_of_strings(self) -> None:
-        result = _parse_decorator_kwargs_regex(
-            '@pipeline.polars(depends=["a", "b"])'
-        )
+        result = _parse_decorator_kwargs_regex('@pipeline.polars(depends=["a", "b"])')
         assert result == {"depends": ["a", "b"]}
 
     def test_list_of_ints(self) -> None:
-        result = _parse_decorator_kwargs_regex(
-            "@pipeline.polars(steps=[1, 2, 3])"
-        )
+        result = _parse_decorator_kwargs_regex("@pipeline.polars(steps=[1, 2, 3])")
         assert result == {"steps": [1, 2, 3]}
 
     def test_empty_list(self) -> None:
@@ -115,9 +110,7 @@ class TestCompoundKwargs:
         assert result == {"tags": []}
 
     def test_dict_value(self) -> None:
-        result = _parse_decorator_kwargs_regex(
-            '@pipeline.polars(config={"key": "val"})'
-        )
+        result = _parse_decorator_kwargs_regex('@pipeline.polars(config={"key": "val"})')
         assert result == {"config": {"key": "val"}}
 
     def test_empty_dict(self) -> None:
@@ -125,9 +118,7 @@ class TestCompoundKwargs:
         assert result == {"config": {}}
 
     def test_nested_list_of_dicts(self) -> None:
-        result = _parse_decorator_kwargs_regex(
-            '@pipeline.polars(nested=[{"a": 1}, {"b": 2}])'
-        )
+        result = _parse_decorator_kwargs_regex('@pipeline.polars(nested=[{"a": 1}, {"b": 2}])')
         assert result == {"nested": [{"a": 1}, {"b": 2}]}
 
     def test_tuple_value(self) -> None:
@@ -149,9 +140,7 @@ class TestCompoundKwargs:
 
 class TestMultipleKwargs:
     def test_string_and_bool(self) -> None:
-        result = _parse_decorator_kwargs_regex(
-            '@pipeline.polars(path="data.csv", output=True)'
-        )
+        result = _parse_decorator_kwargs_regex('@pipeline.polars(path="data.csv", output=True)')
         assert result == {"path": "data.csv", "output": True}
 
     def test_all_scalar_types_together(self) -> None:
