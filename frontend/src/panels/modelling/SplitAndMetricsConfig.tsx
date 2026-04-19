@@ -1,7 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
 import { configField, safeParseInt } from "../../utils/configField"
-import { toggleButtonStyle } from "./styles"
 
 type Column = { name: string; dtype: string }
 
@@ -167,29 +166,6 @@ export function SplitAndMetricsConfig({
               </div>
             </div>
           )}
-          {/* Cross-validation */}
-          <div className="flex items-center gap-2 mt-2">
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Cross-validate</label>
-            <button
-              onClick={() => onUpdate("cv_folds", config.cv_folds ? null : 5)}
-              className="px-2 py-0.5 rounded text-[11px] font-mono"
-              style={toggleButtonStyle(!!config.cv_folds)}
-            >
-              {config.cv_folds ? "On" : "Off"}
-            </button>
-            {!!config.cv_folds && (
-              <div className="flex items-center gap-1">
-                <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Folds:</label>
-                <input
-                  type="number" min={2} max={20} step={1}
-                  value={configField(config, "cv_folds", 5)}
-                  onChange={(e) => onUpdate("cv_folds", parseInt(e.target.value) || 5)}
-                  className="w-14 px-2 py-0.5 rounded text-xs font-mono"
-                  style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                />
-              </div>
-            )}
-          </div>
           {/* Row limit */}
           {(() => {
             const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null

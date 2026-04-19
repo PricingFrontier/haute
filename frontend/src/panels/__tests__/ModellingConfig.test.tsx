@@ -758,53 +758,6 @@ describe("ModellingConfig", () => {
   })
 
   // ═════════════════════════════════════════════════════════════════
-  // Cross-validation
-  // ═════════════════════════════════════════════════════════════════
-
-  describe("Cross-validation", () => {
-    it("CV toggle defaults to Off", () => {
-      renderConfig()
-      const cvBtn = screen.getByRole("button", { name: "Off" })
-      expect(cvBtn).toBeTruthy()
-    })
-
-    it("clicking CV toggle calls onUpdate to enable cv_folds", () => {
-      const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "Off" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("cv_folds", 5)
-    })
-
-    it("clicking CV toggle when on calls onUpdate to disable cv_folds", () => {
-      const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
-      })
-      fireEvent.click(screen.getByRole("button", { name: "On" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("cv_folds", null)
-    })
-
-    it("CV results are not shown inline (moved to preview panel)", () => {
-      useNodeResultsStore.setState({
-        trainResults: {
-          node_1: {
-            result: makeTrainResult({
-              cv_results: {
-                mean_metrics: { gini: 0.44 },
-                std_metrics: { gini: 0.02 },
-                n_folds: 5,
-              },
-            }),
-            jobId: "job_1",
-            configHash: "irrelevant",
-          },
-        },
-      })
-      renderConfig()
-      // CV results should NOT appear in config panel — they're in ModellingPreview
-      expect(screen.queryByText(/Cross-Validation \(5-fold\)/)).toBeNull()
-    })
-  })
-
-  // ═════════════════════════════════════════════════════════════════
   // Edge cases
   // ═════════════════════════════════════════════════════════════════
 
@@ -910,29 +863,6 @@ describe("ModellingConfig", () => {
       const maeButtons = screen.getAllByRole("button", { name: "MAE" })
       fireEvent.click(maeButtons[0])
       expect(props.onUpdate).toHaveBeenCalledWith("loss_function", expect.any(String))
-    })
-  })
-
-  // ═════════════════════════════════════════════════════════════════
-  // CV folds input
-  // ═════════════════════════════════════════════════════════════════
-
-  describe("CV folds input", () => {
-    it("shows folds input when cv_folds is enabled", () => {
-      renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
-      })
-      expect(screen.getByText("On")).toBeTruthy()
-      expect(screen.getByDisplayValue("5")).toBeTruthy()
-    })
-
-    it("changing folds input value calls onUpdate with new folds count", () => {
-      const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
-      })
-      const foldsInput = screen.getByDisplayValue("5")
-      fireEvent.change(foldsInput, { target: { value: "10" } })
-      expect(props.onUpdate).toHaveBeenCalledWith("cv_folds", 10)
     })
   })
 

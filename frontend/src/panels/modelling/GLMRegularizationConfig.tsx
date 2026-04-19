@@ -21,7 +21,6 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
   const regularization = configField(config, "regularization", "")
   const alpha = configField(config, "alpha", 0)
   const l1Ratio = configField(config, "l1_ratio", 0.5)
-  const cvFolds = configField(config, "cv_folds", 5)
   const isActive = !!regularization
 
   return (
@@ -73,20 +72,6 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   min={0}
                   step={0.01}
                   placeholder="0 = auto (CV)"
-                />
-              </div>
-
-              {/* CV folds */}
-              <div>
-                <label className="text-xs" style={{ color: "var(--text-secondary)" }}>CV folds</label>
-                <input
-                  type="number"
-                  value={cvFolds}
-                  onChange={(e) => onUpdate("cv_folds", parseInt(e.target.value) || 5)}
-                  className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-                  style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                  min={2}
-                  max={20}
                 />
               </div>
 

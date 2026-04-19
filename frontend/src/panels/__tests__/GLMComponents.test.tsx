@@ -536,11 +536,10 @@ describe("GLMRegularizationConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("regularization", null)
   })
 
-  it("shows alpha and CV folds when regularization is active", () => {
+  it("shows alpha input when regularization is active", () => {
     render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByText("Regularization"))
     expect(screen.getByText(/Alpha/)).toBeTruthy()
-    expect(screen.getByText("CV folds")).toBeTruthy()
   })
 
   it("L1 ratio slider only appears for elastic_net", () => {

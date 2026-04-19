@@ -46,7 +46,6 @@ export type TrainResult = {
   double_lift?: { decile: number; actual: number; predicted: number; count: number }[]
   shap_summary?: { feature: string; mean_abs_shap: number }[]
   feature_importance_loss?: { feature: string; importance: number }[]
-  cv_results?: { mean_metrics: Record<string, number>; std_metrics: Record<string, number>; n_folds: number } | null
   ave_per_feature?: { feature: string; type: string; bins: { label: string; exposure: number; avg_actual: number; avg_predicted: number }[] }[]
   residuals_histogram?: { bin_center: number; count: number; weighted_count: number }[]
   residuals_stats?: { mean: number; std: number; skew: number; min: number; max: number }
