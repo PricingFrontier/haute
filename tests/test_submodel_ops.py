@@ -6,7 +6,7 @@ import pytest
 
 from haute.graph_utils import NodeType
 from haute.routes._submodel_ops import SubmodelGraphResult, create_submodel_graph
-from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
+from tests.conftest import make_graph
 
 
 def _simple_graph():

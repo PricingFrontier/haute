@@ -35,7 +35,7 @@ def _setup_impact_project(
         f'[project]\nname = "t"\npipeline = "main.py"\n'
         f'[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
         f'target = "{target}"\n'
-        f'{container_section}'
+        f"{container_section}"
         f'[safety]\nimpact_dataset = "{impact_dataset}"\n'
         f'[ci]\nprovider = "github"\n'
         f'[ci.staging]\nendpoint_suffix = "-staging"\n'

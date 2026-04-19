@@ -111,9 +111,7 @@ class SavePipelineService:
             self._infer_flatten_schemas(graph)
             self._write_config_files(graph, touched)
             warnings.extend(
-                self._write_sidecar(
-                    py_path, graph, body.sources, body.active_source, touched
-                )
+                self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
             )
         except BaseException:
             self._rollback(touched)

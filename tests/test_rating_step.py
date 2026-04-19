@@ -5,9 +5,9 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.codegen import graph_to_code
 from haute.executor import _build_node_fn
+from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.parser import parse_pipeline_source
 from tests.conftest import make_source_node as _source_node
 

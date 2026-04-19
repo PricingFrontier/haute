@@ -35,7 +35,6 @@ from haute.errors import DeployError
 from tests._deploy_helpers import make_resolved_deploy
 from tests.conftest import make_graph as _g
 
-
 # ---------------------------------------------------------------------------
 # Item #47 — Container base image pinning
 # ---------------------------------------------------------------------------
@@ -235,9 +234,7 @@ class TestBundledPathsAreAbsolute:
 
         assert len(artifacts) == 1
         [(_name, resolved_path)] = artifacts.items()
-        assert resolved_path.is_absolute(), (
-            f"Expected absolute path, got {resolved_path!r}"
-        )
+        assert resolved_path.is_absolute(), f"Expected absolute path, got {resolved_path!r}"
 
     def test_collect_artifacts_resolves_against_pipeline_dir_not_cwd(
         self,

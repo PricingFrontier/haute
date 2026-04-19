@@ -1025,7 +1025,6 @@ class TestResolveArtifactLocal:
 
     def test_failure_after_cache_write_cleans_partial(self, tmp_path):
         """If an error occurs after the file is moved into cache, the partial file is deleted."""
-        from pathlib import Path
 
         from haute._mlflow_io import _resolve_artifact_local
 

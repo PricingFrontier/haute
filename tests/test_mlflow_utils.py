@@ -8,7 +8,6 @@ import pytest
 
 from haute._mlflow_utils import resolve_version, search_versions
 
-
 # ---------------------------------------------------------------------------
 # search_versions
 # ---------------------------------------------------------------------------

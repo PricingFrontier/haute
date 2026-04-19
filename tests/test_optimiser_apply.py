@@ -16,7 +16,6 @@ from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _node_to_code
 from haute.executor import _apply_online, _apply_ratebook, _build_node_fn
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -509,7 +508,7 @@ class TestApplyRatebookHelper:
 
 class TestBundler:
     def test_collect_optimiser_apply_artifact(self):
-        from haute._types import GraphEdge, PipelineGraph
+        from haute._types import PipelineGraph
         from haute.deploy._bundler import collect_artifacts
 
         artifact = _make_online_artifact()

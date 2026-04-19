@@ -4,13 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from haute._node_builder import NodeBuildHooks, node_fn_name, wrap_builder
 from haute.graph_utils import GraphNode
-
 from tests.conftest import make_node
-
 
 # ---------------------------------------------------------------------------
 # Helpers

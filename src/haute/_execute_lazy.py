@@ -13,14 +13,14 @@ from typing import Any, NamedTuple
 import polars as pl
 
 from haute._builders import get_column_contract
-from haute._logging import get_logger
-from haute._polars_utils import _malloc_trim, safe_sink
-from haute._topo import ancestors, topo_sort_ids
 from haute._graph_utils import (
     _sanitize_func_name,
     build_parents_of,
     resolve_orig_source_names,
 )
+from haute._logging import get_logger
+from haute._polars_utils import _malloc_trim, safe_sink
+from haute._topo import ancestors, topo_sort_ids
 from haute._types import (
     GraphEdge,
     GraphNode,

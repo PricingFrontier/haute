@@ -870,8 +870,7 @@ def _build_rename_chain(
 ) -> list[str]:
     """Build a chain of renames by looking backward through steps."""
     trace_mod = _trace_module()
-    has_parser = trace_mod._HAS_EXPRESSION_PARSER
-    parse_expression = trace_mod.parse_expression if has_parser else None
+    parse_expression = trace_mod.parse_expression
 
     # Start with the current rename: old_name -> new_name
     chain = [old_name, new_name]
@@ -893,7 +892,7 @@ def _build_rename_chain(
             continue
 
         # Try to detect what column was the source by parsing the step's code
-        if has_parser and node_map and parse_expression is not None:
+        if node_map and parse_expression is not None:
             try:
                 nd = node_map.get(prev_step.node_id)
                 if nd:
@@ -953,8 +952,6 @@ def enrich_steps(
     monkeypatching at that location flows through unchanged.
     """
     trace_mod = _trace_module()
-    has_parser = trace_mod._HAS_EXPRESSION_PARSER
-    has_enrichment = trace_mod._HAS_TRACE_ENRICHMENT
 
     for step in steps:
         try:
@@ -997,8 +994,7 @@ def enrich_steps(
             # If this is the target step and the column is just passing
             # through, look upstream for the creating step's expression
             if (
-                has_parser
-                and column
+                column
                 and not _col_in_schema
                 and step.node_id == steps[-1].node_id  # target step
                 and column in step.schema_diff.columns_passed
@@ -1068,7 +1064,7 @@ def enrich_steps(
             if column and raw_code and ".with_columns(" in raw_code:
                 # Check if the column is a keyword arg or appears as an alias target
                 _col_in_code = bool(re.search(rf"\b{re.escape(column)}\s*=", raw_code))
-            if has_parser and column and (_col_in_schema or _col_in_code):
+            if column and (_col_in_schema or _col_in_code):
                 try:
                     parsed = trace_mod.parse_expression(code, column)
                     if parsed is not None:
@@ -1156,9 +1152,7 @@ def enrich_steps(
                                     error_type=type(inner_exc).__name__,
                                     exc_info=True,
                                 )
-                                entry["error"] = (
-                                    f"chain entry evaluation failed: {inner_exc}"
-                                )
+                                entry["error"] = f"chain entry evaluation failed: {inner_exc}"
                                 entry["error_type"] = type(inner_exc).__name__
                                 entry.setdefault("substituted_text", p.expression_text)
                                 fallback = combined_values.get(p.target_column)
@@ -1250,15 +1244,11 @@ def enrich_steps(
                     )
                     if step.calculation is None:
                         step.calculation = {}
-                    step.calculation.setdefault(
-                        "error", f"input_sources build failed: {exc}"
-                    )
-                    step.calculation.setdefault(
-                        "error_type", type(exc).__name__
-                    )
+                    step.calculation.setdefault("error", f"input_sources build failed: {exc}")
+                    step.calculation.setdefault("error_type", type(exc).__name__)
 
             # --- Rename detection ---
-            if has_parser and column:
+            if column:
                 try:
                     _detect_rename(step, code, raw_code, column, steps, node_map)
                 except Exception as exc:
@@ -1278,7 +1268,7 @@ def enrich_steps(
                     )
 
             # --- Node-type enrichment ---
-            if has_enrichment:
+            if True:
                 try:
                     detail: dict[str, Any] | None = None
                     if node_type == "ratingStep":
@@ -1363,9 +1353,7 @@ def enrich_steps(
                     # row_lineage_type is a plain string; encode the
                     # error visibly so UI consumers see "error: ..."
                     # rather than a silent None.
-                    step.row_lineage_type = (
-                        f"error: row lineage detection failed: {exc}"
-                    )
+                    step.row_lineage_type = f"error: row lineage detection failed: {exc}"
         except Exception as exc:
             # Outer catch-all for any enrichment step.  Surface the
             # failure on the step so downstream consumers can see it,
@@ -1386,8 +1374,6 @@ def enrich_steps(
                     "error_type": type(exc).__name__,
                 }
             else:
-                step.node_detail.setdefault(
-                    "error", f"trace enrichment step failed: {exc}"
-                )
+                step.node_detail.setdefault("error", f"trace enrichment step failed: {exc}")
                 step.node_detail.setdefault("error_type", type(exc).__name__)
             continue

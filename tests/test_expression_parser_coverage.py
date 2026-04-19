@@ -7,18 +7,15 @@ Organised by the source section each test targets.
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+from datetime import date
 
 import pytest
 
 from haute._expression_parser import (
-    EvaluatedExpression,
-    ParsedExpression,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
 )
-
 
 # ###########################################################################
 # 1. _ExprConverter.convert — node dispatch: Dict, IfExp, JoinedStr,

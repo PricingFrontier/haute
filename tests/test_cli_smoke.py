@@ -33,7 +33,7 @@ def _setup_smoke_project(
         f'[project]\nname = "t"\npipeline = "main.py"\n'
         f'[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
         f'target = "{target}"\n'
-        f'{container_section}'
+        f"{container_section}"
         f'[test_quotes]\ndir = "tests/quotes"\n'
         f'[ci]\nprovider = "github"\n'
         f'[ci.staging]\nendpoint_suffix = "-staging"\n'

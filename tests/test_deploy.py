@@ -19,7 +19,7 @@ from haute.graph_utils import PipelineGraph
 from haute.parser import parse_pipeline_file
 
 if TYPE_CHECKING:
-    from haute.deploy._config import DeployConfig, ResolvedDeploy
+    pass
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
 

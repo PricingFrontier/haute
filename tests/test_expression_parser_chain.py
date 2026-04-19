@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from haute._expression_parser import (
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
 )
-
 
 # ###########################################################################
 # 1. parse_expression_chain

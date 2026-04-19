@@ -32,14 +32,13 @@ import pytest
 from haute._project import get_project_root, is_haute_project
 from haute.errors import ConfigError
 
-
 # ---------------------------------------------------------------------------
 # Filesystem builders — small helpers keep each test focused on its
 # scenario rather than the mechanics of laying out a fake project.
 # ---------------------------------------------------------------------------
 
 
-def _make_haute_toml(root: Path, body: str = "[project]\nname = \"test\"\n") -> Path:
+def _make_haute_toml(root: Path, body: str = '[project]\nname = "test"\n') -> Path:
     """Create a minimal ``haute.toml`` at ``root`` and return its path."""
     toml = root / "haute.toml"
     toml.write_text(body, encoding="utf-8")
@@ -75,9 +74,7 @@ def _make_git_file(root: Path, target: str = "/absolute/gitdir/path") -> Path:
 
 
 class TestHappyPath:
-    def test_returns_tmp_when_haute_toml_and_git_dir_both_present(
-        self, tmp_path: Path
-    ) -> None:
+    def test_returns_tmp_when_haute_toml_and_git_dir_both_present(self, tmp_path: Path) -> None:
         _make_haute_toml(tmp_path)
         _make_git_dir(tmp_path)
         assert get_project_root(tmp_path) == tmp_path
@@ -201,9 +198,7 @@ class TestNoHauteToml:
 
 
 class TestNotAGitRepo:
-    def test_raises_config_error_when_no_dot_git_anywhere(
-        self, tmp_path: Path
-    ) -> None:
+    def test_raises_config_error_when_no_dot_git_anywhere(self, tmp_path: Path) -> None:
         _make_haute_toml(tmp_path)
         with pytest.raises(ConfigError):
             get_project_root(tmp_path)
@@ -219,9 +214,7 @@ class TestNotAGitRepo:
             get_project_root(tmp_path)
         assert "git" in str(exc_info.value).lower()
 
-    def test_raises_when_called_from_nested_dir_without_git(
-        self, tmp_path: Path
-    ) -> None:
+    def test_raises_when_called_from_nested_dir_without_git(self, tmp_path: Path) -> None:
         _make_haute_toml(tmp_path)
         nested = tmp_path / "a" / "b"
         nested.mkdir(parents=True)
@@ -263,9 +256,7 @@ class TestGitAsFile:
 
 
 class TestNestedProjects:
-    def test_inner_project_wins_when_called_from_inner_subdir(
-        self, tmp_path: Path
-    ) -> None:
+    def test_inner_project_wins_when_called_from_inner_subdir(self, tmp_path: Path) -> None:
         """First ``haute.toml`` walking up, not the outermost."""
         _make_haute_toml(tmp_path)
         _make_git_dir(tmp_path)  # shared repo at outer
@@ -276,9 +267,7 @@ class TestNestedProjects:
         sub.mkdir()
         assert get_project_root(sub) == inner
 
-    def test_inner_project_wins_when_called_from_inner_itself(
-        self, tmp_path: Path
-    ) -> None:
+    def test_inner_project_wins_when_called_from_inner_itself(self, tmp_path: Path) -> None:
         _make_haute_toml(tmp_path)
         _make_git_dir(tmp_path)
         inner = tmp_path / "inner"
@@ -286,9 +275,7 @@ class TestNestedProjects:
         _make_haute_toml(inner)
         assert get_project_root(inner) == inner
 
-    def test_outer_project_wins_when_called_from_outer_sibling(
-        self, tmp_path: Path
-    ) -> None:
+    def test_outer_project_wins_when_called_from_outer_sibling(self, tmp_path: Path) -> None:
         """Regression guard: calling from a dir outside the inner project
         walks up to the outer one, not down into the inner one."""
         _make_haute_toml(tmp_path)
@@ -376,9 +363,7 @@ class TestNonExistentStart:
         with pytest.raises(ConfigError):
             get_project_root(missing)
 
-    def test_non_existent_sibling_of_real_root_still_raises(
-        self, tmp_path: Path
-    ) -> None:
+    def test_non_existent_sibling_of_real_root_still_raises(self, tmp_path: Path) -> None:
         """Even if a sibling directory *is* a Haute project, a typo'd
         path must not quietly succeed by walking up to it."""
         real = tmp_path / "real"
@@ -417,9 +402,7 @@ class TestPermissionError:
             with pytest.raises(PermissionError):
                 get_project_root(tmp_path)
 
-    def test_permission_error_is_not_wrapped_as_config_error(
-        self, tmp_path: Path
-    ) -> None:
+    def test_permission_error_is_not_wrapped_as_config_error(self, tmp_path: Path) -> None:
         """``PermissionError`` must surface as itself, not as a
         ``ConfigError`` whose message hides the underlying OS cause.
 

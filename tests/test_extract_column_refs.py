@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from haute.executor import _extract_column_refs
 
 

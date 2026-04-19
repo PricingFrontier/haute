@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
-
 from tests.conftest import make_edge as _make_edge
 
 # ---------------------------------------------------------------------------

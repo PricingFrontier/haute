@@ -11,31 +11,30 @@ This file defines the complete specification for the trace enhancement.
 from __future__ import annotations
 
 import json
-import math
 import time
-from datetime import date, datetime
-from pathlib import Path
-from typing import Any
+from datetime import date
 
 import polars as pl
 import pytest
 
+from haute.executor import _preview_cache, execute_graph
 from haute.trace import (
-    SchemaDiff,
     TraceResult,
     TraceStep,
-    _compute_schema_diff,
-    _jsonify_row,
     execute_trace,
     trace_result_to_dict,
 )
 from haute.trace import _cache as _trace_cache
-from haute.executor import _preview_cache, execute_graph
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
-    make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
 

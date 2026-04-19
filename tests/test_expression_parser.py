@@ -13,22 +13,16 @@ pass as the parser is built out.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Any
 
 import pytest
 
 # ---------------------------------------------------------------------------
 # The dataclasses under test (will live in haute._expression_parser)
 # ---------------------------------------------------------------------------
-
 from haute._expression_parser import (
-    EvaluatedExpression,
-    ParsedExpression,
-    parse_expression,
     evaluate_expression,
+    parse_expression,
 )
-
 
 # ###########################################################################
 # A. Simple Arithmetic

@@ -105,9 +105,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
             try:
                 cleaned = load_test_quote_file(jf)
             except Exception as exc:
-                test_quote_errors.append(
-                    f"test quote {jf.name!r} failed: could not parse ({exc})"
-                )
+                test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
                 continue
             for row in cleaned:
                 missing = sorted(required_cols - set(row))

@@ -17,15 +17,14 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
 import pytest
 
-from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests._deploy_helpers import FIXTURE_DIR
+from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
 
 # ---------------------------------------------------------------------------
@@ -203,7 +202,7 @@ class TestHauteModelPredict:
         assert result["x"].tolist() == [1.0]
 
     @staticmethod
-    def _build_fixture_model(output_fields: list[str] | None = None) -> "HauteModel":
+    def _build_fixture_model(output_fields: list[str] | None = None) -> HauteModel:
         """Build a HauteModel wired to the fixture pipeline graph."""
         from haute.deploy._model_code import HauteModel
         from haute.deploy._pruner import prune_for_deploy
@@ -1626,9 +1625,10 @@ class TestBuildSignature:
         return {col.name: col.type for col in sig.inputs.inputs}
 
     def test_basic_types(self):
-        from haute.deploy._mlflow import _build_signature
         from mlflow.models import ModelSignature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
             input_schema={"age": "Int32", "name": "String", "premium": "Float64"},
@@ -1647,8 +1647,9 @@ class TestBuildSignature:
 
     def test_parameterized_datetime_type(self):
         """Datetime('us', 'UTC') should map to datetime DataType."""
-        from haute.deploy._mlflow import _build_signature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
             input_schema={"ts": "Datetime('us', 'UTC')"},
@@ -1661,8 +1662,9 @@ class TestBuildSignature:
 
     def test_unknown_dtype_falls_back_to_string(self):
         """Unknown polars dtype should map to DataType.string."""
-        from haute.deploy._mlflow import _build_signature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
             input_schema={"exotic": "CategoricalComplex"},
@@ -1675,8 +1677,9 @@ class TestBuildSignature:
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""
-        from haute.deploy._mlflow import _build_signature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         all_types = {
             "a_i8": "Int8",
@@ -2556,7 +2559,6 @@ class TestBugB10LexicographicVersionComparison:
     """B10: MLflow version max() must use numeric, not string comparison."""
 
     def test_version_10_greater_than_9(self) -> None:
-        from haute.deploy._mlflow import deploy_to_mlflow
 
         # We just need to test the max() logic. Let's test directly.
         versions = ["1", "2", "9", "10", "11"]

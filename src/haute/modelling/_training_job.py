@@ -337,9 +337,7 @@ class TrainingJob:
                     cat_features=[f for f in prepared.cat_features if f in term_names],
                     total_rows=prepared.total_rows,
                     feature_dtypes={
-                        f: dt
-                        for f, dt in prepared.feature_dtypes.items()
-                        if f in term_names
+                        f: dt for f, dt in prepared.feature_dtypes.items() if f in term_names
                     },
                     target_dtype=prepared.target_dtype,
                 )
@@ -1143,9 +1141,7 @@ class TrainingJob:
         features than we snapshotted — iterate ``features`` to preserve
         the training order.
         """
-        return {
-            f: self._contract_feature_dtypes.get(f, "Float64") for f in features
-        }
+        return {f: self._contract_feature_dtypes.get(f, "Float64") for f in features}
 
     def _target_dtype_for_contract(self) -> str:
         """Return the target dtype seen at data-prep time."""

@@ -91,9 +91,7 @@ class TestStaticDataSourceSchemaDrift:
     reorder turns into positional-join bugs.
     """
 
-    def test_pruner_surfaces_static_source_column_mismatch(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pruner_surfaces_static_source_column_mismatch(self, tmp_path: Path) -> None:
         """The bundler/pruner pipeline must raise when a static CSV's columns
         are reordered relative to the training-time expectation.
         """
@@ -173,9 +171,7 @@ class TestValidateDeployFailsOnTestQuotes:
         # Set up a test_quotes directory with a deliberately bad quote.
         tq_dir = tmp_path / "quotes"
         tq_dir.mkdir()
-        (tq_dir / "bad.json").write_text(
-            json.dumps([{"wrong_column": 1, "also_wrong": 2}])
-        )
+        (tq_dir / "bad.json").write_text(json.dumps([{"wrong_column": 1, "also_wrong": 2}]))
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -202,9 +198,7 @@ class TestValidateDeployFailsOnTestQuotes:
         msg = str(exc_info.value)
         assert "bad.json" in msg or "test quote" in msg.lower() or "quote" in msg.lower()
 
-    def test_validate_deploy_succeeds_when_no_test_quotes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_validate_deploy_succeeds_when_no_test_quotes(self, tmp_path: Path) -> None:
         """Without a test_quotes directory, validate_deploy proceeds — but
         must still return the list form for structural-error callers.
         """
@@ -229,9 +223,7 @@ class TestValidateDeployFailsOnTestQuotes:
         errors = validate_deploy(resolved)
         assert errors == []
 
-    def test_validate_deploy_aggregates_structural_and_test_errors(
-        self, tmp_path: Path
-    ) -> None:
+    def test_validate_deploy_aggregates_structural_and_test_errors(self, tmp_path: Path) -> None:
         """If there are BOTH structural errors AND failing test quotes, the
         DeployError must include both sources so the operator sees the full
         picture at once — not a trickle of one error per rerun.
@@ -330,9 +322,7 @@ class TestFeatureContractBundled:
         artifacts = collect_artifacts(graph, [], tmp_path)
         # Must bundle the feature contract alongside the .cbm; the key name
         # is not fixed but the filename must be feature_contract.json.
-        contract_paths = [
-            p for p in artifacts.values() if p.name == CONTRACT_FILENAME
-        ]
+        contract_paths = [p for p in artifacts.values() if p.name == CONTRACT_FILENAME]
         assert contract_paths, (
             f"Bundle must include {CONTRACT_FILENAME}; got: "
             f"{sorted(p.name for p in artifacts.values())}"
@@ -341,9 +331,7 @@ class TestFeatureContractBundled:
         loaded = load_contract(contract_paths[0])
         assert_contracts_match(training_contract, loaded)
 
-    def test_scorer_raises_when_runtime_contract_mismatches(
-        self, tmp_path: Path
-    ) -> None:
+    def test_scorer_raises_when_runtime_contract_mismatches(self, tmp_path: Path) -> None:
         """At load time the deploy scorer rebuilds the runtime contract from
         the live input data; if it disagrees with the bundled contract
         the scorer must raise ``FeatureMismatchError``.

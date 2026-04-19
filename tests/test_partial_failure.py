@@ -19,7 +19,6 @@ Failure scenarios covered:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import stat
@@ -28,11 +27,11 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.routes._helpers import (
     broadcast,
     invalidate_pipeline_index,
@@ -42,7 +41,6 @@ from haute.routes._helpers import (
 )
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -456,7 +454,6 @@ class TestFileWatcherRaceCondition:
         Catches: permanent suppression of file watcher after a single save,
         making live code editing appear broken.
         """
-        from haute.routes._helpers import _SELF_WRITE_COOLDOWN, _last_self_write
 
         import haute.routes._helpers as helpers
 
@@ -805,9 +802,7 @@ class TestOutOfMemoryDuringCollect:
 class TestSavePipelinePartialFailureIntegration:
     """End-to-end tests where real files are written then a step fails."""
 
-    def test_code_written_but_sidecar_fails_rolls_back_new_code(
-        self, tmp_path: Path
-    ) -> None:
+    def test_code_written_but_sidecar_fails_rolls_back_new_code(self, tmp_path: Path) -> None:
         """Phase 1C #50 flipped the contract: a failed save is atomic.
 
         Previously a sidecar-write failure left the newly-written .py
@@ -844,13 +839,10 @@ class TestSavePipelinePartialFailureIntegration:
 
         # Previously-nonexistent file must be deleted by rollback.
         assert not py_path.exists(), (
-            "Transactional save must roll back the new .py when a "
-            "later step fails."
+            "Transactional save must roll back the new .py when a later step fails."
         )
 
-    def test_config_write_failure_restores_pre_existing_code(
-        self, tmp_path: Path
-    ) -> None:
+    def test_config_write_failure_restores_pre_existing_code(self, tmp_path: Path) -> None:
         """Phase 1C #50: when ``_write_code`` overwrote a pre-existing
         file and a later step fails, rollback restores the original
         bytes (not "leave the new bytes and hope")."""
@@ -863,9 +855,7 @@ class TestSavePipelinePartialFailureIntegration:
 
         def fake_write_code(body, graph, path, touched=None):
             if touched is not None:
-                touched.append(
-                    _TouchedFile(target=path, previous_bytes=path.read_bytes())
-                )
+                touched.append(_TouchedFile(target=path, previous_bytes=path.read_bytes()))
             path.write_text("# good code")
 
         with (
@@ -882,6 +872,5 @@ class TestSavePipelinePartialFailureIntegration:
 
         assert py_path.exists()
         assert py_path.read_text() == "# ORIGINAL", (
-            "Rollback must restore the pre-save bytes of any file the "
-            "save service overwrote."
+            "Rollback must restore the pre-save bytes of any file the save service overwrote."
         )

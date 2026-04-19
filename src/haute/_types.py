@@ -15,18 +15,11 @@ from typing import Any, Protocol, TypedDict, runtime_checkable
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from haute._graph_utils import build_parents_of
+from haute.errors import HauteError as HauteError
+
 # Type alias - nodes pass lazy frames between each other
 _Frame = pl.LazyFrame
-
-
-from haute.errors import HauteError as HauteError
-from haute._graph_utils import (
-    _resolve_sink_path as _resolve_sink_path,
-    _sanitize_func_name as _sanitize_func_name,
-    build_instance_mapping as build_instance_mapping,
-    build_parents_of as build_parents_of,
-    resolve_orig_source_names as resolve_orig_source_names,
-)
 
 
 class NodeType(StrEnum):

@@ -15,13 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from haute._mlflow_utils import resolve_version as _resolve_version
 from haute._optimiser_io import (
     _artifact_cache,
     _mlflow_cache,
     load_mlflow_optimiser_artifact,
     load_optimiser_artifact,
 )
-from haute._mlflow_utils import resolve_version as _resolve_version
 
 # ---------------------------------------------------------------------------
 # Fixtures

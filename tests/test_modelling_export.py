@@ -7,7 +7,6 @@ import pytest
 from haute.modelling._export import generate_training_script
 from haute.modelling._split import DEFAULT_SPLIT_DICT
 
-
 MINIMAL_CONFIG = {
     "name": "freq",
     "target": "ClaimCount",

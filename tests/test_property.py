@@ -14,10 +14,17 @@ import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code
 from haute.executor import _apply_banding
-from haute.graph_utils import _sanitize_func_name, topo_sort_ids
+from haute.graph_utils import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    _sanitize_func_name,
+    topo_sort_ids,
+)
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from tests.conftest import make_edge
 

@@ -19,10 +19,9 @@ import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import numpy as np
 import polars as pl
+import pytest
 
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (

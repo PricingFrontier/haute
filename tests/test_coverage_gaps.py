@@ -15,16 +15,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import time as _time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
 
-from tests.conftest import make_graph as _g, make_node
-
+from tests.conftest import make_graph as _g
+from tests.conftest import make_node
 
 # ===========================================================================
 # _config_validation.py — remaining edge cases
@@ -516,9 +513,8 @@ class TestBuildManifestEdgeCases:
 
     def test_manifest_includes_created_by(self):
         """build_manifest always includes created_by field."""
-        from tests._deploy_helpers import make_resolved_deploy
-
         from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
 
         resolved = make_resolved_deploy()
         manifest = build_manifest(resolved)
@@ -528,9 +524,8 @@ class TestBuildManifestEdgeCases:
 
     def test_manifest_includes_haute_version(self):
         """build_manifest always includes haute_version field."""
-        from tests._deploy_helpers import make_resolved_deploy
-
         from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
 
         resolved = make_resolved_deploy()
         manifest = build_manifest(resolved)
@@ -540,10 +535,8 @@ class TestBuildManifestEdgeCases:
     def test_manifest_nodes_deployed_matches_graph(self):
         """nodes_deployed count matches the actual number of nodes in pruned_graph."""
         from haute._types import GraphNode, NodeData, PipelineGraph
-
-        from tests._deploy_helpers import make_resolved_deploy
-
         from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
 
         nodes = [
             GraphNode(

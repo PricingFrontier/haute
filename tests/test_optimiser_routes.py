@@ -16,7 +16,6 @@ from haute._sandbox import set_project_root
 from haute.graph_utils import NodeType
 from haute.routes._optimiser_service import _compute_scenario_value_stats
 from haute.routes.optimiser import _build_artifact_payload
-from haute.server import app
 from tests.conftest import make_edge, make_graph
 
 
@@ -1250,7 +1249,6 @@ class TestExecutePipelineArgs:
 
     def test_execute_pipeline_passes_scenario_and_checkpoint(self, scored_data, tmp_path):
         """_execute_lazy receives scenario != 'live', the caller's checkpoint_dir, and preamble_ns."""
-        from pathlib import Path
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -1362,7 +1360,6 @@ class TestBuildGridSinkFallback:
     def test_build_grid_sink_fallback(self, tmp_path):
         """When safe_sink_parquet's streaming sink raises ComputeError,
         the fallback (collect+write) still produces a valid parquet and grid builds."""
-        from unittest.mock import call
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService

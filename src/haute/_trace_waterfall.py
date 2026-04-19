@@ -116,9 +116,7 @@ def build_waterfall_from_steps(
             if val is None:
                 continue
             if column in step.schema_diff.columns_added and not waterfall_steps:
-                waterfall_steps.append(
-                    {"label": step.node_name, "operation": "base", "value": val}
-                )
+                waterfall_steps.append({"label": step.node_name, "operation": "base", "value": val})
             elif column in step.schema_diff.columns_modified:
                 # Detect multiply vs add from the expression
                 op = "multiply"
@@ -126,9 +124,7 @@ def build_waterfall_from_steps(
                     expr_text = step.expression.get("expression_text", "")
                     if "+" in expr_text or "-" in expr_text:
                         op = "add"
-                waterfall_steps.append(
-                    {"label": step.node_name, "operation": op, "value": val}
-                )
+                waterfall_steps.append({"label": step.node_name, "operation": op, "value": val})
         wf_result = build_waterfall(waterfall_steps)
         if wf_result is None:
             return None

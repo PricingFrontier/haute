@@ -885,7 +885,6 @@ class TestLogJsonArtifact:
 
     def test_cleans_up_on_error(self) -> None:
         """Even if log_artifact raises, the temp file should be cleaned up."""
-        import os
 
         mock_mlflow = MagicMock()
         mock_mlflow.log_artifact.side_effect = RuntimeError("boom")

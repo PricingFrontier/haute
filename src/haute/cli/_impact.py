@@ -153,9 +153,7 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
 # only shapes that should flip ``prod_exists`` to False — every other
 # exception (timeout, 5xx, connection error) is a real failure and must
 # propagate.
-_DATABRICKS_NOT_FOUND_CLASSES: frozenset[str] = frozenset(
-    {"NotFound", "ResourceDoesNotExist"}
-)
+_DATABRICKS_NOT_FOUND_CLASSES: frozenset[str] = frozenset({"NotFound", "ResourceDoesNotExist"})
 
 
 def _is_databricks_not_found(exc: BaseException) -> bool:
@@ -223,9 +221,7 @@ def _impact_databricks(
         ws.serving_endpoints.get(prod_name)
     except Exception as exc:
         if _is_databricks_not_found(exc):
-            click.echo(
-                f"  First deployment - production endpoint '{prod_name}' not found"
-            )
+            click.echo(f"  First deployment - production endpoint '{prod_name}' not found")
             prod_exists = False
         else:
             raise

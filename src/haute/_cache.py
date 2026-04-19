@@ -51,8 +51,7 @@ def _canonicalise(value: Any) -> Any:
         for k, v in value.items():
             if not isinstance(k, str):
                 raise TypeError(
-                    f"Cannot fingerprint dict with non-string key of type "
-                    f"{type(k).__name__!r}",
+                    f"Cannot fingerprint dict with non-string key of type {type(k).__name__!r}",
                 )
             canon[k] = _canonicalise(v)
         return canon
@@ -84,8 +83,7 @@ def _sort_key(value: Any) -> tuple[str, Any]:
     if isinstance(value, dict):
         return ("5_dict", _json.dumps(value, sort_keys=True))
     raise TypeError(
-        f"Cannot produce sort key for canonicalised value of type "
-        f"{type(value).__name__!r}",
+        f"Cannot produce sort key for canonicalised value of type {type(value).__name__!r}",
     )
 
 

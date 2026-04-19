@@ -36,6 +36,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from haute._file_ops import Writer, atomic_write_bytes, atomic_write_text
 
 # ---------------------------------------------------------------------------

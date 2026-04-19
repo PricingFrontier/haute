@@ -140,7 +140,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise FeatureMismatchError(
-            f"contract file must contain a JSON object",
+            "contract file must contain a JSON object",
             path=str(path),
             actual_type=type(raw).__name__,
         )
@@ -183,8 +183,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         stored = raw["contract_hash"]
         if recomputed != stored:
             raise FeatureMismatchError(
-                "contract file hash does not match its content; "
-                "file has been edited or corrupted",
+                "contract file hash does not match its content; file has been edited or corrupted",
                 path=str(path),
                 expected_hash=stored,
                 actual_hash=recomputed,
@@ -225,8 +224,7 @@ def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -
         act_val = getattr(actual, field)
         if _normalise(exp_val) != _normalise(act_val):
             raise FeatureMismatchError(
-                f"contract mismatch: {field}: expected={_show(exp_val)}, "
-                f"actual={_show(act_val)}",
+                f"contract mismatch: {field}: expected={_show(exp_val)}, actual={_show(act_val)}",
                 field=field,
                 expected=_normalise(exp_val),
                 actual=_normalise(act_val),

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 from haute._submodel_graph import (
     build_submodel_placeholder,
     classify_ports,
     rewire_edges,
 )
 from haute.graph_utils import GraphEdge, NodeType
-
 
 # ---------------------------------------------------------------------------
 # build_submodel_placeholder

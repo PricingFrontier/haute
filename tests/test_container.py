@@ -4,19 +4,16 @@ from __future__ import annotations
 
 import ast
 import subprocess
-from dataclasses import field
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._container import (
-    _ARTIFACT_EXT_TO_DEP,
+    ContainerBuildResult,
     _check_docker_available,
     _detect_extra_deps,
-    _docker_build,
     _docker_push,
     _generate_app_source,
     _generate_dockerfile,
@@ -28,13 +25,11 @@ from haute.deploy._container import (
     build_and_push_image,
     deploy_to_container,
     deploy_to_platform_container,
-    ContainerBuildResult,
 )
 from haute.deploy._mlflow import DeployResult
 from haute.deploy._utils import build_manifest as _build_manifest
-
+from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._deploy_helpers import make_resolved_deploy
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

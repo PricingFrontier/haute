@@ -17,7 +17,6 @@ from haute.routes._train_service import (
     _friendly_error,
     _validate_glm_family_link,
 )
-from haute.server import app
 from tests.conftest import make_edge, make_graph
 
 
@@ -766,7 +765,6 @@ class TestExecuteAndSinkCheckpointCleanup:
     def test_checkpoint_dir_cleaned_on_error(self, tmp_path):
         """If _execute_lazy raises, checkpoint_dir must still be cleaned up."""
         from pathlib import Path
-        from unittest.mock import MagicMock
 
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
@@ -1014,7 +1012,7 @@ class TestTrainModelDirect:
 
     def test_train_model_delegates_to_service(self):
         """train_model should delegate to _train_service.start()."""
-        from haute.routes.modelling import _store, _train_service, train_model
+        from haute.routes.modelling import _train_service, train_model
         from haute.schemas import TrainRequest, TrainResponse
 
         graph = make_graph(

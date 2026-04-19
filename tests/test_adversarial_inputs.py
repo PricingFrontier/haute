@@ -7,9 +7,6 @@ with malformed, hostile, or boundary-condition inputs.
 
 from __future__ import annotations
 
-import json
-import sys
-
 import pytest
 from pydantic import ValidationError
 
@@ -22,7 +19,6 @@ from haute.schemas import (
     GitCreateBranchRequest,
     GitRevertRequest,
     Graph,
-    GraphNodeData,
     JsonCacheBuildRequest,
     OptimiserApplyRequest,
     OptimiserFrontierRequest,
@@ -37,7 +33,6 @@ from haute.schemas import (
     UtilityCreateRequest,
     UtilityWriteRequest,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 

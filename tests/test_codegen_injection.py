@@ -28,7 +28,6 @@ from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

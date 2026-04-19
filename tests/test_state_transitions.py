@@ -59,7 +59,7 @@ class TestDoubleStartTraining:
         _store.jobs.clear()
         _store.jobs.update(self._snapshot)
 
-    def test_409_when_job_already_running(self, client: "TestClient") -> None:
+    def test_409_when_job_already_running(self, client: TestClient) -> None:
         _inject_job(self._store, "running")
 
         # The train endpoint requires a valid graph payload; it will check
@@ -99,7 +99,7 @@ class TestDoubleStartTraining:
         assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
         assert "already running" in resp.json()["detail"].lower()
 
-    def test_allows_start_when_previous_completed(self, client: "TestClient") -> None:
+    def test_allows_start_when_previous_completed(self, client: TestClient) -> None:
         """A completed job should not block a new start (no 409)."""
         _inject_job(self._store, "completed")
         # The request may fail for other reasons (missing file etc.) but
@@ -156,7 +156,7 @@ class TestPollCompletedJob:
 
     def test_completed_job_returns_same_status_on_repeated_polls(
         self,
-        client: "TestClient",
+        client: TestClient,
     ) -> None:
         job_id = _inject_job(
             self._store,
@@ -180,7 +180,7 @@ class TestPollCompletedJob:
 
         assert responses[0] == responses[1] == responses[2]
 
-    def test_poll_nonexistent_job_returns_404(self, client: "TestClient") -> None:
+    def test_poll_nonexistent_job_returns_404(self, client: TestClient) -> None:
         resp = client.get("/api/modelling/train/status/does_not_exist")
         assert resp.status_code == 404
 
@@ -234,7 +234,7 @@ class TestRejectNonCompletedJob:
     @pytest.mark.parametrize("store_name,status,url", _CASES)
     def test_rejects_non_completed_job(
         self,
-        client: "TestClient",
+        client: TestClient,
         store_name: str,
         status: str,
         url: str,
@@ -264,7 +264,7 @@ class TestExportScript:
     it reads the node config from the submitted graph payload.
     """
 
-    def test_export_works_with_valid_graph(self, client: "TestClient") -> None:
+    def test_export_works_with_valid_graph(self, client: TestClient) -> None:
         """Export only needs a valid graph with a modelling node."""
         payload = {
             "graph": {
@@ -352,7 +352,8 @@ class TestRevertNonExistentSHA:
 
     @pytest.fixture(autouse=True)
     def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import git_run as _git, init_repo as _init_repo
+        from tests._git_helpers import git_run as _git
+        from tests._git_helpers import init_repo as _init_repo
 
         repo = _init_repo(tmp_path)
         monkeypatch.chdir(tmp_path)
@@ -372,7 +373,7 @@ class TestRevertNonExistentSHA:
         with pytest.raises(GitError, match="not found"):
             revert_to("not_a_real_sha_at_all")
 
-    def test_revert_via_api(self, client: "TestClient") -> None:
+    def test_revert_via_api(self, client: TestClient) -> None:
         resp = client.post(
             "/api/git/revert",
             json={"sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
@@ -391,7 +392,8 @@ class TestDeleteProtectedBranch:
 
     @pytest.fixture(autouse=True)
     def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import git_run as _git, init_repo as _init_repo
+        from tests._git_helpers import git_run as _git
+        from tests._git_helpers import init_repo as _init_repo
 
         repo = _init_repo(tmp_path)
         monkeypatch.chdir(tmp_path)
@@ -411,12 +413,12 @@ class TestDeleteProtectedBranch:
         with pytest.raises(GitGuardrailError, match="protected"):
             delete_branch("master")
 
-    def test_delete_main_via_api(self, client: "TestClient") -> None:
+    def test_delete_main_via_api(self, client: TestClient) -> None:
         resp = client.request("DELETE", "/api/git/branches", json={"branch": "main"})
         assert resp.status_code == 403
         assert "protected" in resp.json()["detail"].lower()
 
-    def test_delete_develop_via_api(self, client: "TestClient") -> None:
+    def test_delete_develop_via_api(self, client: TestClient) -> None:
         resp = client.request("DELETE", "/api/git/branches", json={"branch": "develop"})
         assert resp.status_code == 403
         assert "protected" in resp.json()["detail"].lower()
@@ -446,7 +448,7 @@ class TestSwitchToCurrentBranch:
         switch_branch(current)
         assert _get_current_branch() == current
 
-    def test_switch_to_current_via_api(self, client: "TestClient") -> None:
+    def test_switch_to_current_via_api(self, client: TestClient) -> None:
         status = client.get("/api/git/status").json()
         current = status["branch"]
         resp = client.post("/api/git/switch", json={"branch": current})
@@ -463,7 +465,7 @@ class TestCreateDuplicateBranch:
 
     @pytest.fixture(autouse=True)
     def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import git_run as _git, init_repo as _init_repo
+        from tests._git_helpers import init_repo as _init_repo
 
         repo = _init_repo(tmp_path)
         monkeypatch.chdir(tmp_path)
@@ -476,7 +478,7 @@ class TestCreateDuplicateBranch:
         with pytest.raises(GitError, match="already exists"):
             create_branch("my feature")
 
-    def test_duplicate_via_api(self, client: "TestClient", tmp_path: Path) -> None:
+    def test_duplicate_via_api(self, client: TestClient, tmp_path: Path) -> None:
         from tests._git_helpers import git_run as _git
 
         resp1 = client.post("/api/git/branches", json={"description": "rate update"})
@@ -514,7 +516,7 @@ class TestSaveOnProtectedBranch:
         with pytest.raises(GitGuardrailError, match="protected"):
             save_progress()
 
-    def test_save_on_main_via_api(self, client: "TestClient", tmp_path: Path) -> None:
+    def test_save_on_main_via_api(self, client: TestClient, tmp_path: Path) -> None:
         (tmp_path / "change.py").write_text("x = 1\n")
         resp = client.post("/api/git/save")
         assert resp.status_code == 403
@@ -540,7 +542,7 @@ class TestOptimiserTimeoutDetection:
         _store.jobs.clear()
         _store.jobs.update(self._snapshot)
 
-    def test_timeout_detection_on_poll(self, client: "TestClient") -> None:
+    def test_timeout_detection_on_poll(self, client: TestClient) -> None:
         # Create a running job with start_time far in the past
         job_id = _inject_job(
             self._store,
@@ -613,14 +615,14 @@ class TestRevertOnProtectedBranch:
 
     @pytest.fixture(autouse=True)
     def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import git_run as _git, init_repo as _init_repo
+        from tests._git_helpers import init_repo as _init_repo
 
         repo = _init_repo(tmp_path)
         monkeypatch.chdir(tmp_path)
         # Stay on main (protected)
         return repo
 
-    def test_revert_on_main_via_api(self, client: "TestClient", tmp_path: Path) -> None:
+    def test_revert_on_main_via_api(self, client: TestClient, tmp_path: Path) -> None:
         from tests._git_helpers import git_run as _git
 
         sha = _git(tmp_path, "rev-parse", "HEAD")

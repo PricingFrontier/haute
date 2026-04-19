@@ -45,6 +45,11 @@ from typing import Any
 
 import polars as pl
 
+from haute._expression_parser import (
+    evaluate_expression,
+    parse_expression,
+    parse_expression_chain,
+)
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
 from haute._trace_correlation import (
@@ -53,6 +58,14 @@ from haute._trace_correlation import (
     _correlate_rows_posthoc,
     _jsonify_row,
     _trace_values_match,
+)
+from haute._trace_enrichment import (
+    detect_row_lineage_type,
+    enrich_banding,
+    enrich_live_switch,
+    enrich_model_score,
+    enrich_rating_step,
+    enrich_scenario_expansion,
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
@@ -70,9 +83,18 @@ logger = get_logger(component="trace")
 
 __all__ = [
     "SchemaDiff",
-    "TraceStep",
     "TraceResult",
+    "TraceStep",
+    "detect_row_lineage_type",
+    "enrich_banding",
+    "enrich_live_switch",
+    "enrich_model_score",
+    "enrich_rating_step",
+    "enrich_scenario_expansion",
+    "evaluate_expression",
     "execute_trace",
+    "parse_expression",
+    "parse_expression_chain",
     "trace_result_to_dict",
 ]
 
@@ -155,38 +177,11 @@ _cache = FingerprintCache(
 )
 
 
-# ---------------------------------------------------------------------------
-# Enrichment imports — re-exported at module scope so tests can
-# ``monkeypatch.setattr("haute.trace.parse_expression", …)`` and so the
+# Enrichment + expression-parser names are imported at the top of this
+# module and re-exported via ``__all__`` so tests can
+# ``monkeypatch.setattr("haute.trace.parse_expression", …)`` and the
 # dispatch walk in ``_trace_enrichment.enrich_steps`` sees the patched
 # version via its ``sys.modules["haute.trace"]`` lookup.
-# ---------------------------------------------------------------------------
-
-
-try:
-    from haute._expression_parser import (
-        evaluate_expression,
-        parse_expression,
-        parse_expression_chain,
-    )
-
-    _HAS_EXPRESSION_PARSER = True
-except ImportError:
-    _HAS_EXPRESSION_PARSER = False
-
-try:
-    from haute._trace_enrichment import (
-        detect_row_lineage_type,
-        enrich_banding,
-        enrich_live_switch,
-        enrich_model_score,
-        enrich_rating_step,
-        enrich_scenario_expansion,
-    )
-
-    _HAS_TRACE_ENRICHMENT = True
-except ImportError:
-    _HAS_TRACE_ENRICHMENT = False
 
 
 # ---------------------------------------------------------------------------
@@ -460,9 +455,7 @@ def _materialize_eager_outputs(
             # succeeded.  The post-hoc correlator handles missing
             # nodes gracefully.
             eager_outputs = {
-                nid: prev_outputs[nid]
-                for nid in order
-                if prev_outputs.get(nid) is not None
+                nid: prev_outputs[nid] for nid in order if prev_outputs.get(nid) is not None
             }
             if target_node_id in eager_outputs:
                 source_ids = {nid for nid in order if not parents_of.get(nid)}

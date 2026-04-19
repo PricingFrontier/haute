@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from haute.cli import cli
 
 if TYPE_CHECKING:

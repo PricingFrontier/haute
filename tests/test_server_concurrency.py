@@ -86,12 +86,8 @@ class TestWsClientsConcurrentMutation:
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        threads = [
-            threading.Thread(target=adder, args=(s,), daemon=True)
-            for s in sentinels
-        ] + [
-            threading.Thread(target=other, args=(s,), daemon=True)
-            for s in sentinels
+        threads = [threading.Thread(target=adder, args=(s,), daemon=True) for s in sentinels] + [
+            threading.Thread(target=other, args=(s,), daemon=True) for s in sentinels
         ]
         for t in threads:
             t.start()
@@ -155,9 +151,7 @@ class TestWsClientsConcurrentMutation:
         t_mut.join(timeout=5)
         t_bc.join(timeout=5)
 
-        assert not errors, (
-            f"broadcast/discard race raised: {[type(e).__name__ for e in errors]}"
-        )
+        assert not errors, f"broadcast/discard race raised: {[type(e).__name__ for e in errors]}"
 
     def test_ws_clients_mutation_uses_explicit_lock(self) -> None:
         """Structural: ``ws_clients`` mutation paths must be guarded by
@@ -179,20 +173,14 @@ class TestWsClientsConcurrentMutation:
         import haute.routes._helpers as helpers
         import haute.server as server
 
-        helpers_lock = (
-            getattr(helpers, "ws_clients_lock", None)
-            or getattr(helpers, "_ws_clients_lock", None)
+        helpers_lock = getattr(helpers, "ws_clients_lock", None) or getattr(
+            helpers, "_ws_clients_lock", None
         )
-        server_lock = (
-            getattr(server, "ws_clients_lock", None)
-            or getattr(server, "_ws_clients_lock", None)
+        server_lock = getattr(server, "ws_clients_lock", None) or getattr(
+            server, "_ws_clients_lock", None
         )
         container_lock = getattr(helpers.ws_clients, "_lock", None)
-        assert (
-            helpers_lock is not None
-            or server_lock is not None
-            or container_lock is not None
-        ), (
+        assert helpers_lock is not None or server_lock is not None or container_lock is not None, (
             "#6 requires an explicit lock for ws_clients mutation — "
             "expose `ws_clients_lock` on haute.routes._helpers or "
             "haute.server, or wrap the set in a locked container."
@@ -269,13 +257,9 @@ class TestWsClientsConcurrentMutation:
         )
         # All dead clients should be gone; live ones still present
         for c in dead_clients:
-            assert c not in ws_clients, (
-                "#6: dead client leaked back into ws_clients"
-            )
+            assert c not in ws_clients, "#6: dead client leaked back into ws_clients"
         for c in live_clients:
-            assert c in ws_clients, (
-                "#6: live client was accidentally removed"
-            )
+            assert c in ws_clients, "#6: live client was accidentally removed"
 
 
 # ---------------------------------------------------------------------------
@@ -527,12 +511,9 @@ class TestGitFetchLock:
         for t in threads:
             t.join(timeout=10)
 
-        assert fetch_count >= 2, (
-            "test setup broken: expected at least two concurrent fetch calls"
-        )
+        assert fetch_count >= 2, "test setup broken: expected at least two concurrent fetch calls"
         assert max_active == 1, (
-            f"#29 requires git fetch to be serialised — "
-            f"observed {max_active} concurrent fetches"
+            f"#29 requires git fetch to be serialised — observed {max_active} concurrent fetches"
         )
 
 
@@ -593,9 +574,8 @@ class TestAsyncRouteDoesNotBlockEventLoop:
             start = time.monotonic()
 
             transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as ac:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+
                 async def slow_req() -> None:
                     r = await ac.get(
                         "/api/schema",

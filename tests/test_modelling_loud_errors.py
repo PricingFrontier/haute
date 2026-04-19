@@ -87,9 +87,7 @@ class TestModelScoreColumnDetectionLoud:
                 _model_score_columns(config)
             # Must NOT be swallowed — the caller needs to see something
             # mentioning the configuration or the failure origin.
-            assert "run" in str(exc_info.value).lower() or "file" in str(
-                exc_info.value
-            ).lower()
+            assert "run" in str(exc_info.value).lower() or "file" in str(exc_info.value).lower()
 
     def test_empty_source_type_is_passthrough(self) -> None:
         """An *unconfigured* node (blank sourceType) must still be OK —
@@ -273,9 +271,7 @@ class TestArtifactLoadCorruptionRaises:
             f"RustyStats corruption must be bounded to two attempts; got {call_count}"
         )
 
-    def test_persistently_corrupt_file_not_unlinked_forever(
-        self, tmp_path: Path
-    ) -> None:
+    def test_persistently_corrupt_file_not_unlinked_forever(self, tmp_path: Path) -> None:
         """After the final failure the retry must surface a diagnostic so
         the operator can act.  Absence of such a diagnostic is itself a
         silent-failure regression.

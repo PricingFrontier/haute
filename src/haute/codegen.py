@@ -7,7 +7,6 @@ from collections.abc import Callable
 
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._logging import get_logger
-from haute.errors import ConfigError, ParseError
 from haute._types import (
     MODELLING_CONFIG_KEYS,
     NODE_TYPE_TO_DECORATOR,
@@ -15,6 +14,7 @@ from haute._types import (
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
 )
+from haute.errors import ConfigError, ParseError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,

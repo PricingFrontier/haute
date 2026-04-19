@@ -1607,9 +1607,9 @@ class TestMiddlewareLogging:
 
     def test_5xx_logs_error(self):
         import asyncio
+        from unittest.mock import AsyncMock, MagicMock
 
         import structlog.testing
-        from unittest.mock import AsyncMock, MagicMock
 
         from haute.server import _RequestIdMiddleware
 

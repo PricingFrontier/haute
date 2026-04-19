@@ -12,7 +12,6 @@ from haute.graph_utils import flatten_graph
 from haute.parser import parse_pipeline_file
 from tests.conftest import make_graph as _g
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -256,7 +255,7 @@ class TestParserSubmodel:
         _write(
             tmp_path,
             "main.py",
-            f"""\
+            """\
             import polars as pl
             import haute
 

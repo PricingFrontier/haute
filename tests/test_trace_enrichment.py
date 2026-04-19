@@ -18,30 +18,28 @@ type produces.
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import polars as pl
 import pytest
 
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.trace import (
-    SchemaDiff,
     TraceResult,
     TraceStep,
-    _compute_schema_diff,
-    _jsonify_row,
     execute_trace,
-    trace_result_to_dict,
 )
-from haute.executor import execute_graph
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
-    make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

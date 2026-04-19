@@ -242,20 +242,14 @@ def _rewrite_project_dependencies(text: str) -> str:
     array_text = text[open_bracket_abs + 1 : close_bracket_abs]
     # Re-parse the single-table slice to discover current entries structurally
     # (tomllib on the full file already succeeded, so this slice is valid).
-    current_deps: list[str] = tomllib.loads(
-        "dependencies = [" + array_text + "]"
-    )["dependencies"]
+    current_deps: list[str] = tomllib.loads("dependencies = [" + array_text + "]")["dependencies"]
 
     new_deps = ["haute", *current_deps]
     # Preserve trailing newline conventions by formatting the replacement
     # body as ``\n    "a",\n    "b",\n`` (one dep per line, trailing comma).
     new_array_body = "\n" + "".join(f'    "{dep}",\n' for dep in new_deps)
 
-    return (
-        text[: open_bracket_abs + 1]
-        + new_array_body
-        + text[close_bracket_abs:]
-    )
+    return text[: open_bracket_abs + 1] + new_array_body + text[close_bracket_abs:]
 
 
 def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
@@ -298,9 +292,7 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
     # string scans) so comments can't fool us.
     parsed = tomllib.loads(text)
     has_dep_groups = "dependency-groups" in parsed
-    has_tool_mypy = isinstance(parsed.get("tool", {}), dict) and "mypy" in parsed.get(
-        "tool", {}
-    )
+    has_tool_mypy = isinstance(parsed.get("tool", {}), dict) and "mypy" in parsed.get("tool", {})
 
     if not has_dep_groups:
         text += _DEV_DEPS_BLOCK

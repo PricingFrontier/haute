@@ -22,7 +22,6 @@ from haute.modelling._metrics import (
     compute_residuals_histogram,
 )
 
-
 # ---------------------------------------------------------------------------
 # compute_ave_per_feature — max_features=None default
 # ---------------------------------------------------------------------------

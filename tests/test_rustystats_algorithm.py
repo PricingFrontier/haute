@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Skip if RustyStats is not installed
@@ -22,7 +20,6 @@ from haute.modelling._rustystats import (
     _auto_terms,
     _build_interactions,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

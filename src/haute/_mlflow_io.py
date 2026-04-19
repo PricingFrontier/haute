@@ -477,9 +477,8 @@ def _load_with_bounded_retry(
             if attempt >= _LOAD_MAX_ATTEMPTS:
                 break
             # Exponential backoff with jitter between attempts.
-            delay = (
-                _LOAD_BACKOFF_BASE_S * (2 ** (attempt - 1))
-                + random.uniform(0, _LOAD_BACKOFF_JITTER_S)
+            delay = _LOAD_BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(
+                0, _LOAD_BACKOFF_JITTER_S
             )
             time.sleep(delay)
 

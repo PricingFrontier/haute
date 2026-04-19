@@ -35,9 +35,8 @@ from haute._git import (
     submit_for_review,
     switch_branch,
 )
-
-from tests._git_helpers import git_run as _git, init_repo as _init_repo
-
+from tests._git_helpers import git_run as _git
+from tests._git_helpers import init_repo as _init_repo
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -36,7 +36,6 @@ from haute.modelling._feature_contract import (
     save_contract,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -97,12 +96,17 @@ class TestContractHash:
         "mutation",
         [
             # Change features list (add a feature)
-            {"features": ["age", "region", "vehicle_value", "postcode"],
-             "feature_types": {"age": "Int64", "region": "String",
-                               "vehicle_value": "Float64", "postcode": "String"}},
+            {
+                "features": ["age", "region", "vehicle_value", "postcode"],
+                "feature_types": {
+                    "age": "Int64",
+                    "region": "String",
+                    "vehicle_value": "Float64",
+                    "postcode": "String",
+                },
+            },
             # Change feature types (age Int64 -> Float64)
-            {"feature_types": {"age": "Float64", "region": "String",
-                               "vehicle_value": "Float64"}},
+            {"feature_types": {"age": "Float64", "region": "String", "vehicle_value": "Float64"}},
             # Change categorical set
             {"categorical_features": ["region", "age"]},
             # Change target name
@@ -187,13 +191,9 @@ class TestSaveLoad:
 
         # Top-level keys sorted alphabetically.
         top_keys = list(parsed.keys())
-        assert top_keys == sorted(top_keys), (
-            f"Top-level keys must be sorted, got {top_keys}"
-        )
+        assert top_keys == sorted(top_keys), f"Top-level keys must be sorted, got {top_keys}"
 
-    def test_save_is_deterministic(
-        self, tmp_path: Path, basic_contract: FeatureContract
-    ) -> None:
+    def test_save_is_deterministic(self, tmp_path: Path, basic_contract: FeatureContract) -> None:
         """Writing the same contract twice produces identical bytes —
         this is required for content-hashing the artifact downstream.
         """
@@ -270,9 +270,7 @@ class TestLoadRejectsMalformed:
 
 
 class TestAssertContractsMatch:
-    def test_identical_contracts_do_not_raise(
-        self, basic_contract: FeatureContract
-    ) -> None:
+    def test_identical_contracts_do_not_raise(self, basic_contract: FeatureContract) -> None:
         """Two equal contracts must pass silently."""
         other = build_contract(**_basic_kwargs())
         # Both call directions should succeed.
@@ -368,9 +366,7 @@ class TestAssertContractsMatch:
 
 
 class TestFrozenContract:
-    def test_cannot_mutate_scalar_field(
-        self, basic_contract: FeatureContract
-    ) -> None:
+    def test_cannot_mutate_scalar_field(self, basic_contract: FeatureContract) -> None:
         """Reassigning a scalar field raises FrozenInstanceError."""
         with pytest.raises(dataclasses.FrozenInstanceError):
             basic_contract.target_name = "something_else"  # type: ignore[misc]
@@ -380,9 +376,7 @@ class TestFrozenContract:
         with pytest.raises(dataclasses.FrozenInstanceError):
             basic_contract.contract_hash = "tampered"  # type: ignore[misc]
 
-    def test_cannot_assign_new_attribute(
-        self, basic_contract: FeatureContract
-    ) -> None:
+    def test_cannot_assign_new_attribute(self, basic_contract: FeatureContract) -> None:
         """Frozen dataclasses also reject brand-new attribute assignment."""
         with pytest.raises(dataclasses.FrozenInstanceError):
             basic_contract.surprise = "value"  # type: ignore[attr-defined]

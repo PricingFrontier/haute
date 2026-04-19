@@ -8,11 +8,7 @@ D13 — LogExperimentResponse and OptimiserMlflowLogResponse share MlflowLogResp
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Any
-
-import pytest
-from pydantic import BaseModel
 
 from haute.routes._job_store import JobStore
 
@@ -143,6 +139,7 @@ class TestFinalizeOnline:
         """When solve_result has a dataframe with optimal_scenario_value,
         stats and histogram should be populated."""
         import numpy as np
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         class ResultWithDF(_FakeSolveResult):
@@ -262,6 +259,7 @@ class TestFinalizeFrontier:
     def test_computes_frontier_when_online_with_constraints(self) -> None:
         """Online mode + constraints → frontier_data populated on the job."""
         from unittest.mock import MagicMock
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         result = _FakeSolveResult(
@@ -372,6 +370,7 @@ class TestFinalizeFrontier:
     def test_frontier_exception_non_fatal(self) -> None:
         """solver.frontier() raising does not fail the solve — status is still completed."""
         from unittest.mock import MagicMock
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         result = _FakeSolveResult(
@@ -410,6 +409,7 @@ class TestFinalizeFrontier:
     def test_frontier_skips_zero_baseline(self) -> None:
         """A constraint with baseline=0 is excluded from frontier ranges."""
         from unittest.mock import MagicMock
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         result = _FakeSolveResult(

@@ -435,9 +435,7 @@ def _log_model_with_signature(
         cat_model: Any
         try:
             cat_model = (
-                CatBoostClassifier()
-                if resolved_task == "classification"
-                else CatBoostRegressor()
+                CatBoostClassifier() if resolved_task == "classification" else CatBoostRegressor()
             )
             cat_model.load_model(str(model_file))
         except Exception:
@@ -496,11 +494,7 @@ def _build_signature_for_log(
             resolved_features = list(cb.feature_names_)
             if hasattr(cb, "get_cat_feature_indices"):
                 cat_idx = set(cb.get_cat_feature_indices())
-                resolved_cats = [
-                    name
-                    for i, name in enumerate(resolved_features)
-                    if i in cat_idx
-                ]
+                resolved_cats = [name for i, name in enumerate(resolved_features) if i in cat_idx]
         except Exception:
             # Unloadable file — fall through to the no-signature path.
             pass

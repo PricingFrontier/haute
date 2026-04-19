@@ -82,9 +82,7 @@ def _structlog_to_caplog(
 # ---------------------------------------------------------------------------
 
 
-def _records_mentioning(
-    caplog: pytest.LogCaptureFixture, needle: str
-) -> list[logging.LogRecord]:
+def _records_mentioning(caplog: pytest.LogCaptureFixture, needle: str) -> list[logging.LogRecord]:
     """Return WARNING-level records that contain ``needle`` in message or args."""
     out: list[logging.LogRecord] = []
     for rec in caplog.records:
@@ -379,4 +377,3 @@ class TestStrictMode:
         # The error message / context must name the offending path so the
         # caller can surface it to the user.
         assert "locked.py" in str(excinfo.value)
-

@@ -8,26 +8,28 @@ build graph -> execute_trace -> check enrichment fields on steps.
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import polars as pl
-import pytest
 
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.trace import (
     TraceResult,
     TraceStep,
     execute_trace,
 )
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
-    make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

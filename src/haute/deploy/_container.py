@@ -11,9 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from haute._logging import get_logger
-from haute.deploy._config import ResolvedDeploy
+from haute.deploy._config import _CONTAINER_BASED_TARGETS, ResolvedDeploy
 from haute.deploy._mlflow import DeployResult
 from haute.deploy._utils import build_manifest
+
+# Re-export so external callers can continue importing from _container.
+__all__ = ["_CONTAINER_BASED_TARGETS"]
 
 logger = get_logger(component="deploy.container")
 
@@ -34,8 +37,9 @@ def _validate_model_name(model_name: str) -> None:
 
 
 # ── Targets that share container build+push ────────────────────────
-
-from haute.deploy._config import _CONTAINER_BASED_TARGETS as _CONTAINER_BASED_TARGETS
+# _CONTAINER_BASED_TARGETS is re-exported from _config.py via the top-of-file
+# import — kept here for backward compat with callers that imported from
+# _container before the predicate moved to _config.
 
 
 @dataclass

@@ -16,9 +16,17 @@ from haute.trace import (
 )
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
+)
+from tests.conftest import (
     make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
 

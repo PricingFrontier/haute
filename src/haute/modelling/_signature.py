@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Literal
 
 from mlflow.models import ModelSignature
-from mlflow.types import ColSpec, DataType, Schema
+from mlflow.types import ColSpec, DataType, Schema, TensorSpec
 
 _POLARS_TO_MLFLOW: dict[str, DataType] = {
     "Int64": DataType.long,
@@ -22,8 +22,7 @@ _POLARS_TO_MLFLOW: dict[str, DataType] = {
 def _map_dtype(dtype: str) -> DataType:
     if dtype not in _POLARS_TO_MLFLOW:
         raise ValueError(
-            f"Unknown polars dtype {dtype!r}. "
-            f"Supported dtypes: {sorted(_POLARS_TO_MLFLOW)}"
+            f"Unknown polars dtype {dtype!r}. Supported dtypes: {sorted(_POLARS_TO_MLFLOW)}"
         )
     return _POLARS_TO_MLFLOW[dtype]
 
@@ -66,11 +65,11 @@ def build_signature(
 
     extras = [c for c in categorical_features if c not in features]
     if extras:
-        raise ValueError(
-            f"categorical_features contains names not in features: {extras}"
-        )
+        raise ValueError(f"categorical_features contains names not in features: {extras}")
 
-    input_specs = [ColSpec(type=_map_dtype(feature_types[f]), name=f) for f in features]
+    input_specs: list[ColSpec | TensorSpec] = [
+        ColSpec(type=_map_dtype(feature_types[f]), name=f) for f in features
+    ]
     inputs = Schema(input_specs)
 
     target_dtype = _map_dtype(target_type)

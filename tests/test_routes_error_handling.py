@@ -36,9 +36,7 @@ _SAFE_DETAIL = "Operation failed. Check the server logs for details."
 def project_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """TestClient rooted at a clean temp project directory."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "main.py").write_text(
-        'import haute\npipeline = haute.Pipeline("p")\n'
-    )
+    (tmp_path / "main.py").write_text('import haute\npipeline = haute.Pipeline("p")\n')
     from haute.server import app
 
     return TestClient(app, raise_server_exceptions=False)
@@ -136,9 +134,7 @@ class TestSubmodelCreateValueErrorSanitisation:
     """
 
     @pytest.fixture()
-    def _isolated_cwd(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> Path:
+    def _isolated_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.chdir(tmp_path)
         return tmp_path
 
@@ -358,15 +354,9 @@ class TestSchemaBroadExceptionHandling:
         # generic "schema_read_failed" event MUST include the exception
         # class name/message in its payload, or a dedicated event must
         # fire for unexpected errors.
-        error_events = [
-            e for e in captured if e.get("log_level") == "error"
-        ]
-        assert error_events, (
-            "#24: no error-level log emitted for unexpected KeyError in /schema"
-        )
-        event_text = " ".join(
-            f"{k}={v}" for e in error_events for k, v in e.items()
-        )
+        error_events = [e for e in captured if e.get("log_level") == "error"]
+        assert error_events, "#24: no error-level log emitted for unexpected KeyError in /schema"
+        event_text = " ".join(f"{k}={v}" for e in error_events for k, v in e.items())
         assert "KeyError" in event_text or "missing_partition_key" in event_text, (
             "#24: structured log must record the exception class or message "
             f"(got events: {error_events!r})"
@@ -406,18 +396,10 @@ class TestSchemaBroadExceptionHandling:
         detail = resp.json()["detail"]
         assert "native polars decoder" not in detail
         error_events = [e for e in captured if e.get("log_level") == "error"]
-        assert error_events, (
-            "#24: unexpected RuntimeError produced no error-level log"
-        )
-        joined = " ".join(
-            f"{k}={v}" for e in error_events for k, v in e.items()
-        )
-        assert (
-            "RuntimeError" in joined
-            or "native polars decoder crash" in joined
-        ), (
-            f"#24: structured log must include the real exception "
-            f"(got: {error_events!r})"
+        assert error_events, "#24: unexpected RuntimeError produced no error-level log"
+        joined = " ".join(f"{k}={v}" for e in error_events for k, v in e.items())
+        assert "RuntimeError" in joined or "native polars decoder crash" in joined, (
+            f"#24: structured log must include the real exception (got: {error_events!r})"
         )
 
     def test_http_exception_still_passes_through_unmodified(

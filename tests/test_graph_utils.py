@@ -5,8 +5,10 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import (
+    GraphNode,
+    NodeData,
+    PipelineGraph,
     _execute_lazy,
     _prepare_graph,
     _resolve_sink_path,

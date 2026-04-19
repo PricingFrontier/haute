@@ -52,9 +52,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             node_count=len(body.node_ids or []),
             exc_info=True,
         )
-        raise HTTPException(
-            status_code=400, detail=_INTERNAL_ERROR_DETAIL
-        ) from None
+        raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL) from None
 
     if not body.source_file:
         raise HTTPException(
@@ -88,12 +86,14 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     # Walk both the parent graph and every nested submodel graph so
     # child-node configs are written alongside their parent's.
     from haute._config_io import collect_node_configs
-    from haute._types import PipelineGraph as _PG
+    from haute._types import PipelineGraph
 
     configs: dict[str, str] = dict(collect_node_configs(result.graph))
     for sm_meta in (result.graph.submodels or {}).values():
         sm_graph_dict = sm_meta.get("graph", {})
-        nested = _PG.model_validate({"nodes": sm_graph_dict.get("nodes", []), "edges": []})
+        nested = PipelineGraph.model_validate(
+            {"nodes": sm_graph_dict.get("nodes", []), "edges": []}
+        )
         configs.update(collect_node_configs(nested))
     for rel_path, json_content in configs.items():
         cfg_path = validate_safe_path(cwd, rel_path)

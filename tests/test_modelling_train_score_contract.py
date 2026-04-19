@@ -141,9 +141,7 @@ class TestFeatureOrderMismatchAtScore:
         msg = str(exc_info.value).lower()
         assert "order" in msg or "feature" in msg
 
-    def test_score_with_cat_at_wrong_position_raises(
-        self, mixed_train_df: pl.DataFrame
-    ) -> None:
+    def test_score_with_cat_at_wrong_position_raises(self, mixed_train_df: pl.DataFrame) -> None:
         """Moving the categorical column to a different index is a mismatch.
 
         In CatBoost the categorical set is stored as *indices* into the
@@ -461,9 +459,7 @@ class TestGLMCategoricalSurvival:
             "scoring won't know to String-cast the column."
         )
 
-    def test_save_load_preserves_cat_features_via_contract(
-        self, tmp_path: Path
-    ) -> None:
+    def test_save_load_preserves_cat_features_via_contract(self, tmp_path: Path) -> None:
         """Contract round-trip keeps the categorical set intact."""
         contract = build_contract(
             features=["region", "age"],
@@ -481,9 +477,7 @@ class TestGLMCategoricalSurvival:
         assert loaded.feature_types["region"] == "String"
         assert_contracts_match(contract, loaded)
 
-    def test_glm_narrowing_drops_non_term_cat_feature(
-        self, tmp_path: Path
-    ) -> None:
+    def test_glm_narrowing_drops_non_term_cat_feature(self, tmp_path: Path) -> None:
         """A categorical column NOT referenced by a term is dropped — but the
         narrowing must not accidentally drop *all* categoricals because of a
         wrong set operation.
@@ -556,9 +550,7 @@ class TestDiagnosticsFailLoudlySplit:
             }
         )
 
-    def test_shap_failure_surfaces_in_result(
-        self, synth: pl.DataFrame, tmp_path: Path
-    ) -> None:
+    def test_shap_failure_surfaces_in_result(self, synth: pl.DataFrame, tmp_path: Path) -> None:
         """SHAP is optional — if it raises, the run must still succeed
         BUT ``result.diagnostics_errors`` must carry the entry so the UI
         can show a degraded-diagnostics badge.
@@ -593,16 +585,12 @@ class TestDiagnosticsFailLoudlySplit:
             "TrainResult must expose `diagnostics_errors` so optional "
             "diagnostic failures (SHAP, PDP, etc.) are visible to callers."
         )
-        assert any(
-            "shap" in str(entry).lower() for entry in diag_errors
-        ), (
+        assert any("shap" in str(entry).lower() for entry in diag_errors), (
             "SHAP failure must be recorded in diagnostics_errors with the "
             "offending diagnostic named"
         )
 
-    def test_pdp_failure_surfaces_in_result(
-        self, synth: pl.DataFrame, tmp_path: Path
-    ) -> None:
+    def test_pdp_failure_surfaces_in_result(self, synth: pl.DataFrame, tmp_path: Path) -> None:
         """PDP is optional — its failure is recorded, not silently swallowed."""
         pytest.importorskip("catboost")
         from haute.modelling._training_job import TrainingJob
@@ -626,13 +614,9 @@ class TestDiagnosticsFailLoudlySplit:
         assert result.metrics
         diag_errors = getattr(result, "diagnostics_errors", None)
         assert diag_errors is not None
-        assert any(
-            "pdp" in str(entry).lower() for entry in diag_errors
-        )
+        assert any("pdp" in str(entry).lower() for entry in diag_errors)
 
-    def test_mandatory_metric_failure_raises(
-        self, synth: pl.DataFrame, tmp_path: Path
-    ) -> None:
+    def test_mandatory_metric_failure_raises(self, synth: pl.DataFrame, tmp_path: Path) -> None:
         """Core metrics (``compute_metrics``) are mandatory — a failure must
         propagate as an ExecutionError / ValueError, not be swallowed.
         """
@@ -659,9 +643,7 @@ class TestDiagnosticsFailLoudlySplit:
                 exc_info.value.__cause__ is not None
             )
 
-    def test_feature_importance_failure_raises(
-        self, synth: pl.DataFrame, tmp_path: Path
-    ) -> None:
+    def test_feature_importance_failure_raises(self, synth: pl.DataFrame, tmp_path: Path) -> None:
         """CatBoost feature-importance is mandatory — zero-diagnostics runs
         are useless to actuaries.  Must propagate on failure.
         """
@@ -682,5 +664,3 @@ class TestDiagnosticsFailLoudlySplit:
             )
             with pytest.raises(Exception):
                 job.run()
-
-

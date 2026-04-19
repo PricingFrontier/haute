@@ -18,10 +18,20 @@ from haute.executor import (
 )
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
+)
+from tests.conftest import (
     make_node as _n,
+)
+from tests.conftest import (
     make_output_node as _output_node,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
@@ -429,7 +439,6 @@ class TestBuildNodeFn:
     def test_unknown_node_type_rejected(self):
         """Unknown nodeType should be rejected by NodeType enum validation."""
         import pytest
-
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError, match="Input should be"):
@@ -943,7 +952,7 @@ class TestDataSourceUserCode:
         for _path, content in configs.items():
             parsed = json.loads(content)
             assert "code" not in parsed, (
-                f"Config JSON should not contain 'code' — it lives in the .py file"
+                "Config JSON should not contain 'code' — it lives in the .py file"
             )
 
     def test_parser_extracts_data_source_code_no_sentinel(self, tmp_path):
@@ -1142,8 +1151,9 @@ class TestExecuteSink:
         graph, _ = _make_sink_graph(tmp_path, src_data={"x": [1, 2]})
 
         captured_sources: list[str] = []
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
         from unittest.mock import patch
+
+        from haute._execute_lazy import _execute_lazy as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
@@ -1159,8 +1169,9 @@ class TestExecuteSink:
         graph, _ = _make_sink_graph(tmp_path)
 
         captured_sources: list[str] = []
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
         from unittest.mock import patch
+
+        from haute._execute_lazy import _execute_lazy as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
@@ -1248,6 +1259,7 @@ class TestExecuteSink:
 
         from pathlib import Path
         from unittest.mock import patch
+
         from haute._execute_lazy import _execute_lazy as original
 
         captured_kwargs: list[dict] = []
@@ -1270,6 +1282,7 @@ class TestExecuteSink:
 
         from pathlib import Path
         from unittest.mock import patch
+
         from haute._execute_lazy import _execute_lazy as original
 
         created_dirs: list[Path] = []
@@ -1335,8 +1348,9 @@ class TestExecuteSink:
         )
 
         captured_sources: list[str] = []
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
         from unittest.mock import patch
+
+        from haute._execute_lazy import _execute_lazy as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
@@ -2177,6 +2191,7 @@ class TestPreviewCachePartialHit:
         the result is already cached.
         """
         from unittest.mock import patch
+
         from haute.executor import _preview_cache
 
         _preview_cache.invalidate()
@@ -2842,7 +2857,7 @@ class TestPreambleFailureIsolation:
         p = tmp_path / "d.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
 
-        from haute.executor import _preview_cache, _eager_execute
+        from haute.executor import _eager_execute, _preview_cache
 
         _preview_cache.invalidate()
 

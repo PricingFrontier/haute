@@ -22,10 +22,13 @@ from haute.codegen import (
     graph_to_code,
     graph_to_code_multi,
 )
-from haute.parser import parse_pipeline_source
 from tests.conftest import (
     compile_node_code as _compile_node_code,
+)
+from tests.conftest import (
     make_graph as _g,
+)
+from tests.conftest import (
     make_node as _n,
 )
 
@@ -1788,6 +1791,7 @@ class TestUnknownNodeTypeFallbackCode:
     def test_fallback_generates_compilable_transform_with_code(self):
         """Unknown type with user code still wraps it like a polars transform."""
         from unittest.mock import patch
+
         from haute.codegen import _CODEGEN_BUILDERS
 
         node = _n(
@@ -1815,6 +1819,7 @@ class TestUnknownNodeTypeFallbackCode:
     def test_fallback_without_code_returns_first_source(self):
         """Unknown type with no user code produces passthrough returning first source."""
         from unittest.mock import patch
+
         from haute.codegen import _CODEGEN_BUILDERS
 
         node = _n(
@@ -2579,6 +2584,7 @@ class TestGenTransformEdgeCases:
 class TestGenLiveSwitchRoundTrip:
     def test_round_trip_preserves_scenario_map(self, tmp_path):
         import json
+
         from haute.parser import parse_pipeline_file
 
         scenario_map = {"src_a": "live", "src_b": "test_batch"}
@@ -2724,6 +2730,7 @@ class TestGraphToCodeEdgeCases:
 
     def test_unknown_node_type_falls_back_gracefully(self):
         from unittest.mock import patch
+
         from haute.codegen import _CODEGEN_BUILDERS
 
         node = _n(

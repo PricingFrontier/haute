@@ -11,7 +11,6 @@ import pytest
 
 from haute._io import _object_cache, load_external_object, read_source
 
-
 # ---------------------------------------------------------------------------
 # read_source
 # ---------------------------------------------------------------------------

@@ -512,7 +512,7 @@ class TestAtomicWriteEdgeCases:
             with atomic_write(dest) as tmp:
                 tmp_ref = tmp
                 tmp.write_bytes(b"partial data")
-                raise IOError("write failed")
+                raise OSError("write failed")
 
         assert not dest.exists()
         assert tmp_ref is not None

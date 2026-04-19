@@ -620,9 +620,9 @@ class TestDockerfileStructure:
     def test_dockerfile_has_required_instructions(self) -> None:
         from pathlib import Path
 
-        from haute.graph_utils import PipelineGraph
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._container import _generate_dockerfile
+        from haute.graph_utils import PipelineGraph
 
         resolved = ResolvedDeploy(
             config=DeployConfig(pipeline_file=Path("main.py"), model_name="test"),

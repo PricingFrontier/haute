@@ -38,7 +38,6 @@ from haute._io import _object_cache, load_external_object
 from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
 from haute._types import GraphNode, NodeData, PipelineGraph
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------

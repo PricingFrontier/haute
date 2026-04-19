@@ -13,14 +13,13 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import polars as pl
 import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.schemas import SinkResponse
-
 
 # ---------------------------------------------------------------------------
 # Helpers

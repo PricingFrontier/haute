@@ -84,9 +84,7 @@ def build_instance_mapping(
         orig_set = set(orig_names)
         inst_set = set(inst_names)
         stale_keys = [k for k in explicit if k not in orig_set]
-        stale_values = [
-            (k, v) for k, v in explicit.items() if v and v not in inst_set
-        ]
+        stale_values = [(k, v) for k, v in explicit.items() if v and v not in inst_set]
         if stale_keys or stale_values:
             raise ConfigError(
                 "inputMapping contains stale entries that no longer match the "

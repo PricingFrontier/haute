@@ -34,7 +34,6 @@ from haute._git import GitError, _validate_ref_name
 from haute._topo import topo_sort_ids
 from haute._types import GraphEdge
 
-
 # =========================================================================
 # 1. SQL Injection — Table name validation
 # =========================================================================
@@ -266,6 +265,7 @@ class TestPathTraversalURLEncoded:
 
     def test_decoded_dotdot_blocked(self, tmp_path: Path):
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         with pytest.raises(HTTPException) as exc_info:
@@ -293,6 +293,7 @@ class TestPathTraversalURLEncoded:
         from urllib.parse import unquote
 
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         raw = "%2e%2e/%2e%2e/etc/passwd"
@@ -308,6 +309,7 @@ class TestPathTraversalURLEncoded:
         from urllib.parse import unquote
 
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         raw = "%252e%252e/%252e%252e/etc/passwd"
@@ -367,6 +369,7 @@ class TestPathTraversalJsonCache:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
+
         from haute.server import app
 
         return TestClient(app, raise_server_exceptions=False)
@@ -645,6 +648,7 @@ class TestSymlinkTraversalBrowse:
         self, dir_with_symlink: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         base = dir_with_symlink
@@ -736,6 +740,7 @@ class TestNullByteHTTPParam:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
+
         from haute.server import app
 
         return TestClient(app, raise_server_exceptions=False)
@@ -776,6 +781,7 @@ class TestDoubleEncodedHTTPTraversal:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
+
         from haute.server import app
 
         return TestClient(app, raise_server_exceptions=False)

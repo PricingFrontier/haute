@@ -11,13 +11,11 @@ Covers:
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from haute._types import HauteError
-
 
 # ── A9: Exception hierarchy ────────────────────────────────────────
 
@@ -306,7 +304,6 @@ class TestFindTypedNode:
 
     def test_optimiser_service_uses_find_typed_node(self) -> None:
         """_find_optimiser_node should delegate to find_typed_node."""
-        from haute.graph_utils import NodeType
         from haute.routes._optimiser_service import _find_optimiser_node
 
         graph = self._make_graph_with_node("optimiser")
@@ -315,7 +312,6 @@ class TestFindTypedNode:
 
     def test_train_service_uses_find_typed_node(self) -> None:
         """_find_modelling_node should delegate to find_typed_node."""
-        from haute.graph_utils import NodeType
         from haute.routes._train_service import _find_modelling_node
 
         graph = self._make_graph_with_node("modelling")

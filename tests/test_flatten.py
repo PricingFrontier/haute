@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from haute._flatten import flatten_graph
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
-
 
 # ---------------------------------------------------------------------------
 # Helpers

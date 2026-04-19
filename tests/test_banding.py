@@ -5,11 +5,9 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
-from haute.executor import _apply_banding, _build_node_fn, execute_graph
 from haute._rating import _breakpoints_to_rules
-from tests.conftest import make_edge as _edge, make_source_node as _source_node
-
+from haute.executor import _apply_banding, _build_node_fn
+from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 
 # ---------------------------------------------------------------------------
 # Helper builders

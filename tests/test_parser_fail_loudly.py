@@ -34,17 +34,25 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from haute._parser_helpers import _resolve_node_config
 from haute._graph_utils import build_instance_mapping
+from haute._parser_helpers import _resolve_node_config
 from haute._types import NodeType
 from haute.codegen import _gen_transform, _instance_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.executor import execute_graph
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
+)
+from tests.conftest import (
     make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
@@ -124,9 +132,7 @@ class TestItem18ConfigPathFailsLoudly:
                 f"Got: {rendered!r} / context={exc_info.value.context!r}"
             )
 
-    def test_missing_config_error_contains_remediation_hint(
-        self, tmp_path: Path
-    ) -> None:
+    def test_missing_config_error_contains_remediation_hint(self, tmp_path: Path) -> None:
         """Users should get actionable guidance (e.g. "check the path",
         "create the file", or similar) — not a bare error string."""
         with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
@@ -530,9 +536,7 @@ class TestItem21ExtendPathNoStaleData:
         assert r2["leaf"].status == "ok"
         assert r2["leaf"].row_count == 3
 
-    def test_node_reconfigured_with_new_code_serves_fresh_result(
-        self, tmp_path: Path
-    ) -> None:
+    def test_node_reconfigured_with_new_code_serves_fresh_result(self, tmp_path: Path) -> None:
         """The canonical scenario from Item #21: a node was executed,
         then re-added with the same ID but altered config.  The next
         execution must serve the NEW code's output, not the stale one."""
@@ -603,9 +607,7 @@ class TestItem21ExtendPathNoStaleData:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node(
-                        "mid", "df = df.with_columns(y=pl.col('x') * 1000)"
-                    ),  # altered
+                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') * 1000)"),  # altered
                     _transform_node("leaf", "df = df.with_columns(z=pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
@@ -616,13 +618,10 @@ class TestItem21ExtendPathNoStaleData:
         z_vals = [row["z"] for row in r2["leaf"].preview]
         # Must use v2 'mid' code (y = x * 1000), not the stale v1 (y = x + 1)
         assert z_vals == [1000, 2000], (
-            f"Downstream computed against stale cached 'mid'. Expected "
-            f"[1000, 2000], got {z_vals}"
+            f"Downstream computed against stale cached 'mid'. Expected [1000, 2000], got {z_vals}"
         )
 
-    def test_extend_path_does_not_return_stale_outputs_from_cache(
-        self, tmp_path: Path
-    ) -> None:
+    def test_extend_path_does_not_return_stale_outputs_from_cache(self, tmp_path: Path) -> None:
         """Directly exercises the ``{**eager_outputs, **prev_outputs}`` merge.
 
         This is the structural heart of Item #21: when the extend-path fires
@@ -690,8 +689,7 @@ class TestItem21ExtendPathNoStaleData:
         # seed values.
         src_x = [row["x"] for row in results["src"].preview]
         assert src_x == [1, 2, 3], (
-            f"Extend-path merge served stale 'src' output. "
-            f"Expected x=[1, 2, 3], got {src_x}."
+            f"Extend-path merge served stale 'src' output. Expected x=[1, 2, 3], got {src_x}."
         )
 
 

@@ -5,12 +5,12 @@ from __future__ import annotations
 import dataclasses
 import os
 from pathlib import Path
-from unittest.mock import PropertyMock
 
 import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.deploy._config import (
+    _VALID_TOML_SCHEMA,
     AwsEcsConfig,
     AzureContainerAppsConfig,
     CIConfig,
@@ -22,7 +22,6 @@ from haute.deploy._config import (
     SafetyConfig,
     _apply_env_overrides,
     _validate_toml_keys,
-    _VALID_TOML_SCHEMA,
 )
 from haute.deploy._validators import validate_deploy
 

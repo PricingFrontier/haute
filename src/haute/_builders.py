@@ -16,6 +16,7 @@ from typing import Any
 
 import polars as pl
 
+from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_source
 from haute._logging import get_logger
 from haute._rating import (
@@ -24,12 +25,7 @@ from haute._rating import (
     _combine_rating_columns,
     _normalise_banding_factors,
 )
-from haute._types import (
-    GraphNode,
-    NodeType,
-    _Frame,
-    _sanitize_func_name,
-)
+from haute._types import GraphNode, NodeType, _Frame
 
 logger = get_logger(component="executor")
 

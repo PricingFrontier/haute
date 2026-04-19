@@ -19,7 +19,6 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-
 # -- Shared constants and helpers ------------------------------------------
 
 _SAFE_DETAIL = "Operation failed. Check the server logs for details."
@@ -763,8 +762,8 @@ class TestNodeFailureLogLevel:
 
     @staticmethod
     def _make_failing_graph():
-        from tests.conftest import make_edge, make_source_node, make_transform_node
         from haute._types import PipelineGraph
+        from tests.conftest import make_edge, make_source_node, make_transform_node
 
         return PipelineGraph(
             nodes=[make_source_node("src"), make_transform_node("t")],

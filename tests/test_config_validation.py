@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from haute._config_validation import (
-    VALID_KEYS,
     _UNIVERSAL_KEYS,
+    VALID_KEYS,
     warn_unrecognized_config_keys,
 )
 from haute._types import (
@@ -15,8 +15,6 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
-    DataSinkConfig,
-    DataSourceConfig,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,

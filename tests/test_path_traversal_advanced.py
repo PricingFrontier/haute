@@ -16,13 +16,10 @@ Each test class targets a specific module or attack vector:
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -256,6 +253,7 @@ class TestSymlinkTraversal:
     def test_validate_safe_path_blocks_symlink_escape(self, tmp_path: Path):
         """A symlink inside base pointing outside must be rejected."""
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         outside = tmp_path / "outside_secrets"
@@ -289,6 +287,7 @@ class TestSymlinkTraversal:
     def test_nested_symlink_chain_blocked(self, tmp_path: Path):
         """A chain of symlinks (a -> b -> outside) should still be blocked."""
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         outside = tmp_path / "outside"
@@ -309,6 +308,7 @@ class TestSymlinkTraversal:
     def test_symlink_to_parent_directory_blocked(self, tmp_path: Path):
         """project/escape -> project/.. (parent) allows reading anything."""
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         project = tmp_path / "project"
@@ -409,6 +409,7 @@ class TestWindowsMixedSeparatorTraversal:
         Production failure: reading files from network shares.
         """
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         with pytest.raises(HTTPException) as exc_info:

@@ -7,7 +7,6 @@ verify all stages interoperate correctly.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -18,7 +17,7 @@ import pytest
 from haute._config_io import collect_node_configs
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
-from haute.executor import _compile_preamble, execute_graph
+from haute.executor import execute_graph
 from haute.graph_utils import _prune_live_switch_edges, flatten_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph

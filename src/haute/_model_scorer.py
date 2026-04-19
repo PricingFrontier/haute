@@ -52,9 +52,7 @@ def _format_feature_mismatch(
             lines.append(f"  - '{col}': model expects {expected_type}, got {actual_type}")
         lines.append("")
 
-    lines.append(
-        "These features were expected by the model but are not in the current input data."
-    )
+    lines.append("These features were expected by the model but are not in the current input data.")
     return "\n".join(lines)
 
 
@@ -136,12 +134,8 @@ def _validate_features(
     # schema presents the model's features in the same relative order as
     # training — extra columns elsewhere in the schema are fine.
     schema_order = schema.names()
-    feature_positions = [
-        (name, schema_order.index(name)) for name in expected if name in available
-    ]
-    actual_order_by_position = [
-        name for name, _ in sorted(feature_positions, key=lambda p: p[1])
-    ]
+    feature_positions = [(name, schema_order.index(name)) for name in expected if name in available]
+    actual_order_by_position = [name for name, _ in sorted(feature_positions, key=lambda p: p[1])]
     if actual_order_by_position != list(expected):
         raise FeatureMismatchError(
             "Feature order mismatch between training and scoring: the "

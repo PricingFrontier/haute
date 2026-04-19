@@ -7,9 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from haute._types import GraphNode, NodeData, PipelineGraph
-from haute.deploy._config import DeployConfig, ResolvedDeploy
+from haute.deploy._config import ResolvedDeploy
 from haute.deploy._utils import build_manifest, get_haute_version, get_user
-
 from tests._deploy_helpers import make_resolved_deploy
 
 # ---------------------------------------------------------------------------

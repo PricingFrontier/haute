@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
-from haute.codegen import graph_to_code
 from haute._parser_helpers import _build_node_config
+from haute.codegen import graph_to_code
 from tests.conftest import make_edge, make_graph
-
 
 # ---------------------------------------------------------------------------
 # Code generation

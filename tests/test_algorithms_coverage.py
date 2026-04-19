@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, mock_open, patch
@@ -1007,7 +1006,7 @@ class TestSaveArtifactsCoverage:
 
 class TestLogToMlflowCoverage:
     def test_log_to_mlflow_calls_log_experiment(self, tmp_path):
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="mlflow_test",
@@ -1053,7 +1052,7 @@ class TestLogToMlflowCoverage:
         mock_log.assert_called_once()
 
     def test_log_to_mlflow_no_experiment_returns_early(self):
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="test",
@@ -1067,7 +1066,7 @@ class TestLogToMlflowCoverage:
         job._log_to_mlflow(result)
 
     def test_log_to_mlflow_import_error_returns_early(self):
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="test",
@@ -1286,8 +1285,6 @@ class TestGPUOnIterationPath:
             on_iter_calls.append((it, total))
 
         # When model.fit is called in the thread, create a fake metric file
-        import tempfile
-        import threading
 
         real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_test_")
 
@@ -1336,7 +1333,6 @@ class TestGPUOnIterationPath:
 
         mock_model.fit = failing_fit
 
-        import tempfile
 
         real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_err_")
 
@@ -1608,7 +1604,7 @@ class TestTrainingJobGLMPaths:
 class TestLogToMlflowFull:
     def test_log_to_mlflow_constructs_diagnostics_and_metadata(self, tmp_path):
         """Verify _log_to_mlflow constructs ModelDiagnostics and calls log_experiment."""
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="mlflow_full",
@@ -1877,7 +1873,7 @@ class TestPrepareDataWriteError:
             output_dir=str(tmp_path),
         )
 
-        with patch.object(pl.DataFrame, "write_parquet", side_effect=IOError("disk full")):
+        with patch.object(pl.DataFrame, "write_parquet", side_effect=OSError("disk full")):
             with pytest.raises(IOError, match="disk full"):
                 job._prepare_data(lambda msg, frac: None)
 

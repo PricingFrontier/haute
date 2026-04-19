@@ -97,8 +97,7 @@ class TestPyprojectParseIsTomlAware:
         """Round-trip through tomllib must succeed after the command runs."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\nname = "foo"\nversion = "0.1.0"\n'
-            'dependencies = [\n    "polars",\n]\n'
+            '[project]\nname = "foo"\nversion = "0.1.0"\ndependencies = [\n    "polars",\n]\n'
         )
         _ensure_haute_dependency(pyproject, "foo")
         # Must parse without raising
@@ -107,9 +106,7 @@ class TestPyprojectParseIsTomlAware:
         assert "haute" in data["project"]["dependencies"]
         assert "polars" in data["project"]["dependencies"]
 
-    def test_multiple_dependencies_arrays_only_project_is_touched(
-        self, tmp_path: Path
-    ) -> None:
+    def test_multiple_dependencies_arrays_only_project_is_touched(self, tmp_path: Path) -> None:
         """A second ``dependencies = [`` in another table must be left alone.
 
         If a Poetry-style ``[tool.poetry]`` block (or any other tool-specific
@@ -122,12 +119,12 @@ class TestPyprojectParseIsTomlAware:
         # Poetry-style block appears BEFORE [project], so its "dependencies = ["
         # is the first occurrence the str.replace() will hit.
         pyproject.write_text(
-            '[tool.poetry]\n'
+            "[tool.poetry]\n"
             'name = "foo-legacy"\n'
             'version = "0.1.0"\n'
             'dependencies = [\n    "requests",\n]\n'
-            '\n'
-            '[project]\n'
+            "\n"
+            "[project]\n"
             'name = "foo"\n'
             'version = "0.1.0"\n'
             'dependencies = [\n    "polars",\n]\n'
@@ -142,9 +139,7 @@ class TestPyprojectParseIsTomlAware:
         assert "haute" not in data["tool"]["poetry"]["dependencies"]
         assert "requests" in data["tool"]["poetry"]["dependencies"]
 
-    def test_unusual_whitespace_variants_do_not_duplicate(
-        self, tmp_path: Path
-    ) -> None:
+    def test_unusual_whitespace_variants_do_not_duplicate(self, tmp_path: Path) -> None:
         """``dependencies=[`` (no spaces) and ``dependencies =  [`` must still work.
 
         Pre-fix these don't match the literal ``"dependencies = ["`` string,
@@ -154,7 +149,7 @@ class TestPyprojectParseIsTomlAware:
         """
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\n'
+            "[project]\n"
             'name = "foo"\n'
             'version = "0.1.0"\n'
             'dependencies=[\n    "polars",\n]\n'  # no space around =
@@ -187,19 +182,19 @@ class TestPyprojectParseIsTomlAware:
         """
         monkeypatch.chdir(tmp_path)
         original = (
-            '[project]\n'
+            "[project]\n"
             'name = "my_project"\n'
             'version = "0.1.0"\n'
             'requires-python = ">=3.11"\n'
-            'dependencies = [\n'
+            "dependencies = [\n"
             '    "polars",\n'
             '    "pydantic",\n'
-            ']\n'
-            '\n'
-            '[project.optional-dependencies]\n'
-            'test = [\n'
+            "]\n"
+            "\n"
+            "[project.optional-dependencies]\n"
+            "test = [\n"
             '    "pytest",\n'
-            ']\n'
+            "]\n"
         )
         (tmp_path / "pyproject.toml").write_text(original)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
@@ -234,10 +229,10 @@ class TestHauteDependencyDetectionIsStructural:
         """A comment mentioning 'haute' should not block injection."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\n'
+            "[project]\n"
             'name = "foo"\n'
             'version = "0.1.0"\n'
-            '# using haute for X — note this is a comment only\n'
+            "# using haute for X — note this is a comment only\n"
             'dependencies = [\n    "polars",\n]\n'
         )
         _ensure_haute_dependency(pyproject, "foo")
@@ -246,13 +241,11 @@ class TestHauteDependencyDetectionIsStructural:
         # The comment must not have blocked the addition
         assert "haute" in data["project"]["dependencies"]
 
-    def test_haute_substring_package_name_does_not_fool_detection(
-        self, tmp_path: Path
-    ) -> None:
+    def test_haute_substring_package_name_does_not_fool_detection(self, tmp_path: Path) -> None:
         """A dep like 'haute-utils' should not match the 'haute' check."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\n'
+            "[project]\n"
             'name = "foo"\n'
             'version = "0.1.0"\n'
             'dependencies = [\n    "haute-utils>=1.0",\n]\n'
@@ -265,13 +258,11 @@ class TestHauteDependencyDetectionIsStructural:
         assert any(d == "haute" or d.startswith("haute==") or d.startswith("haute>") for d in deps)
         assert any(d.startswith("haute-utils") for d in deps)
 
-    def test_actual_haute_entry_is_detected_and_not_duplicated(
-        self, tmp_path: Path
-    ) -> None:
+    def test_actual_haute_entry_is_detected_and_not_duplicated(self, tmp_path: Path) -> None:
         """A real ``"haute"`` entry must be recognised and not duplicated."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\n'
+            "[project]\n"
             'name = "foo"\n'
             'version = "0.1.0"\n'
             'dependencies = [\n    "haute",\n    "polars",\n]\n'
@@ -304,8 +295,7 @@ class TestStatusInstallInstructionIsCorrect:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "haute.toml").write_text(
-            '[project]\nname = "t"\npipeline = "main.py"\n'
-            '[deploy]\nmodel_name = "motor-pricing"\n'
+            '[project]\nname = "t"\npipeline = "main.py"\n[deploy]\nmodel_name = "motor-pricing"\n'
         )
         with patch(
             "haute.deploy._mlflow.get_deploy_status",
@@ -416,9 +406,9 @@ class TestDeployCiDetection:
 
         # With the CI var set, the gate must allow deploy through. A failure
         # here means the CI detection did not recognise this env var.
-        assert (
-            "must go through ci/cd" not in result.output.lower()
-        ), f"{env_var}={value} should be recognised as CI, got: {result.output}"
+        assert "must go through ci/cd" not in result.output.lower(), (
+            f"{env_var}={value} should be recognised as CI, got: {result.output}"
+        )
 
     def test_no_ci_env_blocks_deploy(
         self,
@@ -432,9 +422,7 @@ class TestDeployCiDetection:
 
         result = runner.invoke(cli, ["deploy"])
         assert result.exit_code == 1
-        assert (
-            "ci/cd" in result.output.lower() or "dry-run" in result.output.lower()
-        )
+        assert "ci/cd" in result.output.lower() or "dry-run" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -498,10 +486,9 @@ class TestServePortConflictDetection:
             f"Expected '--port' suggestion in the error:\n{result.output}"
         )
         # A generic indication that the port is in use / already bound
-        assert any(
-            phrase in output
-            for phrase in ("already", "in use", "bound", "conflict")
-        ), f"Expected a port-conflict phrase in the error:\n{result.output}"
+        assert any(phrase in output for phrase in ("already", "in use", "bound", "conflict")), (
+            f"Expected a port-conflict phrase in the error:\n{result.output}"
+        )
         # uvicorn must not have been invoked at all
         mock_uvicorn_run.assert_not_called()
 
@@ -570,9 +557,9 @@ class TestImpactProdExistsFailsLoudly:
         from haute.cli._impact import _impact_databricks
 
         mock_ws = MagicMock()
-        mock_ws.serving_endpoints.get.side_effect = type(
-            "NotFound", (Exception,), {}
-        )("endpoint not found")
+        mock_ws.serving_endpoints.get.side_effect = type("NotFound", (Exception,), {})(
+            "endpoint not found"
+        )
 
         with (
             patch("databricks.sdk.WorkspaceClient", return_value=mock_ws),
@@ -594,9 +581,9 @@ class TestImpactProdExistsFailsLoudly:
         from haute.cli._impact import _impact_databricks
 
         mock_ws = MagicMock()
-        mock_ws.serving_endpoints.get.side_effect = type(
-            "ResourceDoesNotExist", (Exception,), {}
-        )("does not exist")
+        mock_ws.serving_endpoints.get.side_effect = type("ResourceDoesNotExist", (Exception,), {})(
+            "does not exist"
+        )
 
         with (
             patch("databricks.sdk.WorkspaceClient", return_value=mock_ws),
@@ -632,9 +619,7 @@ class TestImpactProdExistsFailsLoudly:
         from haute.cli._impact import _impact_databricks
 
         mock_ws = MagicMock()
-        mock_ws.serving_endpoints.get.side_effect = RuntimeError(
-            "500 Internal Server Error"
-        )
+        mock_ws.serving_endpoints.get.side_effect = RuntimeError("500 Internal Server Error")
 
         with (
             patch("databricks.sdk.WorkspaceClient", return_value=mock_ws),
@@ -652,9 +637,7 @@ class TestImpactProdExistsFailsLoudly:
         from haute.cli._impact import _impact_databricks
 
         mock_ws = MagicMock()
-        mock_ws.serving_endpoints.get.side_effect = ConnectionError(
-            "connection refused"
-        )
+        mock_ws.serving_endpoints.get.side_effect = ConnectionError("connection refused")
 
         with (
             patch("databricks.sdk.WorkspaceClient", return_value=mock_ws),
@@ -677,9 +660,7 @@ class TestImpactProdExistsFailsLoudly:
             "haute.deploy._impact.score_http_endpoint_batched",
             return_value=[{"p": 1.0}],
         ):
-            _, prod, exists = _impact_http(
-                "http://stg/quote", "", [{"x": 1}], 100
-            )
+            _, prod, exists = _impact_http("http://stg/quote", "", [{"x": 1}], 100)
         assert exists is False
         assert prod == []
 

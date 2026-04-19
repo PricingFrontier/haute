@@ -53,9 +53,7 @@ from fastapi.testclient import TestClient
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Return a clean temp project root and chdir into it."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "main.py").write_text(
-        'import haute\npipeline = haute.Pipeline("main")\n'
-    )
+    (tmp_path / "main.py").write_text('import haute\npipeline = haute.Pipeline("main")\n')
     return tmp_path
 
 
@@ -143,9 +141,7 @@ class TestWatcherLongSaveRace:
             original_mark()
 
         monkeypatch.setattr(helpers, "mark_self_write", tracked_mark)
-        monkeypatch.setattr(
-            "haute.routes._save_pipeline.mark_self_write", tracked_mark
-        )
+        monkeypatch.setattr("haute.routes._save_pipeline.mark_self_write", tracked_mark)
 
         # Build a minimal graph that triggers the main-file write path.
         graph = PipelineGraph(
@@ -172,9 +168,7 @@ class TestWatcherLongSaveRace:
         # old timestamp-based cooldown would have expired.
         def slow_generate(*args, **kwargs):
             time.sleep(0.5)  # Just enough to show per-file timestamp
-            return (
-                'import haute\npipeline = haute.Pipeline("main")\n'
-            )
+            return 'import haute\npipeline = haute.Pipeline("main")\n'
 
         with patch(
             "haute.codegen.graph_to_code",
@@ -302,9 +296,7 @@ class TestWatcherLongSaveRace:
         # atomic/Writer path.
         main_written = any("main.py" in p for p in all_writes)
         module_written = any("sm1.py" in p for p in all_writes)
-        assert main_written, (
-            "#7: main.py was not written via atomic_write_text / Writer"
-        )
+        assert main_written, "#7: main.py was not written via atomic_write_text / Writer"
         assert module_written, (
             "#7: modules/sm1.py was not written via atomic_write_text / "
             "Writer — submodel branch still uses raw write_text and "
@@ -341,9 +333,7 @@ class TestGraphToCodeMultiPathTraversal:
     and raise a loud HTTPException on anything else.
     """
 
-    def _make_graph_with_crafted_submodel_file(
-        self, sm_file: str
-    ) -> dict:
+    def _make_graph_with_crafted_submodel_file(self, sm_file: str) -> dict:
         return {
             "nodes": [
                 {
@@ -457,13 +447,9 @@ class TestGraphToCodeMultiPathTraversal:
         ]
         for c in outside_candidates:
             if c.exists():
-                pytest.fail(
-                    f"#12: malicious write reached filesystem at {c}"
-                )
+                pytest.fail(f"#12: malicious write reached filesystem at {c}")
 
-    def test_allowlist_accepts_valid_main_and_modules_paths(
-        self, project_root: Path
-    ) -> None:
+    def test_allowlist_accepts_valid_main_and_modules_paths(self, project_root: Path) -> None:
         """A well-formed codegen output (main file + ``modules/<name>.py``)
         must still be accepted by the allowlist.
         """
@@ -474,9 +460,7 @@ class TestGraphToCodeMultiPathTraversal:
 
         svc = SavePipelineService(project_root)
 
-        graph_dict = self._make_graph_with_crafted_submodel_file(
-            "modules/evil.py"
-        )
+        graph_dict = self._make_graph_with_crafted_submodel_file("modules/evil.py")
         req = SavePipelineRequest(
             name="main",
             description="",
@@ -508,10 +492,7 @@ class TestGraphToCodeMultiPathTraversal:
                         and "outside" not in msg
                         and "forbidden" not in msg
                         and "escape" not in msg
-                    ), (
-                        f"#12: allowlist wrongly rejected valid paths: "
-                        f"{exc.detail!r}"
-                    )
+                    ), f"#12: allowlist wrongly rejected valid paths: {exc.detail!r}"
             except Exception:  # noqa: BLE001
                 # Non-HTTP failures (e.g. filesystem issues in the skinny
                 # setup) are acceptable here — we only care that the
@@ -531,9 +512,7 @@ class TestGraphToCodeMultiPathTraversal:
         from haute.schemas import SavePipelineRequest
 
         svc = SavePipelineService(project_root)
-        graph_dict = self._make_graph_with_crafted_submodel_file(
-            "../escape/oops.py"
-        )
+        graph_dict = self._make_graph_with_crafted_submodel_file("../escape/oops.py")
         req = SavePipelineRequest(
             name="main",
             description="",
@@ -620,15 +599,13 @@ class TestSaveServiceTransaction:
             source_file=source,
         )
 
-    def test_sidecar_failure_rolls_back_py_file(
-        self, project_root: Path
-    ) -> None:
+    def test_sidecar_failure_rolls_back_py_file(self, project_root: Path) -> None:
         """Fail on the last step (sidecar write) and assert either:
-          - the previously-written main.py is restored to its pre-save
-            content, OR
-          - the main.py was never visible with the new content (i.e.
-            the save staged into a temp location and never published
-            because the later step failed).
+        - the previously-written main.py is restored to its pre-save
+          content, OR
+        - the main.py was never visible with the new content (i.e.
+          the save staged into a temp location and never published
+          because the later step failed).
         """
         from haute.routes._save_pipeline import SavePipelineService
 
@@ -650,17 +627,13 @@ class TestSaveServiceTransaction:
             with pytest.raises(OSError):
                 svc.save(req)
 
-        assert py_path.exists(), (
-            "#50: pipeline.py vanished after a failed save — no rollback"
-        )
+        assert py_path.exists(), "#50: pipeline.py vanished after a failed save — no rollback"
         assert py_path.read_text() == original_contents, (
             "#50: pipeline.py was updated even though a later save step "
             "failed — transaction not atomic"
         )
 
-    def test_config_write_failure_rolls_back_py_file(
-        self, project_root: Path
-    ) -> None:
+    def test_config_write_failure_rolls_back_py_file(self, project_root: Path) -> None:
         """Similar invariant for a mid-pipeline failure (config write)."""
         from haute.routes._save_pipeline import SavePipelineService
 
@@ -682,9 +655,7 @@ class TestSaveServiceTransaction:
             "#50: pipeline.py overwritten despite mid-save failure"
         )
 
-    def test_module_file_not_orphaned_when_sidecar_fails(
-        self, project_root: Path
-    ) -> None:
+    def test_module_file_not_orphaned_when_sidecar_fails(self, project_root: Path) -> None:
         """Realistic multi-file save: a submodel write creates
         ``modules/sm1.py`` BEFORE the sidecar write.  If the sidecar
         write fails, the orphaned module file must be cleaned up so a
@@ -752,9 +723,7 @@ class TestSaveServiceTransaction:
             patch(
                 "haute.codegen.graph_to_code_multi",
                 return_value={
-                    "pipeline.py": (
-                        'import haute\npipeline = haute.Pipeline("main")\n'
-                    ),
+                    "pipeline.py": ('import haute\npipeline = haute.Pipeline("main")\n'),
                     "modules/sm1.py": "# submodel\n",
                 },
             ),
@@ -773,8 +742,7 @@ class TestSaveServiceTransaction:
         # The new module file must not linger — save rolled back OR
         # staged in a temp dir.
         assert not module_path.exists(), (
-            "#50: modules/sm1.py orphaned on disk after save failure — "
-            "save is non-transactional"
+            "#50: modules/sm1.py orphaned on disk after save failure — save is non-transactional"
         )
 
 
@@ -804,9 +772,7 @@ class TestRenameCollisionPositionWarning:
     of silently losing the node's graph location.
     """
 
-    def _payload(
-        self, graph: dict, source: str = "collision.py", name: str = "main"
-    ) -> dict:
+    def _payload(self, graph: dict, source: str = "collision.py", name: str = "main") -> dict:
         return {
             "name": name,
             "description": "",
@@ -835,9 +801,7 @@ class TestRenameCollisionPositionWarning:
 
         # Pre-write a sidecar that has a position keyed by ``feature_x``
         py = project_root / "collision.py"
-        py.write_text(
-            'import haute\npipeline = haute.Pipeline("main")\n'
-        )
+        py.write_text('import haute\npipeline = haute.Pipeline("main")\n')
         sidecar = py.with_suffix(".haute.json")
         sidecar.write_text(
             json.dumps(
@@ -878,9 +842,7 @@ class TestRenameCollisionPositionWarning:
             "edges": [],
         }
 
-        resp = client.post(
-            "/api/pipeline/save", json=self._payload(graph, "collision.py")
-        )
+        resp = client.post("/api/pipeline/save", json=self._payload(graph, "collision.py"))
         # Two outcomes are acceptable:
         # 1) 400 with a clear collision message (current behavior preserved).
         # 2) 200 with ``warnings`` in the response payload explaining that
@@ -892,9 +854,7 @@ class TestRenameCollisionPositionWarning:
             )
             return
 
-        assert resp.status_code == 200, (
-            f"#51: unexpected status {resp.status_code}: {resp.json()}"
-        )
+        assert resp.status_code == 200, f"#51: unexpected status {resp.status_code}: {resp.json()}"
         body = resp.json()
         assert "warnings" in body, (
             "#51: save response for a sanitized-name collision must include "
@@ -902,13 +862,10 @@ class TestRenameCollisionPositionWarning:
         )
         warnings_text = json.dumps(body["warnings"])
         assert "feature_x" in warnings_text.lower() or "feature-x" in warnings_text.lower(), (
-            f"#51: warning must name the colliding sanitized key "
-            f"(got: {body['warnings']!r})"
+            f"#51: warning must name the colliding sanitized key (got: {body['warnings']!r})"
         )
 
-    def test_positions_preserved_when_no_collision(
-        self, project_root: Path
-    ) -> None:
+    def test_positions_preserved_when_no_collision(self, project_root: Path) -> None:
         """Without a rename collision, positions round-trip losslessly
         through save + load.  The fix for #51 must not break this path.
         """
@@ -916,9 +873,7 @@ class TestRenameCollisionPositionWarning:
         from haute.routes._helpers import load_sidecar_positions, save_sidecar
 
         py = project_root / "simple.py"
-        py.write_text(
-            'import haute\npipeline = haute.Pipeline("main")\n'
-        )
+        py.write_text('import haute\npipeline = haute.Pipeline("main")\n')
 
         graph = PipelineGraph(
             nodes=[
@@ -949,9 +904,7 @@ class TestRenameCollisionPositionWarning:
         assert positions["Unique_One"] == {"x": 10.0, "y": 20.0}
         assert positions["Unique_Two"] == {"x": 30.0, "y": 40.0}
 
-    def test_save_sidecar_collision_logs_warning(
-        self, project_root: Path
-    ) -> None:
+    def test_save_sidecar_collision_logs_warning(self, project_root: Path) -> None:
         """Structural: ``save_sidecar`` (or its caller) must emit a
         structured log warning when it detects a sanitized-name collision
         that drops a position.  Silent loss is the hazard identified by
@@ -998,9 +951,7 @@ class TestRenameCollisionPositionWarning:
         with structlog.testing.capture_logs() as captured:
             save_sidecar(py, graph)
 
-        warnings_or_errors = [
-            e for e in captured if e.get("log_level") in ("warning", "error")
-        ]
+        warnings_or_errors = [e for e in captured if e.get("log_level") in ("warning", "error")]
         assert warnings_or_errors, (
             "#51: save_sidecar silently dropped a colliding position — "
             "expected a warning-level log event naming the conflict"
@@ -1009,8 +960,7 @@ class TestRenameCollisionPositionWarning:
         # Either the sanitized function name or the collision keyword
         # must appear in the log output
         assert "My_Node".lower() in joined.lower() or "collision" in joined.lower(), (
-            f"#51: collision warning did not name the affected key "
-            f"(got: {warnings_or_errors!r})"
+            f"#51: collision warning did not name the affected key (got: {warnings_or_errors!r})"
         )
 
 
@@ -1082,9 +1032,7 @@ class TestRollbackRobustness:
             "#50: rollback's first (reverse-order) entry was not restored"
         )
 
-        failed_events = [
-            e for e in captured if e.get("event") == "save_rollback_failed"
-        ]
+        failed_events = [e for e in captured if e.get("event") == "save_rollback_failed"]
         assert failed_events, (
             "#50: _rollback swallowed a partial-rollback error without "
             "emitting save_rollback_failed"

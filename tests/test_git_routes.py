@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-
-from tests._git_helpers import git_run as _git, init_repo as _init_repo
-
 from fastapi import HTTPException
+
+from tests._git_helpers import git_run as _git
+from tests._git_helpers import init_repo as _init_repo
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -562,9 +562,8 @@ class TestGitErrorEndpointResponses:
         body: dict | None,
     ) -> None:
         """Patch the underlying _git function to raise a GitError and verify 400."""
-        from haute._git import GitError
-
         import haute.routes.git as git_routes
+        from haute._git import GitError
 
         monkeypatch.setattr(
             git_routes,
@@ -603,9 +602,8 @@ class TestGitErrorEndpointResponses:
         body: dict | None,
     ) -> None:
         """Patch the underlying _git function to raise a GitGuardrailError and verify 403."""
-        from haute._git import GitGuardrailError
-
         import haute.routes.git as git_routes
+        from haute._git import GitGuardrailError
 
         monkeypatch.setattr(
             git_routes,
