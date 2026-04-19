@@ -3,6 +3,7 @@ import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
 import { CodeEditor } from "./editors"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
+import useToastStore from "../stores/useToastStore"
 import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
 import {
   ApiError,
@@ -39,6 +40,7 @@ interface UtilityPanelProps {
 }
 
 export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelProps) {
+  const addToast = useToastStore((s) => s.addToast)
   const [files, setFiles] = useState<UtilityFile[]>([])
   const [activeModule, setActiveModule] = useState<string | null>(null)
   const [content, setContent] = useState("")
@@ -77,12 +79,13 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
           setErrorLine(syntaxErr.error_line)
           setErrorMsg(syntaxErr.error)
         } else {
-          console.warn("Failed to save utility file", module, err)
+          const detail = err instanceof Error ? err.message : "unknown error"
+          addToast("error", `Failed to save utility file "${module}": ${detail}`)
           setErrorMsg("Failed to save")
         }
       }
     }, 500)
-  }, [])
+  }, [addToast])
 
   // Cleanup timer on unmount
   useEffect(() => () => clearTimeout(saveTimer.current), [])
@@ -113,10 +116,11 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       setErrorLine(null)
       setErrorMsg(null)
     } catch (err) {
-      console.warn("Failed to load utility file", module, err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
     }
-  }, [])
+  }, [addToast])
 
   // Auto-select first file
   useEffect(() => {
@@ -159,10 +163,11 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       setContent("")
       await loadFiles()
     } catch (err) {
-      console.warn("Failed to delete utility file", activeModule, err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }
-  }, [activeModule, loadFiles])
+  }, [activeModule, loadFiles, addToast])
 
   return (
     <PanelShell

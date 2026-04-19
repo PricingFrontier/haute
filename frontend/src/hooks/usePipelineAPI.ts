@@ -187,7 +187,7 @@ export default function usePipelineAPI({
               }
             }
           })
-          .catch((e) => { console.warn("propagation_failed", dsId, e); addToast("warning", `Preview propagation failed for "${dsId}"`) })
+          .catch(() => { addToast("warning", `Preview propagation failed for "${dsId}"`) })
       }
     }
 
@@ -272,7 +272,7 @@ export default function usePipelineAPI({
               ))
             }
           })
-          .catch((e) => { console.warn("upstream_preview_failed", upstream.id, e); addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}"`) }),
+          .catch(() => { addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}"`) }),
       ),
     ).then(() => {
       fetchPreviewImmediate(node)
@@ -302,8 +302,8 @@ export default function usePipelineAPI({
         addToast("success", `Saved → ${data.file}`)
       })
       .catch((err: unknown) => {
-        console.warn("Pipeline save failed:", err)
-        addToast("error", "Failed to save pipeline")
+        const detail = err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Failed to save pipeline: ${detail}`)
       })
   }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, lastSavedRef, setDirty, addToast])
 

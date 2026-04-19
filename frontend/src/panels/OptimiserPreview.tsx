@@ -20,6 +20,7 @@ import { formatNumber } from "../utils/formatValue"
 import { useDragResize } from "../hooks/useDragResize"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useToastStore from "../stores/useToastStore"
 import type { FrontierData } from "../api/types"
 import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
@@ -103,6 +104,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   // Store actions
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
   const storeUpdateAfterSelect = useNodeResultsStore((s) => s.updateFrontierAfterSelect)
+  const addToast = useToastStore((s) => s.addToast)
 
   // MLflow availability
   const mlflowAvailable = useSettingsStore((s) => s.mlflow.status === "connected")
@@ -131,12 +133,13 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
         const res = await selectFrontierPointAPI({ job_id: jobId, point_index: index })
         storeUpdateAfterSelect(nodeId, index, res)
       } catch (err) {
-        console.warn("frontier point select failed", err)
+        const detail = err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Failed to select frontier point: ${detail}`)
         // Revert to the previous selection so the UI doesn't show stale data
         storeSelectPoint(nodeId, selectedIdx)
       }
     },
-    [selectedIdx, nodeId, jobId, storeSelectPoint, storeUpdateAfterSelect],
+    [selectedIdx, nodeId, jobId, storeSelectPoint, storeUpdateAfterSelect, addToast],
   )
 
   const handleStepPoint = useCallback(

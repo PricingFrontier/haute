@@ -5,6 +5,7 @@ import {
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
+import useToastStore from "../stores/useToastStore"
 import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
 import {
   getGitStatus,
@@ -28,6 +29,7 @@ interface GitPanelProps {
 type View = "main" | "history"
 
 export default function GitPanel({ onClose }: GitPanelProps) {
+  const addToast = useToastStore((s) => s.addToast)
 
   // State
   const [status, setStatus] = useState<GitStatus | null>(null)
@@ -70,10 +72,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       const res = await getGitHistory(30)
       setHistory(res.entries)
     } catch (err) {
-      console.warn("Failed to load git history", err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to load git history: ${detail}`)
       setHistory([])
     }
-  }, [])
+  }, [addToast])
 
   useEffect(() => {
     if (view === "history") loadHistory()
