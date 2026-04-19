@@ -95,8 +95,7 @@ Controls how data is divided for training and validation.
       ],
       "intercept": true,
       "regularization": "ridge",
-      "alpha": 0.01,
-      "cv_folds": 5
+      "alpha": 0.01
     }
     ```
 
@@ -112,7 +111,6 @@ Controls how data is divided for training and validation.
     | `l1_ratio` | Elastic net mixing parameter (0 = pure ridge, 1 = pure lasso) |
     | `intercept` | Whether to fit an intercept. Defaults to true. |
     | `var_power` | Variance power for Tweedie distributions |
-    | `cv_folds` | Number of cross-validation folds for regularization tuning |
 
 **See also:**
 
