@@ -467,65 +467,6 @@ class TestHandleGitErrorStatusCodes:
 
 
 # ---------------------------------------------------------------------------
-# _dc_to_pydantic conversion
-# ---------------------------------------------------------------------------
-
-
-class TestDcToPydantic:
-    """_dc_to_pydantic should convert a dataclass to a Pydantic model."""
-
-    def test_converts_simple_dataclass(self) -> None:
-        import dataclasses
-
-        from pydantic import BaseModel
-
-        from haute.routes.git import _dc_to_pydantic
-
-        @dataclasses.dataclass
-        class SimpleDC:
-            name: str
-            count: int
-
-        class SimpleModel(BaseModel):
-            name: str
-            count: int
-
-        dc_inst = SimpleDC(name="test", count=42)
-        result = _dc_to_pydantic(dc_inst, SimpleModel)
-        assert isinstance(result, SimpleModel)
-        assert result.name == "test"
-        assert result.count == 42
-
-    def test_converts_nested_dataclass(self) -> None:
-        import dataclasses
-
-        from pydantic import BaseModel
-
-        from haute.routes.git import _dc_to_pydantic
-
-        @dataclasses.dataclass
-        class Inner:
-            value: str
-
-        @dataclasses.dataclass
-        class Outer:
-            items: list[Inner]
-
-        class InnerModel(BaseModel):
-            value: str
-
-        class OuterModel(BaseModel):
-            items: list[InnerModel]
-
-        dc_inst = Outer(items=[Inner(value="a"), Inner(value="b")])
-        result = _dc_to_pydantic(dc_inst, OuterModel)
-        assert isinstance(result, OuterModel)
-        assert len(result.items) == 2
-        assert result.items[0].value == "a"
-        assert result.items[1].value == "b"
-
-
-# ---------------------------------------------------------------------------
 # GitError (non-guardrail) through endpoints
 # ---------------------------------------------------------------------------
 

@@ -38,7 +38,6 @@ from fastapi.testclient import TestClient
 
 from haute.server import app
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -88,14 +87,11 @@ def _assert_standard_error_shape(
 
     # Body must be a JSON object.
     assert isinstance(body, dict), (
-        f"#76: error body must be a JSON object ({context}); got "
-        f"{type(body).__name__!r}: {body!r}"
+        f"#76: error body must be a JSON object ({context}); got {type(body).__name__!r}: {body!r}"
     )
 
     # Exactly one top-level key, and it must be 'detail' (not 'error').
-    assert "detail" in body, (
-        f"#76: error body must contain key 'detail' ({context}); got: {body!r}"
-    )
+    assert "detail" in body, f"#76: error body must contain key 'detail' ({context}); got: {body!r}"
     assert "error" not in body, (
         f"#76: error body must not contain top-level 'error' key "
         f"({context}); structured payloads belong in the server log, not "
@@ -115,9 +111,7 @@ def _assert_standard_error_shape(
         f"{type(detail).__name__!r}: {detail!r}.  Nested dicts like "
         f"{{'error': ..., 'error_line': ...}} must move to logs."
     )
-    assert detail.strip(), (
-        f"#76: body['detail'] must not be empty ({context}); got {detail!r}"
-    )
+    assert detail.strip(), f"#76: body['detail'] must not be empty ({context}); got {detail!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -284,18 +278,14 @@ class TestUtilitySyntaxErrorDetailIsFlat:
     not a wire response field.
     """
 
-    def test_create_syntax_error_uses_flat_string_detail(
-        self, isolated_client: TestClient
-    ) -> None:
+    def test_create_syntax_error_uses_flat_string_detail(self, isolated_client: TestClient) -> None:
         res = isolated_client.post(
             "/api/utility",
             json={"name": "broken_create", "content": "def foo(\n"},
         )
         assert res.status_code == 400
         body = res.json()
-        _assert_standard_error_shape(
-            body, status=400, method="POST", url="/api/utility"
-        )
+        _assert_standard_error_shape(body, status=400, method="POST", url="/api/utility")
         # A useful detail must mention what went wrong — the SyntaxError
         # token or the word "syntax" — even though it's a plain string.
         detail_lc = body["detail"].lower()
@@ -318,9 +308,7 @@ class TestUtilitySyntaxErrorDetailIsFlat:
         )
         assert res.status_code == 400
         body = res.json()
-        _assert_standard_error_shape(
-            body, status=400, method="PUT", url="/api/utility/helper"
-        )
+        _assert_standard_error_shape(body, status=400, method="PUT", url="/api/utility/helper")
         # Original file must be unchanged (existing invariant).
         assert (util / "helper.py").read_text() == "x = 1\n"
 
@@ -373,15 +361,11 @@ class TestInternalErrorDetailNotRawException:
             "native decoder crashed at 0xDEADBEEF — internal path /etc/secret"
         )
         with patch("haute.graph_utils.read_source", return_value=fake_lf):
-            res = isolated_client.get(
-                "/api/schema", params={"path": "data/sample.parquet"}
-            )
+            res = isolated_client.get("/api/schema", params={"path": "data/sample.parquet"})
 
         assert res.status_code == 500
         body = res.json()
-        _assert_standard_error_shape(
-            body, status=500, method="GET", url="/api/schema"
-        )
+        _assert_standard_error_shape(body, status=500, method="GET", url="/api/schema")
         detail = body["detail"]
         for token in self._sensitive_repr_tokens():
             assert token not in detail, (
@@ -394,9 +378,7 @@ class TestInternalErrorDetailNotRawException:
             f"keep it a short sentence: {detail!r}"
         )
 
-    def test_unhandled_middleware_500_body_is_sanitized(
-        self, isolated_client: TestClient
-    ) -> None:
+    def test_unhandled_middleware_500_body_is_sanitized(self, isolated_client: TestClient) -> None:
         """Even an exception that escapes a handler entirely (handled by
         ``_RequestIdMiddleware``) must produce ``{"detail": "<short str>"}``.
         """
@@ -413,9 +395,7 @@ class TestInternalErrorDetailNotRawException:
 
         assert res.status_code == 500
         body = res.json()
-        _assert_standard_error_shape(
-            body, status=500, method="GET", url="/api/pipelines"
-        )
+        _assert_standard_error_shape(body, status=500, method="GET", url="/api/pipelines")
         detail = body["detail"]
         # Sensitive path / class repr must not leak.
         assert "/var/secret/path" not in detail, (
@@ -461,9 +441,7 @@ class TestNoRouteConstructsDictDetail:
                 if name != "HTTPException":
                     continue
                 for kw in node.keywords:
-                    if kw.arg == "detail" and isinstance(
-                        kw.value, (ast.Dict, ast.List, ast.Tuple)
-                    ):
+                    if kw.arg == "detail" and isinstance(kw.value, (ast.Dict, ast.List, ast.Tuple)):
                         offenders.append(
                             f"{py.relative_to(routes_pkg.parent.parent.parent)}"
                             f":{node.lineno} — detail is "

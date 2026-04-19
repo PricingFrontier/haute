@@ -6,15 +6,17 @@ guardrails (no writes to protected branches, backup tags before revert).
 
 All handlers are plain ``def`` (not ``async def``) so that FastAPI runs
 them in a thread pool, avoiding event-loop blocking on slow git operations.
+
+``_git`` returns Pydantic response models directly (item #74), so each
+route body collapses to a single ``return _git.<op>(...)`` inside the
+try/except — no dataclass-to-dict-to-model shim here.
 """
 
 from __future__ import annotations
 
-import dataclasses
-from typing import Any, NoReturn, TypeVar
+from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 from haute._git import (
     GitDomainError,
@@ -41,7 +43,6 @@ from haute.schemas import (
     GitCreateBranchRequest,
     GitCreateBranchResponse,
     GitDeleteBranchRequest,
-    GitHistoryEntry,
     GitHistoryResponse,
     GitPullResponse,
     GitRevertRequest,
@@ -51,8 +52,6 @@ from haute.schemas import (
     GitSubmitResponse,
     GitSwitchBranchRequest,
 )
-
-_M = TypeVar("_M", bound=BaseModel)
 
 logger = get_logger(component="server.git")
 
@@ -86,15 +85,6 @@ def _handle_git_error(e: GitError) -> NoReturn:
     raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL)
 
 
-def _dc_to_pydantic(dc_instance: Any, model: type[_M]) -> _M:
-    """Convert a dataclass instance to a Pydantic model via ``model_validate``.
-
-    Handles nested dataclass fields (e.g. lists of dataclasses) by recursively
-    converting them with ``dataclasses.asdict``.
-    """
-    return model.model_validate(dataclasses.asdict(dc_instance))
-
-
 # ---------------------------------------------------------------------------
 # GET /api/git/status
 # ---------------------------------------------------------------------------
@@ -104,13 +94,12 @@ def _dc_to_pydantic(dc_instance: Any, model: type[_M]) -> _M:
 def git_status() -> GitStatusResponse:
     """Current branch, changed files, and main-ahead status."""
     try:
-        s = get_status()
+        return get_status()
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_status_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return _dc_to_pydantic(s, GitStatusResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -122,13 +111,12 @@ def git_status() -> GitStatusResponse:
 def git_branches() -> GitBranchListResponse:
     """List all branches (user's first, then others, archived last)."""
     try:
-        result = list_branches()
+        return list_branches()
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_branches_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return _dc_to_pydantic(result, GitBranchListResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +166,12 @@ def git_switch(body: GitSwitchBranchRequest) -> dict[str, str]:
 def git_save() -> GitSaveResponse:
     """Stage, commit, and push all changes."""
     try:
-        result = save_progress()
+        return save_progress()
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_save_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return _dc_to_pydantic(result, GitSaveResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -196,13 +183,12 @@ def git_save() -> GitSaveResponse:
 def git_submit() -> GitSubmitResponse:
     """Push and return a comparison URL for PR creation."""
     try:
-        result = submit_for_review()
+        return submit_for_review()
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_submit_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return _dc_to_pydantic(result, GitSubmitResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +206,7 @@ def git_history(limit: int = Query(20, ge=1, le=500)) -> GitHistoryResponse:
     except Exception as e:
         logger.error("git_history_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitHistoryResponse(
-        entries=[_dc_to_pydantic(e, GitHistoryEntry) for e in entries],
-    )
+    return GitHistoryResponse(entries=entries)
 
 
 # ---------------------------------------------------------------------------
@@ -234,13 +218,12 @@ def git_history(limit: int = Query(20, ge=1, le=500)) -> GitHistoryResponse:
 def git_revert(body: GitRevertRequest) -> GitRevertResponse:
     """Reset to a specific commit (creates a backup tag first)."""
     try:
-        result = revert_to(body.sha)
+        return revert_to(body.sha)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_revert_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return _dc_to_pydantic(result, GitRevertResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -252,13 +235,12 @@ def git_revert(body: GitRevertRequest) -> GitRevertResponse:
 def git_pull() -> GitPullResponse:
     """Pull latest default branch into current branch."""
     try:
-        result = pull_latest()
+        return pull_latest()
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_pull_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return _dc_to_pydantic(result, GitPullResponse)
 
 
 # ---------------------------------------------------------------------------

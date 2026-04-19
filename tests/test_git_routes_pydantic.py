@@ -127,16 +127,13 @@ class TestGitModuleReturnsPydantic:
             assert result, "history should contain the commit we just made"
             for entry in result:
                 assert isinstance(entry, BaseModel), (
-                    f"#74: history entries must be Pydantic models; "
-                    f"got {type(entry).__name__!r}."
+                    f"#74: history entries must be Pydantic models; got {type(entry).__name__!r}."
                 )
                 GitHistoryEntry.model_validate(entry.model_dump())
         else:
             # Response-shaped return — must expose an 'entries' list of models.
             entries = getattr(result, "entries", None)
-            assert entries is not None, (
-                "#74: GitHistoryResponse must expose an 'entries' field."
-            )
+            assert entries is not None, "#74: GitHistoryResponse must expose an 'entries' field."
             for entry in entries:
                 assert isinstance(entry, BaseModel)
                 GitHistoryEntry.model_validate(entry.model_dump())
@@ -239,8 +236,7 @@ class TestGitRouteBodiesDoNotRewrap:
             f"Route body should delegate directly to _git.*: got:\n{source}"
         )
         assert "dataclasses.asdict" not in source, (
-            f"#74: {route_func_name} still uses dataclasses.asdict — drop "
-            f"the shim. Body:\n{source}"
+            f"#74: {route_func_name} still uses dataclasses.asdict — drop the shim. Body:\n{source}"
         )
         # A list-comprehension building Pydantic models over dataclass
         # entries is the history-specific variant of the same smell.
@@ -301,13 +297,9 @@ class TestGitRouteWireShapeUnchanged:
         assert isinstance(body["main_ahead"], bool)
         assert isinstance(body["main_ahead_by"], int)
         # main_last_updated may be null; must not be an arbitrary object.
-        assert body["main_last_updated"] is None or isinstance(
-            body["main_last_updated"], str
-        )
+        assert body["main_last_updated"] is None or isinstance(body["main_last_updated"], str)
 
-    def test_history_wire_shape_matches_c5ad780(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_history_wire_shape_matches_c5ad780(self, client: TestClient, tmp_path: Path) -> None:
         _git(tmp_path, "checkout", "-b", "pricing/test-user/feat")
         (tmp_path / "a.py").write_text("a = 1\n")
         _git(tmp_path, "add", ".")

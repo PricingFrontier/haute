@@ -379,7 +379,11 @@ class UtilityWriteRequest(BaseModel):
 
 
 class UtilityCreateRequest(BaseModel):
-    name: str = Field(..., pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")  # filename without .py extension
+    # Pattern validation lives in ``_validate_module_name`` so bad names
+    # surface as a 400 with a flat string ``detail`` (item #76 contract)
+    # rather than the structured-list body that Pydantic ``Field(pattern=)``
+    # would produce via FastAPI's 422 handler.
+    name: str  # filename without .py extension
     content: str = ""
 
 

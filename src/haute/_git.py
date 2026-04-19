@@ -15,13 +15,22 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
 from haute._logging import get_logger
 from haute._types import HauteError
+from haute.schemas import (
+    GitBranchItem,
+    GitBranchListResponse,
+    GitHistoryEntry,
+    GitPullResponse,
+    GitRevertResponse,
+    GitSaveResponse,
+    GitStatusResponse,
+    GitSubmitResponse,
+)
 
 logger = get_logger(component="git")
 
@@ -88,71 +97,22 @@ class GitGuardrailError(GitDomainError):
 
 
 # ---------------------------------------------------------------------------
-# Data classes
+# Public result types
 # ---------------------------------------------------------------------------
+#
+# ``_git`` hands back the same Pydantic models that the HTTP layer exposes so
+# the routes can pass results through verbatim — no dataclass-to-dict-to-model
+# round-trip.  The local aliases preserve the historical ``GitStatus``,
+# ``BranchInfo``, ``SaveResult`` (etc.) names used by the rest of the codebase.
 
-
-@dataclass
-class GitStatus:
-    branch: str
-    is_main: bool
-    is_read_only: bool
-    changed_files: list[str]
-    main_ahead: bool
-    main_ahead_by: int
-    main_last_updated: str | None
-
-
-@dataclass
-class BranchInfo:
-    name: str
-    is_yours: bool
-    is_current: bool
-    is_archived: bool
-    last_commit_time: str
-    commit_count: int
-
-
-@dataclass
-class BranchListResult:
-    current: str
-    branches: list[BranchInfo]
-
-
-@dataclass
-class SaveResult:
-    commit_sha: str
-    message: str
-    timestamp: str
-
-
-@dataclass
-class HistoryEntry:
-    sha: str
-    short_sha: str
-    message: str
-    timestamp: str
-    files_changed: list[str]
-
-
-@dataclass
-class RevertResult:
-    backup_tag: str
-    reverted_to: str
-
-
-@dataclass
-class PullResult:
-    success: bool
-    conflict: bool
-    conflict_message: str | None
-    commits_pulled: int
-
-
-@dataclass
-class SubmitResult:
-    compare_url: str | None
-    branch: str
+GitStatus = GitStatusResponse
+BranchInfo = GitBranchItem
+BranchListResult = GitBranchListResponse
+SaveResult = GitSaveResponse
+HistoryEntry = GitHistoryEntry
+RevertResult = GitRevertResponse
+PullResult = GitPullResponse
+SubmitResult = GitSubmitResponse
 
 
 # ---------------------------------------------------------------------------

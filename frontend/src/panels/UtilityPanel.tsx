@@ -17,21 +17,44 @@ import type { UtilityFile } from "../api/client"
 
 const fileHover = hoverBg("var(--bg-hover)")
 
-/** Extract syntax error info from an ApiError's detail (which may be a JSON object or string). */
+/**
+ * Extract syntax error info from an ApiError's flat string detail.
+ *
+ * Server responses are now ``{"detail": "Syntax error on line N: <msg>"}``
+ * (item #76).  We keep the line number available to the editor gutter by
+ * extracting it with a ``/line (\d+)/`` regex; the raw message is shown
+ * to the user.  A legacy JSON-encoded ``{error, error_line}`` detail is
+ * still accepted so this parser remains robust across mixed-version
+ * servers during rollout.
+ */
 function parseSyntaxError(err: unknown): { error: string; error_line: number | null } | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null
   const raw = err.detail
   if (!raw) return null
-  // detail may already be an object (runtime) or a JSON string
-  let parsed: unknown = raw
-  if (typeof raw === "string") {
-    try { parsed = JSON.parse(raw) } catch { return { error: raw, error_line: null } }
+
+  // Legacy structured-dict detail — decode and extract fields directly.
+  if (typeof raw === "string" && raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+        const obj = parsed as { error?: string; error_line?: number | null }
+        return {
+          error: obj.error ?? "Syntax error",
+          error_line: obj.error_line ?? null,
+        }
+      }
+    } catch {
+      // Not valid JSON — fall through to flat-string handling.
+    }
   }
-  if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
-    const obj = parsed as { error?: string; error_line?: number | null }
-    return { error: obj.error ?? "Syntax error", error_line: obj.error_line ?? null }
+
+  // Canonical flat-string detail: "Syntax error on line N: <msg>"
+  const message = String(raw)
+  const match = /\bline\s+(\d+)\b/i.exec(message)
+  return {
+    error: message,
+    error_line: match ? Number.parseInt(match[1], 10) : null,
   }
-  return { error: String(raw), error_line: null }
 }
 
 interface UtilityPanelProps {
