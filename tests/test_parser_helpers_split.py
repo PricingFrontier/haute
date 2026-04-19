@@ -29,16 +29,13 @@ must remain importable from *either* the new module *or* from
 
 from __future__ import annotations
 
-import ast
 import importlib
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 from typing import Any
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -167,9 +164,7 @@ class TestModuleLayout:
 
     @pytest.mark.parametrize(
         "modname,names",
-        [
-            (m, EXPECTED_HOMES[m]) for m in sorted(EXPECTED_HOMES)
-        ],
+        [(m, EXPECTED_HOMES[m]) for m in sorted(EXPECTED_HOMES)],
     )
     def test_module_exports_expected_names(self, modname: str, names: tuple[str, ...]):
         """Each split module hosts its thematic set of names directly.
@@ -293,21 +288,19 @@ DATA_SOURCE_BODY_IMPORT_PREFIX = (
     '    """data source"""\n'
     "    from pathlib import Path\n"
     '    df = pl.scan_parquet("d.parquet")\n'
-    '    df = df.with_columns(x=pl.lit(1))\n'
+    "    df = df.with_columns(x=pl.lit(1))\n"
     "    return df"
 )
 
 DATA_SOURCE_BODY_JUST_LOAD = (
-    '    """just loads"""\n'
-    '    df = pl.scan_parquet("d.parquet")\n'
-    "    return df"
+    '    """just loads"""\n    df = pl.scan_parquet("d.parquet")\n    return df'
 )
 
 DATA_SOURCE_BODY_CHAIN = (
     '    """chain-style"""\n'
     '    df = pl.scan_parquet("d.parquet")\n'
     "    df = (\n"
-    '        df\n'
+    "        df\n"
     '        .filter(pl.col("a") > 0)\n'
     '        .select(pl.col("b"))\n'
     "    )\n"
@@ -347,7 +340,7 @@ MODEL_SCORE_BODY_MULTILINE_CALL = (
     "        source,\n"
     '        config="config/score.json",\n'
     "    )\n"
-    '    df = result.with_columns(x=pl.lit(1))\n'
+    "    df = result.with_columns(x=pl.lit(1))\n"
     "    return result"
 )
 
@@ -357,7 +350,7 @@ EXTERNAL_FILE_BODY_PICKLE = (
     "    import pickle\n"
     '    with open("m.pkl", "rb") as _f:\n'
     "        obj = pickle.load(_f)\n"
-    '    df = df.with_columns(pred=pl.lit(obj.predict()))\n'
+    "    df = df.with_columns(pred=pl.lit(obj.predict()))\n"
     "    return df"
 )
 
@@ -365,7 +358,7 @@ EXTERNAL_FILE_BODY_JOBLIB_SIMPLE = (
     '    """joblib load"""\n'
     "    import joblib\n"
     '    obj = joblib.load("m.pkl")\n'
-    '    df = df.with_columns(score=pl.lit(42))\n'
+    "    df = df.with_columns(score=pl.lit(42))\n"
     "    return df"
 )
 
@@ -373,7 +366,7 @@ EXTERNAL_FILE_BODY_LOAD_HELPER = (
     '    """via load_external_object"""\n'
     "    from haute.graph_utils import load_external_object\n"
     '    obj = load_external_object("m.cbm", "catboost", "regressor")\n'
-    '    df = df.with_columns(pred=pl.lit(obj.predict()))\n'
+    "    df = df.with_columns(pred=pl.lit(obj.predict()))\n"
     "    return df"
 )
 
@@ -388,22 +381,17 @@ EXTERNAL_FILE_BODY_NO_USER_CODE = (
 
 POLARS_BODY_DF_CHAIN = (
     '    """chain style"""\n'
-    '    df = (\n'
-    '        source\n'
+    "    df = (\n"
+    "        source\n"
     '        .filter(pl.col("a") > 0)\n'
     "    )\n"
     "    return df"
 )
 
-POLARS_BODY_RETURN_EXPR = (
-    '    """return expression"""\n'
-    "    return source.with_columns(y=pl.lit(1))"
-)
+POLARS_BODY_RETURN_EXPR = '    """return expression"""\n    return source.with_columns(y=pl.lit(1))'
 
 POLARS_BODY_EXPLICIT_ASSIGN = (
-    '    """explicit assignment"""\n'
-    '    df = df.filter(pl.col("x") > 0)\n'
-    "    return df"
+    '    """explicit assignment"""\n    df = df.filter(pl.col("x") > 0)\n    return df'
 )
 
 
@@ -619,9 +607,7 @@ class TestConsolidatedEngineContract:
                 count = len(registry)
             except TypeError:
                 count = sum(1 for _ in registry)
-            assert count >= 4, (
-                f"Matcher registry has {count} entries; expected >= 4."
-            )
+            assert count >= 4, f"Matcher registry has {count} entries; expected >= 4."
 
     def test_engine_produces_same_output_per_kind(self):
         """The consolidated engine produces the same output as the legacy
@@ -671,14 +657,30 @@ class TestConsolidatedEngineContract:
         }
 
         samples = [
-            ("source", DATA_SOURCE_BODY_NO_SENTINEL, None,
-             legacy._extract_source_user_code(DATA_SOURCE_BODY_NO_SENTINEL)),
-            ("model_score", MODEL_SCORE_BODY_WITH_POST, None,
-             legacy._extract_model_score_user_code(MODEL_SCORE_BODY_WITH_POST)),
-            ("external", EXTERNAL_FILE_BODY_PICKLE, ["df"],
-             legacy._extract_external_user_code(EXTERNAL_FILE_BODY_PICKLE, ["df"])),
-            ("polars", POLARS_BODY_DF_CHAIN, ["source"],
-             legacy._extract_user_code(POLARS_BODY_DF_CHAIN, ["source"])),
+            (
+                "source",
+                DATA_SOURCE_BODY_NO_SENTINEL,
+                None,
+                legacy._extract_source_user_code(DATA_SOURCE_BODY_NO_SENTINEL),
+            ),
+            (
+                "model_score",
+                MODEL_SCORE_BODY_WITH_POST,
+                None,
+                legacy._extract_model_score_user_code(MODEL_SCORE_BODY_WITH_POST),
+            ),
+            (
+                "external",
+                EXTERNAL_FILE_BODY_PICKLE,
+                ["df"],
+                legacy._extract_external_user_code(EXTERNAL_FILE_BODY_PICKLE, ["df"]),
+            ),
+            (
+                "polars",
+                POLARS_BODY_DF_CHAIN,
+                ["source"],
+                legacy._extract_user_code(POLARS_BODY_DF_CHAIN, ["source"]),
+            ),
         ]
 
         matched_any = False
@@ -729,12 +731,17 @@ class TestEndToEndParseUnchanged:
         assert graph.pipeline_name == "test_pipeline"
         assert len(graph.nodes) >= 6
         node_ids = {n.id for n in graph.nodes}
-        assert {"quotes", "batch_quotes", "policies", "area_lookup",
-                "calculate_premium", "output", "results_write"} <= node_ids
+        assert {
+            "quotes",
+            "batch_quotes",
+            "policies",
+            "area_lookup",
+            "calculate_premium",
+            "output",
+            "results_write",
+        } <= node_ids
 
-    def test_parse_extracts_external_user_code_unchanged(
-        self, fixture_source: str
-    ):
+    def test_parse_extracts_external_user_code_unchanged(self, fixture_source: str):
         """The externalFile node's code must not have the import / obj
         boilerplate leaked after the split.
         """
@@ -788,7 +795,6 @@ class TestGodFileIsGone:
         If a function's __module__ is still _parser_helpers, the split is
         incomplete.
         """
-        import inspect
 
         sample_checks = [
             # (import-from, attr, expected home)
