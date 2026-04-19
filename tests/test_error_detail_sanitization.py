@@ -1173,7 +1173,6 @@ class TestSensitiveInfoLeakage:
                 feature_importance_loss=None,
                 double_lift=None,
                 loss_history=None,
-                cv_results=None,
                 ave_per_feature=None,
                 residuals_histogram=None,
                 residuals_stats=None,

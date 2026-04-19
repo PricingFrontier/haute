@@ -104,7 +104,6 @@ class TrainResult:
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     shap_summary: list[dict[str, Any]] = field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
-    cv_results: dict[str, Any] | None = None
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
     residuals_stats: dict[str, float] = field(default_factory=dict)
@@ -118,7 +117,7 @@ class TrainResult:
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
     glm_regularization_path: dict[str, Any] | None = None
     # Optional-diagnostic failures surfaced to callers so a degraded
-    # run (SHAP/PDP/CV/GLM diagnostics missing) is visible in the UI and
+    # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
 
@@ -170,7 +169,6 @@ class _MetricsResult:
     double_lift: list[dict[str, Any]]
     shap_summary: list[dict[str, float]]
     feature_importance_loss: list[dict[str, Any]]
-    cv_results: dict[str, Any] | None
     ave_per_feature: list[dict[str, Any]]
     residuals_histogram: list[dict[str, Any]]
     residuals_stats: dict[str, float]
@@ -183,7 +181,7 @@ class _MetricsResult:
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
     glm_regularization_path: dict[str, Any] | None = None
-    # Optional-diagnostic failures (SHAP, PDP, CV, GLM diagnostics) —
+    # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
     # surfaced rather than silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
 
@@ -243,7 +241,6 @@ class TrainingJob:
         offset: str | None = None,
         monotone_constraints: dict[str, int] | None = None,
         feature_weights: dict[str, float] | None = None,
-        cv_folds: int | None = None,
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | None = data
@@ -262,7 +259,6 @@ class TrainingJob:
         self.offset = offset
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
-        self.cv_folds = cv_folds
 
         # Parse split config
         if isinstance(split, SplitConfig):
@@ -396,7 +392,6 @@ class TrainingJob:
             double_lift=metrics_result.double_lift,
             shap_summary=metrics_result.shap_summary,
             feature_importance_loss=metrics_result.feature_importance_loss,
-            cv_results=metrics_result.cv_results,
             ave_per_feature=metrics_result.ave_per_feature,
             residuals_histogram=metrics_result.residuals_histogram,
             residuals_stats=metrics_result.residuals_stats,
@@ -806,11 +801,10 @@ class TrainingJob:
         data_path = split_result.split_path
         algo = train_result.algo
         model = train_result.model
-        need_cv = bool(self.cv_folds and self.cv_folds > 1)
 
         # Optional-diagnostic error surface — see fail-loud policy:
         # mandatory failures (feature_importance, compute_metrics) must
-        # propagate, optional ones (SHAP, PDP, CV, GLM info) are skipped
+        # propagate, optional ones (SHAP, PDP, GLM info) are skipped
         # but recorded so callers see the degraded state.
         diagnostics_errors: list[dict[str, str]] = []
 
@@ -966,32 +960,6 @@ class TrainingJob:
         del diag_df
         gc.collect()
 
-        # ── Cross-validation (OPTIONAL) ──
-        cv_results: dict[str, Any] | None = None
-        if need_cv and hasattr(algo, "cross_validate"):
-            _report("Running cross-validation", 0.88)
-            try:
-                _cv_df = (
-                    self._scan_with_columns(data_path, features)
-                    .filter(pl.col("_partition") == PARTITION_TRAIN)
-                    .drop("_partition")
-                    .collect()
-                )
-                cv_results = algo.cross_validate(
-                    _cv_df,
-                    features,
-                    cat_features,
-                    self.target,
-                    self.weight,
-                    train_result.fit_params,
-                    self.task,
-                    n_folds=self.cv_folds,
-                )
-                del _cv_df
-                gc.collect()
-            except Exception as exc:
-                _record_diag_error(diagnostics_errors, "cv", exc)
-
         # Clean up split parquet
         if split_result.owns_tmp and os.path.exists(data_path):
             os.unlink(data_path)
@@ -1004,7 +972,6 @@ class TrainingJob:
             double_lift=double_lift,
             shap_summary=shap_summary,
             feature_importance_loss=feature_importance_loss,
-            cv_results=cv_results,
             ave_per_feature=ave_per_feature,
             residuals_histogram=residuals_histogram,
             residuals_stats=residuals_stats,
@@ -1171,7 +1138,6 @@ class TrainingJob:
             feature_importance_loss=result.feature_importance_loss,
             double_lift=result.double_lift,
             loss_history=result.loss_history,
-            cv_results=result.cv_results,
             ave_per_feature=result.ave_per_feature,
             residuals_histogram=result.residuals_histogram,
             residuals_stats=result.residuals_stats,

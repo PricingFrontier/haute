@@ -1317,67 +1317,22 @@ class TestSHAP:
 
 
 # ---------------------------------------------------------------------------
-# Cross-Validation
+# Cross-Validation (removed — Phase 2 Package 2C-5)
+#
+# The GLM CV code path in ``TrainingJob`` has been fully deleted. The
+# ``cv_folds`` kwarg, ``cv_results`` field on ``TrainResult``, and the
+# ``cross_validate`` algorithm methods are all gone. The regression
+# contract is enforced by ``tests/test_training_job_no_glm_cv.py``.
 # ---------------------------------------------------------------------------
 
 
-class TestCrossValidation:
-    def test_cv_returns_results(self):
-        rng = np.random.RandomState(42)
-        n = 200
-        df = pl.DataFrame(
-            {
-                "x1": rng.randn(n),
-                "x2": rng.randn(n),
-                "y": rng.randn(n),
-            }
-        )
-        algo = CatBoostAlgorithm()
-        cv_results = algo.cross_validate(
-            df,
-            features=["x1", "x2"],
-            cat_features=[],
-            target="y",
-            weight=None,
-            params={"iterations": 10, "depth": 3},
-            task="regression",
-            n_folds=3,
-        )
-        assert "mean_metrics" in cv_results
-        assert "std_metrics" in cv_results
-        assert cv_results["n_folds"] == 3
-        assert len(cv_results["mean_metrics"]) > 0
+class TestNoCvResultsField:
+    def test_training_job_no_cv_results_attr(self, tmp_path):
+        """After the delete, ``TrainResult`` no longer exposes ``cv_results``.
 
-    def test_training_job_with_cv(self, tmp_path):
-        rng = np.random.RandomState(42)
-        n = 200
-        df = pl.DataFrame(
-            {
-                "x1": rng.randn(n),
-                "x2": rng.randn(n),
-                "y": rng.randn(n),
-            }
-        )
-        job = TrainingJob(
-            name="cv_test",
-            data=df,
-            target="y",
-            params={"iterations": 10},
-            cv_folds=3,
-            output_dir=str(tmp_path),
-        )
-        result = job.run()
-        # CV should be computed
-        assert result.cv_results is not None
-        assert result.cv_results["n_folds"] == 3
-        assert len(result.cv_results["mean_metrics"]) > 0
-        # Normal model should still be trained
-        assert result.metrics, "CV training should also produce hold-out metrics"
-        for k, v in result.metrics.items():
-            assert np.isfinite(v), f"metric '{k}' is not finite: {v}"
-        assert result.train_rows > 0
-
-    def test_training_job_without_cv(self, tmp_path):
+        Also confirms that ``cv_folds`` is not accepted as a kwarg — passing
+        it must raise ``TypeError`` because the argument has been removed.
+        """
         rng = np.random.RandomState(42)
         n = 100
         df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
@@ -1389,4 +1344,14 @@ class TestCrossValidation:
             output_dir=str(tmp_path),
         )
         result = job.run()
-        assert result.cv_results is None
+        assert not hasattr(result, "cv_results")
+
+        with pytest.raises(TypeError, match="cv_folds"):
+            TrainingJob(
+                name="no_cv",
+                data=df,
+                target="y",
+                params={"iterations": 5},
+                cv_folds=3,  # type: ignore[call-arg]
+                output_dir=str(tmp_path),
+            )

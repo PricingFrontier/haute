@@ -115,11 +115,6 @@ class TestModelCardAllSections:
                 {"feature": "x1", "importance": 0.6},
                 {"feature": "x2", "importance": 0.4},
             ],
-            cv_results={
-                "mean_metrics": {"rmse": 0.13},
-                "std_metrics": {"rmse": 0.01},
-                "n_folds": 5,
-            },
             ave_per_feature=[
                 {
                     "feature": "x1",
@@ -170,7 +165,8 @@ class TestModelCardAllSections:
         html = generate_model_card(**kwargs)
         assert "Training Summary" in html
         assert "Metrics" in html
-        assert "Cross-Validation" in html
+        # Cross-Validation section was removed in Phase 2 Package 2C-5.
+        assert "Cross-Validation" not in html
         assert "Double Lift" in html
         assert "Loss Curve" in html
         assert "PredictionValuesChange" in html
@@ -375,20 +371,9 @@ class TestModelCardNonFiniteMetrics:
         assert "N/A" in html
 
 
-class TestModelCardCVNonFinite:
-    def test_cv_with_non_finite_values(self):
-        """CV metrics with inf/nan should show N/A."""
-        kwargs = _minimal_kwargs()
-        kwargs["diagnostics"] = ModelDiagnostics(
-            cv_results={
-                "mean_metrics": {"rmse": float("inf")},
-                "std_metrics": {"rmse": float("nan")},
-                "n_folds": 5,
-            }
-        )
-        html = generate_model_card(**kwargs)
-        assert "Cross-Validation" in html
-        assert "N/A" in html
+# ``TestModelCardCVNonFinite`` deleted in Phase 2 Package 2C-5:
+# ``ModelDiagnostics.cv_results`` was removed along with the CV section
+# of the model card HTML.
 
 
 class TestModelCardBestIteration:

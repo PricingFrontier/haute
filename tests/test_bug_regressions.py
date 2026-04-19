@@ -456,13 +456,7 @@ class TestBugB16ValidateDeployCall:
         )
 
 
-class TestBugB8GlmCvRegularization:
-    def test_cross_validate_forwards_alpha(self) -> None:
-        """cross_validate should forward alpha from params to the fit call."""
-        import inspect
-
-        from haute.modelling._rustystats import GLMAlgorithm
-
-        source = inspect.getsource(GLMAlgorithm.cross_validate)
-        # The fix should extract alpha from params and pass it
-        assert "alpha" in source, "cross_validate should extract and forward the alpha parameter"
+# TestBugB8GlmCvRegularization deleted in Phase 2 Package 2C-5: the
+# ``GLMAlgorithm.cross_validate`` method was removed along with the dead
+# GLM CV code path in ``TrainingJob``. Alpha is still forwarded by
+# ``GLMAlgorithm.fit`` (covered by tests/test_rustystats_algorithm.py).

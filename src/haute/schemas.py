@@ -464,7 +464,6 @@ class TrainResponse(BaseModel):
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
-    cv_results: dict[str, Any] | None = None
     ave_per_feature: list[dict[str, Any]] = Field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = Field(default_factory=list)
     residuals_stats: dict[str, float] = Field(default_factory=dict)

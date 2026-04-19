@@ -45,7 +45,6 @@ _GLM_CONFIG_KEYS: tuple[str, ...] = (
     "intercept",
     "var_power",
     "offset",
-    "cv_folds",
 )
 
 
@@ -616,7 +615,6 @@ class TrainService:
             offset=config.get("offset") or None,
             monotone_constraints=config.get("monotone_constraints") or None,
             feature_weights=config.get("feature_weights") or None,
-            cv_folds=config.get("cv_folds"),
         )
 
         def _train_background() -> None:
@@ -637,7 +635,6 @@ class TrainService:
                     double_lift=train_result.double_lift,
                     shap_summary=train_result.shap_summary,
                     feature_importance_loss=train_result.feature_importance_loss,
-                    cv_results=train_result.cv_results,
                     ave_per_feature=train_result.ave_per_feature,
                     residuals_histogram=train_result.residuals_histogram,
                     residuals_stats=train_result.residuals_stats,

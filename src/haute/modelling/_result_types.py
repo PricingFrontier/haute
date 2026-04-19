@@ -19,7 +19,6 @@ class ModelDiagnostics:
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     loss_history: list[dict[str, float]] = field(default_factory=list)
-    cv_results: dict[str, Any] | None = None
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
     residuals_stats: dict[str, float] = field(default_factory=dict)

@@ -699,72 +699,10 @@ class TestShapSummaryCoverage:
 
 
 # ---------------------------------------------------------------------------
-# CatBoostAlgorithm.cross_validate
+# CatBoostAlgorithm.cross_validate — removed in Phase 2 Package 2C-5.
+# The dead GLM CV code path in ``TrainingJob`` was deleted along with the
+# ``cross_validate`` methods on both algorithm classes. No callers remain.
 # ---------------------------------------------------------------------------
-
-
-class TestCrossValidateCoverage:
-    def test_cv_with_mocked_catboost(self):
-        """Cross-validation delegates to catboost.cv and extracts metrics."""
-        import pandas as pd
-
-        from haute.modelling._algorithms import CatBoostAlgorithm
-
-        algo = CatBoostAlgorithm()
-
-        mock_cv_result = pd.DataFrame(
-            {
-                "test-RMSE-mean": [0.5, 0.4, 0.3],
-                "test-RMSE-std": [0.1, 0.08, 0.06],
-                "train-RMSE-mean": [0.4, 0.3, 0.2],
-            }
-        )
-
-        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "y": [0.0, 1.0, 0.0]})
-
-        with (
-            patch("catboost.cv", return_value=mock_cv_result),
-            patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()),
-            patch("haute.modelling._algorithms._mem_checkpoint"),
-        ):
-            result = algo.cross_validate(
-                df,
-                features=["f1"],
-                cat_features=[],
-                target="y",
-                weight=None,
-                params={"iterations": 3},
-                task="regression",
-                n_folds=3,
-            )
-
-        assert result["mean_metrics"]["RMSE"] == pytest.approx(0.3)
-        assert result["std_metrics"]["RMSE"] == pytest.approx(0.06)
-        assert result["n_folds"] == 3
-
-    def test_cv_classification_loss_function(self):
-        """Classification task sets loss_function to Logloss by default."""
-        import pandas as pd
-
-        from haute.modelling._algorithms import CatBoostAlgorithm
-
-        algo = CatBoostAlgorithm()
-        captured_params: dict[str, Any] = {}
-
-        def mock_cv(pool: Any, params: dict, fold_count: int, as_pandas: bool) -> Any:
-            captured_params.update(params)
-            return pd.DataFrame({"test-Logloss-mean": [0.5], "test-Logloss-std": [0.1]})
-
-        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "y": [0, 1, 0]})
-
-        with (
-            patch("catboost.cv", side_effect=mock_cv),
-            patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()),
-            patch("haute.modelling._algorithms._mem_checkpoint"),
-        ):
-            algo.cross_validate(df, ["f1"], [], "y", None, {"iterations": 3}, "classification", 3)
-
-        assert captured_params["loss_function"] == "Logloss"
 
 
 # ---------------------------------------------------------------------------
@@ -1031,7 +969,6 @@ class TestLogToMlflowCoverage:
             feature_importance_loss=[],
             double_lift=[],
             loss_history=[],
-            cv_results=None,
             ave_per_feature=[],
             residuals_histogram=[],
             residuals_stats={},
@@ -1629,7 +1566,6 @@ class TestLogToMlflowFull:
             feature_importance_loss=[],
             double_lift=[],
             loss_history=[],
-            cv_results=None,
             ave_per_feature=[],
             residuals_histogram=[],
             residuals_stats={},
@@ -2061,39 +1997,10 @@ class TestFeatureImportanceLossExceptionPath:
 
 
 # ---------------------------------------------------------------------------
-# TrainingJob — CV exception path (lines 886-887)
+# TrainingJob — CV exception path: removed in Phase 2 Package 2C-5.
+# The dead GLM CV branch (and its silent exception swallowing into
+# ``diagnostics_errors``) was deleted. ``cross_validate`` no longer exists.
 # ---------------------------------------------------------------------------
-
-
-class TestCVExceptionPath:
-    def test_cv_exception_is_logged_and_none_returned(self, tmp_path):
-        """When cross_validate raises, cv_results is None."""
-        from haute.modelling._algorithms import CatBoostAlgorithm
-        from haute.modelling._training_job import TrainingJob
-
-        rng = np.random.RandomState(42)
-        n = 50
-        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
-        job = TrainingJob(
-            name="cv_fail",
-            data=df,
-            target="y",
-            params={"iterations": 5},
-            cv_folds=3,
-            output_dir=str(tmp_path),
-        )
-
-        orig_cv = CatBoostAlgorithm.cross_validate
-
-        def failing_cv(self, *args: Any, **kwargs: Any) -> None:
-            raise RuntimeError("CV failed")
-
-        CatBoostAlgorithm.cross_validate = failing_cv
-        try:
-            result = job.run()
-            assert result.cv_results is None
-        finally:
-            CatBoostAlgorithm.cross_validate = orig_cv
 
 
 # ---------------------------------------------------------------------------

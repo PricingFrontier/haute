@@ -115,28 +115,6 @@ def generate_model_card(
         sections.append("<h2>Holdout Metrics</h2>")
         sections.append(_html_table(["Metric", "Value"], ho_rows, ["left", "right"]))
 
-    # --- CV results ---
-    if diag.cv_results and diag.cv_results.get("mean_metrics"):
-        means = diag.cv_results["mean_metrics"]
-        stds = diag.cv_results.get("std_metrics", {})
-        n_folds = diag.cv_results.get("n_folds", "—")
-        cv_rows = [
-            [
-                k,
-                f"{means[k]:.4f}" if math.isfinite(means[k]) else "N/A",
-                f"{stds.get(k, 0):.4f}" if math.isfinite(stds.get(k, 0)) else "N/A",
-            ]
-            for k in means
-        ]
-        sections.append(f"<h2>Cross-Validation ({n_folds} folds)</h2>")
-        sections.append(
-            _html_table(
-                ["Metric", "Mean", "Std"],
-                cv_rows,
-                ["left", "right", "right"],
-            )
-        )
-
     # --- Loss curve ---
     if diag.loss_history:
         sections.append("<h2>Loss Curve</h2>")

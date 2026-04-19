@@ -110,7 +110,7 @@ def _build_glm_builder_kwargs(
     offset: str | None = None,
     interactions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build kwargs dict for ``rs.glm_dict()``, shared by fit() and cross_validate()."""
+    """Build kwargs dict for ``rs.glm_dict()`` used by ``fit()``."""
     kwargs: dict[str, Any] = {
         "response": target,
         "terms": terms,
@@ -173,7 +173,6 @@ class GLMAlgorithm(BaseAlgorithm):
         regularization = params.get("regularization") or None
         alpha = params.get("alpha", 0.0)
         l1_ratio = params.get("l1_ratio", 0.0)
-        cv_folds = params.get("cv_folds", 5)
 
         # Auto-generate terms if none specified
         if not terms:
@@ -219,7 +218,10 @@ class GLMAlgorithm(BaseAlgorithm):
         fit_kwargs: dict[str, Any] = {}
         if regularization:
             fit_kwargs["regularization"] = regularization
-            fit_kwargs["cv"] = cv_folds
+            # RustyStats' internal CV sweeps alpha during regularization fits.
+            # 5 folds is the standard default used by sklearn's LassoCV /
+            # RidgeCV / ElasticNetCV and gives a good bias-variance trade-off.
+            fit_kwargs["cv"] = 5
             if alpha > 0:
                 fit_kwargs["alpha"] = alpha
             if regularization == "elastic_net":
@@ -452,84 +454,3 @@ class GLMAlgorithm(BaseAlgorithm):
         except Exception as exc:
             logger.warning("glm_diagnostics_failed", error=str(exc))
             return {}
-
-    def cross_validate(
-        self,
-        train_df: pl.DataFrame,
-        features: list[str],
-        cat_features: list[str],
-        target: str,
-        weight: str | None,
-        params: dict[str, Any],
-        task: str,
-        n_folds: int = 5,
-    ) -> dict[str, Any]:
-        """Run cross-validation by fitting on folds and computing metrics.
-
-        RustyStats doesn't have a built-in CV function (unlike CatBoost),
-        so we use its regularization CV when regularization is set, or
-        fit once and return AIC/BIC otherwise.
-        """
-        import rustystats as rs
-
-        terms = params.get("terms", _auto_terms(features, cat_features))
-        family = params.get("family", "gaussian")
-        link = params.get("link") or None
-        var_power = params.get("var_power", 1.5)
-        intercept = params.get("intercept", True)
-        offset = params.get("offset") or None
-        interactions_config = params.get("interactions", [])
-        rs_interactions = _build_interactions(interactions_config, terms)
-
-        builder_kwargs = _build_glm_builder_kwargs(
-            target=target,
-            terms=terms,
-            data=train_df,
-            family=family,
-            intercept=intercept,
-            link=link,
-            var_power=var_power,
-            weight=weight,
-            offset=offset,
-            interactions=rs_interactions,
-        )
-
-        regularization = params.get("regularization")
-        alpha = params.get("alpha", 0)
-        l1_ratio = params.get("l1_ratio", 0.5)
-        if regularization:
-            # RustyStats handles CV internally for regularization
-            fit_kwargs: dict[str, Any] = {
-                "regularization": regularization,
-                "cv": n_folds,
-            }
-            if alpha > 0:
-                fit_kwargs["alpha"] = alpha
-            if regularization == "elastic_net":
-                fit_kwargs["l1_ratio"] = l1_ratio
-            result = rs.glm_dict(**builder_kwargs).fit(**fit_kwargs)
-
-            raw_cv = getattr(result, "cv_deviance", None)
-            cv_deviance = float(raw_cv) if raw_cv is not None else 0.0
-            return {
-                "fold_metrics": [],
-                "mean_metrics": {"cv_deviance": cv_deviance},
-                "std_metrics": {},
-                "n_folds": n_folds,
-            }
-
-        # No regularization: return AIC/BIC as model-comparison metrics
-        # (standard GLM practice — k-fold CV is not typical for unregularized GLM)
-        try:
-            result = rs.glm_dict(**builder_kwargs).fit()
-            mean_metrics = {"aic": float(result.aic()), "bic": float(result.bic())}
-        except Exception as exc:
-            logger.warning("cv_aic_bic_failed", error=str(exc))
-            mean_metrics = {}
-
-        return {
-            "fold_metrics": [],
-            "mean_metrics": mean_metrics,
-            "std_metrics": {},
-            "n_folds": n_folds,
-        }

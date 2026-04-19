@@ -226,7 +226,6 @@ class ModellingConfig(TypedDict, total=False):
     l1_ratio: float
     intercept: bool
     var_power: float
-    cv_folds: int
     # CatBoost / shared
     loss_function: str
     variance_power: float

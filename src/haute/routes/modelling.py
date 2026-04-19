@@ -198,7 +198,6 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             feature_importance_loss=result.feature_importance_loss,
             double_lift=result.double_lift,
             loss_history=result.loss_history,
-            cv_results=result.cv_results,
             ave_per_feature=result.ave_per_feature,
             residuals_histogram=result.residuals_histogram,
             residuals_stats=result.residuals_stats,

@@ -229,12 +229,6 @@ def log_experiment(
                 "importance",
             )
 
-        # Log CV results
-        if diag.cv_results:
-            _log_json_artifact(mlflow, diag.cv_results, "cv_results", "cv")
-            for k, v in diag.cv_results.get("mean_metrics", {}).items():
-                mlflow.log_metric(f"cv_mean_{k}", v)
-
         # Log double lift
         if diag.double_lift:
             _log_json_artifact(mlflow, diag.double_lift, "double_lift", "diagnostics")

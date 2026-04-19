@@ -281,7 +281,6 @@ class TestGLMFit:
             params={
                 "family": "poisson",
                 "regularization": "lasso",
-                "cv_folds": 3,
             },
             task="regression",
         )
@@ -438,46 +437,10 @@ class TestGLMDiagnostics:
 
 
 # ---------------------------------------------------------------------------
-# GLMAlgorithm.cross_validate()
+# GLMAlgorithm.cross_validate() — removed in Phase 2 Package 2C-5.
+# The orchestrator (``TrainingJob``) no longer calls CV, so the method
+# and its tests were deleted. AIC/BIC remain on the GLM fit statistics.
 # ---------------------------------------------------------------------------
-
-
-class TestGLMCrossValidate:
-    def test_cv_with_regularization(self, algo, sample_df):
-        """CV with regularization uses RustyStats internal CV."""
-        result = algo.cross_validate(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={
-                "family": "poisson",
-                "regularization": "ridge",
-            },
-            task="regression",
-            n_folds=3,
-        )
-        assert "n_folds" in result
-        assert result["n_folds"] == 3
-
-    def test_cv_without_regularization_returns_aic_bic(self, algo, sample_df):
-        """CV without regularization fits once and returns AIC/BIC."""
-        result = algo.cross_validate(
-            train_df=sample_df,
-            features=["driver_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
-            n_folds=5,
-        )
-        assert result["n_folds"] == 5
-        assert "aic" in result["mean_metrics"]
-        assert "bic" in result["mean_metrics"]
-        assert isinstance(result["mean_metrics"]["aic"], float)
-        assert isinstance(result["mean_metrics"]["bic"], float)
 
 
 # ---------------------------------------------------------------------------
