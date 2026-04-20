@@ -4,7 +4,7 @@ import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore, { selectIsDirty, serializeSnapshot } from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
@@ -66,7 +66,14 @@ describe("usePipelineAPI", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
-    useUIStore.setState({ lastSavedSnapshot: null })
+    useGraphStore.setState({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      lastSavedSnapshot: null,
+      undoStack: [],
+      redoStack: [],
+    })
     useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
@@ -111,6 +118,10 @@ describe("usePipelineAPI", () => {
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    // handleSave reads graphRef for the save payload, but markSaved()
+    // captures from useGraphStore — keep the two in sync so isDirty()
+    // reports false after save.
+    useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     await act(async () => {
@@ -120,14 +131,9 @@ describe("usePipelineAPI", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.some((t) => t.type === "success" && t.text.includes("pricing.py"))).toBe(true)
     })
-    // After save, lastSavedSnapshot equals the current graph snapshot,
-    // so selectIsDirty returns false — the new derived-dirty contract.
-    const snapshot = serializeSnapshot({
-      nodes: params.graphRef.current.nodes,
-      edges: params.graphRef.current.edges,
-      preamble: params.preambleRef.current,
-    })
-    expect(selectIsDirty(useUIStore.getState(), snapshot)).toBe(false)
+    // After save, useGraphStore.lastSavedSnapshot captures the current
+    // state so isDirty() returns false — the new derived-dirty contract.
+    expect(useGraphStore.getState().isDirty()).toBe(false)
   })
 
   it("handleSave shows error toast on failure", async () => {

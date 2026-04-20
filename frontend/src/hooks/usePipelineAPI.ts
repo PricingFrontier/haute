@@ -8,7 +8,7 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { NodeResult } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useUIStore, { serializeSnapshot } from "../stores/useUIStore"
+import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 
@@ -144,14 +144,11 @@ export default function usePipelineAPI({
         }
         nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
         // The loaded pipeline IS the on-disk state — mark it saved so
-        // selectIsDirty returns false until the user edits something.
-        useUIStore.getState().markSaved(
-          serializeSnapshot({
-            nodes: pipelineNodes,
-            edges: pipelineEdges,
-            preamble: data.preamble || "",
-          }),
-        )
+        // isDirty returns false until the user edits something.  The
+        // preceding setNodesRaw / setEdgesRaw / setPreamble have already
+        // written into useGraphStore, so markSaved captures the exact
+        // snapshot we just loaded.
+        useGraphStore.getState().markSaved()
         if (data.warning) addToast("warning", data.warning)
         setLoading(false)
       })
@@ -335,9 +332,11 @@ export default function usePipelineAPI({
       active_source: as_,
     })
       .then((data) => {
-        useUIStore.getState().markSaved(
-          serializeSnapshot({ nodes: n, edges: e, preamble: preambleRef.current }),
-        )
+        // We just wrote `n` / `e` / `preambleRef.current` to disk.  These
+        // match the current useGraphStore state (the save handler reads
+        // them from graphRef, which mirrors the store), so markSaved
+        // with no args captures the correct baseline.
+        useGraphStore.getState().markSaved()
         addToast("success", `Saved → ${data.file}`)
       })
       .catch((err: unknown) => {

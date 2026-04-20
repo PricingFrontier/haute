@@ -12,7 +12,7 @@ import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
@@ -79,7 +79,14 @@ describe("usePipelineAPI — gap tests", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
-    useUIStore.setState({ lastSavedSnapshot: null })
+    useGraphStore.setState({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      lastSavedSnapshot: null,
+      undoStack: [],
+      redoStack: [],
+    })
     useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
@@ -199,6 +206,8 @@ describe("usePipelineAPI — gap tests", () => {
 
       const params = makeParams()
       params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+      // markSaved captures from useGraphStore, keep the two in sync.
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
 
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
@@ -218,7 +227,7 @@ describe("usePipelineAPI — gap tests", () => {
 
       // After the first success, lastSavedSnapshot should be non-null.
       // The failing second save's catch block must NOT touch it.
-      expect(useUIStore.getState().lastSavedSnapshot).not.toBeNull()
+      expect(useGraphStore.getState().lastSavedSnapshot).not.toBeNull()
     })
   })
 

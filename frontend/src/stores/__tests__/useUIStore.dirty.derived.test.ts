@@ -1,43 +1,35 @@
 /**
- * Phase 3 Wave 7 package 7D — Item #99
+ * Phase 3 Wave 7 package 7D / 7E — Item #99
  *
- * Pins the derivation of the `dirty` flag in `useUIStore` from a comparison
- * of the current graph snapshot against the last-saved snapshot.
+ * Pins the canonical `serializeSnapshot` + `selectIsDirty` helpers that back
+ * the GUI's unsaved-changes indicator.
  *
- * Before this refactor, the store held TWO fields that encoded the same
- * information: a boolean `dirty` (written by several sites via `setDirty`)
- * AND a `lastSavedRef` (a React ref held inside `App.tsx`). Keeping them in
- * sync is a class-of-bugs — forget to flip one and the Unsaved-changes dot
- * lies to the user.
+ * Consolidation history:
+ *   - Pre-7D: two fields encoded dirty state (a boolean `dirty` plus a
+ *     `lastSavedRef` inside `App.tsx`).  Keeping them in sync was a
+ *     class-of-bugs: forget to flip one and the amber dot lies.
+ *   - 7D: `dirty` becomes derived.  `useUIStore.lastSavedSnapshot` holds
+ *     the on-disk baseline as a canonical string; `selectIsDirty(state,
+ *     currentSnapshot)` returns the derived boolean.
+ *   - 7E: the `lastSavedSnapshot` state moves into `useGraphStore` (which
+ *     owns graph-shaped state), together with `markSaved()`.  The pure
+ *     helpers `serializeSnapshot` and `selectIsDirty` move to
+ *     `utils/graphSnapshot` and are re-exported from `useUIStore` for
+ *     back-compat imports.
  *
- * The derivation pinned here:
+ * What this file pins after 7E:
  *
- *   - The Zustand store holds ONE field: `lastSavedSnapshot: string | null`.
- *     `null` means "never saved in this session" (initial state).
- *     A non-null string is the JSON-stringified `{nodes, edges, preamble}`
- *     captured at the moment of save (or at pipeline load, which also counts
- *     as the current on-disk state being the saved state).
- *
- *   - `dirty` is derived. The store exports a `selectIsDirty` selector that
- *     takes the store state plus the current snapshot string and returns a
- *     boolean. There is NO `dirty` field and NO `setDirty` action on the
- *     store.
- *
- *   - Consumers call `markSaved(snapshot)` after a successful save or load
- *     to replace the stored last-saved reference. They call `selectIsDirty`
- *     to read the derived boolean.
- *
- * Rationale for "current snapshot passed in, not held in store": the graph
- * (nodes, edges) lives in React Flow state inside `FlowEditor` (via the
- * `useUndoRedo` hook). Lifting it into Zustand for the sole purpose of
- * making dirty-derivation a store-only selector would be a much bigger
- * refactor and risks re-render storms on every keystroke. Deriving at the
- * call-site keeps the change surgical while still eliminating the two-field
- * inconsistency.
+ *   - `serializeSnapshot` and `selectIsDirty` are still importable from
+ *     `../useUIStore` (they're re-exports from the utility module).
+ *   - `useUIStore` no longer carries `lastSavedSnapshot` / `markSaved` —
+ *     those live on `useGraphStore`.
+ *   - `selectIsDirty` is a pure function of its arguments; it does not
+ *     read any store.
  */
 
 import { describe, it, expect, beforeEach } from "vitest"
 import useUIStore, { selectIsDirty, serializeSnapshot } from "../useUIStore"
+import useGraphStore from "../useGraphStore"
 import type { Node, Edge } from "@xyflow/react"
 
 // ---------------------------------------------------------------------------
@@ -53,8 +45,10 @@ function makeEdge(id: string, source: string, target: string): Edge {
 }
 
 /**
- * Reset the store to a clean "never-saved" state for each test.
- * Uses setState with a full object to exercise the full state shape.
+ * Reset both stores to a clean "never-saved" state for each test.  The UI
+ * store no longer carries dirty state itself, but we reset it to guard
+ * against test cross-talk on other slices; the graph store is where
+ * `lastSavedSnapshot` actually lives.
  */
 function resetStore() {
   useUIStore.setState({
@@ -66,10 +60,17 @@ function resetStore() {
     submodelDialog: null,
     renameDialog: null,
     syncBanner: null,
-    lastSavedSnapshot: null,
     nodePanelWidth: 0,
     hoveredNodeId: null,
     nodeSearchOpen: false,
+  })
+  useGraphStore.setState({
+    nodes: [],
+    edges: [],
+    preamble: "",
+    lastSavedSnapshot: null,
+    undoStack: [],
+    redoStack: [],
   })
 }
 
@@ -83,9 +84,8 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
   // -----------------------------------------------------------------------
   // Shape / surface area
   //
-  // These first few tests pin the new API shape so that any accidental
-  // reintroduction of `dirty` / `setDirty` as writable store fields is
-  // caught immediately.
+  // Pins that the post-7E `useUIStore` has no dirty-state fields left,
+  // and that the helper exports are still in place.
   // -----------------------------------------------------------------------
 
   describe("store shape", () => {
@@ -99,21 +99,17 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
       expect(state).not.toHaveProperty("setDirty")
     })
 
-    it("exposes `lastSavedSnapshot` (initial value: null) natively — not from test setup", () => {
-      // Zustand's setState merges by default, so any key injected by a
-      // prior test's setState would linger. We use `getInitialState()` to
-      // read the pristine shape defined by the store's create() call.
-      // This will fail today because the current store does not define
-      // `lastSavedSnapshot` in its creator function — which is the right
-      // behavior pre-refactor.
+    it("no longer exposes `lastSavedSnapshot` on useUIStore (moved to useGraphStore)", () => {
+      // 7E migration: the saved-baseline moved to useGraphStore.  Any
+      // import that still reaches for `useUIStore.lastSavedSnapshot`
+      // should fail loudly rather than silently read undefined.
       const initial = useUIStore.getInitialState() as unknown as Record<string, unknown>
-      expect(initial).toHaveProperty("lastSavedSnapshot")
-      expect(initial.lastSavedSnapshot).toBeNull()
+      expect(initial).not.toHaveProperty("lastSavedSnapshot")
     })
 
-    it("exposes a `markSaved` action", () => {
+    it("no longer exposes a `markSaved` action on useUIStore (moved to useGraphStore)", () => {
       const initial = useUIStore.getInitialState() as unknown as Record<string, unknown>
-      expect(typeof initial.markSaved).toBe("function")
+      expect(initial).not.toHaveProperty("markSaved")
     })
 
     it("exports a `selectIsDirty` pure selector", () => {
@@ -197,39 +193,39 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
   })
 
   // -----------------------------------------------------------------------
-  // selectIsDirty — the derived boolean
+  // selectIsDirty — the derived boolean.
+  //
+  // selectIsDirty is pure: it takes a `{ lastSavedSnapshot }` object and
+  // the current snapshot string and returns a boolean.  It does not read
+  // any store, so these tests pass raw state objects.
   // -----------------------------------------------------------------------
 
   describe("selectIsDirty", () => {
     it("returns false for initial state with an empty graph (lastSavedSnapshot=null, current=empty)", () => {
       // Pinned choice: untouched + never-saved counts as NOT dirty.
       // The rationale is that on fresh load the backend sends {nodes, edges,
-      // preamble}; the dirty-tracking effect in App.tsx guards on
-      // `lastSavedRef.current` being set before flagging dirty, so an
-      // untouched empty workspace is treated as clean.
+      // preamble}; an untouched empty workspace is treated as clean.
       const empty = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
-      expect(selectIsDirty(useUIStore.getState(), empty)).toBe(false)
+      expect(selectIsDirty({ lastSavedSnapshot: null }, empty)).toBe(false)
     })
 
-    it("returns false after markSaved() with current === saved", () => {
+    it("returns false when current snapshot equals the saved snapshot", () => {
       const snap = serializeSnapshot({
         nodes: [makeNode("a")],
         edges: [],
         preamble: "import x",
       })
-      useUIStore.getState().markSaved(snap)
-      expect(selectIsDirty(useUIStore.getState(), snap)).toBe(false)
+      expect(selectIsDirty({ lastSavedSnapshot: snap }, snap)).toBe(false)
     })
 
     it("returns true when current !== saved (node added after save)", () => {
       const saved = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(saved)
       const current = serializeSnapshot({
         nodes: [makeNode("a"), makeNode("b")],
         edges: [],
         preamble: "",
       })
-      expect(selectIsDirty(useUIStore.getState(), current)).toBe(true)
+      expect(selectIsDirty({ lastSavedSnapshot: saved }, current)).toBe(true)
     })
 
     it("returns true when node config changed after save", () => {
@@ -238,50 +234,44 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
         edges: [],
         preamble: "",
       })
-      useUIStore.getState().markSaved(saved)
       const edited = serializeSnapshot({
         nodes: [makeNode("a", { value: 2 })],
         edges: [],
         preamble: "",
       })
-      expect(selectIsDirty(useUIStore.getState(), edited)).toBe(true)
+      expect(selectIsDirty({ lastSavedSnapshot: saved }, edited)).toBe(true)
     })
 
     it("returns true when preamble changed after save", () => {
       const saved = serializeSnapshot({ nodes: [], edges: [], preamble: "old" })
-      useUIStore.getState().markSaved(saved)
       const edited = serializeSnapshot({ nodes: [], edges: [], preamble: "new" })
-      expect(selectIsDirty(useUIStore.getState(), edited)).toBe(true)
+      expect(selectIsDirty({ lastSavedSnapshot: saved }, edited)).toBe(true)
     })
 
     it("returns true when an edge is added after save", () => {
       const nodes = [makeNode("a"), makeNode("b")]
       const saved = serializeSnapshot({ nodes, edges: [], preamble: "" })
-      useUIStore.getState().markSaved(saved)
       const current = serializeSnapshot({
         nodes,
         edges: [makeEdge("e1", "a", "b")],
         preamble: "",
       })
-      expect(selectIsDirty(useUIStore.getState(), current)).toBe(true)
+      expect(selectIsDirty({ lastSavedSnapshot: saved }, current)).toBe(true)
     })
 
     // --------------------- Crucial: save → edit → save → edit → save ---------------------
 
     it("returns false again after a second save (dirty clears)", () => {
       const v1 = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(v1)
-
       const v2 = serializeSnapshot({
         nodes: [makeNode("a"), makeNode("b")],
         edges: [],
         preamble: "",
       })
-      // Currently dirty between v1-save and v2-save:
-      expect(selectIsDirty(useUIStore.getState(), v2)).toBe(true)
-
-      useUIStore.getState().markSaved(v2)
-      expect(selectIsDirty(useUIStore.getState(), v2)).toBe(false)
+      // Between v1-save and v2-save: dirty.
+      expect(selectIsDirty({ lastSavedSnapshot: v1 }, v2)).toBe(true)
+      // After v2-save (saved is now v2): clean.
+      expect(selectIsDirty({ lastSavedSnapshot: v2 }, v2)).toBe(false)
     })
 
     // --------------------- The big one: undo-to-saved-state ---------------------
@@ -298,7 +288,6 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
         edges: [],
         preamble: "import x",
       })
-      useUIStore.getState().markSaved(saved)
 
       // Simulate an edit:
       const edited = serializeSnapshot({
@@ -306,7 +295,7 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
         edges: [],
         preamble: "import x",
       })
-      expect(selectIsDirty(useUIStore.getState(), edited)).toBe(true)
+      expect(selectIsDirty({ lastSavedSnapshot: saved }, edited)).toBe(true)
 
       // Simulate undo, which produces exactly the saved snapshot:
       const undone = serializeSnapshot({
@@ -314,7 +303,7 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
         edges: [],
         preamble: "import x",
       })
-      expect(selectIsDirty(useUIStore.getState(), undone)).toBe(false)
+      expect(selectIsDirty({ lastSavedSnapshot: saved }, undone)).toBe(false)
     })
 
     it("undo past save-point is still reported as dirty (we undid into pre-save history)", () => {
@@ -325,68 +314,35 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
       // back and accidentally show clean.
       const preSave = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
       const saved = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(saved)
 
       // preSave != saved, so undoing past the save-point is dirty:
       expect(preSave).not.toBe(saved)
-      expect(selectIsDirty(useUIStore.getState(), preSave)).toBe(true)
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // markSaved — the only writable entry point for the saved snapshot
-  // -----------------------------------------------------------------------
-
-  describe("markSaved", () => {
-    it("updates lastSavedSnapshot to the argument string", () => {
-      const snap = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(snap)
-      expect(useUIStore.getState().lastSavedSnapshot).toBe(snap)
-    })
-
-    it("is idempotent when called twice with the same snapshot", () => {
-      const snap = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(snap)
-      useUIStore.getState().markSaved(snap)
-      expect(useUIStore.getState().lastSavedSnapshot).toBe(snap)
-    })
-
-    it("replaces the previous saved snapshot on subsequent saves", () => {
-      const v1 = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      const v2 = serializeSnapshot({
-        nodes: [makeNode("a"), makeNode("b")],
-        edges: [],
-        preamble: "",
-      })
-      useUIStore.getState().markSaved(v1)
-      useUIStore.getState().markSaved(v2)
-      expect(useUIStore.getState().lastSavedSnapshot).toBe(v2)
+      expect(selectIsDirty({ lastSavedSnapshot: saved }, preSave)).toBe(true)
     })
   })
 
   // -----------------------------------------------------------------------
   // Performance / selector semantics
   //
-  // `selectIsDirty` is read on every render of the toolbar (so it shows the
-  // amber dot). It accepts an already-serialized snapshot string so that
-  // the call-site controls memoization of the serialization step; the
-  // selector itself must therefore be O(string-compare), not O(graph-size
-  // re-serialization).
+  // `selectIsDirty` is read on every render of the toolbar (so it shows
+  // the amber dot).  It accepts an already-serialized snapshot string so
+  // that the call-site controls memoization of the serialization step;
+  // the selector itself must therefore be O(string-compare), not
+  // O(graph-size re-serialization).
   // -----------------------------------------------------------------------
 
   describe("selector semantics", () => {
     it("selectIsDirty is a pure function of (state, snapshot)", () => {
       const saved = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(saved)
+      const state = { lastSavedSnapshot: saved }
       // Identical inputs → identical outputs across repeated calls, no
       // mutation of state.
-      const state = useUIStore.getState()
       const r1 = selectIsDirty(state, saved)
       const r2 = selectIsDirty(state, saved)
       expect(r1).toBe(r2)
       expect(r1).toBe(false)
       // State unchanged by selector:
-      expect(useUIStore.getState().lastSavedSnapshot).toBe(saved)
+      expect(state.lastSavedSnapshot).toBe(saved)
     })
 
     it("selectIsDirty returns a referentially stable boolean (primitive) so Zustand equality works", () => {
@@ -396,16 +352,14 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
       // re-render on every store update. Pin: the selector returns a
       // boolean primitive.
       const saved = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(saved)
-      const result = selectIsDirty(useUIStore.getState(), saved)
+      const result = selectIsDirty({ lastSavedSnapshot: saved }, saved)
       expect(typeof result).toBe("boolean")
     })
 
     it("selectIsDirty with `null` lastSavedSnapshot treats the empty graph as clean", () => {
       // Fresh store, never saved. Current = empty graph = initial app state.
       const empty = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
-      expect(useUIStore.getState().lastSavedSnapshot).toBeNull()
-      expect(selectIsDirty(useUIStore.getState(), empty)).toBe(false)
+      expect(selectIsDirty({ lastSavedSnapshot: null }, empty)).toBe(false)
     })
 
     it("selectIsDirty with `null` lastSavedSnapshot AND a non-empty current graph returns true", () => {
@@ -417,79 +371,66 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
         edges: [],
         preamble: "",
       })
-      expect(useUIStore.getState().lastSavedSnapshot).toBeNull()
-      expect(selectIsDirty(useUIStore.getState(), nonEmpty)).toBe(true)
+      expect(selectIsDirty({ lastSavedSnapshot: null }, nonEmpty)).toBe(true)
     })
   })
 
   // -----------------------------------------------------------------------
-  // Integration-ish: walks the full save/edit/save lifecycle
+  // Integration-ish: walks the full save/edit/save lifecycle using the
+  // post-7E API (useGraphStore owns markSaved and lastSavedSnapshot).
   // -----------------------------------------------------------------------
 
-  describe("full lifecycle", () => {
+  describe("full lifecycle (via useGraphStore)", () => {
     it("load → edit → save → edit → undo-to-save → save", () => {
       // 1. Initial pipeline load: backend returns {nodes:[a], edges:[], preamble:""}
-      //    usePipelineAPI calls markSaved with this snapshot.
-      const loaded = serializeSnapshot({
+      //    usePipelineAPI writes the graph into useGraphStore and calls markSaved().
+      useGraphStore.setState({
         nodes: [makeNode("a", { v: 1 })],
         edges: [],
         preamble: "",
       })
-      useUIStore.getState().markSaved(loaded)
-      expect(selectIsDirty(useUIStore.getState(), loaded)).toBe(false)
+      useGraphStore.getState().markSaved()
+      expect(useGraphStore.getState().isDirty()).toBe(false)
 
       // 2. User edits node config:
-      const edit1 = serializeSnapshot({
-        nodes: [makeNode("a", { v: 2 })],
-        edges: [],
-        preamble: "",
-      })
-      expect(selectIsDirty(useUIStore.getState(), edit1)).toBe(true)
+      useGraphStore.setState({ nodes: [makeNode("a", { v: 2 })] })
+      expect(useGraphStore.getState().isDirty()).toBe(true)
 
       // 3. User saves. handleSave calls markSaved:
-      useUIStore.getState().markSaved(edit1)
-      expect(selectIsDirty(useUIStore.getState(), edit1)).toBe(false)
+      useGraphStore.getState().markSaved()
+      expect(useGraphStore.getState().isDirty()).toBe(false)
 
       // 4. User edits again:
-      const edit2 = serializeSnapshot({
-        nodes: [makeNode("a", { v: 3 })],
-        edges: [],
-        preamble: "",
-      })
-      expect(selectIsDirty(useUIStore.getState(), edit2)).toBe(true)
+      useGraphStore.setState({ nodes: [makeNode("a", { v: 3 })] })
+      expect(useGraphStore.getState().isDirty()).toBe(true)
 
-      // 5. User undoes (Ctrl+Z) — current state is now exactly edit1:
-      expect(selectIsDirty(useUIStore.getState(), edit1)).toBe(false)
+      // 5. User undoes (Ctrl+Z) — current state is now exactly the previous save:
+      useGraphStore.setState({ nodes: [makeNode("a", { v: 2 })] })
+      expect(useGraphStore.getState().isDirty()).toBe(false)
 
       // 6. User saves again (even though not dirty — should still work):
-      useUIStore.getState().markSaved(edit1)
-      expect(selectIsDirty(useUIStore.getState(), edit1)).toBe(false)
+      useGraphStore.getState().markSaved()
+      expect(useGraphStore.getState().isDirty()).toBe(false)
     })
 
     it("websocket sync pulls file changes → markSaved syncs to disk → clean", () => {
       // 1. Local edit makes the graph dirty:
-      const loaded = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      useUIStore.getState().markSaved(loaded)
-
-      const localEdit = serializeSnapshot({
-        nodes: [makeNode("a"), makeNode("b")],
-        edges: [],
-        preamble: "",
-      })
-      expect(selectIsDirty(useUIStore.getState(), localEdit)).toBe(true)
+      useGraphStore.setState({ nodes: [makeNode("a")], edges: [], preamble: "" })
+      useGraphStore.getState().markSaved()
+      useGraphStore.setState({ nodes: [makeNode("a"), makeNode("b")] })
+      expect(useGraphStore.getState().isDirty()).toBe(true)
 
       // 2. File changes on disk; websocket pushes a new graph. useWebSocketSync
-      //    receives the new graph, swaps local state, and calls markSaved
-      //    with the new on-disk snapshot:
-      const onDisk = serializeSnapshot({
+      //    swaps the store's nodes/edges/preamble and calls markSaved:
+      useGraphStore.setState({
         nodes: [makeNode("c")],
         edges: [],
         preamble: "# file was rewritten",
       })
-      useUIStore.getState().markSaved(onDisk)
+      useGraphStore.getState().markSaved()
 
       // 3. Current state now equals on-disk state → not dirty:
-      expect(selectIsDirty(useUIStore.getState(), onDisk)).toBe(false)
+      expect(useGraphStore.getState().isDirty()).toBe(false)
     })
   })
 })

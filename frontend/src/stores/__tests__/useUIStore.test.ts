@@ -11,7 +11,6 @@ function reset() {
     submodelDialog: null,
     renameDialog: null,
     syncBanner: null,
-    lastSavedSnapshot: null,
     nodePanelWidth: 0,
     hoveredNodeId: null,
     nodeSearchOpen: false,
@@ -69,28 +68,29 @@ describe("useUIStore", () => {
   })
 
   // -----------------------------------------------------------------------
-  // Last-saved snapshot (derived-dirty source of truth — see item #99)
+  // Last-saved snapshot moved to useGraphStore (Wave 7E consolidation).
   //
-  // Dirty derivation semantics live in useUIStore.dirty.derived.test.ts;
-  // here we just pin that markSaved writes to lastSavedSnapshot.
+  // Shape assertions here pin that useUIStore no longer carries dirty
+  // state so a future refactor doesn't silently reintroduce the two-
+  // source-of-truth bug (see item #99).  Full behavioural coverage for
+  // markSaved / isDirty lives in useGraphStore.consolidation.test.ts.
   // -----------------------------------------------------------------------
 
-  describe("markSaved / lastSavedSnapshot", () => {
-    it("lastSavedSnapshot defaults to null (never-saved sentinel)", () => {
-      expect(useUIStore.getState().lastSavedSnapshot).toBeNull()
+  describe("no dirty-tracking state on useUIStore (Wave 7E)", () => {
+    it("does not expose lastSavedSnapshot", () => {
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
+      expect(state).not.toHaveProperty("lastSavedSnapshot")
     })
 
-    it("markSaved writes the argument to lastSavedSnapshot", () => {
-      useUIStore.getState().markSaved('{"nodes":[],"edges":[],"preamble":""}')
-      expect(useUIStore.getState().lastSavedSnapshot).toBe(
-        '{"nodes":[],"edges":[],"preamble":""}',
-      )
+    it("does not expose markSaved", () => {
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
+      expect(state).not.toHaveProperty("markSaved")
     })
 
-    it("markSaved replaces a prior snapshot on subsequent calls", () => {
-      useUIStore.getState().markSaved("v1")
-      useUIStore.getState().markSaved("v2")
-      expect(useUIStore.getState().lastSavedSnapshot).toBe("v2")
+    it("does not expose the legacy dirty boolean / setDirty", () => {
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
+      expect(state).not.toHaveProperty("dirty")
+      expect(state).not.toHaveProperty("setDirty")
     })
   })
 

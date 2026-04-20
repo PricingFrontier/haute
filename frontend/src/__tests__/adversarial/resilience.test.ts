@@ -21,6 +21,7 @@ import type { Node, Edge } from "@xyflow/react"
 // ── Store imports ────────────────────────────────────────────────
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useSettingsStore from "../../stores/useSettingsStore.ts"
 
@@ -51,10 +52,17 @@ function resetStores() {
     submodelDialog: null,
     renameDialog: null,
     syncBanner: null,
-    lastSavedSnapshot: null,
     nodePanelWidth: 0,
     hoveredNodeId: null,
     nodeSearchOpen: false,
+  })
+  useGraphStore.setState({
+    nodes: [],
+    edges: [],
+    preamble: "",
+    lastSavedSnapshot: null,
+    undoStack: [],
+    redoStack: [],
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
@@ -612,8 +620,13 @@ describe("6. Empty graph", () => {
     expect(state.submodelDialog).toBeNull()
     expect(state.renameDialog).toBeNull()
     expect(state.syncBanner).toBeNull()
-    // Never-saved sentinel; dirty itself is derived (see #99).
-    expect(state.lastSavedSnapshot).toBeNull()
+  })
+
+  it("GraphStore never-saved sentinel: lastSavedSnapshot starts null (Wave 7E)", () => {
+    // After Wave 7E, dirty-tracking state lives on useGraphStore.
+    // `null` means "never saved this session" — the derived dirty flag
+    // (#99) uses this as its sentinel.
+    expect(useGraphStore.getState().lastSavedSnapshot).toBeNull()
   })
 
   it("SettingsStore handles empty source list gracefully", () => {
@@ -821,15 +834,23 @@ describe("10. Store state after unmount", () => {
 
     const store = useUIStore.getState()
     expect(() => store.setPaletteOpen(false)).not.toThrow()
-    expect(() => store.markSaved("snap")).not.toThrow()
     expect(() => store.setHoveredNodeId("n1")).not.toThrow()
     expect(() => store.setSyncBanner("test")).not.toThrow()
 
     // State should be updated
     expect(useUIStore.getState().paletteOpen).toBe(false)
-    expect(useUIStore.getState().lastSavedSnapshot).toBe("snap")
     expect(useUIStore.getState().hoveredNodeId).toBe("n1")
     expect(useUIStore.getState().syncBanner).toBe("test")
+  })
+
+  it("GraphStore markSaved works after cleanup without memory leaks (Wave 7E)", () => {
+    cleanup()
+
+    const store = useGraphStore.getState()
+    expect(() => store.markSaved()).not.toThrow()
+
+    // markSaved captures the current graph state as the baseline.
+    expect(useGraphStore.getState().lastSavedSnapshot).not.toBeNull()
   })
 
   it("toastStore addToast after cleanup does not throw", () => {

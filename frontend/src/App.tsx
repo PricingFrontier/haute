@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo, useState, useRef } from "react"
+import { useEffect, useCallback, useState, useRef } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -46,7 +46,8 @@ import useBackgroundJobs from "./hooks/useBackgroundJobs"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import useSettingsStore from "./stores/useSettingsStore"
-import useUIStore, { selectIsDirty, serializeSnapshot } from "./stores/useUIStore"
+import useUIStore from "./stores/useUIStore"
+import useGraphStore from "./stores/useGraphStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
@@ -140,7 +141,16 @@ function FlowEditor() {
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
-  const [preamble, setPreamble] = useState("")
+  // Preamble lives in useGraphStore (Wave 7E consolidation).  We
+  // subscribe to the string directly — sibling state slices (nodes,
+  // edges, lastSavedSnapshot) mutate independently without re-rendering
+  // this component.  `setPreamble` is a stable wrapper that writes to
+  // the store (raw variant — matches the pre-consolidation behaviour of
+  // a React useState setter: no undo snapshot).
+  const preamble = useGraphStore((s) => s.preamble)
+  const setPreamble = useCallback((value: string) => {
+    useGraphStore.getState().setPreambleRaw(value)
+  }, [])
   const lastSelectedNodeRef = useRef<Node | null>(null)
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
 
@@ -188,6 +198,16 @@ function FlowEditor() {
   // preview-populated result fields like _columns do not cause the fingerprint
   // to change — including them would invalidate the preview cache on every
   // preview completion, defeating the cache entirely.
+  //
+  // TODO(Phase 8): Move graphVersion bumping into useGraphStore so this
+  // cross-store effect disappears (Wave 7E leftover).  The straightforward
+  // migrations (pushSnapshot → bumpGraphVersion, or graphVersion =
+  // undoStack.length) both regress preview caching: pushSnapshot fires on
+  // drag-start, and drag-start would then invalidate every preview even
+  // though nothing changed structurally.  The fix needs a structural-hash
+  // check inside setNodes/setEdges (and their Raw variants), which is a
+  // larger refactor than the rest of 7E wants to absorb — tracked for
+  // Phase 8.
   const prevStructureRef = useRef<string>("")
   useEffect(() => {
     graphRef.current = { nodes, edges }
@@ -203,23 +223,14 @@ function FlowEditor() {
     }
   }, [nodes, edges, bumpGraphVersion])
 
-  // Derived dirty flag (item #99).
+  // Derived dirty flag (item #99, Wave 7E consolidation).
   //
-  // The current snapshot is a canonical JSON string of {nodes, edges,
-  // preamble}. Memoizing on just those three references is correct
-  // because React Flow returns a fresh nodes/edges array only when the
-  // graph actually changes, and `preamble` is a primitive string.
-  // Without memoization every render re-serializes the full graph,
-  // which is O(graph-size).
-  const currentSnapshot = useMemo(
-    () => serializeSnapshot({ nodes, edges, preamble }),
-    [nodes, edges, preamble],
-  )
-  // Subscribe only to `lastSavedSnapshot`; the selector is a pure
-  // string-compare so it returns a stable boolean primitive that
-  // Zustand's default value-equality handles cleanly.
-  const lastSavedSnapshot = useUIStore((s) => s.lastSavedSnapshot)
-  const dirty = selectIsDirty({ lastSavedSnapshot }, currentSnapshot)
+  // `isDirty` is a pure selector on useGraphStore that canonicalises the
+  // current {nodes, edges, preamble} and string-compares against the
+  // saved snapshot.  Zustand reruns the selector on every store update
+  // but re-renders only when the returned boolean flips — so position
+  // drags and other no-op changes don't thrash App.tsx.
+  const dirty = useGraphStore((s) => s.isDirty())
 
   // ---------------------------------------------------------------------------
   // Hooks

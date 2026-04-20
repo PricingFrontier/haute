@@ -41,10 +41,8 @@ vi.mock("../../stores/useToastStore.ts", () => {
 
 vi.mock("../../stores/useUIStore.ts", () => {
   const store: Record<string, unknown> = {
-    lastSavedSnapshot: null,
     syncBanner: null,
     setSyncBanner: vi.fn(),
-    markSaved: vi.fn((snap: string) => { store.lastSavedSnapshot = snap }),
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
     submodelDialog: null,
@@ -57,12 +55,21 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setState: vi.fn(),
     subscribe: vi.fn(),
   })
-  return {
-    default: useUIStore,
-    // The hook now imports { serializeSnapshot } alongside the default export.
-    serializeSnapshot: (input: { nodes: unknown; edges: unknown; preamble: unknown }) =>
-      JSON.stringify(input),
-  }
+  return { default: useUIStore }
+})
+
+// After Wave 7E, the hook calls `useGraphStore.getState().markSaved()`.
+// We mock a minimal store surface: markSaved is the only method touched,
+// and state assertions in these tests focus on the setter params (not
+// store reads) so the stub does nothing.
+vi.mock("../../stores/useGraphStore.ts", () => {
+  const store = { markSaved: vi.fn() }
+  const useGraphStore = Object.assign(() => store, {
+    getState: () => store,
+    setState: vi.fn(),
+    subscribe: vi.fn(),
+  })
+  return { default: useGraphStore }
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"

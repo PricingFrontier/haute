@@ -166,6 +166,7 @@ vi.mock("../api/client", () => ({
 
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
+import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
 
 describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)", () => {
@@ -178,10 +179,18 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
       submodelDialog: null,
       renameDialog: null,
       syncBanner: null,
-      lastSavedSnapshot: null,
       utilityOpen: false,
       importsOpen: false,
       gitOpen: false,
+    })
+    // Reset the graph store (App.tsx subscribes to preamble / isDirty).
+    useGraphStore.setState({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      lastSavedSnapshot: null,
+      undoStack: [],
+      redoStack: [],
     })
     useSettingsStore.setState({
       mlflow: { status: "pending", backend: "", host: "" },

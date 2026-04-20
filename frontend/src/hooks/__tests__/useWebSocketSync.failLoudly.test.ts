@@ -45,10 +45,8 @@ vi.mock("../../stores/useToastStore.ts", () => {
 
 vi.mock("../../stores/useUIStore.ts", () => {
   const store: Record<string, unknown> = {
-    lastSavedSnapshot: null,
     syncBanner: null,
     setSyncBanner: vi.fn((banner: string | null) => { store.syncBanner = banner }),
-    markSaved: vi.fn((snap: string) => { store.lastSavedSnapshot = snap }),
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
     submodelDialog: null,
@@ -61,11 +59,18 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setState: vi.fn(),
     subscribe: vi.fn(),
   })
-  return {
-    default: useUIStore,
-    serializeSnapshot: (input: { nodes: unknown; edges: unknown; preamble: unknown }) =>
-      JSON.stringify(input),
-  }
+  return { default: useUIStore }
+})
+
+// Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
+vi.mock("../../stores/useGraphStore.ts", () => {
+  const store = { markSaved: vi.fn() }
+  const useGraphStore = Object.assign(() => store, {
+    getState: () => store,
+    setState: vi.fn(),
+    subscribe: vi.fn(),
+  })
+  return { default: useGraphStore }
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"

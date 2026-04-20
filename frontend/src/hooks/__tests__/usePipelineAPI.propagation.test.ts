@@ -38,7 +38,7 @@ import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
@@ -124,7 +124,14 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })
-    useUIStore.setState({ lastSavedSnapshot: null })
+    useGraphStore.setState({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      lastSavedSnapshot: null,
+      undoStack: [],
+      redoStack: [],
+    })
     useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()

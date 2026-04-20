@@ -48,6 +48,7 @@
  */
 import { create } from "zustand"
 import type { Node, Edge } from "@xyflow/react"
+import { serializeSnapshot, EMPTY_SNAPSHOT } from "../utils/graphSnapshot"
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -115,17 +116,6 @@ function captureSnapshot(state: Pick<GraphStore, "nodes" | "edges" | "preamble">
  */
 function applyUpdater<T>(current: T, updater: T | ((prev: T) => T)): T {
   return typeof updater === "function" ? (updater as (prev: T) => T)(current) : updater
-}
-
-/**
- * Canonical string form of a snapshot used for dirty comparison.
- *
- * Node/edge objects are shallow-cloned and JSON-stringified.  Keys end up in
- * insertion order; since both `captureSnapshot` and the live state objects
- * originate from the same shape, equal graphs produce equal strings.
- */
-function serializeSnapshot(s: Pick<GraphSnapshot, "nodes" | "edges" | "preamble">): string {
-  return JSON.stringify({ nodes: s.nodes, edges: s.edges, preamble: s.preamble })
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────
@@ -237,8 +227,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     isDirty: () => {
       const { lastSavedSnapshot, nodes, edges, preamble } = get()
-      if (lastSavedSnapshot === null) return false
-      return serializeSnapshot({ nodes, edges, preamble }) !== serializeSnapshot(lastSavedSnapshot)
+      const current = serializeSnapshot({ nodes, edges, preamble })
+      if (lastSavedSnapshot === null) {
+        // Fresh workspace (never saved) — match selectIsDirty's sentinel:
+        // empty current => clean; non-empty => dirty (user built something
+        // without saving).
+        return current !== EMPTY_SNAPSHOT
+      }
+      return current !== serializeSnapshot(lastSavedSnapshot)
     },
 
     canUndo: () => get().undoStack.length > 0,
@@ -246,9 +242,5 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     canRedo: () => get().redoStack.length > 0,
   }
 })
-
-// ─── Public helpers ──────────────────────────────────────────────────────
-
-export { serializeSnapshot }
 
 export default useGraphStore

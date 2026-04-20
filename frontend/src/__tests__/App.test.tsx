@@ -241,6 +241,7 @@ vi.mock("../api/client", () => ({
 
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
+import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
 
 // ---------------------------------------------------------------------------
@@ -261,7 +262,17 @@ beforeEach(() => {
     shortcutsOpen: false,
     submodelDialog: null,
     syncBanner: null,
+  })
+
+  // Reset the graph store so tests start from a clean slate — App.tsx
+  // now subscribes to useGraphStore for preamble / dirty derivation.
+  useGraphStore.setState({
+    nodes: [],
+    edges: [],
+    preamble: "",
     lastSavedSnapshot: null,
+    undoStack: [],
+    redoStack: [],
   })
 
   // Reset settings store MLflow state so fetchMlflow runs cleanly

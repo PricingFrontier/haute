@@ -3,7 +3,8 @@ import type { Node, Edge } from "@xyflow/react"
 import { getLayoutedElements } from "../utils/layout"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
-import useUIStore, { serializeSnapshot } from "../stores/useUIStore"
+import useUIStore from "../stores/useUIStore"
+import useGraphStore from "../stores/useGraphStore"
 
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
 
@@ -74,13 +75,10 @@ export default function useWebSocketSync({
               // compute the layout, the *layouted* nodes (which carry
               // assigned positions) are what the GUI will render — the
               // raw nodes without positions would diverge immediately.
-              let nodesForSnapshot: Node[]
               if (hasPositions) {
-                nodesForSnapshot = newNodes
                 setNodesRaw(newNodes)
               } else {
                 const layouted = await getLayoutedElements(newNodes, newEdges)
-                nodesForSnapshot = layouted as Node[]
                 setNodesRaw(layouted)
               }
               setEdgesRaw(newEdges)
@@ -91,15 +89,12 @@ export default function useWebSocketSync({
               }
               nodeIdCounter.current = computeNextNodeId(newNodes)
               setSyncBanner(null)
-              // The GUI is now in sync with the file on disk — mark this
-              // snapshot as the saved state so selectIsDirty returns false.
-              useUIStore.getState().markSaved(
-                serializeSnapshot({
-                  nodes: nodesForSnapshot,
-                  edges: newEdges,
-                  preamble: nextPreamble,
-                }),
-              )
+              // The GUI is now in sync with the file on disk — mark the
+              // current store state as saved so isDirty returns false.
+              // The preceding setNodesRaw / setEdgesRaw / setPreamble have
+              // already written into useGraphStore, so the capture here
+              // matches what we just loaded.
+              useGraphStore.getState().markSaved()
 
               // Issue #39: clear any open dialog whose target node was
               // removed by this graph update.  Leaving an orphaned
