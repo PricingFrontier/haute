@@ -13,6 +13,20 @@
  */
 import { create } from "zustand"
 
+/**
+ * One frame on the submodel-navigation view stack.
+ *
+ * `kind: "root"` is never pushed — it is the sentinel `currentView()`
+ * returns when the stack is empty.  Submodel frames record the submodel
+ * `name` (used for breadcrumbs) and an optional `returnTo` hint for
+ * consumers that want to surface a back-target to the user.
+ */
+export interface ViewStackEntry {
+  kind: "root" | "submodel"
+  name?: string
+  returnTo?: string
+}
+
 interface UIState {
   // Modals / panels
   paletteOpen: boolean
@@ -45,9 +59,33 @@ interface UIState {
   // Node search (Ctrl+K)
   nodeSearchOpen: boolean
   setNodeSearchOpen: (open: boolean | ((prev: boolean) => boolean)) => void
+
+  // ---------------------------------------------------------------------
+  // Submodel-navigation view stack (Phase 5 Wave 10C, #128).
+  //
+  // Previously submodel navigation threaded parent/child refs through prop
+  // drilling; components that needed to know "which view am I in?" had to
+  // accept a ref prop.  The stack lives on the store so any component can
+  // subscribe to `viewStack` or call `currentView()` without wiring refs.
+  //
+  // Reference stability: `viewStack` is only re-allocated inside the three
+  // action methods below, so subscribers to the array reference will only
+  // re-render on push/pop/clear (not on unrelated slice updates — zustand
+  // default behaviour).
+  // ---------------------------------------------------------------------
+  viewStack: ViewStackEntry[]
+  pushView: (view: ViewStackEntry) => void
+  popView: () => void
+  clearViews: () => void
+  /**
+   * Getter-style accessor.  Returns the top frame, or a `{ kind: "root" }`
+   * sentinel when the stack is empty so consumers don't need an extra
+   * null check to render breadcrumbs.
+   */
+  currentView: () => ViewStackEntry
 }
 
-const useUIStore = create<UIState>()((set) => ({
+const useUIStore = create<UIState>()((set, get) => ({
   // Modals / panels
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
@@ -90,6 +128,31 @@ const useUIStore = create<UIState>()((set) => ({
     } else {
       set({ nodeSearchOpen: open })
     }
+  },
+
+  // Submodel-navigation view stack.  Starts empty; consumers treat an
+  // empty stack as "viewing the root pipeline" via `currentView()`.
+  viewStack: [],
+  pushView: (view) =>
+    set((s) => ({ viewStack: [...s.viewStack, view] })),
+  popView: () =>
+    // Empty-pop is an explicit no-op, not an error.  The UI never needs
+    // to "pop below root" — breadcrumbs at root hide the back button —
+    // so throwing would only add guard noise at every caller.
+    set((s) =>
+      s.viewStack.length === 0
+        ? s
+        : { viewStack: s.viewStack.slice(0, -1) },
+    ),
+  clearViews: () =>
+    set((s) => (s.viewStack.length === 0 ? s : { viewStack: [] })),
+  currentView: (): ViewStackEntry => {
+    // Read via get() so the selector stays within the store's own
+    // closure — using `useUIStore.getState()` here would create a
+    // self-referential initializer that TypeScript flags as implicit
+    // any.
+    const stack = get().viewStack
+    return stack.length === 0 ? { kind: "root" } : stack[stack.length - 1]
   },
 }))
 
