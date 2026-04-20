@@ -10,6 +10,7 @@ Split into:
 from __future__ import annotations
 
 import re
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -461,14 +462,22 @@ def handle_init(config: InitConfig) -> None:
     hooks_dir.mkdir(exist_ok=True)
     hook_path = hooks_dir / "pre-commit"
     hook_path.write_text(pre_commit_hook(), encoding="utf-8")
-    hook_path.chmod(0o755)
+    # Path.chmod is a silent no-op on NTFS, and git on Windows ignores the
+    # POSIX executable bit anyway. Skip the call on Windows and document the
+    # manual workaround so maintainers know the escape hatch.
+    # On Windows, run: git update-index --chmod=+x .githooks/pre-commit
+    if sys.platform != "win32":
+        hook_path.chmod(0o755)
 
     # Install into .git/hooks if inside a git repo
     git_hooks_dir = project_dir / ".git" / "hooks"
     if git_hooks_dir.is_dir():
         installed = git_hooks_dir / "pre-commit"
         installed.write_text(pre_commit_hook(), encoding="utf-8")
-        installed.chmod(0o755)
+        # Same Windows caveat as above — see the comment near the .githooks
+        # chmod. On Windows, run: git update-index --chmod=+x .git/hooks/pre-commit
+        if sys.platform != "win32":
+            installed.chmod(0o755)
 
     # -- .gitignore - append if exists, create if not --------------------------
     gitignore_path = project_dir / ".gitignore"
