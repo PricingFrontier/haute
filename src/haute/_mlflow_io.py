@@ -28,6 +28,21 @@ logger = get_logger(component="mlflow_io")
 _MODEL_CACHE_MAX_SIZE = 16
 _DISK_CACHE_MAX_DIRS = 50
 
+
+class _ArtifactNotFoundError(FileNotFoundError):
+    """Internal sentinel: a probe completed and no artifact matched.
+
+    Subclasses :class:`FileNotFoundError` so the public surface of
+    helpers like :func:`_find_cbm_artifact` continues to raise
+    ``FileNotFoundError`` (legacy contract honoured by tests and
+    callers), but the *internal* probe callers catch the narrower
+    sentinel.  A bare ``FileNotFoundError`` bubbling out of
+    ``list_artifacts`` (future MLflow behaviour, local-fs shim, etc.)
+    is **not** swallowed by ``except _ArtifactNotFoundError`` — it surfaces
+    as an infrastructure error the operator must see.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Cache observability counters (issue #98)
 # ---------------------------------------------------------------------------
@@ -167,20 +182,22 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]
         Returns the number of entries evicted.  Used by
         :func:`clear_model_cache` to implement targeted ``run_id=...``
         clears without wiping the whole cache.
-        """
-        with self._lock:
-            matching = [(k, v) for k, v in self._data.items() if predicate(k)]
-            if not matching:
-                return 0
-            for key, _ in matching:
-                del self._data[key]
-                self._timestamps.pop(key, None)
-                self._pinned.discard(key)
-            from haute import _model_scorer as _ms
 
-            for _, sm in matching:
-                _ms._invalidate_feature_validation_cache_for(sm)
-            return len(matching)
+        Delegates eviction to :meth:`LRUCache.evict_where` so no call
+        site reaches into the internal data structures directly.  The
+        cascade runs **outside** the base cache's lock — ``evict_where``
+        returns evicted values, and we invalidate dependent caches here
+        without any of our own locking held, avoiding a potential
+        deadlock if the callback reaches back into another cache.
+        """
+        evicted = self.evict_where(predicate)
+        if not evicted:
+            return 0
+        from haute import _model_scorer as _ms
+
+        for sm in evicted:
+            _ms._invalidate_feature_validation_cache_for(sm)
+        return len(evicted)
 
 
 _model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
@@ -370,7 +387,12 @@ def _find_artifact_by_extension(
         label: Human-readable label for error messages (e.g. ``"CatBoost"``).
 
     Raises:
-        FileNotFoundError: If no artifact with *ext* is found.
+        _ArtifactNotFoundError: If no artifact with *ext* is found.  Subclass
+            of :class:`FileNotFoundError` so the public contract
+            (callers expect ``FileNotFoundError``) is preserved while
+            the internal triage at :func:`_find_model_artifact` can
+            distinguish "probe missed" from a credential / network error
+            that would be a bare ``FileNotFoundError`` from MLflow.
     """
     artifacts = client.list_artifacts(run_id)
     for art in artifacts:
@@ -383,7 +405,7 @@ def _find_artifact_by_extension(
             for sub in sub_artifacts:
                 if sub.path.endswith(ext):
                     return str(sub.path)
-    raise FileNotFoundError(
+    raise _ArtifactNotFoundError(
         f"No {ext} artifact found in run '{run_id}'. "
         f"Ensure the {label} model was logged with mlflow.log_artifact()."
     )
@@ -404,18 +426,29 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
 
     Checks for CatBoost (``.cbm``) first, then RustyStats (``.rsglm``),
     then falls back to a pyfunc model directory.
+
+    Only catches :class:`_ArtifactNotFoundError` — a dedicated subclass of
+    :class:`FileNotFoundError` raised by our own helpers when a probe
+    genuinely sees no matching artifact.  A bare ``FileNotFoundError``
+    or an :class:`mlflow.exceptions.MlflowException` (credential /
+    network failure from ``list_artifacts``) propagates so the operator
+    sees the real infrastructure problem instead of a misleading "no
+    model artifact" message.
     """
     try:
         return _find_cbm_artifact(client, run_id), "catboost"
-    except FileNotFoundError:
+    except _ArtifactNotFoundError:
         pass
 
     try:
         return _find_rsglm_artifact(client, run_id), "rustystats"
-    except FileNotFoundError:
+    except _ArtifactNotFoundError:
         pass
 
-    # Look for a pyfunc model directory (contains MLmodel file)
+    # Look for a pyfunc model directory (contains MLmodel file).
+    # ``list_artifacts`` failures (MlflowException etc.) propagate so
+    # that an auth / network error is never masqueraded as "no model
+    # artifact found".
     artifacts = client.list_artifacts(run_id)
     for art in artifacts:
         if art.path == "model" and art.is_dir:
@@ -428,7 +461,7 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
                 if s.path.endswith("/MLmodel") or s.path == "MLmodel":
                     return art.path, "pyfunc"
 
-    raise FileNotFoundError(
+    raise _ArtifactNotFoundError(
         f"No model artifact found in run '{run_id}'. "
         "Expected .cbm (CatBoost), .rsglm (RustyStats), or model directory (pyfunc)."
     )
@@ -635,6 +668,14 @@ def _load_with_bounded_retry(
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
             return _load_rustystats_model(local_path)
+        except (AttributeError, TypeError, KeyError):
+            # Programmer error — a missing attribute, wrong type, or
+            # unknown dict key is a bug in our dispatch code (or a
+            # breaking change in catboost / rustystats), not a corrupt
+            # artifact.  Wrapping these as "persistently corrupt" would
+            # send on-call down the wrong path.  Re-raise so the real
+            # stack trace surfaces.
+            raise
         except Exception as err:
             last_err = err
             logger.warning(

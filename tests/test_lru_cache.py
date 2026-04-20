@@ -496,3 +496,164 @@ class TestLargeCache:
         assert cache.get(0) is None
         assert cache.get(1000) == 3000
         assert len(cache) == 1000
+
+
+# ---------------------------------------------------------------------------
+# evict_where — predicate-driven eviction primitive
+# ---------------------------------------------------------------------------
+
+
+class TestEvictWhere:
+    """Tests for the ``evict_where`` predicate-driven eviction primitive."""
+
+    def test_evicts_matching_keys(self) -> None:
+        """Evicts all entries whose key satisfies the predicate."""
+        cache: LRUCache[tuple[str, int], int] = LRUCache(max_size=10)
+        cache.put(("a", 1), 10)
+        cache.put(("a", 2), 20)
+        cache.put(("b", 1), 30)
+
+        evicted = cache.evict_where(lambda k: k[0] == "a")
+
+        assert sorted(evicted) == [10, 20]
+        assert ("a", 1) not in cache
+        assert ("a", 2) not in cache
+        assert ("b", 1) in cache
+
+    def test_no_match_returns_empty(self) -> None:
+        """Returns an empty list when nothing matches."""
+        cache: LRUCache[str, int] = LRUCache(max_size=4)
+        cache.put("a", 1)
+        cache.put("b", 2)
+
+        evicted = cache.evict_where(lambda k: k == "nonexistent")
+
+        assert evicted == []
+        assert len(cache) == 2
+
+    def test_evict_all(self) -> None:
+        """``lambda _: True`` evicts every entry."""
+        cache: LRUCache[str, int] = LRUCache(max_size=4)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+
+        evicted = cache.evict_where(lambda _: True)
+
+        assert sorted(evicted) == [1, 2, 3]
+        assert len(cache) == 0
+
+    def test_evict_clears_timestamps(self, monkeypatch) -> None:
+        """Evicted entries are also removed from the timestamp side table."""
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=10, ttl=100.0)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        assert "a" in cache._timestamps
+        assert "b" in cache._timestamps
+
+        cache.evict_where(lambda k: k == "a")
+
+        assert "a" not in cache._timestamps
+        assert "b" in cache._timestamps
+
+    def test_evict_unpins_evicted_keys(self) -> None:
+        """Evicted entries are removed from the pin set as well."""
+        cache: LRUCache[str, int] = LRUCache(max_size=10)
+        cache.put("a", 1)
+        cache.pin("a")
+        assert "a" in cache._pinned
+
+        evicted = cache.evict_where(lambda k: k == "a")
+
+        assert evicted == [1]
+        assert "a" not in cache._pinned
+        assert "a" not in cache
+
+    def test_evict_ignores_pinning(self) -> None:
+        """A pinned entry IS evicted when it matches the predicate.
+
+        A predicate-driven eviction is an explicit instruction — pinning is
+        for LRU-capacity protection, not predicate-driven cleanup.
+        """
+        cache: LRUCache[str, int] = LRUCache(max_size=10)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.pin("a")
+
+        evicted = cache.evict_where(lambda k: k == "a")
+
+        assert evicted == [1]
+        assert "a" not in cache
+
+    def test_evict_preserves_order_for_remaining(self) -> None:
+        """Non-evicted entries keep their LRU order."""
+        cache: LRUCache[str, int] = LRUCache(max_size=3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        # Evict middle entry
+        cache.evict_where(lambda k: k == "b")
+        # Add a fresh entry — cache still at 2, room for one more
+        cache.put("d", 4)
+        assert len(cache) == 3
+        # Now push over capacity — the LRU should be "a" (oldest remaining)
+        cache.put("e", 5)
+        assert "a" not in cache
+        assert "c" in cache
+        assert "d" in cache
+        assert "e" in cache
+
+    def test_concurrent_evict_is_atomic(self) -> None:
+        """Concurrent writes and evictions never lose or duplicate entries."""
+        cache: LRUCache[int, int] = LRUCache(max_size=500)
+        errors: list[Exception] = []
+        barrier = threading.Barrier(5)
+
+        def writer(start: int) -> None:
+            try:
+                barrier.wait()
+                for i in range(start, start + 100):
+                    cache.put(i, i)
+            except Exception as exc:
+                errors.append(exc)
+
+        def evictor() -> None:
+            try:
+                barrier.wait()
+                # Evict odd keys concurrently
+                for _ in range(50):
+                    cache.evict_where(lambda k: k % 2 == 1)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(t * 100,)) for t in range(4)]
+        threads.append(threading.Thread(target=evictor))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        # Every surviving key must have a correct value (no torn writes)
+        for i in range(400):
+            val = cache.get(i)
+            if val is not None:
+                assert val == i
+
+    def test_predicate_with_tuple_keys(self) -> None:
+        """Supports the common (id, hash) tuple-key pattern."""
+        cache: LRUCache[tuple[int, str], str] = LRUCache(max_size=10)
+        cache.put((1, "aaa"), "one-a")
+        cache.put((1, "bbb"), "one-b")
+        cache.put((2, "aaa"), "two-a")
+
+        target_id = 1
+        evicted = cache.evict_where(lambda k: k[0] == target_id)
+
+        assert sorted(evicted) == ["one-a", "one-b"]
+        assert (2, "aaa") in cache
+        assert len(cache) == 1

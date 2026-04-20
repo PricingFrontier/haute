@@ -29,6 +29,7 @@ from __future__ import annotations
 import threading
 import time as _time
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Generic, TypeVar
 
 K = TypeVar("K")
@@ -134,6 +135,33 @@ class LRUCache(Generic[K, V]):
             self._data.clear()
             self._timestamps.clear()
             self._pinned.clear()
+
+    def evict_where(self, predicate: Callable[[K], bool]) -> list[V]:
+        """Atomically evict every entry whose key satisfies *predicate*.
+
+        The whole scan-and-delete happens under ``self._lock`` so callers
+        see a single atomic step — no entry can be promoted, pinned, or
+        TTL-expired in the middle of the iteration.
+
+        Returns the *values* of the evicted entries so callers can run
+        cleanup (cascade invalidation etc.) **outside** the lock.  This
+        is deliberate: invoking a cross-module callback under our own
+        internal lock is a deadlock risk if the callback ever reaches
+        back into another LRUCache that shares a lock-ordering.
+
+        Pinning is *not* honoured — a predicate-driven eviction is an
+        explicit "get rid of these" instruction from the caller and
+        silently keeping a pinned entry alive would defeat the point.
+        """
+        with self._lock:
+            # Materialise matches inside the lock so the iteration is
+            # consistent even if another thread is queueing writes.
+            evicted_pairs = [(k, v) for k, v in self._data.items() if predicate(k)]
+            for k, _ in evicted_pairs:
+                del self._data[k]
+                self._timestamps.pop(k, None)
+                self._pinned.discard(k)
+        return [v for _, v in evicted_pairs]
 
     def __contains__(self, key: K) -> bool:  # type: ignore[override]
         """Check presence *without* promoting the entry or checking TTL.

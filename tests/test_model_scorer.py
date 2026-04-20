@@ -722,20 +722,31 @@ class TestRunScorePipeline:
         mock_eager.assert_called_once()
 
     @patch("haute._mlflow_io._score_eager")
-    def test_generic_exception_wraps_as_feature_mismatch(self, mock_eager):
-        """Non-FeatureMismatchError exceptions are wrapped in FeatureMismatchError."""
+    def test_generic_exception_propagates_unwrapped(self, mock_eager):
+        """Non-FeatureMismatchError exceptions propagate with their real type.
+
+        Previously every non-FMEE failure inside scoring was re-wrapped as
+        ``FeatureMismatchError`` — this laundered the real error type
+        (``RuntimeError`` from a corrupt artifact, ``AttributeError``
+        from a broken predict surface, etc.) behind a misleading mismatch
+        message.  Post-narrowing, the real exception surfaces so on-call
+        engineers see the actual failure class.
+        """
         sm = _make_scoring_model(feature_names=["a", "b"])
         mock_eager.side_effect = RuntimeError("CatBoost internal error")
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        with pytest.raises(FeatureMismatchError) as exc_info:
+        with pytest.raises(RuntimeError, match="CatBoost internal error"):
             _run_score_pipeline(sm, lf, task="regression", output_col="prediction", source="live")
-        assert exc_info.value.__cause__ is not None
-        assert "CatBoost internal error" in str(exc_info.value.__cause__)
 
     @patch("haute._mlflow_io._score_eager")
     def test_feature_mismatch_error_reraised_directly(self, mock_eager):
-        """FeatureMismatchError from scoring is re-raised without wrapping."""
+        """FeatureMismatchError from scoring propagates unchanged.
+
+        The explicit catch-and-rewrap was removed; FMEE now takes the
+        same un-caught path as every other exception, which preserves
+        the original instance and leaves ``__cause__`` as ``None``.
+        """
         sm = _make_scoring_model(feature_names=["a", "b"])
         original_err = FeatureMismatchError(
             expected=["a", "b"],

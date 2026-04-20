@@ -853,6 +853,50 @@ class TestFindModelArtifact:
         assert path == "custom_model"
         assert flavor == "pyfunc"
 
+    def test_mlflow_exception_from_list_artifacts_propagates(self):
+        """A credential / network failure from ``list_artifacts`` must NOT be
+        swallowed as "no artifact in this probe" — it surfaces so on-call
+        sees the real infrastructure issue.
+        """
+        from mlflow.exceptions import MlflowException
+
+        client = MagicMock()
+        client.list_artifacts.side_effect = MlflowException(
+            "PERMISSION_DENIED: Invalid credentials"
+        )
+        with pytest.raises(MlflowException, match="PERMISSION_DENIED"):
+            _find_model_artifact(client, "run1")
+
+    def test_bare_file_not_found_error_propagates(self):
+        """A bare :class:`FileNotFoundError` from ``list_artifacts`` is not a
+        "probe missed" signal — we only swallow our own internal
+        :class:`_ArtifactNotFoundError` sentinel.  If MLflow's local-fs shim
+        (or a custom artifact repo) raises a plain ``FileNotFoundError``
+        it propagates so the operator sees the real problem.
+        """
+        client = MagicMock()
+        client.list_artifacts.side_effect = FileNotFoundError(
+            "Artifact root /mnt/nonexistent/runs/abc does not exist"
+        )
+        with pytest.raises(FileNotFoundError, match="Artifact root"):
+            _find_model_artifact(client, "run1")
+
+    def test_no_artifact_raises_artifact_not_found_subclass(self):
+        """The internal "no match" sentinel is still a ``FileNotFoundError``
+        so callers coded against the public contract keep working.
+        """
+        from haute._mlflow_io import _ArtifactNotFoundError
+
+        client = MagicMock()
+        txt_art = MagicMock(path="readme.txt", is_dir=False)
+        client.list_artifacts.return_value = [txt_art]
+        with pytest.raises(_ArtifactNotFoundError, match="No model artifact"):
+            _find_model_artifact(client, "run1")
+        # Sanity: the sentinel is still a FileNotFoundError subclass.
+        client.list_artifacts.return_value = [txt_art]
+        with pytest.raises(FileNotFoundError):
+            _find_model_artifact(client, "run1")
+
 
 # ---------------------------------------------------------------------------
 # ScoringModel direct usage
