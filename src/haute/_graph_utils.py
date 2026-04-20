@@ -43,14 +43,44 @@ def _resolve_sink_path(path: str, fmt: str) -> str:
 def _sanitize_func_name(label: str) -> str:
     """Convert a human label to a valid Python function name (preserves casing).
 
-    Uses ASCII-only matching to stay in sync with the frontend implementation
-    in frontend/src/utils/sanitizeName.ts.
+    ASCII alnum / ``_`` survive unchanged.  Spaces and hyphens become
+    underscores.  Every other character — punctuation, whitespace, and
+    non-ASCII glyphs — is either dropped (ASCII punctuation, control
+    characters) or reversibly encoded as ``_x<hex>_`` for non-ASCII so
+    distinct labels produce distinct identifiers.
+
+    Invariants (see tests/test_parser_sanitize_phase5.py):
+
+    - ASCII inputs are unchanged from pre-fix behaviour.
+    - Output is always a valid Python identifier (``str.isidentifier()``).
+    - Different inputs produce different outputs (collisions across the
+      ASCII/non-ASCII boundary are eliminated).
+    - Idempotent: ``sanitize(sanitize(x)) == sanitize(x)``.  The encoded
+      form ``_x<hex>_`` is itself all-ASCII alnum/underscore, so a second
+      pass is a no-op.
+
+    Stays in sync with the frontend implementation in
+    ``frontend/src/utils/sanitizeName.ts``.
     """
     import keyword
 
     name = label.strip()
     name = name.replace(" ", "_").replace("-", "_")
-    name = "".join(c for c in name if c.isascii() and (c.isalnum() or c == "_"))
+
+    out_chars: list[str] = []
+    for c in name:
+        if c.isascii():
+            if c.isalnum() or c == "_":
+                out_chars.append(c)
+            # else: drop ASCII punctuation / control chars
+        else:
+            # Reversibly encode non-ASCII codepoints so distinct glyphs
+            # produce distinct identifiers.  The ``_x`` + hex + ``_`` shape
+            # is itself ASCII alnum/underscore, so the encoded form is
+            # idempotent under a second pass through this function.
+            out_chars.append(f"_x{ord(c):x}_")
+    name = "".join(out_chars)
+
     if name and name[0].isdigit():
         name = f"node_{name}"
     if keyword.iskeyword(name):

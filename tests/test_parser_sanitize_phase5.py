@@ -136,28 +136,10 @@ class TestSanitizeFuncNameNonAsciiPostFix:
     today and pass after the fix — all marked ``xfail(strict=True)``.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #123: non-ASCII characters are currently stripped, "
-            "causing ``café`` and ``caf`` to collide.  Post-fix the "
-            "sanitiser must encode non-ASCII reversibly so distinct "
-            "labels produce distinct identifiers."
-        ),
-    )
     def test_cafe_distinct_from_caf(self) -> None:
         """``café`` and ``caf`` must map to different identifiers."""
         assert _sanitize_func_name("café") != _sanitize_func_name("caf")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #123: CJK-only labels currently collapse to the "
-            "digit-suffix fallback, losing the identifying prefix.  "
-            "Post-fix ``用户1`` must yield an identifier that includes "
-            "an encoding of the CJK glyphs."
-        ),
-    )
     def test_cjk_label_yields_distinct_identifiers(self) -> None:
         """Two CJK-only labels that differ only by leading glyphs must
         produce DIFFERENT identifiers after the fix.
@@ -170,14 +152,6 @@ class TestSanitizeFuncNameNonAsciiPostFix:
         b = _sanitize_func_name("客户1")
         assert a != b, f"{a!r} == {b!r}: CJK labels collided"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #123: after the fix, non-ASCII labels must still "
-            "produce valid Python identifiers (``str.isidentifier()``) "
-            "AND be distinct from their ASCII-stripped counterparts."
-        ),
-    )
     def test_non_ascii_result_is_still_a_valid_identifier(self) -> None:
         """Non-ASCII inputs produce valid identifiers AFTER the fix."""
         for label in ["café", "用户1", "数学", "naïve", "Zürich"]:
@@ -193,16 +167,6 @@ class TestSanitizeFuncNameNonAsciiPostFix:
                     f"{label!r} and {ascii_stripped!r} both -> {result!r}"
                 )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #123: two distinct labels that share their ASCII "
-            "skeleton but differ in non-ASCII content currently collapse "
-            "to the same identifier (both non-ASCII runs are stripped).  "
-            "Post-fix the encoding must preserve the non-ASCII glyphs "
-            "so these labels map to distinct identifiers."
-        ),
-    )
     def test_distinct_non_ascii_inputs_distinct_outputs(self) -> None:
         """Labels differing ONLY in their non-ASCII characters must not collide.
 

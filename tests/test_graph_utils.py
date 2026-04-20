@@ -53,9 +53,13 @@ class TestSanitizeFuncName:
         """Special characters are stripped, creating potential collisions."""
         assert _sanitize_func_name("foo@bar") == _sanitize_func_name("foobar")
 
-    def test_unicode_stripped(self):
-        """Non-ASCII chars are stripped to stay in sync with the frontend."""
-        assert _sanitize_func_name("café") == "caf"
+    def test_unicode_encoded_reversibly(self):
+        """Non-ASCII chars are reversibly encoded so distinct labels yield
+        distinct identifiers (Wave 9D #123).  ``é`` (U+00E9) → ``_xe9_``.
+        """
+        assert _sanitize_func_name("café") == "caf_xe9_"
+        # And the encoded form is distinct from the ASCII-stripped form.
+        assert _sanitize_func_name("café") != _sanitize_func_name("caf")
 
     def test_all_special_chars_returns_unnamed(self):
         """Label of only special characters becomes unnamed_node."""
