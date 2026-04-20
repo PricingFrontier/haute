@@ -69,7 +69,13 @@ from haute._trace_enrichment import (
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
-from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
+from haute.executor import (
+    ENFORCE_CONTRACTS,
+    _build_node_fn,
+    _compile_preamble,
+    _pipeline_dir,
+    _preview_cache,
+)
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
@@ -272,7 +278,14 @@ def execute_trace(
             source=source,
             row_values=row_values,
             preamble_ns=preamble_ns,
-            preview_fp=graph_fingerprint(graph, f"{row_limit}:{source}"),
+            # Match executor.py's preview cache key (includes the contract-
+            # enforcement flag so the trace reuses the correct cached
+            # preview DataFrames instead of falling through to a cold
+            # execution that may correlate differently).
+            preview_fp=graph_fingerprint(
+                graph,
+                f"{row_limit}:{source}:contracts={int(ENFORCE_CONTRACTS)}",
+            ),
             fp=fp,
         )
 

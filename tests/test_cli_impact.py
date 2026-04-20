@@ -43,7 +43,6 @@ def _setup_impact_project(
         f'[ci.production]\nendpoint_url = "{prod_url}"\n'
     )
     (tmp_path / "haute.toml").write_text(toml)
-    (tmp_path / ".git").mkdir()
 
     # Write impact dataset
     data_dir = tmp_path / "data"
@@ -82,7 +81,6 @@ class TestImpact:
             '[deploy]\nmodel_name = "m"\n'
             '[safety]\nimpact_dataset = ""\n',
         )
-        (tmp_path / ".git").mkdir()
         result = runner.invoke(cli, ["impact"])
         assert result.exit_code == 1
         assert "impact_dataset" in result.output.lower()
@@ -99,7 +97,6 @@ class TestImpact:
             '[deploy]\nmodel_name = "m"\n'
             '[safety]\nimpact_dataset = "missing.parquet"\n',
         )
-        (tmp_path / ".git").mkdir()
         result = runner.invoke(cli, ["impact"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
@@ -259,20 +256,15 @@ class TestImpactDatabricks:
 
 
 class TestImpactHttp:
-    def test_prod_404_marks_first_deploy(self) -> None:
-        """A 404 on the prod URL is the only 'unreachable' signal that
-        should be treated as 'no production yet'. Other transport errors
-        (connection refused, timeout, 5xx) must propagate — see
-        ``test_cli_fail_loudly.py::TestImpactProdExistsFailsLoudly`` for
-        the full contract.
-        """
+    def test_prod_not_reachable(self) -> None:
+        """If prod endpoint is unreachable, should mark as first deploy."""
         from haute.cli._impact import _impact_http
 
         with patch(
             "haute.deploy._impact.score_http_endpoint_batched",
             side_effect=[
                 [{"p": 1.0}],  # staging succeeds
-                RuntimeError("HTTP 404 from http://prod/quote: not found"),
+                ConnectionError("refused"),  # prod fails
             ],
         ):
             staging, prod, exists = _impact_http(
