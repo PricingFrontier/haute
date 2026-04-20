@@ -66,6 +66,22 @@ def _effective_contract(node: GraphNode) -> Contract:
         builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
     except ConfigError:
         builder = Contract.opaque()
+    except Exception as exc:  # noqa: BLE001 — scoped to boundary-check fallback
+        # Contract resolution for MODEL_SCORE etc. may touch MLflow /
+        # external stores.  A transient or deploy-mode lookup failure
+        # here must not prevent the pipeline from running — the fn
+        # builder path has its own error reporting and will surface
+        # the real problem when the node actually executes.  We fall
+        # back to opaque so the boundary check is skipped for this
+        # node; the actual node code path still runs and still fails
+        # loudly via whichever error it has always produced.
+        logger.debug(
+            "effective_contract_unresolved",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            error=repr(exc),
+        )
+        builder = Contract.opaque()
     declared_raw = node.data.config.get("contract")
     if declared_raw is None:
         return builder

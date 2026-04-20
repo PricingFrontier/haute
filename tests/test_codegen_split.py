@@ -225,8 +225,7 @@ class TestCodegenModuleSplit:
         registry = _registry.NODE_REGISTRY
         codegen_types = {nt for nt, entry in registry.items() if entry.codegen is not None}
         assert codegen_types, (
-            "NODE_REGISTRY has no codegen entries — _codegen_builders did "
-            "not populate them."
+            "NODE_REGISTRY has no codegen entries — _codegen_builders did not populate them."
         )
         # _codegen_builders must own the dispatch-function source of truth,
         # so codegen.py must not define its own _CODEGEN_BUILDERS.
