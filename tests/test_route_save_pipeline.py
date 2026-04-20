@@ -167,15 +167,18 @@ class TestValidateUniqueSanitizedNames:
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
-    def test_unicode_stripping_collision_raises_400(self) -> None:
-        """Non-ASCII chars are stripped, so 'café' and 'caf_e' may collide."""
+    def test_unicode_distinct_labels_do_not_collide(self) -> None:
+        """Post Wave 9D #123: non-ASCII chars are reversibly encoded, so
+        ``café`` and ``caf`` no longer collide.  The sanitiser maps them
+        to distinct identifiers (``caf_xe9_`` vs ``caf``) so the
+        save-pipeline validator accepts them both.
+        """
         graph = _make_graph(
             _make_node("a", "café", "polars"),
             _make_node("b", "caf", "polars"),
         )
-        with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
-        assert exc_info.value.status_code == 400
+        # Must not raise — the labels are now distinct after sanitisation.
+        SavePipelineService._validate_unique_sanitized_names(graph)
 
     def test_empty_labels_collide(self) -> None:
         """Multiple nodes with empty labels all sanitize to 'unnamed_node'."""
