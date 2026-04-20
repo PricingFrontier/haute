@@ -27,6 +27,7 @@ class InitConfig:
 
     target: str
     ci: str
+    force: bool = False
 
 _DEV_DEPS_BLOCK = """
 [dependency-groups]
@@ -352,8 +353,12 @@ def handle_init(config: InitConfig) -> None:
 
     project_dir = Path.cwd()
 
-    if (project_dir / "haute.toml").exists():
-        click.echo("Error: haute.toml already exists - project already initialised.", err=True)
+    if (project_dir / "haute.toml").exists() and not config.force:
+        click.echo(
+            "Error: haute.toml already exists - project already initialised. "
+            "Re-run with --force to overwrite the existing scaffold.",
+            err=True,
+        )
         raise SystemExit(1)
 
     # -- Resolve project name --------------------------------------------------
@@ -524,7 +529,13 @@ def handle_init(config: InitConfig) -> None:
     default="github",
     help="CI/CD provider (default: github).",
 )
-def init(target: str, ci: str) -> None:
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite existing scaffold files (haute.toml, starter pipeline, etc.).",
+)
+def init(target: str, ci: str, force: bool) -> None:
     """Scaffold a Haute pricing project in the current directory.
 
     Generates haute.toml, CI/CD workflows, credentials template, and a
@@ -536,6 +547,7 @@ def init(target: str, ci: str) -> None:
       haute init                                  # databricks + github
       haute init --target container --ci none      # container, no CI
       haute init --target sagemaker --ci github   # AWS + github
+      haute init --force                          # overwrite existing scaffold
     """
-    config = InitConfig(target=target, ci=ci)
+    config = InitConfig(target=target, ci=ci, force=force)
     handle_init(config)
