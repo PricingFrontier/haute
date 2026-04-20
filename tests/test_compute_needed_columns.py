@@ -803,8 +803,24 @@ def _time_call(fn: Callable[[], dict], repeats: int) -> float:
     return best
 
 
-class TestForwardPassPerformance:
-    """Benchmark pinning the >2× target for review item #87."""
+class TestForwardPassReferenceAlgorithmBenchmark:
+    """Reference-vs-reference benchmark for the algorithm shape.
+
+    This class times two *reference* implementations defined in this
+    test file (``_reference_forward_pass`` vs ``_reference_backward_pass``).
+    Neither is production code — the purpose is to characterise the
+    algorithmic win of the forward-pass *shape* independent of whatever
+    ad-hoc optimisations production may pick up over time.
+
+    **This is a supplementary benchmark.**  The load-bearing claim for
+    review item #87 — that *production* is faster than the backward
+    transcription — is pinned by
+    ``TestProductionComputeNeededColumnsBenchmark`` below.  Keeping this
+    reference-vs-reference comparison lets us detect regressions in the
+    reference implementations themselves (e.g. if somebody "optimises"
+    ``_reference_backward_pass`` into something that's no longer a
+    faithful transcription of the original algorithm).
+    """
 
     def test_graph_is_at_least_200_nodes(self):
         """Guardrail: if the builder changes, we still want 200+ nodes."""
@@ -823,11 +839,16 @@ class TestForwardPassPerformance:
         assert backward == forward
         assert backward == production
 
-    def test_forward_pass_is_at_least_twice_as_fast(self):
-        """On a 200-node realistic graph the forward pass must be at
-        least 2× faster than the literal backward transcription (≥50%
-        reduction in wall time).  This is the performance bar for the
-        rewrite in review item #87.
+    def test_forward_pass_reference_algorithm_is_50_percent_faster_than_backward_reference(self):
+        """On a 200-node realistic graph, the forward-pass *reference*
+        implementation must be at least 2× faster than the literal
+        backward-transcription *reference* (≥50% reduction in wall
+        time).  This pins the algorithmic win of the forward-pass
+        shape — NOT the speed of production code.
+
+        See ``TestProductionComputeNeededColumnsBenchmark`` for the
+        production-vs-backward benchmark that gates the perf claim in
+        review item #87.
 
         We take the best of several runs to filter out GC hitches and
         OS scheduling noise; both algorithms are warmed identically.
@@ -868,7 +889,80 @@ class TestForwardPassPerformance:
         reduction = (backward_t - forward_t) / backward_t
 
         assert reduction > 0.50, (
-            "forward pass did not achieve the >50% wall-time reduction target. "
+            "forward-reference did not achieve the >50% wall-time reduction target "
+            "vs the backward-reference.  This is a regression in the reference "
+            "implementations themselves — not a production perf signal. "
             f"backward={backward_t * 1000:.3f}ms forward={forward_t * 1000:.3f}ms "
+            f"reduction={reduction:.2%}"
+        )
+
+
+class TestProductionComputeNeededColumnsBenchmark:
+    """Production-path benchmark for review item #87.
+
+    Times the real ``_compute_needed_columns`` imported from
+    ``haute._execute_lazy`` against the backward-reference baseline.
+    This is the load-bearing benchmark for the perf claim: if somebody
+    later rewrites production into a regression, this test fails
+    directly.
+
+    The reference-vs-reference benchmark above is kept as a
+    supplementary regression guard on the two in-file references;
+    this class is what gates shipping the perf claim.
+    """
+
+    def test_production_compute_needed_columns_is_at_least_twice_as_fast_as_backward_reference(
+        self,
+    ):
+        """Production ``_compute_needed_columns`` must clear the same
+        ≥50% wall-time reduction bar against the backward-reference
+        baseline on the 200-node benchmark graph.
+
+        The backward-reference is a byte-for-byte transcription of the
+        *old* backward-pass production, so a ratio ≥2× here is a direct
+        claim about the win delivered by the production rewrite.
+
+        Uses the same min-of-many methodology as the reference-vs-
+        reference benchmark so the two can be compared side-by-side.
+        """
+        order, children_of, node_map = _build_realistic_200_node_graph()
+
+        # Warm up both code paths to stabilise JIT/GC.  Production and
+        # the backward reference must be warmed identically, otherwise
+        # the comparison is confounded by contract-registry cache state.
+        # The contract registry itself is LRU-cached, so after the first
+        # lookup per (nodeType, config) pair the cost is a dict lookup.
+        for _ in range(10):
+            _reference_backward_pass(order, children_of, node_map)
+            _compute_needed_columns(order, children_of, node_map)
+
+        # Min-of-many: both timings take the single fastest run over
+        # many trials, which filters out scheduler interrupts and GC
+        # cycles that would otherwise inflate a single sample and skew
+        # the ratio.  50 repeats gives enough samples that at least one
+        # run on each side hits a quiet moment on the scheduler.
+        repeats = 50
+        backward_t = _time_call(
+            lambda: _reference_backward_pass(order, children_of, node_map),
+            repeats,
+        )
+        production_t = _time_call(
+            lambda: _compute_needed_columns(order, children_of, node_map),
+            repeats,
+        )
+
+        assert backward_t > 0.0, "baseline measurement was zero — timer resolution too coarse"
+        assert backward_t > 100e-6, (
+            f"baseline run too fast to benchmark reliably: {backward_t * 1000:.3f}ms. "
+            "Increase bandings_per_bank or aggregators_per_bank."
+        )
+
+        reduction = (backward_t - production_t) / backward_t
+
+        assert reduction >= 0.50, (
+            "production _compute_needed_columns did not achieve the >=50% wall-time "
+            "reduction target vs the backward-reference baseline.  This is the "
+            "load-bearing claim for review item #87. "
+            f"backward={backward_t * 1000:.3f}ms production={production_t * 1000:.3f}ms "
             f"reduction={reduction:.2%}"
         )

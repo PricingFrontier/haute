@@ -39,58 +39,33 @@
  *      realistic 200-node graph.
  */
 import { describe, it, expect } from "vitest"
+import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 
 // ---------------------------------------------------------------------------
 // Target functions under test
 // ---------------------------------------------------------------------------
 //
-// The shallow-hash helper the implementer will add to App.tsx (or a small
-// util module).  We inline the function here so the test can pin its
-// contract without depending on wiring-up details.  Post-fix, the real
-// implementation is expected to be identical (character-for-character) to
-// this reference — and the App.tsx fingerprint line will call it.
+// Production ``shallowNodeDataHash`` lives in ``frontend/src/utils/shallowNodeHash.ts``
+// and is imported directly above.  This test file exercises that production
+// function — no inline reference copy — so drift is impossible by construction.
 //
-// INPUT_KEYS is the minimal set of keys that, if all unchanged, means
-// downstream preview work does not need to rerun.  Do not add result-only
-// keys here; do not remove input keys.
-
-const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
+// The INPUT_KEYS contract (nodeType, label, description, config, code,
+// func_name) is documented at the production call site.  See
+// ``src/utils/shallowNodeHash.ts`` for the rationale about which keys are
+// input-identity vs. result-only.
 
 type NodeLike = { id: string; data: Record<string, unknown>; position?: { x: number; y: number } }
 type EdgeLike = { id: string; source: string; target: string }
 
 /**
- * Reference implementation of the shallow hash used by App.tsx.
- *
- * Only inspects keys in INPUT_KEYS, JSON-stringifying their individual
- * values.  For primitive-valued keys (label, nodeType, code, func_name)
- * this is cheaper than full ``JSON.stringify(n.data)`` which walks every
- * key including _columns arrays and nested schema_warning lists.
- *
- * For the ``config`` key we still call ``JSON.stringify`` because configs
- * are structured objects whose content genuinely matters.  But we skip
- * all result-only sibling keys.
- */
-function shallowNodeHash(data: Record<string, unknown>): string {
-  const parts: string[] = []
-  for (const key of INPUT_KEYS) {
-    const v = data[key]
-    if (v === undefined) {
-      parts.push("")
-      continue
-    }
-    parts.push(typeof v === "object" ? JSON.stringify(v) : String(v))
-  }
-  return parts.join("\u0001")
-}
-
-/**
- * Fingerprint builder used by App.tsx — mirrors the post-fix shape.
+ * Fingerprint builder used by App.tsx — mirrors the App.tsx effect so the
+ * benchmark measures the same composition production builds (per-node
+ * ``shallowNodeDataHash`` call + edge fingerprint concatenation).
  * Takes nodes + edges; returns a single string that can be compared
  * against ``prevStructureRef.current``.
  */
 function graphFingerprintShallow(nodes: NodeLike[], edges: EdgeLike[]): string {
-  const nodeFingerprint = nodes.map((n) => `${n.id}:${shallowNodeHash(n.data)}`).join("|")
+  const nodeFingerprint = nodes.map((n) => `${n.id}:${shallowNodeDataHash(n.data)}`).join("|")
   const edgeFingerprint = edges.map((e) => `${e.id}:${e.source}:${e.target}`).join("|")
   return `${nodeFingerprint}||${edgeFingerprint}`
 }
@@ -118,11 +93,11 @@ function makeNode(id: string, data: Record<string, unknown> = {}): NodeLike {
 // 1. Input-identity invariants — equal input keys → equal hash
 // ===========================================================================
 
-describe("shallowNodeHash — input-identity invariants", () => {
+describe("shallowNodeDataHash — input-identity invariants", () => {
   it("two nodes with identical input keys produce identical hashes", () => {
     const a = { label: "A", nodeType: "polars", config: { code: "x + 1" } }
     const b = { label: "A", nodeType: "polars", config: { code: "x + 1" } }
-    expect(shallowNodeHash(a)).toBe(shallowNodeHash(b))
+    expect(shallowNodeDataHash(a)).toBe(shallowNodeDataHash(b))
   })
 
   it("two nodes with identical input keys but different result keys produce identical hashes", () => {
@@ -142,13 +117,13 @@ describe("shallowNodeHash — input-identity invariants", () => {
       _availableColumns: [],
       _schemaWarnings: [{ column: "x", status: "missing" }],
     }
-    expect(shallowNodeHash(a)).toBe(shallowNodeHash(b))
+    expect(shallowNodeDataHash(a)).toBe(shallowNodeDataHash(b))
   })
 
   it("a node with runtime status flags mutated does not invalidate its hash", () => {
     const base = { label: "N", nodeType: "polars", config: { c: 1 } }
-    const before = shallowNodeHash(base)
-    const afterTraceActive = shallowNodeHash({
+    const before = shallowNodeDataHash(base)
+    const afterTraceActive = shallowNodeDataHash({
       ...base,
       _status: "ok",
       _traceActive: true,
@@ -160,8 +135,8 @@ describe("shallowNodeHash — input-identity invariants", () => {
   })
 
   it("a node with a newly populated _columns array does not invalidate its hash", () => {
-    const before = shallowNodeHash({ label: "N", nodeType: "polars", config: {} })
-    const after = shallowNodeHash({
+    const before = shallowNodeDataHash({ label: "N", nodeType: "polars", config: {} })
+    const after = shallowNodeDataHash({
       label: "N",
       nodeType: "polars",
       config: {},
@@ -173,7 +148,7 @@ describe("shallowNodeHash — input-identity invariants", () => {
   it("optional input keys absent vs. explicitly undefined produce equal hashes", () => {
     const a = { label: "A", nodeType: "polars", config: { x: 1 } }
     const b = { label: "A", nodeType: "polars", config: { x: 1 }, description: undefined }
-    expect(shallowNodeHash(a)).toBe(shallowNodeHash(b))
+    expect(shallowNodeDataHash(a)).toBe(shallowNodeDataHash(b))
   })
 })
 
@@ -181,7 +156,7 @@ describe("shallowNodeHash — input-identity invariants", () => {
 // 2. Sensitivity — any input-key change flips the hash
 // ===========================================================================
 
-describe("shallowNodeHash — input-key sensitivity", () => {
+describe("shallowNodeDataHash — input-key sensitivity", () => {
   const base = {
     label: "N",
     nodeType: "polars",
@@ -193,38 +168,38 @@ describe("shallowNodeHash — input-key sensitivity", () => {
 
   it("nodeType change flips the hash", () => {
     const changed = { ...base, nodeType: "dataSource" }
-    expect(shallowNodeHash(changed)).not.toBe(shallowNodeHash(base))
+    expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
   it("label change flips the hash", () => {
     const changed = { ...base, label: "Different" }
-    expect(shallowNodeHash(changed)).not.toBe(shallowNodeHash(base))
+    expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
   it("description change flips the hash", () => {
     const changed = { ...base, description: "new description" }
-    expect(shallowNodeHash(changed)).not.toBe(shallowNodeHash(base))
+    expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
   it("config content change flips the hash", () => {
     const changed = { ...base, config: { code: "a + 2" } }
-    expect(shallowNodeHash(changed)).not.toBe(shallowNodeHash(base))
+    expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
   it("config with nested-object change flips the hash", () => {
     const nestedBase = { ...base, config: { nested: { a: 1, b: 2 } } }
     const nestedChanged = { ...base, config: { nested: { a: 1, b: 3 } } }
-    expect(shallowNodeHash(nestedChanged)).not.toBe(shallowNodeHash(nestedBase))
+    expect(shallowNodeDataHash(nestedChanged)).not.toBe(shallowNodeDataHash(nestedBase))
   })
 
   it("code change flips the hash", () => {
     const changed = { ...base, code: "print(42)" }
-    expect(shallowNodeHash(changed)).not.toBe(shallowNodeHash(base))
+    expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
   it("func_name change flips the hash", () => {
     const changed = { ...base, func_name: "renamed_node" }
-    expect(shallowNodeHash(changed)).not.toBe(shallowNodeHash(base))
+    expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
   it("key collisions across input keys are avoided (the delimiter is non-empty)", () => {
@@ -233,7 +208,7 @@ describe("shallowNodeHash — input-key sensitivity", () => {
     // collide.  This pins that a delimiter is used.
     const a = { label: "abc", nodeType: "def", config: {} }
     const b = { label: "ab", nodeType: "cdef", config: {} }
-    expect(shallowNodeHash(a)).not.toBe(shallowNodeHash(b))
+    expect(shallowNodeDataHash(a)).not.toBe(shallowNodeDataHash(b))
   })
 })
 
@@ -321,7 +296,7 @@ describe("graphFingerprintShallow — graph-level invariants", () => {
 // 4. Benchmark — shallow hash must be ≥10× faster than full stringify
 // ===========================================================================
 
-describe("shallowNodeHash — benchmark", () => {
+describe("shallowNodeDataHash — benchmark", () => {
   function makeRealisticNode(i: number): NodeLike {
     // Realistic node: modest config, populated _columns / _availableColumns
     // arrays (these are the chief cost of the pre-fix full-stringify path).
@@ -400,10 +375,10 @@ describe("shallowNodeHash — benchmark", () => {
     const ITERATIONS = 10_000
 
     // Warm-up
-    for (let w = 0; w < 100; w++) shallowNodeHash(node.data)
+    for (let w = 0; w < 100; w++) shallowNodeDataHash(node.data)
 
     const start = performance.now()
-    for (let i = 0; i < ITERATIONS; i++) shallowNodeHash(node.data)
+    for (let i = 0; i < ITERATIONS; i++) shallowNodeDataHash(node.data)
     const elapsed = performance.now() - start
 
     // 10k iterations should comfortably finish in under 50ms
