@@ -454,7 +454,10 @@ class TestErrorHandling:
         def slow_trace(*args, **kwargs):
             time.sleep(2.0)
 
-        with patch("haute.trace.execute_trace", side_effect=slow_trace):
+        # Route-scoped patch — the route imports ``execute_trace`` at
+        # module top-level after the #101 hoist, so the source module's
+        # name no longer intercepts it.
+        with patch("haute.routes.pipeline.execute_trace", side_effect=slow_trace):
             resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
         assert resp.status_code == 504

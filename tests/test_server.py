@@ -958,9 +958,14 @@ class TestPipelineExceptions:
     @pytest.mark.parametrize(
         ("endpoint", "patch_target", "error_msg", "use_parsed_graph"),
         [
-            ("trace", "haute.trace.execute_trace", "trace error", True),
-            ("preview", "haute.executor.execute_graph", "preview error", True),
-            ("sink", "haute.executor.execute_sink", "sink error", False),
+            # Route-side patch targets: the route module imports these
+            # functions at top level (post-#101 hoist), so patching the
+            # source modules (``haute.trace`` / ``haute.executor``) would
+            # be a no-op — the route still calls its own top-level
+            # bindings.
+            ("trace", "haute.routes.pipeline.execute_trace", "trace error", True),
+            ("preview", "haute.routes.pipeline.execute_graph", "preview error", True),
+            ("sink", "haute.routes.pipeline.execute_sink", "sink error", False),
         ],
         ids=["trace_exception", "preview_exception", "sink_exception"],
     )
@@ -1004,9 +1009,10 @@ class TestPreviewEdgeCases:
 
         graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
 
-        # Mock execute_graph to return results without the target node
+        # Route-scoped patch target: ``routes/pipeline.py`` imports
+        # ``execute_graph`` at module top-level post-#101.
         with patch(
-            "haute.executor.execute_graph",
+            "haute.routes.pipeline.execute_graph",
             return_value={},  # empty results
         ):
             resp = client.post(
@@ -1042,6 +1048,7 @@ class TestListPipelinesParseError:
             raise RuntimeError("Simulated parse failure")
 
         from haute import parser
+        from haute.routes import pipeline as pipeline_routes
 
         original_parse = parser.parse_pipeline_file
 
@@ -1052,7 +1059,13 @@ class TestListPipelinesParseError:
         invalidate_pipeline_index()
 
         c = TestClient(app)
-        with patch.object(parser, "parse_pipeline_file", side_effect=_patch_parse):
+        # Patch the route-scoped binding — after the #101 import hoist
+        # ``list_pipelines`` calls its own top-level ``parse_pipeline_file``
+        # alias, so patching the ``haute.parser`` source module alone no
+        # longer affects the code path.
+        with patch.object(
+            pipeline_routes, "parse_pipeline_file", side_effect=_patch_parse
+        ):
             resp = c.get("/api/pipelines")
         assert resp.status_code == 200
         data = resp.json()

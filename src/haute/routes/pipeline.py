@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from haute._logging import get_logger
 from haute._topo import ancestors
 from haute.errors import ContractMismatchError
-from haute.executor import execute_graph, execute_sink
+from haute.executor import _preview_cache, execute_graph, execute_sink
 from haute.graph_utils import (
     PipelineGraph,
     _prune_live_switch_edges,
@@ -183,6 +183,13 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
                 row_limit=body.row_limit,
                 source=body.source,
                 row_values=body.row_values,
+                # Inject the executor's preview cache explicitly so the
+                # trace module is not coupled to a private singleton on
+                # another module (item #104).  ``FingerprintCache``
+                # already satisfies the :class:`~haute.trace.PreviewReader`
+                # protocol — its ``try_get`` returns the slot dict on hit
+                # or ``None`` on miss.
+                preview=_preview_cache,
             ),
             timeout=_TRACE_TIMEOUT,
         )

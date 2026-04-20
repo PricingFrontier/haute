@@ -313,8 +313,13 @@ class TestSafeDetailOnError:
     # -- Pipeline routes need the pipeline_graph fixture --
 
     def test_pipeline_trace_500_no_leak(self, client: TestClient, pipeline_graph) -> None:
+        # Route-side patch target: ``routes/pipeline.py`` imports
+        # ``execute_trace`` at module top-level, so patching the source
+        # module (``haute.trace``) is a no-op after import time.  The
+        # route-scoped symbol is what the FastAPI handler actually
+        # calls.
         with patch(
-            "haute.trace.execute_trace",
+            "haute.routes.pipeline.execute_trace",
             side_effect=RuntimeError("traceback: File /home/user/secret.py line 42"),
         ):
             resp = client.post(
@@ -328,8 +333,10 @@ class TestSafeDetailOnError:
 
     def test_pipeline_preview_500_no_leak(self, client: TestClient, pipeline_graph) -> None:
         node_id = pipeline_graph.nodes[0].id
+        # Route-scoped patch target: after #101 the route binds
+        # ``execute_graph`` at module top-level.
         with patch(
-            "haute.executor.execute_graph",
+            "haute.routes.pipeline.execute_graph",
             side_effect=RuntimeError("MemoryError at 0x7fff5e3a1000"),
         ):
             resp = client.post(
@@ -358,8 +365,10 @@ class TestSafeDetailOnError:
             }
         )
         graph["edges"] = [{"id": "e1", "source": "src", "target": "sink"}]
+        # Route-scoped patch — see note in
+        # ``test_pipeline_trace_500_no_leak``.
         with patch(
-            "haute.executor.execute_sink",
+            "haute.routes.pipeline.execute_sink",
             side_effect=RuntimeError("PermissionError: /secure/dir/output.parquet"),
         ):
             resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
@@ -621,8 +630,12 @@ class TestLogOnError:
     def test_pipeline_trace_logs_error(self, client: TestClient, pipeline_graph) -> None:
         mock_logger = MagicMock()
         with (
+            # Route-side patch target: see the matching note in
+            # ``test_pipeline_trace_500_no_leak`` — after the #101
+            # import hoist, ``routes/pipeline.py`` binds
+            # ``execute_trace`` at module-load time.
             patch(
-                "haute.trace.execute_trace",
+                "haute.routes.pipeline.execute_trace",
                 side_effect=RuntimeError("real-trace-error"),
             ),
             patch("haute.routes.pipeline.logger", mock_logger),
@@ -639,8 +652,10 @@ class TestLogOnError:
         mock_logger = MagicMock()
         node_id = pipeline_graph.nodes[0].id
         with (
+            # Route-scoped patch — see note in
+            # ``test_pipeline_trace_logs_error``.
             patch(
-                "haute.executor.execute_graph",
+                "haute.routes.pipeline.execute_graph",
                 side_effect=RuntimeError("real-preview-error"),
             ),
             patch("haute.routes.pipeline.logger", mock_logger),
@@ -657,8 +672,10 @@ class TestLogOnError:
         mock_logger = MagicMock()
         graph = _minimal_source_graph()
         with (
+            # Route-scoped patch — see note in
+            # ``test_pipeline_trace_logs_error``.
             patch(
-                "haute.executor.execute_sink",
+                "haute.routes.pipeline.execute_sink",
                 side_effect=RuntimeError("real-sink-error"),
             ),
             patch("haute.routes.pipeline.logger", mock_logger),
@@ -1046,8 +1063,10 @@ class TestSensitiveInfoLeakage:
         from haute.server import app
 
         c = TestClient(app)
+        # Patch the route-scoped binding — ``list_pipelines`` imports
+        # ``parse_pipeline_file`` at module top after #101.
         with patch(
-            "haute.parser.parse_pipeline_file",
+            "haute.routes.pipeline.parse_pipeline_file",
             side_effect=RuntimeError(
                 f"SyntaxError in {tmp_path / 'bad_pipeline.py'}: invalid token"
             ),
@@ -1070,8 +1089,11 @@ class TestSensitiveInfoLeakage:
             "    in _collect\n"
             "RuntimeError: out of memory"
         )
+        # Patch the route-scoped ``execute_trace`` — after the
+        # function-local imports were hoisted to module top (#101),
+        # patching the source module is a no-op.
         with patch(
-            "haute.trace.execute_trace",
+            "haute.routes.pipeline.execute_trace",
             side_effect=RuntimeError(deep_error),
         ):
             resp = client.post(
@@ -1088,8 +1110,10 @@ class TestSensitiveInfoLeakage:
     def test_preview_traceback_string_no_leak(self, client: TestClient, pipeline_graph) -> None:
         """POST /api/pipeline/preview -- traceback-containing error must not leak."""
         node_id = pipeline_graph.nodes[0].id
+        # Same reasoning as ``test_trace_deep_exception_no_traceback_frames``:
+        # the route binds ``execute_graph`` at module import time.
         with patch(
-            "haute.executor.execute_graph",
+            "haute.routes.pipeline.execute_graph",
             side_effect=RuntimeError(
                 'File "/app/src/haute/executor.py", line 312, in _exec_user_code\n'
                 "  exec(exec_code, safe_globals(pl=pl), local_ns)\n"
@@ -1110,8 +1134,10 @@ class TestSensitiveInfoLeakage:
     def test_sink_cpython_error_no_leak(self, client: TestClient) -> None:
         """POST /api/pipeline/sink -- CPython info in error must not leak."""
         graph = _minimal_source_graph()
+        # Route-scoped patch — see note in
+        # ``test_pipeline_trace_500_no_leak``.
         with patch(
-            "haute.executor.execute_sink",
+            "haute.routes.pipeline.execute_sink",
             side_effect=RuntimeError(
                 "SystemError: CPython 3.11.5 (default, Sep 11 2023) "
                 "[GCC 12.2.0] on linux: frame object is garbage collected"
@@ -1269,7 +1295,9 @@ class TestUserCodeErrorSanitization:
             ),
         }
 
-        with patch("haute.executor.execute_graph", return_value=mock_results):
+        # Route-scoped patch — see note in
+        # ``test_pipeline_trace_500_no_leak``.
+        with patch("haute.routes.pipeline.execute_graph", return_value=mock_results):
             resp = client.post(
                 "/api/pipeline/preview",
                 json={"graph": graph, "node_id": "txn"},
@@ -1352,7 +1380,9 @@ class TestPreambleErrorSanitization:
             ),
         }
 
-        with patch("haute.executor.execute_graph", return_value=mock_results):
+        # Route-scoped patch — see note in
+        # ``test_pipeline_trace_500_no_leak``.
+        with patch("haute.routes.pipeline.execute_graph", return_value=mock_results):
             resp = client.post(
                 "/api/pipeline/preview",
                 json={"graph": graph, "node_id": "txn"},

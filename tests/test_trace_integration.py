@@ -345,7 +345,19 @@ class TestJoinTraceNullLeftJoin:
         preview_rows = results["join"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["key"] == 2)
 
-        result = execute_trace(graph, row_index=null_row_idx, target_node_id="join", column="val_b")
+        # Pass the executor's preview cache explicitly so the trace
+        # reuses the exact DataFrames ``execute_graph`` just populated
+        # — a cold re-execution would pick a different row ordering
+        # for non-deterministic polars joins.  Wave 9E (#104) removed
+        # the implicit reach-through that used to happen inside the
+        # trace module.
+        result = execute_trace(
+            graph,
+            row_index=null_row_idx,
+            target_node_id="join",
+            column="val_b",
+            preview=_preview_cache,
+        )
         assert result.output_value is None
 
 
@@ -2361,8 +2373,15 @@ class TestBurnCostExample:
         preview_rows = results["join_premiums"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["quote_id"] == 102)
 
+        # Pass the executor's preview cache so the trace correlates
+        # against the exact same join output ``execute_graph`` produced.
+        # See the matching note in ``test_trace_null_from_left_join``.
         result = execute_trace(
-            graph, row_index=null_row_idx, target_node_id="join_premiums", column="burn_cost"
+            graph,
+            row_index=null_row_idx,
+            target_node_id="join_premiums",
+            column="burn_cost",
+            preview=_preview_cache,
         )
         assert result.output_value is None
 
