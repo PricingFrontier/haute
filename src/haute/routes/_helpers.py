@@ -54,28 +54,54 @@ def pipeline_dir() -> Path:
 
     The result is cached for the lifetime of the process (the pipeline location
     won't change during a session).
+
+    A missing ``[project].pipeline`` key is a soft configuration omission:
+    we warn and fall back to cwd so a fresh project still works.  A
+    malformed ``haute.toml`` (decode error) or an I/O error, however, is
+    propagated as a ``ConfigError`` — silently returning cwd would
+    route every subsequent save / load at the wrong directory and
+    surface as confusing "file not found" errors far from the real
+    cause.  Programming bugs inside the ``dict.get(...)`` chain
+    (``AttributeError``, ``KeyError``) are deliberately NOT caught so
+    they surface as normal tracebacks during development.
     """
+    import tomllib
+
+    from haute.errors import ConfigError
+
     toml_path = Path.cwd() / "haute.toml"
     if not toml_path.exists():
         logger.error(
             "haute_toml_missing", cwd=str(Path.cwd()), hint="Run 'haute init' to create a project"
         )
         return Path.cwd().resolve()
-    try:
-        import tomllib
 
+    try:
         with open(toml_path, "rb") as f:
             data = tomllib.load(f)
-        configured: str | None = data.get("project", {}).get("pipeline")
-        if configured:
-            return (Path.cwd() / configured).resolve().parent
-        logger.warning(
-            "haute_toml_missing_pipeline",
+    except tomllib.TOMLDecodeError as exc:
+        logger.error("haute_toml_decode_failed", path=str(toml_path), error=str(exc))
+        raise ConfigError(
+            "haute.toml is malformed and could not be parsed",
             path=str(toml_path),
-            hint="Add [project].pipeline to haute.toml",
-        )
-    except Exception:
-        logger.error("haute_toml_read_failed", path=str(toml_path), exc_info=True)
+            error=str(exc),
+        ) from exc
+    except OSError as exc:
+        logger.error("haute_toml_read_failed", path=str(toml_path), error=str(exc))
+        raise ConfigError(
+            "haute.toml could not be read",
+            path=str(toml_path),
+            error=str(exc),
+        ) from exc
+
+    configured: str | None = data.get("project", {}).get("pipeline")
+    if configured:
+        return (Path.cwd() / configured).resolve().parent
+    logger.warning(
+        "haute_toml_missing_pipeline",
+        path=str(toml_path),
+        hint="Add [project].pipeline to haute.toml",
+    )
     return Path.cwd().resolve()
 
 

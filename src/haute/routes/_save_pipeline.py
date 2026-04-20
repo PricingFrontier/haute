@@ -29,7 +29,12 @@ from fastapi import HTTPException
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
 from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
-from haute.routes._helpers import mark_self_write, save_sidecar, validate_safe_path
+from haute.routes._helpers import (
+    invalidate_pipeline_index,
+    mark_self_write,
+    save_sidecar,
+    validate_safe_path,
+)
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
 logger = get_logger(component="server.pipeline.save")
@@ -127,6 +132,15 @@ class SavePipelineService:
         # for callers that wait on the cooldown rather than per-file
         # callbacks.  Item #7's per-rename callbacks fire inside Writer.
         mark_self_write()
+
+        # The file-watcher's ``_flush`` early-returns on ``is_self_write()``
+        # BEFORE it would otherwise invalidate the pipeline index, so a
+        # save that renames a pipeline (or adds/removes one) would leave
+        # ``_pipeline_index`` mapping the stale name → path.  The save
+        # path knows exactly when invalidation is required: right after
+        # all files land successfully.  Don't rely on the file-watcher
+        # to do it for us — self-writes skip the watcher on purpose.
+        invalidate_pipeline_index()
 
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),

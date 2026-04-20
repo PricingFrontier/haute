@@ -62,7 +62,7 @@ from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import (
     NODE_TYPE_TO_DECORATOR,
 )
-from haute.errors import ParseError
+from haute.errors import ConfigError, HauteError, ParseError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -108,19 +108,30 @@ def _format_contract_kwarg(node: GraphNode) -> str | None:
     Contract computation for some nodes (notably ``MODEL_SCORE``)
     loads an MLflow artifact to discover feature names — that load can
     fail at codegen time in disconnected environments or CI runs.  We
-    treat any failure as "opaque at codegen time" rather than
-    propagating: the purpose of the kwarg is documentation at the
-    source-file level, and the executor still re-computes + enforces
-    the contract at runtime from the actual model.  Forcing a running
-    MLflow server just to save a pipeline would be a regression.
+    treat *infrastructure* failures (MLflow unreachable, artifact
+    missing) as "opaque at codegen time" rather than propagating: the
+    purpose of the kwarg is documentation at the source-file level, and
+    the executor still re-computes + enforces the contract at runtime
+    from the actual model.  Forcing a running MLflow server just to
+    save a pipeline would be a regression.
+
+    Misconfiguration errors (``ConfigError``), however, MUST fail loud
+    at save time — emitting ``contract="opaque"`` for a node whose
+    ``sourceType="run"`` lacks a ``run_id`` would hide the real user
+    error inside a file that silently runs, then blow up at execution
+    far from the broken config.
     """
     config = node.data.config
     if config.get("instanceOf"):
         return None
     try:
         tup = get_column_contract(node.data.nodeType, config)
+    except ConfigError:
+        # Misconfiguration is a user bug, not an environmental one — let
+        # it propagate so save fails at the source of the mistake.
+        raise
     except Exception as exc:
-        logger.debug(
+        logger.warning(
             "contract_emit_opaque_on_error",
             node=node.data.label,
             node_type=str(node.data.nodeType),
@@ -181,8 +192,17 @@ def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
                 break
 
         if end_col is None:
-            logger.warning("contract_injection_failed", reason="no_closing_paren")
-            return code
+            # Reaching this branch means the decorator's argument list
+            # has no matching closing paren.  That's a codegen bug —
+            # the emitted file would be missing its contract kwarg and
+            # the downstream parser check would catch it much later
+            # with a confusing "contract mismatch" error.  Fail loud
+            # here so the real cause is obvious.
+            raise HauteError(
+                "contract injection failed: decorator argument list has no "
+                "matching closing paren — this is a codegen bug",
+                reason="no_closing_paren",
+            )
 
         target = lines[end_line]
         # Determine whether the decorator currently has any arguments so
@@ -205,8 +225,16 @@ def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
             result += "\n"
         return result
 
-    logger.warning("contract_injection_failed", reason="no_decorator")
-    return code
+    # Same reasoning as the no-closing-paren branch above: reaching
+    # this point means the generated code had no ``@pipeline.*`` or
+    # ``@submodel.*`` decorator at all.  Silently returning the code
+    # unchanged would emit a file with no contract kwarg and surface
+    # as an opaque downstream failure — raise instead.
+    raise HauteError(
+        "contract injection failed: no @pipeline.* or @submodel.* "
+        "decorator found in generated code — this is a codegen bug",
+        reason="no_decorator",
+    )
 
 
 def _node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str:
@@ -233,7 +261,16 @@ def _node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str
 
     contract_kwarg = _format_contract_kwarg(node)
     if contract_kwarg is not None:
-        code = _inject_contract_kwarg(code, contract_kwarg)
+        try:
+            code = _inject_contract_kwarg(code, contract_kwarg)
+        except HauteError as exc:
+            # Enrich the error with the offending node's identity so
+            # the saved-pipeline error message names exactly which node
+            # triggered the codegen bug, not just the shape of the bug.
+            exc.context.setdefault("node_id", node.id)
+            exc.context.setdefault("node_label", node.data.label)
+            exc.context.setdefault("node_type", str(node.data.nodeType))
+            raise
 
     return code
 

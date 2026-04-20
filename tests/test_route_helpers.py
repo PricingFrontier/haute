@@ -470,16 +470,27 @@ class TestPipelineDir:
         assert result == tmp_path.resolve()
         pipeline_dir.cache_clear()
 
-    def test_falls_back_when_toml_is_corrupt(self, tmp_path, monkeypatch):
-        """When haute.toml exists but is unreadable, falls back to cwd."""
+    def test_raises_config_error_when_toml_is_corrupt(self, tmp_path, monkeypatch):
+        """Malformed haute.toml raises ConfigError (changed in Phase 2 audit).
+
+        Previous behaviour silently fell back to cwd, which routed every
+        downstream save/load at the wrong directory and surfaced as
+        confusing "file not found" errors far from the real cause.
+        Narrowing the catch to ``TOMLDecodeError``/``OSError`` and re-
+        raising as ``ConfigError`` keeps the error close to its cause
+        so the user can fix the toml in one edit.
+        """
+        import pytest
+
+        from haute.errors import ConfigError
         from haute.routes._helpers import pipeline_dir
 
         pipeline_dir.cache_clear()
         monkeypatch.chdir(tmp_path)
         toml = tmp_path / "haute.toml"
         toml.write_text("not valid toml {{{}}}}")
-        result = pipeline_dir()
-        assert result == tmp_path.resolve()
+        with pytest.raises(ConfigError):
+            pipeline_dir()
         pipeline_dir.cache_clear()
 
 

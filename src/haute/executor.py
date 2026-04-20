@@ -35,6 +35,7 @@ from haute._builders import (  # noqa: F401 — re-exported for backward compat
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
+from haute._registry import ensure_registry_ready
 from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
 from haute.graph_utils import (
     HauteError,
@@ -50,6 +51,14 @@ from haute.graph_utils import (
 from haute.schemas import ColumnInfo, NodeResult, SchemaWarning, SinkResponse
 
 logger = get_logger(component="executor")
+
+# Validate the registry at executor-import time so every production code
+# path that executes a graph — preview, trace, deploy scoring, training,
+# the optimiser — trips the missing-builder check, not just the codegen
+# path.  ``ensure_registry_ready`` is idempotent: subsequent calls from
+# ``haute.codegen`` hit the ``sys.modules`` cache and the validator
+# short-circuits on an already-populated registry.
+ensure_registry_ready()
 
 # ── Default constants ─────────────────────────────────────────────
 _MAX_PREVIEW_ROWS = 10_000  # safety cap for execute_graph JSON payload

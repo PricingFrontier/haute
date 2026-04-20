@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from haute._logging import get_logger
+from haute.errors import ContractMismatchError
 from haute.graph_utils import PipelineGraph
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
@@ -195,6 +196,14 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
         )
     except HTTPException:
         raise
+    except ContractMismatchError as e:
+        # Contract mismatches carry the node id and the symmetric column
+        # diff in ``str(e)``.  Surface that directly (422 Unprocessable
+        # Entity) instead of collapsing it into the generic 500
+        # "check the logs" reply — the point of the contract error is
+        # that the user can fix the bad contract in one edit.
+        logger.warning("trace_contract_mismatch", error=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.error("trace_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
@@ -302,6 +311,19 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         )
     except HTTPException:
         raise
+    except ContractMismatchError as e:
+        # ``_execute_eager_core`` re-raises ``ContractMismatchError`` even
+        # with ``swallow_errors=True`` (API-level violation, not a per-node
+        # transient failure), so the preview path can receive one here.
+        # Surface the node + column diagnostic from ``str(e)`` via the
+        # target node's ``NodeResult.error`` — the frontend renders that
+        # field in-situ, which is a better UX than a generic 500 banner.
+        logger.warning("preview_contract_mismatch", error=str(e))
+        return PreviewNodeResponse(
+            node_id=body.node_id,
+            status="error",
+            error=str(e),
+        )
     except Exception as e:
         logger.error("preview_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
