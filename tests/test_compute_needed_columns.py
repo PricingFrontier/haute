@@ -678,14 +678,14 @@ def _build_realistic_200_node_graph() -> tuple[
     benchmark uses a dense bipartite "banding bank → aggregator bank"
     pattern where every aggregator has dozens of parents:
 
-        source ──► BANDINGS_PER_BANK multi-factor bandings (layer A)
+        source ──► bandings_per_bank multi-factor bandings (layer A)
                         │
-                        └─► AGGREGATORS_PER_BANK aggregators (each has all
-                        │       BANDINGS_PER_BANK parents — dense bipartite)
+                        └─► aggregators_per_bank aggregators (each has all
+                        │       bandings_per_bank parents — dense bipartite)
                         │         │
-                        │         └─► BANDINGS_PER_BANK bandings (layer B)
+                        │         └─► bandings_per_bank bandings (layer B)
                         │                   │
-                        │                   └─► AGGREGATORS_PER_BANK aggregators
+                        │                   └─► aggregators_per_bank aggregators
                         │                             │
                         │                             └─► chain of passthroughs
                         │                                      │
@@ -695,7 +695,7 @@ def _build_realistic_200_node_graph() -> tuple[
     two stages) the edge-to-node ratio is ≈ 7, so the baseline issues
     ≈ 7× more contract lookups than the forward pass.  BANDING
     contracts are built via set comprehension over
-    ``FACTORS_PER_BANDING`` factors so each call is expensive —
+    ``factors_per_banding`` factors so each call is expensive —
     contract cost dominates the raw set-arithmetic cost and the
     redundant lookups are where the time goes.
 
@@ -706,9 +706,9 @@ def _build_realistic_200_node_graph() -> tuple[
     short-circuit the backward pass to ``None``, trivially matching
     both algorithms and defeating the timing.
     """
-    BANDINGS_PER_BANK = 60  # fan-out per banding bank
-    AGGREGATORS_PER_BANK = 10  # fan-in bank — each sees 60 parents
-    FACTORS_PER_BANDING = 3  # kept small so accumulated-set sizes stay
+    bandings_per_bank = 60  # fan-out per banding bank
+    aggregators_per_bank = 10  # fan-in bank — each sees 60 parents
+    factors_per_banding = 3  # kept small so accumulated-set sizes stay
     # manageable — the benchmark's signal is contract-lookup cost, not
     # set-arithmetic throughput.
     nodes: list[GraphNode] = []
@@ -735,7 +735,7 @@ def _build_realistic_200_node_graph() -> tuple[
                     "column": f"{bank_id}_b{b}_c{fi}",
                     "outputColumn": f"{bank_id}_b{b}_o{fi}",
                 }
-                for fi in range(FACTORS_PER_BANDING)
+                for fi in range(factors_per_banding)
             ]
             bid = add(_banding(f"{bank_id}_b{b}", factors=factors), [parent_id])
             band_ids.append(bid)
@@ -753,10 +753,10 @@ def _build_realistic_200_node_graph() -> tuple[
     # Source
     src = add(_source("src"), [])
 
-    # Stage 1: BANDINGS_PER_BANK bandings → AGGREGATORS_PER_BANK
+    # Stage 1: bandings_per_bank bandings → aggregators_per_bank
     # aggregators (full bipartite — every aggregator sees every banding).
-    band_a_ids, band_a_outs = add_banding_bank("s1_a", src, BANDINGS_PER_BANK)
-    agg_a_ids = add_aggregator_bank("s1_agg", band_a_ids, AGGREGATORS_PER_BANK)
+    band_a_ids, band_a_outs = add_banding_bank("s1_a", src, bandings_per_bank)
+    agg_a_ids = add_aggregator_bank("s1_agg", band_a_ids, aggregators_per_bank)
 
     # Single merge collapsing the first aggregator bank so it has a
     # unique non-terminal downstream.  Without this, aggregators beyond
@@ -767,10 +767,8 @@ def _build_realistic_200_node_graph() -> tuple[
     merge_a = add(_passthrough("s1_merge"), agg_a_ids)
 
     # Stage 2: same shape again.
-    band_b_ids, band_b_outs = add_banding_bank(
-        "s2_b", merge_a, BANDINGS_PER_BANK
-    )
-    agg_b_ids = add_aggregator_bank("s2_agg", band_b_ids, AGGREGATORS_PER_BANK)
+    band_b_ids, band_b_outs = add_banding_bank("s2_b", merge_a, bandings_per_bank)
+    agg_b_ids = add_aggregator_bank("s2_agg", band_b_ids, aggregators_per_bank)
 
     # Single merge collapsing the second aggregator bank (same reason
     # as merge_a).
@@ -864,7 +862,7 @@ class TestForwardPassPerformance:
         # is sized so this never trips on real hardware.
         assert backward_t > 100e-6, (
             f"baseline run too fast to benchmark reliably: {backward_t * 1000:.3f}ms. "
-            "Increase BANDINGS_PER_BANK or AGGREGATORS_PER_BANK."
+            "Increase bandings_per_bank or aggregators_per_bank."
         )
 
         reduction = (backward_t - forward_t) / backward_t

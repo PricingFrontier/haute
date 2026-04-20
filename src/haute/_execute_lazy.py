@@ -209,19 +209,31 @@ def _compute_needed_columns(
     children_of: dict[str, list[str]],
     node_map: dict[str, GraphNode],
 ) -> dict[str, set[str] | None]:
-    """Backward pass: compute minimal columns needed from each node's output.
+    """Single reverse-topological sweep computing per-node column needs.
 
-    Walks the graph in reverse topological order.  For each node *n*,
-    ``needed[n]`` is the set of columns from *n*'s output that any
-    downstream consumer actually uses.  ``None`` means "all columns"
-    (cannot be determined — an opaque node is downstream).
+    For each node *n*, ``needed[n]`` is the set of columns from *n*'s
+    output that any downstream consumer actually uses.  ``None`` means
+    "all columns" (the requirement cannot be determined — an opaque
+    node is downstream, or an OUTPUT asks for everything).
 
-    Column contracts (which columns each node creates and reads) are
-    provided by the builder registry via ``get_column_contract``.  This
-    keeps the column knowledge colocated with the builder that defines
-    the node's runtime behaviour.
+    Each node also has a *contribution* — the set a parent must union
+    in for this node as a child, namely
+    ``(needed[n] - produced_n) | referenced_n``.  Contributions are
+    cached per node so a parent with fan-in ``k`` folds ``k``
+    pre-computed sets instead of re-running contract lookup and set
+    algebra ``k`` times.  This turns the pass from
+    ``O(edges × contract_lookups)`` into ``O(V + E)`` with one contract
+    lookup per node (review item #87).
+
+    Opaque contribution (``None``) from any child forces the parent's
+    ``needed`` to ``None`` as a short-circuit, matching the previous
+    backward-pass semantics byte-for-byte.
     """
     needed: dict[str, set[str] | None] = {}
+    # Per-node contribution to parents.  ``None`` means "parent must
+    # fall to None" — either this node is opaque or any of its
+    # descendants is.  Each entry is written exactly once per node.
+    contribution: dict[str, set[str] | None] = {}
 
     for nid in reversed(order):
         node = node_map[nid]
@@ -234,35 +246,37 @@ def _compute_needed_columns(
                 needed[nid] = set(fields) if fields else None
             else:
                 needed[nid] = None
+        else:
+            # Union of pre-computed child contributions.  Each
+            # contribution was set in this same loop when the child
+            # was visited (reverse topo order guarantees children are
+            # processed before parents).  A single ``None`` child
+            # contribution short-circuits the union to ``None``.
+            acc: set[str] | None = set()
+            for cid in children:
+                child_contrib = contribution.get(cid)
+                if child_contrib is None:
+                    acc = None
+                    break
+                acc |= child_contrib  # type: ignore[operator]
+            needed[nid] = acc
+
+        # Cache this node's contribution to its parents.  Computed
+        # once here; every parent that visits this node as a child
+        # reads the cached value instead of re-fetching the contract
+        # and re-doing the set algebra.
+        my_needed = needed[nid]
+        if my_needed is None:
+            contribution[nid] = None
             continue
-
-        # Union of what all children need from this node's output.
-        needed_by_children: set[str] | None = set()
-        for cid in children:
-            child_node = node_map[cid]
-            child_needed = needed.get(cid)
-
-            if child_needed is None:
-                # Child needs all columns → we need all columns.
-                needed_by_children = None
-                break
-
-            produced, referenced = get_column_contract(
-                child_node.data.nodeType,
-                child_node.data.config,
-            )
-
-            if produced is None or referenced is None:
-                # Opaque child — can't determine what it needs.
-                needed_by_children = None
-                break
-
-            # Child needs from this node: columns needed downstream
-            # (minus what child creates) plus columns child reads.
-            from_parent = (child_needed - produced) | referenced
-            needed_by_children |= from_parent  # type: ignore[operator]
-
-        needed[nid] = needed_by_children
+        produced, referenced = get_column_contract(
+            node.data.nodeType,
+            node.data.config,
+        )
+        if produced is None or referenced is None:
+            contribution[nid] = None
+        else:
+            contribution[nid] = (my_needed - produced) | referenced
 
     return needed
 
@@ -860,6 +874,19 @@ def _execute_eager_core(
     # keeps the contract-enforced path within the <5% budget.
     column_cache: dict[str, frozenset[str]] = {}
 
+    # Fan-out count per node — how many direct children consume this
+    # node's output.  Used to add a Polars ``.cache()`` hint when the
+    # parent feeds >1 consumer so the optimiser reuses one materialized
+    # plan across branches (diamond graphs) instead of duplicating the
+    # upstream work.  Each eager_outputs entry is already a concrete
+    # DataFrame, so the cache hint only matters once we re-enter a
+    # LazyFrame via ``.lazy()`` for the next node's inputs.
+    children_count: dict[str, int] = dict.fromkeys(order, 0)
+    for _nid, _pids in parents_of.items():
+        for _pid in _pids:
+            if _pid in children_count:
+                children_count[_pid] += 1
+
     for nid in order:
         fn, is_source = funcs[nid]
         node = node_map[nid]
@@ -892,11 +919,24 @@ def _execute_eager_core(
                 if failed_parents:
                     eager_outputs[nid] = None
                     continue
-                input_lfs = [
-                    df.lazy()
-                    for pid in input_ids
-                    if pid in eager_outputs and (df := eager_outputs[pid]) is not None
-                ]
+                # Add ``.cache()`` on parents that feed >1 consumer so a
+                # downstream ``.collect()`` re-uses the materialised plan
+                # across branches instead of duplicating upstream work.
+                # This is the diamond optimisation: src -> (left, right)
+                # -> sink should compute src's plan once, not twice.
+                # Parents with exactly one consumer skip the hint — it's
+                # cheap but non-zero overhead and adds no value there.
+                input_lfs = []
+                for pid in input_ids:
+                    if pid not in eager_outputs:
+                        continue
+                    parent_df = eager_outputs[pid]
+                    if parent_df is None:
+                        continue
+                    parent_lf = parent_df.lazy()
+                    if children_count.get(pid, 0) > 1:
+                        parent_lf = parent_lf.cache()
+                    input_lfs.append(parent_lf)
                 if not input_lfs:
                     raise ValueError(
                         f"No input data available for node '{nid}'",
