@@ -25,6 +25,25 @@
   /* Accent - clean blue */
   --accent: #3b82f6;
   --accent-soft: rgba(59,130,246,.12);
+  --accent-ring: rgba(59,130,246,.30);
+
+  /* Danger (destructive / remove / error states).  Used by menu-item--danger,
+     icon-danger-btn, node-close-btn.  Soft variant is the low-opacity
+     background for hover/focus; hover is the darker shade used when the
+     solid background should deepen on interaction. */
+  --danger: #ef4444;
+  --danger-hover: #b91c1c;
+  --danger-solid: #dc2626;
+  --danger-soft: rgba(239,68,68,.10);
+
+  /* Elevated-chip rest background (TracePanel "N hidden" chip, etc.).
+     Slightly brighter than transparent so the chip reads as distinct
+     from its container without dominating. */
+  --chip-rest: rgba(255,255,255,.03);
+
+  /* Filled-button hover-pressed state: used by .add-row-btn.  Slightly
+     brighter than --chrome-hover so the "pressed" feedback is visible. */
+  --chrome-active: #1d2230;
 
   /* GLM significance & chart colors */
   --signif-high: #22c55e;
@@ -285,12 +304,12 @@ html, body, #root {
    while keeping the red foreground.  Equal-specificity rules; later-
    in-source wins, which is why this block sits after .hover-chrome. */
 .menu-item--danger {
-  color: #ef4444;
+  color: var(--danger);
 }
 .menu-item--danger:hover,
 .menu-item--danger:focus-visible {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -324,18 +343,18 @@ html, body, #root {
 /* NodePanel close button — solid danger background with darker
    hover state (no inline style mutation on hover). */
 .node-close-btn {
-  background: #dc2626;
+  background: var(--danger-solid);
 }
 .node-close-btn:hover,
 .node-close-btn:focus-visible {
-  background: #b91c1c;
+  background: var(--danger-hover);
 }
 
 /* TracePanel "N pass-through nodes hidden" chip — rest background
    is the subtle dashed-chip colour (not transparent), hover flips
    to the shared bg-hover token. */
 .trace-hidden-toggle {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--chip-rest);
 }
 .trace-hidden-toggle:hover,
 .trace-hidden-toggle:focus-visible {
@@ -360,7 +379,7 @@ html, body, #root {
    default is the app's blue accent. */
 .focus-ring:focus-visible {
   outline: none;
-  border-color: var(--focus-ring-border, rgba(59, 130, 246, 0.3));
+  border-color: var(--focus-ring-border, var(--accent-ring));
   box-shadow: 0 0 0 2px var(--focus-ring-shadow, var(--accent-soft));
 }
 
@@ -435,7 +454,7 @@ html, body, #root {
 }
 .icon-danger-btn:hover,
 .icon-danger-btn:focus-visible {
-  color: #ef4444;
+  color: var(--danger);
 }
 
 /* "Add value" style fill-hover button — rests on chrome-hover,
@@ -447,7 +466,7 @@ html, body, #root {
 }
 .add-row-btn:hover,
 .add-row-btn:focus-visible {
-  background: var(--chrome-active, var(--bg-hover));
+  background: var(--chrome-active);
 }
 
 /* FeatureBrowser row (panels/modelling/FeatureBrowser.tsx) — the sidebar
