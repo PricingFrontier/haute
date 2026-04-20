@@ -29,8 +29,7 @@ export interface WaterfallErrorAlertProps {
  * error message here with `role="alert"` so screen readers announce it.
  */
 export const WaterfallErrorAlert: React.FC<WaterfallErrorAlertProps> = ({ error }) => {
-  const trimmed = error.trim()
-  const hasMessage = trimmed.length > 0
+  const hasMessage = error.trim().length > 0
   return (
     <div
       role="alert"
