@@ -6,7 +6,6 @@ import {
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
 import useToastStore from "../stores/useToastStore"
-import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
 import {
   getGitStatus,
   listGitBranches,
@@ -416,9 +415,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             ) : (
               <button
                 onClick={() => setCreating(true)}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-medium rounded-md transition-colors"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-medium rounded-md transition-colors hover:bg-[rgba(59,130,246,0.2)]"
                 style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
-                {...hoverBg("rgba(59,130,246,.2)", "var(--accent-soft)")}
               >
                 <Plus size={13} />
                 Start editing (create branch)
@@ -457,9 +455,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                 <button
                   onClick={handleSave}
                   disabled={loading}
-                  className="w-full px-3 py-2 text-[12px] font-medium rounded-md transition-colors disabled:opacity-40"
+                  className="w-full px-3 py-2 text-[12px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
                   style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-                  {...hoverBg("var(--bg-hover)", "var(--bg-input)")}
                 >
                   Save progress
                 </button>
@@ -467,9 +464,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               <button
                 onClick={handleSubmit}
                 disabled={loading}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold text-white rounded-md transition-colors disabled:opacity-40"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold text-white rounded-md transition-colors disabled:opacity-40 hover:bg-[#60a5fa]"
                 style={{ background: 'var(--accent)' }}
-                {...hoverBg("#60a5fa", "var(--accent)")}
               >
                 <ExternalLink size={12} />
                 Submit for review
@@ -488,9 +484,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                 <button
                   onClick={handlePull}
                   disabled={loading}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors disabled:opacity-40"
+                  className="w-full flex items-center justify-center gap-2 px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
                   style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-                  {...hoverBg("var(--bg-hover)", "var(--bg-input)")}
                 >
                   <ArrowDownToLine size={12} />
                   Pull latest
@@ -502,10 +497,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             <div className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
               <button
                 onClick={() => setView(view === "history" ? "main" : "history")}
-                className="flex items-center gap-2 text-[12px] font-medium transition-colors"
+                className="flex items-center gap-2 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
                 style={{ color: view === "history" ? 'var(--accent)' : 'var(--text-secondary)' }}
-                onMouseEnter={(e) => e.currentTarget.style.color = 'var(--accent)'}
-                onMouseLeave={(e) => e.currentTarget.style.color = view === "history" ? 'var(--accent)' : 'var(--text-secondary)'}
               >
                 <Clock size={12} />
                 {view === "history" ? "Hide version history" : "Version history"}
@@ -529,9 +522,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         </div>
                         <button
                           onClick={() => setConfirmAction({ type: "revert", target: entry.sha, label: entry.message })}
-                          className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                          className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity shrink-0 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)]"
                           style={{ color: 'var(--text-muted)' }}
-                          {...hoverHandlers("var(--bg-hover)", "var(--accent)", "transparent", "var(--text-muted)")}
                           title="Revert to this version"
                         >
                           <RotateCcw size={12} />
@@ -548,9 +540,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               <button
                 onClick={() => setConfirmAction({ type: "archive", target: currentBranch, label: currentBranch.split("/").pop() ?? currentBranch })}
                 disabled={loading}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40"
+                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
                 style={{ color: 'var(--text-muted)' }}
-                {...hoverHandlers("var(--bg-hover)", "var(--text-secondary)", "transparent", "var(--text-muted)")}
               >
                 <Archive size={11} />
                 Archive
@@ -558,9 +549,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               <button
                 onClick={() => setConfirmAction({ type: "delete", target: currentBranch, label: currentBranch.split("/").pop() ?? currentBranch })}
                 disabled={loading}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40"
+                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[rgba(239,68,68,0.1)] hover:text-[#ef4444]"
                 style={{ color: 'var(--text-muted)' }}
-                {...hoverHandlers("rgba(239,68,68,.1)", "#ef4444", "transparent", "var(--text-muted)")}
               >
                 <Trash2 size={11} />
                 Delete
@@ -590,8 +580,6 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 // Branch list item
 // ---------------------------------------------------------------------------
 
-const branchHover = hoverBg("var(--bg-hover)")
-
 function BranchItem({
   branch,
   currentBranch,
@@ -609,13 +597,11 @@ function BranchItem({
   return (
     <button
       onClick={() => { if (!isCurrent) onSwitch(branch.name) }}
-      className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors"
+      className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isCurrent ? "" : "hover:bg-[var(--bg-hover)]"}`}
       style={{
         color: isCurrent ? 'var(--accent)' : 'var(--text-secondary)',
         background: isCurrent ? 'var(--accent-soft)' : 'transparent',
       }}
-      onMouseEnter={(e) => { if (!isCurrent) branchHover.onMouseEnter(e) }}
-      onMouseLeave={(e) => { if (!isCurrent) branchHover.onMouseLeave(e) }}
     >
       <GitBranch size={11} style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
       <span className="flex-1 truncate">{displayName}</span>

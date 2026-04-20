@@ -146,10 +146,8 @@ export function FeatureAndAlgorithmConfig({
                       <span className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>not found</span>
                       <button
                         onClick={() => removeExclude(name)}
-                        className="p-0.5 rounded transition-colors shrink-0"
+                        className="p-0.5 rounded transition-colors shrink-0 hover:text-[#ef4444]"
                         style={{ color: "var(--text-muted)" }}
-                        onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444" }}
-                        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)" }}
                         title={`Remove "${name}" from exclude list`}
                       >
                         <X size={12} />

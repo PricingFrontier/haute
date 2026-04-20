@@ -1,5 +1,4 @@
 import ModalShell from "./ModalShell"
-import { hoverBg } from "../utils/hoverHandlers"
 
 const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent)
 const mod = isMac ? "\u2318" : "Ctrl"
@@ -25,9 +24,8 @@ export default function KeyboardShortcuts({ onClose }: { onClose: () => void }) 
         <button
           onClick={onClose}
           aria-label="Close keyboard shortcuts"
-          className="p-1 rounded transition-colors"
+          className="p-1 rounded transition-colors hover-bg"
           style={{ color: "var(--text-muted)" }}
-          {...hoverBg("var(--bg-hover)")}
         >
           ✕
         </button>

@@ -5,11 +5,6 @@ import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import useSettingsStore from "../stores/useSettingsStore"
 import useClickOutside from "../hooks/useClickOutside"
-import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
-
-const bgHover = hoverBg("var(--chrome-hover)")
-const accentBtnHover = hoverHandlers("#60a5fa", "", "var(--accent)", "")
-const greenBtnHover = hoverHandlers("#4ade80", "", "#22c55e", "")
 
 function formatTiming(ms: number): string {
   return ms < 1000 ? `${ms.toFixed(1)}ms` : `${(ms / 1000).toFixed(2)}s`
@@ -144,31 +139,31 @@ export default function Toolbar({
             style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
           >
             <div className="py-1">
-              {sources.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => { setActiveSource(s); setSourceOpen(false) }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors"
-                  style={{
-                    color: s === activeSource ? 'var(--accent)' : 'var(--text-secondary)',
-                    background: s === activeSource ? 'var(--accent-soft)' : 'transparent',
-                  }}
-                  onMouseEnter={(e) => { if (s !== activeSource) bgHover.onMouseEnter(e) }}
-                  onMouseLeave={(e) => { if (s !== activeSource) bgHover.onMouseLeave(e) }}
-                >
-                  {s === "live"
-                    ? <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-                    : <span className="w-1.5 shrink-0" />}
-                  {s}
-                </button>
-              ))}
+              {sources.map((s) => {
+                const isActive = s === activeSource
+                return (
+                  <button
+                    key={s}
+                    onClick={() => { setActiveSource(s); setSourceOpen(false) }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isActive ? "" : "hover:bg-[var(--chrome-hover)]"}`}
+                    style={{
+                      color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                      background: isActive ? 'var(--accent-soft)' : 'transparent',
+                    }}
+                  >
+                    {s === "live"
+                      ? <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                      : <span className="w-1.5 shrink-0" />}
+                    {s}
+                  </button>
+                )
+              })}
             </div>
             <div className="py-1" style={{ borderTop: '1px solid var(--border)' }}>
               <button
                 onClick={() => { setAddingSource(true); setSourceOpen(false) }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)] hover:text-[var(--text-secondary)]"
                 style={{ color: 'var(--text-muted)' }}
-                {...hoverHandlers("var(--chrome-hover)", "var(--text-secondary)", "transparent", "var(--text-muted)")}
               >
                 <Plus size={12} />
                 Add source
@@ -176,9 +171,8 @@ export default function Toolbar({
               {activeSource !== "live" && (
                 <button
                   onClick={() => { removeSource(activeSource); setSourceOpen(false) }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[rgba(239,68,68,0.1)]"
                   style={{ color: '#ef4444' }}
-                  {...hoverBg("rgba(239,68,68,.1)")}
                 >
                   <Trash2 size={12} />
                   Remove "{activeSource}"
@@ -288,18 +282,16 @@ export default function Toolbar({
         </button>
         <button
           onClick={onSave}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors"
+          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[#60a5fa]"
           style={{ background: 'var(--accent)' }}
-          {...accentBtnHover}
           title="Ctrl+S"
         >
           Save
         </button>
         <button
           onClick={onOpenGit}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1"
+          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1 hover:bg-[#4ade80]"
           style={{ background: '#22c55e' }}
-          {...greenBtnHover}
           title="Git — branch management and version control"
         >
           <GitFork size={13} />

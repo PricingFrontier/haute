@@ -4,7 +4,6 @@ import { CodeEditor } from "./editors"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
 import useToastStore from "../stores/useToastStore"
-import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
 import {
   ApiError,
   listUtilityFiles,
@@ -14,8 +13,6 @@ import {
   deleteUtilityFile,
 } from "../api/client"
 import type { UtilityFile } from "../api/client"
-
-const fileHover = hoverBg("var(--bg-hover)")
 
 /**
  * Extract syntax error info from an ApiError's flat string detail.
@@ -215,30 +212,30 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
               {dropdownOpen && files.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 rounded-lg shadow-2xl z-50 overflow-hidden" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
                   <div className="py-1">
-                    {files.map((f) => (
-                      <button
-                        key={f.module}
-                        onClick={() => { setDropdownOpen(false); if (f.module !== activeModule) loadFile(f.module) }}
-                        className="w-full flex items-center px-3 py-1.5 text-[12px] font-mono text-left transition-colors"
-                        style={{
-                          color: f.module === activeModule ? 'var(--accent)' : 'var(--text-secondary)',
-                          background: f.module === activeModule ? 'var(--accent-soft)' : 'transparent',
-                        }}
-                        onMouseEnter={(e) => { if (f.module !== activeModule) fileHover.onMouseEnter(e) }}
-                        onMouseLeave={(e) => { if (f.module !== activeModule) fileHover.onMouseLeave(e) }}
-                      >
-                        {f.module}
-                      </button>
-                    ))}
+                    {files.map((f) => {
+                      const isActive = f.module === activeModule
+                      return (
+                        <button
+                          key={f.module}
+                          onClick={() => { setDropdownOpen(false); if (!isActive) loadFile(f.module) }}
+                          className={`w-full flex items-center px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isActive ? "" : "hover:bg-[var(--bg-hover)]"}`}
+                          style={{
+                            color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                            background: isActive ? 'var(--accent-soft)' : 'transparent',
+                          }}
+                        >
+                          {f.module}
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
               )}
             </div>
             <button
               onClick={() => setCreating(true)}
-              className="p-1.5 rounded-md transition-colors"
+              className="p-1.5 rounded-md transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--accent)]"
               style={{ color: 'var(--text-muted)' }}
-              {...hoverHandlers("var(--bg-hover)", "var(--accent)", "transparent", "var(--text-muted)")}
               title="New utility file"
             >
               <Plus size={14} />
@@ -246,9 +243,8 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
             {activeModule && (
               <button
                 onClick={handleDelete}
-                className="p-1.5 rounded-md transition-colors"
+                className="p-1.5 rounded-md transition-colors hover:bg-[rgba(239,68,68,0.1)] hover:text-[#ef4444]"
                 style={{ color: 'var(--text-muted)' }}
-                {...hoverHandlers("rgba(239,68,68,.1)", "#ef4444", "transparent", "var(--text-muted)")}
                 title={`Delete ${activeModule}`}
               >
                 <Trash2 size={14} />
@@ -283,9 +279,8 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
                 <p>No utility files yet.</p>
                 <button
                   onClick={() => setCreating(true)}
-                  className="mt-2 px-3 py-1 text-[12px] font-medium rounded-md transition-colors"
+                  className="mt-2 px-3 py-1 text-[12px] font-medium rounded-md transition-colors hover:bg-[rgba(59,130,246,0.2)]"
                   style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
-                  {...hoverBg("rgba(59,130,246,.2)", "var(--accent-soft)")}
                 >
                   Create one
                 </button>

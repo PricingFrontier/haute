@@ -61,13 +61,11 @@ export function FeatureBrowser({ features, selected, onSelect, width = 180 }: Fe
             <button
               key={f.feature}
               onClick={() => onSelect(f.feature)}
-              className="w-full text-left px-2 py-1 flex items-center gap-1.5 transition-colors"
+              className={`w-full text-left px-2 py-1 flex items-center gap-1.5 transition-colors ${isSelected ? "" : "hover:bg-[var(--chrome-hover)]"}`}
               style={{
                 background: isSelected ? "var(--accent-soft)" : "transparent",
                 borderLeft: isSelected ? "2px solid var(--accent)" : "2px solid transparent",
               }}
-              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "var(--chrome-hover)" }}
-              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent" }}
             >
               <div className="flex-1 min-w-0">
                 <div

@@ -1,5 +1,4 @@
 import ModalShell from "./ModalShell"
-import { hoverBg } from "../utils/hoverHandlers"
 
 interface SubmodelDialogProps {
   nodeCount: number
@@ -47,9 +46,8 @@ export default function SubmodelDialog({ nodeCount, onClose, onSubmit }: Submode
           </button>
           <button
             type="submit"
-            className="px-4 py-1.5 text-[12px] font-semibold text-white rounded-md transition-colors"
+            className="px-4 py-1.5 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[#94a3b8]"
             style={{ background: '#64748b' }}
-            {...hoverBg('#94a3b8', '#64748b')}
           >
             Create
           </button>

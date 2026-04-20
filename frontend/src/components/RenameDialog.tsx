@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react"
 import ModalShell from "./ModalShell"
-import { hoverBg } from "../utils/hoverHandlers"
 
 interface RenameDialogProps {
   defaultValue: string
@@ -128,9 +127,8 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
           <button
             type="submit"
             disabled={!canSubmit}
-            className="px-4 py-1.5 text-[12px] font-semibold text-white rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 text-[12px] font-semibold text-white rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#94a3b8] disabled:hover:bg-[#64748b]"
             style={{ background: "#64748b" }}
-            {...hoverBg("#94a3b8", "#64748b")}
           >
             Rename
           </button>
