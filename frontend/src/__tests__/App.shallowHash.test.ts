@@ -385,7 +385,6 @@ describe("shallowNodeHash — benchmark", () => {
     const shallowElapsed = performance.now() - startShallow
 
     // Pin the benchmark result so the CI log captures the ratio.
-    // eslint-disable-next-line no-console
     console.log(
       `shallowHash benchmark: full=${fullElapsed.toFixed(1)}ms shallow=${shallowElapsed.toFixed(1)}ms ratio=${(fullElapsed / Math.max(shallowElapsed, 0.01)).toFixed(1)}x`
     )

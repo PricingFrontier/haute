@@ -50,6 +50,7 @@ import useUIStore from "./stores/useUIStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
+import { shallowNodeDataHash } from "./utils/shallowNodeHash"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
@@ -185,11 +186,18 @@ function FlowEditor() {
 
   // Keep graphRef in sync so callbacks never see stale state.
   // Only bump graphVersion for structural changes (add/remove/data), not position-only drags.
+  //
+  // We hash only the input-identity keys (see shallowNodeDataHash) so that
+  // preview-populated result fields like _columns do not cause the fingerprint
+  // to change — including them would invalidate the preview cache on every
+  // preview completion, defeating the cache entirely.
   const prevStructureRef = useRef<string>("")
   useEffect(() => {
     graphRef.current = { nodes, edges }
-    // Build a fingerprint that ignores position — includes node ids, data, and edge list
-    const nodeFingerprint = nodes.map((n) => `${n.id}:${JSON.stringify(n.data)}`).join("|")
+    // Build a fingerprint that ignores position and result-only data keys.
+    const nodeFingerprint = nodes
+      .map((n) => `${n.id}:${shallowNodeDataHash(n.data as Record<string, unknown>)}`)
+      .join("|")
     const edgeFingerprint = edges.map((e) => `${e.id}:${e.source}:${e.target}`).join("|")
     const fingerprint = `${nodeFingerprint}||${edgeFingerprint}`
     if (fingerprint !== prevStructureRef.current) {

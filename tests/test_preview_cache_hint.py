@@ -155,9 +155,7 @@ class TestDiamondSourceReadOnce:
         with patch("haute._builders.read_source", side_effect=counting_read):
             results = execute_graph(graph, target_node_id="sink")
 
-        assert results["sink"].status == "ok", (
-            f"sink failed: {results['sink'].error!r}"
-        )
+        assert results["sink"].status == "ok", f"sink failed: {results['sink'].error!r}"
         assert call_count[0] == 1, (
             f"expected read_source called exactly once for the diamond, "
             f"got {call_count[0]}.  Branches re-read the source — "
@@ -194,8 +192,7 @@ class TestDiamondSourceReadOnce:
 
         assert first == 1, f"first preview should read once, got {first}"
         assert second_delta == 0, (
-            f"second preview reused cache and should NOT read again, "
-            f"got {second_delta} new reads."
+            f"second preview reused cache and should NOT read again, got {second_delta} new reads."
         )
 
     def test_wide_fan_out_source_read_once(self, tmp_path):
@@ -234,9 +231,7 @@ class TestDiamondSourceReadOnce:
         # Every branch that's reachable from the sink (b0, b1) plus
         # the sink and the source all execute.  But the SOURCE read
         # fires once total.
-        assert call_count[0] == 1, (
-            f"expected 1 source read for 4-way fan-out, got {call_count[0]}"
-        )
+        assert call_count[0] == 1, f"expected 1 source read for 4-way fan-out, got {call_count[0]}"
         assert results["sink"].status == "ok"
 
 
@@ -427,12 +422,9 @@ class TestMemoryNeutralOnRealisticGraph:
         max_peak = max(peaks)
         min_peak = min(peaks)
         drift_ratio = max_peak / max(min_peak, 1)
-        print(
-            f"\nmemory_reproducibility peaks={peaks} drift_ratio={drift_ratio:.2f}x"
-        )
+        print(f"\nmemory_reproducibility peaks={peaks} drift_ratio={drift_ratio:.2f}x")
         assert drift_ratio < 2.0, (
-            f"peak memory drift between two runs: {peaks} "
-            f"(drift_ratio={drift_ratio:.2f}x)"
+            f"peak memory drift between two runs: {peaks} (drift_ratio={drift_ratio:.2f}x)"
         )
 
     def test_memory_benchmark_regression_bound(self, tmp_path):
