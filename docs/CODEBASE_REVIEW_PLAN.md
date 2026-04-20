@@ -109,6 +109,7 @@ On rejection, record the reasoning in the rejected-findings log. A rejected find
 | 5 | P2 consistency / UX | 32 items (#101–#132) | — |
 | 6 | P3 stdlib / polish | 12 items (#133–#144) | — |
 | 7 | Missing test scenarios | 12 items (#145–#156) | Woven through phases 1–6 |
+| 8 | Deferred Phase 2 polish | 4 items (#157–#160) | Phases 4, 5 |
 
 ---
 
@@ -421,6 +422,28 @@ Each test scenario gets a pair. Attaches to whichever phase first makes the scen
 
 ---
 
+## 12b. Phase 8 — Deferred Phase 2 polish
+
+Four residual items from the Phase 2 audit that were judged non-blocking at
+review time but worth closing out before the codebase sits long.  Added here
+(rather than retroactively into Phase 2) so Phase 2's completion stays
+auditable and these items get their own scoped review.  Each is independent
+and can run in parallel; the parser-shim item needs the largest test migration
+(~30 files).
+
+| # | Item | Dev | Reviewer gate |
+|---|---|---|---|
+| 157 | `_parser_helpers.py` shim trampolines — `_config_builder._warn_unrecognized_config_keys` / `_load_node_config` are late-bound through the shim solely so ~30 test files' `patch("haute._parser_helpers.X")` sites keep working.  Production code is load-bearing for tests. | Migrate the ~30 `patch("haute._parser_helpers.<name>")` sites to patch at the real home (`haute._config_builder`, `haute._config_validation`, etc.).  Delete the late-binding trampolines in `_config_builder.py`.  Shrink the `_parser_helpers.py` shim to only the genuinely re-exported names.  | Did the patch-site count drop to zero?  Do all migrated tests still pin what they claim to pin (same assertions, different patch target)?  Is the shim smaller, or did something else grow in its place? |
+| 158 | `_builders.py` → `haute.executor._exec_user_code` layering inversion — `_builders.py:413, 501, 674, 899` use lazy in-function `from haute.executor import _exec_user_code` to paper over an import cycle.  The dependency violates the declared layering (`_builders` is lower-level than `executor`). | Move `_exec_user_code` to a dedicated `src/haute/_user_exec.py` module.  Both `_builders.py` and `executor.py` import it at top level.  Delete the four lazy-import bodies. | Does `_user_exec.py` own a cohesive concern (user-code execution + error enrichment), or is it just a parking spot?  Any new cycle introduced?  Does the traceback for a user-code error still name `_exec_user_code` clearly? |
+| 159 | `useConfigEstimate` + `useConfigStaleness` merge — both hooks are always called together in `ModellingConfig.tsx` and `OptimiserConfig.tsx`, and consumers must manually pass the same `configHash` to both.  The coupling is implicit today. | Merge into a single `useStaleConfigEstimate(config, cachedResult, endpoint, ...)` hook that owns both the hash and the fetch.  Delete the two old hooks + their tests; write focused tests on the merged hook. | Does the merged hook expose the same control surface (loading / error / estimate) as the pair?  Is any consumer forced to call the old split-hook pattern?  Any regression in re-render count? |
+| 160 | Split `WaterfallErrorAlert` out of `WaterfallChart.tsx` — `WaterfallChart.tsx` houses both the chart (150 LoC) and the independent `WaterfallErrorAlert` component (31 LoC).  The alert is reusable; keeping it co-located blocks sharing with `CalculationHero.tsx`'s inline alert (which styles identically but lives independently). | Extract `WaterfallErrorAlert` into `frontend/src/trace/WaterfallErrorAlert.tsx`.  Import from `WaterfallChart.tsx` and `CalculationHero.tsx` (replacing its inline alert for DRY). | Is the alert component genuinely generic (no waterfall-specific assumptions)?  Does the DRY'd `CalculationHero` path still render the same a11y role + message copy?  Was a wider "generic error alert" helper considered? |
+
+**Phase 8 gate:** a single reviewer audits that none of the four items
+introduced new seams where they were supposed to remove them (e.g. #157's
+trampoline-free shim must not reappear as a different abstraction).
+
+---
+
 ## 13. Items to debate before starting (reject candidates)
 
 These items are legitimately real but the reviewer may conclude the right answer is "don't do this." Discuss with the user before dev agents start:
@@ -455,7 +478,7 @@ Phase gates are tracked as separate checklist items — cannot be ticked until e
 
 ## 15. Summary
 
-- **168 items** (156 findings + 12 tests), **7 foundation tasks**, **two-agent pair per item**, **phase-level review** after each phase.
+- **172 items** (156 findings + 12 tests + 4 Phase-8 deferred), **7 foundation tasks**, **two-agent pair per item**, **phase-level review** after each phase.
 - Reviewer is a **gate**: rejects changes that don't improve the codebase, not just ones that have bugs.
 - **Foundation first** (shared helpers), then **fix P0**, then **architecture P1**, then **perf P1**, then **frontend style sweep** (parallel), then **consistency P2**, then **polish P3**. Tests weave through.
 - **All 10 reject-candidate items resolved** — no items blocking phase start.
@@ -472,6 +495,7 @@ Estimated effort, ballpark:
 | 5 | 32 | 8–10 days |
 | 6 | 12 | 4–6 days |
 | 7 | 12 | Woven (effort counted in host phase) |
-| **Total** | **168** | **~45–60 days** of agent work, with significant parallelism available |
+| 8 | 4 | 2–3 days |
+| **Total** | **172** | **~45–60 days** of agent work, with significant parallelism available |
 
 With 4–6 agent pairs working in parallel, real calendar time is materially shorter.
