@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-from haute.cli._helpers import resolve_transport
+from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
 
 
 @dataclass
@@ -92,7 +92,7 @@ def handle_smoke(config: SmokeConfig) -> None:
 @click.option(
     "--endpoint-suffix",
     default=None,
-    help='Suffix appended to endpoint name (e.g. "-staging").',
+    help=ENDPOINT_SUFFIX_HELP,
 )
 def smoke(endpoint_suffix: str | None) -> None:
     """Score test quotes against a live serving endpoint.

@@ -15,7 +15,7 @@ from pathlib import Path
 import click
 
 from haute._project import get_project_root
-from haute.cli._helpers import resolve_transport
+from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
 
 
 @dataclass
@@ -177,11 +177,6 @@ def handle_impact(config: ImpactConfig) -> None:
 
 @click.command()
 @click.option(
-    "--endpoint-suffix",
-    default=None,
-    help='Suffix identifying the staging endpoint (e.g. "-staging").',
-)
-@click.option(
     "--sample",
     default=10000,
     type=int,
@@ -192,6 +187,11 @@ def handle_impact(config: ImpactConfig) -> None:
     default=500,
     type=click.IntRange(min=1),
     help="Rows per endpoint request. Default: 500.",
+)
+@click.option(
+    "--endpoint-suffix",
+    default=None,
+    help=ENDPOINT_SUFFIX_HELP,
 )
 def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
     """Compare staging vs production endpoint predictions.

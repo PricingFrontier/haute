@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 
 from haute._project import resolve_pipeline_file
+from haute.cli._helpers import ENDPOINT_SUFFIX_HELP
 
 # Map of provider-name → env var set by that provider when a job is running.
 # Each provider is recognised explicitly so detection is obvious to anyone
@@ -212,12 +213,12 @@ def handle_deploy(config: DeployCliConfig) -> None:
 @click.command()
 @click.argument("pipeline_file", required=False)
 @click.option("--model-name", default=None, help="Override model name from haute.toml.")
+@click.option("--dry-run", is_flag=True, help="Validate and score test quotes without deploying.")
 @click.option(
     "--endpoint-suffix",
     default=None,
-    help='Suffix appended to endpoint name (e.g. "-staging").',
+    help=ENDPOINT_SUFFIX_HELP,
 )
-@click.option("--dry-run", is_flag=True, help="Validate and score test quotes without deploying.")
 def deploy(
     pipeline_file: str | None,
     model_name: str | None,

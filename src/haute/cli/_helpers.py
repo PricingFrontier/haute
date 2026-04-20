@@ -30,6 +30,19 @@ logger = get_logger(component="cli")
 
 
 # ---------------------------------------------------------------------------
+# Shared Click option help strings
+# ---------------------------------------------------------------------------
+#
+# A single source of truth for option help that appears on more than one
+# command — without this the wording drifts over time and tooling that
+# parses ``--help`` output has to special-case each command.
+#
+# Any command that accepts ``--endpoint-suffix`` MUST use this constant.
+
+ENDPOINT_SUFFIX_HELP = 'Suffix appended to endpoint name (e.g. "-staging").'
+
+
+# ---------------------------------------------------------------------------
 # Model name resolution — CLI > haute.toml > error
 # ---------------------------------------------------------------------------
 
