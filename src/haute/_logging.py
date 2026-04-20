@@ -1,5 +1,20 @@
 """Structured logging configuration for Haute.
 
+Logging convention (keep this split consistent across the codebase):
+
+* Server / internal code uses **structlog** via :func:`get_logger`.
+  Structured key-value events are machine-parseable, request-scoped, and
+  configured centrally by :func:`configure_logging`.
+* CLI user-facing output uses **click.echo** (and ``click.secho``) — and
+  lives only under ``src/haute/cli/``.  Plain ``print(...)`` is banned
+  anywhere in ``src/haute/``; the test suite enforces this via AST
+  walks.
+
+In short: if the caller is the server, a route handler, or any internal
+module, import ``get_logger`` from this module; if the caller is the CLI
+and the message is meant for a human reading the terminal, use
+``click.echo``.
+
 Dev mode (default):  colored console output, human-readable.
 Prod mode (HAUTE_LOG_FORMAT=json):  JSON lines to stdout for log aggregators.
 
