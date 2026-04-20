@@ -109,7 +109,7 @@ On rejection, record the reasoning in the rejected-findings log. A rejected find
 | 5 | P2 consistency / UX | 32 items (#101–#132) | — |
 | 6 | P3 stdlib / polish | 12 items (#133–#144) | — |
 | 7 | Missing test scenarios | 12 items (#145–#156) | Woven through phases 1–6 |
-| 8 | Deferred Phase 2 polish | 4 items (#157–#160) | Phases 4, 5 |
+| 8 | Deferred polish (Phases 2, 3, 4) | 7 items (#157–#163) | Phases 4, 5 |
 
 ---
 
@@ -424,12 +424,15 @@ Each test scenario gets a pair. Attaches to whichever phase first makes the scen
 
 ## 12b. Phase 8 — Deferred Phase 2 polish
 
-Four residual items from the Phase 2 audit that were judged non-blocking at
-review time but worth closing out before the codebase sits long.  Added here
-(rather than retroactively into Phase 2) so Phase 2's completion stays
-auditable and these items get their own scoped review.  Each is independent
-and can run in parallel; the parser-shim item needs the largest test migration
-(~30 files).
+Residual non-blocking items from the Phase 2, 3, and 4 audits that were
+judged worth closing out but would have churned their respective phase's
+completion record.  Added here (rather than retroactively into the host
+phase) so each phase's completion stays auditable and these items get their
+own scoped review.  #157–#160 came from Phase 2; #161 came from Phase 3
+Wave 7E; #162–#163 came from Phase 4 and Phase 3 fail-loud audits.  Each
+is independent and can run in parallel; the parser-shim item (#157) needs
+the largest test migration (~30 files), and the `graphVersion` item (#161)
+is the most invasive store refactor.
 
 | # | Item | Dev | Reviewer gate |
 |---|---|---|---|
@@ -437,10 +440,15 @@ and can run in parallel; the parser-shim item needs the largest test migration
 | 158 | `_builders.py` → `haute.executor._exec_user_code` layering inversion — `_builders.py:413, 501, 674, 899` use lazy in-function `from haute.executor import _exec_user_code` to paper over an import cycle.  The dependency violates the declared layering (`_builders` is lower-level than `executor`). | Move `_exec_user_code` to a dedicated `src/haute/_user_exec.py` module.  Both `_builders.py` and `executor.py` import it at top level.  Delete the four lazy-import bodies. | Does `_user_exec.py` own a cohesive concern (user-code execution + error enrichment), or is it just a parking spot?  Any new cycle introduced?  Does the traceback for a user-code error still name `_exec_user_code` clearly? |
 | 159 | `useConfigEstimate` + `useConfigStaleness` merge — both hooks are always called together in `ModellingConfig.tsx` and `OptimiserConfig.tsx`, and consumers must manually pass the same `configHash` to both.  The coupling is implicit today. | Merge into a single `useStaleConfigEstimate(config, cachedResult, endpoint, ...)` hook that owns both the hash and the fetch.  Delete the two old hooks + their tests; write focused tests on the merged hook. | Does the merged hook expose the same control surface (loading / error / estimate) as the pair?  Is any consumer forced to call the old split-hook pattern?  Any regression in re-render count? |
 | 160 | Split `WaterfallErrorAlert` out of `WaterfallChart.tsx` — `WaterfallChart.tsx` houses both the chart (150 LoC) and the independent `WaterfallErrorAlert` component (31 LoC).  The alert is reusable; keeping it co-located blocks sharing with `CalculationHero.tsx`'s inline alert (which styles identically but lives independently). | Extract `WaterfallErrorAlert` into `frontend/src/trace/WaterfallErrorAlert.tsx`.  Import from `WaterfallChart.tsx` and `CalculationHero.tsx` (replacing its inline alert for DRY). | Is the alert component genuinely generic (no waterfall-specific assumptions)?  Does the DRY'd `CalculationHero` path still render the same a11y role + message copy?  Was a wider "generic error alert" helper considered? |
+| 161 | `graphVersion` cross-store effect (Phase 3 Wave 7E audit finding) — `App.tsx:192-204` hashes `(nodes, edges)` on every render and imperatively calls `useNodeResultsStore.bumpGraphVersion()`.  Exactly the effect-coupling smell Wave 7E was supposed to remove.  Deferred from Wave 7E because the simple fixes (`graphVersion = undoStack.length`; fire `bumpGraphVersion` from `pushSnapshot`) both break preview caching — drag-start pushes a snapshot even when nothing structural changed, so every drag would invalidate every cached preview. | Add a `structuralVersion: number` field to `useGraphStore`.  Bump it only inside `setNodes`/`setEdges`/`setNodesRaw`/`setEdgesRaw` when the structural fingerprint (ids + edge pairs; NOT positions or selection) actually changes.  Then derive `graphVersion` from `structuralVersion`, or delete `useNodeResultsStore.graphVersion` entirely and have consumers subscribe to the store directly.  Delete the App.tsx effect. | Is the structural-fingerprint definition exactly right (does it catch joins + rewires but ignore drag/hover/selection)?  Does the preview cache still invalidate at the right moments?  Benchmark: re-render count on a 200-node graph during drag — must not spike. |
+| 162 | Hard-coded color literals in `.tsx` files (Phase 4 audit follow-up) — ~15 `.tsx` files inline `style={{ color: "#ef4444" }}` / `color: "#22c55e"` / similar for error, success, neutral state pins instead of referencing CSS custom properties.  Phase 4 only tokenised the new `.hover-*` classes in `index.css`; the inline `.tsx` color literals predate Phase 4 and were left untouched.  Files affected include `components/CacheFetchButton.tsx`, `components/Toast.tsx`, `components/Toolbar.tsx`, `panels/DataPreview.tsx`, `panels/editors/banding/*.tsx`, `panels/editors/BandingEditor.tsx`, `panels/editors/GroupedColumnsTab.tsx`, `nodes/PipelineNode.tsx`.  Two new tokens from Phase 4 audit (`--danger`, `--signif-high`, etc.) already cover the colors. | Grep all hard-coded `#ef4444`, `#22c55e`, `#eab308`, `#60a5fa`, `#dc2626`, `#b91c1c` literals in `.tsx` / `.ts` files.  Replace each with the matching design token (`var(--danger)`, `var(--signif-high)`, `var(--signif-marginal)`, `var(--text-accent)`, `var(--danger-solid)`, `var(--danger-hover)`).  For Tailwind arbitrary values like `hover:text-[#ef4444]`, migrate to `hover:text-[var(--danger)]`. | Does the rendered visual match byte-for-byte after the swap? (Token values are the exact same hex.) Any site where the inline color was intentionally different from the token? (If yes: either add a new token or keep the hex with a comment naming the reason.) |
+| 163 | Preamble `_DANGEROUS_MODULES` check uses `.__name__` string comparison (Phase 3 fail-loud audit NON-BLOCKING #12) — `executor.py` filters dangerous modules out of the compiled preamble namespace by checking `v.__name__ in _DANGEROUS_MODULES`.  An indirect reference like `my_helper = os.path.join` has `__name__ == "join"` so it passes the filter.  The upstream AST validator catches most of these but the module-level filter is currently trust-by-name. | Check by module identity (`v is not os`, `v is not subprocess`) or by membership in a frozenset of actual module objects resolved at import time.  Keep the AST validator as the primary defence and tighten this as secondary defence-in-depth. | Does the new check still permit legitimate wrapped helpers (e.g. `safe_join = os.path.join` should flag as dangerous OR be allowed — product decision)?  Any false positives on unrelated modules sharing `__name__`? |
 
-**Phase 8 gate:** a single reviewer audits that none of the four items
+**Phase 8 gate:** a single reviewer audits that none of the seven items
 introduced new seams where they were supposed to remove them (e.g. #157's
-trampoline-free shim must not reappear as a different abstraction).
+trampoline-free shim must not reappear as a different abstraction; #161's
+`structuralVersion` derivation must not accidentally re-introduce the
+cross-store effect with a different variable name).
 
 ---
 
@@ -478,7 +486,7 @@ Phase gates are tracked as separate checklist items — cannot be ticked until e
 
 ## 15. Summary
 
-- **172 items** (156 findings + 12 tests + 4 Phase-8 deferred), **7 foundation tasks**, **two-agent pair per item**, **phase-level review** after each phase.
+- **175 items** (156 findings + 12 tests + 7 Phase-8 deferred), **7 foundation tasks**, **two-agent pair per item**, **phase-level review** after each phase.
 - Reviewer is a **gate**: rejects changes that don't improve the codebase, not just ones that have bugs.
 - **Foundation first** (shared helpers), then **fix P0**, then **architecture P1**, then **perf P1**, then **frontend style sweep** (parallel), then **consistency P2**, then **polish P3**. Tests weave through.
 - **All 10 reject-candidate items resolved** — no items blocking phase start.
@@ -495,7 +503,7 @@ Estimated effort, ballpark:
 | 5 | 32 | 8–10 days |
 | 6 | 12 | 4–6 days |
 | 7 | 12 | Woven (effort counted in host phase) |
-| 8 | 4 | 2–3 days |
-| **Total** | **172** | **~45–60 days** of agent work, with significant parallelism available |
+| 8 | 7 | 3–5 days |
+| **Total** | **175** | **~45–60 days** of agent work, with significant parallelism available |
 
 With 4–6 agent pairs working in parallel, real calendar time is materially shorter.
