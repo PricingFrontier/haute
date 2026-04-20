@@ -73,20 +73,22 @@ export default function SinkEditor({
           placeholder=""
           value={localPath}
           onChange={(e) => { setLocalPath(e.target.value); onUpdate("path", e.target.value) }}
-          className="w-full px-2.5 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = withAlpha(accentColor, 0.3); e.currentTarget.style.boxShadow = `0 0 0 2px ${withAlpha(accentColor, 0.1)}` }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
+          className="focus-ring w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
+          style={{
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-primary)',
+            ['--focus-ring-border' as string]: withAlpha(accentColor, 0.3),
+            ['--focus-ring-shadow' as string]: withAlpha(accentColor, 0.1),
+          }}
         />
       </div>
 
       <button
         onClick={handleWrite}
         disabled={!hasPath || writing}
-        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold rounded-lg transition-colors disabled:opacity-40"
+        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold rounded-lg transition-opacity disabled:opacity-40 enabled:hover:opacity-85"
         style={{ background: accentColor, color: '#000' }}
-        onMouseEnter={(e) => { if (hasPath && !writing) e.currentTarget.style.opacity = '0.85' }}
-        onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
       >
         <HardDriveDownload size={14} />
         {writing ? "Writing..." : "Write"}

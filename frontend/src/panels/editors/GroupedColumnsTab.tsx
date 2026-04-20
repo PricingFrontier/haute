@@ -408,10 +408,8 @@ export default function GroupedColumnsTab({ config, onUpdate, availableColumns, 
             <div key={group.prefix}>
               {/* Group header */}
               <div
-                className="flex items-center gap-1.5 px-2.5 py-1.5 select-none transition-colors"
-                style={{ background: "var(--bg-elevated)", borderBottom: "1px solid var(--border)" }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)" }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-elevated)" }}
+                className="grouped-col-group-header flex items-center gap-1.5 px-2.5 py-1.5 select-none"
+                style={{ borderBottom: "1px solid var(--border)" }}
               >
                 <input
                   type="checkbox"
@@ -471,11 +469,9 @@ export default function GroupedColumnsTab({ config, onUpdate, availableColumns, 
                 return (
                   <div
                     key={row.pattern}
-                    className="flex items-center cursor-pointer transition-colors"
+                    className="grouped-col-pattern-row flex items-center cursor-pointer"
                     style={{ borderBottom: "1px solid var(--border)" }}
                     onClick={() => togglePattern(row)}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)" }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent" }}
                   >
                     <div className="px-2.5 py-1 pl-7 shrink-0">
                       <input

@@ -71,10 +71,8 @@ export function WarehousePicker({
           placeholder="/sql/1.0/warehouses/abc123"
           value={httpPath}
           onChange={(e) => onSelect(e.target.value)}
-          className="flex-1 px-2.5 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
+          className="focus-ring flex-1 px-2.5 py-1.5 text-xs font-mono rounded-lg"
           style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(59,130,246,.3)'; e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent-soft)' }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
         />
         <button
           onClick={fetchWarehouses}

@@ -191,13 +191,9 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
                       handleFileClick(item.path)
                     }
                   }}
-                  className="w-full px-3 py-2 flex items-center gap-2 text-left transition-colors"
-                  style={{
-                    borderBottom: '1px solid var(--border)',
-                    background: isSelected ? 'var(--accent-soft)' : 'transparent',
-                  }}
-                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)' }}
-                  onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
+                  className="file-browser-row w-full px-3 py-2 flex items-center gap-2 text-left"
+                  data-selected={isSelected ? "true" : "false"}
+                  style={{ borderBottom: '1px solid var(--border)' }}
                 >
                   {item.type === "directory" ? (
                     <Folder size={14} style={{ color: '#f59e0b' }} className="shrink-0" />
@@ -706,10 +702,7 @@ export function InputSourcesBar({
             {onDeleteInput && (
               <button
                 onClick={() => onDeleteInput(src.edgeId)}
-                className="p-0 rounded transition-colors"
-                style={{ color: 'var(--text-muted)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444' }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)' }}
+                className="icon-danger-btn p-0 rounded"
                 title={`Remove connection from ${src.sourceLabel}`}
               >
                 <X size={10} />

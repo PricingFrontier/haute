@@ -185,9 +185,8 @@ export default function RatingStepEditor({
           )
         })}
         <button onClick={addTable}
-          className="p-1.5 rounded-lg transition-colors" style={{ color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = accentColor; e.currentTarget.style.color = accentColor }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}>
+          className="accent-hover-btn p-1.5 rounded-lg"
+          style={{ color: 'var(--text-muted)', border: '1px dashed var(--border)', ['--node-accent' as string]: accentColor }}>
           <Plus size={12} />
         </button>
       </div>
@@ -224,9 +223,7 @@ export default function RatingStepEditor({
                 ))}
               </select>
               <button onClick={() => removeFactor(safeIdx, fi)}
-                className="p-1 rounded transition-colors" style={{ color: 'var(--text-muted)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444' }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)' }}>
+                className="icon-danger-btn p-1 rounded">
                 <X size={11} />
               </button>
             </div>
@@ -265,10 +262,8 @@ export default function RatingStepEditor({
       {/* Rebuild button */}
       {factorCount > 0 && (
         <button onClick={rebuildCurrentEntries}
-          className="w-full px-2 py-1.5 text-[11px] font-medium rounded-lg transition-colors"
-          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = accentColor; e.currentTarget.style.color = accentColor }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)' }}>
+          className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg"
+          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}>
           ↻ Rebuild from banding levels
         </button>
       )}
