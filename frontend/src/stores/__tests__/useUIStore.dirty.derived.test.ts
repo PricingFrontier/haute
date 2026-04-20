@@ -90,12 +90,12 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
 
   describe("store shape", () => {
     it("does not expose a `dirty` field on the store state", () => {
-      const state = useUIStore.getState() as Record<string, unknown>
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
       expect(state).not.toHaveProperty("dirty")
     })
 
     it("does not expose a `setDirty` action on the store state", () => {
-      const state = useUIStore.getState() as Record<string, unknown>
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
       expect(state).not.toHaveProperty("setDirty")
     })
 
@@ -106,13 +106,13 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
       // This will fail today because the current store does not define
       // `lastSavedSnapshot` in its creator function — which is the right
       // behavior pre-refactor.
-      const initial = useUIStore.getInitialState() as Record<string, unknown>
+      const initial = useUIStore.getInitialState() as unknown as Record<string, unknown>
       expect(initial).toHaveProperty("lastSavedSnapshot")
       expect(initial.lastSavedSnapshot).toBeNull()
     })
 
     it("exposes a `markSaved` action", () => {
-      const initial = useUIStore.getInitialState() as Record<string, unknown>
+      const initial = useUIStore.getInitialState() as unknown as Record<string, unknown>
       expect(typeof initial.markSaved).toBe("function")
     })
 

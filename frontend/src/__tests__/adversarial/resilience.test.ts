@@ -51,7 +51,7 @@ function resetStores() {
     submodelDialog: null,
     renameDialog: null,
     syncBanner: null,
-    dirty: false,
+    lastSavedSnapshot: null,
     nodePanelWidth: 0,
     hoveredNodeId: null,
     nodeSearchOpen: false,
@@ -612,7 +612,8 @@ describe("6. Empty graph", () => {
     expect(state.submodelDialog).toBeNull()
     expect(state.renameDialog).toBeNull()
     expect(state.syncBanner).toBeNull()
-    expect(state.dirty).toBe(false)
+    // Never-saved sentinel; dirty itself is derived (see #99).
+    expect(state.lastSavedSnapshot).toBeNull()
   })
 
   it("SettingsStore handles empty source list gracefully", () => {
@@ -820,13 +821,13 @@ describe("10. Store state after unmount", () => {
 
     const store = useUIStore.getState()
     expect(() => store.setPaletteOpen(false)).not.toThrow()
-    expect(() => store.setDirty(true)).not.toThrow()
+    expect(() => store.markSaved("snap")).not.toThrow()
     expect(() => store.setHoveredNodeId("n1")).not.toThrow()
     expect(() => store.setSyncBanner("test")).not.toThrow()
 
     // State should be updated
     expect(useUIStore.getState().paletteOpen).toBe(false)
-    expect(useUIStore.getState().dirty).toBe(true)
+    expect(useUIStore.getState().lastSavedSnapshot).toBe("snap")
     expect(useUIStore.getState().hoveredNodeId).toBe("n1")
     expect(useUIStore.getState().syncBanner).toBe("test")
   })

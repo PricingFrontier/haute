@@ -3,7 +3,7 @@ import type { Node, Edge } from "@xyflow/react"
 import { getLayoutedElements } from "../utils/layout"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
-import useUIStore from "../stores/useUIStore"
+import useUIStore, { serializeSnapshot } from "../stores/useUIStore"
 
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
 
@@ -69,21 +69,37 @@ export default function useWebSocketSync({
             // the open panel while we replace nodes.
             graphRefreshingRef.current += 1
             try {
+              // Capture the exact nodes+edges we hand to React Flow so
+              // the saved snapshot matches what lives in state. If we
+              // compute the layout, the *layouted* nodes (which carry
+              // assigned positions) are what the GUI will render — the
+              // raw nodes without positions would diverge immediately.
+              let nodesForSnapshot: Node[]
               if (hasPositions) {
+                nodesForSnapshot = newNodes
                 setNodesRaw(newNodes)
               } else {
                 const layouted = await getLayoutedElements(newNodes, newEdges)
+                nodesForSnapshot = layouted as Node[]
                 setNodesRaw(layouted)
               }
               setEdgesRaw(newEdges)
+              const nextPreamble = g.preamble !== undefined ? (g.preamble || "") : preambleRef.current
               if (g.preamble !== undefined) {
-                setPreamble(g.preamble || "")
-                preambleRef.current = g.preamble || ""
+                setPreamble(nextPreamble)
+                preambleRef.current = nextPreamble
               }
               nodeIdCounter.current = computeNextNodeId(newNodes)
               setSyncBanner(null)
-              // The GUI is now in sync with the file on disk — not dirty.
-              useUIStore.getState().setDirty(false)
+              // The GUI is now in sync with the file on disk — mark this
+              // snapshot as the saved state so selectIsDirty returns false.
+              useUIStore.getState().markSaved(
+                serializeSnapshot({
+                  nodes: nodesForSnapshot,
+                  edges: newEdges,
+                  preamble: nextPreamble,
+                }),
+              )
 
               // Issue #39: clear any open dialog whose target node was
               // removed by this graph update.  Leaving an orphaned

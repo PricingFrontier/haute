@@ -7,7 +7,6 @@ import { normalizeEdges } from "../utils/graphHelpers"
 import { nodeData } from "../types/node"
 import { createSubmodel, loadSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
-import useUIStore from "../stores/useUIStore"
 
 interface SubmodelNavParams {
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
@@ -40,7 +39,6 @@ export default function useSubmodelNavigation({
   fitView,
 }: SubmodelNavParams): SubmodelNavReturn {
   const addToast = useToastStore((s) => s.addToast)
-  const setDirty = useUIStore((s) => s.setDirty)
   const [viewStack, setViewStack] = useState<ViewLevel[]>([{ type: "pipeline", name: "main", file: "" }])
   const viewStackRef = useRef(viewStack)
   useEffect(() => { viewStackRef.current = viewStack }, [viewStack])
@@ -63,13 +61,14 @@ export default function useSubmodelNavigation({
         setEdgesRaw(normalizeEdges(newGraph.edges ?? []))
         submodelsRef.current = newGraph.submodels ?? {}
         addToast("success", `Submodel "${name}" created`)
-        setDirty(true)
+        // Dirty is derived — the graph replacement itself triggers the
+        // selectIsDirty comparison at the next render.
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast, setDirty])
+  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     const smName = nodeId.replace("submodel__", "")
@@ -206,13 +205,14 @@ export default function useSubmodelNavigation({
         setEdgesRaw(normalizeEdges(flat.edges ?? []))
         submodelsRef.current = data.graph?.submodels ?? submodelsRef.current
         addToast("success", `Submodel "${smName}" dissolved`)
-        setDirty(true)
+        // Dirty is derived — the graph replacement itself triggers the
+        // selectIsDirty comparison at the next render.
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast, setDirty])
+  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   return {
     viewStack,

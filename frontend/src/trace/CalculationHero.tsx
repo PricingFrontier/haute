@@ -10,6 +10,7 @@ import {
   type ExpressionChainEntry,
   type InputSourceEntry,
   type WaterfallEntryProp,
+  type WaterfallErrorProp,
   type WaterfallStep,
 } from "./traceHelpers"
 import {
@@ -39,7 +40,10 @@ export interface CalculationHeroProps {
   executionMs?: number
   stepCount?: number
   nodeName?: string
-  waterfall?: WaterfallEntryProp[] | null
+  // Backend emits either a successful entries list or a structured error
+  // (e.g. "row had 2+ passes — waterfall not well-defined").  Pass both
+  // through and let resolveWaterfallProp split them into steps vs error.
+  waterfall?: WaterfallEntryProp[] | WaterfallErrorProp | null
 }
 
 // ---------------------------------------------------------------------------

@@ -94,7 +94,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
-    lastSavedRef: { current: "" },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -114,7 +113,7 @@ function makeControllablePreview() {
   mockPreview.mockImplementation((_g: unknown, nodeId: string, rowLimit: number, source?: string) => {
     callOrder.push(nodeId)
     return new Promise((resolve, reject) => {
-      deferreds.set(nodeId, { resolve, reject, source, rowLimit })
+      deferreds.set(nodeId, { resolve: resolve as (v: unknown) => void, reject, source, rowLimit })
     })
   })
   return { callOrder, deferreds }
@@ -125,7 +124,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })
-    useUIStore.setState({ dirty: false })
+    useUIStore.setState({ lastSavedSnapshot: null })
     useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()

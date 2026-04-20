@@ -38,18 +38,18 @@ vi.mock("../../stores/useToastStore.ts", () => {
 })
 
 vi.mock("../../stores/useUIStore.ts", () => {
-  let dirty = false
+  let lastSavedSnapshot: string | null = null
   let syncBanner: string | null = null
   const store: Record<string, unknown> = {
-    dirty,
+    lastSavedSnapshot,
     syncBanner,
     setSyncBanner: vi.fn((banner: string | null) => {
       syncBanner = banner
       store.syncBanner = banner
     }),
-    setDirty: vi.fn((d: boolean) => {
-      dirty = d
-      store.dirty = d
+    markSaved: vi.fn((snap: string) => {
+      lastSavedSnapshot = snap
+      store.lastSavedSnapshot = snap
     }),
     // Other fields the hook destructures
     setPaletteOpen: vi.fn(),
@@ -60,7 +60,11 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setState: vi.fn(),
     subscribe: vi.fn(),
   })
-  return { default: useUIStore }
+  return {
+    default: useUIStore,
+    serializeSnapshot: (input: { nodes: unknown; edges: unknown; preamble: unknown }) =>
+      JSON.stringify(input),
+  }
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
@@ -131,8 +135,8 @@ describe("useWebSocketSync", () => {
     // Reset mock state
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
-    vi.mocked(useUIStore.getState().setDirty).mockClear()
-    useUIStore.getState().dirty = false
+    vi.mocked(useUIStore.getState().markSaved).mockClear()
+    useUIStore.getState().lastSavedSnapshot = null
   })
 
   afterEach(() => {
@@ -248,8 +252,9 @@ describe("useWebSocketSync", () => {
       )
       // Sync banner cleared
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(null)
-      // Ensures subsequent file-watcher updates are not blocked
-      expect(useUIStore.getState().setDirty).toHaveBeenCalledWith(false)
+      // Ensures subsequent file-watcher updates mark the new graph as
+      // the saved state (item #99: dirty is derived from this snapshot).
+      expect(useUIStore.getState().markSaved).toHaveBeenCalled()
     })
 
     it("uses layout when nodes have no positions", async () => {
@@ -280,7 +285,7 @@ describe("useWebSocketSync", () => {
       expect(getLayoutedElements).toHaveBeenCalled()
     })
 
-    it("accepts graph update even when dirty flag is true", async () => {
+    it("accepts graph update even when the graph was previously dirty", async () => {
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
 
@@ -288,8 +293,8 @@ describe("useWebSocketSync", () => {
         latestWS().onopen?.(new Event("open"))
       })
 
-      // Set dirty flag
-      useUIStore.getState().dirty = true
+      // Simulate a dirty state: lastSavedSnapshot diverged from current.
+      useUIStore.getState().lastSavedSnapshot = "stale-snapshot"
 
       const graphMsg = {
         type: "graph_update",

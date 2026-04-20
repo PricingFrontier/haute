@@ -261,7 +261,7 @@ beforeEach(() => {
     shortcutsOpen: false,
     submodelDialog: null,
     syncBanner: null,
-    dirty: false,
+    lastSavedSnapshot: null,
   })
 
   // Reset settings store MLflow state so fetchMlflow runs cleanly

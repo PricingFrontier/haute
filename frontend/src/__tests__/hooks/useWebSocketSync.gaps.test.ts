@@ -38,18 +38,18 @@ vi.mock("../../stores/useToastStore.ts", () => {
 })
 
 vi.mock("../../stores/useUIStore.ts", () => {
-  let dirty = false
+  let lastSavedSnapshot: string | null = null
   let syncBanner: string | null = null
   const store: Record<string, unknown> = {
-    dirty,
+    lastSavedSnapshot,
     syncBanner,
     setSyncBanner: vi.fn((banner: string | null) => {
       syncBanner = banner
       store.syncBanner = banner
     }),
-    setDirty: vi.fn((d: boolean) => {
-      dirty = d
-      store.dirty = d
+    markSaved: vi.fn((snap: string) => {
+      lastSavedSnapshot = snap
+      store.lastSavedSnapshot = snap
     }),
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
@@ -59,7 +59,11 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setState: vi.fn(),
     subscribe: vi.fn(),
   })
-  return { default: useUIStore }
+  return {
+    default: useUIStore,
+    serializeSnapshot: (input: { nodes: unknown; edges: unknown; preamble: unknown }) =>
+      JSON.stringify(input),
+  }
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
@@ -123,7 +127,7 @@ describe("useWebSocketSync — gap tests", () => {
 
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
-    useUIStore.getState().dirty = false
+    useUIStore.getState().lastSavedSnapshot = null
   })
 
   afterEach(() => {

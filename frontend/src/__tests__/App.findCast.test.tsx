@@ -178,7 +178,7 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
       submodelDialog: null,
       renameDialog: null,
       syncBanner: null,
-      dirty: false,
+      lastSavedSnapshot: null,
       utilityOpen: false,
       importsOpen: false,
       gitOpen: false,

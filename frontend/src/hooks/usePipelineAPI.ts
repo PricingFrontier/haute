@@ -8,7 +8,7 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { NodeResult } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useUIStore from "../stores/useUIStore"
+import useUIStore, { serializeSnapshot } from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 
@@ -25,7 +25,6 @@ interface PipelineAPIParams {
   pipelineNameRef: React.MutableRefObject<string>
   descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
-  lastSavedRef: React.MutableRefObject<string>
   nodeIdCounter: React.MutableRefObject<number>
 }
 
@@ -101,12 +100,11 @@ export default function usePipelineAPI({
   selectedNode,
   graphRef, parentGraphRef, submodelsRef, setNodes,
   setNodesRaw, setEdgesRaw, setPreamble,
-  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, lastSavedRef,
+  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const activeSource = useSettingsStore((s) => s.activeSource)
-  const setDirty = useUIStore((s) => s.setDirty)
   const addToast = useToastStore((s) => s.addToast)
   const [loading, setLoading] = useState(true)
   const [previewData, setPreviewData] = useState<PreviewData | null>(null)
@@ -145,7 +143,15 @@ export default function usePipelineAPI({
           useSettingsStore.getState().setActiveSource(data.active_source)
         }
         nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
-        lastSavedRef.current = JSON.stringify({ nodes: pipelineNodes, edges: pipelineEdges, preamble: data.preamble || "" })
+        // The loaded pipeline IS the on-disk state — mark it saved so
+        // selectIsDirty returns false until the user edits something.
+        useUIStore.getState().markSaved(
+          serializeSnapshot({
+            nodes: pipelineNodes,
+            edges: pipelineEdges,
+            preamble: data.preamble || "",
+          }),
+        )
         if (data.warning) addToast("warning", data.warning)
         setLoading(false)
       })
@@ -153,7 +159,7 @@ export default function usePipelineAPI({
         addToast("error", `Failed to load pipeline: ${err.message}`)
         setLoading(false)
       })
-  }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, lastSavedRef, addToast])
+  }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node) => {
     // Abort any in-flight preview request
@@ -329,15 +335,16 @@ export default function usePipelineAPI({
       active_source: as_,
     })
       .then((data) => {
-        lastSavedRef.current = JSON.stringify({ nodes: n, edges: e, preamble: preambleRef.current })
-        setDirty(false)
+        useUIStore.getState().markSaved(
+          serializeSnapshot({ nodes: n, edges: e, preamble: preambleRef.current }),
+        )
         addToast("success", `Saved → ${data.file}`)
       })
       .catch((err: unknown) => {
         const detail = err instanceof Error ? err.message : "unknown error"
         addToast("error", `Failed to save pipeline: ${detail}`)
       })
-  }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, lastSavedRef, setDirty, addToast])
+  }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
 
   // Clear node statuses when selected node changes (including deselect)
   // so statuses from a previous node don't bleed into the next selection.

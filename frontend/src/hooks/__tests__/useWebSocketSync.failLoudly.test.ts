@@ -45,10 +45,10 @@ vi.mock("../../stores/useToastStore.ts", () => {
 
 vi.mock("../../stores/useUIStore.ts", () => {
   const store: Record<string, unknown> = {
-    dirty: false,
+    lastSavedSnapshot: null,
     syncBanner: null,
     setSyncBanner: vi.fn((banner: string | null) => { store.syncBanner = banner }),
-    setDirty: vi.fn((d: boolean) => { store.dirty = d }),
+    markSaved: vi.fn((snap: string) => { store.lastSavedSnapshot = snap }),
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
     submodelDialog: null,
@@ -61,7 +61,11 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setState: vi.fn(),
     subscribe: vi.fn(),
   })
-  return { default: useUIStore }
+  return {
+    default: useUIStore,
+    serializeSnapshot: (input: { nodes: unknown; edges: unknown; preamble: unknown }) =>
+      JSON.stringify(input),
+  }
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"

@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef } from "react"
+import { useEffect, useCallback, useMemo, useState, useRef } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -46,7 +46,7 @@ import useBackgroundJobs from "./hooks/useBackgroundJobs"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import useSettingsStore from "./stores/useSettingsStore"
-import useUIStore from "./stores/useUIStore"
+import useUIStore, { selectIsDirty, serializeSnapshot } from "./stores/useUIStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
@@ -129,8 +129,6 @@ function FlowEditor() {
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
-  const dirty = useUIStore((s) => s.dirty)
-  const setDirty = useUIStore((s) => s.setDirty)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
@@ -176,7 +174,6 @@ function FlowEditor() {
   const clipboard = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   const graphRef = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   const parentGraphRef = useRef<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>(null)
-  const lastSavedRef = useRef<string>("")
   const preambleRef = useRef("")
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
@@ -206,19 +203,23 @@ function FlowEditor() {
     }
   }, [nodes, edges, bumpGraphVersion])
 
-  // Track dirty state via reference equality (avoids JSON.stringify overhead).
-  // Skip when a WebSocket graph refresh caused the change — the file on disk
-  // is the source of truth in that case, so the GUI is not "dirty".
-  const prevStateRef = useRef<{ nodes: Node[]; edges: Edge[]; preamble: string } | null>(null)
-  useEffect(() => {
-    if (lastSavedRef.current && !graphRefreshingRef.current) {
-      const prev = prevStateRef.current
-      if (prev && (prev.nodes !== nodes || prev.edges !== edges || prev.preamble !== preamble)) {
-        setDirty(true)
-      }
-    }
-    prevStateRef.current = { nodes, edges, preamble }
-  }, [nodes, edges, preamble, setDirty])
+  // Derived dirty flag (item #99).
+  //
+  // The current snapshot is a canonical JSON string of {nodes, edges,
+  // preamble}. Memoizing on just those three references is correct
+  // because React Flow returns a fresh nodes/edges array only when the
+  // graph actually changes, and `preamble` is a primitive string.
+  // Without memoization every render re-serializes the full graph,
+  // which is O(graph-size).
+  const currentSnapshot = useMemo(
+    () => serializeSnapshot({ nodes, edges, preamble }),
+    [nodes, edges, preamble],
+  )
+  // Subscribe only to `lastSavedSnapshot`; the selector is a pure
+  // string-compare so it returns a stable boolean primitive that
+  // Zustand's default value-equality handles cleanly.
+  const lastSavedSnapshot = useUIStore((s) => s.lastSavedSnapshot)
+  const dirty = selectIsDirty({ lastSavedSnapshot }, currentSnapshot)
 
   // ---------------------------------------------------------------------------
   // Hooks
@@ -237,7 +238,7 @@ function FlowEditor() {
     selectedNode,
     graphRef, parentGraphRef, submodelsRef, setNodes,
     setNodesRaw, setEdgesRaw, setPreamble,
-    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, lastSavedRef,
+    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
     nodeIdCounter,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
@@ -478,7 +479,7 @@ function FlowEditor() {
                     const updated = current ? `${current}\n${importLine}` : importLine
                     setPreamble(updated)
                     preambleRef.current = updated
-                    setDirty(true)
+                    // Dirty is derived from the new preamble at next render.
                   }
                 }}
               />
@@ -488,7 +489,7 @@ function FlowEditor() {
                 onPreambleChange={(value) => {
                   setPreamble(value)
                   preambleRef.current = value
-                  setDirty(true)
+                  // Dirty is derived from the new preamble at next render.
                 }}
                 onClose={() => setImportsOpen(false)}
               />

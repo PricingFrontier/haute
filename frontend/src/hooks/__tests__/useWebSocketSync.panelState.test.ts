@@ -37,10 +37,10 @@ vi.mock("../../stores/useToastStore.ts", () => {
 
 vi.mock("../../stores/useUIStore.ts", () => {
   const store: Record<string, unknown> = {
-    dirty: false,
+    lastSavedSnapshot: null,
     syncBanner: null,
     setSyncBanner: vi.fn(),
-    setDirty: vi.fn((d: boolean) => { store.dirty = d }),
+    markSaved: vi.fn((snap: string) => { store.lastSavedSnapshot = snap }),
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
     submodelDialog: null as null | { nodeIds: string[] },
@@ -53,7 +53,11 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setState: vi.fn((patch: Record<string, unknown>) => Object.assign(store, patch)),
     subscribe: vi.fn(),
   })
-  return { default: useUIStore }
+  return {
+    default: useUIStore,
+    serializeSnapshot: (input: { nodes: unknown; edges: unknown; preamble: unknown }) =>
+      JSON.stringify(input),
+  }
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
@@ -103,7 +107,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     globalThis.WebSocket = createMockWebSocket() as unknown as typeof WebSocket
 
     // Reset store to a clean baseline
-    const store = useUIStore.getState() as Record<string, unknown>
+    const store = useUIStore.getState() as unknown as Record<string, unknown>
     store.renameDialog = null
     store.submodelDialog = null
     vi.mocked(useUIStore.getState().setRenameDialog as Mock).mockClear()
@@ -120,7 +124,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     // Simulate: user had opened the Rename dialog for node "doomed_42",
     // then the backend file watcher sends a graph_update where
     // "doomed_42" no longer exists.
-    const store = useUIStore.getState() as Record<string, unknown>
+    const store = useUIStore.getState() as unknown as Record<string, unknown>
     store.renameDialog = { nodeId: "doomed_42", currentLabel: "To Be Deleted" }
 
     const params = makeHookParams()
@@ -149,7 +153,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     // Catches: over-eager clearing would dismiss a dialog that remains
     // valid. The dialog must survive a WS sync if its target is still
     // in the graph.
-    const store = useUIStore.getState() as Record<string, unknown>
+    const store = useUIStore.getState() as unknown as Record<string, unknown>
     store.renameDialog = { nodeId: "keeper_1", currentLabel: "Keep" }
 
     const params = makeHookParams()
@@ -178,7 +182,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
   it("submodelDialog with nodeIds referring to a removed node is cleared", async () => {
     // If any of the referenced node IDs are no longer in the graph,
     // the dialog is invalid — clear it.
-    const store = useUIStore.getState() as Record<string, unknown>
+    const store = useUIStore.getState() as unknown as Record<string, unknown>
     store.submodelDialog = { nodeIds: ["a", "gone_b", "c"] }
 
     const params = makeHookParams()
@@ -206,7 +210,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
   })
 
   it("submodelDialog with all nodeIds present is NOT cleared", async () => {
-    const store = useUIStore.getState() as Record<string, unknown>
+    const store = useUIStore.getState() as unknown as Record<string, unknown>
     store.submodelDialog = { nodeIds: ["a", "b"] }
 
     const params = makeHookParams()
@@ -237,7 +241,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     // Make sure the cleanup logic handles the null case gracefully —
     // no spurious setRenameDialog(null) or setSubmodelDialog(null)
     // when the dialogs were already null.
-    const store = useUIStore.getState() as Record<string, unknown>
+    const store = useUIStore.getState() as unknown as Record<string, unknown>
     store.renameDialog = null
     store.submodelDialog = null
 

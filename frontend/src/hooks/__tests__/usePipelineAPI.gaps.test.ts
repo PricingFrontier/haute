@@ -69,7 +69,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
-    lastSavedRef: { current: "" },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -80,7 +79,7 @@ describe("usePipelineAPI — gap tests", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
-    useUIStore.setState({ dirty: false })
+    useUIStore.setState({ lastSavedSnapshot: null })
     useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
@@ -185,11 +184,10 @@ describe("usePipelineAPI — gap tests", () => {
       })
     })
 
-    it("second save failure does not corrupt dirty flag from first success", async () => {
-      // Catches: if the dirty flag is set to false by the first save's
-      // .then() but then re-set by the second save's .catch(), the UI
-      // would incorrectly show "unsaved changes" even though data was
-      // persisted.
+    it("second save failure does not corrupt lastSavedSnapshot from first success", async () => {
+      // Catches: if the failure path of the second save somehow cleared
+      // lastSavedSnapshot, dirty derivation would incorrectly mark the
+      // graph as unsaved even though the first save persisted the data.
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
       let callIdx = 0
@@ -205,8 +203,6 @@ describe("usePipelineAPI — gap tests", () => {
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
 
-      useUIStore.setState({ dirty: true })
-
       await act(async () => {
         result.current.handleSave()
         result.current.handleSave()
@@ -219,6 +215,10 @@ describe("usePipelineAPI — gap tests", () => {
         expect(toasts.some((t) => t.type === "success")).toBe(true)
         expect(toasts.some((t) => t.type === "error")).toBe(true)
       })
+
+      // After the first success, lastSavedSnapshot should be non-null.
+      // The failing second save's catch block must NOT touch it.
+      expect(useUIStore.getState().lastSavedSnapshot).not.toBeNull()
     })
   })
 

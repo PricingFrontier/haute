@@ -4,7 +4,7 @@ import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
+import useUIStore, { selectIsDirty, serializeSnapshot } from "../../stores/useUIStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
@@ -56,7 +56,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
-    lastSavedRef: { current: "" },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -67,7 +66,7 @@ describe("usePipelineAPI", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
-    useUIStore.setState({ dirty: false })
+    useUIStore.setState({ lastSavedSnapshot: null })
     useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
@@ -121,7 +120,14 @@ describe("usePipelineAPI", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.some((t) => t.type === "success" && t.text.includes("pricing.py"))).toBe(true)
     })
-    expect(useUIStore.getState().dirty).toBe(false)
+    // After save, lastSavedSnapshot equals the current graph snapshot,
+    // so selectIsDirty returns false — the new derived-dirty contract.
+    const snapshot = serializeSnapshot({
+      nodes: params.graphRef.current.nodes,
+      edges: params.graphRef.current.edges,
+      preamble: params.preambleRef.current,
+    })
+    expect(selectIsDirty(useUIStore.getState(), snapshot)).toBe(false)
   })
 
   it("handleSave shows error toast on failure", async () => {

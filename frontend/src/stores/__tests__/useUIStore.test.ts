@@ -11,7 +11,7 @@ function reset() {
     submodelDialog: null,
     renameDialog: null,
     syncBanner: null,
-    dirty: false,
+    lastSavedSnapshot: null,
     nodePanelWidth: 0,
     hoveredNodeId: null,
     nodeSearchOpen: false,
@@ -69,23 +69,28 @@ describe("useUIStore", () => {
   })
 
   // -----------------------------------------------------------------------
-  // Dirty flag
+  // Last-saved snapshot (derived-dirty source of truth — see item #99)
+  //
+  // Dirty derivation semantics live in useUIStore.dirty.derived.test.ts;
+  // here we just pin that markSaved writes to lastSavedSnapshot.
   // -----------------------------------------------------------------------
 
-  describe("setDirty", () => {
-    it("defaults to false", () => {
-      expect(useUIStore.getState().dirty).toBe(false)
+  describe("markSaved / lastSavedSnapshot", () => {
+    it("lastSavedSnapshot defaults to null (never-saved sentinel)", () => {
+      expect(useUIStore.getState().lastSavedSnapshot).toBeNull()
     })
 
-    it("sets dirty flag", () => {
-      useUIStore.getState().setDirty(true)
-      expect(useUIStore.getState().dirty).toBe(true)
+    it("markSaved writes the argument to lastSavedSnapshot", () => {
+      useUIStore.getState().markSaved('{"nodes":[],"edges":[],"preamble":""}')
+      expect(useUIStore.getState().lastSavedSnapshot).toBe(
+        '{"nodes":[],"edges":[],"preamble":""}',
+      )
     })
 
-    it("clears dirty flag", () => {
-      useUIStore.getState().setDirty(true)
-      useUIStore.getState().setDirty(false)
-      expect(useUIStore.getState().dirty).toBe(false)
+    it("markSaved replaces a prior snapshot on subsequent calls", () => {
+      useUIStore.getState().markSaved("v1")
+      useUIStore.getState().markSaved("v2")
+      expect(useUIStore.getState().lastSavedSnapshot).toBe("v2")
     })
   })
 

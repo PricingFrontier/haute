@@ -42,7 +42,7 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
 describe("useSubmodelNavigation", () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
-    useUIStore.setState({ dirty: false })
+    useUIStore.setState({ lastSavedSnapshot: null })
     mockCreate.mockReset()
     mockLoad.mockReset()
     mockDissolve.mockReset()

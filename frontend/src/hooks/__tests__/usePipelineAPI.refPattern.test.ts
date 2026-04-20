@@ -80,7 +80,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
-    lastSavedRef: { current: "" },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -91,7 +90,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })
-    useUIStore.setState({ dirty: false })
+    useUIStore.setState({ lastSavedSnapshot: null })
     useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
