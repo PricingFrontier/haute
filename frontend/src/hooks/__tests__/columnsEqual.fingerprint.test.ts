@@ -47,7 +47,6 @@ import { describe, it, expect } from "vitest"
 // When the developer adds the export, this `@ts-expect-error` becomes an
 // "unused directive" error, forcing them to delete the directive as part
 // of the same change.
-// @ts-expect-error — TDD: import will resolve after the production fix.
 import { columnFingerprint } from "../usePipelineAPI"
 
 type ColumnDef = { name: string; dtype: string }

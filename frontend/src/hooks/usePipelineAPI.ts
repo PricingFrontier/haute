@@ -46,11 +46,37 @@ function nodeLabel(node: Node): string {
 
 type ColumnDef = { name: string; dtype: string }
 
+/**
+ * Produce a collision-safe string fingerprint for a column list.
+ *
+ * Encoding: each column is written as
+ *   `${name.length}:${name}\u0002${dtype.length}:${dtype}`
+ * and columns are joined with `\u0003`. The length-prefix is what makes the
+ * scheme collision-safe: no value of `name` or `dtype` — including ones
+ * containing the separators — can be confused with a different column list,
+ * because the parser would need to see a different length prefix.
+ *
+ * `undefined` maps to `""` so never-previewed nodes get a stable sentinel
+ * distinct from any non-empty list (the empty list `[]` maps to `"0:"` via
+ * the implementation below, not `""`, so the two cases remain distinguishable).
+ *
+ * This is the fingerprint consumed by {@link columnsEqual} — the hot path
+ * that decides whether a preview cascade must propagate downstream.
+ */
+export function columnFingerprint(columns: ColumnDef[] | undefined): string {
+  if (columns === undefined) return ""
+  if (columns.length === 0) return "0:"
+  const parts: string[] = new Array(columns.length)
+  for (let i = 0; i < columns.length; i++) {
+    const { name, dtype } = columns[i]
+    parts[i] = `${name.length}:${name}\u0002${dtype.length}:${dtype}`
+  }
+  return parts.join("\u0003")
+}
+
 /** Compare two column arrays by name+dtype — returns true if identical. */
 function columnsEqual(a: ColumnDef[] | undefined, b: ColumnDef[] | undefined): boolean {
-  if (!a && !b) return true
-  if (!a || !b || a.length !== b.length) return false
-  return a.every((col, i) => col.name === b[i].name && col.dtype === b[i].dtype)
+  return columnFingerprint(a) === columnFingerprint(b)
 }
 
 function resultToPreview(nodeId: string, label: string, r: NodeResult): PreviewData {
