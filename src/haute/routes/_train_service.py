@@ -490,6 +490,8 @@ class TrainService:
             _mem_checkpoint("before _execute_lazy")
 
             checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
+            from haute.executor import ENFORCE_CONTRACTS
+
             lazy_outputs, _order, _parents, _id_to_name = _execute_lazy(
                 body.graph,
                 _build_node_fn,
@@ -497,6 +499,7 @@ class TrainService:
                 preamble_ns=preamble_ns,
                 source=body.source,
                 checkpoint_dir=checkpoint_dir,
+                enforce_contracts=ENFORCE_CONTRACTS,
             )
 
             target_lf = lazy_outputs.get(body.node_id)

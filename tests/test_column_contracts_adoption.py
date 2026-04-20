@@ -26,9 +26,9 @@ import pytest
 from haute import errors as haute_errors
 from haute._builders import (
     _COLUMN_CONTRACTS,
-    _NODE_BUILDERS,
     get_column_contract,
 )
+from haute._registry import NODE_REGISTRY
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.fixtures.expected_contracts import (
     ALL_NODE_KINDS,
@@ -67,17 +67,20 @@ class TestEveryBuilderHasContract:
     """
 
     def test_every_node_type_has_a_builder(self):
-        """Sanity: ``_NODE_BUILDERS`` covers every ``NodeType`` value.
+        """Sanity: ``NODE_REGISTRY`` covers every ``NodeType`` value with an
+        ``exec`` entry.
 
         This already holds today — we assert it so the contract-adoption
         tests below can rely on it.  If a future dev adds a ``NodeType``
         without a builder, the failure will point here before the
         contract tests fail mysteriously.
         """
-        missing = ALL_NODE_KINDS - set(_NODE_BUILDERS.keys())
+        registered = {nt for nt, entry in NODE_REGISTRY.items() if entry.exec is not None}
+        missing = ALL_NODE_KINDS - registered
         assert missing == set(), (
             f"NodeType(s) without a registered builder: {sorted(missing)}. "
-            "Every NodeType must have a builder in _builders.py."
+            "Every NodeType must have a builder registered via _register() "
+            "in _builders.py."
         )
 
     def test_every_node_type_has_a_contract(self):
@@ -671,7 +674,11 @@ class TestContractOverheadBenchmark:
                                 "column": "age",
                                 "outputColumn": f"band_{i}",
                                 "banding": "continuous",
-                                "rules": [{"max": 25, "value": "0"}],
+                                # Use the real rule schema (op1/val1/assignment);
+                                # the legacy {"max": ..., "value": ...} form
+                                # parses without producing the declared
+                                # output column at runtime.
+                                "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
                                 "default": "1",
                             }
                         ],

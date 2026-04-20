@@ -8,9 +8,7 @@ Extracted from ``executor.py`` to keep the orchestration module focused
 on ``execute_graph``, ``_eager_execute``, and ``execute_sink``.
 
 Exec-side registrations write into :data:`haute._registry.NODE_REGISTRY` —
-the single source of truth shared with ``_codegen_builders.py``.  A legacy
-``_NODE_BUILDERS`` dict mirror is maintained for backward compatibility
-with tests that inspected the old standalone table.
+the single source of truth shared with ``_codegen_builders.py``.
 """
 
 from __future__ import annotations
@@ -108,8 +106,6 @@ class NodeBuildContext:
 
 # Type alias for builder functions.
 NodeBuilder = Callable[[NodeBuildContext], tuple[str, Callable, bool]]
-
-_NODE_BUILDERS: dict[NodeType, NodeBuilder] = {}
 
 # Column contract type: (produced_columns, referenced_columns).
 # ``produced``: columns the node creates (not in input).  None = opaque.
@@ -264,8 +260,10 @@ def _register(
 ) -> Callable[[NodeBuilder], NodeBuilder]:
     """Decorator to register a node builder for a given NodeType.
 
-    Writes the builder into the unified :data:`haute._registry.NODE_REGISTRY`
-    (primary) and the legacy ``_NODE_BUILDERS`` / ``_COLUMN_CONTRACTS`` mirrors.
+    Writes the builder into the unified :data:`haute._registry.NODE_REGISTRY`.
+    A ``_COLUMN_CONTRACTS`` mirror is also populated so the adoption-
+    coverage invariant (``_validate_registry_contracts_complete``) can
+    check coverage without walking the registry.
 
     The optional *columns* callback declares the node's column contract —
     which columns it creates and which input columns it reads — given its
@@ -300,7 +298,6 @@ def _register(
 
     def decorator(fn: NodeBuilder) -> NodeBuilder:
         registrar(fn)
-        _NODE_BUILDERS[node_type] = fn
         if contract_fn is not None:
             _COLUMN_CONTRACTS[node_type] = contract_fn
         return fn
@@ -325,7 +322,7 @@ def get_column_contract(
     if entry is None or entry.column_contract is None:
         raise KeyError(
             f"NodeType {node_type!r} has no column contract registered. "
-            "Every builder in _NODE_BUILDERS must also register a contract "
+            "Every builder in NODE_REGISTRY must also register a contract "
             "in _COLUMN_CONTRACTS (pass columns=... or opaque=True to "
             "_register).",
         )

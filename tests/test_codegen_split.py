@@ -214,17 +214,24 @@ class TestCodegenModuleSplit:
         mod = importlib.import_module("haute._codegen_builders")
         assert mod is not None
 
-    def test_codegen_builders_owns_registry(self) -> None:
-        """The codegen dispatch registry must live in ``_codegen_builders``."""
-        from haute import _codegen_builders as cb
+    def test_codegen_builders_owns_registration_entrypoint(self) -> None:
+        """The codegen side of dispatch must be registered from
+        ``_codegen_builders`` — the registry itself lives in
+        :mod:`haute._registry`, so what we pin here is that every codegen
+        NodeType is populated by importing ``_codegen_builders`` (and only
+        ``_codegen_builders``), NOT from ``haute.codegen`` itself."""
+        from haute import _codegen_builders, _registry, codegen  # noqa: F401
 
-        # Either the full registry or a per-type accessor must exist in
-        # _codegen_builders — anything else means the split did not happen.
-        has_registry = hasattr(cb, "_CODEGEN_BUILDERS") or hasattr(cb, "CODEGEN_BUILDERS")
-        has_registry = has_registry or hasattr(cb, "REGISTRY") or hasattr(cb, "registry")
-        assert has_registry, (
-            "haute._codegen_builders must expose the codegen builder registry "
-            "(_CODEGEN_BUILDERS, CODEGEN_BUILDERS, REGISTRY, or registry)"
+        registry = _registry.NODE_REGISTRY
+        codegen_types = {nt for nt, entry in registry.items() if entry.codegen is not None}
+        assert codegen_types, (
+            "NODE_REGISTRY has no codegen entries — _codegen_builders did "
+            "not populate them."
+        )
+        # _codegen_builders must own the dispatch-function source of truth,
+        # so codegen.py must not define its own _CODEGEN_BUILDERS.
+        assert not hasattr(codegen, "_CODEGEN_BUILDERS"), (
+            "haute.codegen must not expose _CODEGEN_BUILDERS after the split."
         )
 
     def test_codegen_py_has_no_module_level_registry(self) -> None:

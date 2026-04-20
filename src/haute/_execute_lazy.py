@@ -435,6 +435,7 @@ def _execute_lazy(
     preamble_ns: dict | None = None,
     source: str = "live",
     checkpoint_dir: Path | None = None,
+    enforce_contracts: bool = False,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -454,6 +455,13 @@ def _execute_lazy(
             references.  This breaks both chained-join memory
             accumulation and plan duplication across branches
             (GitHub pola-rs/polars#24206).
+        enforce_contracts: When ``True`` (see ``executor.ENFORCE_CONTRACTS``
+            for the default), assert declared column contracts at each
+            node boundary via ``.collect_schema()``.  Polars computes
+            schemas without executing the query, so this stays cheap.
+            Production code paths (batch sink, deploy scoring, training,
+            optimiser) run through here — enforcement on the lazy path
+            is what makes contract coverage real end-to-end.
 
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
@@ -515,8 +523,29 @@ def _execute_lazy(
     # cyclic Python garbage (rare here) and adds 50-200 ms per call.
     checkpoints_since_gc = 0
 
+    # Per-node column sets used by the boundary contract checks.  Polars
+    # computes schema without executing the query, so collect_schema()
+    # is cheap; caching keeps repeated lookups free when the same
+    # upstream feeds multiple consumers.
+    column_cache: dict[str, frozenset[str]] = {}
+
+    def _columns_of(frame: pl.LazyFrame | pl.DataFrame) -> frozenset[str]:
+        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
+        return frozenset(lazy_frame.collect_schema().names())
+
     for nid in order:
         fn, is_source = funcs[nid]
+        node = node_map[nid]
+        contract = _effective_contract(node) if enforce_contracts else None
+        check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
+        # Builder-wired ``_passthrough_fn`` means the node is in a stub
+        # state (MODEL_SCORE without a model, OPTIMISER_APPLY without
+        # an artifact).  Its declared contract describes the configured
+        # shape the runtime does not produce yet; skip the output check
+        # to preserve the "configure later" UX while still enforcing
+        # contracts the moment a real function is wired.
+        is_passthrough_runtime = fn is _passthrough_fn
+
         if is_source:
             lf = fn()
         else:
@@ -530,6 +559,15 @@ def _execute_lazy(
             input_lfs = [lazy_outputs[pid] for pid in input_ids]
             if not input_lfs:
                 raise ValueError(f"No input data available for node '{nid}'")
+
+            if check_here and contract is not None and contract.inputs is not None:
+                upstream_pid = input_ids[0]
+                upstream_cols = column_cache.get(upstream_pid)
+                if upstream_cols is None:
+                    upstream_cols = _columns_of(input_lfs[0])
+                    column_cache[upstream_pid] = upstream_cols
+                _assert_inputs_satisfy_contract(node, contract, upstream_cols)
+
             lf = fn(*input_lfs)
 
         if isinstance(lf, pl.DataFrame):
@@ -539,6 +577,16 @@ def _execute_lazy(
         # then column renames on the surviving columns.
         lf = _apply_selected_columns(lf, node_map[nid].data.config)
         lf = _apply_column_renames(lf, node_map[nid].data.config)
+
+        if (
+            check_here
+            and contract is not None
+            and contract.outputs is not None
+            and not is_passthrough_runtime
+        ):
+            out_cols = _columns_of(lf)
+            column_cache[nid] = out_cols
+            _assert_outputs_satisfy_contract(node, contract, out_cols)
 
         # Adaptive checkpoint to break Polars plan duplication and
         # chained-join memory accumulation (pola-rs/polars#24206).

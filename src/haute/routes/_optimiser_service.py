@@ -484,6 +484,8 @@ class OptimiserSolveService:
             _prev_chunk = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
             pl.Config.set_streaming_chunk_size(50_000)
             try:
+                from haute.executor import ENFORCE_CONTRACTS
+
                 lazy_outputs, *_ = _execute_lazy(
                     body.graph,
                     _build_node_fn,
@@ -491,6 +493,7 @@ class OptimiserSolveService:
                     preamble_ns=preamble_ns,
                     source=scenario,
                     checkpoint_dir=checkpoint_dir,
+                    enforce_contracts=ENFORCE_CONTRACTS,
                 )
             finally:
                 # Restore previous streaming chunk size if one was explicitly set.

@@ -23,7 +23,6 @@ from typing import Any
 import polars as pl
 
 from haute._builders import (  # noqa: F401 — re-exported for backward compat
-    _NODE_BUILDERS,
     NodeBuildContext,
     NodeBuilder,
     _apply_online,
@@ -404,7 +403,11 @@ def execute_graph(
     if not graph.nodes:
         return {}
 
-    fp = graph_fingerprint(graph, f"{row_limit}:{source}")
+    # Include enforce_contracts in the cache key so a toggle flips
+    # between distinct cache slots instead of serving a stale entry
+    # computed under a different enforcement mode.  Without this, the
+    # contract-overhead benchmark measures cache-hit-vs-cache-hit.
+    fp = graph_fingerprint(graph, f"{row_limit}:{source}:contracts={int(enforce_contracts)}")
 
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
@@ -772,6 +775,7 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
                 preamble_ns=preamble_ns or None,
                 source=sink_scenario,
                 checkpoint_dir=checkpoint_path,
+                enforce_contracts=ENFORCE_CONTRACTS,
             )
             lf = lazy_outputs.get(sink_node_id)
             if lf is None:

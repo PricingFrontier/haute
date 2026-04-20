@@ -87,11 +87,10 @@ class TestDispatchTableParity:
     _EXECUTOR_ONLY: frozenset[str] = frozenset({"submodel", "submodelPort"})
 
     def test_codegen_covers_all_executor_types(self) -> None:
-        from haute._builders import _NODE_BUILDERS
-        from haute._codegen_builders import _CODEGEN_BUILDERS
+        from haute._registry import NODE_REGISTRY
 
-        executor_types = set(_NODE_BUILDERS.keys())
-        codegen_types = set(_CODEGEN_BUILDERS.keys())
+        executor_types = {nt for nt, e in NODE_REGISTRY.items() if e.exec is not None}
+        codegen_types = {nt for nt, e in NODE_REGISTRY.items() if e.codegen is not None}
 
         missing_from_codegen = executor_types - codegen_types - self._EXECUTOR_ONLY
         assert missing_from_codegen == set(), (
@@ -100,11 +99,10 @@ class TestDispatchTableParity:
         )
 
     def test_executor_covers_all_codegen_types(self) -> None:
-        from haute._builders import _NODE_BUILDERS
-        from haute._codegen_builders import _CODEGEN_BUILDERS
+        from haute._registry import NODE_REGISTRY
 
-        executor_types = set(_NODE_BUILDERS.keys())
-        codegen_types = set(_CODEGEN_BUILDERS.keys())
+        executor_types = {nt for nt, e in NODE_REGISTRY.items() if e.exec is not None}
+        codegen_types = {nt for nt, e in NODE_REGISTRY.items() if e.codegen is not None}
 
         missing_from_executor = codegen_types - executor_types
         assert missing_from_executor == set(), (
@@ -114,13 +112,14 @@ class TestDispatchTableParity:
 
     def test_executor_only_types_are_documented(self) -> None:
         """Verify the executor-only types are the ones we expect."""
-        from haute._builders import _NODE_BUILDERS
+        from haute._registry import NODE_REGISTRY
         from haute.graph_utils import NodeType
 
         for t in self._EXECUTOR_ONLY:
             nt = NodeType(t)
-            assert nt in _NODE_BUILDERS, (
-                f"Claimed executor-only type {t!r} is not actually in _NODE_BUILDERS"
+            entry = NODE_REGISTRY.get(nt)
+            assert entry is not None and entry.exec is not None, (
+                f"Claimed executor-only type {t!r} has no exec entry in NODE_REGISTRY"
             )
 
 

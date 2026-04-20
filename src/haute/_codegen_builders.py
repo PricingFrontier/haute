@@ -397,32 +397,12 @@ def _wrap_user_code(code: str, source_names: list[str]) -> str:
 CodegenBuilder = Callable[[GraphNode, list[str]], str]
 
 
-# ---------------------------------------------------------------------------
-# Legacy mirror of the codegen side of ``NODE_REGISTRY``
-# ---------------------------------------------------------------------------
-#
-# A handful of tests in ``tests/test_codegen.py`` monkey-patch
-# ``_CODEGEN_BUILDERS.pop(...)`` to exercise the missing-builder error path.
-# We keep the legacy dict mirror populated alongside the unified registry so
-# those tests continue to work.  The unified registry remains canonical for
-# all production dispatch.
-_CODEGEN_BUILDERS: dict[NodeType, CodegenBuilder] = {}
-
-
 def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], CodegenBuilder]:
     """Decorator to register a codegen builder for *node_type*.
 
-    Writes into both the unified registry (primary) and ``_CODEGEN_BUILDERS``
-    (legacy mirror).
+    Writes into the unified :data:`haute._registry.NODE_REGISTRY`.
     """
-    registrar = _register_codegen_in_registry(node_type)
-
-    def decorator(fn: CodegenBuilder) -> CodegenBuilder:
-        registrar(fn)
-        _CODEGEN_BUILDERS[node_type] = fn
-        return fn
-
-    return decorator
+    return _register_codegen_in_registry(node_type)
 
 
 def _assign_codegen(node_type: NodeType, fn: CodegenBuilder) -> None:
@@ -432,7 +412,6 @@ def _assign_codegen(node_type: NodeType, fn: CodegenBuilder) -> None:
     decorator form would need an extra wrapper to apply at definition time.
     """
     _set_codegen_in_registry(node_type, fn)
-    _CODEGEN_BUILDERS[node_type] = fn
 
 
 # ---------------------------------------------------------------------------
@@ -909,9 +888,7 @@ def _gen_submodel_placeholder_unreachable(
 
 
 _set_codegen_in_registry(NodeType.SUBMODEL, _gen_submodel_placeholder_unreachable)
-_CODEGEN_BUILDERS[NodeType.SUBMODEL] = _gen_submodel_placeholder_unreachable
 _set_codegen_in_registry(NodeType.SUBMODEL_PORT, _gen_submodel_placeholder_unreachable)
-_CODEGEN_BUILDERS[NodeType.SUBMODEL_PORT] = _gen_submodel_placeholder_unreachable
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +926,5 @@ __all__ = [
     "_gen_rating_step",
     "_gen_scenario_expander",
     "_gen_transform",
-    # Registry mirror
-    "_CODEGEN_BUILDERS",
     "_register_codegen",
 ]

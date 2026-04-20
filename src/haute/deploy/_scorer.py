@@ -351,12 +351,15 @@ def score_graph(
 
     # Deployed API always runs in "live" source — eager scoring, live
     # switch routes to the live input.
+    from haute.executor import ENFORCE_CONTRACTS
+
     lazy_outputs, order, _parents, _names = _execute_lazy(
         graph,
         builder,
         target_node_id=output_node_id,
         preamble_ns=preamble_ns,
         source="live",
+        enforce_contracts=ENFORCE_CONTRACTS,
     )
 
     output_lf = lazy_outputs.get(output_node_id)
