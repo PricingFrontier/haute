@@ -55,103 +55,99 @@ def _make_node(
 
 
 class TestSanitizeDescription:
-    """Unit tests for _sanitize_description."""
+    """Unit tests for _sanitize_description.
 
-    def test_triple_quotes_replaced(self):
+    Post Wave 9D #122: the sanitiser returns content suitable for
+    interpolation between ``\"\"\"`` triple-double-quotes.  It backslash-
+    escapes every ``\\`` and every ``"`` so that no triple-quote run can
+    form inside the literal and so that escape sequences stay literal.
+    A helper asserts the full round-trip invariant — the docstring
+    extracted from the generated code must equal the original.
+    """
+
+    @staticmethod
+    def _assert_roundtrip(description: str) -> None:
+        """Helper — verify ``f'\"\"\"{_sanitize_description(x)}\"\"\"'`` parses
+        and yields a docstring whose cleandoc value equals *description*.
+        """
+        result = _sanitize_description(description)
+        code = f'def f():\n    """{result}"""\n    pass'
+        tree = ast.parse(code)
+        assert (ast.get_docstring(tree.body[0]) or "") == description, (
+            f"round-trip failed for {description!r}: "
+            f"sanitized={result!r}, "
+            f"docstring={ast.get_docstring(tree.body[0])!r}"
+        )
+
+    def test_triple_quotes_escaped(self):
+        """Every ``\"`` (including those inside ``\"\"\"``) is backslash-escaped."""
         result = _sanitize_description('Has """triple""" quotes')
+        # No bare """ run can appear in the emitted content.
         assert '"""' not in result
-        assert "'''" in result
+        # Round-trip invariant.
+        self._assert_roundtrip('Has """triple""" quotes')
 
     def test_single_triple_quote(self):
         result = _sanitize_description('Ends with """')
         assert '"""' not in result
+        self._assert_roundtrip('Ends with """')
 
     def test_multiple_triple_quotes(self):
         result = _sanitize_description('A """ B """ C')
         assert result.count('"""') == 0
-        assert result.count("'''") == 2
+        self._assert_roundtrip('A """ B """ C')
 
     def test_no_triple_quotes_unchanged(self):
         original = "Normal description"
-        assert _sanitize_description(original) == original
+        self._assert_roundtrip(original)
 
-    def test_single_double_quote_interior_unchanged(self):
-        original = 'Has a " quote'
-        assert _sanitize_description(original) == original
+    def test_single_double_quote_interior_roundtrips(self):
+        self._assert_roundtrip('Has a " quote')
 
-    def test_two_double_quotes_interior_unchanged(self):
-        original = 'Has "" two quotes'
-        assert _sanitize_description(original) == original
+    def test_two_double_quotes_interior_roundtrips(self):
+        self._assert_roundtrip('Has "" two quotes')
 
-    def test_four_double_quotes_partially_replaced(self):
-        """Four consecutive double-quotes contain one triple-quote run."""
+    def test_four_double_quotes_roundtrips(self):
+        """Four consecutive double-quotes must not form a run in output."""
         result = _sanitize_description('Has """" four')
-        # """" is """ + " — the """ part gets replaced with '''
         assert '"""' not in result
-        assert "'''" in result
+        self._assert_roundtrip('Has """" four')
 
     def test_single_quotes_not_affected(self):
-        original = "Has '''single triple''' quotes"
-        assert _sanitize_description(original) == original
+        self._assert_roundtrip("Has '''single triple''' quotes")
 
-    def test_trailing_backslash_handled(self):
-        result = _sanitize_description("ends with backslash\\")
-        # Should end with \\ (double backslash) so generated code has
-        # a valid escaped backslash that doesn't escape the closing triple-quote
-        assert result.endswith("\\\\")
-        # Verify the result produces valid Python when embedded in a docstring
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+    def test_trailing_backslash_roundtrips(self):
+        self._assert_roundtrip("ends with backslash\\")
 
     def test_empty_string(self):
         assert _sanitize_description("") == ""
 
     def test_mixed_quotes(self):
-        result = _sanitize_description('''Has " and "" and """ and '  ''')
+        desc = '''Has " and "" and """ and '  '''
+        result = _sanitize_description(desc)
         assert '"""' not in result
+        self._assert_roundtrip(desc)
 
-    def test_trailing_single_double_quote_escaped(self):
-        """A trailing double-quote would merge with closing triple-quote."""
-        result = _sanitize_description('ends with"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+    def test_trailing_single_double_quote_roundtrips(self):
+        self._assert_roundtrip('ends with"')
 
-    def test_trailing_two_double_quotes_escaped(self):
-        """Two trailing double-quotes would also cause issues."""
-        result = _sanitize_description('ends with""')
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+    def test_trailing_two_double_quotes_roundtrips(self):
+        self._assert_roundtrip('ends with""')
 
-    def test_trailing_four_double_quotes(self):
-        """Four trailing quotes: triple-quote replaced, one remaining escaped."""
-        result = _sanitize_description("ends with" + '"' * 4)
-        assert '"""' not in result
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+    def test_trailing_four_double_quotes_roundtrips(self):
+        self._assert_roundtrip("ends with" + '"' * 4)
 
     def test_trailing_backslash_then_quote(self):
-        r"""Trailing backslash + quote (e.g. ``some\_text\"``) must not break."""
-        result = _sanitize_description('ends with\\"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+        self._assert_roundtrip('ends with\\"')
 
     def test_trailing_double_backslash_then_quote(self):
-        r"""Trailing double-backslash + quote (``\\"``) must be safe."""
-        result = _sanitize_description('ends with\\\\"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+        self._assert_roundtrip('ends with\\\\"')
 
     def test_just_a_single_double_quote(self):
-        """Description that is a single double-quote."""
-        result = _sanitize_description('"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+        self._assert_roundtrip('"')
 
     def test_just_two_double_quotes(self):
-        """Description that is two double-quotes."""
-        result = _sanitize_description('""')
-        code = f'def f():\n    """{result}"""\n    pass'
-        ast.parse(code)
+        self._assert_roundtrip('""')
 
     @pytest.mark.parametrize("n_quotes", range(1, 8))
     def test_trailing_n_quotes_all_safe(self, n_quotes):
@@ -220,18 +216,38 @@ class TestTripleQuoteInjection:
         ids=lambda x: x if isinstance(x, str) else "",
     )
     def test_triple_quote_in_description_all_types(self, node_type, config):
-        """Every node type handles triple-quote in description safely."""
+        """Every node type handles triple-quote in description safely.
+
+        Post Wave 9D #122: the sanitiser backslash-escapes every ``\"`` in
+        the description, so no bare triple-quote run can form inside the
+        docstring literal.  The docstring extracted via
+        ``ast.get_docstring`` must still equal the original description.
+        """
+        import ast
+
+        description = 'Has """triple""" quotes'
         node = _make_node(
             node_type,
             config,
             label="TestNode",
-            description='Has """triple""" quotes',
+            description=description,
         )
         code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         _ast_parse_node_code(code)
-        # The literal """ should not appear unescaped in the docstring
-        assert '"""Has' not in code or "'''" in code
+        # Round-trip: the extracted docstring equals the original.
+        wrapper = (
+            "import polars as pl\n"
+            "import haute\n"
+            "pipeline = haute.Pipeline('test')\n\n"
+            f"{code}\n"
+        )
+        tree = ast.parse(wrapper)
+        fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "TestNode"
+        )
+        assert (ast.get_docstring(fn) or "") == description
 
     def test_triple_quote_in_transform_description(self):
         """Transform node with triple-quote description compiles."""
@@ -756,11 +772,35 @@ class TestDescriptionRegression:
         assert "Normal description text" in code
         _compile_node_code(code)
 
-    def test_default_description_uses_label(self):
+    def test_default_description_is_empty(self):
+        """An unset description produces an empty docstring.
+
+        Post Wave 9D #122: we intentionally do NOT substitute a
+        ``<label> node`` placeholder for an empty description, because
+        that mutation breaks the round-trip invariant (saved graph
+        would come back with a synthetic description the user never
+        typed).  The emitted code still compiles — the docstring is
+        simply ``\"\"\"\"\"\"``.
+        """
+        import ast
+
         node = _make_node("polars", {"code": ""}, label="MyLabel")
         code = _node_to_code(node, source_names=["upstream"])
-        assert "MyLabel node" in code
         _compile_node_code(code)
+        # Wrap the generated node in a minimal pipeline preamble so we
+        # can parse it and verify the docstring is empty.
+        wrapper = (
+            "import polars as pl\n"
+            "import haute\n"
+            "pipeline = haute.Pipeline('test')\n\n"
+            f"{code}\n"
+        )
+        tree = ast.parse(wrapper)
+        fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "MyLabel"
+        )
+        assert (ast.get_docstring(fn) or "") == ""
 
     def test_description_with_newlines(self):
         """Newlines in descriptions are OK inside triple-quoted docstrings."""

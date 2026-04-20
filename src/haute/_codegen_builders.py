@@ -125,57 +125,70 @@ def _build_params(source_names: list[str]) -> str:
 
 
 def _sanitize_description(desc: str) -> str:
-    r"""Sanitize a description string for safe use inside triple-quoted docstrings.
+    r"""Sanitize a description for safe interpolation between ``\"\"\"`` triple
+    double-quotes.
 
-    Replaces ``\"\"\"`` with ``'''`` so that the generated docstring
-    ``\"\"\"{description}\"\"\"`` remains syntactically valid Python.
+    Produces content *x* such that ``f'\"\"\"{x}\"\"\"'`` is a valid
+    Python triple-double-quoted string literal whose
+    ``inspect.cleandoc`` / ``ast.get_docstring`` value equals the
+    original *desc*.  The invariants (see
+    ``tests/test_codegen_docstring_roundtrip.py``):
 
-    Also handles two edge cases that would break the closing ``\"\"\"``:
+    1. *Syntactic safety* — the generated source always parses
+       (no matter what escape sequences, backslashes, or triple-quote
+       runs appear in *desc*).
+    2. *Round-trip* — ``ast.get_docstring(fn) == desc`` for every
+       pathological *desc* in the Phase 5 Wave 9D matrix.
 
-    - **Trailing double-quotes** merge with the closing ``\"\"\"`` (e.g.
-      ``\"\"\"{desc}\"\"\"`` becomes ``\"\"\"foo\"\"\"\"`` which is invalid).
-      Every trailing ``"`` is backslash-escaped.  If the text *before* the
-      trailing quotes already ends with an odd number of backslashes, an
-      extra backslash is inserted so the escape isn't "absorbed".
-    - **Trailing backslash** would escape the closing quote.  An extra
-      backslash is appended to make the count even.
+    Implementation:
+
+    - Every backslash is doubled so sequences like ``\U`` (Windows
+      paths) and ``\N{...}`` (named escapes) stay literal instead of
+      being re-parsed by the Python compiler.
+    - Every ``"`` is backslash-escaped so no run of 3 or more quotes
+      can form and prematurely close the enclosing ``\"\"\"`` literal.
+    - A leading ``\n`` is prepended when *desc* contains a newline or
+      has edge whitespace (so the first non-empty line is on line 2).
+      This neutralises ``inspect.cleandoc``'s behaviour of stripping
+      the first line's leading whitespace and the minimum common
+      indent of the remaining lines, which otherwise corrupts user-
+      authored indented multi-line descriptions.
+    - Curly braces are doubled to survive ``str.format`` interpolation
+      in the per-type templates.
     """
-    desc = desc.replace("{", "{{").replace("}", "}}")
-    desc = desc.replace('"""', "'''")
-
-    # Trailing double-quotes -----------------------------------------------
-    stripped = desc.rstrip('"')
-    n_quotes = len(desc) - len(stripped)
-    if n_quotes > 0:
-        # If the text before the quotes ends with an odd number of
-        # backslashes, our first \" would be parsed as an escaped
-        # backslash + bare quote.  Pad to make the backslash count even.
-        core = stripped.rstrip("\\")
-        n_backslashes = len(stripped) - len(core)
-        if n_backslashes % 2 == 1:
-            stripped = stripped + "\\"
-        desc = stripped + '\\"' * n_quotes
+    # Neutralise cleandoc: prepend a newline when desc has newlines or
+    # leading/trailing whitespace that cleandoc would strip.  For all-ASCII
+    # single-line descriptions without edge whitespace, cleandoc is a no-op.
+    if "\n" in desc or desc != desc.strip():
+        value = "\n" + desc
     else:
-        # Trailing backslash (no trailing quotes) ------------------------
-        core = desc.rstrip("\\")
-        n_backslashes = len(desc) - len(core)
-        if n_backslashes % 2 == 1:
-            desc = desc + "\\"
-
-    return desc
+        value = desc
+    # Double every backslash so Python's reader does not interpret embedded
+    # escape sequences (backslash-U, backslash-N, etc).
+    escaped = value.replace("\\", "\\\\")
+    # Escape every " so no triple-quote run can form inside the docstring
+    # and prematurely close the enclosing """ literal.
+    escaped = escaped.replace('"', '\\"')
+    # Double curly braces so the templates' ``str.format`` doesn't
+    # interpret them as placeholders.
+    escaped = escaped.replace("{", "{{").replace("}", "}}")
+    return escaped
 
 
 def _common_node_fields(node: GraphNode) -> tuple[str, str, dict]:
     """Extract the (func_name, description, config) triple used by every builder.
 
-    The description is sanitized so that triple-quotes cannot break the
-    generated docstring.
+    The description is sanitised so that triple-quotes, backslash escape
+    sequences, and multi-line content cannot break the generated docstring
+    AND so that ``ast.get_docstring`` round-trips it bit-for-bit.  An
+    intentionally-empty description is preserved as-is (it becomes
+    ``\"\"\"\"\"\"``) — we do not substitute a ``<label> node`` placeholder,
+    because that would make the round-trip lossy.
     """
     data = node.data
-    raw_desc = data.description or f"{data.label} node"
     return (
         _sanitize_func_name(data.label),
-        _sanitize_description(raw_desc),
+        _sanitize_description(data.description),
         data.config,
     )
 

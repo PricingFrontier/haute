@@ -169,39 +169,22 @@ _COMPILE_CASES_SAFE_TODAY = [
     ),
 ]
 
-# Cases that CURRENTLY break the compile step because codegen interpolates
-# backslash escape sequences (particularly backslash-U, backslash-N,
-# backslash-u) from the description directly into a real Python
-# triple-quoted string literal.  Those sequences get reinterpreted by the
-# Python parser and raise SyntaxError at ``ast.parse`` time.  Post-fix:
-# codegen must emit a raw-string form OR escape each backslash, so any
-# user-typed backslash content stays literal and does not trigger
-# re-parsing.  Marked xfail(strict=True) so the fix surfaces as
-# unexpected-pass.
+# Cases that historically broke the compile step because codegen
+# interpolated backslash escape sequences (particularly backslash-U,
+# backslash-N, backslash-u) from the description directly into a real
+# Python triple-quoted string literal.  Those sequences were reinterpreted
+# by the Python parser and raised SyntaxError at ``ast.parse`` time.
+# Post-fix (Wave 9D #122): codegen now escapes every backslash in the
+# description before interpolation, so user-typed backslash content stays
+# literal and does not trigger re-parsing.
 _COMPILE_CASES_BROKEN_TODAY = [
     pytest.param(
         r"C:\Users\foo\bar.txt",
         id="windows-path-unicode-escape",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=(
-                "Wave 9D #122: backslash-U in a description is parsed as "
-                "a unicode-escape by the Python reader and raises "
-                "SyntaxError.  Post-fix codegen must emit the docstring "
-                "as a raw-string literal (or escape each backslash)."
-            ),
-        ),
     ),
     pytest.param(
         r"has \N{LATIN SMALL LETTER E} named escape",
         id="named-escape",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=(
-                "Wave 9D #122: backslash-N named escapes are reinterpreted "
-                "by the Python parser; codegen must escape them."
-            ),
-        ),
     ),
 ]
 
@@ -262,90 +245,31 @@ class TestDocstringRoundTrip:
 
     # ----- Currently-broken cases pinned to xfail(strict=True) --------------
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #122: _sanitize_description replaces \"\"\" with ''' "
-            "so the extracted docstring no longer equals the original "
-            "description.  Post-fix codegen must preserve the triple-"
-            "quote content verbatim (e.g. by using a raw-string form or "
-            "escaping the inner quotes individually)."
-        ),
-    )
     def test_triple_quote_content_roundtrips(self) -> None:
         desc = 'a """ b'
         code = _generate_single_node_code(desc)
         assert _extract_docstring(code, "Transform") == desc
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #122: the sanitiser substitutes ''' for every \"\"\" "
-            "run, so pure-triple-quote descriptions never round-trip."
-        ),
-    )
     def test_pure_triple_quote_roundtrips(self) -> None:
         desc = '"""'
         code = _generate_single_node_code(desc)
         assert _extract_docstring(code, "Transform") == desc
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #122: literal backslash-letter sequences in the "
-            "description are embedded in the generated source as real "
-            "escape sequences, so ``\\n`` in the description ends up as "
-            "a newline in the docstring.  Post-fix codegen must emit a "
-            "raw-string or escape each backslash so ``\\n`` stays as "
-            "a literal backslash + n."
-        ),
-    )
     def test_literal_backslash_n_roundtrips(self) -> None:
         desc = r"newline=\n tab=\t backslash=\\"
         code = _generate_single_node_code(desc)
         assert _extract_docstring(code, "Transform") == desc
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #122: ``ast.get_docstring`` runs ``inspect.cleandoc`` "
-            "which dedents the docstring.  A multi-line description with "
-            "varying internal indentation does not round-trip via "
-            "``ast.get_docstring`` today.  Post-fix codegen must either "
-            "emit enough leading whitespace so cleandoc is a no-op or "
-            "the round-trip contract must be stated in terms of "
-            "``ast.get_docstring(clean=False)`` / raw node.value.value."
-        ),
-    )
     def test_multiline_varying_indent_roundtrips(self) -> None:
         desc = "line1\n  line2\n    line3"
         code = _generate_single_node_code(desc)
         assert _extract_docstring(code, "Transform") == desc
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #122: falsy descriptions (``\"\"``) are currently "
-            "replaced with the generic ``<label> node`` placeholder in "
-            "``_common_node_fields``.  That is convenient UX but it "
-            "means the round-trip fails for empty-string descriptions.  "
-            "Post-fix codegen must preserve an intentionally-empty "
-            "description distinctly from a missing one."
-        ),
-    )
     def test_empty_description_roundtrips(self) -> None:
         desc = ""
         code = _generate_single_node_code(desc)
         assert _extract_docstring(code, "Transform") == desc
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #122: ``ast.get_docstring`` runs ``cleandoc`` which "
-            "strips whitespace from a whitespace-only docstring.  The "
-            "round-trip therefore fails for a single-space description."
-        ),
-    )
     def test_whitespace_only_description_roundtrips(self) -> None:
         desc = " "
         code = _generate_single_node_code(desc)
@@ -530,18 +454,6 @@ class TestTortureEndToEnd:
         # surface.
         assert ast.get_docstring(inner_fns[0]) is not None
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #122: strictest end-to-end round-trip.  The "
-            "sanitiser mutates triple-quotes to ''' and may rewrite "
-            "backslash content, so the pathological description does "
-            "not round-trip through graph_to_code_multi -> ast.parse "
-            "-> ast.get_docstring today.  Post-fix this test must "
-            "flip to an unexpected-pass, proving the end-to-end "
-            "contract is tight."
-        ),
-    )
     def test_submodel_nested_torture_roundtrip(self) -> None:
         """Strictest end-to-end: pathological docstring nested in a submodel
         inside graph_to_code_multi must compile AND round-trip.

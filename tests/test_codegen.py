@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -1884,49 +1885,49 @@ class TestWrapUserCodeIndentBehavior:
 
 
 class TestSanitizeDescription:
-    """Catch: descriptions containing triple quotes, trailing backslashes,
-    or trailing double-quotes would break the generated docstring, producing
-    a SyntaxError at pipeline import time."""
+    """Descriptions containing triple quotes, trailing backslashes, or
+    trailing double-quotes must not break the generated docstring.
 
-    def test_triple_quotes_replaced(self):
-        """Triple quotes inside description would close the docstring early."""
+    Post Wave 9D #122: the sanitiser backslash-escapes every ``\\`` and
+    every ``"`` and prepends a leading ``\\n`` when needed to neutralise
+    ``inspect.cleandoc``'s indent-stripping.  The result is that
+    ``\"\"\"{sanitize(desc)}\"\"\"`` is always valid Python AND
+    round-trips via ``ast.get_docstring`` for arbitrary user input.
+    """
+
+    @staticmethod
+    def _assert_roundtrip(description: str) -> None:
+        result = _sanitize_description(description)
+        code = f'def f():\n    """{result}"""\n    pass'
+        compile(code, "<test>", "exec")
+        tree = ast.parse(code)
+        assert (ast.get_docstring(tree.body[0]) or "") == description, (
+            f"round-trip failed for {description!r}: "
+            f"docstring={ast.get_docstring(tree.body[0])!r}"
+        )
+
+    def test_triple_quotes_escaped(self):
+        """Triple quotes inside description never appear as a run in output."""
         result = _sanitize_description('hello """world"""')
         assert '"""' not in result
-        assert "'''" in result
-        # Must produce valid docstring
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('hello """world"""')
 
     def test_trailing_double_quote(self):
-        """A trailing " merges with closing triple-quote to form invalid syntax."""
-        result = _sanitize_description('ends with quote"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('ends with quote"')
 
     def test_trailing_multiple_double_quotes(self):
-        """Multiple trailing " chars each need escaping."""
-        result = _sanitize_description('danger""')
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('danger""')
 
     def test_trailing_backslash(self):
-        """A trailing backslash would escape the closing quote."""
-        result = _sanitize_description("ends with backslash\\")
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip("ends with backslash\\")
 
     def test_trailing_backslash_before_quotes(self):
-        r"""Odd backslashes before trailing quotes: ``foo\"`` would absorb escape."""
-        result = _sanitize_description('backslash then quote\\"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('backslash then quote\\"')
 
     def test_only_triple_quotes(self):
-        """Description that is nothing but triple quotes."""
         result = _sanitize_description('"""')
         assert '"""' not in result
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('"""')
 
     def test_empty_string(self):
         result = _sanitize_description("")
