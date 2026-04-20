@@ -108,10 +108,7 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
       {/* Drag handle */}
       <div
         onMouseDown={onDragStart}
-        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10 transition-colors"
-        style={{ background: 'var(--chrome-border)' }}
-        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--accent)'}
-        onMouseLeave={(e) => e.currentTarget.style.background = 'var(--chrome-border)'}
+        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
       />
       {/* Header bar */}
       <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
@@ -157,10 +154,8 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
           </div>
           <button
             onClick={() => setCollapsed(true)}
-            className="p-1 rounded transition-colors"
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
             style={{ color: 'var(--text-muted)' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
           >
             <ChevronDown size={14} />
           </button>
