@@ -72,7 +72,17 @@ def handle_status(config: StatusConfig) -> None:
         raise SystemExit(1)
 
     if config.version_only:
-        click.echo(info.get("latest_version", 0))
+        # Script callers rely on the stdout being only the version number,
+        # and exit code 0 iff a version exists.  A missing or "not_found"
+        # response must NOT print a misleading ``0`` to stdout — that is
+        # indistinguishable from a genuine version ``0``.  Fail loudly
+        # instead so scripts can detect the absence.
+        if info.get("status") == "not_found" or info.get("latest_version") is None:
+            raise click.ClickException(
+                f"No version registered for model '{model_name}' — "
+                "model not found in MLflow Model Registry."
+            )
+        click.echo(info["latest_version"])
         return
 
     if info.get("status") == "not_found":
