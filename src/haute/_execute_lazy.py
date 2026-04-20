@@ -38,6 +38,32 @@ logger = get_logger(component="execute")
 # ---------------------------------------------------------------------------
 
 
+def _compute_boundary_check_exceptions() -> tuple[type[BaseException], ...]:
+    """Exception classes the boundary contract check treats as recoverable.
+
+    We only catch classes that describe genuine "can't resolve the
+    contract right now" conditions — bad config, missing files, MLflow
+    reachability.  Programmer bugs (``AttributeError``, ``TypeError``,
+    ``KeyError``) propagate so they aren't silently masked.  MLflow's
+    ``RestException`` is included when the dep is importable (it
+    subclasses plain ``Exception`` so we can't catch it via
+    ``ConfigError`` / ``OSError``).
+    """
+    from haute.errors import ConfigError
+
+    exc_types: list[type[BaseException]] = [ConfigError, OSError, ImportError, RuntimeError]
+    try:
+        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+
+        exc_types.append(MlflowException)
+    except ImportError:
+        pass
+    return tuple(exc_types)
+
+
+_BOUNDARY_CHECK_EXCEPTIONS = _compute_boundary_check_exceptions()
+
+
 def _effective_contract(node: GraphNode) -> Contract:
     """Return the effective contract for a node at boundary-check time.
 
@@ -64,23 +90,24 @@ def _effective_contract(node: GraphNode) -> Contract:
 
     try:
         builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
-    except ConfigError:
-        builder = Contract.opaque()
-    except Exception as exc:  # noqa: BLE001 — scoped to boundary-check fallback
+    except _BOUNDARY_CHECK_EXCEPTIONS as exc:
         # Contract resolution for MODEL_SCORE etc. may touch MLflow /
         # external stores.  A transient or deploy-mode lookup failure
-        # here must not prevent the pipeline from running — the fn
-        # builder path has its own error reporting and will surface
-        # the real problem when the node actually executes.  We fall
-        # back to opaque so the boundary check is skipped for this
-        # node; the actual node code path still runs and still fails
-        # loudly via whichever error it has always produced.
-        logger.debug(
-            "effective_contract_unresolved",
-            node_id=node.id,
-            node_type=node.data.nodeType.value,
-            error=repr(exc),
-        )
+        # (ConfigError, OSError, MLflow REST) must not prevent the
+        # pipeline from running — the fn builder path has its own
+        # error reporting and will surface the real problem when the
+        # node actually executes.  We fall back to opaque so the
+        # boundary check is skipped for this node; the actual node
+        # code path still runs and still fails loudly via whichever
+        # error it has always produced.  Programmer errors
+        # (AttributeError / TypeError / KeyError) propagate.
+        if not isinstance(exc, ConfigError):
+            logger.debug(
+                "effective_contract_unresolved",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                error=repr(exc),
+            )
         builder = Contract.opaque()
     declared_raw = node.data.config.get("contract")
     if declared_raw is None:

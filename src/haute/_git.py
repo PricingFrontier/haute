@@ -102,17 +102,7 @@ class GitGuardrailError(GitDomainError):
 #
 # ``_git`` hands back the same Pydantic models that the HTTP layer exposes so
 # the routes can pass results through verbatim — no dataclass-to-dict-to-model
-# round-trip.  The local aliases preserve the historical ``GitStatus``,
-# ``BranchInfo``, ``SaveResult`` (etc.) names used by the rest of the codebase.
-
-GitStatus = GitStatusResponse
-BranchInfo = GitBranchItem
-BranchListResult = GitBranchListResponse
-SaveResult = GitSaveResponse
-HistoryEntry = GitHistoryEntry
-RevertResult = GitRevertResponse
-PullResult = GitPullResponse
-SubmitResult = GitSubmitResponse
+# round-trip.
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +318,7 @@ def ensure_repo(cwd: Path | None = None) -> None:
     _assert_git_repo(cwd)
 
 
-def get_status(cwd: Path | None = None) -> GitStatus:
+def get_status(cwd: Path | None = None) -> GitStatusResponse:
     """Get the current git status for the panel."""
     _assert_git_repo(cwd)
 
@@ -388,7 +378,7 @@ def get_status(cwd: Path | None = None) -> GitStatus:
             if ok_time:
                 main_last_updated = timestamp
 
-    return GitStatus(
+    return GitStatusResponse(
         branch=branch,
         is_main=is_main,
         is_read_only=is_read_only,
@@ -428,7 +418,7 @@ def create_branch(description: str, cwd: Path | None = None) -> str:
     return branch_name
 
 
-def list_branches(cwd: Path | None = None) -> BranchListResult:
+def list_branches(cwd: Path | None = None) -> GitBranchListResponse:
     """List all branches, with the user's branches first.
 
     Uses ``%(ahead-behind:<default>)`` (git 2.35+) to get commit counts
@@ -460,7 +450,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
             cwd=cwd,
         )
 
-    branches: list[BranchInfo] = []
+    branches: list[GitBranchItem] = []
     if ok and raw:
         for line in raw.splitlines():
             parts = line.split("\t")
@@ -488,7 +478,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
                     commit_count = int(count_str)
 
             branches.append(
-                BranchInfo(
+                GitBranchItem(
                     name=name,
                     is_yours=_is_own_branch(name, user_slug),
                     is_current=name == current,
@@ -499,7 +489,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
             )
 
     # Sort: yours first, then others, archived last
-    def sort_key(b: BranchInfo) -> tuple[int, str]:
+    def sort_key(b: GitBranchItem) -> tuple[int, str]:
         if b.is_archived:
             return (2, b.name)
         if b.is_yours:
@@ -508,7 +498,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
 
     branches.sort(key=sort_key)
 
-    return BranchListResult(current=current, branches=branches)
+    return GitBranchListResponse(current=current, branches=branches)
 
 
 def switch_branch(branch: str, cwd: Path | None = None) -> None:
@@ -529,7 +519,7 @@ def switch_branch(branch: str, cwd: Path | None = None) -> None:
     logger.info("branch_switched", from_branch=current, to_branch=branch)
 
 
-def save_progress(cwd: Path | None = None) -> SaveResult:
+def save_progress(cwd: Path | None = None) -> GitSaveResponse:
     """Stage all changes, commit, and push.  Returns commit info."""
     _assert_git_repo(cwd)
 
@@ -558,7 +548,7 @@ def save_progress(cwd: Path | None = None) -> SaveResult:
         _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
 
     logger.info("changes_saved", sha=sha[:8], message=message)
-    return SaveResult(commit_sha=sha, message=message, timestamp=timestamp)
+    return GitSaveResponse(commit_sha=sha, message=message, timestamp=timestamp)
 
 
 def _auto_commit(cwd: Path | None = None) -> None:
@@ -580,7 +570,7 @@ def _auto_commit(cwd: Path | None = None) -> None:
         _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
 
 
-def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
+def get_history(limit: int = 20, cwd: Path | None = None) -> list[GitHistoryEntry]:
     """Get commit history for the current branch.
 
     Uses ``git log --name-only`` to retrieve commit metadata *and*
@@ -611,7 +601,7 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
         cwd=cwd,
     )
 
-    entries: list[HistoryEntry] = []
+    entries: list[GitHistoryEntry] = []
     if ok and raw:
         # Split on the separator to get per-commit blocks.
         blocks = raw.split(_sep)
@@ -630,7 +620,7 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
             files_changed = [f for f in lines[1:] if f.strip()]
 
             entries.append(
-                HistoryEntry(
+                GitHistoryEntry(
                     sha=sha,
                     short_sha=short_sha,
                     message=message,
@@ -642,7 +632,7 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
     return entries
 
 
-def revert_to(sha: str, cwd: Path | None = None) -> RevertResult:
+def revert_to(sha: str, cwd: Path | None = None) -> GitRevertResponse:
     """Reset the current branch to a specific commit (with backup tag)."""
     _assert_git_repo(cwd)
     _validate_ref_name(sha)
@@ -674,10 +664,10 @@ def revert_to(sha: str, cwd: Path | None = None) -> RevertResult:
 
     short_sha = sha[:7]
     logger.info("reverted", to=short_sha, backup=backup_tag)
-    return RevertResult(backup_tag=backup_tag, reverted_to=short_sha)
+    return GitRevertResponse(backup_tag=backup_tag, reverted_to=short_sha)
 
 
-def pull_latest(cwd: Path | None = None) -> PullResult:
+def pull_latest(cwd: Path | None = None) -> GitPullResponse:
     """Pull latest default branch into the current branch."""
     _assert_git_repo(cwd)
 
@@ -706,7 +696,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
     commits_to_pull = int(count_str) if ok_count and count_str.isdigit() else 0
 
     if commits_to_pull == 0:
-        return PullResult(
+        return GitPullResponse(
             success=True,
             conflict=False,
             conflict_message=None,
@@ -725,7 +715,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
         # Conflict detected — abort the merge
         _run_git_ok("merge", "--abort", cwd=cwd)
         logger.warning("merge_conflict", branch=branch)
-        return PullResult(
+        return GitPullResponse(
             success=False,
             conflict=True,
             conflict_message=(
@@ -741,7 +731,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
         _run_git_ok("push", "origin", branch, cwd=cwd)
 
     logger.info("pull_complete", commits=commits_to_pull)
-    return PullResult(
+    return GitPullResponse(
         success=True,
         conflict=False,
         conflict_message=None,
@@ -749,7 +739,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
     )
 
 
-def submit_for_review(cwd: Path | None = None) -> SubmitResult:
+def submit_for_review(cwd: Path | None = None) -> GitSubmitResponse:
     """Push branch and return a comparison URL for PR creation."""
     _assert_git_repo(cwd)
 
@@ -769,7 +759,7 @@ def submit_for_review(cwd: Path | None = None) -> SubmitResult:
     compare_url = _build_compare_url(branch, default, cwd)
 
     logger.info("submitted_for_review", branch=branch, url=compare_url)
-    return SubmitResult(compare_url=compare_url, branch=branch)
+    return GitSubmitResponse(compare_url=compare_url, branch=branch)
 
 
 def archive_branch(branch: str, cwd: Path | None = None) -> str:

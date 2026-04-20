@@ -466,35 +466,12 @@ class TestFinalizeFrontier:
 # D7: Pydantic-native git result types (item #74)
 # ──────────────────────────────────────────────────────────────────────
 #
-# The ``_git`` module now returns ``GitStatusResponse``, ``GitSaveResponse``,
-# etc. directly — the former dataclass → Pydantic shim (``_dc_to_pydantic``)
-# was dead code and has been removed.  The dedicated tests for the contract
-# live in ``tests/test_git_routes_pydantic.py``.
-
-
-class TestGitModuleReturnsPydanticAliases:
-    """Sanity: the ``_git`` public-result aliases resolve to the Pydantic
-    response models so existing callers (``isinstance(x, GitStatusResponse)``)
-    still work."""
-
-    def test_git_status_alias_resolves_to_pydantic(self) -> None:
-        from haute._git import GitStatus
-        from haute.schemas import GitStatusResponse
-
-        assert GitStatus is GitStatusResponse
-
-    def test_branch_list_alias_resolves_to_pydantic(self) -> None:
-        from haute._git import BranchInfo, BranchListResult
-        from haute.schemas import GitBranchItem, GitBranchListResponse
-
-        assert BranchInfo is GitBranchItem
-        assert BranchListResult is GitBranchListResponse
-
-    def test_save_result_alias_resolves_to_pydantic(self) -> None:
-        from haute._git import SaveResult
-        from haute.schemas import GitSaveResponse
-
-        assert SaveResult is GitSaveResponse
+# The ``_git`` module returns ``GitStatusResponse``, ``GitSaveResponse``, etc.
+# directly — the former dataclass → Pydantic shim was dead code and has been
+# removed, and the historical ``GitStatus`` / ``BranchInfo`` / ``SaveResult``
+# aliases have been renamed to their canonical response-model names since
+# nothing outside ``_git`` itself was using the alias form.
+# Dedicated tests for the contract live in ``tests/test_git_routes_pydantic.py``.
 
 
 # ──────────────────────────────────────────────────────────────────────

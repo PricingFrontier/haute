@@ -20,35 +20,15 @@ const fileHover = hoverBg("var(--bg-hover)")
 /**
  * Extract syntax error info from an ApiError's flat string detail.
  *
- * Server responses are now ``{"detail": "Syntax error on line N: <msg>"}``
- * (item #76).  We keep the line number available to the editor gutter by
- * extracting it with a ``/line (\d+)/`` regex; the raw message is shown
- * to the user.  A legacy JSON-encoded ``{error, error_line}`` detail is
- * still accepted so this parser remains robust across mixed-version
- * servers during rollout.
+ * Server responses are ``{"detail": "Syntax error on line N: <msg>"}`` per
+ * item #76.  The line number is extracted via a ``/line (\d+)/`` regex for
+ * the editor's gutter; the raw message is shown to the user.
  */
 function parseSyntaxError(err: unknown): { error: string; error_line: number | null } | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null
   const raw = err.detail
   if (!raw) return null
 
-  // Legacy structured-dict detail — decode and extract fields directly.
-  if (typeof raw === "string" && raw.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(raw) as unknown
-      if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
-        const obj = parsed as { error?: string; error_line?: number | null }
-        return {
-          error: obj.error ?? "Syntax error",
-          error_line: obj.error_line ?? null,
-        }
-      }
-    } catch {
-      // Not valid JSON — fall through to flat-string handling.
-    }
-  }
-
-  // Canonical flat-string detail: "Syntax error on line N: <msg>"
   const message = String(raw)
   const match = /\bline\s+(\d+)\b/i.exec(message)
   return {
@@ -113,17 +93,19 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   // Cleanup timer on unmount
   useEffect(() => () => clearTimeout(saveTimer.current), [])
 
-  // Load file list
+  // Load file list.  The backend returns `{files: []}` for a missing
+  // utility/ dir, so anything reaching this catch is a real failure
+  // (network, 500, auth) — surface it as a toast, not a silent empty list.
   const loadFiles = useCallback(async () => {
     try {
       const res = await listUtilityFiles()
       setFiles(res.files)
     } catch (err) {
-      // utility/ may not exist yet
-      console.warn("Failed to list utility files", err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to list utility files: ${detail}`)
       setFiles([])
     }
-  }, [])
+  }, [addToast])
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount pattern
   useEffect(() => { loadFiles() }, [loadFiles])

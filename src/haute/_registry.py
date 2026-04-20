@@ -202,23 +202,3 @@ def ensure_registry_ready() -> None:
     import haute._codegen_builders  # noqa: F401
 
     validate_registry_complete()
-
-
-# Backward-compat views ─────────────────────────────────────────────────────
-# These dicts reflect the exec / codegen sides of ``NODE_REGISTRY`` for code
-# that pre-dated the unification.  They are derived *lazily*: each attribute
-# read rebuilds the view so the legacy dicts cannot silently drift from the
-# authoritative registry.  Callers that need to mutate (tests that monkey-
-# patch a builder) should prefer mutating ``NODE_REGISTRY`` directly, but
-# the monkey-patch pattern of "pop then restore" still works because a
-# fresh view captures the current state.
-
-
-def exec_view() -> dict[NodeType, ExecFn]:
-    """Snapshot of the exec-side builders keyed by ``NodeType``."""
-    return {nt: entry.exec for nt, entry in NODE_REGISTRY.items() if entry.exec is not None}
-
-
-def codegen_view() -> dict[NodeType, CodegenFn]:
-    """Snapshot of the codegen-side builders keyed by ``NodeType``."""
-    return {nt: entry.codegen for nt, entry in NODE_REGISTRY.items() if entry.codegen is not None}

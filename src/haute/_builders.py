@@ -245,13 +245,6 @@ def _freeze(value: Any) -> frozenset[str] | None:
     )
 
 
-#: Legacy mirror of the exec side of ``NODE_REGISTRY``.  Kept as a real dict
-#: (not a proxy) so tests that mutate the mirror with ``.pop(...)`` / ``[] =``
-#: to simulate missing-builder error paths still work.  The unified registry
-#: remains the canonical source of truth for all production dispatch.
-_COLUMN_CONTRACTS: dict[NodeType, ColumnContractFn] = {}
-
-
 def _register(
     node_type: NodeType,
     *,
@@ -261,9 +254,6 @@ def _register(
     """Decorator to register a node builder for a given NodeType.
 
     Writes the builder into the unified :data:`haute._registry.NODE_REGISTRY`.
-    A ``_COLUMN_CONTRACTS`` mirror is also populated so the adoption-
-    coverage invariant (``_validate_registry_contracts_complete``) can
-    check coverage without walking the registry.
 
     The optional *columns* callback declares the node's column contract —
     which columns it creates and which input columns it reads — given its
@@ -275,9 +265,8 @@ def _register(
     that callers can either spell out "I don't know, and that's by
     design" (``opaque=True``) or provide a callback that might return a
     concrete contract in some configurations and opaque in others (e.g.
-    ``MODEL_SCORE``).  Either way, the entry ends up in
-    ``_COLUMN_CONTRACTS``, so "forgot to register" is distinct from
-    "declared opaque".
+    ``MODEL_SCORE``).  Either way, the registry entry records the
+    callback so "forgot to register" is distinct from "declared opaque".
     """
 
     if columns is not None and opaque:
@@ -298,8 +287,6 @@ def _register(
 
     def decorator(fn: NodeBuilder) -> NodeBuilder:
         registrar(fn)
-        if contract_fn is not None:
-            _COLUMN_CONTRACTS[node_type] = contract_fn
         return fn
 
     return decorator
@@ -311,19 +298,17 @@ def get_column_contract(
 ) -> ColumnContract:
     """Return the column contract for a node type.
 
-    Every registered ``NodeType`` has an entry in ``_COLUMN_CONTRACTS``.
-    If a future ``NodeType`` is added without a contract, this function
-    raises — silently falling back to opaque would hide the omission.
-
-    Reads from the unified registry so that the contract registration and
-    lookup share a single source of truth.
+    Every registered ``NodeType`` must have a ``column_contract`` entry
+    in :data:`haute._registry.NODE_REGISTRY`.  If a future ``NodeType`` is
+    added without a contract, this function raises — silently falling back
+    to opaque would hide the omission.
     """
     entry = NODE_REGISTRY.get(node_type)
     if entry is None or entry.column_contract is None:
         raise KeyError(
             f"NodeType {node_type!r} has no column contract registered. "
             "Every builder in NODE_REGISTRY must also register a contract "
-            "in _COLUMN_CONTRACTS (pass columns=... or opaque=True to "
+            "in NODE_REGISTRY (pass columns=... or opaque=True to "
             "_register).",
         )
     # The registry stores the contract fn as ``Callable[[dict], Any]`` for
