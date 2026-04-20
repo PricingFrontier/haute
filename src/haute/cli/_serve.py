@@ -5,29 +5,122 @@ Split into:
 * :class:`ServeConfig` — the typed bag of CLI inputs.
 * :func:`handle_serve` — the pure function that does the work.
 * :func:`serve` — the thin ``@click.command`` entry point.
+
+Host-binding safety (Wave 10A #118)
+-----------------------------------
+Haute is a dev-only tool with no authentication.  The default bind has
+to be loopback-only (``127.0.0.1``) so a user running ``haute serve``
+on a corporate LAN does not accidentally expose an unauthenticated
+Polars execution endpoint and file browser to every peer on the
+network.  Any explicit non-loopback bind (``0.0.0.0``, a public IP, a
+hostname that resolves off-loopback, …) is honoured but logs a loud
+structured warning via structlog so the choice is auditable in server
+logs.  The same policy applies whether the host was supplied on the
+CLI (``--host ...``) or via ``[server] host = "..."`` in
+``haute.toml``.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import signal
 import socket
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 import click
 
+from haute._logging import get_logger
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
+
+logger = get_logger(component="serve")
+
+
+# ``127.0.0.1`` is the canonical IPv4 loopback; ``::1`` is the IPv6
+# loopback; ``localhost`` is the DNS name conventionally resolved to
+# one of those.  Any of the three are treated as loopback-safe.  Every
+# other host — including the wildcard ``0.0.0.0`` and ``::`` — is
+# non-loopback and therefore triggers the exposure warning.
+_LOOPBACK_HOSTNAMES: frozenset[str] = frozenset({"localhost"})
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return ``True`` iff *host* is a loopback-safe bind target.
+
+    Accepts three forms:
+
+    * The DNS name ``localhost`` (case-insensitive).
+    * An IPv4 or IPv6 address that parses as a loopback address
+      (``127.0.0.0/8`` and ``::1`` respectively).  Parsing via
+      :mod:`ipaddress` covers the full loopback range, not just
+      ``127.0.0.1`` — tools that bind to ``127.0.0.42`` for isolation
+      should be treated as loopback too.
+
+    Anything else (including the wildcards ``0.0.0.0`` and ``::``,
+    public IPs, and off-loopback hostnames) returns ``False`` and is
+    subject to the exposure warning.
+    """
+    normalised = host.strip().lower()
+    if normalised in _LOOPBACK_HOSTNAMES:
+        return True
+    try:
+        return ipaddress.ip_address(normalised).is_loopback
+    except ValueError:
+        # Not a valid IP literal — treat as a hostname that isn't
+        # ``localhost``.  A user binding to a hostname other than
+        # ``localhost`` almost certainly means a network-routable
+        # address, so warn.
+        return False
+
+
+def _load_toml_server_host(project_dir: Path) -> str | None:
+    """Return ``[server].host`` from ``haute.toml`` in *project_dir*, if set.
+
+    Returns ``None`` when the file is absent, unparseable, missing the
+    ``[server]`` table, or when the ``host`` key is not a string.  A
+    malformed TOML file is reported via a structlog warning but does
+    not prevent ``haute serve`` from starting — the CLI falls back to
+    the loopback default in that case.
+    """
+    toml_path = project_dir / "haute.toml"
+    if not toml_path.is_file():
+        return None
+    try:
+        with open(toml_path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning(
+            "haute_toml_read_failed",
+            path=str(toml_path),
+            error_type=type(exc).__name__,
+            reason=str(exc),
+        )
+        return None
+    server = data.get("server")
+    if not isinstance(server, dict):
+        return None
+    host = server.get("host")
+    if not isinstance(host, str) or not host:
+        return None
+    return host
 
 
 @dataclass
 class ServeConfig:
-    """Parsed inputs for the ``haute serve`` command."""
+    """Parsed inputs for the ``haute serve`` command.
 
-    host: str
+    ``host`` defaults to ``127.0.0.1`` so every non-CLI caller
+    (programmatic tests, future alternative frontends) inherits the
+    same safe default as the Click wrapper — there is no path through
+    which an uninitialised ``ServeConfig`` binds to the wider network.
+    """
+
     port: int
     no_browser: bool
+    host: str = "127.0.0.1"
 
 
 def _port_is_available(host: str, port: int) -> bool:
@@ -62,10 +155,37 @@ def handle_serve(config: ServeConfig) -> None:
     Picks dev mode when a ``frontend/`` directory with ``node_modules``
     exists; otherwise falls through to production mode (serving built
     static files).  Fails loudly when neither is available.
+
+    ``handle_serve`` is the single point where the host-exposure
+    warning fires (see the module docstring). Every code path that
+    starts the server — the Click wrapper, programmatic callers in
+    tests, future alternative frontends — goes through this function,
+    so the warning cannot be bypassed by skipping the CLI layer.
     """
     import uvicorn
 
     from haute.server import STATIC_DIR
+
+    # Emit the non-loopback exposure warning before doing anything
+    # else. Firing it early means the operator sees the warning even
+    # if the port probe or frontend lookup below bails out. The
+    # contract with callers / tests is "any non-loopback host
+    # triggers a structured ``warning``-level event whose payload
+    # mentions 'exposing beyond localhost'"; the event name and
+    # precise field layout are implementation details.
+    if not _is_loopback_host(config.host):
+        logger.warning(
+            "server_bind_non_loopback",
+            host=config.host,
+            port=config.port,
+            hint=(
+                "Binding to a non-loopback host is exposing beyond "
+                "localhost — every peer that can reach this machine "
+                "on the network can now hit the unauthenticated "
+                "Haute API. Pass --host 127.0.0.1 to revert to the "
+                "safe default."
+            ),
+        )
 
     # Pre-flight: fail loudly if the port is already taken rather than
     # letting uvicorn crash with a cryptic OSError.
@@ -156,10 +276,31 @@ def handle_serve(config: ServeConfig) -> None:
 
 
 @click.command()
-@click.option("--host", default="127.0.0.1", help="Host to bind to.")
+@click.option(
+    "--host",
+    default=None,
+    help=(
+        "Host to bind to. Defaults to ``haute.toml``'s ``[server] host`` "
+        "if set, otherwise 127.0.0.1 (loopback-only). Non-loopback hosts "
+        "trigger a structured warning."
+    ),
+)
 @click.option("--port", default=8000, type=int, help="Backend API port.")
 @click.option("--no-browser", is_flag=True, help="Don't open browser automatically.")
-def serve(host: str, port: int, no_browser: bool) -> None:
-    """Start the Haute UI server."""
+def serve(host: str | None, port: int, no_browser: bool) -> None:
+    """Start the Haute UI server.
+
+    Host resolution precedence (first match wins):
+
+    1. ``--host`` passed on the CLI.
+    2. ``[server] host = "..."`` in ``haute.toml`` at the current
+       working directory.
+    3. ``127.0.0.1`` (loopback-only default).
+
+    Whichever source wins, any non-loopback value triggers a
+    structured warning so the exposure is auditable in server logs.
+    """
+    if host is None:
+        host = _load_toml_server_host(Path.cwd()) or "127.0.0.1"
     config = ServeConfig(host=host, port=port, no_browser=no_browser)
     handle_serve(config)
