@@ -480,7 +480,7 @@ pipeline.connect("source", "bad")
         mock_graph.pipeline_name = "test"
 
         with (
-            patch("haute.cli._helpers.resolve_pipeline_file", return_value=tmp_path / "x.py"),
+            patch("haute._project.resolve_pipeline_file", return_value=tmp_path / "x.py"),
             patch("haute.parser.parse_pipeline_file", return_value=mock_graph),
             patch(
                 "haute.executor.execute_graph",

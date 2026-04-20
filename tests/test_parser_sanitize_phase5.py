@@ -47,7 +47,6 @@ import structlog
 from haute._ast_helpers import _extract_function_bodies
 from haute._graph_utils import _sanitize_func_name
 
-
 # ---------------------------------------------------------------------------
 # #123 — _sanitize_func_name non-ASCII preservation
 # ---------------------------------------------------------------------------

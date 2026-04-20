@@ -202,7 +202,7 @@ class TestStatusPassesCatalogSchema:
     ) -> None:
         """Without haute.toml, explicit model_name should use default catalog/schema."""
         monkeypatch.chdir(tmp_path)
-        # Create a minimal pipeline file so _load_deploy_config can build a config
+        # Create a minimal pipeline file so DeployConfig.from_toml can build a config
         (tmp_path / "main.py").write_text("")
         mock_info = {
             "model_name": "my-model",

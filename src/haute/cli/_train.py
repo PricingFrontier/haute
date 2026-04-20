@@ -25,6 +25,9 @@ class TrainConfig:
     training_script: Path
 
 
+_PROGRESS_BAR_WIDTH = 30
+
+
 def _progress(msg: str, frac: float) -> None:
     """Render a one-line progress bar and flush stdout immediately.
 
@@ -36,8 +39,8 @@ def _progress(msg: str, frac: float) -> None:
     the bar appear to hang between updates. Flushing after every write
     guarantees each intermediate update reaches the user.
     """
-    bar = "=" * int(frac * 30)
-    sys.stdout.write(f"\r  [{bar:<30}] {frac:.0%} {msg}")
+    bar = "=" * int(frac * _PROGRESS_BAR_WIDTH)
+    sys.stdout.write(f"\r  [{bar:<{_PROGRESS_BAR_WIDTH}}] {frac:.0%} {msg}")
     sys.stdout.flush()
 
 

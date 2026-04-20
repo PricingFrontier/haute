@@ -204,7 +204,9 @@ class TestTraceDecoupling:
             f"Current parameters: {sorted(sig.parameters)}"
         )
 
-    def test_trace_renders_without_executor_singleton(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_trace_renders_without_executor_singleton(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """End-to-end: a Trace built against a fake preview reader must render
         without touching the real ``haute.executor._preview_cache``.
 
@@ -213,10 +215,10 @@ class TestTraceDecoupling:
         preview snapshot.  If the trace still succeeds, the decoupling is
         real; if it touches the singleton, we get a loud AttributeError.
         """
-        import haute.executor as executor_module
         import polars as pl
 
-        from haute.graph_utils import GraphEdge, GraphNode, NodeData
+        import haute.executor as executor_module
+        from haute.graph_utils import GraphNode, NodeData
 
         class _Exploding:
             """Any attribute access raises — proves the singleton is unused."""
@@ -270,8 +272,6 @@ class TestTraceDecoupling:
         trace must still be able to execute the graph from scratch — it
         cannot silently fall back to the real singleton.
         """
-        import polars as pl
-
         from haute.graph_utils import GraphNode, NodeData
 
         class _EmptyReader:

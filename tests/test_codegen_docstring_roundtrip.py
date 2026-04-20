@@ -55,7 +55,6 @@ import pytest
 from haute.codegen import _node_to_code, graph_to_code_multi
 from haute.graph_utils import PipelineGraph
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

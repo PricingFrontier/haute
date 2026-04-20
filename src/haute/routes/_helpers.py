@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from fastapi import HTTPException, WebSocket
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from haute._io import read_user_text
 from haute._logging import get_logger
@@ -54,6 +54,16 @@ class SidecarModel(BaseModel):
     positions: dict[str, dict[str, float]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
+
+    @model_validator(mode="after")
+    def _active_source_must_be_in_sources(self) -> SidecarModel:
+        if self.active_source not in self.sources:
+            raise ValueError(
+                f"active_source={self.active_source!r} is not in "
+                f"sources={self.sources!r}"
+            )
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Path safety

@@ -158,7 +158,11 @@ class TestPipelineImportableCold:
         # Snapshot and restore so sibling tests (which hold pre-test
         # references to these modules) keep seeing the same object
         # identity post-test.
-        snapshot = {n: sys.modules[n] for n in list(sys.modules) if n.startswith("haute.routes.pipeline")}
+        snapshot = {
+            n: sys.modules[n]
+            for n in list(sys.modules)
+            if n.startswith("haute.routes.pipeline")
+        }
         for name in snapshot:
             del sys.modules[name]
         try:
@@ -241,7 +245,7 @@ class TestSidecarModelExists:
         )
 
     def test_sidecar_model_is_pydantic(self) -> None:
-        """Must subclass ``pydantic.BaseModel`` so it has ``model_dump_json`` / ``model_validate_json``."""
+        """Must subclass ``pydantic.BaseModel`` so it exposes the Pydantic API."""
         from pydantic import BaseModel
 
         from haute.routes._helpers import SidecarModel
@@ -287,8 +291,6 @@ class TestSidecarRoundTrip:
     def test_round_trip_via_model_dump_json(self, tmp_path: Path) -> None:
         """Serialising the model to JSON and parsing it back must be idempotent."""
         from haute.routes._helpers import SidecarModel
-
-        graph = _make_sidecar_graph()
 
         # Build the model directly so we don't depend on save_sidecar's
         # internal wiring for this axis of the test.
@@ -495,9 +497,8 @@ class TestBumpVersionInvalidatesCache:
     ) -> None:
         """Simulate the real caching path: store an entry at v1, bump to v2,
         store another — both must be retrievable independently."""
-        from haute._fingerprint_cache import FingerprintCache
-
         import haute._cache as cache_mod
+        from haute._fingerprint_cache import FingerprintCache
 
         cache = FingerprintCache(slots=("payload",))
 

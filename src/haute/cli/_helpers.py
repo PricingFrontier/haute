@@ -16,11 +16,6 @@ from typing import TYPE_CHECKING
 
 import click
 
-# Re-exported from haute._project so CLI callers have a single import site.
-# Every CLI module that needs a resolved pipeline file must either import
-# from this alias or (preferably) directly from ``haute._project``.
-from haute._project import resolve_pipeline_file  # noqa: F401
-
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
 

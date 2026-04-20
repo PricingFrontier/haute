@@ -637,13 +637,12 @@ class TestHandleLintCallable:
 
     def test_lint_success_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Clean pipeline → returns/prints success, no exception raised."""
-        from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
-        from haute.cli._lint import handle_lint
-
         # Build a config for lint directly.  We don't know the exact
         # dataclass type the dev chose — look it up by searching for the
         # only other public class in the module.
         import haute.cli._lint as lint_mod
+        from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+        from haute.cli._lint import handle_lint
 
         config_cls = _find_config_class(lint_mod, "lint")
         pipeline = _touch_pipeline(tmp_path, "ok.py")
@@ -673,10 +672,9 @@ class TestHandleLintCallable:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Disconnected node → handle_lint exits / raises with a useful message."""
+        import haute.cli._lint as lint_mod
         from haute._types import GraphNode, NodeData, PipelineGraph
         from haute.cli._lint import handle_lint
-
-        import haute.cli._lint as lint_mod
 
         config_cls = _find_config_class(lint_mod, "lint")
         pipeline = _touch_pipeline(tmp_path, "orphan.py")
@@ -741,10 +739,9 @@ class TestHandleRunCallable:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """handle_run builds a graph, executes it, and reports per-node results."""
-        from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
-        from haute.cli._run import handle_run
-
         import haute.cli._run as run_mod
+        from haute._types import GraphNode, NodeData, PipelineGraph
+        from haute.cli._run import handle_run
 
         config_cls = _find_config_class(run_mod, "run")
         pipeline = _touch_pipeline(tmp_path, "simple.py")
