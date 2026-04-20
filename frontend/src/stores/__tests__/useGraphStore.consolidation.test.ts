@@ -244,6 +244,11 @@ describe("useGraphStore — consolidation", () => {
 
   describe("selector isolation (reviewer gate)", () => {
     // Helper — a hook that subscribes to a selector and counts renders.
+    // The ref is read back during render on purpose: that's how we observe
+    // the render count for the assertion. This pattern is standard for
+    // render-counting test helpers and safe because the counter is the
+    // observable, not driving a render decision.
+    /* eslint-disable react-hooks/refs -- render-counting pattern; the ref IS the observable */
     function useSelectorRenderCount<T>(selector: (s: GraphStoreShape) => T) {
       const store = requireStore()
       const countRef = useRef(0)
@@ -251,6 +256,7 @@ describe("useGraphStore — consolidation", () => {
       const value = store(selector)
       return { count: countRef.current, value }
     }
+    /* eslint-enable react-hooks/refs */
 
     it("subscribing to nodes does NOT re-render when edges change", () => {
       const store = requireStore()
@@ -618,7 +624,7 @@ describe("useGraphStore — consolidation", () => {
   describe("migration compatibility — useUIStore.dirty", () => {
     it("either (a) useUIStore.dirty is removed, or (b) it aliases useGraphStore.isDirty()", async () => {
       const uiStoreModule = await import("../useUIStore")
-      const uiState = uiStoreModule.default.getState() as Record<string, unknown>
+      const uiState = uiStoreModule.default.getState() as unknown as Record<string, unknown>
 
       const hasDirty = "dirty" in uiState
       const hasSetDirty = "setDirty" in uiState
@@ -637,7 +643,11 @@ describe("useGraphStore — consolidation", () => {
         "useUIStore exposes setDirty without dirty — consumers reading the flag will see a phantom value",
       ).toBe(hasSetDirty)
 
-      // If the alias is there, it must follow the graph store.
+      // If the alias is there, it must follow the graph store.  Property
+      // access goes through a Record<string, unknown> view because the
+      // typed UIState surface has already dropped `dirty` per path (a).
+      const readUiDirty = () =>
+        (uiStoreModule.default.getState() as unknown as Record<string, unknown>).dirty
       const graph = requireStore()
       act(() => {
         graph.setState({
@@ -648,13 +658,13 @@ describe("useGraphStore — consolidation", () => {
         })
         graph.getState().markSaved()
       })
-      expect(uiStoreModule.default.getState().dirty).toBe(false)
+      expect(readUiDirty()).toBe(false)
 
       act(() => {
         graph.getState().setNodesRaw([makeNode("n1"), makeNode("n2")])
       })
       expect(
-        uiStoreModule.default.getState().dirty,
+        readUiDirty(),
         "useUIStore.dirty did not update when useGraphStore became dirty — the alias is broken",
       ).toBe(true)
     })
@@ -663,7 +673,7 @@ describe("useGraphStore — consolidation", () => {
       // If this test fails, consolidation hasn't actually happened —
       // we've added a new store without retiring the old location.
       const uiStoreModule = await import("../useUIStore")
-      const uiState = uiStoreModule.default.getState() as Record<string, unknown>
+      const uiState = uiStoreModule.default.getState() as unknown as Record<string, unknown>
       expect("nodes" in uiState).toBe(false)
       expect("edges" in uiState).toBe(false)
       expect("preamble" in uiState).toBe(false)
