@@ -30,6 +30,7 @@ class InitConfig:
     ci: str
     force: bool = False
 
+
 _DEV_DEPS_BLOCK = """
 [dependency-groups]
 dev = [
