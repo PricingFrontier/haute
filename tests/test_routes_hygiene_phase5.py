@@ -155,12 +155,17 @@ class TestPipelineImportableCold:
     """
 
     def test_importlib_succeeds(self) -> None:
-        # Drop any cached copies so the timing is fair.
-        for name in list(sys.modules):
-            if name.startswith("haute.routes.pipeline"):
-                del sys.modules[name]
-        mod = importlib.import_module("haute.routes.pipeline")
-        assert hasattr(mod, "router")
+        # Snapshot and restore so sibling tests (which hold pre-test
+        # references to these modules) keep seeing the same object
+        # identity post-test.
+        snapshot = {n: sys.modules[n] for n in list(sys.modules) if n.startswith("haute.routes.pipeline")}
+        for name in snapshot:
+            del sys.modules[name]
+        try:
+            mod = importlib.import_module("haute.routes.pipeline")
+            assert hasattr(mod, "router")
+        finally:
+            sys.modules.update(snapshot)
 
     def test_cold_import_under_500ms(self) -> None:
         """Measured cold-import latency for ``haute.routes.pipeline``.
@@ -170,16 +175,21 @@ class TestPipelineImportableCold:
         does not accidentally hoist a heavy import (``torch``, ``mlflow``,
         etc.) to module top when breaking a cycle.
         """
-        # Evict any cached modules so we measure real cold-import work.
-        # We only evict haute submodules — evicting stdlib would be
-        # disruptive and unrepresentative of production startup.
-        to_drop = [n for n in sys.modules if n.startswith("haute")]
-        for name in to_drop:
+        # Snapshot every ``haute.*`` entry before eviction and restore
+        # afterwards.  Without restoration, subsequent tests that hold
+        # pre-test references to modules like ``haute.routes._helpers``
+        # would end up dual-loaded (their reference vs. the freshly
+        # re-imported instance), breaking Pydantic class-identity checks.
+        snapshot = {n: sys.modules[n] for n in list(sys.modules) if n.startswith("haute")}
+        for name in snapshot:
             del sys.modules[name]
 
-        start = time.perf_counter()
-        importlib.import_module("haute.routes.pipeline")
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        try:
+            start = time.perf_counter()
+            importlib.import_module("haute.routes.pipeline")
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+        finally:
+            sys.modules.update(snapshot)
 
         assert elapsed_ms < 500.0, (
             f"Cold import of haute.routes.pipeline took {elapsed_ms:.1f}ms — "

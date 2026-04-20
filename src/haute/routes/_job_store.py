@@ -191,7 +191,7 @@ class JobStore:
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def get_job_store(prefix: str) -> JobStore:
     """Return the shared ``JobStore`` instance for *prefix*.
 
