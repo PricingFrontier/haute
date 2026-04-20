@@ -9,6 +9,7 @@ Split into:
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,22 @@ class TrainConfig:
     """Parsed inputs for the ``haute train`` command."""
 
     training_script: Path
+
+
+def _progress(msg: str, frac: float) -> None:
+    """Render a one-line progress bar and flush stdout immediately.
+
+    Exposed at module scope so the train command can pass it to
+    ``job.run(progress=_progress)`` and so it can be unit-tested.
+
+    The explicit ``sys.stdout.flush()`` is load-bearing — a plain write
+    without flush leaves the line buffered on many terminals, making
+    the bar appear to hang between updates. Flushing after every write
+    guarantees each intermediate update reaches the user.
+    """
+    bar = "=" * int(frac * 30)
+    sys.stdout.write(f"\r  [{bar:<30}] {frac:.0%} {msg}")
+    sys.stdout.flush()
 
 
 def handle_train(config: TrainConfig) -> None:
@@ -70,11 +87,6 @@ def handle_train(config: TrainConfig) -> None:
         raise SystemExit(1)
 
     try:
-
-        def _progress(msg: str, frac: float) -> None:
-            bar = "=" * int(frac * 30)
-            click.echo(f"\r  [{bar:<30}] {frac:.0%} {msg}", nl=False)
-
         result = job.run(progress=_progress)
         click.echo()  # newline after progress bar
         click.echo(f"\n  \u2713 Model saved to: {result.model_path}")
