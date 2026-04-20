@@ -385,6 +385,28 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
 
     // Opaque mode
     if (isOpaque) {
+      // Opaque-but-no-calculation is a real error: the backend said the
+      // expression is opaque (i.e. it claims to produce a result without
+      // exposing the formula) yet no calculation was recorded. Silently
+      // showing a "computed" label here would hide the misconfiguration.
+      if (!calculation) {
+        return (
+          <div
+            role="alert"
+            style={{
+              padding: "8px 12px",
+              border: "1px solid var(--accent-error, #d97706)",
+              borderRadius: 4,
+              background: "var(--bg-error-subtle, rgba(217, 119, 6, 0.08))",
+              color: "var(--text-error, #b45309)",
+              fontSize: 12,
+              marginTop: 4,
+            }}
+          >
+            Calculation is not available for this opaque expression.
+          </div>
+        )
+      }
       return (
         <div
           style={{
