@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json as _json
 from typing import Any
 
+from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._types import PipelineGraph
 
@@ -101,7 +101,7 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
         )
     for e in sorted(graph.edges, key=lambda e: (e.source, e.target)):
         parts.append(f"{e.source}->{e.target}")
-    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    return content_hash_bytes("\n".join(parts).encode())
 
 
 def graph_fingerprint(graph: PipelineGraph, *extra_keys: str) -> str:
@@ -112,14 +112,15 @@ def graph_fingerprint(graph: PipelineGraph, *extra_keys: str) -> str:
     Used by both the trace cache (trace.py) and preview cache (executor.py).
 
     The graph's base fingerprint (node configs + edge topology) is computed
-    once per ``PipelineGraph`` instance and cached; only the extra-key
+    once per ``PipelineGraph`` instance and cached via
+    :attr:`PipelineGraph._haute_base_fingerprint`; only the extra-key
     combination adds overhead on subsequent calls.
     """
-    base = _graph_base_fingerprint(graph)
+    base = graph._haute_base_fingerprint
     if not extra_keys:
         logger.debug("graph_fingerprint_computed", fingerprint=base[:8], extra_keys=())
         return base
     combined = "\n".join(extra_keys) + "\n" + base
-    fp = hashlib.sha256(combined.encode()).hexdigest()
+    fp = content_hash_bytes(combined.encode())
     logger.debug("graph_fingerprint_computed", fingerprint=fp[:8], extra_keys=extra_keys)
     return fp

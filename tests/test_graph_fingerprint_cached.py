@@ -29,7 +29,6 @@ import pytest
 from haute._cache import graph_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -54,10 +53,11 @@ def _make_chain_graph(n_nodes: int) -> PipelineGraph:
     fingerprint computation show up in profiles without inflating other
     costs into the noise.
     """
-    nodes = [_make_node(f"n{i}", {"code": f"df = df.with_columns(y{i}=pl.col('x') * {i})"})
-             for i in range(n_nodes)]
-    edges = [GraphEdge(id=f"e{i}", source=f"n{i}", target=f"n{i + 1}")
-             for i in range(n_nodes - 1)]
+    nodes = [
+        _make_node(f"n{i}", {"code": f"df = df.with_columns(y{i}=pl.col('x') * {i})"})
+        for i in range(n_nodes)
+    ]
+    edges = [GraphEdge(id=f"e{i}", source=f"n{i}", target=f"n{i + 1}") for i in range(n_nodes - 1)]
     return PipelineGraph(nodes=nodes, edges=edges)
 
 
@@ -90,7 +90,11 @@ class TestCachedPropertyContract:
         fp1 = graph_fingerprint(g)
         fp2 = graph_fingerprint(g)
         assert fp1 == fp2
-        assert len(fp1) == 64  # sha256 hex digest
+        # Non-empty lowercase hex digest; the exact algorithm (xxh64 after
+        # the Phase 3 Wave 6 migration) is pinned in
+        # ``test_cache_perf_fixes.py`` — here we only pin stability + shape.
+        assert fp1
+        assert all(c in "0123456789abcdef" for c in fp1)
 
     def test_repeat_calls_with_same_extra_keys_are_identical(self) -> None:
         g = _small_graph()
@@ -283,7 +287,8 @@ class TestFingerprintRecomputeSpy:
     performance claim of item #86."""
 
     def test_repeated_calls_on_same_instance_compute_base_once(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         g = _small_graph()
         with _CallCountingFingerprint(monkeypatch) as spy:
@@ -300,7 +305,8 @@ class TestFingerprintRecomputeSpy:
             )
 
     def test_repeated_calls_with_extras_still_compute_base_once(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Even with varying extras per call, the base is the same and
         must be computed only once."""
@@ -316,7 +322,8 @@ class TestFingerprintRecomputeSpy:
             )
 
     def test_distinct_instances_compute_base_independently(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Cache is per-instance, so two instances → two base computations."""
         g1 = _small_graph()
@@ -327,7 +334,8 @@ class TestFingerprintRecomputeSpy:
             assert spy.calls == 2
 
     def test_model_copy_creates_fresh_cache_slot(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``model_copy`` produces a distinct instance, so the copy
         re-computes the base once (even if its structure is identical)."""
@@ -339,7 +347,9 @@ class TestFingerprintRecomputeSpy:
             assert spy.calls == 2
 
     def test_trace_does_not_recompute_preview_fingerprint(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
     ) -> None:
         """Item #94 — trace.py should not recompute a preview fingerprint
         that ``execute_graph`` already computed on the same ``PipelineGraph``
@@ -416,8 +426,8 @@ class TestFingerprintBenchmark:
     """
 
     # Graph size tuned so that the fingerprint computation dominates the
-    # loop body — at 100 nodes the sha256+json round trip is a ~ms each
-    # call, but still fast enough to not slow CI.
+    # loop body — at 100 nodes the canonicalise + json + hash round trip
+    # is roughly a ms each call, but still fast enough to not slow CI.
     N_NODES = 100
     N_ITERATIONS = 100
 
@@ -453,7 +463,7 @@ class TestFingerprintBenchmark:
 
         Fails before the optimisation lands (cached path ~= baseline
         because every public call recomputes the base).  Passes after
-        the ``@cached_property`` eliminates the per-call sha256.
+        the ``@cached_property`` eliminates the per-call hash.
         """
         graph = _make_chain_graph(self.N_NODES)
 

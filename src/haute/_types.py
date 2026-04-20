@@ -8,9 +8,10 @@ FastAPI endpoint validation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from functools import cached_property
-from typing import Any, Protocol, TypedDict, runtime_checkable
+from typing import Any, ClassVar, Protocol, Self, TypedDict, runtime_checkable
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
@@ -537,6 +538,44 @@ class PipelineGraph(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
 
+    # Names of ``@cached_property`` slots that must be invalidated when
+    # ``model_copy`` produces a new instance with changed structure —
+    # Pydantic's default ``model_copy`` shallow-copies ``__dict__``,
+    # which includes any already-materialised ``cached_property`` values.
+    # Without this invalidation, a copied graph would serve the parent's
+    # stale ``node_map`` / ``parents_of`` / ``_haute_base_fingerprint``
+    # after ``update={"nodes": ...}``.  See Pydantic's own docstring on
+    # ``model_copy`` for the original warning about this footgun.
+    _HAUTE_CACHED_PROPERTY_NAMES: ClassVar[tuple[str, ...]] = (
+        "node_map",
+        "parents_of",
+        "_haute_base_fingerprint",
+    )
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Copy this graph, invalidating any cached-property slots.
+
+        Overrides :meth:`pydantic.BaseModel.model_copy` so that the
+        returned instance starts with a fresh property cache — both the
+        legacy ``node_map``/``parents_of`` memos and the
+        ``_haute_base_fingerprint`` cache introduced for graph-fingerprint
+        caching.
+
+        Callers use ``model_copy(update={"nodes": ...})`` as the canonical
+        way to evolve a graph immutably (see
+        ``tests/test_graph_fingerprint_cached.py``); the override makes
+        that pattern correct by construction.
+        """
+        copied = super().model_copy(update=update, deep=deep)
+        for name in self._HAUTE_CACHED_PROPERTY_NAMES:
+            copied.__dict__.pop(name, None)
+        return copied
+
     @cached_property
     def node_map(self) -> dict[str, GraphNode]:
         """Map node ID to node, cached for repeated access."""
@@ -546,3 +585,29 @@ class PipelineGraph(BaseModel):
     def parents_of(self) -> dict[str, list[str]]:
         """Map each node to its parent node IDs (built from edges)."""
         return build_parents_of(self.edges)
+
+    @cached_property
+    def _haute_base_fingerprint(self) -> str:
+        """Structural fingerprint of the graph (node configs + edge topology).
+
+        Cached once per ``PipelineGraph`` instance — the underlying
+        computation (sorted-by-id node walk + canonical JSON + content
+        hash) is measurable (hundreds of microseconds per call for
+        ~100-node pipelines) and was previously recomputed on every
+        preview cache-key lookup.  Callers evolve a pipeline with
+        ``model_copy(update=...)``; the overridden :meth:`model_copy`
+        above clears the memoised digest on the new instance so the
+        cache boundary follows the immutable-copy idiom.
+
+        See :func:`haute._cache.graph_fingerprint` for the public
+        wrapper that mixes in per-call extra keys.  The base computation
+        is kept module-level (as ``_graph_base_fingerprint`` in
+        :mod:`haute._cache`) so the call-counting spies in
+        ``tests/test_graph_fingerprint_cached.py`` can ``monkeypatch``
+        the function and observe exactly one call per instance.
+        """
+        # Import here to avoid an import cycle: ``_cache`` imports
+        # ``PipelineGraph`` from this module.
+        from haute._cache import _graph_base_fingerprint
+
+        return _graph_base_fingerprint(self)
