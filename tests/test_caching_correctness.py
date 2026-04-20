@@ -241,10 +241,12 @@ class TestFingerprintTypeErrorForUnknown:
         fp1 = graph_fingerprint(g)
         fp2 = graph_fingerprint(g)
         assert fp1 == fp2
-        # xxh64 hex digest — the exact algorithm is an implementation
-        # detail, but the digest must be a non-empty hex string.
+        # xxh64 hex digest after the Wave 9C ``v<N>:`` prefix — the
+        # exact algorithm is an implementation detail, but the digest
+        # portion must be a non-empty hex string.
         assert fp1
-        assert all(c in "0123456789abcdef" for c in fp1)
+        _, _, digest = fp1.partition(":")
+        assert all(c in "0123456789abcdef" for c in digest)
 
 
 # ===========================================================================

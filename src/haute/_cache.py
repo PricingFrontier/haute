@@ -11,6 +11,24 @@ from haute._types import PipelineGraph
 
 logger = get_logger(component="cache")
 
+# ---------------------------------------------------------------------------
+# Algorithm versioning
+# ---------------------------------------------------------------------------
+
+# Fingerprint-algorithm version.  Embedded as a ``"v<N>:"`` prefix on
+# every :func:`graph_fingerprint` output so that a future
+# canonicalisation tweak (node-attribute order, edge representation,
+# hash family, etc.) cannot silently collide with digests produced by
+# the previous algorithm.  Bumping this constant invalidates every
+# previously-cached fingerprint-keyed entry in a single step.
+#
+# Read dynamically inside :func:`graph_fingerprint` so tests can
+# ``monkeypatch.setattr(haute._cache, "ALGO_VERSION", ...)`` to
+# simulate a bump and confirm cache entries do not collide across
+# versions — pinned by
+# ``tests/test_routes_hygiene_phase5.py::TestBumpVersionInvalidatesCache``.
+ALGO_VERSION: int = 1
+
 
 def _canonicalise(value: Any) -> Any:
     """Recursively convert *value* to a JSON-safe, order-independent form.
@@ -115,12 +133,19 @@ def graph_fingerprint(graph: PipelineGraph, *extra_keys: str) -> str:
     once per ``PipelineGraph`` instance and cached via
     :attr:`PipelineGraph._haute_base_fingerprint`; only the extra-key
     combination adds overhead on subsequent calls.
+
+    The returned value is prefixed with ``"v<ALGO_VERSION>:"`` so a
+    future canonicalisation change (which bumps
+    :data:`ALGO_VERSION`) cannot collide with stale cache entries.
+    The constant is read **dynamically** on every call so tests (and
+    emergency cache-busts) can monkeypatch it without re-importing.
     """
     base = graph._haute_base_fingerprint
-    if not extra_keys:
-        logger.debug("graph_fingerprint_computed", fingerprint=base[:8], extra_keys=())
-        return base
-    combined = "\n".join(extra_keys) + "\n" + base
-    fp = content_hash_bytes(combined.encode())
+    if extra_keys:
+        combined = "\n".join(extra_keys) + "\n" + base
+        digest = content_hash_bytes(combined.encode())
+    else:
+        digest = base
+    fp = f"v{ALGO_VERSION}:{digest}"
     logger.debug("graph_fingerprint_computed", fingerprint=fp[:8], extra_keys=extra_keys)
     return fp

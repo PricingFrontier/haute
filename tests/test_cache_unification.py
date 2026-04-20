@@ -145,11 +145,13 @@ class TestGraphFingerprintHelperStable:
         fp_b = graph_fingerprint(g)
         # Must be deterministic across calls.
         assert fp_a == fp_b
-        # Must be a non-empty lowercase hex digest.  The hash algorithm
-        # (xxh64 post-Phase 0 F3) is an implementation detail — we pin
-        # the shape (hex chars only, non-empty) not the exact length.
+        # Must be a non-empty lowercase hex digest after the Wave 9C
+        # ``v<N>:`` version prefix.  The hash algorithm (xxh64
+        # post-Phase 0 F3) is an implementation detail — we pin the
+        # shape (hex chars only, non-empty) not the exact length.
         assert fp_a
-        assert all(c in "0123456789abcdef" for c in fp_a)
+        _, _, digest = fp_a.partition(":")
+        assert all(c in "0123456789abcdef" for c in digest)
 
     def test_extra_keys_still_change_digest(self) -> None:
         """Guard: ``*extra_keys`` still participate in the digest."""

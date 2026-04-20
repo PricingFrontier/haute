@@ -90,11 +90,13 @@ class TestCachedPropertyContract:
         fp1 = graph_fingerprint(g)
         fp2 = graph_fingerprint(g)
         assert fp1 == fp2
-        # Non-empty lowercase hex digest; the exact algorithm (xxh64 after
-        # the Phase 3 Wave 6 migration) is pinned in
-        # ``test_cache_perf_fixes.py`` — here we only pin stability + shape.
+        # Non-empty lowercase hex digest after the Wave 9C ``v<N>:``
+        # prefix; the exact algorithm (xxh64 after the Phase 3 Wave 6
+        # migration) is pinned in ``test_cache_perf_fixes.py`` — here
+        # we only pin stability + shape.
         assert fp1
-        assert all(c in "0123456789abcdef" for c in fp1)
+        _, _, digest = fp1.partition(":")
+        assert all(c in "0123456789abcdef" for c in digest)
 
     def test_repeat_calls_with_same_extra_keys_are_identical(self) -> None:
         g = _small_graph()

@@ -497,10 +497,16 @@ class TestCacheKeyXxhashMigration:
         """Post-refactor, ``graph_fingerprint`` returns a 16-char
         lowercase-hex xxh64 digest — pinning the migration away from
         SHA-256 (which would produce 64 hex chars).
+
+        Phase 5 Wave 9C (#103) introduced an ``ALGO_VERSION`` prefix of
+        the form ``"v<N>:"`` so that a future canonicalisation tweak
+        cannot silently collide with old cache entries.  We strip that
+        prefix before checking the digest shape.
         """
         g = _make_graph({"x": 1})
-        digest = graph_fingerprint(g)
-        assert isinstance(digest, str)
+        fp = graph_fingerprint(g)
+        assert isinstance(fp, str)
+        _, _, digest = fp.partition(":")
         assert len(digest) == 16, (
             f"xxh64 digest must be 16 hex chars; got {len(digest)} "
             "(pre-refactor SHA-256 produced 64)"
@@ -509,7 +515,12 @@ class TestCacheKeyXxhashMigration:
 
     def test_graph_base_fingerprint_digest_is_16_hex_chars(self) -> None:
         """Same pin on the internal helper — ensures the whole module
-        migrates, not just the public entry point."""
+        migrates, not just the public entry point.
+
+        The internal ``_graph_base_fingerprint`` is deliberately
+        unversioned (the ALGO_VERSION prefix is applied by the public
+        wrapper), so we check the raw digest directly.
+        """
         g = _make_graph({"x": 1})
         digest = _graph_base_fingerprint(g)
         assert len(digest) == 16
@@ -522,11 +533,14 @@ class TestCacheKeyXxhashMigration:
         This is the strongest pin: it says "use the F3 helper", not
         just "use xxh64 somehow".  Keeps a single source of truth for
         how content digests are computed across the codebase.
+
+        As with ``test_graph_fingerprint_digest_is_16_hex_chars``, we
+        strip the Wave 9C ``v<N>:`` version prefix before comparing.
         """
         # Build a graph whose canonical serialisation is predictable.
         g = _make_graph({"x": 1})
 
-        digest = graph_fingerprint(g)
+        _, _, digest = graph_fingerprint(g).partition(":")
         # We don't reproduce the exact canonical bytes here (that would
         # couple the test to the internal canonicalisation format).
         # Instead, we verify the digest's *shape* matches exactly what
