@@ -145,8 +145,10 @@ class TestGraphFingerprintHelperStable:
         fp_b = graph_fingerprint(g)
         # Must be deterministic across calls.
         assert fp_a == fp_b
-        # Must be a hex sha256.
-        assert len(fp_a) == 64
+        # Must be a non-empty lowercase hex digest.  The hash algorithm
+        # (xxh64 post-Phase 0 F3) is an implementation detail — we pin
+        # the shape (hex chars only, non-empty) not the exact length.
+        assert fp_a
         assert all(c in "0123456789abcdef" for c in fp_a)
 
     def test_extra_keys_still_change_digest(self) -> None:

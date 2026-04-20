@@ -12,11 +12,11 @@ can optimise the full plan end-to-end.
 
 from __future__ import annotations
 
+import functools
 import gc
 import shutil
 import tempfile
 import threading
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -104,13 +104,11 @@ class PreambleError(HauteError):
         self.source_line = source_line
 
 
-# Cache compiled preamble results by content hash so unchanged preambles
-# (common during training / optimiser runs where the preamble doesn't
-# change between invocations) skip the expensive module eviction +
-# re-import cycle.  The cache is invalidated when the preamble text
-# changes (hash mismatch).
-_PREAMBLE_CACHE_MAX = 64
-_preamble_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+# Cache compiled preamble results by (content, pipeline_dir) so unchanged
+# preambles (common during training / optimiser runs where the preamble
+# doesn't change between invocations) skip the expensive module eviction +
+# re-import cycle.  ``functools.lru_cache`` is C-implemented, gives O(1)
+# eviction, and ships with ``cache_info()`` diagnostics for free.
 
 _DANGEROUS_MODULES = frozenset(
     {
@@ -127,70 +125,39 @@ _DANGEROUS_MODULES = frozenset(
 _polars_config_lock = threading.Lock()
 
 
-def _compile_preamble(
+@functools.lru_cache(maxsize=128)
+def _compile_preamble_cached(
     preamble: str,
-    *,
-    force_refresh: bool = True,
-    pipeline_dir: str | Path | None = None,
+    pipeline_dir_str: str | None,
 ) -> dict[str, Any]:
-    """Compile user-defined preamble code into a namespace dict.
+    """Pure cache-facing worker — compiles preamble bytes into a namespace.
 
-    The preamble (helper functions, constants, lambdas) is defined at the
-    top of a pipeline file between imports and the first ``@pipeline.<type>`` decorator.
-    This compiles it once and returns a dict of bindings that can be
-    injected into ``_exec_user_code`` via ``extra_ns``.
+    Keyed on ``(preamble, pipeline_dir_str)`` so different pipelines sharing
+    an identical preamble text but different working directories still get
+    distinct cache slots — important because relative imports resolve
+    against the pipeline's parent directory.
 
-    Uses a single dict for globals/locals so preamble functions can call
-    each other (they share the same ``__globals__``).
+    ``pipeline_dir_str`` is a normalised ``str`` (or ``None``) rather than a
+    ``Path`` so that ``lru_cache``'s hash lookup produces the same key for
+    ``Path("/x")`` and ``"/x"`` — normalisation happens at the public
+    entry point.
 
-    When *force_refresh* is ``False`` (default), a cached result from a
-    previous call with the same preamble text is returned immediately,
-    skipping utility-module eviction and ``exec()``.  The preview path
-    passes ``force_refresh=True`` so that edits to utility modules in the
-    GUI are always picked up.
-
-    Raises ``PreambleError`` with a human-readable message and optional
-    source line number when the preamble fails to execute (e.g. a utility
-    module has a NameError).
+    The ``_preamble_lock`` serialises the ``sys.modules`` eviction + ``exec()``
+    work so two threads can't observe a partially-evicted ``sys.modules``
+    (which raises ``KeyError`` inside ``importlib._bootstrap._load_unlocked``).
     """
-    if not preamble or not preamble.strip():
-        return {}
-
-    import hashlib
-
-    cache_key = hashlib.sha256(preamble.encode()).hexdigest()
-
-    # Preamble may contain imports (e.g. from utility.features import …)
-    # which are legitimate, but still validate against other dangerous
-    # patterns (dunder access, eval, exec, etc.).
-    validate_user_code(preamble, allow_imports=True)
-    # Ensure project root is importable so `from utility.xxx import …` works
-    # even when the server process was spawned by uvicorn reload.
-    # We add *both* cwd and the pipeline's parent directory because the
-    # utility/ folder may live next to the pipeline file (e.g. inside a
-    # rating/ subfolder) rather than at the project root.
-    import os  # noqa: E401
     import sys
 
-    cwd = os.getcwd()
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
-    if pipeline_dir is not None:
-        pdir = str(Path(pipeline_dir).resolve())
-        if pdir not in sys.path:
-            sys.path.insert(0, pdir)
-    # Evict cached utility modules so edits in the GUI are picked up
-    # on every run instead of serving stale bytecode from sys.modules.
-    # The lock prevents a concurrent request from seeing partially-evicted
-    # state (which causes KeyError inside importlib._load_unlocked).
-    ns = safe_globals(pl=pl, allow_imports=True)
-    base_keys = set(ns.keys())
     with _preamble_lock:
-        if not force_refresh and cache_key in _preamble_cache:
-            return _preamble_cache[cache_key]
-
+        # Evict cached utility modules so edits in the GUI are picked up
+        # on every cache miss instead of serving stale bytecode from
+        # sys.modules.  The lock prevents a concurrent request from seeing
+        # partially-evicted state.
         for mod_name in [k for k in sys.modules if k == "utility" or k.startswith("utility.")]:
             del sys.modules[mod_name]
+
+        ns = safe_globals(pl=pl, allow_imports=True)
+        base_keys = set(ns.keys())
         try:
             exec(preamble, ns)  # noqa: S102  — single dict = shared globals
         except Exception as exc:
@@ -230,16 +197,97 @@ def _compile_preamble(
 
             raise PreambleError(msg, source_line=source_line) from exc
 
-        result = {
+        return {
             k: v
             for k, v in ns.items()
             if k not in base_keys
             and not (hasattr(v, "__name__") and getattr(v, "__name__", "") in _DANGEROUS_MODULES)
         }
-        _preamble_cache[cache_key] = result
-        if len(_preamble_cache) > _PREAMBLE_CACHE_MAX:
-            _preamble_cache.popitem(last=False)
-        return result
+
+
+def _compile_preamble(
+    preamble: str,
+    *,
+    force_refresh: bool = True,
+    pipeline_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Compile user-defined preamble code into a namespace dict.
+
+    The preamble (helper functions, constants, lambdas) is defined at the
+    top of a pipeline file between imports and the first
+    ``@pipeline.<type>`` decorator.  This compiles it once and returns a
+    dict of bindings that can be injected into ``_exec_user_code`` via
+    ``extra_ns``.
+
+    Uses a single dict for globals/locals so preamble functions can call
+    each other (they share the same ``__globals__``).
+
+    When *force_refresh* is ``True`` (default), the cache is cleared and
+    the preamble is re-compiled — so edits to utility modules in the GUI
+    are always picked up.  When *force_refresh* is ``False`` (e.g.
+    optimiser / sink paths that run in tight loops), a cached result from
+    a previous call with the same preamble text and pipeline directory is
+    returned immediately.
+
+    Caching diagnostics are exposed directly on this function via
+    ``_compile_preamble.cache_info()`` and ``_compile_preamble.cache_clear()``
+    — delegating to the underlying ``functools.lru_cache`` wrapper.
+
+    Raises ``PreambleError`` with a human-readable message and optional
+    source line number when the preamble fails to execute (e.g. a utility
+    module has a NameError).
+    """
+    # Short-circuit empty / whitespace preambles BEFORE touching the cache
+    # — empty preambles are common and shouldn't evict cache entries.
+    if not preamble or not preamble.strip():
+        return {}
+
+    # Preamble may contain imports (e.g. from utility.features import …)
+    # which are legitimate, but still validate against other dangerous
+    # patterns (dunder access, eval, exec, etc.).
+    validate_user_code(preamble, allow_imports=True)
+
+    # Ensure project root is importable so `from utility.xxx import …` works
+    # even when the server process was spawned by uvicorn reload.  We add
+    # both cwd and the pipeline's parent directory because the ``utility/``
+    # folder may live next to the pipeline file (e.g. inside a ``rating/``
+    # subfolder) rather than at the project root.  These inserts are
+    # idempotent (gated on ``not in sys.path``) so the list doesn't grow
+    # on every call.
+    import os
+    import sys
+
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+
+    # Normalise pipeline_dir to a string at the boundary so lru_cache's
+    # argument-hashing treats ``Path("/x")`` and ``"/x"`` identically.
+    pipeline_dir_str: str | None = None
+    if pipeline_dir is not None:
+        pipeline_dir_str = str(Path(pipeline_dir).resolve())
+        if pipeline_dir_str not in sys.path:
+            sys.path.insert(0, pipeline_dir_str)
+
+    if force_refresh:
+        # lru_cache has no per-key eviction API, so clear the whole cache
+        # and let the next call repopulate it.  Targeted eviction would
+        # require a parallel dict — the simplicity of ``cache_clear()``
+        # outweighs the cost of evicting peers, especially because
+        # ``force_refresh=True`` is reserved for the GUI preview path
+        # where the user is actively editing utility modules.
+        _compile_preamble_cached.cache_clear()
+
+    return _compile_preamble_cached(preamble, pipeline_dir_str)
+
+
+# Expose the cache diagnostics (``cache_info``, ``cache_clear``) directly on
+# the public wrapper so callers and tests can inspect the cache without
+# having to know about the internal ``_compile_preamble_cached`` symbol.
+# Using ``cast`` keeps mypy happy about attaching non-standard attributes
+# to a plain function.
+_compile_preamble.cache_info = _compile_preamble_cached.cache_info  # type: ignore[attr-defined]
+_compile_preamble.cache_clear = _compile_preamble_cached.cache_clear  # type: ignore[attr-defined]
 
 
 def _exec_user_code(

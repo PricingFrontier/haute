@@ -404,4 +404,7 @@ class TestGraphFingerprint:
         fp2 = graph_fingerprint(g2)
         assert fp1 == fp2
         assert isinstance(fp1, str)
-        assert len(fp1) == 64
+        # Non-empty lowercase hex digest; the exact algorithm (xxh64) is
+        # an implementation detail of ``_cache.py``.
+        assert fp1
+        assert all(c in "0123456789abcdef" for c in fp1)

@@ -241,7 +241,10 @@ class TestFingerprintTypeErrorForUnknown:
         fp1 = graph_fingerprint(g)
         fp2 = graph_fingerprint(g)
         assert fp1 == fp2
-        assert len(fp1) == 64  # sha256 hex
+        # xxh64 hex digest — the exact algorithm is an implementation
+        # detail, but the digest must be a non-empty hex string.
+        assert fp1
+        assert all(c in "0123456789abcdef" for c in fp1)
 
 
 # ===========================================================================

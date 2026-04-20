@@ -13,13 +13,13 @@ Targets:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
 
+from haute._hashing import content_hash_bytes
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node
 
@@ -136,7 +136,10 @@ class TestGraphBaseFingerprint:
         fp1 = _graph_base_fingerprint(g)
         fp2 = _graph_base_fingerprint(g)
         assert fp1 == fp2
-        assert len(fp1) == 64  # sha256 hex digest
+        # Non-empty lowercase hex digest; the exact algorithm (xxh64) is
+        # an implementation detail of ``_cache.py``.
+        assert fp1
+        assert all(c in "0123456789abcdef" for c in fp1)
 
     def test_node_order_does_not_matter(self):
         """Nodes are sorted by ID, so insertion order is irrelevant."""
@@ -181,7 +184,8 @@ class TestGraphBaseFingerprint:
         # Should not raise — repr() is used as JSON default
         fp = _graph_base_fingerprint(g)
         assert isinstance(fp, str)
-        assert len(fp) == 64
+        assert fp
+        assert all(c in "0123456789abcdef" for c in fp)
 
     def test_different_config_different_fingerprint(self):
         """Changing a config value produces a different fingerprint."""
@@ -201,14 +205,17 @@ class TestGraphBaseFingerprint:
         assert _graph_base_fingerprint(g1) != _graph_base_fingerprint(g2)
 
     def test_empty_graph_fingerprint(self):
-        """Empty graph produces a valid sha256 hash."""
+        """Empty graph produces a valid content hash of the empty payload."""
         from haute._cache import _graph_base_fingerprint
         from haute._types import PipelineGraph
 
         g = PipelineGraph()
         fp = _graph_base_fingerprint(g)
-        # Hash of empty string
-        assert fp == hashlib.sha256(b"").hexdigest()
+        # Hash of empty string under the same content-hash helper the
+        # production code uses; pins algorithmic agreement with
+        # ``haute._hashing.content_hash_bytes`` without hard-coding a
+        # specific digest algorithm here.
+        assert fp == content_hash_bytes(b"")
 
 
 class TestGraphFingerprintWithExtraKeys:

@@ -1724,19 +1724,31 @@ class TestDeeplyNestedASTValidation:
 
 class TestPreambleCacheEviction:
     def test_cache_does_not_exceed_max(self):
-        from haute.executor import _PREAMBLE_CACHE_MAX, _compile_preamble, _preamble_cache
+        """Regression guard for the ``functools.lru_cache`` preamble cache.
 
-        initial_keys = set(_preamble_cache.keys())
+        Post-refactor the cache is bounded by the stdlib's
+        ``maxsize`` parameter (128 by default).  Inserting more than that
+        must not cause the cache to grow past the bound.
+        """
+        from haute.executor import _compile_preamble
 
-        for i in range(_PREAMBLE_CACHE_MAX + 5):
+        # Snapshot the cache bound from the cache_info surface — the test
+        # shouldn't hard-code 128 in case the default is tuned later.
+        info_before = _compile_preamble.cache_info()  # type: ignore[attr-defined]
+        bound = info_before.maxsize
+
+        # Insert ``bound + 5`` distinct preambles with force_refresh=False
+        # so each is a fresh miss that populates the cache rather than a
+        # cache_clear() on every call.
+        for i in range(bound + 5):
             preamble = f"PREAMBLE_EVICT_TEST_{i} = {i}\n"
-            _compile_preamble(preamble, force_refresh=True)
+            _compile_preamble(preamble, force_refresh=False)
 
-        assert len(_preamble_cache) <= _PREAMBLE_CACHE_MAX
+        info_after = _compile_preamble.cache_info()  # type: ignore[attr-defined]
+        assert info_after.currsize <= bound
 
-        for k in list(_preamble_cache.keys()):
-            if k not in initial_keys:
-                _preamble_cache.pop(k, None)
+        # Clean up so we don't pollute other tests.
+        _compile_preamble.cache_clear()  # type: ignore[attr-defined]
 
 
 class TestValidationCacheDoesNotCacheUnsafe:

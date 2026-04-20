@@ -55,7 +55,6 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -65,12 +64,10 @@ import pytest
 # helper in _cache.py.  Also pull in the xxh64 helper from the F3 foundation
 # so benchmark tests can hit the exact implementation the migration will use.
 # ---------------------------------------------------------------------------
-
 from haute._cache import _graph_base_fingerprint, graph_fingerprint
 from haute._hashing import content_hash_bytes
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.executor import _compile_preamble
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -231,8 +228,7 @@ class TestPreambleCacheCorrectness:
             _compile_preamble(f"COUNTER_{i} = {i}\n", force_refresh=False)
         size = _cache_size()
         assert size <= bound, (
-            f"cache grew to {size} entries with bound {bound} — the "
-            "eviction path is broken"
+            f"cache grew to {size} entries with bound {bound} — the eviction path is broken"
         )
 
     def test_lru_eviction_order(self) -> None:
@@ -345,18 +341,13 @@ class TestPreambleCacheCorrectness:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="pre-refactor: preamble cache is a manual OrderedDict, not functools.lru_cache",
-)
 class TestPreambleCachePostRefactor:
     """Shape-pinning guards for the ``functools.lru_cache`` migration.
 
-    Every test in this class expects the post-refactor surface
-    (``cache_info``, ``cache_clear``, ``maxsize=128``).  Marked
-    ``xfail(strict=True)`` so the maintainer gets a loud notification
-    the moment the migration lands and these start passing — at that
-    point, remove the decorator.
+    Every test in this class pins the post-refactor surface
+    (``cache_info``, ``cache_clear``, ``maxsize=128``).  These now pass
+    as regression guards — the migration itself lives in Phase 3 Wave 6
+    package 6C (``functools.lru_cache`` on ``_compile_preamble_cached``).
     """
 
     def test_compile_preamble_exposes_cache_info(self) -> None:
@@ -379,9 +370,7 @@ class TestPreambleCachePostRefactor:
         """The stdlib ``lru_cache`` exposes ``cache_clear()``.  Needed
         by tests and any test fixture that wants to reset state."""
         clear_fn = getattr(_compile_preamble, "cache_clear", None)
-        assert callable(clear_fn), (
-            "post-refactor: _compile_preamble must expose cache_clear()"
-        )
+        assert callable(clear_fn), "post-refactor: _compile_preamble must expose cache_clear()"
 
     def test_default_maxsize_is_128(self) -> None:
         """stdlib default for ``lru_cache`` is ``maxsize=128``.  The
@@ -392,9 +381,7 @@ class TestPreambleCachePostRefactor:
         quietly.
         """
         info = _compile_preamble.cache_info()  # type: ignore[attr-defined]
-        assert info.maxsize == 128, (
-            f"default lru_cache maxsize must be 128; got {info.maxsize!r}"
-        )
+        assert info.maxsize == 128, f"default lru_cache maxsize must be 128; got {info.maxsize!r}"
 
     def test_cache_hit_increments_hit_counter(self) -> None:
         """The stdlib ``CacheInfo`` counts hits and misses separately —
@@ -506,28 +493,20 @@ class TestCacheKeyXxhashMigration:
 
     # --- post-refactor only: xxh64 produces 16-char hex -------------------
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="pre-refactor: _cache.py uses SHA-256 (64 hex chars); xxh64 is 16",
-    )
     def test_graph_fingerprint_digest_is_16_hex_chars(self) -> None:
         """Post-refactor, ``graph_fingerprint`` returns a 16-char
-        lowercase-hex xxh64 digest.  Pre-refactor it returns 64-char
-        SHA-256.
+        lowercase-hex xxh64 digest — pinning the migration away from
+        SHA-256 (which would produce 64 hex chars).
         """
         g = _make_graph({"x": 1})
         digest = graph_fingerprint(g)
         assert isinstance(digest, str)
         assert len(digest) == 16, (
             f"xxh64 digest must be 16 hex chars; got {len(digest)} "
-            "(pre-refactor SHA-256 produces 64)"
+            "(pre-refactor SHA-256 produced 64)"
         )
         assert all(c in "0123456789abcdef" for c in digest)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="pre-refactor: _graph_base_fingerprint uses SHA-256 (64 hex chars)",
-    )
     def test_graph_base_fingerprint_digest_is_16_hex_chars(self) -> None:
         """Same pin on the internal helper — ensures the whole module
         migrates, not just the public entry point."""
@@ -536,13 +515,9 @@ class TestCacheKeyXxhashMigration:
         assert len(digest) == 16
         assert all(c in "0123456789abcdef" for c in digest)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="pre-refactor: cache keys still SHA-256 so the new key format isn't applied yet",
-    )
     def test_digest_matches_xxh64_content_hash(self) -> None:
-        """Post-refactor, ``graph_fingerprint`` should produce the exact
-        digest that ``content_hash_bytes`` produces for the same bytes.
+        """``graph_fingerprint`` should produce the exact digest shape that
+        ``content_hash_bytes`` produces for the same bytes.
 
         This is the strongest pin: it says "use the F3 helper", not
         just "use xxh64 somehow".  Keeps a single source of truth for
@@ -701,7 +676,7 @@ class TestPreambleCacheBenchmark:
         # 2. Hand-rolled OrderedDict LRU mirror of the current
         #    executor implementation: dict lookup + miss populate +
         #    LRU eviction.  Wrapped as a callable for fair comparison.
-        _store: "OrderedDict[int, int]" = OrderedDict()
+        _store: OrderedDict[int, int] = OrderedDict()
         _max = 128
         _lock = threading.Lock()  # mirror today's _preamble_lock
 
