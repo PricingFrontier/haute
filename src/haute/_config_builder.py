@@ -215,6 +215,28 @@ def _build_node_config(
     return config
 
 
+def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException], ...]:
+    """Exceptions that mean "can't resolve builder contract right now".
+
+    Matches ``_execute_lazy._BOUNDARY_CHECK_EXCEPTIONS`` — the parse-time
+    fallback must not swallow more than the runtime boundary check would.
+    Programmer errors (``AttributeError`` / ``TypeError`` / ``KeyError``)
+    propagate so they aren't silenced as "harmless parse-time fallback
+    to opaque".
+    """
+    exc_types: list[type[BaseException]] = [ConfigError, OSError, ImportError, RuntimeError]
+    try:
+        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+
+        exc_types.append(MlflowException)
+    except ImportError:
+        pass
+    return tuple(exc_types)
+
+
+_CONTRACT_RESOLVE_FALLBACK_EXCEPTIONS = _compute_contract_resolve_fallback_exceptions()
+
+
 def _validate_user_contract(
     node_type: NodeType,
     config: dict[str, Any],
@@ -240,16 +262,17 @@ def _validate_user_contract(
 
     try:
         derived = Contract.from_tuple(get_column_contract(node_type, config))
-    except Exception:
-        # If the builder contract cannot be computed right now (e.g.
-        # MLflow unreachable during parse of a MODEL_SCORE node whose
-        # ``contract=`` reflects a future load), treat the builder as
-        # fully opaque for this call.  The check still runs at
-        # execution time when the model is actually loaded, so a
-        # drifted annotation surfaces there instead of breaking offline
-        # parse.  No silent swallow in the normal path: a raising
-        # builder with a reachable backend still propagates because
-        # this branch never executes.
+    except _CONTRACT_RESOLVE_FALLBACK_EXCEPTIONS:
+        # If the builder contract cannot be resolved right now (MLflow
+        # unreachable during parse of a MODEL_SCORE node whose
+        # ``contract=`` reflects a future load, missing artifact file,
+        # misconfigured required field), treat the builder as fully
+        # opaque for this call.  The check re-runs at execution time
+        # when the model is actually loaded, so a drifted annotation
+        # still surfaces — just not at offline parse-time.
+        # Programmer errors (AttributeError / TypeError / KeyError)
+        # propagate so they aren't masked as a "harmless parse-time
+        # fallback to opaque".
         derived = Contract.opaque()
 
     mismatches: list[str] = []

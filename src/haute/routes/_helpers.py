@@ -328,7 +328,18 @@ def _ensure_pipeline_index() -> dict[str, Path]:
                 graph = parse_pipeline_file(f)
                 name = graph.pipeline_name or f.stem
                 new_index[name] = f
-            except Exception:
+            except Exception as exc:
+                # Parse failure — index by stem as a fallback so the file is
+                # still listable, but log at ``warning`` so the user can
+                # surface the actual problem in their pipeline.  Using
+                # ``debug`` or silent-skip would mask a broken pipeline as
+                # "the file just uses its stem as its name".
+                logger.warning(
+                    "pipeline_index_parse_failed",
+                    path=str(f),
+                    stem=f.stem,
+                    error=repr(exc),
+                )
                 new_index[f.stem] = f
 
         # Atomic publish: a single assignment is one bytecode op in CPython,
@@ -368,7 +379,7 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
             source = read_user_text(f)
             tree = ast.parse(source)
         except Exception as exc:
-            logger.debug("module_deps_parse_failed", file=f.name, error=str(exc))
+            logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
             continue
 
         from haute._parser_submodels import extract_submodel_calls

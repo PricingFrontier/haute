@@ -13,17 +13,19 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from haute._flatten import flatten_graph
-from haute._logging import get_logger
-from haute._parser_helpers import (
-    _build_edges,
-    _build_rf_nodes,
+from haute._ast_helpers import (
     _extract_connect_calls,
-    _extract_decorated_nodes,
     _extract_function_bodies,
     _extract_submodel_meta,
     _is_submodel_node_decorator,
 )
+from haute._flatten import flatten_graph
+from haute._graph_builders import (
+    _build_edges,
+    _build_rf_nodes,
+    _extract_decorated_nodes,
+)
+from haute._logging import get_logger
 from haute._submodel_graph import (
     build_submodel_placeholder,
     classify_ports,
