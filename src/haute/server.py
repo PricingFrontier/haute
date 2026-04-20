@@ -27,6 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from haute._logging import configure_logging, get_logger
 from haute.routes._helpers import (
+    _ensure_pipeline_index,
     broadcast,
     discover_pipelines,
     invalidate_pipeline_index,
@@ -77,6 +78,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _clear_bytecache()
     configure_logging()
     _load_env(Path.cwd())
+
+    # Prime the pipeline-name → path index so the first HTTP request doesn't
+    # synchronously pay for discovery + parse of every pipeline in the
+    # project.  Startup is the *only* place besides the file-watcher
+    # callback that is allowed to (re)build this index — see
+    # ``haute.routes._helpers`` for the full contract.
+    _ensure_pipeline_index()
 
     global _watcher_task
     _watcher_task = asyncio.create_task(_file_watcher())

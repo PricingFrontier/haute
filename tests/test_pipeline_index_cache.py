@@ -402,9 +402,7 @@ class TestNoManualInvalidation:
             """True iff ``lineno`` in ``py`` is inside ``_file_watcher`` or a nested def."""
             tree = ast.parse(py.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if not isinstance(
-                    node, ast.FunctionDef | ast.AsyncFunctionDef
-                ):
+                if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                     continue
                 if node.name != "_file_watcher":
                     continue

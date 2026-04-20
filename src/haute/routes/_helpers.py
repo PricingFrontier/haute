@@ -236,36 +236,79 @@ async def broadcast(data: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 # Lightweight index: pipeline_name → file_path.
-# Built lazily on first lookup, invalidated by ``invalidate_pipeline_index()``.
+#
+# Lifecycle (Phase 2 Wave 5 / item #75 of the review):
+#   1. Populated at server startup by ``haute.server._lifespan``.
+#   2. Rebuilt on file-watcher events by ``haute.server._file_watcher``, which
+#      is the *only* production caller of ``invalidate_pipeline_index``.
+# No other production code path is allowed to clear or rebuild the index —
+# doing so reintroduces the "two sources of truth" race the review flagged.
+#
+# The lock below serialises the rebuild path so two concurrent readers that
+# both observe a cold cache cannot scan the filesystem twice.  The swap at
+# the end of ``_ensure_pipeline_index`` assigns a fully-built local dict to
+# the module global in a single bytecode op; readers therefore either see
+# the previous dict or the new dict, never a half-populated one.
 _pipeline_index: dict[str, Path] | None = None
+_pipeline_index_lock = threading.Lock()
 
 
 def invalidate_pipeline_index() -> None:
-    """Clear the cached pipeline name→path index (called by file watcher)."""
+    """Clear the cached pipeline name→path index.
+
+    Intended to be called **only** from the file-watcher in
+    ``haute.server._file_watcher``.  All other production code paths must
+    treat the cache as read-only — startup + watcher are the two — and only
+    two — legitimate writers.  Test suites are free to poke this directly
+    to set up fresh state between tests.
+    """
     global _pipeline_index, _module_deps
-    _pipeline_index = None
-    _module_deps = None
+    with _pipeline_index_lock:
+        _pipeline_index = None
+        _module_deps = None
 
 
 def _ensure_pipeline_index() -> dict[str, Path]:
-    """Build or return the cached pipeline name→path index."""
+    """Build or return the cached pipeline name→path index.
+
+    If the cache is already populated, returns it without taking the lock
+    (reads of a single reference are atomic on CPython).  If the cache is
+    ``None``, acquires the lock, re-checks (double-checked locking), and
+    builds the index into a *local* dict.  Only the final assignment to
+    ``_pipeline_index`` publishes the new dict — concurrent readers never
+    observe a partially-constructed mapping.
+    """
     global _pipeline_index
-    if _pipeline_index is not None:
-        return _pipeline_index
+
+    cached = _pipeline_index
+    if cached is not None:
+        return cached
 
     from haute.discovery import discover_pipelines as _discover
     from haute.parser import parse_pipeline_file
 
-    index: dict[str, Path] = {}
-    for f in _discover():
-        try:
-            graph = parse_pipeline_file(f)
-            name = graph.pipeline_name or f.stem
-            index[name] = f
-        except Exception:
-            index[f.stem] = f
-    _pipeline_index = index
-    return _pipeline_index
+    with _pipeline_index_lock:
+        # Re-check under the lock: another thread may have built the index
+        # while we were waiting.  Returning the existing dict here avoids a
+        # redundant filesystem scan and guarantees all concurrent callers
+        # agree on the same object.
+        cached = _pipeline_index
+        if cached is not None:
+            return cached
+
+        new_index: dict[str, Path] = {}
+        for f in _discover():
+            try:
+                graph = parse_pipeline_file(f)
+                name = graph.pipeline_name or f.stem
+                new_index[name] = f
+            except Exception:
+                new_index[f.stem] = f
+
+        # Atomic publish: a single assignment is one bytecode op in CPython,
+        # so readers never see ``None`` as a transient state during rebuild.
+        _pipeline_index = new_index
+        return new_index
 
 
 def discover_pipelines() -> list[Path]:
