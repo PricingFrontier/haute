@@ -40,9 +40,8 @@ export default function BreakdownDropdown({
         onClick={() => { if (hasData) setOpen((v) => !v) }}
         className="flex items-center gap-1 px-1 py-0.5 rounded transition-colors hover-breakdown"
         data-hover-enabled={!open && hasData}
+        data-open={open}
         style={{
-          color: open ? 'var(--accent)' : 'var(--text-muted)',
-          background: open ? 'var(--accent-soft)' : 'transparent',
           cursor: hasData ? 'pointer' : 'default',
           opacity: hasData ? 1 : 0.35,
         }}

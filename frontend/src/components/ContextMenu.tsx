@@ -120,8 +120,7 @@ export default function ContextMenu({
               item.action()
               onClose()
             }}
-            className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-[12px] menu-item${item.danger ? " menu-item--danger" : ""}`}
-            style={{ color: item.danger ? "#ef4444" : "var(--text-secondary)" }}
+            className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-[12px] hover-chrome${item.danger ? " menu-item--danger" : ""}`}
           >
             <Icon size={13} aria-hidden="true" />
             {item.label}

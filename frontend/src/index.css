@@ -197,7 +197,8 @@ html, body, #root {
   color: var(--text-secondary);
   transition: background 150ms, color 150ms;
 }
-.hover-chrome:hover {
+.hover-chrome:hover,
+.hover-chrome:focus-visible {
   background: var(--chrome-hover);
   color: var(--text-primary);
 }
@@ -210,7 +211,8 @@ html, body, #root {
   background: var(--chrome);
   transition: background 150ms;
 }
-.hover-chrome-solid:hover {
+.hover-chrome-solid:hover,
+.hover-chrome-solid:focus-visible {
   background: var(--chrome-hover);
 }
 
@@ -219,7 +221,8 @@ html, body, #root {
 .hover-bg {
   transition: background 150ms;
 }
-.hover-bg:hover {
+.hover-bg:hover,
+.hover-bg:focus-visible {
   background: var(--bg-hover);
 }
 
@@ -239,11 +242,19 @@ html, body, #root {
 /* Breadcrumb crumb: non-last items hover to chrome-hover bg +
    text-primary.  The `:not(:disabled)` guard preserves the existing
    shape where the last (current) crumb is rendered with `disabled`
-   and must not react to hover. */
+   and must not react to hover.  Resting colors live here — NOT as
+   inline `style={{ color }}` on the <button> — because equal-specificity
+   inline styles would beat the `:hover` rule and prevent the color
+   change from firing. */
 .hover-crumb {
+  color: var(--text-muted);
   transition: background 150ms, color 150ms;
 }
-.hover-crumb:not(:disabled):hover {
+.hover-crumb:disabled {
+  color: var(--text-primary);
+}
+.hover-crumb:not(:disabled):hover,
+.hover-crumb:not(:disabled):focus-visible {
   background: var(--chrome-hover);
   color: var(--text-primary);
 }
@@ -251,23 +262,34 @@ html, body, #root {
 /* Breakdown dropdown trigger: hovers to text-secondary color only
    when the dropdown is closed AND there is data to show
    (data-hover-enabled="true").  Matches the pre-migration guard
-   `if (!open && hasData)`. */
-.hover-breakdown[data-hover-enabled="true"]:hover {
+   `if (!open && hasData)`.  Resting colors + background live here —
+   NOT as inline `style={{ color, background }}` — because equal-
+   specificity inline styles would beat the `:hover` rule. */
+.hover-breakdown[data-open="false"] {
+  color: var(--text-muted);
+  background: transparent;
+}
+.hover-breakdown[data-open="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.hover-breakdown[data-hover-enabled="true"]:hover,
+.hover-breakdown[data-hover-enabled="true"]:focus-visible {
   color: var(--text-secondary);
 }
 
-/* Context-menu item hover.  Non-danger items hover to chrome-hover
-   bg + text-primary color; danger items hover to a translucent red
-   background but keep their red foreground. */
-.menu-item {
-  transition: background 150ms, color 150ms;
+/* Context-menu danger variant.  The base ``.hover-chrome`` class on
+   the button provides the non-danger rest + hover (text-secondary →
+   text-primary + chrome-hover bg).  This modifier overrides the color
+   to red at rest and swaps the hover background to a translucent red
+   while keeping the red foreground.  Equal-specificity rules; later-
+   in-source wins, which is why this block sits after .hover-chrome. */
+.menu-item--danger {
+  color: #ef4444;
 }
-.menu-item:hover {
-  background: var(--chrome-hover);
-  color: var(--text-primary);
-}
-.menu-item--danger:hover {
-  background: rgba(239,68,68,.1);
+.menu-item--danger:hover,
+.menu-item--danger:focus-visible {
+  background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
 }
 
@@ -304,7 +326,8 @@ html, body, #root {
 .node-close-btn {
   background: #dc2626;
 }
-.node-close-btn:hover {
+.node-close-btn:hover,
+.node-close-btn:focus-visible {
   background: #b91c1c;
 }
 
@@ -314,7 +337,8 @@ html, body, #root {
 .trace-hidden-toggle {
   background: rgba(255, 255, 255, 0.03);
 }
-.trace-hidden-toggle:hover {
+.trace-hidden-toggle:hover,
+.trace-hidden-toggle:focus-visible {
   background: var(--bg-hover);
 }
 
@@ -326,11 +350,14 @@ html, body, #root {
 
 /* Shared focus ring for text inputs / textareas in editors.
    Drops the native outline and draws a themed border + soft glow via
-   `:focus-visible`.  Callers can override the colour via
-   `--focus-ring-border` / `--focus-ring-shadow` inline custom
-   properties (e.g. `style={{ "--focus-ring-border": rgba(...)} }`)
-   when a per-node accent is needed; default is the app's blue accent. */
-.focus-ring:focus,
+   ``:focus-visible`` only — modern browsers fire this for click-to-
+   focus on text inputs (per spec heuristics) so mouse users still
+   see the ring, while mouse-down on buttons doesn't.  The bare
+   ``:focus`` selector that previously paired with this was dropped
+   because it painted the ring on every button click.  Callers can
+   override the colour via ``--focus-ring-border`` / ``--focus-ring-
+   shadow`` inline custom properties when a per-node accent is needed;
+   default is the app's blue accent. */
 .focus-ring:focus-visible {
   outline: none;
   border-color: var(--focus-ring-border, rgba(59, 130, 246, 0.3));
@@ -345,11 +372,13 @@ html, body, #root {
   background: transparent;
   transition: background 150ms;
 }
-.file-browser-row:hover {
+.file-browser-row:hover,
+.file-browser-row:focus-visible {
   background: var(--bg-hover);
 }
 .file-browser-row[data-selected="true"],
-.file-browser-row[data-selected="true"]:hover {
+.file-browser-row[data-selected="true"]:hover,
+.file-browser-row[data-selected="true"]:focus-visible {
   background: var(--accent-soft);
 }
 
@@ -360,7 +389,8 @@ html, body, #root {
   background: var(--bg-elevated);
   transition: background 150ms;
 }
-.grouped-col-group-header:hover {
+.grouped-col-group-header:hover,
+.grouped-col-group-header:focus-visible {
   background: var(--bg-hover);
 }
 
@@ -372,7 +402,8 @@ html, body, #root {
   background: transparent;
   transition: background 150ms;
 }
-.grouped-col-pattern-row:hover {
+.grouped-col-pattern-row:hover,
+.grouped-col-pattern-row:focus-visible {
   background: var(--bg-hover);
 }
 
@@ -387,7 +418,8 @@ html, body, #root {
 .accent-hover-btn {
   transition: border-color 150ms, color 150ms;
 }
-.accent-hover-btn:hover {
+.accent-hover-btn:hover,
+.accent-hover-btn:focus-visible {
   border-color: var(--node-accent, var(--accent)) !important;
   color: var(--node-accent, var(--accent)) !important;
 }
@@ -401,7 +433,8 @@ html, body, #root {
   color: var(--text-muted);
   transition: color 150ms;
 }
-.icon-danger-btn:hover {
+.icon-danger-btn:hover,
+.icon-danger-btn:focus-visible {
   color: #ef4444;
 }
 
@@ -412,6 +445,43 @@ html, body, #root {
   background: var(--chrome-hover);
   transition: background 150ms;
 }
-.add-row-btn:hover {
+.add-row-btn:hover,
+.add-row-btn:focus-visible {
   background: var(--chrome-active, var(--bg-hover));
+}
+
+/* FeatureBrowser row (panels/modelling/FeatureBrowser.tsx) — the sidebar
+   list row for AvE / PDP tabs.  Rests transparent with a transparent
+   left-border gutter.  Unselected rows hover to var(--chrome-hover);
+   selected rows pin to var(--accent-soft) with a blue left-border and
+   must NOT react to hover.  Resting state lives here rather than inline
+   so the hover rule is not beaten by an equal-specificity inline
+   `style={{ background }}` declaration. */
+.feature-browser-row {
+  background: transparent;
+  border-left: 2px solid transparent;
+}
+.feature-browser-row:not(.feature-browser-row--selected):hover,
+.feature-browser-row:not(.feature-browser-row--selected):focus-visible {
+  background: var(--chrome-hover);
+}
+.feature-browser-row--selected {
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+}
+
+/* Algorithm gateway button (panels/ModellingConfig.tsx) — the large
+   card-style button picking between GLM / XGBoost / CatBoost / etc.
+   Rests on chrome-hover with a muted border; hover flips to accent-soft
+   with the accent border.  Resting state lives here rather than inline
+   so the hover rule is not beaten by an equal-specificity inline
+   `style={{ background, border }}` declaration. */
+.algorithm-gateway-btn {
+  background: var(--chrome-hover);
+  border: 1px solid var(--border);
+}
+.algorithm-gateway-btn:hover,
+.algorithm-gateway-btn:focus-visible {
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }

@@ -134,8 +134,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
           <button
             key={algo.id}
             onClick={() => onUpdate("algorithm", algo.id)}
-            className="w-full flex items-start gap-3 px-3 py-3 rounded-lg text-left transition-colors hover:bg-[var(--accent-soft)] hover:border-[var(--accent)]"
-            style={{ background: "var(--chrome-hover)", border: "1px solid var(--border)" }}
+            className="w-full flex items-start gap-3 px-3 py-3 rounded-lg text-left transition-colors algorithm-gateway-btn"
           >
             <div className="min-w-0">
               <div className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>{algo.name}</div>

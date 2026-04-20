@@ -32,7 +32,6 @@ export default function BreadcrumbBar({ viewStack, onNavigate }: BreadcrumbBarPr
             onClick={() => onNavigate(i)}
             className="text-[12px] font-medium px-1.5 py-0.5 rounded hover-crumb"
             style={{
-              color: i === viewStack.length - 1 ? "var(--text-primary)" : "var(--text-muted)",
               cursor: i === viewStack.length - 1 ? "default" : "pointer",
             }}
             disabled={i === viewStack.length - 1}
