@@ -5,6 +5,7 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import { normalizeEdges } from "../utils/graphHelpers"
 import { nodeData } from "../types/node"
+import { validateReactFlowNode } from "../types/guards"
 import { createSubmodel, loadSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
 
@@ -108,12 +109,12 @@ export default function useSubmodelNavigation({
           const srcNode = parentNodeMap.get(srcId)
           const label = srcNode ? String(nodeData(srcNode).label || srcId) : srcId
           const portId = `port_in__${srcId}`
-          newNodes.push({
+          newNodes.push(validateReactFlowNode({
             id: portId,
             type: NODE_TYPES.SUBMODEL_PORT,
             position: { x: 0, y: 0 },
             data: { label, portDirection: "input", portName: label },
-          } as Node)
+          }))
           for (const childId of [...new Set(targetChildIds)]) {
             if (!childIds.has(childId)) continue
             newEdges.push({
@@ -143,12 +144,12 @@ export default function useSubmodelNavigation({
           const tgtNode = parentNodeMap.get(tgtId)
           const label = tgtNode ? String(nodeData(tgtNode).label || tgtId) : tgtId
           const portId = `port_out__${tgtId}`
-          newNodes.push({
+          newNodes.push(validateReactFlowNode({
             id: portId,
             type: NODE_TYPES.SUBMODEL_PORT,
             position: { x: 0, y: 0 },
             data: { label, portDirection: "output", portName: label },
-          } as Node)
+          }))
           for (const childId of [...new Set(sourceChildIds)]) {
             newEdges.push({
               id: `e_${childId}_${portId}`,

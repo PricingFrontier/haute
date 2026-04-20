@@ -11,6 +11,8 @@ import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
+import { nodeData } from "../types/node"
+import { parsePipelineResponse } from "../types/guards"
 
 interface PipelineAPIParams {
   selectedNode: Node | null
@@ -122,21 +124,27 @@ export default function usePipelineAPI({
   // Initial pipeline load
   useEffect(() => {
     loadPipeline()
-      .then((data) => {
-        const pipelineNodes = data.nodes ?? []
-        const pipelineEdges = data.edges ?? []
+      .then((raw) => {
+        // Narrow the response at the ingestion boundary.  Any drift in
+        // the backend contract (missing `nodes`/`edges`, wrong type on an
+        // optional field) throws a named Error that flows into the
+        // `.catch` handler below — rather than surfacing downstream as a
+        // cryptic "undefined is not iterable" three callbacks deep.
+        const data = parsePipelineResponse(raw)
+        const pipelineNodes = data.nodes
+        const pipelineEdges = data.edges
         setNodesRaw(pipelineNodes)
         setEdgesRaw(normalizeEdges(pipelineEdges))
         if (data.preamble !== undefined) {
-          setPreamble(data.preamble || "")
-          preambleRef.current = data.preamble || ""
+          setPreamble(data.preamble)
+          preambleRef.current = data.preamble
         }
         if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
-        if (data.pipeline_description !== undefined) descriptionRef.current = data.pipeline_description || ""
+        if (data.pipeline_description !== undefined) descriptionRef.current = data.pipeline_description
         if (data.source_file) sourceFileRef.current = data.source_file
         if (data.submodels) submodelsRef.current = data.submodels
         // Populate source state from backend sidecar
-        if (data.sources && Array.isArray(data.sources)) {
+        if (data.sources) {
           useSettingsStore.getState().setSources(data.sources)
         }
         if (data.active_source) {
@@ -201,7 +209,7 @@ export default function usePipelineAPI({
       const cascadeGraph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
       for (const dsId of downstreamIds) {
         const dsNode = currentNodes.find((n) => n.id === dsId)
-        const oldColumns = (dsNode?.data as Record<string, unknown>)?._columns as ColumnDef[] | undefined
+        const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
         previewNode(cascadeGraph, dsId, snapshotRowLimit, snapshotSource)
           .then((result) => {
             if (result.columns) {
@@ -233,7 +241,7 @@ export default function usePipelineAPI({
           setNodeStatuses(result.node_statuses as Record<string, "ok" | "error" | "running">)
         }
         if (result.columns) {
-          const oldColumns = (node.data as Record<string, unknown>)?._columns as ColumnDef[] | undefined
+          const oldColumns = nodeData(node)._columns
           const newColumns = result.columns as ColumnDef[]
           setNodes((nds) => nds.map((n) => n.id === node.id ? { ...n, data: { ...n.data, _columns: newColumns, _availableColumns: result.available_columns ?? newColumns, _schemaWarnings: result.schema_warnings ?? [] } } : n))
           // Cascade to downstream nodes if columns changed.
@@ -273,7 +281,7 @@ export default function usePipelineAPI({
       .map((e) => e.source)
     const staleUpstream = upstreamIds
       .map((id) => nodeMap.get(id))
-      .filter((n): n is Node => !!n && !(n.data as Record<string, unknown>)?._columns)
+      .filter((n): n is Node => !!n && !nodeData(n)._columns)
 
     if (staleUpstream.length === 0) {
       // No upstream gaps — just preview the selected node directly
