@@ -653,21 +653,39 @@ class TestStarterFiles:
 
     def test_pipeline_has_name(self) -> None:
         result = starter_pipeline("my_project")
-        assert 'Pipeline("my_project"' in result
+        # Pipeline constructor may span multiple lines (formatter choice),
+        # so assert the name appears as a quoted string near the
+        # ``haute.Pipeline(`` call rather than on the same line.
+        assert "haute.Pipeline(" in result
+        assert '"my_project"' in result
         assert "import haute" in result
         assert "import polars" in result
 
-    def test_pipeline_imports_from_utility(self) -> None:
+    def test_pipeline_is_runnable_scaffold(self) -> None:
+        """The starter ships a minimal runnable graph (source → transform → output).
+
+        Replaces the old ``test_pipeline_imports_from_utility``: Wave 10A
+        #112 removes the unconditional ``from utility.features import …``
+        line so the starter stands on its own, and introduces decorators
+        (``@pipeline.data_source``, ``@pipeline.polars``,
+        ``@pipeline.output``) so ``haute init`` → ``haute run`` yields a
+        real executable graph instead of an empty ``Pipeline()``.
+        """
         result = starter_pipeline("my_project")
-        assert "from utility.features import" in result
-        assert "clean_columns" in result
-        assert "to_date" in result
-        assert "years_between" in result
-        assert "cols_matching" in result
-        # Import must appear before the pipeline declaration
-        import_line = result.index("from utility.features import")
-        pipeline_decl = result.index("haute.Pipeline(")
-        assert import_line < pipeline_decl
+        # The three core decorator forms must be present so the parser
+        # picks up a source, a transform, and a terminal node.
+        assert "@pipeline.data_source(" in result, (
+            "Starter pipeline must include a dataSource node so data can "
+            "flow into the graph."
+        )
+        assert "@pipeline.polars" in result, (
+            "Starter pipeline must include a polars transform so users "
+            "have a working example of the transform surface."
+        )
+        assert "@pipeline.output" in result, (
+            "Starter pipeline must include an output node so the "
+            "terminal preview materialises."
+        )
 
     def test_starter_utility_features(self) -> None:
         from haute._scaffold import starter_utility_features, starter_utility_init
@@ -876,7 +894,11 @@ class TestStarterPipelineContent:
 
     def test_contains_pipeline_name(self) -> None:
         result = starter_pipeline("acme_rating")
-        assert 'Pipeline("acme_rating"' in result
+        # The ``haute.Pipeline(...)`` constructor may be wrapped across
+        # multiple lines by the formatter; assert the name appears as a
+        # quoted string near the call rather than on the same line.
+        assert "haute.Pipeline(" in result
+        assert '"acme_rating"' in result
 
     def test_imports_haute_and_polars(self) -> None:
         result = starter_pipeline("test")
