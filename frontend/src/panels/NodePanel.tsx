@@ -436,52 +436,59 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
               onUpdateNode(node.id, { ...node.data, label: e.target.value })
             }
           }}
-          className="flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none focus:ring-2 bg-transparent"
+          className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
           style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent-soft)' }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.boxShadow = 'none' }}
         />
         {onRefreshPreview && (
           <button
             onClick={onRefreshPreview}
-            className="px-2 py-1 rounded shrink-0 transition-colors flex items-center gap-1 text-[11px] font-medium"
+            className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
             style={{ background: 'var(--accent)', color: '#fff' }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
             title="Refresh preview"
           >
             <RefreshCw size={11} />
             Refresh
           </button>
         )}
-        <button onClick={onClose} className="p-1 rounded shrink-0 transition-colors" style={{ background: '#dc2626', color: '#fff' }}
-          onMouseEnter={(e) => e.currentTarget.style.background = '#b91c1c'}
-          onMouseLeave={(e) => e.currentTarget.style.background = '#dc2626'}
+        <button onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: '#fff' }}
           title="Close"
         >
           <X size={14} strokeWidth={2.5} />
         </button>
       </div>
 
-      {/* Tab bar — only show when Columns tab is available */}
+      {/* Tab bar — only show when Columns tab is available.  Hover
+          background is applied via Tailwind only for the INACTIVE tab
+          so the accent-soft background of the active tab doesn't
+          flicker on mouseover.  Inactive tabs deliberately omit an
+          inline `background` so the Tailwind `hover:` rule can apply
+          (inline styles would otherwise win over class rules). */}
       {showColumnsTab && (
         <div className="flex shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-          {(["config", "columns"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className="flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors"
-              style={{
-                color: activeTab === tab ? 'var(--accent)' : 'var(--text-muted)',
-                borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
-                background: activeTab === tab ? 'var(--accent-soft)' : 'transparent',
-              }}
-              onMouseEnter={(e) => { if (activeTab !== tab) e.currentTarget.style.background = 'var(--bg-hover)' }}
-              onMouseLeave={(e) => { if (activeTab !== tab) e.currentTarget.style.background = 'transparent' }}
-            >
-              {tab}
-            </button>
-          ))}
+          {(["config", "columns"] as const).map((tab) => {
+            const isActive = activeTab === tab
+            const activeStyle: React.CSSProperties = {
+              color: 'var(--accent)',
+              borderBottom: '2px solid var(--accent)',
+              background: 'var(--accent-soft)',
+            }
+            const inactiveStyle: React.CSSProperties = {
+              color: 'var(--text-muted)',
+              borderBottom: '2px solid transparent',
+            }
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
+                  isActive ? '' : ' hover:bg-[var(--bg-hover)]'
+                }`}
+                style={isActive ? activeStyle : inactiveStyle}
+              >
+                {tab}
+              </button>
+            )
+          })}
         </div>
       )}
 

@@ -158,13 +158,12 @@ function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep
         opacity: relevant ? 1 : 0.55,
       }}
     >
-      {/* Collapsed header */}
+      {/* Collapsed header — hover bg driven by Tailwind.  The inline
+          `background: transparent` is intentionally omitted so the
+          Tailwind `hover:` rule can apply (inline > class specificity). */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
-        style={{ background: "transparent" }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
       >
         {expanded ? (
           <ChevronDown size={12} style={{ color: "var(--text-muted)" }} />
@@ -431,20 +430,16 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         </div>
         <button
           onClick={handleCopy}
-          className="p-1 rounded transition-colors"
+          className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
           style={{ color: copied ? "var(--color-added, #4ade80)" : "var(--text-muted)" }}
           title="Copy trace as markdown"
-          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}
         </button>
         <button
           onClick={onClose}
-          className="p-1 rounded transition-colors"
+          className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
           style={{ color: "var(--text-muted)" }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
         >
           <X size={14} />
         </button>
@@ -549,10 +544,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                 {hiddenSteps.length > 0 && !showHidden && (
                   <button
                     onClick={() => setShowHidden(true)}
-                    className="w-full py-1.5 rounded text-[11px] transition-colors"
-                    style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.03)", border: "1px dashed var(--border)", fontStyle: "italic" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,.03)")}
+                    className="trace-hidden-toggle w-full py-1.5 rounded text-[11px] transition-colors"
+                    style={{ color: "var(--text-muted)", border: "1px dashed var(--border)", fontStyle: "italic" }}
                   >
                     {hiddenSteps.length} pass-through node{hiddenSteps.length > 1 ? "s" : ""} hidden
                   </button>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, type ReactNode } from "react"
+import { useEffect, useRef, useCallback, useState, type ReactNode } from "react"
 import useUIStore from "../stores/useUIStore"
 import PanelHeader from "./PanelHeader"
 
@@ -80,6 +80,12 @@ export default function PanelShell({
   const startW = useRef(panelWidth)
   const widthRef = useRef(panelWidth)
   const panelRef = useRef<HTMLDivElement>(null)
+  // Visual drag state drives the `.dragging` class on the handle so the
+  // accent colour stays visible even when the pointer wanders off the
+  // narrow hit area.  The `isDragging` ref remains the source of truth
+  // for the mousemove/mouseup handlers; this state only mirrors it for
+  // the render path.
+  const [dragActive, setDragActive] = useState(false)
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
@@ -98,6 +104,7 @@ export default function PanelShell({
         document.body.style.cursor = ""
         document.body.style.userSelect = ""
         setNodePanelWidth(widthRef.current)
+        setDragActive(false)
       }
     }
     window.addEventListener("mousemove", onMouseMove)
@@ -116,6 +123,7 @@ export default function PanelShell({
       widthRef.current = panelWidth
       document.body.style.cursor = "col-resize"
       document.body.style.userSelect = "none"
+      setDragActive(true)
     },
     [panelWidth],
   )
@@ -126,17 +134,17 @@ export default function PanelShell({
       className="h-full shrink-0 flex flex-row animate-slide-in"
       style={{ width: panelWidth, background: "var(--bg-panel)", ...style }}
     >
-      {/* Drag handle */}
+      {/* Drag handle — hover and drag-active states are driven by CSS
+          (`.panel-drag-handle`).  The `.dragging` modifier is synced
+          to the `isDragging` ref via `dragActive` state so the accent
+          colour sticks while the user is mid-drag, even if the
+          pointer wanders off the narrow hit area. */}
       <div
         onMouseDown={onDragStart}
-        className="shrink-0 h-full w-1 cursor-col-resize transition-colors"
+        className={`panel-drag-handle shrink-0 h-full w-1 cursor-col-resize transition-colors${
+          dragActive ? " dragging" : ""
+        }`}
         style={{ background: "var(--chrome-border)" }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "var(--accent)"
-        }}
-        onMouseLeave={(e) => {
-          if (!isDragging.current) e.currentTarget.style.background = "var(--chrome-border)"
-        }}
       />
       <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
         {title !== undefined && (
