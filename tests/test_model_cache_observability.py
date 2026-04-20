@@ -32,7 +32,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import structlog.testing
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -327,8 +326,7 @@ class TestCounterMonotonicity:
         # And must never go backwards.
         for prev, nxt in zip(observations, observations[1:]):
             assert nxt >= prev, (
-                f"Hit counter went backwards: {prev} -> {nxt}. "
-                f"Full trace: {observations}"
+                f"Hit counter went backwards: {prev} -> {nxt}. Full trace: {observations}"
             )
 
     def test_misses_monotonic_over_distinct_loads(self, mock_mlflow_env):
@@ -341,8 +339,7 @@ class TestCounterMonotonicity:
 
         final = get_model_cache_stats()["misses"]
         assert final == baseline + 5, (
-            f"5 distinct loads should produce 5 misses "
-            f"(baseline={baseline}, final={final})."
+            f"5 distinct loads should produce 5 misses (baseline={baseline}, final={final})."
         )
 
     def test_hits_and_misses_independent(self, mock_mlflow_env):
@@ -354,8 +351,7 @@ class TestCounterMonotonicity:
         _primed_load(mock_mlflow_env, run_id="ind_a", artifact="model.cbm")
         hits1 = get_model_cache_stats()["hits"]
         assert hits1 == hits0, (
-            f"A miss must not increment the hit counter "
-            f"(hits before={hits0}, after={hits1})."
+            f"A miss must not increment the hit counter (hits before={hits0}, after={hits1})."
         )
 
         # Hit: same key — hits++ misses unchanged
@@ -363,8 +359,7 @@ class TestCounterMonotonicity:
         _primed_load(mock_mlflow_env, run_id="ind_a", artifact="model.cbm")
         misses1 = get_model_cache_stats()["misses"]
         assert misses1 == misses0, (
-            f"A hit must not increment the miss counter "
-            f"(misses before={misses0}, after={misses1})."
+            f"A hit must not increment the miss counter (misses before={misses0}, after={misses1})."
         )
 
 
@@ -408,9 +403,7 @@ class TestResetSemantics:
         clear_model_cache()
 
         stats = get_model_cache_stats()
-        assert stats["misses"] == 0, (
-            "clear_model_cache() should reset the 'misses' counter to 0."
-        )
+        assert stats["misses"] == 0, "clear_model_cache() should reset the 'misses' counter to 0."
 
     def test_post_clear_next_load_is_a_miss(self, mock_mlflow_env):
         """After clear, the same key is a miss again — not an orphan hit."""
@@ -429,9 +422,5 @@ class TestResetSemantics:
             "than silently still-hitting."
         )
         stats = get_model_cache_stats()
-        assert stats["misses"] == 1, (
-            f"After clear, first load must produce misses=1 (got {stats})."
-        )
-        assert stats["hits"] == 0, (
-            f"After clear, first load must produce hits=0 (got {stats})."
-        )
+        assert stats["misses"] == 1, f"After clear, first load must produce misses=1 (got {stats})."
+        assert stats["hits"] == 0, f"After clear, first load must produce hits=0 (got {stats})."

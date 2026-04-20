@@ -7,6 +7,7 @@ Supports CatBoost (native ``.cbm``) and any MLflow pyfunc model.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +26,139 @@ logger = get_logger(component="mlflow_io")
 
 _MODEL_CACHE_MAX_SIZE = 16
 _DISK_CACHE_MAX_DIRS = 50
-_model_cache: LRUCache[tuple[str, str, str, str], ScoringModel] = LRUCache(
+
+# ---------------------------------------------------------------------------
+# Cache observability counters (issue #98)
+# ---------------------------------------------------------------------------
+# Module-level hit/miss counters scraped by ``get_model_cache_stats()`` for
+# ops dashboards.  Incremented under a dedicated stats lock rather than
+# piggy-backing on ``_model_cache._lock``: the LRU lock is a private
+# implementation detail and we do not want counter updates racing with
+# cache reads/writes inside that critical section — counters are
+# observability, not cache correctness.
+_model_cache_hits: int = 0
+_model_cache_misses: int = 0
+_model_cache_stats_lock = threading.Lock()
+
+
+def _flavor_from_artifact(artifact_path: str) -> str:
+    """Derive the model flavor from an artifact filename extension.
+
+    Kept in sync with the dispatch in :func:`load_mlflow_model`.  Used by
+    the fast-path cache hit site where the artifact string is known up
+    front but the full ``resolve_mlflow_source`` round-trip has been
+    skipped.
+    """
+    if artifact_path.endswith(".cbm"):
+        return "catboost"
+    if artifact_path.endswith(".rsglm"):
+        return "rustystats"
+    return "pyfunc"
+
+
+def get_model_cache_stats() -> dict[str, int]:
+    """Return a snapshot of cache hit/miss counters.
+
+    Returns a dict of the form ``{"hits": N, "misses": M}`` for scraping
+    via ops / debug endpoints.  The snapshot is consistent: both counters
+    are read under the stats lock in one atomic step so a caller never
+    sees a mid-increment tear.
+    """
+    with _model_cache_stats_lock:
+        return {"hits": _model_cache_hits, "misses": _model_cache_misses}
+
+
+def _record_cache_hit(*, run_id: str, artifact_path: str, flavor: str) -> None:
+    """Log a structured ``model_cache_hit`` event and bump the hit counter.
+
+    Structured fields (``run_id``, ``artifact_path``, ``flavor``) mirror
+    the ``model_cache_miss`` event vocabulary so log aggregators can
+    compute hit rate per-run, per-artifact, or per-flavor without
+    re-parsing a stringified tuple.
+    """
+    global _model_cache_hits
+    with _model_cache_stats_lock:
+        _model_cache_hits += 1
+    logger.info(
+        "model_cache_hit",
+        run_id=run_id,
+        artifact_path=artifact_path,
+        flavor=flavor,
+    )
+
+
+def _record_cache_miss(*, run_id: str, artifact_path: str, flavor: str) -> None:
+    """Log a structured ``model_cache_miss`` event and bump the miss counter.
+
+    Emitted before the (potentially expensive) model download so the miss
+    is visible even when the subsequent load fails — production on-call
+    should still see the miss that triggered the failure.
+    """
+    global _model_cache_misses
+    with _model_cache_stats_lock:
+        _model_cache_misses += 1
+    logger.info(
+        "model_cache_miss",
+        run_id=run_id,
+        artifact_path=artifact_path,
+        flavor=flavor,
+    )
+
+
+def _reset_model_cache_stats() -> None:
+    """Reset the hit/miss counters to zero.
+
+    Called from :func:`clear_model_cache` to pair cache clearing with
+    stats reset — the caller's mental model of "clear everything
+    cache-related" wins over "clear data but keep stats".
+    """
+    global _model_cache_hits, _model_cache_misses
+    with _model_cache_stats_lock:
+        _model_cache_hits = 0
+        _model_cache_misses = 0
+
+
+class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]):
+    """LRU cache for ``ScoringModel`` instances with a validation-cache cascade.
+
+    Wraps :meth:`LRUCache.put` and :meth:`LRUCache.clear` so every eviction
+    triggers the targeted ``_invalidate_feature_validation_cache_for`` hook
+    in :mod:`haute._model_scorer`, and a full ``clear()`` cascades into a
+    blanket ``_clear_feature_validation_cache()``.
+
+    This is a *shim* on top of the base LRU contract — no new public API
+    on :class:`LRUCache` itself.  The cascade is invoked via a lazy import
+    inside the override to keep the module-import ordering clean:
+    ``_mlflow_io`` and ``_model_scorer`` otherwise have a cyclic dep.
+    """
+
+    __slots__ = ()
+
+    def put(self, key: tuple[str, str, str, str], value: ScoringModel) -> None:
+        with self._lock:
+            # Snapshot live entries *before* the put so we can diff after
+            # super().put() completes.  The diff is exact because puts
+            # are serialised on self._lock and eviction happens inline.
+            before = dict(self._data)
+            super().put(key, value)
+            # Any key that was live before but is gone now was evicted.
+            after_keys = set(self._data)
+            evicted_models = [v for k, v in before.items() if k not in after_keys]
+            if evicted_models:
+                from haute import _model_scorer as _ms
+
+                for sm in evicted_models:
+                    _ms._invalidate_feature_validation_cache_for(sm)
+
+    def clear(self) -> None:
+        with self._lock:
+            super().clear()
+            from haute import _model_scorer as _ms
+
+            _ms._clear_feature_validation_cache()
+
+
+_model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
     max_size=_MODEL_CACHE_MAX_SIZE,
 )
 
@@ -380,30 +513,40 @@ def clear_model_cache(run_id: str | None = None) -> int:
 
     If *run_id* is given, only that run's cache is cleared.
     Otherwise all cached models are removed.
+
+    Also evicts the in-memory LRU cache and resets the observability
+    counters (``hits`` / ``misses``) exposed by
+    :func:`get_model_cache_stats`.  The counter reset is intentional: a
+    cache-wide clear should zero its effectiveness metric too so the
+    next measurement window is not contaminated with pre-clear counts.
     """
     import shutil
     from pathlib import Path
 
+    # Validate run_id up front — do this before any other work so a bad
+    # input fails loudly regardless of whether the disk cache exists.
+    if run_id and (os.sep in run_id or "/" in run_id or ".." in run_id):
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+
     cache_root = Path.cwd() / ".cache" / "models"
-    if not cache_root.exists():
-        return 0
-
     removed = 0
-    if run_id:
-        if os.sep in run_id or "/" in run_id or ".." in run_id:
-            raise ValueError(f"Invalid run_id: {run_id!r}")
-        target = cache_root / run_id
-        if target.exists():
-            removed = sum(1 for _ in target.glob("*") if _.is_file())
-            shutil.rmtree(target, ignore_errors=True)
-    else:
-        for d in cache_root.iterdir():
-            if d.is_dir():
-                removed += sum(1 for _ in d.glob("*") if _.is_file())
-        shutil.rmtree(cache_root, ignore_errors=True)
+    if cache_root.exists():
+        if run_id:
+            target = cache_root / run_id
+            if target.exists():
+                removed = sum(1 for _ in target.glob("*") if _.is_file())
+                shutil.rmtree(target, ignore_errors=True)
+        else:
+            for d in cache_root.iterdir():
+                if d.is_dir():
+                    removed += sum(1 for _ in d.glob("*") if _.is_file())
+            shutil.rmtree(cache_root, ignore_errors=True)
 
-    # Also evict from the in-memory LRU cache
+    # Evict from the in-memory LRU cache and reset observability counters.
+    # These happen regardless of whether the disk cache existed so a caller
+    # always gets consistent "cleared" semantics.
     _model_cache.clear()
+    _reset_model_cache_stats()
     return removed
 
 
@@ -535,7 +678,11 @@ def load_mlflow_model(
         fast_key = (source_type, run_id, artifact_path, task)
         cached = _model_cache.get(fast_key)
         if cached is not None:
-            logger.info("mlflow_model_cache_hit", key=str(fast_key))
+            _record_cache_hit(
+                run_id=run_id,
+                artifact_path=artifact_path,
+                flavor=_flavor_from_artifact(artifact_path),
+            )
             return cached
 
     resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
@@ -553,19 +700,27 @@ def load_mlflow_model(
     # else: detect from the artifact path extension
 
     # Detect flavor from artifact path
-    if resolved_artifact.endswith(".cbm"):
-        flavor = "catboost"
-    elif resolved_artifact.endswith(".rsglm"):
-        flavor = "rustystats"
-    else:
-        flavor = "pyfunc"
+    flavor = _flavor_from_artifact(resolved_artifact)
 
     cache_key = (source_type, resolved_run_id, resolved_version or resolved_artifact, task)
 
     cached = _model_cache.get(cache_key)
     if cached is not None:
-        logger.info("mlflow_model_cache_hit", key=str(cache_key))
+        _record_cache_hit(
+            run_id=resolved_run_id,
+            artifact_path=resolved_artifact,
+            flavor=flavor,
+        )
         return cached
+
+    # Real-path miss — record the miss (counter + structured event) before
+    # the potentially-expensive download so the miss is observable even if
+    # the subsequent load raises.
+    _record_cache_miss(
+        run_id=resolved_run_id,
+        artifact_path=resolved_artifact,
+        flavor=flavor,
+    )
 
     # Load model based on detected flavor.
     # If loading fails (corrupt/truncated cache), delete the cached file
@@ -617,9 +772,12 @@ def _prepare_predict_frame(
     Returns numpy array, pandas DataFrame, or Polars DataFrame depending
     on model needs:
     - RustyStats: Polars DataFrame (native Polars input)
-    - CatBoost with no categoricals: numpy array (fastest)
-    - CatBoost with categoricals: pandas DataFrame (CatBoost requirement)
-    - Pyfunc: always pandas DataFrame
+    - No categoricals (pyfunc or catboost): numpy array (fastest; avoids the
+      Arrow-to-pandas round-trip that keeps the buffer alive twice)
+    - With categoricals (pyfunc or catboost): pandas DataFrame (the
+      ``pd.Categorical`` dtype is the only reliable carrier for
+      CatBoost's cat-feature signal and for pyfunc models that inspect
+      column dtypes)
     """
     # RustyStats handles its own preprocessing — pass Polars directly
     if flavor == "rustystats":
@@ -634,8 +792,10 @@ def _prepare_predict_frame(
         selected = selected.with_columns(
             [pl.col(c).fill_null("_MISSING_").cast(pl.Categorical) for c in cat_cols]
         )
-    # Pyfunc always needs pandas; CatBoost can use numpy when no cats
-    if flavor == "pyfunc" or cat_cols:
+    # Categorical dtype only round-trips through pandas; numeric-only
+    # paths skip the pandas wrapper entirely (pyfunc + sklearn accept
+    # numpy directly, see item #91).
+    if cat_cols:
         return selected.to_pandas()
     return selected.to_numpy()
 

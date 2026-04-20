@@ -9,12 +9,15 @@ from __future__ import annotations
 import contextvars
 import os
 import threading
+import weakref
 from typing import Any
 
 import numpy as np
 import polars as pl
 
+from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 from haute._types import _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
@@ -25,6 +28,152 @@ logger = get_logger(component="model_scorer")
 # Unknown flavor → ConfigError at the scoring entry point (fail loudly: a
 # typo in the flavor string must not silently fall through to pyfunc).
 _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystats"})
+
+
+# ---------------------------------------------------------------------------
+# Feature-validation cache (item #93)
+# ---------------------------------------------------------------------------
+#
+# ``_validate_features`` is invoked on every ``score`` call.  In the batch /
+# preview hot path the caller hands us the same ``ScoringModel`` against the
+# same input schema thousands of times in a row — the answer never changes
+# but the O(n_features) walk + set construction still shows up in profiles.
+#
+# We memoise the ``(usable, missing)`` tuple keyed by
+# ``(id(scoring_model), schema_hash)``.  ``id()`` is stable for the lifetime
+# of the object, so a reload (which produces a fresh ``ScoringModel``
+# instance) naturally misses; an eviction cascade from ``_mlflow_io``'s
+# ``_model_cache`` drops stale entries so we never accumulate dead pins.
+#
+# Bounded: LRUCache, same max_size as ``_model_cache`` so the two caches
+# evict on roughly the same timeline.  Thread-safe via LRUCache's RLock.
+#
+# Errors are NOT cached — ``FeatureMismatchError`` propagates; a later call
+# with the same broken schema must re-raise so a repaired schema is detected
+# on the very next call.
+
+# Imported lazily inside ``_feature_validation_cache`` construction to avoid
+# a circular import: ``_mlflow_io`` imports from us transitively via
+# ``score_frame`` / ``_score_eager``.  The sizing constant itself is cheap
+# to pull through once at module load.
+from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SIZE  # noqa: E402
+
+_feature_validation_cache: LRUCache[tuple[int, str], tuple[list[str], list[str]]] = LRUCache(
+    max_size=_MLFLOW_MODEL_CACHE_MAX_SIZE,
+)
+
+
+# Per-schema-object memoisation of ``_compute_schema_hash``.
+#
+# The primary cache above is keyed on ``(id(scoring_model), schema_hash)`` —
+# which means every ``_validate_features`` call has to compute the schema
+# hash on the hot path.  For a 50-column schema that content hash dominates
+# the cached path timing (~40 µs/call vs <1 µs for the LRU lookup itself).
+#
+# We short-circuit that by memoising the hash per live schema object: a
+# ``(id(schema)) -> (weakref, hash)`` side table, cleaned up by the
+# weakref's finaliser when the schema is GC'd.  On the batch hot path the
+# *same* ``pl.Schema`` instance is passed repeatedly, so this turns every
+# call after the first into a plain dict lookup on ``id(schema)``.
+#
+# Correctness: ``id(schema)`` values are only reused after the schema is
+# garbage collected, at which point the finaliser has already removed the
+# stale entry.  Under the GIL that removal-before-reuse ordering is
+# guaranteed — Python can only allocate a new object with a recycled
+# ``id`` after the old object's ``__del__`` / weakref callbacks have run.
+_schema_hash_cache: dict[int, tuple[weakref.ReferenceType[pl.Schema], str]] = {}
+_schema_hash_cache_lock = threading.Lock()
+
+
+def _compute_schema_hash(schema: pl.Schema) -> str:
+    """Stable 16-char xxh64 hex digest of the schema's ``(name, dtype)`` pairs.
+
+    Sorted by column name so the digest is insensitive to insertion order —
+    two schemas that differ only in iteration order collapse to the same
+    digest, keeping cache hits from degrading on trivial ``select()``
+    reorders.
+
+    Sensitive to:
+    * column rename — the pair tuple changes → new digest
+    * dtype change — the dtype repr changes → new digest
+
+    Uses the project's standard ``xxh64`` hasher so the digest is
+    consistent with every other content-addressed key in the codebase.
+
+    The per-object memoisation above (``_schema_hash_cache``) is a
+    transparent optimisation — callers see the same digest on every call
+    regardless of whether it was recomputed or served from the side
+    table.  Two different ``pl.Schema`` *objects* that carry identical
+    ``(name, dtype)`` pairs always collapse to the same digest; the
+    memoisation only saves work on the repeated-same-object case, which
+    is the batch / preview hot path.
+    """
+    sid = id(schema)
+    hit = _schema_hash_cache.get(sid)
+    if hit is not None:
+        ref, cached = hit
+        # Guard against ``id`` reuse: the stored weakref must still point
+        # to the exact schema we were handed.  Under CPython's GIL this
+        # branch is almost always a hit; the ``is`` check is a cheap
+        # safety net against any future refcount semantics that would
+        # let an ``id`` be reused before the finaliser ran.
+        if ref() is schema:
+            return cached
+
+    # Polars dtypes have stable ``str(...)`` reprs (e.g. "Float64", "Int64",
+    # "Utf8") that differ per dtype — good enough as a lightweight equality
+    # proxy for cache keys.
+    pairs = sorted((name, str(dtype)) for name, dtype in schema.items())
+    payload = "\n".join(f"{name}\0{dtype}" for name, dtype in pairs).encode("utf-8")
+    digest = content_hash_bytes(payload)
+
+    # Install the result in the side table, with a finaliser that drops
+    # the entry the moment the schema is collected.  ``pop(sid, None)``
+    # is a no-op when the entry was already overwritten (e.g. by another
+    # thread computing a hash for a schema whose id got recycled).
+    #
+    # ``weakref.ref`` on a ``pl.Schema`` is supported today (confirmed on
+    # polars 1.x).  If a future polars release drops weakref support the
+    # ``TypeError`` is left to propagate — failing loudly is strictly
+    # preferable to silently degrading to the uncached path, which would
+    # revert this package's speedup without any operator signal.
+    def _drop(_ref: weakref.ReferenceType[pl.Schema], _sid: int = sid) -> None:
+        _schema_hash_cache.pop(_sid, None)
+
+    ref = weakref.ref(schema, _drop)
+    with _schema_hash_cache_lock:
+        _schema_hash_cache[sid] = (ref, digest)
+    return digest
+
+
+def _clear_feature_validation_cache() -> None:
+    """Drop every entry in the feature-validation cache.
+
+    Used as the blanket cascade target for
+    :func:`haute._mlflow_io.clear_model_cache`.
+    """
+    _feature_validation_cache.clear()
+
+
+def _invalidate_feature_validation_cache_for(scoring_model: Any) -> None:
+    """Drop every entry whose first key component is ``id(scoring_model)``.
+
+    Targeted cascade from the ``_model_cache`` eviction path: when a
+    ``ScoringModel`` is dropped from the MLflow cache, any validation
+    results we cached for it become unreachable garbage — purge them
+    so the table does not fill with dead ``id()`` values.
+
+    Silent on an unknown model: a plain walk of the cache's data dict
+    is a no-op when no matching key exists.
+    """
+    target_id = id(scoring_model)
+    with _feature_validation_cache._lock:
+        # Materialise the keys snapshot before we mutate under iteration.
+        stale = [k for k in _feature_validation_cache._data if k[0] == target_id]
+        for key in stale:
+            _feature_validation_cache._data.pop(key, None)
+            _feature_validation_cache._timestamps.pop(key, None)
+            _feature_validation_cache._pinned.discard(key)
 
 
 def _format_feature_mismatch(
@@ -78,7 +227,7 @@ def _raise_feature_mismatch(
     )
 
 
-def _validate_features(
+def _validate_features_uncached(
     scoring_model: Any,
     schema: pl.Schema,
 ) -> tuple[list[str], list[str]]:
@@ -90,6 +239,9 @@ def _validate_features(
     was supplied with a numeric dtype.
 
     Cost: O(n) set operations on column names — no data materialisation.
+
+    This is the raw worker.  Call sites should go through
+    :func:`_validate_features`, which memoises the result.
     """
     available = set(schema.names())
     expected = scoring_model.feature_names
@@ -157,6 +309,33 @@ def _validate_features(
         )
 
     return usable, missing
+
+
+def _validate_features(
+    scoring_model: Any,
+    schema: pl.Schema,
+) -> tuple[list[str], list[str]]:
+    """Memoised façade over :func:`_validate_features_uncached`.
+
+    Keys on ``(id(scoring_model), _compute_schema_hash(schema))``.
+    Cache hits short-circuit the O(n_features) walk that the uncached
+    worker performs — a measurable win on the batch / preview hot path
+    where the same model is scored thousands of times against the same
+    input schema.
+
+    Errors are NOT cached: when
+    :class:`~haute.errors.FeatureMismatchError` propagates, we leave the
+    cache untouched so the next call with the same broken schema runs
+    the validator again and re-raises.  A cached exception would
+    silently swallow a later fix.
+    """
+    key = (id(scoring_model), _compute_schema_hash(schema))
+    cached = _feature_validation_cache.get(key)
+    if cached is not None:
+        return cached
+    result = _validate_features_uncached(scoring_model, schema)
+    _feature_validation_cache.put(key, result)
+    return result
 
 
 # Runtime scenario context — set by Pipeline.run() / Pipeline.score()

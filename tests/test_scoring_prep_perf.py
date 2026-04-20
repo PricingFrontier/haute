@@ -181,9 +181,7 @@ class TestPreparePredictFrameCorrectness:
     def test_catboost_no_cats_returns_numpy_float32(self) -> None:
         """CatBoost + no cats -> numpy float32 array."""
         df = _make_numeric_frame(100, 3)
-        result = _prepare_predict_frame(
-            df, ["f0", "f1", "f2"], frozenset(), "catboost"
-        )
+        result = _prepare_predict_frame(df, ["f0", "f1", "f2"], frozenset(), "catboost")
         assert isinstance(result, np.ndarray)
         assert result.shape == (100, 3)
         assert result.dtype == np.float32
@@ -268,12 +266,8 @@ class TestPreparePredictFrameCorrectness:
         arr = _prepare_predict_frame(df, ["a", "b", "c"], frozenset(), "catboost")
         assert arr[0].tolist() == pytest.approx([1.0, 10.0, 100.0], rel=1e-3)
         # pyfunc with cats -> pandas
-        df_cat = pl.DataFrame(
-            {"b": [10.0, 20.0], "a": [1.0, 2.0], "c": ["x", "y"]}
-        )
-        pdf = _prepare_predict_frame(
-            df_cat, ["a", "b", "c"], frozenset({"c"}), "pyfunc"
-        )
+        df_cat = pl.DataFrame({"b": [10.0, 20.0], "a": [1.0, 2.0], "c": ["x", "y"]})
+        pdf = _prepare_predict_frame(df_cat, ["a", "b", "c"], frozenset({"c"}), "pyfunc")
         assert list(pdf.columns) == ["a", "b", "c"]
 
     def test_rustystats_feature_order_preserved(self) -> None:
@@ -293,38 +287,24 @@ class TestPreparePredictFrameCorrectness:
 
 # ---------------------------------------------------------------------------
 # TestPreparePredictFramePostRefactor — behaviour specific to the swap.
-# These are xfail(strict=True) pre-refactor; they flip to passing when the
-# production code narrows the pyfunc -> pandas blanket.
+# Post-refactor these pass directly; the production code now narrows the
+# pyfunc -> pandas blanket so pyfunc + no cats returns numpy.
 # ---------------------------------------------------------------------------
 
 
 class TestPreparePredictFramePostRefactor:
     """Invariants that only hold after the refactor lands."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Pre-refactor: pyfunc always returns pandas (defensive blanket). "
-            "Post-refactor: pyfunc + no cats returns numpy float32. "
-            "This xfail flips to passing once item #91 ships."
-        ),
-    )
     def test_pyfunc_no_cats_returns_numpy_float32(self) -> None:
         """The headline change: pyfunc + no cats -> numpy float32."""
         df = _make_numeric_frame(100, 5)
-        result = _prepare_predict_frame(
-            df, [f"f{i}" for i in range(5)], frozenset(), "pyfunc"
-        )
+        result = _prepare_predict_frame(df, [f"f{i}" for i in range(5)], frozenset(), "pyfunc")
         assert isinstance(result, np.ndarray), (
             f"post-refactor pyfunc + no cats should return numpy; got {type(result).__name__}"
         )
         assert result.shape == (100, 5)
         assert result.dtype == np.float32
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Post-refactor null handling on the numpy fast path; see item #91.",
-    )
     def test_pyfunc_no_cats_nulls_become_nan(self) -> None:
         """Int64 null -> NaN still works on the proposed numpy path."""
         df = pl.DataFrame({"x": pl.Series("x", [1, None, 3], dtype=pl.Int64)})
@@ -333,10 +313,6 @@ class TestPreparePredictFramePostRefactor:
         assert result.dtype == np.float32
         assert np.isnan(result[1, 0])
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Post-refactor: feature subset + order still preserved on numpy path.",
-    )
     def test_pyfunc_no_cats_feature_order_preserved(self) -> None:
         df = pl.DataFrame(
             {"c": [100.0, 200.0], "a": [1.0, 2.0], "b": [10.0, 20.0], "extra": [0.0, 0.0]}
@@ -376,9 +352,7 @@ class TestDownstreamScoringPassthrough:
         from haute._model_scorer import score_frame
 
         model = self._mock_predicting_model(4, assert_type=np.ndarray)
-        lf = pl.DataFrame(
-            {"f0": [1.0, 2.0, 3.0, 4.0], "f1": [10.0, 20.0, 30.0, 40.0]}
-        ).lazy()
+        lf = pl.DataFrame({"f0": [1.0, 2.0, 3.0, 4.0], "f1": [10.0, 20.0, 30.0, 40.0]}).lazy()
         result = score_frame(
             model=model,
             lf=lf,
@@ -394,9 +368,7 @@ class TestDownstreamScoringPassthrough:
         from haute._model_scorer import score_frame
 
         model = self._mock_predicting_model(4, assert_type=pd.DataFrame)
-        lf = pl.DataFrame(
-            {"num_0": [1.0, 2.0, 3.0, 4.0], "cat_0": ["a", "b", "a", "c"]}
-        ).lazy()
+        lf = pl.DataFrame({"num_0": [1.0, 2.0, 3.0, 4.0], "cat_0": ["a", "b", "a", "c"]}).lazy()
         result = score_frame(
             model=model,
             lf=lf,
@@ -411,9 +383,7 @@ class TestDownstreamScoringPassthrough:
         from haute._model_scorer import score_frame
 
         model = self._mock_predicting_model(4, assert_type=pd.DataFrame)
-        lf = pl.DataFrame(
-            {"num_0": [1.0, 2.0, 3.0, 4.0], "cat_0": ["a", "b", "a", "c"]}
-        ).lazy()
+        lf = pl.DataFrame({"num_0": [1.0, 2.0, 3.0, 4.0], "cat_0": ["a", "b", "a", "c"]}).lazy()
         result = score_frame(
             model=model,
             lf=lf,
@@ -428,9 +398,7 @@ class TestDownstreamScoringPassthrough:
         from haute._model_scorer import score_frame
 
         model = self._mock_predicting_model(4, assert_type=pl.DataFrame)
-        lf = pl.DataFrame(
-            {"f0": [1.0, 2.0, 3.0, 4.0], "f1": [10.0, 20.0, 30.0, 40.0]}
-        ).lazy()
+        lf = pl.DataFrame({"f0": [1.0, 2.0, 3.0, 4.0], "f1": [10.0, 20.0, 30.0, 40.0]}).lazy()
         result = score_frame(
             model=model,
             lf=lf,
@@ -441,22 +409,12 @@ class TestDownstreamScoringPassthrough:
         result.collect()
         assert model.predict.called
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Pre-refactor: pyfunc + no cats receives pandas DataFrame. "
-            "Post-refactor (item #91): receives numpy.ndarray. "
-            "This xfail flips to passing once the refactor ships."
-        ),
-    )
     def test_pyfunc_no_cats_calls_predict_with_numpy_post_refactor(self) -> None:
         """The load-bearing downstream check: pyfunc + no cats -> numpy handoff."""
         from haute._model_scorer import score_frame
 
         model = self._mock_predicting_model(4, assert_type=np.ndarray)
-        lf = pl.DataFrame(
-            {"f0": [1.0, 2.0, 3.0, 4.0], "f1": [10.0, 20.0, 30.0, 40.0]}
-        ).lazy()
+        lf = pl.DataFrame({"f0": [1.0, 2.0, 3.0, 4.0], "f1": [10.0, 20.0, 30.0, 40.0]}).lazy()
         result = score_frame(
             model=model,
             lf=lf,
@@ -537,9 +495,7 @@ class TestEdgeCases:
         refactor too so gradient-boosted and linear models see consistent
         missing-value semantics.
         """
-        df = pl.DataFrame(
-            {"x": pl.Series("x", [1, None, 3, None, 5], dtype=pl.Int64)}
-        )
+        df = pl.DataFrame({"x": pl.Series("x", [1, None, 3, None, 5], dtype=pl.Int64)})
         result = _prepare_predict_frame(df, ["x"], frozenset(), "catboost")
         assert isinstance(result, np.ndarray)
         assert result.dtype == np.float32
@@ -558,9 +514,7 @@ class TestEdgeCases:
                 "cat": ["x", None, "y"],
             }
         )
-        result = _prepare_predict_frame(
-            df, ["num", "cat"], frozenset({"cat"}), "pyfunc"
-        )
+        result = _prepare_predict_frame(df, ["num", "cat"], frozenset({"cat"}), "pyfunc")
         assert isinstance(result, pd.DataFrame)
         assert result["num"].dtype == np.float32
         assert np.isnan(result["num"].iloc[1])

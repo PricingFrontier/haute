@@ -33,12 +33,31 @@ def read_source(path: str) -> pl.LazyFrame:
     Centralises the csv/json/parquet dispatch that was previously duplicated
     across the executor, scorer, schema inference, and server modules.
 
-    All formats except ``.json`` use Polars lazy scans, so a downstream
-    ``.head(row_limit)`` pushes the limit into the I/O layer and avoids
-    reading the full file.  Plain ``.json`` has no ``scan_json`` equivalent
-    in Polars, so the entire file is read eagerly then wrapped as lazy.
-    This is acceptable because API-input JSON files use the separate
-    ``read_json_flat`` path which caches to parquet.
+    Dispatch table and laziness guarantees
+    --------------------------------------
+    * ``.csv``      → ``pl.scan_csv``      (lazy; ``.head(n)`` push-down)
+    * ``.jsonl``    → ``pl.scan_ndjson``   (lazy; ``.head(n)`` push-down)
+    * ``.parquet``  → ``pl.scan_parquet``  (lazy; ``.head(n)`` push-down)
+    * ``.json``     → ``pl.read_json``     (**eager** — see below)
+
+    Eager-read limitation for plain ``.json``
+    -----------------------------------------
+    Polars exposes no ``scan_json`` for plain (object-per-file) JSON, so
+    ``.json`` files are read **eagerly** via ``pl.read_json(path).lazy()``:
+    the entire file is parsed into memory before the wrapped ``LazyFrame``
+    is returned.  A downstream ``.head(n)`` **cannot** reduce I/O cost on
+    this path — the full file has already been materialised.  For large
+    JSON blobs this is an O(file-size) memory spike.
+
+    Escape hatch for large JSON: :func:`haute._json_flatten.read_json_flat`.
+    That function flattens the JSON once, caches the result as parquet, and
+    returns ``pl.scan_parquet(cache_path)`` — a truly lazy ``LazyFrame``
+    with row-limit push-down.  Prefer ``read_json_flat`` over ``read_source``
+    whenever the JSON file is too large to comfortably fit in memory, or
+    whenever ``.head(n)`` / filter push-down matters.
+
+    NDJSON (``.jsonl``) is the "safe" JSON format for this module:
+    ``scan_ndjson`` is lazy, so ``.head(n)`` actually reduces read cost.
 
     Raises:
         ValueError: If the file extension is not supported.

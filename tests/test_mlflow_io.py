@@ -440,10 +440,21 @@ class TestPreparePredictFrame:
         assert result[0, 0] == pytest.approx(1.0, abs=0.01)
         assert result[0, 1] == pytest.approx(10.0, abs=0.01)
 
-    def test_pyfunc_always_returns_pandas(self):
-        """Pyfunc flavor always returns pandas DataFrame, even with no cats."""
+    def test_pyfunc_no_cats_returns_numpy(self):
+        """Pyfunc flavor with no categoricals returns a numpy array.
+
+        Post item #91 refactor: the pandas allocation is only paid when a
+        ``pd.Categorical`` dtype is actually required (cat features present).
+        Pure numeric pyfunc scoring flows through the numpy fast-path.
+        """
         df = pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
         result = _prepare_predict_frame(df, ["a", "b"], frozenset(), "pyfunc")
+        assert isinstance(result, np.ndarray)
+
+    def test_pyfunc_with_cats_returns_pandas(self):
+        """Pyfunc flavor with categoricals still returns pandas (dtype roundtrip)."""
+        df = pl.DataFrame({"a": [1.0, 2.0], "b": ["x", "y"]})
+        result = _prepare_predict_frame(df, ["a", "b"], frozenset({"b"}), "pyfunc")
         import pandas as pd
 
         assert isinstance(result, pd.DataFrame)

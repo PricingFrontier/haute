@@ -39,7 +39,6 @@ import polars as pl
 from haute import _io
 from haute._io import read_source
 
-
 # ---------------------------------------------------------------------------
 # Docstring pinning — eager behaviour and parquet escape hatch must be named.
 # ---------------------------------------------------------------------------
@@ -94,10 +93,7 @@ class TestDocstringDocumentsLimitation:
         to know this exists without reading the implementation.
         """
         doc = (read_source.__doc__ or "").lower()
-        assert any(
-            term in doc
-            for term in ("read_json_flat", "parquet", "cache")
-        ), (
+        assert any(term in doc for term in ("read_json_flat", "parquet", "cache")), (
             "read_source docstring must point at the parquet/read_json_flat "
             "escape hatch so callers hitting the memory wall find the fix."
         )
@@ -117,17 +113,13 @@ class TestNDJSONUsesScanNDJSON:
         path = tmp_path / "data.jsonl"
         pl.DataFrame({"a": [1, 2, 3]}).write_ndjson(str(path))
 
-        with patch.object(
-            _io.pl, "scan_ndjson", wraps=_io.pl.scan_ndjson
-        ) as mock_scan:
+        with patch.object(_io.pl, "scan_ndjson", wraps=_io.pl.scan_ndjson) as mock_scan:
             lf = read_source(str(path))
             lf.collect()
 
         mock_scan.assert_called_once_with(str(path))
 
-    def test_ndjson_head_only_collects_requested_rows(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ndjson_head_only_collects_requested_rows(self, tmp_path: Path) -> None:
         """``.head(n)`` on an NDJSON LazyFrame collects exactly n rows.
 
         This is what makes NDJSON the "safe" JSON format: the optimiser
@@ -186,17 +178,13 @@ class TestPlainJSONIsEager:
         path = tmp_path / "data.json"
         pl.DataFrame({"a": [1, 2, 3]}).write_json(str(path))
 
-        with patch.object(
-            _io.pl, "read_json", wraps=_io.pl.read_json
-        ) as mock_read:
+        with patch.object(_io.pl, "read_json", wraps=_io.pl.read_json) as mock_read:
             lf = read_source(str(path))
             lf.collect()
 
         mock_read.assert_called_once_with(str(path))
 
-    def test_plain_json_head_still_materialises_full_file(
-        self, tmp_path: Path
-    ) -> None:
+    def test_plain_json_head_still_materialises_full_file(self, tmp_path: Path) -> None:
         """``.head(n)`` on a plain ``.json`` LazyFrame CANNOT reduce read cost.
 
         Because ``pl.read_json`` is eager, ``read_source(json).head(n)``
@@ -217,9 +205,7 @@ class TestPlainJSONIsEager:
         file_size = path.stat().st_size
         assert file_size > 500_000  # sanity — file is chunky
 
-        with patch.object(
-            _io.pl, "read_json", wraps=_io.pl.read_json
-        ) as mock_read:
+        with patch.object(_io.pl, "read_json", wraps=_io.pl.read_json) as mock_read:
             lf = read_source(str(path))
             # `.head(5)` is applied AFTER the eager read — it cannot save work.
             head = lf.head(5).collect()
@@ -266,7 +252,9 @@ class TestParquetEscapeHatchExists:
         assert callable(read_json_flat)
 
     def test_read_json_flat_returns_lazyframe_from_parquet_cache(
-        self, tmp_path: Path, monkeypatch,
+        self,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
         """Quick smoke: read_json_flat round-trips via a parquet cache.
 

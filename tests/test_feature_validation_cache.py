@@ -137,7 +137,6 @@ def _cache_exists() -> bool:
 class TestValidationCacheHitsAndMisses:
     """Validator is called exactly once per ``(model_id, schema_hash)``."""
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_first_call_invokes_validator(self) -> None:
         """A cold cache must run the real validation code path."""
         import haute._model_scorer as ms
@@ -156,7 +155,6 @@ class TestValidationCacheHitsAndMisses:
         assert usable == ["a", "b"]
         assert missing == []
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_second_call_same_schema_hits_cache(self) -> None:
         """Identical ``(scoring_model, schema)`` → validator not re-run."""
         import haute._model_scorer as ms
@@ -191,7 +189,6 @@ class TestValidationCacheHitsAndMisses:
         assert first_usable == second_usable == ["a", "b", "c"]
         assert first_missing == second_missing == []
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_different_schema_column_renamed_is_miss(self) -> None:
         """Renaming a column yields a new ``schema_hash`` → cache miss."""
         import haute._model_scorer as ms
@@ -213,7 +210,6 @@ class TestValidationCacheHitsAndMisses:
         # exception, the cache key itself must have been resolved.
         assert spy.call_count == 1
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_different_schema_dtype_changed_is_miss(self) -> None:
         """Dtype changing on a categorical column → distinct ``schema_hash``."""
         import haute._model_scorer as ms
@@ -236,7 +232,6 @@ class TestValidationCacheHitsAndMisses:
 
         assert spy.call_count == 1
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_different_scoring_model_instance_is_miss(self) -> None:
         """Two ``ScoringModel`` objects with identical attributes still miss.
 
@@ -286,7 +281,6 @@ class TestValidationCacheErrorHandling:
         # Context preserved — errors must remain rich, not collapsed.
         assert exc_info.value.context["missing"] == ["c"]
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_second_call_with_same_broken_schema_re_raises(self) -> None:
         """A cached *error* result would silently swallow a later fix.
 
@@ -364,7 +358,6 @@ class TestValidationCacheErrorHandling:
 class TestSchemaHashStability:
     """``_compute_schema_hash`` must be stable, collision-resistant, and pure."""
 
-    @pytest.mark.xfail(strict=True, reason="Helper lands in package 7B")
     def test_identical_schemas_hash_identically(self) -> None:
         from haute._model_scorer import _compute_schema_hash
 
@@ -372,7 +365,6 @@ class TestSchemaHashStability:
         b = _schema_for(["x", "y", "z"])
         assert _compute_schema_hash(a) == _compute_schema_hash(b)
 
-    @pytest.mark.xfail(strict=True, reason="Helper lands in package 7B")
     def test_column_rename_changes_hash(self) -> None:
         from haute._model_scorer import _compute_schema_hash
 
@@ -380,7 +372,6 @@ class TestSchemaHashStability:
             _schema_for(["x2", "y"])
         )
 
-    @pytest.mark.xfail(strict=True, reason="Helper lands in package 7B")
     def test_dtype_change_changes_hash(self) -> None:
         from haute._model_scorer import _compute_schema_hash
 
@@ -388,7 +379,6 @@ class TestSchemaHashStability:
         b = pl.Schema({"col": pl.Int64})
         assert _compute_schema_hash(a) != _compute_schema_hash(b)
 
-    @pytest.mark.xfail(strict=True, reason="Helper lands in package 7B")
     def test_column_order_does_not_affect_hash(self) -> None:
         """Sorting inside the hasher keeps the key insensitive to input order.
 
@@ -402,7 +392,6 @@ class TestSchemaHashStability:
         b = pl.Schema({"y": pl.Int64, "x": pl.Float64})
         assert _compute_schema_hash(a) == _compute_schema_hash(b)
 
-    @pytest.mark.xfail(strict=True, reason="Helper lands in package 7B")
     def test_hash_is_hex_string(self) -> None:
         """xxh64 hexdigest — 16 hex chars, all lowercase."""
         from haute._model_scorer import _compute_schema_hash
@@ -421,7 +410,6 @@ class TestSchemaHashStability:
 class TestValidationCacheCascadeEviction:
     """``_model_cache`` eviction must purge the validation cache for that model."""
 
-    @pytest.mark.xfail(strict=True, reason="Cascade lands in package 7B")
     def test_manual_clear_empties_validation_cache(self) -> None:
         """``_clear_feature_validation_cache`` drops every entry."""
         import haute._model_scorer as ms
@@ -434,7 +422,6 @@ class TestValidationCacheCascadeEviction:
         ms._clear_feature_validation_cache()
         assert len(ms._feature_validation_cache) == 0
 
-    @pytest.mark.xfail(strict=True, reason="Cascade lands in package 7B")
     def test_targeted_invalidation_drops_only_matching_entries(self) -> None:
         """``_invalidate_feature_validation_cache_for(model)`` scopes to one model."""
         import haute._model_scorer as ms
@@ -456,7 +443,6 @@ class TestValidationCacheCascadeEviction:
         assert id(sm_keep) in surviving_ids
         assert id(sm_drop) not in surviving_ids
 
-    @pytest.mark.xfail(strict=True, reason="Cascade lands in package 7B")
     def test_model_cache_eviction_clears_validation_entries(self) -> None:
         """Forcing a model out of ``_model_cache`` cascades into validation."""
         import haute._model_scorer as ms
@@ -487,7 +473,6 @@ class TestValidationCacheCascadeEviction:
         surviving_ids = {k[0] for k in list(ms._feature_validation_cache._data.keys())}
         assert id(sm_evicted) not in surviving_ids
 
-    @pytest.mark.xfail(strict=True, reason="Cascade lands in package 7B")
     def test_clear_model_cache_cascades_to_validation_cache(self) -> None:
         """``clear_model_cache()`` must also blow away every validation entry."""
         import haute._model_scorer as ms
@@ -503,7 +488,6 @@ class TestValidationCacheCascadeEviction:
         assert len(_model_cache) == 0
         assert len(ms._feature_validation_cache) == 0
 
-    @pytest.mark.xfail(strict=True, reason="Cascade lands in package 7B")
     def test_reload_creates_fresh_validation_state(self) -> None:
         """A reloaded model is a new ``ScoringModel`` instance → cold validation.
 
@@ -572,7 +556,6 @@ class TestValidationCacheThreadSafety:
             assert usable == ["a", "b"]
             assert missing == []
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_concurrent_misses_with_different_models_do_not_corrupt_cache(self) -> None:
         """Parallel cold fills on disjoint keys must each produce one entry."""
         import haute._model_scorer as ms
@@ -611,7 +594,6 @@ class TestValidationCacheThreadSafety:
 class TestValidationCacheBenchmark:
     """Cache-hit path: 1000 calls on a 50-feature frame beat re-validation by >5x."""
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_cache_hit_path_is_5x_faster_than_uncached(self) -> None:
         """Timed head-to-head — not a micro-benchmark, a hot-path sanity check.
 
@@ -655,7 +637,6 @@ class TestValidationCacheBenchmark:
             f"uncached={uncached_elapsed * 1e3:.2f}ms)."
         )
 
-    @pytest.mark.xfail(strict=True, reason="Cache lands in package 7B")
     def test_bulk_hit_path_under_fixed_budget(self) -> None:
         """1000 hits on a 50-feature frame complete well under 8 ms.
 
@@ -690,7 +671,6 @@ class TestValidationCacheBenchmark:
 class TestAPIShape:
     """Shape assertions for the API surface the developer must expose."""
 
-    @pytest.mark.xfail(strict=True, reason="API lands in package 7B")
     def test_required_symbols_exist(self) -> None:
         import haute._model_scorer as ms
 
@@ -700,7 +680,6 @@ class TestAPIShape:
         assert hasattr(ms, "_invalidate_feature_validation_cache_for")
         assert hasattr(ms, "_validate_features_uncached")
 
-    @pytest.mark.xfail(strict=True, reason="API lands in package 7B")
     def test_cache_is_bounded_lru(self) -> None:
         """The cache must be a bounded LRU — an unbounded dict is a leak.
 
