@@ -1,9 +1,17 @@
-"""``haute init`` command."""
+"""``haute init`` command.
+
+Split into:
+
+* :class:`InitConfig` — the typed bag of CLI inputs.
+* :func:`handle_init` — the pure function that does the scaffolding.
+* :func:`init` — the thin ``@click.command`` entry point.
+"""
 
 from __future__ import annotations
 
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -11,6 +19,14 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from haute._io import read_user_text
+
+
+@dataclass
+class InitConfig:
+    """Parsed inputs for the ``haute init`` command."""
+
+    target: str
+    ci: str
 
 _DEV_DEPS_BLOCK = """
 [dependency-groups]
@@ -302,41 +318,13 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
     pyproject_path.write_text(text, encoding="utf-8")
 
 
-@click.command()
-@click.option(
-    "--target",
-    type=click.Choice(
-        [
-            "databricks",
-            "container",
-            "azure-container-apps",
-            "aws-ecs",
-            "gcp-run",
-            "sagemaker",
-            "azure-ml",
-        ]
-    ),
-    default="databricks",
-    help="Deploy target (default: databricks).",
-)
-@click.option(
-    "--ci",
-    type=click.Choice(["github", "gitlab", "azure-devops", "none"]),
-    default="github",
-    help="CI/CD provider (default: github).",
-)
-def init(target: str, ci: str) -> None:
-    """Scaffold a Haute pricing project in the current directory.
+def handle_init(config: InitConfig) -> None:
+    """Scaffold a Haute project at :func:`pathlib.Path.cwd`.
 
-    Generates haute.toml, CI/CD workflows, credentials template, and a
-    starter pipeline - all configured for the chosen deploy target and
-    CI provider.
-
-    \b
-    Examples:
-      haute init                                  # databricks + github
-      haute init --target container --ci none      # container, no CI
-      haute init --target sagemaker --ci github   # AWS + github
+    Pure function version of the ``haute init`` command — takes a typed
+    :class:`InitConfig` and writes all scaffold files.  Exits with
+    ``SystemExit(1)`` when ``haute.toml`` already exists (the scaffold
+    never overwrites an existing project).
     """
     import tomllib
 
@@ -355,6 +343,9 @@ def init(target: str, ci: str) -> None:
         starter_utility_features,
         starter_utility_init,
     )
+
+    target = config.target
+    ci = config.ci
 
     # Solo mode is configured in haute.toml, not via a CLI flag.
     # Default is team mode; user sets min_approvers = 0 for solo.
@@ -508,3 +499,43 @@ def init(target: str, ci: str) -> None:
     click.echo("  uv sync                # install dependencies")
     click.echo("  cp .env.example .env   # fill in credentials")
     click.echo("  haute serve")
+
+
+@click.command()
+@click.option(
+    "--target",
+    type=click.Choice(
+        [
+            "databricks",
+            "container",
+            "azure-container-apps",
+            "aws-ecs",
+            "gcp-run",
+            "sagemaker",
+            "azure-ml",
+        ]
+    ),
+    default="databricks",
+    help="Deploy target (default: databricks).",
+)
+@click.option(
+    "--ci",
+    type=click.Choice(["github", "gitlab", "azure-devops", "none"]),
+    default="github",
+    help="CI/CD provider (default: github).",
+)
+def init(target: str, ci: str) -> None:
+    """Scaffold a Haute pricing project in the current directory.
+
+    Generates haute.toml, CI/CD workflows, credentials template, and a
+    starter pipeline - all configured for the chosen deploy target and
+    CI provider.
+
+    \b
+    Examples:
+      haute init                                  # databricks + github
+      haute init --target container --ci none      # container, no CI
+      haute init --target sagemaker --ci github   # AWS + github
+    """
+    config = InitConfig(target=target, ci=ci)
+    handle_init(config)

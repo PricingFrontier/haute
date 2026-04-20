@@ -1,14 +1,33 @@
-"""``haute serve`` command."""
+"""``haute serve`` command.
+
+Split into:
+
+* :class:`ServeConfig` — the typed bag of CLI inputs.
+* :func:`handle_serve` — the pure function that does the work.
+* :func:`serve` — the thin ``@click.command`` entry point.
+"""
+
+from __future__ import annotations
 
 import signal
 import socket
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
 
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
+
+
+@dataclass
+class ServeConfig:
+    """Parsed inputs for the ``haute serve`` command."""
+
+    host: str
+    port: int
+    no_browser: bool
 
 
 def _port_is_available(host: str, port: int) -> bool:
@@ -37,21 +56,22 @@ def _port_is_available(host: str, port: int) -> bool:
     return True
 
 
-@click.command()
-@click.option("--host", default="127.0.0.1", help="Host to bind to.")
-@click.option("--port", default=8000, type=int, help="Backend API port.")
-@click.option("--no-browser", is_flag=True, help="Don't open browser automatically.")
-def serve(host: str, port: int, no_browser: bool) -> None:
-    """Start the Haute UI server."""
+def handle_serve(config: ServeConfig) -> None:
+    """Start the Haute UI server.
+
+    Picks dev mode when a ``frontend/`` directory with ``node_modules``
+    exists; otherwise falls through to production mode (serving built
+    static files).  Fails loudly when neither is available.
+    """
     import uvicorn
 
     from haute.server import STATIC_DIR
 
     # Pre-flight: fail loudly if the port is already taken rather than
     # letting uvicorn crash with a cryptic OSError.
-    if not _port_is_available(host, port):
+    if not _port_is_available(config.host, config.port):
         click.echo(
-            f"Error: port {port} already in use. Use --port to choose another.",
+            f"Error: port {config.port} already in use. Use --port to choose another.",
             err=True,
         )
         raise SystemExit(1)
@@ -70,7 +90,7 @@ def serve(host: str, port: int, no_browser: bool) -> None:
         assert frontend_dir is not None  # narrowed by dev_mode guard
         click.echo("[dev] Dev mode: starting Vite dev server + FastAPI backend")
         click.echo("  Frontend -> http://localhost:5173  (open this)")
-        click.echo(f"  Backend  -> http://{host}:{port}   (API only)")
+        click.echo(f"  Backend  -> http://{config.host}:{config.port}   (API only)")
         click.echo("")
         vite_proc = subprocess.Popen(
             [_npm(), "run", "dev"],
@@ -87,7 +107,7 @@ def serve(host: str, port: int, no_browser: bool) -> None:
         signal.signal(signal.SIGINT, _cleanup)
         signal.signal(signal.SIGTERM, _cleanup)
 
-        if not no_browser:
+        if not config.no_browser:
             import threading
 
             threading.Timer(2.0, _open_browser, args=("http://localhost:5173",)).start()
@@ -101,8 +121,8 @@ def serve(host: str, port: int, no_browser: bool) -> None:
         try:
             uvicorn.run(
                 "haute.server:app",
-                host=host,
-                port=port,
+                host=config.host,
+                port=config.port,
                 reload=True,
                 reload_dirs=[_haute_src_dir],
                 log_level="warning",
@@ -119,13 +139,27 @@ def serve(host: str, port: int, no_browser: bool) -> None:
             )
             raise SystemExit(1)
 
-        if not no_browser:
+        if not config.no_browser:
             import threading
 
-            threading.Timer(1.5, _open_browser, args=(f"http://{host}:{port}",)).start()
+            threading.Timer(
+                1.5,
+                _open_browser,
+                args=(f"http://{config.host}:{config.port}",),
+            ).start()
 
         uvicorn.run(
             "haute.server:app",
-            host=host,
-            port=port,
+            host=config.host,
+            port=config.port,
         )
+
+
+@click.command()
+@click.option("--host", default="127.0.0.1", help="Host to bind to.")
+@click.option("--port", default=8000, type=int, help="Backend API port.")
+@click.option("--no-browser", is_flag=True, help="Don't open browser automatically.")
+def serve(host: str, port: int, no_browser: bool) -> None:
+    """Start the Haute UI server."""
+    config = ServeConfig(host=host, port=port, no_browser=no_browser)
+    handle_serve(config)

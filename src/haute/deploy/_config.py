@@ -375,6 +375,53 @@ class DeployConfig:
 
         return _apply_env_overrides(config)
 
+    @classmethod
+    def from_cli_args(cls, **kwargs: Any) -> DeployConfig:
+        """Build a :class:`DeployConfig` from CLI input — no TOML involved.
+
+        Used when the user runs a deploy command outside a Haute project
+        (no ``haute.toml``) and supplies every required field directly.
+        Required fields are ``pipeline_file`` and ``model_name``; omitting
+        either raises a clear ``ValueError`` naming the missing key.
+
+        Parameters
+        ----------
+        **kwargs:
+            Field values to populate.  ``pipeline_file`` and ``model_name``
+            are required; any other documented field on :class:`DeployConfig`
+            is optional.
+
+        Returns
+        -------
+        DeployConfig
+            A fully validated config ready to be passed to
+            :func:`resolve_config` or :func:`~haute.deploy.deploy`.
+
+        Raises
+        ------
+        ValueError
+            When ``model_name`` or ``pipeline_file`` is missing or empty.
+        TypeError
+            When ``kwargs`` contains a key that is not a documented field
+            on :class:`DeployConfig`.
+        """
+        missing: list[str] = []
+        pipeline_file = kwargs.get("pipeline_file")
+        model_name = kwargs.get("model_name")
+        if not pipeline_file:
+            missing.append("pipeline_file")
+        if not model_name:
+            missing.append("model_name")
+        if missing:
+            raise ValueError(
+                "DeployConfig.from_cli_args() is missing required field(s): "
+                + ", ".join(missing)
+                + ". Pass them via --pipeline-file / --model-name on the "
+                "command line, or run inside a Haute project with haute.toml."
+            )
+
+        return cls(**kwargs)
+
     def override(self, **cli_kwargs: Any) -> DeployConfig:
         """Return a copy with non-None CLI flags applied over TOML values."""
         c = copy.deepcopy(self)

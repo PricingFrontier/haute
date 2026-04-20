@@ -1,11 +1,178 @@
-"""``haute impact`` command."""
+"""``haute impact`` command.
 
+Split into:
+
+* :class:`ImpactConfig` — the typed bag of CLI inputs.
+* :func:`handle_impact` — the pure function that does the work.
+* :func:`impact` — the thin ``@click.command`` entry point.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
 
 from haute._project import get_project_root
-from haute.cli._helpers import _load_deploy_config, resolve_transport
+from haute.cli._helpers import resolve_transport
+
+
+@dataclass
+class ImpactConfig:
+    """Parsed inputs for the ``haute impact`` command."""
+
+    endpoint_suffix: str | None
+    sample: int
+    batch_size: int
+
+
+def handle_impact(config: ImpactConfig) -> None:
+    """Score the impact dataset through staging + production endpoints.
+
+    Compares predictions from the staging and production endpoints across
+    the configured safety dataset, writes a markdown/terminal report, and
+    (when running on GitHub Actions) appends the report to the step
+    summary.  Requires a ``haute.toml`` with a ``[safety].impact_dataset``
+    entry; fails loudly if either is missing.
+    """
+    import os
+
+    from haute.deploy._config import DeployConfig
+    from haute.deploy._impact import (
+        ImpactReport,
+        build_report,
+        format_markdown,
+        format_terminal,
+    )
+
+    toml_path = Path.cwd() / "haute.toml"
+    if not toml_path.exists():
+        click.echo("Error: No haute.toml found.", err=True)
+        raise SystemExit(1)
+
+    deploy_config = DeployConfig.from_toml(toml_path)
+    click.echo("  \u2713 Loaded config from haute.toml")
+    project_root = get_project_root()
+
+    # Resolve staging suffix: CLI flag wins when given, otherwise the
+    # TOML-loaded ``deploy_config.ci.staging_endpoint_suffix`` is
+    # authoritative.  No literal fallback — a blank suffix would produce
+    # ``staging_name == prod_name`` which silently invalidates the impact
+    # comparison, so we fail loudly and point the user at the config key
+    # they need to set.
+    staging_suffix = (
+        config.endpoint_suffix
+        if config.endpoint_suffix
+        else deploy_config.ci.staging_endpoint_suffix
+    )
+    if not staging_suffix:
+        click.echo(
+            "Error: No staging endpoint suffix configured. "
+            "Set [ci.staging] endpoint_suffix in haute.toml "
+            "or pass --endpoint-suffix.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    base_name = deploy_config.endpoint_name or deploy_config.model_name
+    staging_name = base_name + staging_suffix
+    prod_name = base_name
+
+    # Load impact dataset
+    impact_path = deploy_config.safety.impact_dataset
+    if not impact_path:
+        click.echo(
+            "Error: No impact_dataset configured in [safety] section of haute.toml.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    import polars as pl
+
+    dataset_file = (project_root / impact_path).resolve()
+    if not dataset_file.exists():
+        click.echo(f"Error: Impact dataset not found: {dataset_file}", err=True)
+        raise SystemExit(1)
+
+    df = pl.read_parquet(dataset_file)
+    total_rows = len(df)
+
+    if config.sample > 0 and total_rows > config.sample:
+        df = df.sample(n=config.sample, seed=42)
+
+    records = df.to_dicts()
+
+    click.echo(f"Impact analysis: {staging_name} vs {prod_name}")
+    click.echo(f"  Dataset: {impact_path} ({len(records):,} rows)")
+
+    # Score via the appropriate transport
+    transport = resolve_transport(deploy_config)
+
+    if transport.kind == "databricks":
+        staging_preds, prod_preds, prod_exists = _impact_databricks(
+            staging_name,
+            prod_name,
+            records,
+            config.batch_size,
+        )
+    elif transport.kind == "http":
+        staging_preds, prod_preds, prod_exists = _impact_http(
+            transport.staging_url,
+            transport.prod_url,
+            records,
+            config.batch_size,
+        )
+    else:
+        click.echo(
+            f"  \u26a0 Impact analysis not yet implemented for target "
+            f"'{deploy_config.target}'.",
+            err=True,
+        )
+        return
+
+    # Build report
+    if not prod_exists:
+        report = ImpactReport(
+            pipeline_name=deploy_config.model_name,
+            staging_endpoint=staging_name,
+            prod_endpoint=prod_name,
+            dataset_path=impact_path,
+            total_rows=total_rows,
+            sampled_rows=len(records),
+            scored_rows=len(staging_preds),
+            failed_rows=len(records) - len(staging_preds),
+            column_stats=[],
+            segments={},
+            is_first_deploy=True,
+        )
+    else:
+        report = build_report(
+            staging_preds=staging_preds,
+            prod_preds=prod_preds,
+            input_df=df,
+            pipeline_name=deploy_config.model_name,
+            staging_endpoint=staging_name,
+            prod_endpoint=prod_name,
+            dataset_path=impact_path,
+            total_rows=total_rows,
+        )
+
+    # Print terminal report
+    click.echo(format_terminal(report))
+
+    # Always write portable markdown artifact (works on any CI platform)
+    md = format_markdown(report)
+    report_path = project_root / "impact_report.md"
+    report_path.write_text(md, encoding="utf-8")
+    click.echo(f"  \u2192 Report written to {report_path}")
+
+    # Platform-specific CI summary integration
+    github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if github_summary:
+        with open(github_summary, "a") as f:
+            f.write(md)
+        click.echo("  \u2192 Report written to GitHub Step Summary")
 
 
 @click.command()
@@ -35,131 +202,12 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
     running in GitHub Actions so reviewers can inspect before approving
     the production deployment.
     """
-    import os
-
-    from haute.deploy._impact import (
-        ImpactReport,
-        build_report,
-        format_markdown,
-        format_terminal,
+    config = ImpactConfig(
+        endpoint_suffix=endpoint_suffix,
+        sample=sample,
+        batch_size=batch_size,
     )
-
-    config = _load_deploy_config(require_toml=True)
-    project_root = get_project_root()
-
-    # Resolve staging suffix with exactly one canonical fall-through:
-    # CLI flag wins when given, otherwise the TOML-loaded
-    # ``config.ci.staging_endpoint_suffix`` is authoritative. No literal
-    # fallback — a blank suffix would produce ``staging_name == prod_name``
-    # which silently invalidates the impact comparison, so we fail loudly
-    # and point the user at the config key they need to set.
-    staging_suffix = endpoint_suffix if endpoint_suffix else config.ci.staging_endpoint_suffix
-    if not staging_suffix:
-        click.echo(
-            "Error: No staging endpoint suffix configured. "
-            "Set [ci.staging] endpoint_suffix in haute.toml "
-            "or pass --endpoint-suffix.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    base_name = config.endpoint_name or config.model_name
-    staging_name = base_name + staging_suffix
-    prod_name = base_name
-
-    # Load impact dataset
-    impact_path = config.safety.impact_dataset
-    if not impact_path:
-        click.echo(
-            "Error: No impact_dataset configured in [safety] section of haute.toml.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    import polars as pl
-
-    dataset_file = (project_root / impact_path).resolve()
-    if not dataset_file.exists():
-        click.echo(f"Error: Impact dataset not found: {dataset_file}", err=True)
-        raise SystemExit(1)
-
-    df = pl.read_parquet(dataset_file)
-    total_rows = len(df)
-
-    if sample > 0 and total_rows > sample:
-        df = df.sample(n=sample, seed=42)
-
-    records = df.to_dicts()
-
-    click.echo(f"Impact analysis: {staging_name} vs {prod_name}")
-    click.echo(f"  Dataset: {impact_path} ({len(records):,} rows)")
-
-    # Score via the appropriate transport
-    transport = resolve_transport(config)
-
-    if transport.kind == "databricks":
-        staging_preds, prod_preds, prod_exists = _impact_databricks(
-            staging_name,
-            prod_name,
-            records,
-            batch_size,
-        )
-    elif transport.kind == "http":
-        staging_preds, prod_preds, prod_exists = _impact_http(
-            transport.staging_url,
-            transport.prod_url,
-            records,
-            batch_size,
-        )
-    else:
-        click.echo(
-            f"  \u26a0 Impact analysis not yet implemented for target '{config.target}'.",
-            err=True,
-        )
-        return
-
-    # Build report
-    if not prod_exists:
-        report = ImpactReport(
-            pipeline_name=config.model_name,
-            staging_endpoint=staging_name,
-            prod_endpoint=prod_name,
-            dataset_path=impact_path,
-            total_rows=total_rows,
-            sampled_rows=len(records),
-            scored_rows=len(staging_preds),
-            failed_rows=len(records) - len(staging_preds),
-            column_stats=[],
-            segments={},
-            is_first_deploy=True,
-        )
-    else:
-        report = build_report(
-            staging_preds=staging_preds,
-            prod_preds=prod_preds,
-            input_df=df,
-            pipeline_name=config.model_name,
-            staging_endpoint=staging_name,
-            prod_endpoint=prod_name,
-            dataset_path=impact_path,
-            total_rows=total_rows,
-        )
-
-    # Print terminal report
-    click.echo(format_terminal(report))
-
-    # Always write portable markdown artifact (works on any CI platform)
-    md = format_markdown(report)
-    report_path = project_root / "impact_report.md"
-    report_path.write_text(md, encoding="utf-8")
-    click.echo(f"  \u2192 Report written to {report_path}")
-
-    # Platform-specific CI summary integration
-    github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if github_summary:
-        with open(github_summary, "a") as f:
-            f.write(md)
-        click.echo("  \u2192 Report written to GitHub Step Summary")
+    handle_impact(config)
 
 
 # Exception class names the Databricks SDK raises when an endpoint is not

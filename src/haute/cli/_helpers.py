@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING
 
 import click
 
+# Re-exported from haute._project so CLI callers have a single import site.
+# Every CLI module that needs a resolved pipeline file must either import
+# from this alias or (preferably) directly from ``haute._project``.
+from haute._project import resolve_pipeline_file  # noqa: F401
+
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
 
@@ -25,52 +30,81 @@ logger = get_logger(component="cli")
 
 
 # ---------------------------------------------------------------------------
-# Pipeline file resolution — single source of truth for all CLI commands
+# Model name resolution — CLI > haute.toml > error
 # ---------------------------------------------------------------------------
 
 
-def resolve_pipeline_file(explicit_path: str | None = None) -> Path:
-    """Resolve the pipeline file to use.
+def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
+    """Resolve the model name for a CLI command.
 
-    Priority:
+    Encodes the precedence rule used across every CLI command that accepts
+    a model name:
 
-    1. Explicit path from CLI argument
-    2. ``[project].pipeline`` from ``haute.toml``
-    3. Auto-discovery via :func:`~haute.discovery.discover_pipelines`
-    4. Default to ``main.py``
+        CLI flag  >  haute.toml [deploy].model_name  >  error
 
-    Raises :class:`SystemExit` if the resolved file doesn't exist.
+    Parameters
+    ----------
+    cli_arg:
+        The value supplied on the command line (``--model-name`` flag or
+        positional argument).  ``None`` means no CLI value was given.
+    toml_path:
+        Path to a ``haute.toml`` file to read ``[deploy].model_name`` from.
+        ``None`` means no project config is available.
+
+    Returns
+    -------
+    str
+        The resolved model name.
+
+    Raises
+    ------
+    ValueError
+        When *cli_arg* is ``None`` and no usable TOML source is available
+        — either *toml_path* is ``None``, or the TOML file lacks a
+        ``[deploy].model_name`` entry.  The message always names both
+        user-facing fixes (``--model-name`` flag or
+        ``[deploy].model_name`` in ``haute.toml``).
+    FileNotFoundError
+        When *toml_path* is given but does not exist — a missing config
+        file is a programmer bug (the caller passed a wrong path), not a
+        fallback to auto-discovery.
     """
-    if explicit_path:
-        p = Path(explicit_path)
-    else:
-        # Try haute.toml first
-        toml_path = Path.cwd() / "haute.toml"
-        if toml_path.exists():
-            import tomllib
+    if cli_arg is not None and cli_arg != "":
+        return cli_arg
 
-            with open(toml_path, "rb") as f:
-                data = tomllib.load(f)
-            configured = data.get("project", {}).get("pipeline")
-            if configured:
-                p = Path(configured)
-            else:
-                p = _discover_or_default()
-        else:
-            p = _discover_or_default()
+    if toml_path is None:
+        raise ValueError(
+            "model_name is required — pass --model-name on the command line "
+            "or run inside a Haute project with [deploy].model_name set in "
+            "haute.toml."
+        )
 
-    if not p.exists():
-        click.echo(f"Error: Pipeline file not found: {p}", err=True)
-        raise SystemExit(1)
-    return p
+    if not toml_path.exists():
+        raise FileNotFoundError(
+            f"haute.toml not found at {toml_path}. "
+            "Pass --model-name explicitly or cd to a Haute project."
+        )
 
+    import tomllib
 
-def _discover_or_default() -> Path:
-    """Try :func:`~haute.discovery.discover_pipelines`, fall back to ``main.py``."""
-    from haute.discovery import discover_pipelines
+    with open(toml_path, "rb") as fh:
+        data = tomllib.load(fh)
 
-    found = discover_pipelines()
-    return found[0] if found else Path("main.py")
+    deploy_section = data.get("deploy")
+    if not isinstance(deploy_section, dict):
+        raise ValueError(
+            f"haute.toml at {toml_path} has no [deploy] section. "
+            "Add a [deploy] block with model_name, or pass --model-name."
+        )
+
+    model_name = deploy_section.get("model_name")
+    if not model_name:
+        raise ValueError(
+            f"haute.toml at {toml_path} has no [deploy].model_name. "
+            "Add model_name under [deploy], or pass --model-name."
+        )
+
+    return str(model_name)
 
 
 def _open_browser(url: str) -> None:
@@ -201,59 +235,3 @@ def resolve_transport(config: DeployConfig) -> TransportInfo:
         return TransportInfo(kind="http", staging_url=staging_url, prod_url=prod_url)
 
     return TransportInfo(kind="unsupported")
-
-
-def _load_deploy_config(
-    *,
-    pipeline_file: str | None = None,
-    model_name: str | None = None,
-    require_toml: bool = False,
-) -> DeployConfig:
-    """Load a :class:`DeployConfig` from ``haute.toml`` or CLI arguments.
-
-    Centralises the repeated pattern of:
-
-    1. Check if ``haute.toml`` exists in the current working directory.
-    2. If it does, load a :class:`DeployConfig` from it.
-    3. Otherwise, fall back to constructing one from CLI arguments
-       (only when *require_toml* is ``False`` and *pipeline_file* is given).
-
-    Parameters
-    ----------
-    pipeline_file:
-        Path to the pipeline file (CLI argument fallback).
-    model_name:
-        Model name (CLI argument fallback).
-    require_toml:
-        If ``True``, exit with an error when ``haute.toml`` is missing
-        instead of falling back to CLI arguments.
-
-    Returns
-    -------
-    DeployConfig
-        Loaded (or constructed) deploy configuration.
-
-    Raises
-    ------
-    SystemExit
-        When no config source is available.
-    """
-    from haute.deploy._config import DeployConfig
-
-    toml_path = Path.cwd() / "haute.toml"
-
-    if toml_path.exists():
-        config = DeployConfig.from_toml(toml_path)
-        click.echo("  \u2713 Loaded config from haute.toml")
-        return config
-
-    if require_toml:
-        click.echo("Error: No haute.toml found.", err=True)
-        raise SystemExit(1)
-
-    # No haute.toml — resolve pipeline file using the shared strategy
-    resolved = resolve_pipeline_file(pipeline_file)
-    return DeployConfig(
-        pipeline_file=resolved,
-        model_name=model_name or resolved.stem,
-    )

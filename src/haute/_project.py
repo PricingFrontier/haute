@@ -1,12 +1,17 @@
-"""Project root discovery for Haute.
+"""Project root and pipeline file discovery for Haute.
 
 A Haute project is a directory containing ``haute.toml`` that lives inside
 a git repository. :func:`get_project_root` walks upward from a starting
 path to locate it; :func:`is_haute_project` is the exact-path predicate.
 
-Both functions fail loudly: missing ``haute.toml`` or absent git setup
-raises :class:`~haute.errors.ConfigError` rather than silently falling
-back to the current working directory.
+:func:`resolve_pipeline_file` is the canonical pipeline-file resolver used
+by every CLI command and any programmatic caller — it maps a user-facing
+path (``None``, a directory, or a file) to the absolute path of a concrete
+``.py`` pipeline file.
+
+All functions fail loudly: missing ``haute.toml``, absent git setup, or a
+non-existent pipeline file raise an explicit exception rather than
+silently falling back to a default.
 """
 
 from __future__ import annotations
@@ -89,3 +94,67 @@ def is_haute_project(path: Path) -> bool:
     of a project return ``False``.
     """
     return bool((path / "haute.toml").exists() and _has_git(path))
+
+
+def resolve_pipeline_file(path: Path | None) -> Path:
+    """Resolve a user-supplied pipeline path to a concrete absolute file.
+
+    The canonical pipeline-file resolver — every CLI command and every
+    programmatic caller funnels through this function so resolution drift
+    is impossible.
+
+    Resolution rules:
+
+    * ``None`` → ``<cwd>/main.py`` (the project-wide default).
+    * A directory → ``<dir>/main.py`` inside that directory.
+    * An existing file → resolved to its absolute path.
+    * A non-existent path → :class:`FileNotFoundError` naming the missing
+      path so the user can fix it.
+
+    Relative paths are resolved against :func:`pathlib.Path.cwd` via
+    :meth:`pathlib.Path.resolve`.
+
+    Parameters
+    ----------
+    path:
+        The user-supplied path, or ``None`` to use the project default.
+
+    Returns
+    -------
+    Path
+        Absolute path to an existing ``.py`` pipeline file.
+
+    Raises
+    ------
+    FileNotFoundError
+        When *path* (or the resolved ``main.py`` inside a directory, or the
+        default ``main.py`` when *path* is ``None``) does not exist.  The
+        message always names the missing path so users can diagnose and
+        fix their invocation.
+    """
+    if path is None:
+        candidate = Path.cwd() / "main.py"
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"Pipeline file not found: {candidate}. "
+                "Pass a path explicitly, cd to a directory with main.py, "
+                "or run 'haute init' to scaffold a project."
+            )
+        return candidate.resolve()
+
+    if path.is_dir():
+        candidate = path / "main.py"
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"No main.py found in directory: {path}. "
+                "Pass the pipeline file directly or add a main.py to the directory."
+            )
+        return candidate.resolve()
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Pipeline file not found: {path}. "
+            "Check the path or pass a different file."
+        )
+
+    return path.resolve()

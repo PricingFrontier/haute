@@ -1,20 +1,41 @@
-"""``haute lint`` command."""
+"""``haute lint`` command.
+
+Split into three pieces:
+
+* :class:`LintConfig` — the typed bag of values the command needs.
+* :func:`handle_lint` — the pure function that does the work, usable
+  without Click (tests, programmatic callers).
+* :func:`lint` — the thin ``@click.command`` entry point that parses
+  args into a :class:`LintConfig` and dispatches to :func:`handle_lint`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
 
 import click
 
+from haute._project import resolve_pipeline_file
 
-@click.command()
-@click.argument("pipeline_file", required=False)
-def lint(pipeline_file: str | None) -> None:
-    """Validate pipeline structure without deploying.
 
-    Parses the pipeline, checks for structural issues (orphan nodes,
-    missing edges, syntax errors), and reports any problems found.
+@dataclass
+class LintConfig:
+    """Parsed inputs for the ``haute lint`` command."""
+
+    pipeline_file: Path
+
+
+def handle_lint(config: LintConfig) -> None:
+    """Parse the pipeline and report structural issues.
+
+    Exits with ``SystemExit(1)`` on parse errors, disconnected nodes, or
+    any other structural problem — the whole point of the command is to
+    surface those issues loudly.
     """
-    from haute.cli._helpers import resolve_pipeline_file
     from haute.parser import parse_pipeline_file
 
-    filepath = resolve_pipeline_file(pipeline_file)
+    filepath = config.pipeline_file
 
     click.echo(f"Linting pipeline: {filepath}")
 
@@ -65,3 +86,22 @@ def lint(pipeline_file: str | None) -> None:
     name = graph.pipeline_name or filepath.stem
     click.echo(f"  \u2713 Pipeline '{name}': {len(nodes)} nodes, {len(edges)} edges")
     click.echo("  \u2713 No structural issues found.")
+
+
+@click.command()
+@click.argument("pipeline_file", required=False)
+def lint(pipeline_file: str | None) -> None:
+    """Validate pipeline structure without deploying.
+
+    Parses the pipeline, checks for structural issues (orphan nodes,
+    missing edges, syntax errors), and reports any problems found.
+    """
+    try:
+        resolved = resolve_pipeline_file(
+            Path(pipeline_file) if pipeline_file else None,
+        )
+    except FileNotFoundError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+    config = LintConfig(pipeline_file=resolved)
+    handle_lint(config)
