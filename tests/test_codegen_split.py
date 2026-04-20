@@ -215,20 +215,39 @@ class TestCodegenModuleSplit:
         assert mod is not None
 
     def test_codegen_builders_owns_registration_entrypoint(self) -> None:
-        """The codegen side of dispatch must be registered from
+        """The codegen side of dispatch must be *physically defined* in
         ``_codegen_builders`` — the registry itself lives in
         :mod:`haute._registry`, so what we pin here is that every codegen
-        NodeType is populated by importing ``_codegen_builders`` (and only
-        ``_codegen_builders``), NOT from ``haute.codegen`` itself."""
+        NodeType's registered builder function resolves back to
+        ``haute._codegen_builders`` as its owning module, NOT to
+        ``haute.codegen`` or anywhere else."""
         from haute import _codegen_builders, _registry, codegen  # noqa: F401
 
         registry = _registry.NODE_REGISTRY
-        codegen_types = {nt for nt, entry in registry.items() if entry.codegen is not None}
-        assert codegen_types, (
+        codegen_entries = {
+            nt: entry.codegen for nt, entry in registry.items() if entry.codegen is not None
+        }
+        assert codegen_entries, (
             "NODE_REGISTRY has no codegen entries — _codegen_builders did not populate them."
         )
-        # _codegen_builders must own the dispatch-function source of truth,
-        # so codegen.py must not define its own _CODEGEN_BUILDERS.
+        # The load-bearing ownership check: every registered codegen
+        # function must live in _codegen_builders.  If a builder has
+        # been stubbed or moved back into codegen.py, this catches it.
+        wrong_owner = {
+            nt.value: fn.__module__
+            for nt, fn in codegen_entries.items()
+            if fn.__module__ != "haute._codegen_builders"
+        }
+        assert not wrong_owner, (
+            "Every NodeType's codegen builder must be defined in "
+            "haute._codegen_builders.  The following NodeTypes have "
+            f"builders defined elsewhere: {wrong_owner!r}. "
+            "Move them back into _codegen_builders.py so ownership of "
+            "the codegen dispatch table is not split across modules."
+        )
+        # Belt-and-braces: _codegen_builders must own the dispatch-function
+        # source of truth, so codegen.py must not define its own
+        # _CODEGEN_BUILDERS table either.
         assert not hasattr(codegen, "_CODEGEN_BUILDERS"), (
             "haute.codegen must not expose _CODEGEN_BUILDERS after the split."
         )

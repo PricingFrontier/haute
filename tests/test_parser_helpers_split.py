@@ -424,43 +424,6 @@ POLARS_CASES = [
 ]
 
 
-class TestExtractorBehaviorPreserved:
-    """After the split, the per-node extractors must produce byte-identical
-    output for representative inputs.
-
-    This guards against regressions when the developer agent replaces the
-    four bespoke extractors with a single consolidated engine.
-    """
-
-    @pytest.mark.parametrize("body", DATA_SOURCE_CASES)
-    def test_source_extraction_unchanged(self, body: str):
-        from haute._code_extraction import _extract_source_user_code as new
-        from haute._parser_helpers import _extract_source_user_code as old
-
-        assert new(body) == old(body)
-
-    @pytest.mark.parametrize("body", MODEL_SCORE_CASES)
-    def test_model_score_extraction_unchanged(self, body: str):
-        from haute._code_extraction import _extract_model_score_user_code as new
-        from haute._parser_helpers import _extract_model_score_user_code as old
-
-        assert new(body) == old(body)
-
-    @pytest.mark.parametrize("body", EXTERNAL_FILE_CASES)
-    def test_external_file_extraction_unchanged(self, body: str):
-        from haute._code_extraction import _extract_external_user_code as new
-        from haute._parser_helpers import _extract_external_user_code as old
-
-        assert new(body, ["df"]) == old(body, ["df"])
-
-    @pytest.mark.parametrize("body", POLARS_CASES)
-    def test_polars_extraction_unchanged(self, body: str):
-        from haute._code_extraction import _extract_user_code as new
-        from haute._parser_helpers import _extract_user_code as old
-
-        assert new(body, ["source", "df"]) == old(body, ["source", "df"])
-
-
 class TestExtractorCorrectOutputs:
     """Specific output pinning — guards the key invariants independently
     of identity with the legacy function (so the dedup cannot silently

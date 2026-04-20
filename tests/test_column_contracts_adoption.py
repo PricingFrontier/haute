@@ -24,10 +24,7 @@ from typing import Any
 import pytest
 
 from haute import errors as haute_errors
-from haute._builders import (
-    _COLUMN_CONTRACTS,
-    get_column_contract,
-)
+from haute._builders import get_column_contract
 from haute._registry import NODE_REGISTRY
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.fixtures.expected_contracts import (
@@ -84,13 +81,15 @@ class TestEveryBuilderHasContract:
         )
 
     def test_every_node_type_has_a_contract(self):
-        """Every ``NodeType`` has an entry in ``_COLUMN_CONTRACTS``.
+        """Every ``NodeType`` has a ``column_contract`` in ``NODE_REGISTRY``.
 
         Today only 13 of 17 do.  After adoption, all 17 must — concrete
         for structured nodes, ``OPAQUE_CONTRACT`` for ``API_INPUT`` /
         ``DATA_SOURCE`` / ``POLARS`` / ``EXTERNAL_FILE``.
         """
-        missing = ALL_NODE_KINDS - set(_COLUMN_CONTRACTS.keys())
+        missing = ALL_NODE_KINDS - {
+            nt for nt, entry in NODE_REGISTRY.items() if entry.column_contract is not None
+        }
         assert missing == set(), (
             f"NodeType(s) with no explicit contract registration: "
             f"{sorted(missing)}. Concrete contracts are preferred; if the "
@@ -102,10 +101,11 @@ class TestEveryBuilderHasContract:
     @pytest.mark.parametrize("node_type", sorted(ALLOWED_OPAQUE_NODE_TYPES))
     def test_allowlisted_opaque_types_return_opaque(self, node_type: NodeType):
         """Allowlist kinds report ``(None, None)`` — but *declared*."""
-        assert node_type in _COLUMN_CONTRACTS, (
-            f"{node_type} must appear in _COLUMN_CONTRACTS with an explicit "
-            "OPAQUE_CONTRACT registration, even though its columns cannot be "
-            "determined statically."
+        entry = NODE_REGISTRY.get(node_type)
+        assert entry is not None and entry.column_contract is not None, (
+            f"{node_type} must have a column_contract registered on "
+            "NODE_REGISTRY with an explicit OPAQUE_CONTRACT registration, "
+            "even though its columns cannot be determined statically."
         )
         produced, referenced = get_column_contract(node_type, {})
         assert produced is None and referenced is None, (
@@ -590,6 +590,65 @@ class TestExecutorAssertsContractsAtBoundaries:
             f"column. Got: {excinfo.value!r}"
         )
 
+    def test_user_declared_input_missing_from_parent_raises_at_execution(self, tmp_path: Path):
+        """A POLARS node declares ``contract={"inputs": ["nonexistent_col"]}``
+        but its parent produces no such column.
+
+        Audit D clarified that while no *parse-time* check fires for
+        this specific cross-node mismatch (parse lacks the knowledge of
+        what a parent *actually* produces), the runtime check in
+        ``_assert_inputs_satisfy_contract`` does catch it.  This test
+        pins that execution-time behaviour end-to-end so the guarantee
+        the audit verified is protected against regression.
+        """
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
+        if cls is None:
+            pytest.skip("ContractMismatchError not yet defined")
+        import polars as pl_
+
+        from haute.executor import execute_graph
+
+        pq = tmp_path / "x.parquet"
+        # Parent produces only 'a' — the declared 'nonexistent_col'
+        # cannot possibly be satisfied from upstream.
+        pl_.DataFrame({"a": [1, 2, 3]}).write_parquet(pq)
+
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_SOURCE, path=str(pq)),
+                _node(
+                    "t",
+                    NodeType.POLARS,
+                    code="df = df",
+                    # User-declared input that no parent produces — the
+                    # execution-time contract check must catch it.  The
+                    # contract dict form requires both keys; outputs is
+                    # explicitly opaque (None) so this test pins the
+                    # INPUT-side check specifically.
+                    contract={"inputs": ["nonexistent_col"], "outputs": None},
+                ),
+            ],
+            edges=[_e("src", "t")],
+        )
+        with pytest.raises(cls) as excinfo:
+            execute_graph(graph, enforce_contracts=True)
+        # The audit requires that the missing column name reaches the
+        # error context (not just the message blob) so callers can
+        # programmatically discover what's wrong.
+        ctx = excinfo.value.context
+        assert ctx.get("missing") == ["nonexistent_col"], (
+            "ContractMismatchError.context['missing'] must name the "
+            f"unsatisfied declared input. Got context: {ctx!r}"
+        )
+        assert ctx.get("node_id") == "t", (
+            "ContractMismatchError.context['node_id'] must identify the "
+            f"offending node. Got context: {ctx!r}"
+        )
+        assert "nonexistent_col" in str(excinfo.value), (
+            "Rendered error message must mention the missing column so "
+            f"the user sees it in logs. Got: {excinfo.value!r}"
+        )
+
     def test_contract_check_does_not_raise_on_clean_pipeline(self, tmp_path: Path):
         """Well-formed pipelines execute end-to-end without spurious errors.
 
@@ -742,8 +801,24 @@ class TestContractOverheadBenchmark:
         Uses a realistic-shape pipeline alternating banding (concrete
         contract) and polars (opaque contract) to exercise both paths.
         The threshold is the <5% target named in the plan.
+
+        Clearing ``_preview_cache`` before every timed iteration is
+        essential — otherwise the first pass in each mode is cold and
+        the subsequent two are warm cache hits, so the ``t_with`` vs.
+        ``t_without`` delta measures cache hits on both sides rather
+        than the actual enforcement path.  Noise then swamps a
+        genuine <5% bound.
+
+        We also interleave the two modes iteration-by-iteration so that
+        any OS-level transient (GC pause, scheduler hiccup, filesystem
+        cache churn) has a proportional chance of landing in both
+        samples, instead of biasing one mode's run.  This yields a
+        far more stable overhead ratio than timing all N no-enforce
+        passes contiguously followed by all N with-enforce passes.
         """
         import polars as pl_
+
+        from haute.executor import _preview_cache
 
         pq = tmp_path / "bench.parquet"
         # 10k rows is large enough to dominate the per-node overhead and
@@ -751,23 +826,33 @@ class TestContractOverheadBenchmark:
         pl_.DataFrame({"age": [float(i) for i in range(10_000)]}).write_parquet(pq)
         graph = self._build_chain_graph(100, str(pq))
 
-        # Warm-up run (caches, imports, JIT) — also fails fast if the
+        # Warm-up run (imports, JIT) — also fails fast if the
         # enforcement toggle isn't wired up yet.
         self._execute(graph, enforce=False)
 
-        # Measure without enforcement
-        t0 = time.perf_counter()
-        for _ in range(3):
+        # Interleaved measurement.  Each iteration clears the preview
+        # cache so every timed pass is a cold execution — without this
+        # clear, the second+ iteration in a mode is a cache hit and
+        # the delta collapses to measurement noise.
+        iterations = 5
+        t_without_total = 0.0
+        t_with_total = 0.0
+        for _ in range(iterations):
+            _preview_cache.invalidate()
+            t0 = time.perf_counter()
             self._execute(graph, enforce=False)
-        t_without = (time.perf_counter() - t0) / 3
+            t_without_total += time.perf_counter() - t0
 
-        # Measure with enforcement
-        t0 = time.perf_counter()
-        for _ in range(3):
+            _preview_cache.invalidate()
+            t0 = time.perf_counter()
             self._execute(graph, enforce=True)
-        t_with = (time.perf_counter() - t0) / 3
+            t_with_total += time.perf_counter() - t0
 
-        overhead = (t_with - t_without) / t_without if t_without > 0 else 0.0
+        t_without = t_without_total / iterations
+        t_with = t_with_total / iterations
+        overhead = (
+            (t_with_total - t_without_total) / t_without_total if t_without_total > 0 else 0.0
+        )
         assert overhead < 0.05, (
             f"Contract enforcement overhead is {overhead:.1%} "
             f"({t_without * 1000:.1f}ms → {t_with * 1000:.1f}ms), exceeds "

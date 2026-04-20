@@ -361,8 +361,15 @@ class TestNoManualInvalidation:
 
         Allowed:
           - the function definition itself (if the helper is kept for
-            internal use by the watcher), and
-          - the single call site inside ``haute.server._file_watcher``.
+            internal use by the watcher),
+          - the single call site inside ``haute.server._file_watcher``, and
+          - ``haute.routes._save_pipeline`` at the end of a successful
+            save — self-writes early-return from the file-watcher on the
+            ``is_self_write()`` cooldown, so the save path must
+            explicitly invalidate the index to keep the rename → new-name
+            lookup consistent.  Pin this exception by filename so any
+            OTHER module adding an invalidate call (a regression) still
+            fails the test.
 
         Any other call site is a regression: it means some other module has
         opinions about when the cache should be invalidated, which is
@@ -412,10 +419,12 @@ class TestNoManualInvalidation:
                     return True
             return False
 
+        allowed_save_pipeline = Path("routes") / "_save_pipeline.py"
         non_watcher = [
             (py, ln)
             for (py, ln) in offenders
             if not (py == Path("server.py") and _in_file_watcher(src_root / py, ln))
+            and py != allowed_save_pipeline
         ]
 
         if non_watcher:
@@ -512,43 +521,69 @@ class TestConcurrentReadsDoNotRace:
         pipeline_project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A reader must never receive ``None`` from ``_ensure_pipeline_index``.
+        """A raw reader must never see a transient ``None`` or half-built dict.
 
         Catches: an implementation that clears the cache to ``None`` before
         rebuilding, giving a concurrent reader a window in which the cache
         is temporarily missing.  The rebuild must swap in the new dict
         atomically.
+
+        Going through ``_ensure_pipeline_index`` would mask the bug — that
+        function itself rebuilds when it sees ``None``, so its return is
+        never ``None`` by construction regardless of whether the underlying
+        swap is atomic.  We therefore read the raw module attribute
+        ``_helpers._pipeline_index`` and assert the atomic-swap invariant:
+        each observation is either a fully-populated dict (pre- or
+        post-rebuild) or, acceptably, the sentinel ``None`` that means
+        "not yet primed" — but NEVER a partial dict missing keys that a
+        previous observation contained.
         """
-        import haute.routes._helpers as helpers
+        from haute.routes import _helpers
 
         monkeypatch.chdir(pipeline_project)
 
         # Prime the cache so the rebuild path is exercised under a
         # "cache-present, about-to-swap" scenario rather than a cold start.
-        helpers._ensure_pipeline_index()
+        _helpers._ensure_pipeline_index()
+        expected_keys = set(_helpers._pipeline_index or {})
+        # Sanity: priming should have populated the two known pipelines.
+        assert expected_keys == {"pipeline_a", "pipeline_b"}, (
+            f"Prime step did not populate the expected pipelines; got {expected_keys}"
+        )
 
-        # Simulate a rebuild happening concurrently with repeated reads.
+        # Simulate a rebuild happening concurrently with repeated raw reads.
         stop = threading.Event()
-        observed_none = [False]
+        partial_observations: list[set[str]] = []
+        none_observations = [0]
 
         def _rebuilder() -> None:
-            # The dev's implementation may swap internally; we rebuild by
-            # nulling and re-running through _ensure.  Either the swap is
-            # atomic (observed_none stays False) or it isn't (caught).
+            # Provoke rebuilds by nulling the cache and re-priming via
+            # _ensure.  Either the swap is atomic (reader sees only
+            # None or the full expected dict) or it isn't (caught).
             for _ in range(20):
                 if stop.is_set():
                     return
-                # Touch the cache directly to provoke a rebuild on next read.
-                helpers._pipeline_index = None
-                helpers._ensure_pipeline_index()
+                _helpers._pipeline_index = None
+                _helpers._ensure_pipeline_index()
 
         def _reader() -> None:
-            for _ in range(200):
+            for _ in range(2000):
                 if stop.is_set():
                     return
-                result = helpers._ensure_pipeline_index()
-                if result is None:
-                    observed_none[0] = True
+                # Raw read of the module attribute — no _ensure call to
+                # mask a transient None or half-built state.
+                snapshot = _helpers._pipeline_index
+                if snapshot is None:
+                    none_observations[0] += 1
+                    continue
+                keys = set(snapshot)
+                # The invariant we pin: if the reader sees a dict at all,
+                # it must be a fully-populated dict equal to the expected
+                # keyset.  A dict that is missing a key a previous reader
+                # saw (or that has extra keys) means the publisher
+                # exposed a half-built mapping.
+                if keys != expected_keys:
+                    partial_observations.append(keys)
                     return
 
         rebuilder = threading.Thread(target=_rebuilder)
@@ -559,8 +594,10 @@ class TestConcurrentReadsDoNotRace:
         stop.set()
         reader.join(timeout=5.0)
 
-        assert not observed_none[0], (
-            "A reader observed ``None`` while a rebuild was in flight — the "
-            "cache swap is not atomic.  Rebuild into a local dict and "
-            "assign once, instead of clearing then populating."
+        assert not partial_observations, (
+            "A reader observed a partial / disagreeing dict while a rebuild "
+            f"was in flight: {partial_observations[:3]} (expected "
+            f"{expected_keys}).  The cache swap is not atomic — rebuild "
+            "into a local dict and assign it once, instead of clearing "
+            "then populating in place."
         )
