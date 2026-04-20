@@ -163,6 +163,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> TraceResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
+    from haute.executor import _preview_cache
     from haute.graph_utils import flatten_graph
     from haute.trace import execute_trace, trace_result_to_dict
 
@@ -182,6 +183,13 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
                 row_limit=body.row_limit,
                 source=body.source,
                 row_values=body.row_values,
+                # Inject the executor's preview cache explicitly so the
+                # trace module is not coupled to a private singleton on
+                # another module (item #104).  ``FingerprintCache``
+                # already satisfies the :class:`PreviewReader` protocol —
+                # its ``try_get`` returns the slot dict on hit or
+                # ``None`` on miss.
+                preview=_preview_cache,
             ),
             timeout=_TRACE_TIMEOUT,
         )

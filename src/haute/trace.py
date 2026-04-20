@@ -41,7 +41,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
 
@@ -74,7 +74,6 @@ from haute.executor import (
     _build_node_fn,
     _compile_preamble,
     _pipeline_dir,
-    _preview_cache,
 )
 from haute.graph_utils import (
     NodeType,
@@ -88,6 +87,7 @@ from haute.graph_utils import (
 logger = get_logger(component="trace")
 
 __all__ = [
+    "PreviewReader",
     "SchemaDiff",
     "TraceResult",
     "TraceStep",
@@ -103,6 +103,31 @@ __all__ = [
     "parse_expression_chain",
     "trace_result_to_dict",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Preview injection — decouples the trace from ``haute.executor``'s private
+# ``_preview_cache`` singleton.  Callers (the FastAPI route handler, tests,
+# future CLI commands) construct a snapshot or reader themselves and pass
+# it in.  This keeps the trace a pure observation layer with an explicit
+# data dependency instead of a module-level reach-through.
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class PreviewReader(Protocol):
+    """Read-only preview-cache lookup surface used by :func:`execute_trace`.
+
+    Any object that exposes ``try_get(fingerprint) -> dict | None``
+    satisfies this protocol.  ``FingerprintCache`` already does so by
+    construction, which is why the production route handler forwards the
+    executor's preview cache directly and tests can inject a trivial
+    stub without touching ``haute.executor``.
+    """
+
+    def try_get(self, fingerprint: str) -> dict[str, Any] | None:
+        """Return the preview slot-dict for *fingerprint*, or ``None`` on miss."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +229,7 @@ def execute_trace(
     source: str = "live",
     row_values: dict[str, Any] | None = None,
     preamble_ns: dict[str, Any] | None = None,
+    preview: PreviewReader | dict[str, Any] | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -222,6 +248,15 @@ def execute_trace(
         row_values: Optional dict of the clicked row's values from the frontend.
                     Used to verify the trace is operating on the same data the
                     user sees.  If the values don't match, a ValueError is raised.
+        preview: Optional preview-cache lookup surface — either a reader
+                 object implementing :class:`PreviewReader` (``try_get``)
+                 or a pre-materialised snapshot dict with an
+                 ``eager_outputs`` slot.  When provided the trace reuses
+                 the materialised DataFrames instead of re-executing the
+                 upstream graph; when ``None`` (tests, CLI, cold requests)
+                 the trace falls back to a fresh execution.  Replaces the
+                 pre-Wave-9E reach-through into
+                 ``haute.executor._preview_cache``.
 
     Returns:
         TraceResult with per-node steps showing how the row was produced.
@@ -287,6 +322,7 @@ def execute_trace(
                 f"{row_limit}:{source}:contracts={int(ENFORCE_CONTRACTS)}",
             ),
             fp=fp,
+            preview=preview,
         )
 
         # Populate cache — unmodified DataFrames from the single execution
@@ -424,6 +460,51 @@ def execute_trace(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_preview_snapshot(
+    preview: PreviewReader | dict[str, Any] | None,
+    preview_fp: str,
+) -> dict[str, Any] | None:
+    """Normalise *preview* into the slot-dict shape or ``None``.
+
+    Accepts three input shapes so callers can inject whichever is
+    cheapest to construct:
+
+    * ``None`` — caller opted out of preview reuse; returns ``None``.
+    * A reader with ``try_get(fingerprint) -> dict | None`` — we call it
+      with *preview_fp* and return whatever it returns.  The executor's
+      ``FingerprintCache`` satisfies this protocol unchanged.
+    * A snapshot dict — treated as a pre-materialised cache entry.  The
+      caller has already done the fingerprint lookup, so we return the
+      dict verbatim without consulting *preview_fp*.
+
+    This indirection is what lets :func:`execute_trace` stay agnostic to
+    where the preview data came from (executor cache, unit-test stub,
+    future Redis-backed reader, …).
+    """
+    if preview is None:
+        return None
+    # Duck-type the reader protocol: ``FingerprintCache`` and test stubs
+    # both expose ``try_get``.  ``isinstance(..., PreviewReader)`` would
+    # also work since the Protocol is ``@runtime_checkable``, but
+    # ``hasattr`` is explicit about what we actually call.
+    try_get = getattr(preview, "try_get", None)
+    if callable(try_get):
+        result = try_get(preview_fp)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise TypeError(
+                f"PreviewReader.try_get must return dict | None, got {type(result).__name__}"
+            )
+        return result
+    if isinstance(preview, dict):
+        return preview
+    raise TypeError(
+        "execute_trace(preview=...) expects a PreviewReader, a snapshot dict, or None; "
+        f"got {type(preview).__name__}"
+    )
+
+
 def _materialize_eager_outputs(
     *,
     graph: PipelineGraph,
@@ -434,6 +515,7 @@ def _materialize_eager_outputs(
     preamble_ns: dict[str, Any] | None,
     preview_fp: str,
     fp: str,
+    preview: PreviewReader | dict[str, Any] | None,
 ) -> tuple[
     dict[str, pl.DataFrame],
     list[str],
@@ -444,14 +526,24 @@ def _materialize_eager_outputs(
     """Populate the trace cache: reuse preview outputs if available, else execute.
 
     Returns ``(eager_outputs, order, parents_of, node_map, source_ids)``.
+
+    The *preview* parameter is the sole source of preview-cache data.
+    Passing ``None`` forces a cold execution; passing a reader or a
+    snapshot dict lets callers reuse already-materialised DataFrames
+    without this module reaching into ``haute.executor``'s private
+    singleton.
     """
-    # --- Try to reuse outputs from the preview cache ----------------
-    # Preview uses fingerprint f"{row_limit}:{scenario}" (no target),
-    # so compute that separately and check if we can skip execution.
-    preview_data = _preview_cache.try_get(preview_fp)
+    # --- Try to reuse outputs from the injected preview ---------------
+    # The injected preview is either a reader object (``try_get(fp) ->
+    # dict | None``; the executor's FingerprintCache satisfies this
+    # protocol) or a pre-materialised snapshot dict.  ``None`` disables
+    # cache lookup entirely and forces a fresh execution.
+    preview_data = _resolve_preview_snapshot(preview, preview_fp)
 
     if preview_data is not None:
-        prev_outputs = preview_data["eager_outputs"]
+        # Snapshot dicts without an ``eager_outputs`` slot are treated
+        # as empty — the cold-execute path below will handle them.
+        prev_outputs = preview_data.get("eager_outputs") or {}
         # Preview uses swallow_errors=True, so some outputs may be
         # None on error.  Only reuse if target node has a real value.
         if target_node_id in prev_outputs and prev_outputs[target_node_id] is not None:

@@ -892,7 +892,16 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 input_mapping=_in_map,
             )
 
-        return ctx.func_name, transform_fn, False
+        # A polars node with self-contained code and no upstream wiring
+        # is effectively a source: there is no dataframe to receive, so
+        # the code block must construct its own (``df = pl.DataFrame(
+        # ...)``).  Marking it as a source lets the executor call the
+        # function with no args and skip the "no input data available"
+        # guard — which exists to catch genuinely-broken graphs where a
+        # downstream node lost its parents, not self-contained code
+        # snippets.
+        is_source = not _src_names
+        return ctx.func_name, transform_fn, is_source
     else:
         return ctx.func_name, _passthrough_fn, False
 
