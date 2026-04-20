@@ -46,10 +46,8 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
       <button
         onClick={() => onDismiss(toast.id)}
         aria-label="Dismiss notification"
-        className="p-0.5 rounded shrink-0 transition-colors"
+        className="p-0.5 rounded shrink-0 hover-bg"
         style={{ color: "var(--text-muted)" }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)" }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent" }}
       >
         <X size={12} />
       </button>

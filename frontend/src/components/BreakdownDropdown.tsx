@@ -38,15 +38,14 @@ export default function BreakdownDropdown({
     <div ref={ref} className="relative flex items-center gap-1">
       <button
         onClick={() => { if (hasData) setOpen((v) => !v) }}
-        className="flex items-center gap-1 px-1 py-0.5 rounded transition-colors"
+        className="flex items-center gap-1 px-1 py-0.5 rounded transition-colors hover-breakdown"
+        data-hover-enabled={!open && hasData}
         style={{
           color: open ? 'var(--accent)' : 'var(--text-muted)',
           background: open ? 'var(--accent-soft)' : 'transparent',
           cursor: hasData ? 'pointer' : 'default',
           opacity: hasData ? 1 : 0.35,
         }}
-        onMouseEnter={(e) => { if (!open && hasData) e.currentTarget.style.color = 'var(--text-secondary)' }}
-        onMouseLeave={(e) => { if (!open) e.currentTarget.style.color = 'var(--text-muted)' }}
         title={hasData ? `Toggle ${title.toLowerCase()} breakdown` : title}
       >
         <Icon size={12} />

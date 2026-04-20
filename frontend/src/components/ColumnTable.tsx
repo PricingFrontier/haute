@@ -71,19 +71,9 @@ export default function ColumnTable({
             const row = (
               <tr
                 key={col.name}
-                className={interactiveRows ? "cursor-pointer transition-colors" : undefined}
+                className={interactiveRows ? "cursor-pointer hover-bg" : undefined}
                 style={{ borderBottom: "1px solid var(--border)" }}
                 onClick={interactiveRows && checkbox ? () => checkbox.onToggle(col.name) : undefined}
-                onMouseEnter={
-                  interactiveRows
-                    ? (e) => { e.currentTarget.style.background = "var(--bg-hover)" }
-                    : undefined
-                }
-                onMouseLeave={
-                  interactiveRows
-                    ? (e) => { e.currentTarget.style.background = "transparent" }
-                    : undefined
-                }
               >
                 {checkbox && (
                   <td className="px-2.5 py-1.5 text-center">

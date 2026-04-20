@@ -201,3 +201,217 @@ html, body, #root {
   background: var(--chrome-hover);
   color: var(--text-primary);
 }
+
+/* Chrome toggle (e.g. collapsed-palette reveal button): rests on
+   var(--chrome) rather than transparent, but still hovers to
+   var(--chrome-hover).  Does NOT alter foreground color, since the
+   icon inside has its own explicit color. */
+.hover-chrome-solid {
+  background: var(--chrome);
+  transition: background 150ms;
+}
+.hover-chrome-solid:hover {
+  background: var(--chrome-hover);
+}
+
+/* Generic bg hover for elevated surfaces (toast dismiss, interactive
+   table rows).  Rest is transparent; hover uses var(--bg-hover). */
+.hover-bg {
+  transition: background 150ms;
+}
+.hover-bg:hover {
+  background: var(--bg-hover);
+}
+
+/* Shared hover: bottom-panel drag handles (DataPreview / OptimiserPreview /
+   OptimiserDataPreview / ModellingPreview).  Tints the 1px handle from the
+   subtle chrome border to the accent colour on hover, giving users feedback
+   that the handle is grabbable for vertical resize.  Pairs with the
+   `cursor-ns-resize` class already applied at the call site. */
+.drag-handle-hover {
+  background: var(--chrome-border);
+  transition: background 150ms;
+}
+.drag-handle-hover:hover {
+  background: var(--accent);
+}
+
+/* Breadcrumb crumb: non-last items hover to chrome-hover bg +
+   text-primary.  The `:not(:disabled)` guard preserves the existing
+   shape where the last (current) crumb is rendered with `disabled`
+   and must not react to hover. */
+.hover-crumb {
+  transition: background 150ms, color 150ms;
+}
+.hover-crumb:not(:disabled):hover {
+  background: var(--chrome-hover);
+  color: var(--text-primary);
+}
+
+/* Breakdown dropdown trigger: hovers to text-secondary color only
+   when the dropdown is closed AND there is data to show
+   (data-hover-enabled="true").  Matches the pre-migration guard
+   `if (!open && hasData)`. */
+.hover-breakdown[data-hover-enabled="true"]:hover {
+  color: var(--text-secondary);
+}
+
+/* Context-menu item hover.  Non-danger items hover to chrome-hover
+   bg + text-primary color; danger items hover to a translucent red
+   background but keep their red foreground. */
+.menu-item {
+  transition: background 150ms, color 150ms;
+}
+.menu-item:hover {
+  background: var(--chrome-hover);
+  color: var(--text-primary);
+}
+.menu-item--danger:hover {
+  background: rgba(239,68,68,.1);
+  color: #ef4444;
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Inspector-panel hover / focus classes (Phase 4 Wave 8 Package 8B)
+   Replaces inline `e.currentTarget.style.*` mutations in
+   NodePanel / TracePanel / PanelShell with CSS-driven state.
+   ──────────────────────────────────────────────────────────────── */
+
+/* PanelShell drag handle — the element keeps an inline
+   `style={{ background: 'var(--chrome-border)' }}` for its rest
+   colour (pinned by PanelShell tests).  `!important` is required
+   here so the hover rule wins over the inline declaration.  The
+   `.dragging` modifier keeps the accent colour visible while the
+   user is actively resizing, even when the pointer wanders off the
+   handle. */
+.panel-drag-handle:hover {
+  background: var(--accent) !important;
+}
+.panel-drag-handle.dragging {
+  background: var(--accent) !important;
+}
+
+/* NodePanel label input — :focus-visible ring replaces the
+   onFocus/onBlur inline borderColor + boxShadow writes. */
+.node-label-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* NodePanel close button — solid danger background with darker
+   hover state (no inline style mutation on hover). */
+.node-close-btn {
+  background: #dc2626;
+}
+.node-close-btn:hover {
+  background: #b91c1c;
+}
+
+/* TracePanel "N pass-through nodes hidden" chip — rest background
+   is the subtle dashed-chip colour (not transparent), hover flips
+   to the shared bg-hover token. */
+.trace-hidden-toggle {
+  background: rgba(255, 255, 255, 0.03);
+}
+.trace-hidden-toggle:hover {
+  background: var(--bg-hover);
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Editor-panel focus / hover classes (Phase 4 Wave 8 Package 8C)
+   Replaces inline `e.currentTarget.style.*` mutations inside
+   panels/editors/* with CSS-driven state.
+   ──────────────────────────────────────────────────────────────── */
+
+/* Shared focus ring for text inputs / textareas in editors.
+   Drops the native outline and draws a themed border + soft glow via
+   `:focus-visible`.  Callers can override the colour via
+   `--focus-ring-border` / `--focus-ring-shadow` inline custom
+   properties (e.g. `style={{ "--focus-ring-border": rgba(...)} }`)
+   when a per-node accent is needed; default is the app's blue accent. */
+.focus-ring:focus,
+.focus-ring:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring-border, rgba(59, 130, 246, 0.3));
+  box-shadow: 0 0 0 2px var(--focus-ring-shadow, var(--accent-soft));
+}
+
+/* FileBrowser row in _shared.tsx — rests transparent, hovers to
+   var(--bg-hover).  The [data-selected="true"] variant disables
+   the hover (the accent-soft background is pinned for the selected
+   row and must not flicker when the mouse moves over it). */
+.file-browser-row {
+  background: transparent;
+  transition: background 150ms;
+}
+.file-browser-row:hover {
+  background: var(--bg-hover);
+}
+.file-browser-row[data-selected="true"],
+.file-browser-row[data-selected="true"]:hover {
+  background: var(--accent-soft);
+}
+
+/* GroupedColumnsTab group-header — rests on var(--bg-elevated)
+   (the elevated row inside the scroll container), hovers to
+   var(--bg-hover). */
+.grouped-col-group-header {
+  background: var(--bg-elevated);
+  transition: background 150ms;
+}
+.grouped-col-group-header:hover {
+  background: var(--bg-hover);
+}
+
+/* GroupedColumnsTab pattern-row — rests transparent, hovers to
+   var(--bg-hover).  Parent `.file-browser-row` hover shares the same
+   pattern but a different selected-row policy, so a dedicated class
+   keeps the two independent. */
+.grouped-col-pattern-row {
+  background: transparent;
+  transition: background 150ms;
+}
+.grouped-col-pattern-row:hover {
+  background: var(--bg-hover);
+}
+
+/* RatingStepEditor / Sink / generic "themed" chrome button: a
+   dashed or solid bordered button whose border + text colour flip to
+   the current accent on hover.  The accent colour is piped in via
+   the `--node-accent` custom property on inline `style={{ ... }}`,
+   so the same class can serve every node type.  `!important` is
+   required because call sites keep an inline `border:` shorthand
+   (used by other hover tests to locate the button) and inline
+   styles beat class selectors without it. */
+.accent-hover-btn {
+  transition: border-color 150ms, color 150ms;
+}
+.accent-hover-btn:hover {
+  border-color: var(--node-accent, var(--accent)) !important;
+  color: var(--node-accent, var(--accent)) !important;
+}
+
+/* Delete / remove icon button — rests at var(--text-muted), hovers
+   to danger red.  Parameterising via class makes the intent explicit
+   at every call site and survives SSR → hydration (CSS-driven, no JS
+   mutation).  Re-used in _shared.InputSourcesBar delete-X, the
+   RatingStepEditor factor remove-X, and ConstantEditor row remove-X. */
+.icon-danger-btn {
+  color: var(--text-muted);
+  transition: color 150ms;
+}
+.icon-danger-btn:hover {
+  color: #ef4444;
+}
+
+/* "Add value" style fill-hover button — rests on chrome-hover,
+   hovers to chrome-active.  Matches ConstantEditor's Add button
+   (and can be reused by any similar add-new-row affordance). */
+.add-row-btn {
+  background: var(--chrome-hover);
+  transition: background 150ms;
+}
+.add-row-btn:hover {
+  background: var(--chrome-active, var(--bg-hover));
+}

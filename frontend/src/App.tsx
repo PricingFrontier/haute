@@ -368,10 +368,8 @@ function FlowEditor() {
             <button
               onClick={() => setPaletteOpen(true)}
               aria-label="Show node palette"
-              className="shrink-0 flex items-center justify-center w-10 h-full transition-colors"
-              style={{ background: 'var(--chrome)', borderRight: '1px solid var(--chrome-border)' }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--chrome-hover)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'var(--chrome)'}
+              className="shrink-0 flex items-center justify-center w-10 h-full hover-chrome-solid"
+              style={{ borderRight: '1px solid var(--chrome-border)' }}
               title="Show node palette"
             >
               <PanelLeftOpen size={16} style={{ color: 'var(--text-muted)' }} />
