@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -156,6 +157,30 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]
             from haute import _model_scorer as _ms
 
             _ms._clear_feature_validation_cache()
+
+    def evict_matching(
+        self,
+        predicate: Callable[[tuple[str, str, str, str]], bool],
+    ) -> int:
+        """Evict every entry whose key satisfies *predicate*, cascading.
+
+        Returns the number of entries evicted.  Used by
+        :func:`clear_model_cache` to implement targeted ``run_id=...``
+        clears without wiping the whole cache.
+        """
+        with self._lock:
+            matching = [(k, v) for k, v in self._data.items() if predicate(k)]
+            if not matching:
+                return 0
+            for key, _ in matching:
+                del self._data[key]
+                self._timestamps.pop(key, None)
+                self._pinned.discard(key)
+            from haute import _model_scorer as _ms
+
+            for _, sm in matching:
+                _ms._invalidate_feature_validation_cache_for(sm)
+            return len(matching)
 
 
 _model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
@@ -511,14 +536,17 @@ def _resolve_artifact_local(
 def clear_model_cache(run_id: str | None = None) -> int:
     """Delete cached model artifacts, returning the number of files removed.
 
-    If *run_id* is given, only that run's cache is cleared.
-    Otherwise all cached models are removed.
+    If *run_id* is given, only that run's cache is cleared — in-memory
+    entries whose cache key's ``run_id`` slot matches are evicted, the
+    on-disk directory for that run is removed, and observability
+    counters are left untouched (a targeted clear is not a
+    measurement-window boundary).
 
-    Also evicts the in-memory LRU cache and resets the observability
-    counters (``hits`` / ``misses``) exposed by
-    :func:`get_model_cache_stats`.  The counter reset is intentional: a
-    cache-wide clear should zero its effectiveness metric too so the
-    next measurement window is not contaminated with pre-clear counts.
+    If *run_id* is ``None``, everything goes: all in-memory entries, the
+    entire ``.cache/models`` tree, AND the observability counters
+    (``hits`` / ``misses``).  The counter reset on blanket clear is
+    intentional so the next measurement window is not contaminated with
+    pre-clear counts.
     """
     import shutil
     from pathlib import Path
@@ -542,11 +570,20 @@ def clear_model_cache(run_id: str | None = None) -> int:
                     removed += sum(1 for _ in d.glob("*") if _.is_file())
             shutil.rmtree(cache_root, ignore_errors=True)
 
-    # Evict from the in-memory LRU cache and reset observability counters.
-    # These happen regardless of whether the disk cache existed so a caller
-    # always gets consistent "cleared" semantics.
-    _model_cache.clear()
-    _reset_model_cache_stats()
+    # In-memory + counter cleanup is scoped to the caller's intent:
+    # blanket ``clear_model_cache()`` zeroes everything; targeted
+    # ``clear_model_cache(run_id="x")`` only evicts entries whose cache
+    # key matches the run_id and leaves counters alone.
+    if run_id is None:
+        _model_cache.clear()
+        _reset_model_cache_stats()
+    else:
+        # Cache keys are ``(source_type, resolved_run_id, version_or_artifact, task)``.
+        # Evict every entry whose run_id slot matches (may be multiple,
+        # different task / version per run) and let the cascade handle
+        # feature-validation-cache invalidation.  Counters are left
+        # alone — targeted clear is not a measurement-window boundary.
+        _model_cache.evict_matching(lambda k: len(k) >= 2 and k[1] == run_id)
     return removed
 
 
