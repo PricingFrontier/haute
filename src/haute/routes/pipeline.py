@@ -4,20 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tomllib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from haute._logging import get_logger
+from haute._topo import ancestors
 from haute.errors import ContractMismatchError
-from haute.graph_utils import PipelineGraph
+from haute.executor import execute_graph, execute_sink
+from haute.graph_utils import (
+    PipelineGraph,
+    _prune_live_switch_edges,
+    flatten_graph,
+)
+from haute.parser import parse_pipeline_file
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
     lookup_pipeline_by_name,
     parse_pipeline_to_graph,
+    pipeline_dir,
     raise_pipeline_not_found,
 )
+from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import (
     NodeMemoryInfo,
     NodeTimingInfo,
@@ -31,6 +41,7 @@ from haute.schemas import (
     TraceRequest,
     TraceResponse,
 )
+from haute.trace import execute_trace, trace_result_to_dict
 
 logger = get_logger(component="server.pipeline")
 
@@ -53,8 +64,6 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
     if not toml_path.exists():
         return
     try:
-        import tomllib
-
         with open(toml_path, "rb") as f:
             configured = tomllib.load(f).get("project", {}).get("pipeline")
         if configured:
@@ -66,8 +75,6 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
 @router.get("/pipelines", response_model=list[PipelineSummary])
 async def list_pipelines() -> list[PipelineSummary]:
     """List all discovered pipelines."""
-    from haute.parser import parse_pipeline_file
-
     files = discover_pipelines()
     cwd = Path.cwd()
 
@@ -153,9 +160,6 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     When the graph contains submodels, multiple files are written via
     ``graph_to_code_multi``.
     """
-    from haute.routes._helpers import pipeline_dir
-    from haute.routes._save_pipeline import SavePipelineService
-
     svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
     return svc.save(body)
 
@@ -163,10 +167,6 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> TraceResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
-    from haute.executor import _preview_cache
-    from haute.graph_utils import flatten_graph
-    from haute.trace import execute_trace, trace_result_to_dict
-
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
@@ -183,13 +183,6 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
                 row_limit=body.row_limit,
                 source=body.source,
                 row_values=body.row_values,
-                # Inject the executor's preview cache explicitly so the
-                # trace module is not coupled to a private singleton on
-                # another module (item #104).  ``FingerprintCache``
-                # already satisfies the :class:`PreviewReader` protocol —
-                # its ``try_get`` returns the slot dict on hit or
-                # ``None`` on miss.
-                preview=_preview_cache,
             ),
             timeout=_TRACE_TIMEOUT,
         )
@@ -224,13 +217,6 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     Accepts an optional ``row_limit`` (default 100) that is pushed into
     the Polars lazy query plan so only that many rows are scanned.
     """
-    from haute._topo import ancestors
-    from haute.executor import execute_graph
-    from haute.graph_utils import (
-        _prune_live_switch_edges,
-        flatten_graph,
-    )
-
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
@@ -343,9 +329,6 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
 
     Only called on explicit user action (Write button), not during normal run/preview.
     """
-    from haute.executor import execute_sink
-    from haute.graph_utils import flatten_graph
-
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
