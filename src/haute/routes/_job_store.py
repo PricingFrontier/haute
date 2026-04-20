@@ -2,10 +2,19 @@
 
 Fine for a single-server dev tool.  Jobs older than ``ttl_seconds`` are
 evicted on each ``create_job`` / ``get_job`` call to bound memory usage.
+
+Route modules acquire their ``JobStore`` through the
+:func:`get_job_store` factory.  The factory returns exactly one
+instance per prefix (``"training"``, ``"optimiser"``, ...), so every
+caller in the same route module shares a single namespace.  Direct
+``JobStore()`` instantiation outside of this file is forbidden and
+is pinned by ``tests/test_routes_hygiene_phase5.py::
+TestNoDirectJobStoreInstantiation``.
 """
 
 from __future__ import annotations
 
+import functools
 import threading
 import time
 import uuid
@@ -175,3 +184,39 @@ class JobStore:
         access.
         """
         return self._jobs
+
+
+# ---------------------------------------------------------------------------
+# Factory: one JobStore singleton per prefix
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def get_job_store(prefix: str) -> JobStore:
+    """Return the shared ``JobStore`` instance for *prefix*.
+
+    The factory is the **single** legitimate entry-point to construct
+    a :class:`JobStore`.  Route modules (``modelling.py``,
+    ``optimiser.py``, ...) must acquire their store through this
+    helper so every caller in the same route ends up with the same
+    in-memory dict — previously each module independently called
+    ``JobStore()`` and ended up with four disjoint job-ID namespaces
+    (see item #126 of the Phase 5 review).
+
+    Semantics:
+
+    * **Singleton per prefix** — two calls with the same *prefix*
+      return the same instance.  Backed by
+      :func:`functools.lru_cache` with unbounded size so the mapping
+      from prefix → store is permanent for the process lifetime.
+    * **Isolated across prefixes** — ``get_job_store("training")``
+      and ``get_job_store("optimiser")`` return independent stores,
+      so a job ID created in one prefix is never visible in another.
+    * **Test reset hook** — the autouse fixture in
+      ``tests/test_routes_hygiene_phase5.py`` calls
+      ``get_job_store.cache_clear()`` between tests so singleton
+      state does not leak across test runs.  Production code should
+      never call ``cache_clear``; the lifetime is a process-level
+      invariant.
+    """
+    return JobStore()

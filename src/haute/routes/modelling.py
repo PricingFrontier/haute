@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import get_job_store
 from haute.routes._train_service import (
     TrainService,
     _check_gpu_vram,
@@ -31,8 +31,10 @@ logger = get_logger(component="server.modelling")
 
 router = APIRouter(prefix="/api/modelling", tags=["modelling"])
 
-# In-memory job store — fine for single-server dev tool.
-_store = JobStore()
+# In-memory job store — acquired through the central factory so the
+# "training" namespace is shared across any other importers that look
+# it up with the same prefix (see ``haute.routes._job_store``).
+_store = get_job_store("training")
 _train_service = TrainService(_store)
 
 

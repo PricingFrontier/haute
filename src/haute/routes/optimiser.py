@@ -13,7 +13,7 @@ from haute._logging import get_logger
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import get_job_store
 from haute.routes._optimiser_service import (
     _DEFAULT_CHUNK_SIZE,
     _DEFAULT_TIMEOUT,
@@ -42,8 +42,10 @@ logger = get_logger(component="server.optimiser")
 
 router = APIRouter(prefix="/api/optimiser", tags=["optimiser"])
 
-# In-memory job store — same pattern as modelling.
-_store = JobStore()
+# In-memory job store — same pattern as modelling, acquired through
+# the central factory (item #126) so the "optimiser" prefix is a
+# single source of truth for every importer.
+_store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
 
 _APPLY_PREVIEW_ROWS = 100  # max rows returned in the apply preview payload
