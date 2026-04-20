@@ -10,12 +10,50 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from fastapi import HTTPException, WebSocket
+from pydantic import BaseModel, Field
 
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
 logger = get_logger(component="server")
+
+
+# ---------------------------------------------------------------------------
+# Sidecar schema (.haute.json on-disk format)
+# ---------------------------------------------------------------------------
+
+
+class SidecarModel(BaseModel):
+    """On-disk schema for the ``.haute.json`` sidecar file.
+
+    The sidecar carries editor-state that doesn't belong in the pipeline
+    ``.py`` source-of-truth:
+
+    * ``positions`` — canvas (x, y) co-ordinates per sanitised node id,
+      so the layout survives label renames.
+    * ``sources`` — ordered list of available data sources for this
+      pipeline (``"live"`` is always first).
+    * ``active_source`` — which source is currently selected in the UI.
+
+    Every field has a sensible default so a sidecar missing a
+    newly-introduced field still parses.  That forward-compat guarantee
+    is pinned by ``tests/test_routes_hygiene_phase5.py::
+    TestSidecarForwardCompat``.
+
+    Write path: ``save_sidecar`` constructs a ``SidecarModel`` and
+    serialises via :meth:`model_dump_json`, excluding defaults so a
+    freshly-saved pipeline with ``sources=["live"]`` does not bloat the
+    file with redundant state (matching pre-refactor on-disk shape —
+    see ``tests/test_route_helpers.py::test_default_source_not_saved``).
+    Read path: ``load_sidecar``/``parse_pipeline_to_graph`` still parses
+    as plain JSON today, but consumers may upgrade to
+    :meth:`model_validate_json` for typed access.
+    """
+
+    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
+    sources: list[str] = Field(default_factory=lambda: ["live"])
+    active_source: str = "live"
 
 # ---------------------------------------------------------------------------
 # Path safety
@@ -463,14 +501,31 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
         )
 
     positions = {_sanitize_func_name(node.data.label): node.position for node in graph.nodes}
-    sidecar_data: dict[str, Any] = {"positions": positions}
-    # Persist source state
+
+    # Build the on-disk payload via ``SidecarModel`` so the schema is
+    # typed and forward-compatible.  We still omit default source state
+    # so a freshly-saved pipeline with ``sources=["live"]`` does not
+    # bloat the file — callers that never touched the source selector
+    # should not see spurious sidecar keys appear.  This mirrors the
+    # pre-refactor manual-JSON path and is pinned by
+    # ``test_route_helpers.py::test_default_source_not_saved``.
+    model_kwargs: dict[str, Any] = {"positions": positions}
     if graph.sources and graph.sources != ["live"]:
-        sidecar_data["sources"] = graph.sources
+        model_kwargs["sources"] = graph.sources
     if graph.active_source and graph.active_source != "live":
-        sidecar_data["active_source"] = graph.active_source
+        model_kwargs["active_source"] = graph.active_source
+
+    sidecar_model = SidecarModel(**model_kwargs)
+    # ``exclude_defaults`` drops any field whose value equals the
+    # declared default, so unset ``sources``/``active_source`` do not
+    # serialise.  ``indent`` matches the prior manual ``json.dumps``
+    # output so diffs on existing sidecars stay minimal.
+    serialised = sidecar_model.model_dump_json(
+        indent=2,
+        exclude_defaults=True,
+    )
     sidecar = py_path.with_suffix(".haute.json")
-    sidecar.write_text(_json.dumps(sidecar_data, indent=2) + "\n")
+    sidecar.write_text(serialised + "\n")
     return warnings
 
 
