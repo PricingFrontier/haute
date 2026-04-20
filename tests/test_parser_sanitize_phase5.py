@@ -449,30 +449,12 @@ class TestExtractFunctionBodiesTreeRequired:
             "tree parameter must exist on _extract_function_bodies"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #125: after the fix, ``tree`` is required -- its "
-            "default becomes ``inspect.Parameter.empty``.  Today the "
-            "default is ``None`` so this test fails.  Post-fix the "
-            "xfail marker must be removed."
-        ),
-    )
     def test_tree_has_no_default_after_fix(self) -> None:
         sig = inspect.signature(_extract_function_bodies)
         assert (
             sig.parameters["tree"].default is inspect.Parameter.empty
         ), "tree parameter still has a default value; fix not applied"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #125: after the fix, calling without ``tree`` must "
-            "raise ``TypeError`` (missing required argument).  Today "
-            "the call silently succeeds by re-parsing ``source`` — "
-            "which is the behaviour being removed."
-        ),
-    )
     def test_call_without_tree_raises_after_fix(self) -> None:
         """Post-fix behaviour: calling without ``tree`` raises TypeError."""
         source = "def f():\n    return 42"

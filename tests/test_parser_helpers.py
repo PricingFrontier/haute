@@ -248,27 +248,24 @@ class TestGetDocstring:
 class TestExtractFunctionBodies:
     def test_single_function(self):
         source = "def foo():\n    x = 1\n    return x"
-        bodies = _extract_function_bodies(source)
+        bodies = _extract_function_bodies(source, tree=ast.parse(source))
         assert "foo" in bodies
         assert "x = 1" in bodies["foo"]
         assert "return x" in bodies["foo"]
 
     def test_multiple_functions(self):
         source = "def a():\n    return 1\n\ndef b():\n    return 2"
-        bodies = _extract_function_bodies(source)
+        bodies = _extract_function_bodies(source, tree=ast.parse(source))
         assert set(bodies.keys()) == {"a", "b"}
 
     def test_nested_function(self):
         source = "def outer():\n    def inner():\n        return 1\n    return inner"
-        bodies = _extract_function_bodies(source)
+        bodies = _extract_function_bodies(source, tree=ast.parse(source))
         assert "outer" in bodies
         assert "inner" not in bodies  # ast.iter_child_nodes extracts top-level only
 
     def test_empty_source(self):
-        assert _extract_function_bodies("") == {}
-
-    def test_syntax_error_returns_empty(self):
-        assert _extract_function_bodies("def f(\n") == {}
+        assert _extract_function_bodies("", tree=ast.parse("")) == {}
 
     def test_pre_parsed_tree(self):
         source = "def f():\n    return 42"
@@ -278,7 +275,7 @@ class TestExtractFunctionBodies:
 
     def test_no_functions(self):
         source = "x = 1\ny = 2"
-        assert _extract_function_bodies(source) == {}
+        assert _extract_function_bodies(source, tree=ast.parse(source)) == {}
 
 
 # ===========================================================================
@@ -1560,7 +1557,7 @@ class TestExtractExternalUserCode:
 class TestExtractFunctionBodiesZeroCov:
     def test_single_function_body_content(self):
         source = "def greet():\n    msg = 'hi'\n    return msg"
-        bodies = _extract_function_bodies(source)
+        bodies = _extract_function_bodies(source, tree=ast.parse(source))
         assert "greet" in bodies
         assert "msg = 'hi'" in bodies["greet"]
         assert "return msg" in bodies["greet"]
@@ -1569,7 +1566,7 @@ class TestExtractFunctionBodiesZeroCov:
         source = (
             "def alpha():\n    return 1\n\ndef beta():\n    return 2\n\ndef gamma():\n    return 3"
         )
-        bodies = _extract_function_bodies(source)
+        bodies = _extract_function_bodies(source, tree=ast.parse(source))
         assert set(bodies.keys()) == {"alpha", "beta", "gamma"}
         assert "return 1" in bodies["alpha"]
         assert "return 2" in bodies["beta"]
@@ -1577,15 +1574,12 @@ class TestExtractFunctionBodiesZeroCov:
 
     def test_nested_not_extracted(self):
         source = "def outer():\n    def inner():\n        pass\n    return inner()"
-        bodies = _extract_function_bodies(source)
+        bodies = _extract_function_bodies(source, tree=ast.parse(source))
         assert "outer" in bodies
         assert "inner" not in bodies
 
     def test_empty_source_returns_empty(self):
-        assert _extract_function_bodies("") == {}
-
-    def test_syntax_error_returns_empty(self):
-        assert _extract_function_bodies("def broken(") == {}
+        assert _extract_function_bodies("", tree=ast.parse("")) == {}
 
 
 # ===========================================================================

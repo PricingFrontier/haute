@@ -168,21 +168,19 @@ def _dedent(code: str) -> str:
 
 def _extract_function_bodies(
     source: str,
-    tree: ast.Module | None = None,
+    *,
+    tree: ast.Module,
 ) -> dict[str, str]:
     """Extract raw source of each function body, keyed by function name.
 
     Args:
         source: The raw source code (needed for line extraction).
-        tree: Pre-parsed AST tree.  If *None*, the source is parsed
-            internally.  Passing a tree avoids a redundant ``ast.parse()``.
+        tree: Pre-parsed AST tree.  Required — callers must parse the
+            source exactly once and pass the resulting tree.  Making this
+            mandatory prevents a class of bug where *source* and *tree*
+            are computed from two different snapshots of the file, and
+            avoids a silent second ``ast.parse()`` call that masks errors.
     """
-    if tree is None:
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            return {}
-
     source_lines = source.splitlines()
     bodies: dict[str, str] = {}
 
