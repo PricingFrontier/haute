@@ -366,6 +366,45 @@ def _build_id_to_func(sorted_nodes: list[GraphNode]) -> dict[str, str]:
     return {node.id: _sanitize_func_name(node.data.label) for node in sorted_nodes}
 
 
+def _warn_on_name_collisions(labels: list[str]) -> None:
+    """Warn (via structlog) for any pair of labels that sanitize to the same
+    identifier.
+
+    Phase 5 Wave 9D #124 — Phase A.  When two distinct labels collapse
+    to the same Python function name, codegen will still emit two
+    ``def <name>(...)`` blocks and the second one shadows the first at
+    import time.  That is a silent user-data-loss bug; this function
+    makes it loud by logging a ``warning`` that names every colliding
+    label so the user can rename the offending nodes in the GUI.
+
+    Phase B (future): upgrade the warning to a ``ConfigError`` so the
+    collision blocks save instead of corrupting the pipeline.
+
+    Pass a flat list of every label that will ultimately become a
+    function name in any emitted file (root graph + every submodel).
+    """
+    buckets: dict[str, list[str]] = {}
+    for label in labels:
+        sanitized = _sanitize_func_name(label)
+        buckets.setdefault(sanitized, []).append(label)
+
+    for sanitized, originals in buckets.items():
+        # Only warn on *distinct* source labels colliding — two graph
+        # nodes with the exact same label are a different (legal) case
+        # that the executor handles elsewhere.
+        distinct_originals = sorted(set(originals))
+        if len(distinct_originals) > 1:
+            logger.warning(
+                "sanitize_name_collision",
+                name=sanitized,
+                originals=distinct_originals,
+                suggestion=(
+                    "rename one of the colliding nodes so each label "
+                    "produces a unique Python function name"
+                ),
+            )
+
+
 def _build_node_sources(
     edges: list[GraphEdge],
     id_to_func: dict[str, str],
@@ -557,6 +596,19 @@ def graph_to_code_multi(
     if not description and graph.pipeline_description:
         description = graph.pipeline_description
     submodels = graph.submodels or {}
+
+    # Detect colliding labels across the whole graph and emit a Phase A
+    # warning.  Done once, eagerly, so duplicate-function-name collisions
+    # are reported even when the file-generation path short-circuits.
+    collision_labels: list[str] = [n.data.label for n in graph.nodes]
+    for sm_meta in submodels.values():
+        for raw in sm_meta.get("graph", {}).get("nodes", []):
+            if isinstance(raw, dict):
+                label = raw.get("data", {}).get("label", "")
+            else:
+                label = raw.data.label
+            collision_labels.append(label)
+    _warn_on_name_collisions(collision_labels)
 
     if not submodels:
         # No submodels — single-file output

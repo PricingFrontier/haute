@@ -243,16 +243,6 @@ class TestDuplicateSanitizedNamesWarning:
         a, b = self._find_collision_pair()
         assert _sanitize_func_name(a) == _sanitize_func_name(b)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #124 Phase A: codegen must emit a structlog WARNING "
-            "when two labels sanitize to the same identifier.  Today "
-            "codegen silently emits two functions with the same name, "
-            "the second shadowing the first at import time.  Post-fix "
-            "this test passes (warning fired, both labels named)."
-        ),
-    )
     def test_duplicate_labels_fire_warning(self) -> None:
         """Build a graph where two nodes' labels collide; codegen must warn."""
         from haute.codegen import graph_to_code
@@ -322,16 +312,6 @@ class TestDuplicateSanitizedNamesWarning:
             f"warning does not name {label_b!r}: {payload}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Wave 9D #124 Phase A: codegen must not RAISE on a "
-            "collision — only WARN.  Phase B (raise) is deferred; see "
-            "the migration comment in this file.  Currently codegen "
-            "doesn't emit any warning, so this test catches the "
-            "transition-to-warning step."
-        ),
-    )
     def test_phase_a_does_not_raise(self) -> None:
         """Phase A behaviour: continue-with-warning, do NOT raise.
 
