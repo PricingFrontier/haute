@@ -57,7 +57,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   }, [focusedStoryEntries, showHidden, targetStep, trace.steps])
 
   return (
-    <PanelShell>
+    <PanelShell testId="trace-panel">
       {/* Header */}
       <div
         className="px-4 py-3 flex items-center gap-2 shrink-0"

@@ -85,17 +85,28 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
  *
  * Returning a JSX list rather than mutating render order keeps the call
  * sites at the three zoom levels each a one-line switch.
+ *
+ * Test ids are positional, not semantic: `output-connector[<idx>]:<node
+ * label>`, where idx is the visual top-to-bottom port order. Single-port
+ * nodes (all non-apiInput types today, and apiInputs with 0–1 emit
+ * tables) are always index 0, which stays stable when single-frame
+ * emission moves to singleton-dict. Ids derive from volatile editor
+ * state (emit topology) and recompute on change — fine for a UI harness
+ * reading the live DOM, as long as the harness isn't itself mutating
+ * emit topology mid-assertion.
  */
 function _SourceHandles({
   isApiInput,
   config,
   accent,
   isConnectableEnd,
+  nodeLabel,
 }: {
   isApiInput: boolean
   config: Record<string, unknown> | undefined
   accent: string
   isConnectableEnd: boolean
+  nodeLabel: string
 }) {
   if (!isApiInput) {
     return (
@@ -103,6 +114,7 @@ function _SourceHandles({
         type="source"
         position={Position.Right}
         isConnectableEnd={isConnectableEnd}
+        data-testid={`output-connector[0]:${nodeLabel}`}
       />
     )
   }
@@ -121,6 +133,7 @@ function _SourceHandles({
         type="source"
         position={Position.Right}
         isConnectableEnd={isConnectableEnd}
+        data-testid={`output-connector[0]:${nodeLabel}`}
       />
     )
   }
@@ -162,7 +175,7 @@ function _SourceHandles({
             position={Position.Right}
             isConnectableEnd={isConnectableEnd}
             style={{ top: `${topPct}%`, background: accent }}
-            data-testid={`api-input-port-${label}`}
+            data-testid={`output-connector[${idx}]:${nodeLabel}`}
           />
         )
       })}
@@ -174,13 +187,22 @@ function _TargetHandles({
   nodeType,
   accent,
   edgeJoinJoinHandlePosition,
+  nodeLabel,
 }: {
   nodeType: string
   accent: string
   edgeJoinJoinHandlePosition: EdgeJoinJoinHandlePosition
+  nodeLabel: string
 }) {
   if (nodeType !== NODE_TYPES.EDGE_JOIN) {
-    return <Handle id={DEFAULT_TARGET_HANDLE} type="target" position={Position.Left} />
+    return (
+      <Handle
+        id={DEFAULT_TARGET_HANDLE}
+        type="target"
+        position={Position.Left}
+        data-testid={`input-connector[0]:${nodeLabel}`}
+      />
+    )
   }
   const topJoinHandleStyle = { left: "50%", top: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
   const bottomJoinHandleStyle = { left: "50%", bottom: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
@@ -280,6 +302,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       config={nodeData.config as Record<string, unknown> | undefined}
       accent={accent}
       isConnectableEnd={sourceHandlesCanEnd}
+      nodeLabel={nodeData.label}
     />
   ) : null
   const targetHandles = !isSourceOnly ? (
@@ -287,6 +310,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       nodeType={nodeType}
       accent={accent}
       edgeJoinJoinHandlePosition={edgeJoinJoinHandlePosition}
+      nodeLabel={nodeData.label}
     />
   ) : null
   // 2+ emit tables = multi-port; render the visual port-to-label

@@ -11,6 +11,7 @@ interface ImportsPanelProps {
 export default function ImportsPanel({ preamble, onPreambleChange, onClose }: ImportsPanelProps) {
   return (
     <PanelShell
+      testId="imports-panel"
       title="Pipeline Imports"
       onClose={onClose}
       icon={<Package size={14} style={{ color: 'var(--accent)' }} />}

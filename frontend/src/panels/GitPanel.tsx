@@ -239,6 +239,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
   return (
     <PanelShell
+      testId="git-panel"
       title="Git"
       onClose={onClose}
       icon={<GitFork size={14} style={{ color: 'var(--success)' }} />}
