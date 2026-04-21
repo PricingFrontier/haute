@@ -15,21 +15,41 @@ external objects.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 from pathlib import Path
 from typing import Any
 
+from haute._functools_cache_adapter import FunctoolsLRUCacheAdapter
 from haute._hashing import content_hash
 from haute._logging import get_logger
-from haute._lru_cache import LRUCache
 from haute._mlflow_utils import resolve_mlflow_source
 
 logger = get_logger(component="optimiser_io")
 
 _ARTIFACT_CACHE_MAX_SIZE = 8
-_artifact_cache: LRUCache[tuple[str, str], dict[str, Any]] = LRUCache(
-    max_size=_ARTIFACT_CACHE_MAX_SIZE,
-)
+
+
+@functools.lru_cache(maxsize=_ARTIFACT_CACHE_MAX_SIZE)
+def _load_artifact_cached(
+    path: str,
+    digest: str,  # noqa: ARG001 — part of cache key, not used in body.
+) -> dict[str, Any]:
+    """Memoised artifact loader keyed on ``(path, digest)``.
+
+    The ``digest`` argument (the xxh64 content hash) is NEVER used
+    inside the body — it exists solely as part of the
+    ``functools.lru_cache`` key so a same-second overwrite (mtime
+    unchanged, bytes changed) produces a fresh miss rather than a
+    stale hit.  The caller hashes the file on each invocation and
+    passes the digest in.
+    """
+    with open(path, encoding="utf-8") as f:
+        artifact: dict[str, Any] = json.load(f)
+    return artifact
+
+
+_artifact_cache = FunctoolsLRUCacheAdapter(_load_artifact_cached)
 
 
 def load_optimiser_artifact(path: str) -> dict[str, Any]:
@@ -41,21 +61,20 @@ def load_optimiser_artifact(path: str) -> dict[str, Any]:
     ``_ARTIFACT_CACHE_MAX_SIZE`` entries with oldest-eviction.
 
     Returns the full parsed JSON dict (mode, lambdas, constraints,
-    factor_tables, version, etc.).
+    factor_tables, version, etc.).  A deep copy is returned so callers
+    can safely mutate the result without corrupting the cached value.
     """
     digest = content_hash(Path(path))
-    key = (path, digest)
 
-    cached = _artifact_cache.get(key)
-    if cached is not None:
+    info_before = _load_artifact_cached.cache_info()
+    artifact = _load_artifact_cached(path, digest)
+    info_after = _load_artifact_cached.cache_info()
+
+    if info_after.misses > info_before.misses:
+        logger.info("optimiser_artifact_loaded", path=path, mode=artifact.get("mode"))
+    else:
         logger.debug("optimiser_artifact_cache_hit", path=path)
-        return copy.deepcopy(cached)
 
-    with open(path, encoding="utf-8") as f:
-        artifact: dict[str, Any] = json.load(f)
-
-    _artifact_cache.put(key, artifact)
-    logger.info("optimiser_artifact_loaded", path=path, mode=artifact.get("mode"))
     return copy.deepcopy(artifact)
 
 
@@ -65,11 +84,42 @@ def load_optimiser_artifact(path: str) -> dict[str, Any]:
 
 _MLFLOW_ARTIFACT_NAME = "optimiser_result.json"
 
-# Separate LRU cache for MLflow-sourced artifacts (keyed by run_id or
-# model+version, not file path).
-_mlflow_cache: LRUCache[tuple[str, str, str], dict[str, Any]] = LRUCache(
-    max_size=_ARTIFACT_CACHE_MAX_SIZE,
-)
+
+@functools.lru_cache(maxsize=_ARTIFACT_CACHE_MAX_SIZE)
+def _load_mlflow_cached(
+    source_type: str,
+    resolved_run_id: str,
+    resolved_version: str,  # noqa: ARG001 — part of cache key, not used in body.
+) -> dict[str, Any]:
+    """Memoised MLflow artifact loader keyed on the resolved triple.
+
+    Does the MLflow download inside the cached body so repeat calls
+    with an identical ``(source_type, run_id, version)`` resolution
+    reuse the cached dict without re-invoking ``download_artifacts``.
+    ``resolved_version`` participates in the cache key but is not used
+    in the body (``run_id`` uniquely identifies the download URI).
+
+    Imports :mod:`mlflow` lazily inside the function so a hit served
+    from cache never incurs the MLflow import cost, and so modules
+    that don't touch MLflow don't pay for the import on collection.
+    """
+    import mlflow as _mlflow
+
+    local_path = _mlflow.artifacts.download_artifacts(
+        f"runs:/{resolved_run_id}/{_MLFLOW_ARTIFACT_NAME}"
+    )
+    with open(local_path, encoding="utf-8") as f:
+        artifact: dict[str, Any] = json.load(f)
+    logger.info(
+        "mlflow_optimiser_artifact_loaded",
+        source_type=source_type,
+        run_id=resolved_run_id,
+        mode=artifact.get("mode"),
+    )
+    return artifact
+
+
+_mlflow_cache = FunctoolsLRUCacheAdapter(_load_mlflow_cached)
 
 
 def load_mlflow_optimiser_artifact(
@@ -93,7 +143,7 @@ def load_mlflow_optimiser_artifact(
     Returns:
         Parsed artifact dict (same shape as ``load_optimiser_artifact``).
     """
-    resolved_run_id, resolved_version, mlflow, _client = resolve_mlflow_source(
+    resolved_run_id, resolved_version, _mlflow, _client = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
@@ -101,24 +151,14 @@ def load_mlflow_optimiser_artifact(
         tracking_uri=tracking_uri,
     )
 
-    cache_key = (source_type, resolved_run_id, resolved_version)
-    cached = _mlflow_cache.get(cache_key)
-    if cached is not None:
-        logger.debug("mlflow_optimiser_cache_hit", key=str(cache_key))
-        return copy.deepcopy(cached)
+    info_before = _load_mlflow_cached.cache_info()
+    artifact = _load_mlflow_cached(source_type, resolved_run_id, resolved_version)
+    info_after = _load_mlflow_cached.cache_info()
 
-    local_path = mlflow.artifacts.download_artifacts(
-        f"runs:/{resolved_run_id}/{_MLFLOW_ARTIFACT_NAME}"
-    )
+    if info_after.hits > info_before.hits:
+        logger.debug(
+            "mlflow_optimiser_cache_hit",
+            key=str((source_type, resolved_run_id, resolved_version)),
+        )
 
-    with open(local_path, encoding="utf-8") as f:
-        artifact: dict[str, Any] = json.load(f)
-
-    _mlflow_cache.put(cache_key, artifact)
-    logger.info(
-        "mlflow_optimiser_artifact_loaded",
-        source_type=source_type,
-        run_id=resolved_run_id,
-        mode=artifact.get("mode"),
-    )
     return copy.deepcopy(artifact)

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import polars as pl
 
+from haute._functools_cache_adapter import FunctoolsLRUCacheAdapter
 from haute._hashing import content_hash
 from haute._logging import get_logger
-from haute._lru_cache import LRUCache
 
 logger = get_logger(component="io")
 
@@ -87,9 +88,30 @@ def read_source(path: str) -> pl.LazyFrame:
     raise ValueError(f"Unsupported file type: .{suffix}")
 
 
-_object_cache: LRUCache[tuple[str, str, str, str], object] = LRUCache(
-    max_size=_OBJECT_CACHE_MAX_SIZE,
-)
+@functools.lru_cache(maxsize=_OBJECT_CACHE_MAX_SIZE)
+def _load_cached(
+    path: str,
+    digest: str,  # noqa: ARG001 — part of cache key, not used in body.
+    file_type: str,
+    model_class: str,
+) -> object:
+    """Memoised loader keyed on ``(path, digest, file_type, model_class)``.
+
+    The ``digest`` argument (the xxh64 content hash) is NEVER used inside
+    the body — it is present solely to participate in the
+    ``functools.lru_cache`` key so a same-second overwrite of the
+    underlying file (mtime unchanged, bytes changed) produces a fresh
+    miss rather than a stale hit.
+
+    The caller (``load_external_object``) computes the hash outside this
+    cached helper so the cache machinery stays pure-functional: the
+    decorated function never touches the filesystem for cache-key
+    purposes.
+    """
+    return _load_external_object_uncached(path, file_type, model_class)
+
+
+_object_cache = FunctoolsLRUCacheAdapter(_load_cached)
 
 
 def load_external_object(path: str, file_type: str, model_class: str = "classifier") -> object:
@@ -113,15 +135,7 @@ def load_external_object(path: str, file_type: str, model_class: str = "classifi
     validate_project_path(path)
 
     digest = content_hash(Path(path))
-    key = (path, digest, file_type, model_class)
-
-    cached = _object_cache.get(key)
-    if cached is not None:
-        return cached
-
-    obj = _load_external_object_uncached(path, file_type, model_class)
-    _object_cache.put(key, obj)
-    return obj
+    return _load_cached(path, digest, file_type, model_class)
 
 
 def _load_external_object_uncached(
