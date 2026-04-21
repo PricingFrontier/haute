@@ -146,6 +146,7 @@
   --status-info: var(--status-running);
 
   /* Code editor syntax */
+  --syntax-text: #a5f3fc;
   --syntax-accent: #60a5fa;
   --syntax-warning: #fbbf24;
   --syntax-keyword: #c084fc;
