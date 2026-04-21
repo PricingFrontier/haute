@@ -66,6 +66,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   if (zoomLevel === "compact") {
     return (
       <div
+        data-testid={`node-${nodeData.label}`}
         aria-label={ariaLabel}
         role="button"
         className={`relative w-[160px] cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
@@ -113,6 +114,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   if (zoomLevel === "medium") {
     return (
       <div
+        data-testid={`node-${nodeData.label}`}
         aria-label={ariaLabel}
         role="button"
         className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
@@ -143,6 +145,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   // Full mode: header bar with badges + body with label and trace
   return (
     <div
+      data-testid={`node-${nodeData.label}`}
       aria-label={ariaLabel}
       role="button"
       className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
