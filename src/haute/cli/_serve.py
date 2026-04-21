@@ -163,6 +163,173 @@ def _port_is_available(host: str, port: int) -> bool:
     return True
 
 
+def _warn_if_non_loopback(config: ServeConfig) -> None:
+    """Emit the structured exposure warning when binding off-loopback.
+
+    Fires before port probing and frontend lookup so the warning
+    reaches the operator even if a later step bails out. The contract
+    with callers / tests is "any non-loopback host triggers a
+    structured ``warning``-level event whose payload mentions
+    'exposing beyond localhost'"; the event name and field layout are
+    implementation details.
+    """
+    if _is_loopback_host(config.host):
+        return
+    logger.warning(
+        "server_bind_non_loopback",
+        host=config.host,
+        port=config.port,
+        hint=(
+            "Binding to a non-loopback host is exposing beyond "
+            "localhost — every peer that can reach this machine "
+            "on the network can now hit the unauthenticated "
+            "Haute API. Pass --host 127.0.0.1 to revert to the "
+            "safe default."
+        ),
+    )
+
+
+def _abort_if_port_in_use(config: ServeConfig) -> None:
+    """Fail loudly with exit code 1 when the target port is already bound.
+
+    Running the pre-flight probe here — rather than letting uvicorn
+    attempt the bind and crash with a cryptic ``OSError`` — lets us
+    surface a user-facing message that names the flag to try next.
+    """
+    if _port_is_available(config.host, config.port):
+        return
+    click.echo(
+        f"Error: port {config.port} already in use. Use --port to choose another.",
+        err=True,
+    )
+    raise SystemExit(1)
+
+
+def _detect_dev_frontend_dir() -> Path | None:
+    """Return the ``frontend/`` dir iff dev mode is viable, else ``None``.
+
+    Dev mode requires both a discoverable ``frontend/`` directory and
+    its ``node_modules`` to be installed. When ``_find_frontend_dir``
+    raises (e.g. running from a wheel install with no checkout), we
+    swallow the ``FileNotFoundError`` and signal "fall through to prod
+    mode" by returning ``None``.
+    """
+    try:
+        frontend_dir = _find_frontend_dir()
+    except FileNotFoundError:
+        return None
+    if not (frontend_dir / "node_modules").exists():
+        return None
+    return frontend_dir
+
+
+def _schedule_browser_open(url: str, delay: float) -> None:
+    """Open *url* in the default browser after *delay* seconds.
+
+    Deferred so the server has time to start accepting connections
+    before the browser races to fetch the page.
+    """
+    import threading
+
+    threading.Timer(delay, _open_browser, args=(url,)).start()
+
+
+def _start_vite_subprocess(frontend_dir: Path) -> subprocess.Popen[bytes]:
+    """Launch ``npm run dev`` in *frontend_dir* and wire signals for cleanup.
+
+    Registers ``SIGINT`` / ``SIGTERM`` handlers that terminate the
+    Vite child before exiting, so a Ctrl-C on the parent doesn't
+    orphan the dev server.
+    """
+    vite_proc = subprocess.Popen(
+        [_npm(), "run", "dev"],
+        cwd=str(frontend_dir),
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        env=_node_env(),
+    )
+
+    def _cleanup(signum: int, frame: object) -> None:
+        vite_proc.terminate()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _cleanup)
+    signal.signal(signal.SIGTERM, _cleanup)
+    return vite_proc
+
+
+def _haute_package_dir() -> str:
+    """Return the on-disk directory of the installed ``haute`` package.
+
+    Used as uvicorn's ``reload_dirs`` so the autoreloader only watches
+    server source files — not user pipeline file writes under the
+    working directory, which would otherwise trigger constant reloads.
+    """
+    import haute as _haute_pkg
+
+    return str(Path(_haute_pkg.__file__).resolve().parent)
+
+
+def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
+    """Run Vite dev server + uvicorn with autoreload.
+
+    The Vite process is terminated in the ``finally`` block so that
+    any uvicorn exit path — clean shutdown, KeyboardInterrupt, crash —
+    leaves no orphaned child.
+    """
+    import uvicorn
+
+    click.echo("[dev] Dev mode: starting Vite dev server + FastAPI backend")
+    click.echo("  Frontend -> http://localhost:5173  (open this)")
+    click.echo(f"  Backend  -> http://{config.host}:{config.port}   (API only)")
+    click.echo("")
+
+    vite_proc = _start_vite_subprocess(frontend_dir)
+    if not config.no_browser:
+        _schedule_browser_open("http://localhost:5173", delay=2.0)
+    try:
+        uvicorn.run(
+            "haute.server:app",
+            host=config.host,
+            port=config.port,
+            reload=True,
+            reload_dirs=[_haute_package_dir()],
+            log_level="warning",
+        )
+    finally:
+        vite_proc.terminate()
+
+
+def _run_prod_mode(config: ServeConfig) -> None:
+    """Serve the pre-built static frontend from uvicorn.
+
+    Fails loudly when no ``STATIC_DIR`` is present — the user needs to
+    either build the frontend or install ``node_modules`` for dev
+    mode, and a silent fallback would be worse than an actionable
+    error.
+    """
+    import uvicorn
+
+    from haute.server import STATIC_DIR
+
+    if not STATIC_DIR.exists():
+        click.echo(
+            "Error: No built frontend found. "
+            "Run 'npm run build' in frontend/ first, or "
+            "install node_modules for dev mode.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if not config.no_browser:
+        _schedule_browser_open(f"http://{config.host}:{config.port}", delay=1.5)
+    uvicorn.run(
+        "haute.server:app",
+        host=config.host,
+        port=config.port,
+    )
+
+
 def handle_serve(config: ServeConfig) -> None:
     """Start the Haute UI server.
 
@@ -176,117 +343,13 @@ def handle_serve(config: ServeConfig) -> None:
     tests, future alternative frontends — goes through this function,
     so the warning cannot be bypassed by skipping the CLI layer.
     """
-    import uvicorn
-
-    from haute.server import STATIC_DIR
-
-    # Emit the non-loopback exposure warning before doing anything
-    # else. Firing it early means the operator sees the warning even
-    # if the port probe or frontend lookup below bails out. The
-    # contract with callers / tests is "any non-loopback host
-    # triggers a structured ``warning``-level event whose payload
-    # mentions 'exposing beyond localhost'"; the event name and
-    # precise field layout are implementation details.
-    if not _is_loopback_host(config.host):
-        logger.warning(
-            "server_bind_non_loopback",
-            host=config.host,
-            port=config.port,
-            hint=(
-                "Binding to a non-loopback host is exposing beyond "
-                "localhost — every peer that can reach this machine "
-                "on the network can now hit the unauthenticated "
-                "Haute API. Pass --host 127.0.0.1 to revert to the "
-                "safe default."
-            ),
-        )
-
-    # Pre-flight: fail loudly if the port is already taken rather than
-    # letting uvicorn crash with a cryptic OSError.
-    if not _port_is_available(config.host, config.port):
-        click.echo(
-            f"Error: port {config.port} already in use. Use --port to choose another.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    # Dev mode requires a frontend/ directory with node_modules already
-    # installed. When no frontend/ is checked out (e.g. running from a
-    # wheel install), _find_frontend_dir raises — we catch that here and
-    # fall through to production mode (serve built static files).
-    try:
-        frontend_dir: Path | None = _find_frontend_dir()
-    except FileNotFoundError:
-        frontend_dir = None
-    dev_mode = frontend_dir is not None and (frontend_dir / "node_modules").exists()
-
-    if dev_mode:
-        assert frontend_dir is not None  # narrowed by dev_mode guard
-        click.echo("[dev] Dev mode: starting Vite dev server + FastAPI backend")
-        click.echo("  Frontend -> http://localhost:5173  (open this)")
-        click.echo(f"  Backend  -> http://{config.host}:{config.port}   (API only)")
-        click.echo("")
-        vite_proc = subprocess.Popen(
-            [_npm(), "run", "dev"],
-            cwd=str(frontend_dir),
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            env=_node_env(),
-        )
-
-        def _cleanup(signum: int, frame: object) -> None:
-            vite_proc.terminate()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, _cleanup)
-        signal.signal(signal.SIGTERM, _cleanup)
-
-        if not config.no_browser:
-            import threading
-
-            threading.Timer(2.0, _open_browser, args=("http://localhost:5173",)).start()
-
-        # Resolve the haute package directory so uvicorn only reloads on
-        # server source changes, not on user pipeline file writes.
-        import haute as _haute_pkg
-
-        _haute_src_dir = str(Path(_haute_pkg.__file__).resolve().parent)
-
-        try:
-            uvicorn.run(
-                "haute.server:app",
-                host=config.host,
-                port=config.port,
-                reload=True,
-                reload_dirs=[_haute_src_dir],
-                log_level="warning",
-            )
-        finally:
-            vite_proc.terminate()
+    _warn_if_non_loopback(config)
+    _abort_if_port_in_use(config)
+    frontend_dir = _detect_dev_frontend_dir()
+    if frontend_dir is not None:
+        _run_dev_mode(config, frontend_dir)
     else:
-        if not STATIC_DIR.exists():
-            click.echo(
-                "Error: No built frontend found. "
-                "Run 'npm run build' in frontend/ first, or "
-                "install node_modules for dev mode.",
-                err=True,
-            )
-            raise SystemExit(1)
-
-        if not config.no_browser:
-            import threading
-
-            threading.Timer(
-                1.5,
-                _open_browser,
-                args=(f"http://{config.host}:{config.port}",),
-            ).start()
-
-        uvicorn.run(
-            "haute.server:app",
-            host=config.host,
-            port=config.port,
-        )
+        _run_prod_mode(config)
 
 
 @click.command()
