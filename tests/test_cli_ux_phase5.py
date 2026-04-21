@@ -29,11 +29,11 @@ pinning failures because the shared constant is part of the contract.
 
 from __future__ import annotations
 
+import io
 import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
-import io
 from unittest.mock import MagicMock, patch
 
 import click

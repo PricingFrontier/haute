@@ -42,7 +42,6 @@ import inspect
 from pathlib import Path
 
 import pytest
-import structlog
 
 from haute._ast_helpers import _extract_function_bodies
 from haute._graph_utils import _sanitize_func_name
