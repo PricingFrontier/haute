@@ -9,6 +9,8 @@ export interface ModalShellProps {
   extraCloseKeys?: string[]
   /** Width class for the inner panel (default: "w-[360px]") */
   width?: string
+  /** data-testid applied to the outer backdrop (for E2E tests) */
+  testId?: string
   children: ReactNode
 }
 
@@ -26,6 +28,7 @@ export default function ModalShell({
   onClose,
   extraCloseKeys,
   width = "w-[360px]",
+  testId,
   children,
 }: ModalShellProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -100,6 +103,7 @@ export default function ModalShell({
   return (
     <div
       ref={containerRef}
+      data-testid={testId}
       className="fixed inset-0 z-50 flex items-center justify-center"
       role="dialog"
       aria-modal="true"

@@ -883,6 +883,7 @@ export default function NodePanel({
     <PanelShell testId="node-panel" style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
       <div className="px-3 py-2.5 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         <input
+          data-testid="node-panel-label-input"
           type="text"
           value={node.data.label}
           onChange={(e) => {
@@ -904,7 +905,7 @@ export default function NodePanel({
             Refresh
           </button>
         )}
-        <button onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: 'var(--text-on-accent)' }}
+        <button data-testid="node-panel-close" onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: 'var(--text-on-accent)' }}
           title="Close"
         >
           <X size={14} strokeWidth={2.5} />

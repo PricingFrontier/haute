@@ -8,7 +8,7 @@ interface SubmodelDialogProps {
 
 export default function SubmodelDialog({ nodeCount, onClose, onSubmit }: SubmodelDialogProps) {
   return (
-    <ModalShell ariaLabel="Create submodel" onClose={onClose} width="w-[400px]">
+    <ModalShell ariaLabel="Create submodel" onClose={onClose} width="w-[400px]" testId="submodel-dialog">
       <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Create Submodel</h2>
         <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>

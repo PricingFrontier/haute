@@ -256,6 +256,8 @@ src/haute/static/
 # Internal docs - not for public repos
 WTW_RADAR_REPORT.md
 CLAUDE.md
+READ_AND_DESTROY.md
+PLANNED_WORK.md
 
 # Claude Code workspace
 .claude/

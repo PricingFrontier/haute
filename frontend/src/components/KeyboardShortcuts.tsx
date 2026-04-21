@@ -18,7 +18,7 @@ const shortcuts = [
 
 export default function KeyboardShortcuts({ onClose }: { onClose: () => void }) {
   return (
-    <ModalShell ariaLabel="Keyboard shortcuts" onClose={onClose} extraCloseKeys={["?"]}>
+    <ModalShell ariaLabel="Keyboard shortcuts" onClose={onClose} extraCloseKeys={["?"]} testId="keyboard-shortcuts-modal">
       <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Keyboard Shortcuts</h2>
         <button
