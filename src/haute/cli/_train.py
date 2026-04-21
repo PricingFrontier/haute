@@ -34,13 +34,19 @@ def _progress(msg: str, frac: float) -> None:
     Exposed at module scope so the train command can pass it to
     ``job.run(progress=_progress)`` and so it can be unit-tested.
 
-    The explicit ``sys.stdout.flush()`` is load-bearing — a plain write
-    without flush leaves the line buffered on many terminals, making
-    the bar appear to hang between updates. Flushing after every write
+    The explicit ``sys.stdout.flush()`` is load-bearing — ``click.echo``
+    with ``nl=False`` leaves the line buffered on many terminals so the
+    bar appears to hang between updates.  Flushing after every write
     guarantees each intermediate update reaches the user.
+
+    We deliberately use :func:`click.echo` (not a raw ``sys.stdout.write``)
+    so this command follows the CLI logging convention documented in
+    :mod:`haute._logging` — every CLI-user-facing write goes through
+    Click, which gives us ANSI handling + ``err=`` routing consistent
+    with every other ``haute`` command.
     """
     bar = "=" * int(frac * _PROGRESS_BAR_WIDTH)
-    sys.stdout.write(f"\r  [{bar:<{_PROGRESS_BAR_WIDTH}}] {frac:.0%} {msg}")
+    click.echo(f"\r  [{bar:<{_PROGRESS_BAR_WIDTH}}] {frac:.0%} {msg}", nl=False)
     sys.stdout.flush()
 
 

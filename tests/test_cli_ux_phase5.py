@@ -33,6 +33,7 @@ import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+import io
 from unittest.mock import MagicMock, patch
 
 import click
@@ -47,6 +48,29 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class _FlushCountingStream(io.StringIO):
+    """Real text stream that counts ``flush()`` calls.
+
+    Used in place of a ``MagicMock`` for ``sys.stdout`` in the
+    ``_progress`` tests: Click's echo path reads ``stream.encoding``
+    and calls ``codecs.lookup`` on it, which fails on a MagicMock
+    whose ``.encoding`` is itself a mock.  A real :class:`io.StringIO`
+    subclass with a fixed ``encoding`` attribute and a flush counter
+    gives us accurate observability without breaking the code under
+    test.
+    """
+
+    encoding = "utf-8"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self) -> None:  # type: ignore[override]
+        self.flush_count += 1
+        super().flush()
 
 
 def _render_help(command_name: str) -> str:
@@ -319,6 +343,12 @@ class TestTrainProgressFlush:
         A buffered-write without flush is what causes the "hanging" bar;
         calling ``.flush()`` is the only user-visible invariant we care
         about — the exact message format is unit-tested elsewhere.
+
+        Uses a real :class:`io.StringIO` subclass (not ``MagicMock``) so
+        that :func:`click.echo` keeps working — Click reads
+        ``stream.encoding`` during its write path and a bare ``MagicMock``
+        returns a non-codec value that makes the echo blow up.  Counting
+        ``flush`` calls on a real stream is just as precise.
         """
         from haute.cli import _train
 
@@ -329,12 +359,12 @@ class TestTrainProgressFlush:
             "lives as a closure inside train() and cannot be unit-tested."
         )
 
-        fake_stdout = MagicMock(name="sys.stdout")
-        monkeypatch.setattr(sys, "stdout", fake_stdout)
+        stream = _FlushCountingStream()
+        monkeypatch.setattr(sys, "stdout", stream)
 
         progress_fn("Training", 0.5)
 
-        assert fake_stdout.flush.called, (
+        assert stream.flush_count >= 1, (
             "_progress must call sys.stdout.flush() so the progress bar "
             "appears live on line-buffered terminals."
         )
@@ -355,17 +385,17 @@ class TestTrainProgressFlush:
             "function that flushes stdout after each update."
         )
 
-        fake_stdout = MagicMock(name="sys.stdout")
-        monkeypatch.setattr(sys, "stdout", fake_stdout)
+        stream = _FlushCountingStream()
+        monkeypatch.setattr(sys, "stdout", stream)
 
         for msg, frac in [
             ("Loading data", 0.0),
             ("Training", 0.5),
             ("Done", 1.0),
         ]:
-            before = fake_stdout.flush.call_count
+            before = stream.flush_count
             progress_fn(msg, frac)
-            after = fake_stdout.flush.call_count
+            after = stream.flush_count
             assert after > before, (
                 f"_progress({msg!r}, {frac}) did not flush stdout — "
                 f"intermediate updates will stall on line-buffered terminals."

@@ -33,7 +33,7 @@
  * threading, conditional panel rendering — that the old file could not.
  * Target runtime is <5s for the whole file.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -230,32 +230,52 @@ async function waitForAppReady(): Promise<void> {
 // Setup / teardown
 // ═══════════════════════════════════════════════════════════════════════════
 
-beforeEach(() => {
-  // Install jsdom polyfills.
+// Originals captured in ``beforeAll`` so ``afterAll`` can restore them.
+// Without this round-trip the mutations below leak out of the file's
+// vitest worker into the global prototype chain — vitest's worker
+// isolation papers over this today, but the test file is no longer
+// hermetic and a future move to shared-worker pools would silently
+// break unrelated suites.
+let _originalElementGetBCR: Element["getBoundingClientRect"] | undefined
+let _originalRangeGetClientRects: Range["getClientRects"] | undefined
+let _originalRangeGetBCR: Range["getBoundingClientRect"] | undefined
+let _originalResizeObserver: typeof globalThis.ResizeObserver | undefined
+let _originalWebSocket: typeof globalThis.WebSocket | undefined
+
+beforeAll(() => {
+  // Snapshot originals so afterAll can restore.  ``undefined`` is a
+  // legitimate value (jsdom ships no Range.prototype.getClientRects at
+  // all) so we distinguish via a sentinel property on the globalThis
+  // caches.
+  _originalElementGetBCR = Element.prototype.getBoundingClientRect
+  _originalRangeGetClientRects = Range.prototype.getClientRects
+  _originalRangeGetBCR = Range.prototype.getBoundingClientRect
+  _originalResizeObserver = (globalThis as unknown as { ResizeObserver?: typeof globalThis.ResizeObserver }).ResizeObserver
+  _originalWebSocket = (globalThis as unknown as { WebSocket?: typeof globalThis.WebSocket }).WebSocket
+
+  // Install polyfills once for the whole file.
+
   ;(globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver
   ;(globalThis as unknown as { WebSocket: typeof MockWebSocket }).WebSocket = MockWebSocket as unknown as typeof MockWebSocket
 
   // Give elements measurable dimensions so ReactFlow's layout pass works.
   // Without this, internal `getBoundingClientRect()` returns zeros and
   // viewport calculations divide by zero.
-  if (!Element.prototype.getBoundingClientRect.toString().includes("[integration-stub]")) {
-    const stub = function getBoundingClientRect(this: Element): DOMRect {
-      return {
-        x: 0,
-        y: 0,
-        top: 0,
-        left: 0,
-        right: 800,
-        bottom: 600,
-        width: 800,
-        height: 600,
-        toJSON: () => ({}),
-      } as DOMRect
-    }
-    // Tag the function so we only install once per worker.
-    Object.defineProperty(stub, "name", { value: "getBoundingClientRect [integration-stub]" })
-    Element.prototype.getBoundingClientRect = stub as Element["getBoundingClientRect"]
+  const bcrStub = function getBoundingClientRect(this: Element): DOMRect {
+    return {
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 800,
+      bottom: 600,
+      width: 800,
+      height: 600,
+      toJSON: () => ({}),
+    } as DOMRect
   }
+  Object.defineProperty(bcrStub, "name", { value: "getBoundingClientRect [integration-stub]" })
+  Element.prototype.getBoundingClientRect = bcrStub as Element["getBoundingClientRect"]
 
   // CodeMirror (used by UtilityPanel's CodeEditor) measures text by creating
   // a `Range` and calling `getClientRects()` on it.  jsdom does not
@@ -265,24 +285,41 @@ beforeEach(() => {
   // down — surfacing as an "Unhandled Error" that taints the run summary.
   // Install minimal implementations matching CodeMirror's "no measurable
   // rects" code path so those rAF callbacks no-op cleanly.
-  const existingGetClientRects = Range.prototype.getClientRects as unknown as undefined | { _integrationStub?: boolean }
-  if (!existingGetClientRects || !existingGetClientRects._integrationStub) {
-    const stub = function getClientRects(this: Range): DOMRectList {
-      const list: unknown = { length: 0, item: () => null, [Symbol.iterator]: function* () {} }
-      return list as DOMRectList
-    }
-    ;(stub as unknown as { _integrationStub: boolean })._integrationStub = true
-    Range.prototype.getClientRects = stub as Range["getClientRects"]
+  const getClientRectsStub = function getClientRects(this: Range): DOMRectList {
+    const list: unknown = { length: 0, item: () => null, [Symbol.iterator]: function* () {} }
+    return list as DOMRectList
   }
-  const existingRangeGetBCR = Range.prototype.getBoundingClientRect as unknown as undefined | { _integrationStub?: boolean }
-  if (!existingRangeGetBCR || !existingRangeGetBCR._integrationStub) {
-    const stub = function rangeGetBoundingClientRect(this: Range): DOMRect {
-      return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect
-    }
-    ;(stub as unknown as { _integrationStub: boolean })._integrationStub = true
-    Range.prototype.getBoundingClientRect = stub as Range["getBoundingClientRect"]
-  }
+  Range.prototype.getClientRects = getClientRectsStub as Range["getClientRects"]
 
+  const rangeGetBCRStub = function rangeGetBoundingClientRect(this: Range): DOMRect {
+    return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect
+  }
+  Range.prototype.getBoundingClientRect = rangeGetBCRStub as Range["getBoundingClientRect"]
+})
+
+afterAll(() => {
+  // Restore every mutated global.  We use an ``as any`` write path for
+  // Range.prototype because jsdom ships with ``undefined`` there and
+  // TypeScript rejects assigning ``undefined`` to a non-optional
+  // property; runtime behaviour matches the pre-test state.
+  if (_originalElementGetBCR) {
+    Element.prototype.getBoundingClientRect = _originalElementGetBCR
+  }
+  ;(Range.prototype as unknown as { getClientRects?: Range["getClientRects"] }).getClientRects = _originalRangeGetClientRects
+  ;(Range.prototype as unknown as { getBoundingClientRect?: Range["getBoundingClientRect"] }).getBoundingClientRect = _originalRangeGetBCR
+  if (_originalResizeObserver === undefined) {
+    delete (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver
+  } else {
+    ;(globalThis as unknown as { ResizeObserver: typeof globalThis.ResizeObserver }).ResizeObserver = _originalResizeObserver
+  }
+  if (_originalWebSocket === undefined) {
+    delete (globalThis as unknown as { WebSocket?: unknown }).WebSocket
+  } else {
+    ;(globalThis as unknown as { WebSocket: typeof globalThis.WebSocket }).WebSocket = _originalWebSocket
+  }
+})
+
+beforeEach(() => {
   resetAllStores()
 
   // Reset all api mocks to their default resolution (empty graph, success).

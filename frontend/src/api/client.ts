@@ -163,11 +163,18 @@ async function attemptFetch<T>(
   const timeoutId = setTimeout(() => controller.abort(), timeout)
 
   // If an external signal is provided, abort our controller when it fires.
+  // We track the listener so we can remove it in the finally block below —
+  // otherwise up to MAX_RETRIES one-shot listeners accumulate on the
+  // caller's signal across retries before any of them fire.  The signal
+  // itself typically lives at least as long as a user interaction, so
+  // ambient listener pressure during a retry burst is worth avoiding.
+  let externalAbortHandler: (() => void) | undefined
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort()
     } else {
-      externalSignal.addEventListener("abort", () => controller.abort(), { once: true })
+      externalAbortHandler = () => controller.abort()
+      externalSignal.addEventListener("abort", externalAbortHandler, { once: true })
     }
   }
 
@@ -187,6 +194,9 @@ async function attemptFetch<T>(
     return await res.json() as T
   } finally {
     clearTimeout(timeoutId)
+    if (externalAbortHandler) {
+      externalSignal?.removeEventListener("abort", externalAbortHandler)
+    }
   }
 }
 
