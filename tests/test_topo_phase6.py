@@ -37,7 +37,6 @@ from haute._execute_lazy import _prepare_graph
 from haute._topo import CycleError, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, HauteError, NodeData, PipelineGraph
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

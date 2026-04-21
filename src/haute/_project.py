@@ -127,7 +127,7 @@ def _toml_configured_pipeline(root: Path) -> Path | None:
         # opinion on TOML correctness — it just can't use it as a source.
         return None
     pipeline = data.get("project", {}).get("pipeline")
-    if not pipeline:
+    if not isinstance(pipeline, str) or not pipeline:
         return None
     return root / pipeline
 

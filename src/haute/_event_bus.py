@@ -156,7 +156,9 @@ class EventBus:
     @overload
     def subscribe(self, event_type: str, handler: HandlerType) -> Callable[[], None]: ...
 
-    def subscribe(self, event_type: str, handler: HandlerType) -> Callable[[], None]:
+    def subscribe(  # type: ignore[misc]  # noqa: E501 — impl widens payload type for overload dispatch; public API constrained by @overloads above
+        self, event_type: str, handler: HandlerType
+    ) -> Callable[[], None]:
         """Register *handler* to receive events of type *event_type*.
 
         Returns a zero-arg callable; invoking it removes *this*
@@ -205,7 +207,7 @@ class EventBus:
     @overload
     def publish(self, event_type: str, payload: PayloadType) -> None: ...
 
-    def publish(self, event_type: str, payload: PayloadType) -> None:
+    def publish(self, event_type: str, payload: PayloadType) -> None:  # type: ignore[misc]
         """Fan *payload* out to every handler registered for *event_type*.
 
         Publishing an event type with no subscribers is a no-op — the
