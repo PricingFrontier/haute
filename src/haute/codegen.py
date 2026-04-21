@@ -377,8 +377,10 @@ def _warn_on_name_collisions(labels: list[str]) -> None:
     makes it loud by logging a ``warning`` that names every colliding
     label so the user can rename the offending nodes in the GUI.
 
-    Phase B (future): upgrade the warning to a ``ConfigError`` so the
-    collision blocks save instead of corrupting the pipeline.
+    Phase B (future): upgrade the warning to a ``ParseError`` so the
+    collision blocks save instead of corrupting the pipeline.  See
+    Phase 8 #164 in ``docs/CODEBASE_REVIEW_PLAN.md`` for the migration
+    window and trigger condition.
 
     Pass a flat list of every label that will ultimately become a
     function name in any emitted file (root graph + every submodel).
