@@ -329,9 +329,9 @@ class TestStatusModelNameOptional:
         result = runner.invoke(cli, ["status"])
         assert result.exit_code != 0
         msg = result.output.lower()
-        assert any(
-            h in msg for h in ("model_name", "model-name", "haute.toml", "haute project")
-        ), f"Status error must mention the fix — got:\n{result.output}"
+        assert any(h in msg for h in ("model_name", "model-name", "haute.toml", "haute project")), (
+            f"Status error must mention the fix — got:\n{result.output}"
+        )
 
 
 # ===========================================================================
@@ -343,13 +343,22 @@ class TestProjectResolvePipelineFile:
     """The canonical :func:`haute._project.resolve_pipeline_file` helper.
 
     Lives in ``haute._project`` so CLI and programmatic callers share one
-    resolution strategy.  The helper:
+    resolution strategy.  The helper resolves a user-facing path (``None``,
+    a directory, or a file) to the absolute path of a concrete ``.py``
+    pipeline file.
 
-    1. Returns ``<cwd>/main.py`` when invoked with ``None``.
-    2. Resolves an explicit path to its absolute form.
-    3. Raises :class:`FileNotFoundError` when the path doesn't exist.
-    4. Looks for ``main.py`` inside a directory argument.
-    5. Resolves relative paths against :func:`pathlib.Path.cwd`.
+    Resolution order when *path* is ``None`` (or a directory):
+
+    1. ``haute.toml [project].pipeline`` — the project's authoritative
+       pipeline path.
+    2. Single-match auto-discovery — a lone root-level ``.py`` file
+       containing ``haute.Pipeline``.
+    3. ``main.py`` — the conventional default, when it exists.
+    4. :class:`FileNotFoundError` enumerating what was checked so the
+       user can fix the invocation.
+
+    An explicit existing file is resolved to its absolute path directly;
+    an explicit missing file raises :class:`FileNotFoundError`.
     """
 
     def test_none_returns_cwd_main_py(
@@ -439,6 +448,283 @@ class TestProjectResolvePipelineFile:
         assert result.resolve() == (tmp_path / "rel.py").resolve()
 
 
+class TestProjectResolvePipelineFileAutoDiscovery:
+    """Restored auto-discovery for ``resolve_pipeline_file`` (post-9B fix).
+
+    Phase 5 Wave 9B simplified the resolver to ``None → cwd/main.py`` with
+    no fallbacks.  That broke the actuary UX — users with a differently
+    named pipeline (``motor.py``, ``rating.py``) got a ``main.py not
+    found`` error instead of the resolver picking the obvious candidate.
+
+    This class pins the restored four-tier fallback chain for ``None``
+    (and directory) inputs:
+
+    1. ``haute.toml [project].pipeline`` — explicit project config wins.
+    2. Single-match auto-discovery — a lone ``.py`` with ``haute.Pipeline``.
+    3. ``main.py`` — the conventional default.
+    4. :class:`FileNotFoundError` listing what was tried.
+    """
+
+    def test_none_uses_toml_project_pipeline_when_present(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``haute.toml [project].pipeline`` wins over auto-discovery / main.py."""
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "demo"\npipeline = "custom.py"\n',
+            encoding="utf-8",
+        )
+        # Both files exist — the TOML-configured one must win.
+        (tmp_path / "custom.py").write_text(
+            "import haute\npipeline = haute.Pipeline('c')\n", encoding="utf-8"
+        )
+        (tmp_path / "main.py").write_text(
+            "import haute\npipeline = haute.Pipeline('m')\n", encoding="utf-8"
+        )
+
+        result = resolve_pipeline_file(None)
+        assert result.resolve() == (tmp_path / "custom.py").resolve(), (
+            "TOML [project].pipeline must win over main.py when both exist"
+        )
+
+    def test_none_discovers_single_haute_pipeline_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A lone ``.py`` with ``haute.Pipeline`` is discovered automatically.
+
+        This is the core UX case Wave 9B broke: actuaries with
+        ``motor.py`` (and no ``main.py``) must be able to run ``haute
+        run`` / ``haute lint`` without passing ``--file`` or renaming.
+        """
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "motor.py").write_text(
+            "import haute\npipeline = haute.Pipeline('motor')\n",
+            encoding="utf-8",
+        )
+        # No main.py, no haute.toml.
+
+        result = resolve_pipeline_file(None)
+        assert result.resolve() == (tmp_path / "motor.py").resolve(), (
+            "A lone haute.Pipeline-containing .py file must be auto-discovered"
+        )
+
+    def test_none_prefers_main_py_over_discoverable_sibling(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When ``main.py`` exists alongside a discoverable file, ``main.py`` wins.
+
+        This matches the historical discovery contract: ``main.py`` is
+        the conventional project entry point and shouldn't be shadowed
+        by a sibling that merely mentions ``haute.Pipeline``.  Users who
+        want the sibling pass it explicitly.
+        """
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "motor.py").write_text(
+            "import haute\npipeline = haute.Pipeline('motor')\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "main.py").write_text(
+            "import haute\npipeline = haute.Pipeline('m')\n",
+            encoding="utf-8",
+        )
+
+        result = resolve_pipeline_file(None)
+        # ``main.py`` is the conventional default — if discovery hadn't
+        # been restored this test would be redundant with test_none_returns_cwd_main_py.
+        assert result.resolve() == (tmp_path / "main.py").resolve(), (
+            "main.py must win over a discoverable sibling for predictable behaviour"
+        )
+
+    def test_none_no_candidates_raises_enumerating_alternatives(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Empty cwd + no toml + no main.py → ``FileNotFoundError`` w/ actionable hint.
+
+        The message must point at the two user-facing fixes (rename to
+        ``main.py`` or pass a path explicitly) so the user isn't left
+        guessing.
+        """
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(FileNotFoundError) as excinfo:
+            resolve_pipeline_file(None)
+        msg = str(excinfo.value).lower()
+        assert "main.py" in msg, (
+            f"Error must mention main.py so users know the default — got {excinfo.value!r}"
+        )
+
+    def test_none_ambiguous_discovery_prefers_main_py_if_present(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Multiple discoverable files + ``main.py`` → ``main.py`` wins.
+
+        With two ambiguous candidates, the conventional entry point
+        ``main.py`` is the tie-breaker — prevents the resolver from
+        silently picking a random file when the user meant the project's
+        main entry.
+        """
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "motor.py").write_text(
+            "import haute\npipeline = haute.Pipeline('motor')\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "rating.py").write_text(
+            "import haute\npipeline = haute.Pipeline('rating')\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "main.py").write_text(
+            "import haute\npipeline = haute.Pipeline('m')\n",
+            encoding="utf-8",
+        )
+
+        result = resolve_pipeline_file(None)
+        assert result.resolve() == (tmp_path / "main.py").resolve()
+
+    def test_none_ambiguous_discovery_without_main_py_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Multiple discoverable files + no ``main.py`` → raise with names.
+
+        When discovery finds more than one candidate and there's no
+        ``main.py`` tie-breaker, the resolver must not silently pick one
+        — it must tell the user what it found and how to disambiguate.
+        """
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "motor.py").write_text(
+            "import haute\npipeline = haute.Pipeline('motor')\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "rating.py").write_text(
+            "import haute\npipeline = haute.Pipeline('rating')\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            resolve_pipeline_file(None)
+        msg = str(excinfo.value)
+        assert "motor.py" in msg and "rating.py" in msg, (
+            f"Ambiguous discovery error must name the candidates — got {msg!r}"
+        )
+
+    def test_none_single_discovery_chosen_when_no_main_py(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Exactly one ``.py`` with ``haute.Pipeline`` + no main.py → pick it.
+
+        The critical regression: before Wave 9B a dir with ``motor.py``
+        and no ``main.py`` worked; after Wave 9B it errored.  This test
+        pins the restored behaviour.
+        """
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "motor.py").write_text(
+            "import haute\npipeline = haute.Pipeline('motor')\n",
+            encoding="utf-8",
+        )
+
+        result = resolve_pipeline_file(None)
+        assert result.resolve() == (tmp_path / "motor.py").resolve()
+
+    def test_directory_path_uses_same_discovery(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A directory arg with one ``.py`` + no main.py → find the pipeline.
+
+        Directory-input resolution follows the same tier chain as
+        ``None``, scoped to that directory rather than cwd.  This makes
+        ``haute run ./rating`` symmetric with ``cd rating && haute run``.
+        """
+        from haute._project import resolve_pipeline_file
+
+        sub = tmp_path / "rating"
+        sub.mkdir()
+        (sub / "rating.py").write_text(
+            "import haute\npipeline = haute.Pipeline('rating')\n",
+            encoding="utf-8",
+        )
+
+        result = resolve_pipeline_file(sub)
+        assert result.resolve() == (sub / "rating.py").resolve()
+
+    def test_directory_path_with_toml_pipeline_wins(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A directory with its own ``haute.toml`` + ``[project].pipeline``."""
+        from haute._project import resolve_pipeline_file
+
+        sub = tmp_path / "rating"
+        sub.mkdir()
+        (sub / "haute.toml").write_text(
+            '[project]\nname = "rating"\npipeline = "rate.py"\n',
+            encoding="utf-8",
+        )
+        (sub / "rate.py").write_text(
+            "import haute\npipeline = haute.Pipeline('r')\n",
+            encoding="utf-8",
+        )
+        # Also throw in a main.py to confirm TOML wins.
+        (sub / "main.py").write_text(
+            "import haute\npipeline = haute.Pipeline('m')\n",
+            encoding="utf-8",
+        )
+
+        result = resolve_pipeline_file(sub)
+        assert result.resolve() == (sub / "rate.py").resolve()
+
+    def test_toml_configured_but_missing_file_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``[project].pipeline`` points at a non-existent file → fail loudly.
+
+        This is a user configuration error — the TOML points at a file
+        that doesn't exist.  Silently falling through to discovery would
+        mask the typo, so the resolver fails loudly and names the
+        missing path.
+        """
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "x"\npipeline = "typoed.py"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(FileNotFoundError) as excinfo:
+            resolve_pipeline_file(None)
+        assert "typoed.py" in str(excinfo.value)
+
+
 class TestCliNoAdHocPipelineResolution:
     """The CLI source tree must not contain ad-hoc pipeline resolution.
 
@@ -495,22 +781,16 @@ class TestCliNoAdHocPipelineResolution:
         for py_file in _CLI_DIR.glob("_*.py"):
             tree = ast.parse(py_file.read_text(encoding="utf-8"), str(py_file))
             for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.BoolOp)
-                    and isinstance(node.op, ast.Or)
-                ):
+                if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
                     for val in node.values:
                         if (
                             isinstance(val, ast.Constant)
                             and isinstance(val.value, str)
                             and val.value in ("main.py", "pipeline.py")
                         ):
-                            offenders.append(
-                                f"{py_file.name}:{node.lineno} → ... or {val.value!r}"
-                            )
-        assert not offenders, (
-            "Ad-hoc ``or 'main.py'`` fallbacks in CLI modules:\n  "
-            + "\n  ".join(offenders)
+                            offenders.append(f"{py_file.name}:{node.lineno} → ... or {val.value!r}")
+        assert not offenders, "Ad-hoc ``or 'main.py'`` fallbacks in CLI modules:\n  " + "\n  ".join(
+            offenders
         )
 
     def test_cli_delegates_to_project_helper(self) -> None:
@@ -627,8 +907,7 @@ class TestHandleFunctionsExist:
             f"{len(positional)}: {[p.name for p in positional]})"
         )
         assert positional[0].name == "config", (
-            f"handle_{cmd} positional argument must be named 'config' — "
-            f"got {positional[0].name!r}"
+            f"handle_{cmd} positional argument must be named 'config' — got {positional[0].name!r}"
         )
 
 
@@ -949,9 +1228,12 @@ class TestDeployConfigFromToml:
         # tomllib raises TOMLDecodeError which is a ValueError subclass.
         # Make sure the error message actually mentions the file so
         # users can find it.
-        assert "haute.toml" in str(excinfo.value) or bad.name in str(excinfo.value) or \
-            "TOML" in type(excinfo.value).__name__.upper() or \
-            "decode" in str(excinfo.value).lower()
+        assert (
+            "haute.toml" in str(excinfo.value)
+            or bad.name in str(excinfo.value)
+            or "TOML" in type(excinfo.value).__name__.upper()
+            or "decode" in str(excinfo.value).lower()
+        )
 
     def test_unknown_toml_keys_raises_validation_error(self, tmp_path: Path) -> None:
         """Typos in config keys must fail loudly, not be silently ignored."""
@@ -1003,10 +1285,7 @@ class TestDeployConfigFromCliArgs:
 
         with pytest.raises((TypeError, ValueError)) as excinfo:
             DeployConfig.from_cli_args(model_name="m")
-        assert (
-            "pipeline" in str(excinfo.value).lower()
-            or "required" in str(excinfo.value).lower()
-        )
+        assert "pipeline" in str(excinfo.value).lower() or "required" in str(excinfo.value).lower()
 
     def test_accepts_optional_endpoint_suffix(self, tmp_path: Path) -> None:
         """Optional kwargs flow through to the final config."""
@@ -1038,3 +1317,196 @@ class TestLoadDeployConfigRemoved:
             "The legacy _load_deploy_config helper must be removed — use "
             "DeployConfig.from_toml / DeployConfig.from_cli_args instead"
         )
+
+
+# ===========================================================================
+# Deploy fallback: stem-derived model_name when no --model-name + no toml
+# (restores coverage deleted in Wave 9B — flagged by reviewer)
+# ===========================================================================
+
+
+class TestDeployFallbackStemDerivedModelName:
+    """``haute deploy`` derives ``model_name`` from the pipeline stem.
+
+    When no ``haute.toml`` is present AND no ``--model-name`` is passed,
+    :func:`handle_deploy` must fall back to deriving the model name from
+    the resolved pipeline file's stem (``my_pipeline.py`` →
+    ``my_pipeline``).  The pre-9B ``_load_deploy_config`` helper
+    implemented this directly; after 9B the logic moved into the
+    deploy-command handler.  This test pins the restored coverage that
+    was deleted with ``TestLoadDeployConfig::test_fallback_to_pipeline_file``.
+    """
+
+    def test_no_toml_no_flag_derives_model_name_from_stem(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No toml + pipeline file arg + no --model-name → stem is the model_name."""
+        monkeypatch.chdir(tmp_path)
+        # No haute.toml present.  A uniquely-named pipeline file is given
+        # so its stem (``my_pipeline``) is the fallback model_name.
+        pipeline = _touch_pipeline(tmp_path, "my_pipeline.py")
+
+        resolved = _mock_resolved()
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["deploy", "--dry-run", str(pipeline)])
+
+        assert result.exit_code == 0, result.output
+        assert "my_pipeline" in result.output, (
+            f"Deploy must derive model_name from pipeline stem when no toml / "
+            f"--model-name — got:\n{result.output}"
+        )
+
+    def test_no_toml_flag_wins_over_stem(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With no toml, an explicit ``--model-name`` still beats the stem."""
+        monkeypatch.chdir(tmp_path)
+        pipeline = _touch_pipeline(tmp_path, "my_pipeline.py")
+
+        resolved = _mock_resolved()
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+        ):
+            result = runner.invoke(
+                cli,
+                ["deploy", "--dry-run", str(pipeline), "--model-name", "explicit"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "explicit" in result.output, (
+            f"--model-name must win over stem — got:\n{result.output}"
+        )
+
+
+# ===========================================================================
+# End-to-end auto-discovery via the CLI (run / lint)
+# (restores coverage deleted in Wave 9B — flagged by reviewer)
+# ===========================================================================
+
+
+class TestCliAutoDiscoveryEndToEnd:
+    """``haute run`` / ``haute lint`` auto-discover a differently-named pipeline.
+
+    Wave 9B silently broke the case where a user has ``motor.py`` (or
+    any other ``haute.Pipeline``-containing file) but no ``main.py`` —
+    they'd see ``main.py not found`` instead of the obvious pipeline
+    being picked.  These tests pin the restored behaviour end-to-end
+    through the Click dispatch.
+    """
+
+    def test_run_auto_discovers_single_pipeline_without_main_py(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``haute run`` in a dir with ``motor.py`` (no main.py) finds motor.py."""
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "motor.py").write_text(
+            "import haute\npipeline = haute.Pipeline('motor')\n",
+            encoding="utf-8",
+        )
+        # No main.py, no haute.toml.
+
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="a",
+                    data=NodeData(
+                        label="a",
+                        nodeType="dataSource",
+                        config={"path": "d.parquet"},
+                    ),
+                ),
+            ],
+            edges=[],
+        )
+        ok_result = MagicMock()
+        ok_result.status = "ok"
+        ok_result.row_count = 10
+        ok_result.column_count = 4
+        ok_result.preview = None
+
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph) as parse_mock,
+            patch("haute.executor.execute_graph", return_value={"a": ok_result}),
+        ):
+            result = runner.invoke(cli, ["run"])
+
+        assert result.exit_code == 0, result.output
+        # The parse was driven by the auto-discovered motor.py — not a
+        # spurious main.py fallback.
+        parse_mock.assert_called_once()
+        called_path = parse_mock.call_args[0][0]
+        assert Path(called_path).resolve() == (tmp_path / "motor.py").resolve(), (
+            f"haute run must auto-discover motor.py — got {called_path!r}"
+        )
+
+    def test_lint_auto_discovers_single_pipeline_without_main_py(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``haute lint`` with a lone ``motor.py`` + no main.py → lints motor.py."""
+        from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "motor.py").write_text(
+            "import haute\npipeline = haute.Pipeline('motor')\n",
+            encoding="utf-8",
+        )
+
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="a",
+                    data=NodeData(
+                        label="a",
+                        nodeType="dataSource",
+                        config={"path": "d.parquet"},
+                    ),
+                ),
+                GraphNode(
+                    id="b",
+                    data=NodeData(label="b", nodeType="polars", config={}),
+                ),
+            ],
+            edges=[GraphEdge(id="e1", source="a", target="b")],
+        )
+
+        with patch("haute.parser.parse_pipeline_file", return_value=graph) as parse_mock:
+            result = runner.invoke(cli, ["lint"])
+
+        assert result.exit_code == 0, result.output
+        parse_mock.assert_called_once()
+        called_path = parse_mock.call_args[0][0]
+        assert Path(called_path).resolve() == (tmp_path / "motor.py").resolve(), (
+            f"haute lint must auto-discover motor.py — got {called_path!r}"
+        )
+
+    def test_lint_no_main_py_no_discoverable_errors_with_hint(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Empty dir → error names ``main.py`` so the user knows the default."""
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["lint"])
+        assert result.exit_code != 0
+        assert "main.py" in result.output.lower()

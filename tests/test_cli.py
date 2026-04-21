@@ -367,11 +367,22 @@ class TestRun:
     def test_run_no_pipeline_found(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        """Empty cwd → error tells the user nothing was found and how to fix it.
+
+        The resolver enumerates what it checked (TOML config, discovery,
+        main.py) so the user isn't left guessing — the test just makes
+        sure we reference "no pipeline file" and "main.py" so the hint
+        lands.
+        """
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["run"])
         assert result.exit_code == 1
-        assert "pipeline file not found" in result.output.lower(), (
-            f"Expected 'pipeline file not found' in output, got: {result.output!r}"
+        msg = result.output.lower()
+        assert "pipeline file" in msg and "not found" in msg or "no pipeline" in msg, (
+            f"Expected a 'no pipeline file found' style error, got: {result.output!r}"
+        )
+        assert "main.py" in msg, (
+            "Error must point at the main.py default so the user knows the convention"
         )
 
     def test_run_file_not_found(self, runner: CliRunner):

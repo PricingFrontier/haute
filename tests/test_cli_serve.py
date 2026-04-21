@@ -66,6 +66,13 @@ class TestServe:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Custom ``--host`` / ``--port`` flow through to uvicorn.
+
+        The pre-flight port-availability check is patched to always
+        succeed so the test doesn't depend on port 9000 being free on
+        the host machine — we only want to verify the CLI flags reach
+        :func:`uvicorn.run`, not exercise real socket binding.
+        """
         monkeypatch.chdir(tmp_path)
         static = tmp_path / "static"
         static.mkdir()
@@ -75,6 +82,7 @@ class TestServe:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._port_is_available", return_value=True),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
         ):
