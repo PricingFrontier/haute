@@ -79,11 +79,17 @@ def _is_loopback_host(host: str) -> bool:
 def _load_toml_server_host(project_dir: Path) -> str | None:
     """Return ``[server].host`` from ``haute.toml`` in *project_dir*, if set.
 
-    Returns ``None`` when the file is absent, unparseable, missing the
-    ``[server]`` table, or when the ``host`` key is not a string.  A
-    malformed TOML file is reported via a structlog warning but does
-    not prevent ``haute serve`` from starting — the CLI falls back to
-    the loopback default in that case.
+    Returns ``None`` when the file is absent, missing the ``[server]``
+    table, or when the ``host`` key is not a string.  An ``OSError``
+    (permission denied, transient FS issue) is logged as a warning and
+    treated as "no override" so ``haute serve`` can still start on the
+    loopback default.
+
+    A ``TOMLDecodeError``, by contrast, is raised as :class:`ConfigError`
+    — a typo in ``[server] host = "0.0.0.0"`` silently falling back to
+    127.0.0.1 would make the user believe they had exposed the server
+    when they had not (or vice-versa).  Failing loudly here surfaces the
+    typo immediately.
     """
     toml_path = project_dir / "haute.toml"
     if not toml_path.is_file():
@@ -91,7 +97,7 @@ def _load_toml_server_host(project_dir: Path) -> str | None:
     try:
         with open(toml_path, "rb") as fh:
             data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except OSError as exc:
         logger.warning(
             "haute_toml_read_failed",
             path=str(toml_path),
@@ -99,6 +105,14 @@ def _load_toml_server_host(project_dir: Path) -> str | None:
             reason=str(exc),
         )
         return None
+    except tomllib.TOMLDecodeError as exc:
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            "haute.toml is malformed and could not be parsed",
+            path=str(toml_path),
+            error=str(exc),
+        ) from exc
     server = data.get("server")
     if not isinstance(server, dict):
         return None
