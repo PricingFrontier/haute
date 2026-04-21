@@ -425,8 +425,10 @@ class TestPathTraversalJsonCache:
 
 
 class TestResourceExhaustionTopoSort:
-    """topo_sort_ids uses Kahn's algorithm (O(V+E)).  These tests verify
-    it handles large graphs without crashing or excessive runtime.
+    """topo_sort_ids is O(V+E) via :class:`graphlib.TopologicalSorter`
+    on the happy path and a custom Kahn peel for cycle-node discovery.
+    These tests verify it handles large graphs without crashing or
+    excessive runtime.
     """
 
     def test_10k_node_linear_chain(self):

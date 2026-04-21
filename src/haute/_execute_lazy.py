@@ -479,15 +479,20 @@ def _prepare_graph(
     """
     node_map = graph.node_map
     edges = _prune_live_switch_edges(graph.edges, node_map, source)
-    all_ids = set(node_map.keys())
 
+    # ``node_map`` is an insertion-ordered ``dict``; deriving the ID list
+    # by iterating it preserves that order all the way into
+    # ``topo_sort_ids``'s insertion-order tie-break.  Going through a
+    # ``set`` would have introduced hash-randomisation into sibling
+    # execution order.
+    all_ids = set(node_map)
     if target_node_id:
         needed = ancestors(target_node_id, edges, all_ids)
     else:
         needed = all_ids
 
     relevant_edges = [e for e in edges if e.source in needed and e.target in needed]
-    order = topo_sort_ids([nid for nid in all_ids if nid in needed], relevant_edges)
+    order = topo_sort_ids([nid for nid in node_map if nid in needed], relevant_edges)
 
     parents_of = build_parents_of(relevant_edges, set(order))
 

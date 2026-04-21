@@ -1,4 +1,20 @@
-"""Topological sorting and graph traversal algorithms."""
+"""Topological sorting and graph traversal algorithms.
+
+Haute originally hand-rolled Kahn's algorithm here.  We migrated to
+:class:`graphlib.TopologicalSorter` (Python 3.9+ stdlib) because that
+implementation is battle-tested, maintained upstream, and our previous
+loop was almost line-for-line stdlib-equivalent behaviour.  The only
+piece kept custom is :func:`_find_cycle_nodes` — :mod:`graphlib`
+reports one representative from a cycle but not the disjoint union
+when multiple cycles exist, and surfacing every participating node in
+the user-facing :class:`CycleError` matters more than the code-size
+saving.
+
+Tie-break note: :mod:`graphlib` is insertion-order deterministic (unlike
+the previous heap which sorted alphabetically).  Every caller must pass
+``node_ids`` as an insertion-ordered sequence — passing a ``set`` would
+couple the sort to CPython hash randomisation across process invocations.
+"""
 
 from __future__ import annotations
 

@@ -269,10 +269,13 @@ def execute_trace(
     if not nodes:
         raise ValueError("Empty graph - nothing to trace")
 
-    # Resolve target before _prepare_graph filters to ancestors
+    # Resolve target before _prepare_graph filters to ancestors.
+    # Pass the node list in its declared order (not a set) so the topo
+    # sort's insertion-order tie-break is deterministic — the previous
+    # set-derived list made the chosen sink depend on CPython hash
+    # randomisation across process invocations.
     if target_node_id is None:
-        all_ids = {n.id for n in nodes}
-        target_node_id = topo_sort_ids(list(all_ids), edges)[-1]
+        target_node_id = topo_sort_ids([n.id for n in nodes], edges)[-1]
     if not any(n.id == target_node_id for n in nodes):
         raise ValueError(f"Target node '{target_node_id}' not found in graph")
 
