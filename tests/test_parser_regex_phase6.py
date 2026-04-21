@@ -227,77 +227,40 @@ def _kwarg_value_matches(value: object, expected_fragment: str) -> bool:
 
 
 class TestPathologicalStillUnsupported:
-    """Shapes the AST fallback should support but currently rejects.
+    """Shapes the AST fallback round-trips via ``ast.unparse``.
 
-    Each test is marked ``xfail(strict=True)`` — when the dev extends the
-    implementation to accept non-literal expressions (e.g. via
-    ``ast.unparse`` fallback) the test will flip to XPASS, which is a
-    *failure* under strict mode.  That failure signals: "remove the
-    xfail marker, the feature now works".
+    Originally xfail-strict against the ``literal_eval``-only parser; the
+    AST-unparse fallback (#136) resolves every case.  Preserved under the
+    legacy class name to keep cross-repo references intact, and kept as
+    part of the pinned contract so any future regression in the unparse
+    fallback surfaces here.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "ast.literal_eval rejects ast.Call nodes. Dev must extend "
-            "_parse_decorator_kwargs_regex to preserve non-literal values "
-            "(e.g. via ast.unparse) so dict(...), list(...), etc. survive."
-        ),
-    )
     def test_nested_dict_call_preserved(self) -> None:
         result = _parse_decorator_kwargs_regex("@pipeline.polars(transform=dict(a=1, b=2))")
         assert "transform" in result
         assert _kwarg_value_matches(result["transform"], "dict(")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="ast.literal_eval rejects ast.Call — function-call values dropped.",
-    )
     def test_nested_function_call_preserved(self) -> None:
         result = _parse_decorator_kwargs_regex("@pipeline.polars(seed=compute_seed(42))")
         assert "seed" in result
         assert _kwarg_value_matches(result["seed"], "compute_seed")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "ast.literal_eval rejects ast.JoinedStr (f-strings) when they "
-            "contain interpolated expressions."
-        ),
-    )
     def test_dynamic_fstring_preserved(self) -> None:
         result = _parse_decorator_kwargs_regex('@pipeline.polars(label=f"row {i}")')
         assert "label" in result
         assert _kwarg_value_matches(result["label"], "row")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "ast.literal_eval rejects ast.JoinedStr even when the f-string "
-            "has no interpolations — the AST node is JoinedStr, not Str."
-        ),
-    )
     def test_static_fstring_preserved(self) -> None:
         result = _parse_decorator_kwargs_regex('@pipeline.polars(label=f"row")')
         assert "label" in result
         assert _kwarg_value_matches(result["label"], "row")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="ast.literal_eval rejects ast.IfExp (ternary expressions).",
-    )
     def test_conditional_expression_preserved(self) -> None:
         result = _parse_decorator_kwargs_regex("@pipeline.polars(threshold=0.5 if x else 1.0)")
         assert "threshold" in result
         assert _kwarg_value_matches(result["threshold"], "0.5")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "ast.literal_eval rejects ast.BinOp on names; a.b.c attribute "
-            "chains are an ast.Attribute and also rejected."
-        ),
-    )
     def test_attribute_chain_preserved(self) -> None:
         result = _parse_decorator_kwargs_regex("@pipeline.polars(mode=pl.FlowMode.LAZY)")
         assert "mode" in result

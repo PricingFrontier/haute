@@ -127,6 +127,29 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     literals (lists, dicts, tuples, ``None``, booleans) that the previous
     hand-rolled regex silently dropped or mangled.
 
+    Value-parsing policy (two tiers):
+
+    1. **Literals** — :func:`ast.literal_eval` evaluates the kwarg value to
+       its native Python type (``int``, ``float``, ``str``, ``bool``,
+       ``None``, ``list``, ``dict``, ``tuple``, plus nested combinations).
+       Downstream config builders rely on these concrete types, so the
+       literal policy is preserved wherever possible.
+
+    2. **Non-literal expressions** — when ``ast.literal_eval`` rejects the
+       value (function calls like ``dict(a=1)``, f-strings, ternary
+       ``IfExp``, attribute chains like ``pl.FlowMode.LAZY``, etc.) we
+       fall back to :func:`ast.unparse` and return the raw source text.
+       This preserves the user's intent losslessly without executing
+       arbitrary code at parse time.  Downstream callers that need a
+       literal value can re-parse the string themselves.
+
+    **Exception:** a bare :class:`ast.Name` (e.g. ``depends=some_var``) is
+    *not* a self-contained expression — it is an unresolved reference to
+    something outside the decorator's lexical scope that we cannot
+    evaluate safely at parse time.  These surface as ``ValueError`` so
+    broken pipeline files fail loud rather than silently carrying an
+    opaque identifier string downstream.
+
     Malformed kwargs (e.g. ``percent=50%``) surface as ``SyntaxError`` /
     ``ValueError`` rather than being silently truncated — a wrong-but-
     plausible answer is strictly worse than a loud failure.
@@ -151,7 +174,46 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     call = tree.body
     if not isinstance(call, ast.Call):
         raise ValueError(f"decorator kwargs body is not a call expression: {inner!r}")
-    return {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords if kw.arg is not None}
+    return {
+        kw.arg: _resolve_kwarg_value(kw.arg, kw.value)
+        for kw in call.keywords
+        if kw.arg is not None
+    }
+
+
+def _resolve_kwarg_value(arg_name: str, value_node: ast.expr) -> Any:
+    """Resolve a single kwarg value AST node to its Python representation.
+
+    See :func:`_parse_decorator_kwargs_regex` for the two-tier policy
+    (literal_eval first, ast.unparse fallback, with ast.Name rejected).
+    """
+    # Tier 1: literal evaluation.  Preserves native Python types so the
+    # downstream config builders (which index by type for e.g. list-of-
+    # dicts factors) keep working unchanged.
+    try:
+        return ast.literal_eval(value_node)
+    except (ValueError, SyntaxError):
+        pass
+
+    # Tier 2: bare Name is an unresolvable reference — fail loud rather
+    # than letting an opaque identifier leak into the config.
+    if isinstance(value_node, ast.Name):
+        raise ValueError(
+            f"decorator kwarg {arg_name!r} references an unresolved name "
+            f"{value_node.id!r}; expected a literal or self-contained expression"
+        )
+
+    # Tier 3: non-literal expression (Call, JoinedStr, IfExp, Attribute,
+    # BinOp, etc.) — round-trip the source text via ast.unparse so the
+    # value survives the fallback parser without silently dropping.
+    try:
+        return ast.unparse(value_node)
+    except Exception as exc:  # pragma: no cover — ast.unparse rarely fails on a valid AST
+        raise ValueError(
+            f"decorator kwarg {arg_name!r} could not be serialised: "
+            f"ast.literal_eval and ast.unparse both refused the value "
+            f"(node type {type(value_node).__name__})"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
