@@ -189,6 +189,21 @@ class JobStore:
 # ---------------------------------------------------------------------------
 # Factory: one JobStore singleton per prefix
 # ---------------------------------------------------------------------------
+#
+# The prefix allow-list is deliberately closed.  ``get_job_store`` is
+# called from route handlers whose prefix is a compile-time constant
+# (``"training"`` for modelling, ``"optimiser"`` for optimiser).  There
+# is no code path through which an externally-supplied value reaches
+# the factory today, and closing the list prevents one from being
+# added accidentally — a user-controlled prefix plus an unbounded
+# ``functools.cache`` would be an unbounded memory-growth vector.
+#
+# Adding a new prefix:
+#   1. Add the literal to :data:`_KNOWN_PREFIXES` below.
+#   2. Update the caller in its route module.
+#   3. Add a test that asserts the new prefix returns a store distinct
+#      from the existing ones.
+_KNOWN_PREFIXES: frozenset[str] = frozenset({"training", "optimiser"})
 
 
 @functools.cache
@@ -203,12 +218,19 @@ def get_job_store(prefix: str) -> JobStore:
     ``JobStore()`` and ended up with four disjoint job-ID namespaces
     (see item #126 of the Phase 5 review).
 
+    Raises :class:`ValueError` on any prefix not listed in
+    :data:`_KNOWN_PREFIXES`.  This closes the door on an
+    externally-supplied value reaching an unbounded
+    :func:`functools.cache` — every legitimate prefix is a
+    compile-time constant, so there is no flexibility to lose.
+
     Semantics:
 
-    * **Singleton per prefix** — two calls with the same *prefix*
-      return the same instance.  Backed by
-      :func:`functools.lru_cache` with unbounded size so the mapping
-      from prefix → store is permanent for the process lifetime.
+    * **Singleton per known prefix** — two calls with the same *prefix*
+      return the same instance.  Backed by :func:`functools.cache` with
+      size bounded by the ``_KNOWN_PREFIXES`` allow-list, so the
+      mapping from prefix → store is permanent for the process
+      lifetime.
     * **Isolated across prefixes** — ``get_job_store("training")``
       and ``get_job_store("optimiser")`` return independent stores,
       so a job ID created in one prefix is never visible in another.
@@ -219,4 +241,11 @@ def get_job_store(prefix: str) -> JobStore:
       never call ``cache_clear``; the lifetime is a process-level
       invariant.
     """
+    if prefix not in _KNOWN_PREFIXES:
+        raise ValueError(
+            f"Unknown JobStore prefix {prefix!r}.  Add it to "
+            f"haute.routes._job_store._KNOWN_PREFIXES if this is a "
+            f"genuine new route; currently registered: "
+            f"{sorted(_KNOWN_PREFIXES)}."
+        )
     return JobStore()

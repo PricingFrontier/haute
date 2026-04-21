@@ -28,6 +28,44 @@ def _clear_trace_caches():
     _preview_cache.invalidate()
 
 
+@pytest.fixture(scope="session")
+def _default_bus_baseline() -> dict:
+    """Capture default_bus' import-time subscribers once per session.
+
+    The file-watcher's WS translators in :mod:`haute.server` register
+    themselves at module import.  We must import ``haute.server`` here
+    so those subscribers exist before the snapshot — otherwise the
+    per-test restore in :func:`_default_bus_test_isolation` resets
+    ``default_bus`` to an empty registry, breaking every subsequent
+    test that expects a broadcast.
+    """
+    import haute.server  # noqa: F401 — side effect: register subscribers
+    from haute._event_bus import default_bus
+
+    return default_bus._snapshot_handlers_for_testing()
+
+
+@pytest.fixture(autouse=True)
+def _default_bus_test_isolation(_default_bus_baseline: dict):
+    """Restore ``default_bus`` to its session baseline after every test.
+
+    Without this, a test that calls ``default_bus.subscribe(...)`` and
+    forgets to unsubscribe leaks its handler into every subsequent
+    test in the session — the bus is a module-level singleton.  The
+    baseline is the set of handlers registered at module-import time
+    (server.py's WS subscribers), so production wiring persists while
+    any test-added handlers are evicted.
+
+    Prefer instantiating a fresh ``EventBus()`` inside a test for full
+    isolation; this fixture is a safety net for tests that reach for
+    ``default_bus`` by accident.
+    """
+    from haute._event_bus import default_bus
+
+    yield
+    default_bus._restore_handlers_for_testing(_default_bus_baseline)
+
+
 @pytest.fixture(autouse=True)
 def _clear_pipeline_dir_cache():
     """Prevent the lru_cache on pipeline_dir from leaking real paths into tests.

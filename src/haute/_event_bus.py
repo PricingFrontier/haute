@@ -55,15 +55,52 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal, TypedDict, overload
 
 from haute._logging import get_logger
 
 logger = get_logger(component="event_bus")
 
-# Payload shape the bus carries.  Every dispatch path accepts
-# ``dict[str, Any]``; structured subtypes (TypedDict) can plug in at
-# the call site without widening this contract.
+
+# ---------------------------------------------------------------------------
+# Event-type registry
+# ---------------------------------------------------------------------------
+#
+# Every event the bus supports is declared here.  Producers (the
+# file-watcher in :mod:`haute.server`) and consumers (the WebSocket
+# translator) pay for this verbosity once in exchange for static
+# type-checking at every call site: a subscriber that reads a typo'd
+# key now fails mypy/pyright, not silently at runtime.
+#
+# Adding a new event:
+#   1. Declare its ``TypedDict`` below.
+#   2. Add the string literal to :data:`EventType`.
+#   3. Add ``@overload`` rows for :meth:`EventBus.publish` and
+#      :meth:`EventBus.subscribe`.
+#
+# The wide ``dict[str, Any]`` fallback remains for tests and
+# experimental events that do not yet warrant a TypedDict.
+
+
+class GraphUpdatePayload(TypedDict):
+    """Emitted by the file-watcher when a pipeline file re-parses cleanly."""
+
+    graph: dict[str, Any]
+    source_file: str
+
+
+class ParseErrorPayload(TypedDict):
+    """Emitted by the file-watcher when a pipeline file fails to parse."""
+
+    error: str
+    source_file: str
+
+
+EventType = Literal["graph.update", "parse.error"]
+
+# Wide backstop used at the bus' *implementation* signature and for
+# ad-hoc test events.  Producers that publish a typed event should use
+# the overloads above so the narrow TypedDict is type-checked.
 PayloadType = dict[str, Any]
 
 # A handler is any callable that consumes a payload dict.  We do not
@@ -102,6 +139,23 @@ class EventBus:
         # legitimate — e.g. a translate-then-republish bridge.
         self._lock = threading.RLock()
 
+    @overload
+    def subscribe(
+        self,
+        event_type: Literal["graph.update"],
+        handler: Callable[[GraphUpdatePayload], None],
+    ) -> Callable[[], None]: ...
+
+    @overload
+    def subscribe(
+        self,
+        event_type: Literal["parse.error"],
+        handler: Callable[[ParseErrorPayload], None],
+    ) -> Callable[[], None]: ...
+
+    @overload
+    def subscribe(self, event_type: str, handler: HandlerType) -> Callable[[], None]: ...
+
     def subscribe(self, event_type: str, handler: HandlerType) -> Callable[[], None]:
         """Register *handler* to receive events of type *event_type*.
 
@@ -137,6 +191,19 @@ class EventBus:
                     self._handlers.pop(event_type, None)
 
         return _unsubscribe
+
+    @overload
+    def publish(
+        self, event_type: Literal["graph.update"], payload: GraphUpdatePayload
+    ) -> None: ...
+
+    @overload
+    def publish(
+        self, event_type: Literal["parse.error"], payload: ParseErrorPayload
+    ) -> None: ...
+
+    @overload
+    def publish(self, event_type: str, payload: PayloadType) -> None: ...
 
     def publish(self, event_type: str, payload: PayloadType) -> None:
         """Fan *payload* out to every handler registered for *event_type*.
@@ -181,6 +248,32 @@ class EventBus:
             summary = {et: len(hs) for et, hs in self._handlers.items()}
         return f"EventBus(subscribers={summary})"
 
+    # -- Test-isolation hooks -------------------------------------------------
+    #
+    # Tests that inadvertently subscribe to :data:`default_bus` leak their
+    # handler into the rest of the session.  The conftest.py autouse
+    # fixture snapshots the handler registry before each test and
+    # restores it afterwards, preserving production wiring (the
+    # server.py WS subscribers) while evicting anything the test added.
+    #
+    # Prefer instantiating a fresh ``EventBus()`` inside a test for full
+    # isolation; these hooks are a safety net, not the primary pattern.
+
+    def _snapshot_handlers_for_testing(self) -> dict[str, list[HandlerType]]:
+        """Deep copy of the current handler registry.  Test-only."""
+        with self._lock:
+            return {et: list(hs) for et, hs in self._handlers.items()}
+
+    def _restore_handlers_for_testing(
+        self, snapshot: dict[str, list[HandlerType]]
+    ) -> None:
+        """Replace the handler registry with *snapshot*.  Test-only."""
+        with self._lock:
+            self._handlers.clear()
+            for event_type, hs in snapshot.items():
+                if hs:
+                    self._handlers[event_type] = list(hs)
+
 
 # Module-level default bus so producers (file-watcher) and consumers
 # (WebSocket broadcaster) can find each other without plumbing a bus
@@ -192,7 +285,10 @@ default_bus = EventBus()
 
 __all__ = [
     "EventBus",
+    "EventType",
+    "GraphUpdatePayload",
     "HandlerType",
+    "ParseErrorPayload",
     "PayloadType",
     "default_bus",
 ]
