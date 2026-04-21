@@ -19,10 +19,26 @@ Design (item #52 of CODEBASE_REVIEW.md):
   kind-specific logic through the registry.
 * The four legacy ``_extract_*_user_code`` functions remain as thin
   shims over the engine, keeping the existing public surface intact.
+
+Return-boundary detection (#137):
+
+* The trailing-return strip and the ``return <expr>`` → ``df = <expr>``
+  rewrite both need to know which ``return`` statements belong to the
+  OUTER scope (the node body itself) and which belong to nested
+  ``def`` / ``async def`` / ``class`` / ``lambda`` constructs that the
+  user wrote inside the body.  A line-based heuristic cannot tell the
+  difference — it picks up any line whose ``.strip()`` starts with
+  ``return``, silently corrupting nested helpers.  The ``_outermost_returns``
+  helper below walks the AST and returns only the ``ast.Return`` nodes
+  at the module-top scope, skipping nested function / class / lambda
+  bodies.  Comments, whitespace, string literals containing ``return``
+  and multi-line ``return (...)`` all fall out for free.
 """
 
 from __future__ import annotations
 
+import ast
+import textwrap
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -45,6 +61,170 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Shared low-level helpers
 # ---------------------------------------------------------------------------
+
+
+# Nodes that open a *new lexical scope* and whose ``Return`` children
+# therefore belong to that inner scope, not to the enclosing one.  A
+# ``Lambda`` has no ``ast.Return`` at all (its body is an expression),
+# but we still recurse-block it so a ``return`` appearing textually
+# within the lambda's source span cannot leak into the outer walk.
+_NESTED_SCOPE_NODES: tuple[type[ast.AST], ...] = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Lambda,
+)
+
+
+class _UserCodeParseError(ValueError):
+    """Raised when user code cannot be parsed as a Python module.
+
+    The extractor's callers catch this and surface a clear diagnostic
+    back to the end user; the original ``SyntaxError`` is chained via
+    ``__cause__`` so the underlying location information survives.
+    """
+
+
+def _parse_user_code(source: str, *, context: str = "user code") -> ast.Module:
+    """Parse *source* as an ``ast.Module`` with a friendly error message.
+
+    The previous line-based heuristics silently mis-parsed invalid code;
+    the AST path fails loudly.  That's the intended behaviour (see
+    CLAUDE.md — "let code fail loudly") but we wrap ``SyntaxError`` in
+    a ``ValueError`` subclass that includes the context (which extractor
+    was running) so the diagnostic is actionable.
+    """
+    try:
+        return ast.parse(source)
+    except SyntaxError as exc:
+        raise _UserCodeParseError(
+            f"cannot parse {context}: {exc.msg} (line {exc.lineno}, offset {exc.offset})"
+        ) from exc
+
+
+def _outermost_returns(source: str, *, context: str = "user code") -> list[ast.Return]:
+    """Return every ``ast.Return`` node that belongs to the TOP-LEVEL scope.
+
+    *source* is parsed as a module; the walk descends through control
+    flow (``if`` / ``for`` / ``while`` / ``try`` / ``with``) but stops
+    at any node that introduces a new lexical scope
+    (:data:`_NESTED_SCOPE_NODES`).  Returns inside nested ``def`` /
+    ``async def`` / ``class`` / ``lambda`` constructs are therefore
+    EXCLUDED from the result.
+
+    The returned list is in source order (ascending line / column).
+
+    Raises:
+        _UserCodeParseError: If *source* is not valid Python.
+    """
+    tree = _parse_user_code(source, context=context)
+    returns: list[ast.Return] = []
+
+    def _walk(node: ast.AST) -> None:
+        if isinstance(node, ast.Return):
+            returns.append(node)
+            return
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _NESTED_SCOPE_NODES):
+                continue
+            _walk(child)
+
+    _walk(tree)
+    returns.sort(key=lambda r: (r.lineno, r.col_offset))
+    return returns
+
+
+def _rewrite_outer_returns_as_assignment(source: str, target: str) -> str:
+    """Rewrite every OUTER-scope ``return <expr>`` in *source* to ``<target> = <expr>``.
+
+    Preserves original whitespace, comments, quoting style and line
+    endings — we edit the source TEXTUALLY at the line/column positions
+    reported by the AST rather than re-emitting through ``ast.unparse``
+    (which would normalise everything).
+
+    A ``Return`` with no value (bare ``return``) is rewritten to an
+    assignment to ``None`` — this keeps the extracted body syntactically
+    valid in the (unusual) case a user wrote a bare ``return`` at the
+    outer scope of a polars-style node.
+    """
+    returns = _outermost_returns(source, context="user code")
+    if not returns:
+        return source
+
+    lines = source.splitlines(keepends=True)
+    # Rewrite from LAST to FIRST so earlier rewrites never invalidate
+    # a later return's line index.
+    for node in sorted(returns, key=lambda r: (r.lineno, r.col_offset), reverse=True):
+        line_idx = node.lineno - 1
+        line = lines[line_idx]
+        col = node.col_offset
+        before = line[:col]
+        rest = line[col:]
+        if rest.startswith("return "):
+            new_rest = f"{target} = " + rest[len("return ") :]
+        elif rest.startswith("return\n") or rest.rstrip() == "return":
+            # Bare ``return`` — replace with ``<target> = None`` so the
+            # extracted snippet remains syntactically well-formed.
+            new_rest = f"{target} = None" + rest[len("return") :]
+        else:  # pragma: no cover — defensive; ast placed the node here
+            raise AssertionError(f"expected 'return' at line {node.lineno} col {col}, got {line!r}")
+        lines[line_idx] = before + new_rest
+
+    return "".join(lines)
+
+
+def _strip_outer_trailing_return(source: str, return_var: str) -> str:
+    """Strip a trailing ``return <return_var>`` at the OUTERMOST scope.
+
+    Returns *source* with the codegen-generated trailing return removed
+    if the LAST top-level statement is literally ``return <return_var>``.
+    Nested returns (inside ``def`` / ``class`` / ``lambda`` bodies) are
+    invisible to this check.
+
+    Also strips trailing blank lines from the result for parity with the
+    legacy line-heuristic.
+    """
+    if not source.strip():
+        return source
+
+    returns = _outermost_returns(source, context="user code")
+    if not returns:
+        # Nothing to strip — just trim trailing blanks for legacy parity.
+        return _rstrip_blank_lines(source)
+
+    last = returns[-1]
+    value = last.value
+    is_sentinel_return = isinstance(value, ast.Name) and value.id == return_var
+    if not is_sentinel_return:
+        return _rstrip_blank_lines(source)
+
+    # Confirm this Return is truly TRAILING — i.e. nothing non-blank
+    # follows it at any scope in the source.  A Return is typically
+    # single-line; use ``end_lineno`` to locate the last source line it
+    # occupies.
+    end_line = last.end_lineno or last.lineno
+    lines = source.splitlines(keepends=True)
+    # Check no non-blank source after end_line
+    for line in lines[end_line:]:
+        if line.strip():
+            # Something follows the return — don't strip
+            # (shouldn't normally happen since Python requires trailing
+            # returns to be LAST, but defensive for comments etc.).
+            return _rstrip_blank_lines(source)
+
+    # Drop the return's source span (lineno..end_lineno inclusive, 1-based).
+    kept = lines[: last.lineno - 1]
+    return _rstrip_blank_lines("".join(kept))
+
+
+def _rstrip_blank_lines(source: str) -> str:
+    """Remove trailing whitespace and blank lines from *source*.
+
+    Matches the behaviour of the legacy ``while stripped[-1].strip() == "":
+    stripped.pop()`` loop — any tail composed solely of whitespace
+    characters (spaces, tabs, newlines) is removed.
+    """
+    return source.rstrip()
 
 
 def _unwrap_chain_assignment(
@@ -90,6 +270,11 @@ def _extract_sentinel_user_code(body_source: str, return_var: str = "result") ->
 
     If no sentinel is found returns an empty string (caller should try
     the non-sentinel extraction path).
+
+    The trailing ``return <return_var>`` is detected via
+    :func:`_strip_outer_trailing_return` — an AST walk that sees only
+    OUTER-scope returns, so an inner helper whose last line happens to
+    be ``return <return_var>`` is preserved.
     """
     sentinel = "# -- user code --"
     if sentinel not in body_source:
@@ -97,18 +282,22 @@ def _extract_sentinel_user_code(body_source: str, return_var: str = "result") ->
 
     # Take everything after the sentinel
     _, _, after = body_source.partition(sentinel)
-    lines = after.strip().splitlines()
-    if not lines:
+    if not after.strip():
         return ""
 
-    # Strip trailing auto-generated return
-    while lines and lines[-1].strip() in (f"return {return_var}", ""):
-        lines.pop()
-
-    if not lines:
+    # Dedent so ``ast.parse`` sees module-level statements (the snippet
+    # comes from a function body and therefore arrives pre-indented).
+    # ``textwrap.dedent`` is the right tool here — it preserves the
+    # RELATIVE indentation of nested constructs while stripping the
+    # common leading whitespace introduced by the enclosing ``def``.
+    dedented = textwrap.dedent(after).strip()
+    if not dedented:
         return ""
 
-    return _dedent("\n".join(lines)).strip()
+    # Drop the codegen-generated trailing ``return <return_var>`` using
+    # the AST — nested helpers with the same textual tail are preserved.
+    result = _strip_outer_trailing_return(dedented, return_var).strip()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -260,15 +449,37 @@ BOILERPLATE_MATCHERS: dict[str, BoilerplateMatcher] = {
 
 
 def _strip_trailing_return(code_lines: list[str], return_var: str) -> list[str]:
-    """Strip trailing blank lines and the codegen ``return <return_var>`` line."""
-    stripped = list(code_lines)
-    while stripped and stripped[-1].strip() in (f"return {return_var}", ""):
-        stripped.pop()
-    return stripped
+    """Strip the codegen-generated trailing ``return <return_var>`` from *code_lines*.
+
+    Uses an AST walk (via :func:`_strip_outer_trailing_return`) to
+    identify whether the LAST OUTER-scope statement is literally
+    ``return <return_var>``.  A nested helper whose final line happens
+    to be ``return <return_var>`` textually is therefore preserved —
+    only the outer sentinel is removed.
+
+    Also pops any trailing blank lines in the process.
+
+    The list-of-lines signature is kept for API compatibility with the
+    existing ``extract_user_code`` engine — internally we glue the
+    lines back together, delegate to the AST helper, and split again.
+    """
+    if not code_lines:
+        return []
+    source = "\n".join(code_lines)
+    stripped_source = _strip_outer_trailing_return(source, return_var)
+    if not stripped_source:
+        return []
+    return stripped_source.splitlines()
 
 
 def _finalise_polars(code: str, param_names: tuple[str, ...]) -> str:
-    """Apply polars-specific post-processing: strip df=<param>, unwrap chain, convert return."""
+    """Apply polars-specific post-processing: strip df=<param>, unwrap chain, convert return.
+
+    Pattern 2 (``return <expr>`` → ``df = <expr>``) is performed via an
+    AST walk that only picks up ``Return`` nodes at the OUTERMOST scope.
+    Returns inside nested ``def`` / ``class`` / ``lambda`` bodies are
+    left untouched.
+    """
     # Strip codegen-prepended "df = <param_name>" alias to prevent
     # accumulation on save/reload roundtrips.
     first_line = code.splitlines()[0].strip() if code else ""
@@ -284,21 +495,12 @@ def _finalise_polars(code: str, param_names: tuple[str, ...]) -> str:
     if chain is not None:
         return chain
 
-    # Pattern 2: hand-written "return <expr>" — convert to "df = <expr>"
-    stripped_lines: list[str] = []
-    in_return = False
-    for line in code.splitlines():
-        s = line.strip()
-        is_return = s == "return" or (s.startswith("return ") and not s.startswith("return_"))
-        if is_return and not in_return:
-            stripped_lines.append(line.replace("return ", "df = ", 1) if "return " in line else "")
-            in_return = True
-        elif in_return:
-            stripped_lines.append(line)
-        elif not is_return:
-            stripped_lines.append(line)
+    if not code.strip():
+        return code
 
-    return _dedent("\n".join(stripped_lines)).strip()
+    # Pattern 2: hand-written "return <expr>" at the OUTER scope only.
+    rewritten = _rewrite_outer_returns_as_assignment(code, target="df")
+    return _dedent(rewritten).strip()
 
 
 def _finalise_source(code: str, param_names: tuple[str, ...]) -> str:
@@ -310,12 +512,35 @@ def _finalise_source(code: str, param_names: tuple[str, ...]) -> str:
 
 
 def _finalise_external(code: str, param_names: tuple[str, ...]) -> str:
-    """External-specific post-processing: handle the edge case of ``return df`` only."""
-    # _strip_trailing_return has already removed the newline-prefixed
-    # version; if the sole remaining content is ``return df`` (e.g. the
-    # body was just boilerplate + return), wipe it.
-    if code.strip() == "return df":
-        return ""
+    """External-specific post-processing: handle the edge case of a lone ``return df``.
+
+    ``_strip_trailing_return`` has already removed any trailing outer
+    ``return df``.  In the rare case where the extracted tail consists
+    of a lone outer ``return df`` (e.g. the body was just boilerplate
+    plus a single return, and the trailing-strip ran against a tail
+    that isn't the absolute end of the source) we wipe it here.  The
+    check is scoped via the AST helper so that ``return df`` inside a
+    nested helper is left alone.
+    """
+    stripped = code.strip()
+    if not stripped:
+        return code
+
+    try:
+        returns = _outermost_returns(stripped, context="external user code")
+    except _UserCodeParseError:
+        # Invalid Python — defer the error to the caller; passthrough.
+        return code
+
+    # If the only outer-level statement is a lone ``return df``, wipe.
+    if len(returns) == 1:
+        only = returns[0]
+        if (
+            isinstance(only.value, ast.Name)
+            and only.value.id == "df"
+            and stripped == ast.unparse(only)
+        ):
+            return ""
     return code
 
 

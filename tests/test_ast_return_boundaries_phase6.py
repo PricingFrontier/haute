@@ -72,8 +72,6 @@ from __future__ import annotations
 
 import ast
 
-import pytest
-
 from haute._code_extraction import (
     _extract_external_user_code,
     _extract_model_score_user_code,
@@ -244,10 +242,6 @@ class TestLineHeuristicMisfires:
     for the reviewer to flip them to regular assertions.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#137 — nested def's `return` is rewritten as if it were the outer's",
-    )
     def test_nested_function_return_is_not_rewritten(self) -> None:
         """Inner ``def helper(): return 1`` must NOT be mutated to ``df = 1``."""
         body = _body(
@@ -272,10 +266,6 @@ class TestLineHeuristicMisfires:
         # Outer return is still converted:
         assert "df = source.with_columns(x=pl.lit(inner()))" in result
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#137 — nested def with final `return df` is clobbered by trailing-strip",
-    )
     def test_nested_function_return_df_is_not_stripped(self) -> None:
         """Inner helper whose last line is ``return df`` must keep that return."""
         body = _body(
@@ -300,10 +290,6 @@ class TestLineHeuristicMisfires:
             f"Inner `return df` wrongly rewritten as `df = df`:\n{result}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#137 — `return` inside async def rewritten as if outer-scope",
-    )
     def test_async_def_nested_return_preserved(self) -> None:
         """``async def helper(): return 1`` nested inside a sync node body."""
         body = _body(
@@ -322,10 +308,6 @@ class TestLineHeuristicMisfires:
         )
         assert "async def helper" in result
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#137 — class method's `return` rewritten as if outer-scope",
-    )
     def test_class_method_return_preserved(self) -> None:
         """Inner class method's ``return`` must stay untouched."""
         body = _body(
@@ -345,13 +327,6 @@ class TestLineHeuristicMisfires:
         assert "class Helper" in result
         assert "df = source" in result
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#137 — early-exit second `return` left un-rewritten; "
-            "`in_return=True` latch converts only the first"
-        ),
-    )
     def test_multiple_returns_early_exit_all_converted(self) -> None:
         """Both branches of an early-exit must flip to ``df = …``.
 
@@ -387,13 +362,6 @@ class TestLineHeuristicMisfires:
             f"late-exit branch not flipped to `df = late`:\n{result}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#137 — source extractor's trailing-strip eats an inner fn's "
-            "`return df` when it's the absolute last line of the body"
-        ),
-    )
     def test_source_node_nested_fn_return_df_preserved(self) -> None:
         """DataSource body: inner helper's terminal ``return df`` must NOT be eaten.
 
@@ -423,13 +391,6 @@ class TestLineHeuristicMisfires:
             f"trailing-return strip:\n{result}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#137 — inner helper ending with `return df` loses its last "
-            "line, producing syntactically invalid Python"
-        ),
-    )
     def test_source_node_nested_fn_only_return_df_preserved(self) -> None:
         """Inner helper's sole body line is ``return df`` — must survive.
 
@@ -559,10 +520,6 @@ class TestASTInvariants:
         _assert_is_valid_python(result, context="windows")
         assert "df = source" in result
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#137 — nested function at deep indent is still mis-rewritten",
-    )
     def test_deeply_nested_function_return_preserved(self) -> None:
         """Triple-nested ``def`` inside ``if`` inside ``def`` — still scope-correct.
 
@@ -681,14 +638,6 @@ class TestModelScoreExtractor:
             f"Outer trailing `return result` not stripped:\n{result}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#137 — when the inner `return result` is the ABSOLUTE LAST "
-            "line, the trailing-strip eats it because .strip() matches "
-            "`return result`, producing a syntactically-invalid helper"
-        ),
-    )
     def test_model_score_inner_fn_return_result_at_end_preserved(self) -> None:
         """Inner helper whose body's ABSOLUTE LAST line is ``return result``.
 
@@ -777,14 +726,6 @@ class TestExternalFileExtractor:
             f"Inner helper's `return df` was stripped:\n{result}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#137 — inner helper's `return df` eaten when it's the "
-            "ABSOLUTE LAST line of the extracted tail, producing a "
-            "helper def with no body (SyntaxError)"
-        ),
-    )
     def test_external_file_inner_fn_return_df_at_end_preserved(self) -> None:
         """Pathological case: inner helper's sole body line is ``return df``.
 
