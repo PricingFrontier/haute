@@ -36,7 +36,20 @@ Design choices:
   (event_type, handler) pair for a separate ``unsubscribe`` method —
   two subscribes of the same handler remain independently
   addressable.
-"""
+
+Naming convention (keep this consistent across the codebase):
+
+* **Bus event types** use dotted names: ``"graph.update"``,
+  ``"parse.error"``, ``"file.changed"``.  The dotted form reads as a
+  topic hierarchy and pairs cleanly with any future wildcard routing.
+* **structlog event names** (see :mod:`haute._logging`) use
+  snake_case: ``"server_bind_non_loopback"``,
+  ``"sanitize_name_collision"``, ``"model_cache_hit"``.  These feed
+  log aggregators that typically don't treat dots as field
+  separators.
+
+The two naming systems are deliberately distinct — a bus event type
+is a transport key, a structlog event name is a log identifier."""
 
 from __future__ import annotations
 
