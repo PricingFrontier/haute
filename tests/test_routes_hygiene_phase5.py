@@ -146,6 +146,49 @@ class TestPipelineImportsHoisted:
         pytest.skip("No genuine cycle documented — see xfail reason.")
 
 
+def _snapshot_haute_modules(prefix: str) -> dict[str, Any]:
+    """Snapshot every ``sys.modules`` entry whose name starts with *prefix*.
+
+    Also captures the parent-package ``__dict__`` attribute bindings so a
+    subsequent :func:`_restore_haute_modules` call can repair attribute
+    references like ``haute.routes.pipeline`` — deleting a sub-module from
+    ``sys.modules`` and re-importing it mutates the package's attribute
+    *in addition to* ``sys.modules``, so restoring only ``sys.modules``
+    leaves dangling references that ``import pkg.sub as alias`` picks up
+    via attribute lookup rather than the ``sys.modules`` cache.
+    """
+    snapshot: dict[str, Any] = {
+        "modules": {n: sys.modules[n] for n in list(sys.modules) if n.startswith(prefix)},
+        "attrs": {},
+    }
+    for name in snapshot["modules"]:
+        if "." in name:
+            parent_name, child_name = name.rsplit(".", 1)
+            parent = sys.modules.get(parent_name)
+            if parent is not None and hasattr(parent, child_name):
+                snapshot["attrs"][(parent_name, child_name)] = getattr(parent, child_name)
+    return snapshot
+
+
+def _restore_haute_modules(snapshot: dict[str, Any]) -> None:
+    """Restore ``sys.modules`` and parent-package attributes from a snapshot.
+
+    Paired with :func:`_snapshot_haute_modules` — restores the same module
+    identity that sibling tests held before this test deleted and
+    re-imported.  Without the attribute-restore step, a later
+    ``import haute.routes.pipeline as route_mod`` statement resolves via
+    the stale parent attribute (the fresh copy) rather than the canonical
+    ``sys.modules`` entry, so ``monkeypatch.setattr(route_mod, ...)``
+    mutates a dead module and tests that rely on the route-registered
+    endpoint seeing the override silently fail.
+    """
+    sys.modules.update(snapshot["modules"])
+    for (parent_name, child_name), value in snapshot["attrs"].items():
+        parent = sys.modules.get(parent_name)
+        if parent is not None:
+            setattr(parent, child_name, value)
+
+
 class TestPipelineImportableCold:
     """The module must import quickly — no runtime side-effects.
 
@@ -157,19 +200,16 @@ class TestPipelineImportableCold:
     def test_importlib_succeeds(self) -> None:
         # Snapshot and restore so sibling tests (which hold pre-test
         # references to these modules) keep seeing the same object
-        # identity post-test.
-        snapshot = {
-            n: sys.modules[n]
-            for n in list(sys.modules)
-            if n.startswith("haute.routes.pipeline")
-        }
-        for name in snapshot:
+        # identity post-test — including parent-package attribute
+        # bindings, not just ``sys.modules`` entries.
+        snapshot = _snapshot_haute_modules("haute.routes.pipeline")
+        for name in snapshot["modules"]:
             del sys.modules[name]
         try:
             mod = importlib.import_module("haute.routes.pipeline")
             assert hasattr(mod, "router")
         finally:
-            sys.modules.update(snapshot)
+            _restore_haute_modules(snapshot)
 
     def test_cold_import_under_500ms(self) -> None:
         """Measured cold-import latency for ``haute.routes.pipeline``.
@@ -180,12 +220,16 @@ class TestPipelineImportableCold:
         etc.) to module top when breaking a cycle.
         """
         # Snapshot every ``haute.*`` entry before eviction and restore
-        # afterwards.  Without restoration, subsequent tests that hold
-        # pre-test references to modules like ``haute.routes._helpers``
-        # would end up dual-loaded (their reference vs. the freshly
-        # re-imported instance), breaking Pydantic class-identity checks.
-        snapshot = {n: sys.modules[n] for n in list(sys.modules) if n.startswith("haute")}
-        for name in snapshot:
+        # afterwards — including parent-package attribute bindings.
+        # Without attribute restoration, ``haute.routes.pipeline`` on the
+        # parent ``haute.routes`` package still points at the fresh copy
+        # after the ``sys.modules`` restore, so ``import haute.routes
+        # .pipeline as route_mod`` (which uses attribute access, not the
+        # ``sys.modules`` cache) resolves to the dead copy.  The result
+        # is a test-order flake where ``monkeypatch.setattr(route_mod,
+        # ...)`` writes to a module that nothing else actually reads.
+        snapshot = _snapshot_haute_modules("haute")
+        for name in snapshot["modules"]:
             del sys.modules[name]
 
         try:
@@ -193,7 +237,7 @@ class TestPipelineImportableCold:
             importlib.import_module("haute.routes.pipeline")
             elapsed_ms = (time.perf_counter() - start) * 1000.0
         finally:
-            sys.modules.update(snapshot)
+            _restore_haute_modules(snapshot)
 
         assert elapsed_ms < 500.0, (
             f"Cold import of haute.routes.pipeline took {elapsed_ms:.1f}ms — "
