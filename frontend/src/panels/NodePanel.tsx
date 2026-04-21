@@ -880,7 +880,7 @@ export default function NodePanel({
   const currentColumns = ((node.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[]) || []
 
   return (
-    <PanelShell style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
+    <PanelShell testId="node-panel" style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
       <div className="px-3 py-2.5 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         <input
           type="text"
