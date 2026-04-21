@@ -27,6 +27,8 @@ interface PanelShellBaseProps {
   children: ReactNode
   /** Additional opacity/transition styles (e.g. dimmed NodePanel) */
   style?: React.CSSProperties
+  /** data-testid applied to the outer wrapper (for E2E tests) */
+  testId?: string
 }
 
 /**
@@ -65,6 +67,7 @@ type PanelShellProps = PanelShellBaseProps & PanelShellHeaderProps
 export default function PanelShell({
   children,
   style,
+  testId,
   title,
   onClose,
   icon,
@@ -131,6 +134,7 @@ export default function PanelShell({
   return (
     <div
       ref={panelRef}
+      data-testid={testId}
       className="h-full shrink-0 flex flex-row animate-slide-in"
       style={{ width: panelWidth, background: "var(--bg-panel)", ...style }}
     >
@@ -141,6 +145,7 @@ export default function PanelShell({
           pointer wanders off the narrow hit area. */}
       <div
         onMouseDown={onDragStart}
+        data-testid="panel-resize-handle"
         className={`panel-drag-handle shrink-0 h-full w-1 cursor-col-resize transition-colors${
           dragActive ? " dragging" : ""
         }`}
