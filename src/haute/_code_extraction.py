@@ -43,6 +43,7 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 from haute._ast_helpers import _dedent, _strip_docstring
+from haute.errors import ParseError
 
 __all__ = [
     "_extract_user_code",
@@ -76,12 +77,18 @@ _NESTED_SCOPE_NODES: tuple[type[ast.AST], ...] = (
 )
 
 
-class _UserCodeParseError(ValueError):
+class _UserCodeParseError(ParseError, ValueError):
     """Raised when user code cannot be parsed as a Python module.
 
     The extractor's callers catch this and surface a clear diagnostic
     back to the end user; the original ``SyntaxError`` is chained via
     ``__cause__`` so the underlying location information survives.
+
+    Multiple inheritance with :class:`ParseError` (via ``HauteError``)
+    puts the error into Haute's canonical hierarchy so GUI callers
+    that catch ``ParseError`` see this too; keeping ``ValueError`` in
+    the bases preserves backwards compatibility with callers written
+    against the pre-Phase-6 raw-``ValueError`` contract.
     """
 
 

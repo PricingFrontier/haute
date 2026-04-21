@@ -127,7 +127,7 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     literals (lists, dicts, tuples, ``None``, booleans) that the previous
     hand-rolled regex silently dropped or mangled.
 
-    Value-parsing policy (two tiers):
+    Value-parsing policy (three tiers):
 
     1. **Literals** — :func:`ast.literal_eval` evaluates the kwarg value to
        its native Python type (``int``, ``float``, ``str``, ``bool``,
@@ -135,7 +135,14 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
        Downstream config builders rely on these concrete types, so the
        literal policy is preserved wherever possible.
 
-    2. **Non-literal expressions** — when ``ast.literal_eval`` rejects the
+    2. **Bare identifier rejection** — a lone ``ast.Name`` (e.g.
+       ``kwarg=some_var``) cannot be resolved at parse time (we are
+       already in the syntax-error fallback; the module is not
+       importable).  Fail loud with ``ValueError`` so the broken
+       reference surfaces to the user rather than leaking an opaque
+       identifier string into downstream config.
+
+    3. **Non-literal expressions** — when ``ast.literal_eval`` rejects the
        value (function calls like ``dict(a=1)``, f-strings, ternary
        ``IfExp``, attribute chains like ``pl.FlowMode.LAZY``, etc.) we
        fall back to :func:`ast.unparse` and return the raw source text.
