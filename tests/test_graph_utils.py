@@ -127,16 +127,18 @@ class TestTopoSort:
     def test_single_node(self):
         assert topo_sort_ids(["x"], []) == ["x"]
 
-    def test_no_edges_returns_sorted(self):
+    def test_no_edges_returns_insertion_order(self):
+        """With no edges, ties break on insertion order (graphlib stdlib)."""
         result = topo_sort_ids(["c", "a", "b"], [])
-        assert result == ["a", "b", "c"]
+        assert result == ["c", "a", "b"]
 
     def test_deterministic_ordering(self):
-        """With equal in-degree, nodes should be sorted alphabetically."""
+        """With equal in-degree, ties break on insertion order (graphlib)."""
         ids = ["c", "b", "a"]
         edges = [_e("a", "c"), _e("b", "c")]
         result = topo_sort_ids(ids, edges)
-        assert result == ["a", "b", "c"]
+        # b was inserted before a in node_ids, so b precedes a among ties.
+        assert result == ["b", "a", "c"]
         # Verify topological invariant: every parent before its child
         idx = {nid: i for i, nid in enumerate(result)}
         for e in edges:
