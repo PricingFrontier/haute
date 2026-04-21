@@ -366,45 +366,54 @@ def _build_id_to_func(sorted_nodes: list[GraphNode]) -> dict[str, str]:
     return {node.id: _sanitize_func_name(node.data.label) for node in sorted_nodes}
 
 
-def _warn_on_name_collisions(labels: list[str]) -> None:
-    """Warn (via structlog) for any pair of labels that sanitize to the same
-    identifier.
+def _error_on_name_collisions(labels: list[str]) -> None:
+    """Raise :class:`ParseError` on any pair of labels that sanitize to the
+    same identifier.
 
-    Phase 5 Wave 9D #124 — Phase A.  When two distinct labels collapse
-    to the same Python function name, codegen will still emit two
-    ``def <name>(...)`` blocks and the second one shadows the first at
-    import time.  That is a silent user-data-loss bug; this function
-    makes it loud by logging a ``warning`` that names every colliding
-    label so the user can rename the offending nodes in the GUI.
-
-    Phase B (future): upgrade the warning to a ``ParseError`` so the
-    collision blocks save instead of corrupting the pipeline.  See
-    Phase 8 #164 in ``docs/CODEBASE_REVIEW_PLAN.md`` for the migration
-    window and trigger condition.
+    Phase 5 #124 — shipped directly as Phase B (raise) rather than going
+    through a Phase A warning window.  Haute has no deployed user base
+    that needs a migration path, so the earlier "warn-then-raise one
+    release later" plan is churn — a collision is a silent
+    user-data-loss bug (codegen emits two ``def <name>(...)`` blocks
+    and the second shadows the first at import time), so we fail at
+    codegen time rather than corrupting the pipeline on disk.
 
     Pass a flat list of every label that will ultimately become a
     function name in any emitted file (root graph + every submodel).
+    The raised :class:`ParseError` enumerates every colliding bucket
+    so the user can fix them all in one editing pass.
     """
     buckets: dict[str, list[str]] = {}
     for label in labels:
         sanitized = _sanitize_func_name(label)
         buckets.setdefault(sanitized, []).append(label)
 
-    for sanitized, originals in buckets.items():
-        # Only warn on *distinct* source labels colliding — two graph
-        # nodes with the exact same label are a different (legal) case
-        # that the executor handles elsewhere.
-        distinct_originals = sorted(set(originals))
-        if len(distinct_originals) > 1:
-            logger.warning(
-                "sanitize_name_collision",
-                name=sanitized,
-                originals=distinct_originals,
-                suggestion=(
-                    "rename one of the colliding nodes so each label "
-                    "produces a unique Python function name"
-                ),
-            )
+    # Only flag *distinct* source labels colliding — two graph nodes
+    # with the exact same label are a different (legal) case that the
+    # executor handles elsewhere.
+    collisions = {
+        sanitized: sorted(set(originals))
+        for sanitized, originals in buckets.items()
+        if len(set(originals)) > 1
+    }
+    if not collisions:
+        return
+
+    bullets = "\n".join(
+        f"  - `{sanitized}` is produced by: {', '.join(repr(o) for o in originals)}"
+        for sanitized, originals in sorted(collisions.items())
+    )
+    logger.error(
+        "sanitize_name_collision",
+        collisions={k: list(v) for k, v in collisions.items()},
+    )
+    raise ParseError(
+        "Multiple node labels sanitize to the same Python function name. "
+        "Rename the offending nodes so each label produces a unique "
+        "identifier:\n"
+        f"{bullets}",
+        collisions={k: list(v) for k, v in collisions.items()},
+    )
 
 
 def _build_node_sources(
@@ -610,7 +619,7 @@ def graph_to_code_multi(
             else:
                 label = raw.data.label
             collision_labels.append(label)
-    _warn_on_name_collisions(collision_labels)
+    _error_on_name_collisions(collision_labels)
 
     if not submodels:
         # No submodels — single-file output

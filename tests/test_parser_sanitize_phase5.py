@@ -204,14 +204,20 @@ class TestSanitizeFuncNameNonAsciiPostFix:
 
 
 # ---------------------------------------------------------------------------
-# #124 — Duplicate sanitized names warning (Phase A)
+# #124 — Duplicate sanitized names raise ParseError (shipped direct as Phase B)
 # ---------------------------------------------------------------------------
 
 
-class TestDuplicateSanitizedNamesWarning:
+class TestDuplicateSanitizedNamesRaise:
     """When two distinct labels sanitize to the same identifier, codegen
-    must log a structlog WARNING naming both original labels, AND continue
-    execution (Phase A — Phase B will raise; see below).
+    must raise :class:`ParseError` naming every colliding bucket.
+
+    Historical note: the original plan split this into Phase A (warn)
+    and Phase B (raise) with a release-window migration.  Haute has no
+    deployed user base that needs a migration path, so we shipped
+    directly as Phase B — silently-warning codegen with a collision
+    corrupts the pipeline (second ``def`` shadows first), so failing
+    loud at codegen time is the correct behaviour for a new tool.
     """
 
     def _find_collision_pair(self) -> tuple[str, str]:
@@ -242,9 +248,11 @@ class TestDuplicateSanitizedNamesWarning:
         a, b = self._find_collision_pair()
         assert _sanitize_func_name(a) == _sanitize_func_name(b)
 
-    def test_duplicate_labels_fire_warning(self) -> None:
-        """Build a graph where two nodes' labels collide; codegen must warn."""
+    def test_duplicate_labels_raise_parse_error(self) -> None:
+        """Build a graph where two nodes' labels collide; codegen must raise
+        :class:`ParseError` and the message must name both original labels."""
         from haute.codegen import graph_to_code
+        from haute.errors import ParseError
         from haute.graph_utils import PipelineGraph
 
         label_a, label_b = self._find_collision_pair()
@@ -272,97 +280,18 @@ class TestDuplicateSanitizedNamesWarning:
             }
         )
 
-        with structlog.testing.capture_logs() as captured:
-            code = graph_to_code(graph)
+        with pytest.raises(ParseError) as excinfo:
+            graph_to_code(graph)
 
-        # Phase A: execution continues (no exception raised).
-        assert isinstance(code, str) and code, "codegen must still return code"
-
-        # A warning with both original labels must have been logged.
-        warnings = [
-            ev for ev in captured if ev.get("log_level") == "warning"
-        ]
-        assert warnings, (
-            "no warning fired despite colliding labels "
-            f"{label_a!r} and {label_b!r}"
+        # Every raised error must name BOTH original labels so the user
+        # can find them in the GUI — naming only one is a regression.
+        message = str(excinfo.value)
+        assert label_a in message, (
+            f"ParseError does not name {label_a!r}: {message}"
         )
-        # Find the collision warning specifically and check it names both.
-        collision_warnings = [
-            ev
-            for ev in warnings
-            if any(
-                "duplicate" in str(v).lower()
-                or "collision" in str(v).lower()
-                or "collid" in str(v).lower()
-                for v in ev.values()
-            )
-        ]
-        assert collision_warnings, (
-            "no warning event mentions duplicate / collision; "
-            f"captured warnings: {warnings}"
+        assert label_b in message, (
+            f"ParseError does not name {label_b!r}: {message}"
         )
-        # Every collision warning must name BOTH original labels so the
-        # user can find them in the GUI — naming only one is a regression.
-        payload = str(collision_warnings)
-        assert label_a in payload, (
-            f"warning does not name {label_a!r}: {payload}"
-        )
-        assert label_b in payload, (
-            f"warning does not name {label_b!r}: {payload}"
-        )
-
-    def test_phase_a_does_not_raise(self) -> None:
-        """Phase A behaviour: continue-with-warning, do NOT raise.
-
-        PHASE B MIGRATION PLAN
-        ----------------------
-        After at least one release cycle of Phase A warnings in
-        production, upgrade the warning to an exception:
-
-        1. Change ``logger.warning`` to ``raise ConfigError`` in the
-           duplicate-detection path.
-        2. Update this test to ``pytest.raises(ConfigError)``.
-        3. Remove ``@pytest.mark.xfail`` from this class.
-
-        The Phase A warning fires at save / codegen time — users see
-        it in the GUI warning banner.  Phase B makes it a hard stop.
-        """
-        from haute.codegen import graph_to_code
-        from haute.graph_utils import PipelineGraph
-
-        label_a, label_b = self._find_collision_pair()
-        graph = PipelineGraph.model_validate(
-            {
-                "nodes": [
-                    {
-                        "id": "n1",
-                        "data": {
-                            "label": label_a,
-                            "nodeType": "polars",
-                            "config": {"code": "df = upstream"},
-                        },
-                    },
-                    {
-                        "id": "n2",
-                        "data": {
-                            "label": label_b,
-                            "nodeType": "polars",
-                            "config": {"code": "df = upstream"},
-                        },
-                    },
-                ],
-                "edges": [],
-            }
-        )
-        # Must not raise:
-        with structlog.testing.capture_logs() as captured:
-            code = graph_to_code(graph)
-        assert "def " in code  # codegen still produced something
-        # And must have emitted at least one warning (sanity check —
-        # the dedicated warning test above is stricter).
-        assert any(
-            ev.get("log_level") == "warning" for ev in captured
-        ), "Phase A requires at least a warning to be emitted"
 
 
 # ---------------------------------------------------------------------------
