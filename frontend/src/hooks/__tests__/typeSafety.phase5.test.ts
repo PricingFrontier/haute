@@ -1,9 +1,9 @@
 /**
  * Phase 5 Wave 10C — frontend type-safety contracts.
  *
- * Pins three refactors in the hooks / store layer that replace implicit
- * `as` casts with parse-time narrowing that fails loudly.  All three were
- * audited in Phase 5 Wave 10 as hidden sources of type-drift bugs:
+ * Pins two refactors in the hooks layer that replace implicit `as` casts
+ * with parse-time narrowing that fails loudly.  Both were audited in
+ * Phase 5 Wave 10 as hidden sources of type-drift bugs:
  *
  *   #116 — `usePipelineAPI.ts` reads `node.data._columns` through
  *           `as Record<string, unknown>` casts.  These cover up the fact
@@ -20,14 +20,11 @@
  *           `validateReactFlowNode` guard that narrows any value to
  *           `Node` and throws on malformed shape.
  *
- *   #128 — Submodel navigation currently threads parent/child refs
- *           through prop drilling (`parentGraphRef`, viewStack-in-hook).
- *           Replacement: a view-stack slice on `useUIStore` so any
- *           component can read the current view without wiring refs.
- *
- * These tests MUST fail today — `isPipelineResponse`,
- * `validateReactFlowNode`, and `useUIStore.viewStack` do not yet exist.
- * They form the red step of the TDD cycle for Wave 10C.
+ * A third contract for `useUIStore.viewStack` (#128) was removed in
+ * Phase 8 #168 — the slice shipped with zero production consumers so the
+ * store-side abstraction was deleted rather than migrated onto.  The
+ * existing consumer pattern (`useSubmodelNavigation`'s local
+ * `useState<ViewLevel[]>`) remains the single source of truth.
  *
  * ── Test structure — lazy imports ─────────────────────────────────────
  *
@@ -49,14 +46,11 @@
  *   tests pin is identical.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { renderHook, cleanup, act } from "@testing-library/react"
+import { describe, it, expect } from "vitest"
 import { readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Node } from "@xyflow/react"
-
-import useUIStore from "../../stores/useUIStore"
 
 // ---------------------------------------------------------------------------
 // Lazy module loaders.  Using dynamic `import()` lets the test file parse
@@ -514,277 +508,6 @@ describe("#117 — validateReactFlowNode", () => {
       // A type annotation like `newNodes: Node[]` or `(n: Node) => ...`
       // does not have a leading `as` token and is not matched.
       expect(source).not.toMatch(/\bas\s+Node\b(?!\w)/)
-    })
-  })
-})
-
-// ===========================================================================
-// #128 — useUIStore view stack
-// ===========================================================================
-
-describe("#128 — useUIStore view stack", () => {
-  /**
-   * Reset the view-stack slice between tests, but only if it already
-   * exists on the store.  Creating the slice here would mask the
-   * shape-level tests below that assert it lives on the store.
-   */
-  function resetViewStack() {
-    const state = useUIStore.getState() as unknown as Record<string, unknown>
-    if (!("viewStack" in state)) return
-    useUIStore.setState(
-      { viewStack: [] } as unknown as Parameters<
-        typeof useUIStore.setState
-      >[0],
-    )
-  }
-
-  function readViewStack(): unknown[] {
-    return (useUIStore.getState() as unknown as { viewStack: unknown[] })
-      .viewStack
-  }
-
-  function callAction<T>(name: string, arg?: T): void {
-    const state = useUIStore.getState() as unknown as Record<string, unknown>
-    const fn = state[name]
-    if (typeof fn !== "function") {
-      throw new Error(`useUIStore does not expose a \`${name}\` action`)
-    }
-    ;(fn as (a?: T) => void)(arg)
-  }
-
-  function callSelector<R>(name: string): R {
-    const state = useUIStore.getState() as unknown as Record<string, unknown>
-    const fn = state[name]
-    if (typeof fn !== "function") {
-      throw new Error(`useUIStore does not expose a \`${name}\` selector`)
-    }
-    return (fn as () => R)()
-  }
-
-  beforeEach(resetViewStack)
-
-  afterEach(() => {
-    cleanup()
-    resetViewStack()
-  })
-
-  // -------------------------------------------------------------------------
-  // Shape: the slice exists at all.  Without this, the rest of the suite
-  // collapses into "undefined is not a function" noise — keep the first
-  // assertions structural so failures are legible.
-  // -------------------------------------------------------------------------
-
-  describe("shape", () => {
-    it("exposes a `viewStack` array on the store state", () => {
-      const state = useUIStore.getState() as unknown as Record<string, unknown>
-      expect(state).toHaveProperty("viewStack")
-      expect(Array.isArray(state.viewStack)).toBe(true)
-    })
-
-    it("exposes `pushView`, `popView`, `clearViews` actions", () => {
-      const state = useUIStore.getState() as unknown as Record<string, unknown>
-      expect(typeof state.pushView).toBe("function")
-      expect(typeof state.popView).toBe("function")
-      expect(typeof state.clearViews).toBe("function")
-    })
-
-    it("exposes a `currentView` selector/getter", () => {
-      const state = useUIStore.getState() as unknown as Record<string, unknown>
-      expect(typeof state.currentView).toBe("function")
-    })
-  })
-
-  // -------------------------------------------------------------------------
-  // Initial state
-  // -------------------------------------------------------------------------
-
-  describe("initial state", () => {
-    it("viewStack starts empty", () => {
-      expect(readViewStack()).toEqual([])
-    })
-
-    it("currentView() on an empty stack returns a root sentinel", () => {
-      // Contract: when the stack is empty, `currentView` is the top-level
-      // pipeline view — signalled by `kind: "root"`.  This lets consumers
-      // render breadcrumbs without an extra null check.
-      const view = callSelector<{ kind: string }>("currentView")
-      expect(view).toBeDefined()
-      expect(view.kind).toBe("root")
-    })
-  })
-
-  // -------------------------------------------------------------------------
-  // pushView / popView / clearViews
-  // -------------------------------------------------------------------------
-
-  describe("pushView", () => {
-    it("appends a view to the stack", () => {
-      callAction("pushView", { kind: "submodel", name: "pricing" })
-      const stack = readViewStack()
-      expect(stack).toHaveLength(1)
-      expect(stack[0]).toMatchObject({ kind: "submodel", name: "pricing" })
-    })
-
-    it("currentView() after pushView returns the pushed view", () => {
-      callAction("pushView", { kind: "submodel", name: "foo" })
-      const view = callSelector<{ kind: string; name?: string }>("currentView")
-      expect(view.kind).toBe("submodel")
-      expect(view.name).toBe("foo")
-    })
-
-    it("pushView preserves the returnTo field when provided", () => {
-      callAction("pushView", {
-        kind: "submodel",
-        name: "nested",
-        returnTo: "parent",
-      })
-      const view = callSelector<{ returnTo?: string }>("currentView")
-      expect(view.returnTo).toBe("parent")
-    })
-
-    it("pushView can stack multiple submodels (drill-down)", () => {
-      callAction("pushView", { kind: "submodel", name: "a" })
-      callAction("pushView", { kind: "submodel", name: "b" })
-      callAction("pushView", { kind: "submodel", name: "c" })
-      const stack = readViewStack()
-      expect(stack).toHaveLength(3)
-      expect(callSelector<{ name: string }>("currentView").name).toBe("c")
-    })
-  })
-
-  describe("popView", () => {
-    it("removes the top view from the stack", () => {
-      callAction("pushView", { kind: "submodel", name: "a" })
-      callAction("pushView", { kind: "submodel", name: "b" })
-      callAction("popView")
-      const stack = readViewStack()
-      expect(stack).toHaveLength(1)
-      expect(stack[0]).toMatchObject({ kind: "submodel", name: "a" })
-    })
-
-    it("currentView() after popView reflects the new top", () => {
-      callAction("pushView", { kind: "submodel", name: "a" })
-      callAction("pushView", { kind: "submodel", name: "b" })
-      callAction("popView")
-      expect(callSelector<{ name: string }>("currentView").name).toBe("a")
-    })
-
-    it("popping the last view returns the stack to empty and currentView() to root", () => {
-      callAction("pushView", { kind: "submodel", name: "only" })
-      callAction("popView")
-      expect(readViewStack()).toEqual([])
-      expect(callSelector<{ kind: string }>("currentView").kind).toBe("root")
-    })
-
-    it("popView on an empty stack is a no-op (does not throw, does not push)", () => {
-      // Pinned choice: no-op.  Throwing on empty-pop would force every
-      // caller to guard, and the root view is a terminal sentinel — there
-      // is nothing below root to pop to.  Callers that need "are we at
-      // root?" should read `currentView().kind === "root"` instead.
-      expect(() => callAction("popView")).not.toThrow()
-      expect(readViewStack()).toEqual([])
-    })
-  })
-
-  describe("clearViews", () => {
-    it("empties the stack regardless of depth", () => {
-      callAction("pushView", { kind: "submodel", name: "a" })
-      callAction("pushView", { kind: "submodel", name: "b" })
-      callAction("pushView", { kind: "submodel", name: "c" })
-      callAction("clearViews")
-      expect(readViewStack()).toEqual([])
-      expect(callSelector<{ kind: string }>("currentView").kind).toBe("root")
-    })
-
-    it("clearViews on an already-empty stack is a no-op", () => {
-      expect(() => callAction("clearViews")).not.toThrow()
-      expect(readViewStack()).toEqual([])
-    })
-  })
-
-  // -------------------------------------------------------------------------
-  // Re-render semantics — the store is a zustand slice, so pushView must
-  // trigger a render in components that subscribe via a selector on
-  // `viewStack` (or on `currentView`).
-  // -------------------------------------------------------------------------
-
-  describe("re-render behaviour", () => {
-    it("pushView triggers a re-render of subscribers to viewStack", () => {
-      const { result } = renderHook(() =>
-        useUIStore(
-          (s) => (s as unknown as { viewStack: unknown[] }).viewStack,
-        ),
-      )
-      expect(result.current).toEqual([])
-      act(() => {
-        callAction("pushView", { kind: "submodel", name: "x" })
-      })
-      expect(result.current).toHaveLength(1)
-    })
-
-    it("popView triggers a re-render", () => {
-      callAction("pushView", { kind: "submodel", name: "a" })
-      callAction("pushView", { kind: "submodel", name: "b" })
-      const { result } = renderHook(() =>
-        useUIStore(
-          (s) => (s as unknown as { viewStack: unknown[] }).viewStack,
-        ),
-      )
-      expect(result.current).toHaveLength(2)
-      act(() => {
-        callAction("popView")
-      })
-      expect(result.current).toHaveLength(1)
-    })
-
-    it("clearViews triggers a re-render to an empty stack", () => {
-      callAction("pushView", { kind: "submodel", name: "a" })
-      const { result } = renderHook(() =>
-        useUIStore(
-          (s) => (s as unknown as { viewStack: unknown[] }).viewStack,
-        ),
-      )
-      expect(result.current).toHaveLength(1)
-      act(() => {
-        callAction("clearViews")
-      })
-      expect(result.current).toEqual([])
-    })
-
-    // ---------------------------------------------------------------------
-    // Selector stability — critical for preventing the breadcrumb bar
-    // from re-rendering every time an unrelated store slice changes.
-    //
-    // When the stack is untouched, `viewStack` must keep the same array
-    // reference across updates to other slices.  The store should not
-    // re-allocate `viewStack` on every `set()` call.
-    // ---------------------------------------------------------------------
-    it("viewStack reference is stable across unrelated store updates", () => {
-      const before = readViewStack()
-      expect(Array.isArray(before)).toBe(true)
-      act(() => {
-        // Mutate an unrelated slice.
-        useUIStore.getState().setPaletteOpen(false)
-      })
-      const after = readViewStack()
-      expect(after).toBe(before)
-    })
-
-    it("currentView() is semantically stable across unrelated updates", () => {
-      callAction("pushView", { kind: "submodel", name: "foo" })
-      const first = callSelector<object>("currentView")
-      act(() => {
-        useUIStore.getState().setPaletteOpen(false)
-      })
-      const second = callSelector<object>("currentView")
-      // Either reference-identical (fully memoized) or deep-equal (the
-      // selector re-computes but yields an equal object).  We accept
-      // either — the important property is no semantic change.
-      if (first !== second) {
-        expect(second).toEqual(first)
-      } else {
-        expect(second).toBe(first)
-      }
     })
   })
 })
