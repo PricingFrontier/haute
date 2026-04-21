@@ -119,6 +119,7 @@ export default function Toolbar({
           </form>
         ) : (
           <button
+            data-testid="source-selector"
             onClick={() => setSourceOpen((v) => !v)}
             className="flex items-center gap-1.5 px-2 py-1 text-[12px] font-mono rounded-md transition-colors"
             style={{
@@ -199,6 +200,7 @@ export default function Toolbar({
       </div>
       {/* Undo / Redo */}
       <button
+        data-testid="toolbar-undo"
         onClick={onUndo}
         disabled={!canUndo}
         aria-label="Undo"
@@ -208,6 +210,7 @@ export default function Toolbar({
         <Undo2 size={14} aria-hidden="true" />
       </button>
       <button
+        data-testid="toolbar-redo"
         onClick={onRedo}
         disabled={!canRedo}
         aria-label="Redo"
@@ -234,6 +237,7 @@ export default function Toolbar({
       />
       <div className="ml-auto flex items-center gap-1.5">
         <button
+          data-testid="toolbar-utility"
           onClick={onOpenUtility}
           className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 hover-chrome"
           title="Utility scripts — reusable functions"
@@ -242,6 +246,7 @@ export default function Toolbar({
           Utility
         </button>
         <button
+          data-testid="toolbar-imports"
           onClick={onOpenImports}
           className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 hover-chrome"
           title="Pipeline imports — utility and library imports"
@@ -251,6 +256,7 @@ export default function Toolbar({
         </button>
         {/* Zoom */}
         <button
+          data-testid="toolbar-zoom-out"
           onClick={onZoomOut}
           aria-label="Zoom out"
           className="p-1.5 rounded-md hover-chrome"
@@ -259,6 +265,7 @@ export default function Toolbar({
           <ZoomOut size={14} aria-hidden="true" />
         </button>
         <button
+          data-testid="toolbar-zoom-in"
           onClick={onZoomIn}
           aria-label="Zoom in"
           className="p-1.5 rounded-md hover-chrome"
@@ -268,6 +275,7 @@ export default function Toolbar({
         </button>
         <div className="w-px h-4 mx-0.5" style={{ background: 'var(--chrome-border)' }} />
         <button
+          data-testid="toolbar-centre"
           onClick={onCentre}
           disabled={nodeCount === 0}
           className="px-2.5 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome"
@@ -276,6 +284,7 @@ export default function Toolbar({
           Centre
         </button>
         <button
+          data-testid="toolbar-layout"
           onClick={onAutoLayout}
           disabled={nodeCount === 0 || isAutoLayouting}
           aria-busy={isAutoLayouting}
@@ -286,6 +295,7 @@ export default function Toolbar({
           {isAutoLayouting ? "Laying out" : "Layout"}
         </button>
         <button
+          data-testid="toolbar-save"
           onClick={onSave}
           className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
           style={{ background: 'var(--accent)' }}
@@ -294,6 +304,7 @@ export default function Toolbar({
           Save
         </button>
         <button
+          data-testid="toolbar-git"
           onClick={onOpenGit}
           className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1 hover:bg-[var(--success-hover)]"
           style={{ background: 'var(--success)' }}

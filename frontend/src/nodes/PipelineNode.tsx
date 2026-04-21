@@ -78,14 +78,14 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
           transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
         }}
       >
-        {!isSourceOnly && <Handle type="target" position={Position.Left} />}
+        {!isSourceOnly && <Handle type="target" position={Position.Left} data-testid={`handle-target-${nodeData.label}`} />}
         <div className="flex items-center gap-2 pl-3 pr-2.5 py-2">
           <Icon size={14} style={{ color: accent }} className="shrink-0" />
           <div className="font-bold text-[12px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
             {nodeData.label}
           </div>
         </div>
-        {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+        {!isSinkOnly && <Handle type="source" position={Position.Right} data-testid={`handle-source-${nodeData.label}`} />}
       </div>
     )
   }
@@ -120,7 +120,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
         style={containerStyle}
       >
-        {!isSourceOnly && <Handle type="target" position={Position.Left} />}
+        {!isSourceOnly && <Handle type="target" position={Position.Left} data-testid={`handle-target-${nodeData.label}`} />}
         {/* Header bar */}
         <div
           className="flex items-center gap-2 px-3 py-1.5"
@@ -137,7 +137,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
             {nodeData.label}
           </div>
         </div>
-        {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+        {!isSinkOnly && <Handle type="source" position={Position.Right} data-testid={`handle-source-${nodeData.label}`} />}
       </div>
     )
   }
@@ -151,7 +151,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
       className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
       style={containerStyle}
     >
-      {!isSourceOnly && <Handle type="target" position={Position.Left} />}
+      {!isSourceOnly && <Handle type="target" position={Position.Left} data-testid={`handle-target-${nodeData.label}`} />}
 
       {/* Header bar */}
       <div
@@ -223,7 +223,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         )}
       </div>
 
-      {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+      {!isSinkOnly && <Handle type="source" position={Position.Right} data-testid={`handle-source-${nodeData.label}`} />}
     </div>
   )
 }

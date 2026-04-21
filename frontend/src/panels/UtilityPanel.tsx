@@ -173,6 +173,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
 
   return (
     <PanelShell
+      testId="utility-panel"
       title="Utility Scripts"
       onClose={onClose}
       icon={<FileCode2 size={14} style={{ color: 'var(--accent)' }} />}

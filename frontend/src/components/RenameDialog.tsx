@@ -64,7 +64,7 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
   }
 
   return (
-    <ModalShell ariaLabel="Rename node" onClose={onCancel}>
+    <ModalShell ariaLabel="Rename node" onClose={onCancel} testId="rename-dialog">
       <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
           Rename Node

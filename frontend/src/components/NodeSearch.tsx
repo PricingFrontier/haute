@@ -147,6 +147,7 @@ export default function NodeSearch({ onClose, onSelectNode }: NodeSearchProps) {
 
   return (
     <div
+      data-testid="node-search-dialog"
       className="fixed inset-0 z-[100] flex justify-center pt-[3vh]"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
