@@ -2,7 +2,7 @@ import { useEffect, useCallback, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { PreviewData } from "../panels/DataPreview"
 import { makePreviewData } from "../utils/makePreviewData"
-import { loadPipeline, previewNode, savePipeline, ApiError } from "../api/client"
+import { loadPipeline, previewNode, savePipeline } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { NodeResult } from "../api/types"
@@ -35,10 +35,19 @@ export interface PipelineAPIReturn {
   previewData: PreviewData | null
   setPreviewData: React.Dispatch<React.SetStateAction<PreviewData | null>>
   nodeStatuses: Record<string, "ok" | "error" | "running">
-  fetchPreview: (node: Node) => void
+  fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
+  cancelPreview: () => void
   /** Refresh: lazily preview upstream nodes missing _columns, then preview the target node. */
   refreshPreview: (node: Node) => void
   handleSave: () => void
+}
+
+export interface FetchPreviewOptions {
+  /**
+   * Delay before the API preview starts. Expensive nodes can use a longer
+   * idle delay so quick click-throughs are cancelled before backend work begins.
+   */
+  debounceMs?: number
 }
 
 function nodeLabel(node: Node): string {
@@ -113,6 +122,7 @@ export default function usePipelineAPI({
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, "ok" | "error" | "running">>({})
   const previewAbort = useRef<AbortController | null>(null)
   const previewDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const previewRequestSeq = useRef(0)
 
   // Stable refs for values that change across renders but shouldn't
   // trigger re-creation of callbacks. Read at call-time instead.
@@ -166,11 +176,11 @@ export default function usePipelineAPI({
       })
   }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
 
-  const fetchPreviewImmediate = useCallback((node: Node) => {
+  const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number) => {
+    const requestId = existingRequestId ?? ++previewRequestSeq.current
     // Abort any in-flight preview request
     previewAbort.current?.abort()
-    const controller = new AbortController()
-    previewAbort.current = controller
+    previewAbort.current = null
 
     const label = nodeLabel(node)
     const { getPreview, setPreview: storePreview } = useNodeResultsStore.getState()
@@ -189,12 +199,13 @@ export default function usePipelineAPI({
       cached.source === snapshotSource &&
       cached.rowLimit === snapshotRowLimit
     const requestStillCurrent = () =>
+      previewRequestSeq.current === requestId &&
       useGraphStore.getState().structuralVersion === structuralVersion
 
     // Cache-first: show cached data immediately if available
     const cached = getPreview(node.id)
     if (cached && cached.source === snapshotSource && cached.rowLimit === snapshotRowLimit) {
-      setPreviewData(cached.data)
+      if (requestStillCurrent()) setPreviewData(cached.data)
       // If cache is fresh for the same execution context, skip the API call.
       if (matchesRequestContext(cached)) return
       // Otherwise continue to fetch fresh data in background (cached data shown meanwhile)
@@ -203,6 +214,8 @@ export default function usePipelineAPI({
     }
 
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const controller = new AbortController()
+    previewAbort.current = controller
 
     // Recursively cascade downstream when a node's columns change.  The
     // snapshotted rowLimit/source are closed over so every node in the
@@ -259,25 +272,60 @@ export default function usePipelineAPI({
           }
         }
       })
-      .catch((err) => {
-        if (err instanceof ApiError || err.name !== "AbortError") {
-          setPreviewData(makePreviewData(node.id, label, { status: "error", error: err.message }))
-          setNodeStatuses({})
+      .catch((err: unknown) => {
+        if (!requestStillCurrent()) return
+        const isAbortError =
+          err instanceof Error
+            ? err.name === "AbortError"
+            : typeof err === "object" &&
+              err !== null &&
+              (err as { name?: unknown }).name === "AbortError"
+        if (isAbortError) return
+        const detail = err instanceof Error ? err.message : String(err)
+        setPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }))
+        setNodeStatuses({})
+      })
+      .finally(() => {
+        if (previewAbort.current === controller) {
+          previewAbort.current = null
         }
       })
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
 
-  const fetchPreview = useCallback((node: Node) => {
-    if (previewDebounce.current) clearTimeout(previewDebounce.current)
-    // Show cached data immediately if available (no loading flash)
+  const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
+    const requestId = ++previewRequestSeq.current
+    // Cancel any previous node preview as soon as the user changes
+    // selection. The next request is still debounced, but stale backend
+    // work should not keep running during that debounce window.
+    previewAbort.current?.abort()
+    previewAbort.current = null
+    if (previewDebounce.current) {
+      clearTimeout(previewDebounce.current)
+      previewDebounce.current = null
+    }
+    // Cached data should paint immediately. Deferring it creates a visible
+    // "Executing pipeline..." flash when switching away from result panels.
     const cached = useNodeResultsStore.getState().getPreview(node.id)
     if (cached && cached.source === activeSourceRef.current && cached.rowLimit === rowLimitRef.current) {
       setPreviewData(cached.data)
     } else {
       setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))
     }
-    previewDebounce.current = setTimeout(() => fetchPreviewImmediate(node), 200)
+    previewDebounce.current = setTimeout(() => {
+      previewDebounce.current = null
+      fetchPreviewImmediate(node, requestId)
+    }, options.debounceMs ?? 200)
   }, [fetchPreviewImmediate])
+
+  const cancelPreview = useCallback(() => {
+    ++previewRequestSeq.current
+    previewAbort.current?.abort()
+    previewAbort.current = null
+    if (previewDebounce.current) {
+      clearTimeout(previewDebounce.current)
+      previewDebounce.current = null
+    }
+  }, [])
 
   /** Lazily preview upstream nodes that are missing _columns, then preview the target node. */
   const refreshPreview = useCallback((node: Node) => {
@@ -381,6 +429,6 @@ export default function usePipelineAPI({
     loading,
     previewData, setPreviewData,
     nodeStatuses,
-    fetchPreview, refreshPreview, handleSave,
+    fetchPreview, cancelPreview, refreshPreview, handleSave,
   }
 }

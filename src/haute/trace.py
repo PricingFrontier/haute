@@ -220,6 +220,18 @@ _cache = FingerprintCache(
 # ---------------------------------------------------------------------------
 
 
+def _find_target_row_index(df: pl.DataFrame, row_values: dict[str, Any]) -> int | None:
+    """Find the target row that exactly matches the GUI's clicked row values."""
+    shared = [col for col in row_values if col in df.columns]
+    if not shared:
+        return None
+
+    for idx, row in enumerate(df.select(shared).iter_rows(named=True)):
+        if all(_trace_values_match(row.get(col), row_values.get(col)) for col in shared):
+            return idx
+    return None
+
+
 def execute_trace(
     graph: PipelineGraph,
     row_index: int = 0,
@@ -345,6 +357,7 @@ def execute_trace(
     # after a cache miss).
     if row_values is not None:
         target_df = eager_outputs[target_node_id]
+        row_matches = False
         if row_index < len(target_df):
             actual_row = target_df.row(row_index, named=True)
             mismatched = []
@@ -352,12 +365,22 @@ def execute_trace(
                 actual = actual_row.get(col)
                 if not _trace_values_match(actual, expected):
                     mismatched.append(col)
-            if mismatched:
+            row_matches = not mismatched
+
+        if not row_matches:
+            # The backend preview cache can be evicted between the GUI
+            # preview request and the user's trace click. A cold trace
+            # may still reproduce the clicked row, but joins can reorder
+            # rows. Treat the clicked values as the source of truth and
+            # relocate the target row before correlating upstream rows.
+            matched_index = _find_target_row_index(target_df, row_values)
+            if matched_index is not None:
+                row_index = matched_index
+            else:
                 raise ValueError(
-                    f"Trace data does not match the preview row "
-                    f"(mismatched columns: {mismatched[:5]}). "
-                    f"The preview data may have changed. "
-                    f"Please click the node to refresh, then retry."
+                    "Trace data does not match the preview row. "
+                    "The preview data may have changed. "
+                    "Please click the node to refresh, then retry."
                 )
 
     # Extract correct row from each node via post-hoc correlation
@@ -575,19 +598,10 @@ def _materialize_eager_outputs(
                 )
                 return eager_outputs, order, parents_of, node_map, source_ids
 
-    # No usable preview cache — fall through to a cold execution.
-    if row_values is not None:
-        # Frontend sent row values for verification, meaning the
-        # user clicked a cell in a live preview.  Re-executing
-        # would produce DataFrames with potentially different row
-        # ordering (Polars joins are non-deterministic), so refuse
-        # rather than show wrong data.
-        raise ValueError(
-            "Preview data is not available. "
-            "Please click the node to refresh its data, then retry the trace."
-        )
-
-    # No row_values — cold start or unit test.  Execute fresh.
+    # No usable preview cache. Execute fresh; if the frontend supplied
+    # clicked row values, execute_trace verifies or relocates the target
+    # row before correlation so the trace stays anchored to the preview
+    # row the user clicked.
     compiled_preamble_ns = _compile_preamble(
         graph.preamble or "",
         pipeline_dir=_pipeline_dir(graph),

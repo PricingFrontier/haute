@@ -726,6 +726,34 @@ class TestExecuteGraph:
         assert "b" in results
         assert "c" not in results
 
+    def test_cached_broad_preview_returns_only_narrow_target_results(self, tmp_path):
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p)),
+                    _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
+                ],
+                "edges": [_edge("a", "b"), _edge("b", "c")],
+            }
+        )
+
+        broad_results = execute_graph(graph, target_node_id="c")
+        assert "c" in broad_results
+
+        narrow_results = execute_graph(
+            graph,
+            target_node_id="b",
+            target_preview_only=True,
+        )
+        assert "b" in narrow_results
+        assert "c" not in narrow_results
+        assert narrow_results["a"].preview == []
+        assert narrow_results["b"].preview == [{"x": 1, "y": 2}]
+
     def test_error_node_captured(self, tmp_path):
         p = tmp_path / "d.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)

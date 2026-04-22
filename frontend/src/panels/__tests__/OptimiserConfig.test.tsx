@@ -39,6 +39,8 @@ vi.mock("../../hooks/useDataInputColumns", () => ({
     { name: "volume", dtype: "Float64" },
   ]),
 }))
+import { useDataInputColumns } from "../../hooks/useDataInputColumns"
+const mockUseDataInputColumns = vi.mocked(useDataInputColumns)
 
 vi.mock("../../hooks/useConstraintHandlers", () => ({
   useConstraintHandlers: vi.fn(() => ({
@@ -95,6 +97,7 @@ function makeProps(overrides: MakePropsOverrides = {}) {
     upstreamColumns: [
       { name: "premium", dtype: "Float64" },
       { name: "loss_ratio", dtype: "Float64" },
+      { name: "volume", dtype: "Float64" },
     ],
     ...componentOverrides,
   }
@@ -192,12 +195,40 @@ describe("OptimiserConfig", () => {
 
     it("objective column dropdown lists data input columns", () => {
       renderConfig(makeProps())
-      // The mocked useDataInputColumns returns premium, loss_ratio, volume
+      // Upstream columns are supplied by NodePanel and should populate
+      // the objective select without needing a schema-preview request.
       // These appear as options in the objective select
       const options = screen.getAllByText(/premium/)
       expect(options.length).toBeGreaterThanOrEqual(1)
       expect(screen.getByText(/loss_ratio \(Float64\)/)).toBeInTheDocument()
       expect(screen.getByText(/volume \(Float64\)/)).toBeInTheDocument()
+    })
+
+    it("disables data-input column fetches when upstream columns exist", () => {
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          data_input: "input_1",
+          objective: "expected_margin",
+          constraints: {},
+        },
+        upstreamColumns: [{ name: "expected_margin", dtype: "Float64" }],
+      })
+
+      renderConfig(props)
+
+      expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+        "input_1",
+        props.graph.allNodes,
+        props.graph.edges,
+        undefined,
+        undefined,
+        {
+          enabled: false,
+          fallbackColumns: props.componentProps.upstreamColumns,
+        },
+      )
     })
 
     it("objective change calls onUpdate with objective key", () => {

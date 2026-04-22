@@ -36,6 +36,25 @@ type QuoteRow = {
   values: Record<string, number> // objective + constraint column values
 }
 
+type PreviewRow = PreviewData["preview"][number]
+
+function toQuoteRow(
+  row: PreviewRow,
+  scenarioIndexCol: string,
+  scenarioValueCol: string,
+  allSeries: string[],
+): QuoteRow {
+  const vals: Record<string, number> = {}
+  for (const col of allSeries) {
+    vals[col] = Number(row[col] ?? 0)
+  }
+  return {
+    scenarioIndex: Number(row[scenarioIndexCol] ?? 0),
+    scenarioValue: Number(row[scenarioValueCol] ?? 0),
+    values: vals,
+  }
+}
+
 // ─── Shared chart primitives ─────────────────────────────────────
 
 const CHART_PX = 44 // left padding for Y axis labels
@@ -225,20 +244,31 @@ type ScenarioStats = {
 }
 
 function computeScenarioStats(
-  allQuoteRows: Map<string, QuoteRow[]>,
+  rows: PreviewRow[],
   scenarioIndices: number[],
   column: string,
+  scenarioIndexCol: string,
+  scenarioValueCol: string,
 ): ScenarioStats[] {
-  return scenarioIndices.map((si) => {
-    const vals: number[] = []
-    let scenarioValue = 0
-    for (const rows of allQuoteRows.values()) {
-      const row = rows.find((r) => r.scenarioIndex === si)
-      if (row) {
-        vals.push(row.values[column] ?? 0)
-        scenarioValue = row.scenarioValue
-      }
+  const valuesByScenario = new Map<number, { scenarioValue: number; values: number[] }>()
+  for (const row of rows) {
+    const scenarioIndex = Number(row[scenarioIndexCol] ?? 0)
+    const bucket = valuesByScenario.get(scenarioIndex)
+    if (bucket) {
+      bucket.values.push(Number(row[column] ?? 0))
+      bucket.scenarioValue = Number(row[scenarioValueCol] ?? bucket.scenarioValue)
+    } else {
+      valuesByScenario.set(scenarioIndex, {
+        scenarioValue: Number(row[scenarioValueCol] ?? 0),
+        values: [Number(row[column] ?? 0)],
+      })
     }
+  }
+
+  return scenarioIndices.map((si) => {
+    const bucket = valuesByScenario.get(si)
+    const vals = bucket?.values ?? []
+    const scenarioValue = bucket?.scenarioValue ?? 0
     vals.sort((a, b) => a - b)
     const n = vals.length
     if (n === 0) {
@@ -398,7 +428,7 @@ export default function OptimiserDataPreview({
   }, [objectiveCol, constraintCols])
 
   // Stable key for detecting when the actual series list changes
-  const allSeriesKey = allSeries.join("\0")
+  const allSeriesKey = JSON.stringify(allSeries)
 
   // ── Checkbox state: which series are visible ──
   const [checkedSeries, setCheckedSeries] = useState<Set<string>>(
@@ -420,26 +450,21 @@ export default function OptimiserDataPreview({
   }, [])
 
   // ── Group preview rows by quote_id ──
-  const { quoteIds, quoteData } = useMemo(() => {
-    const map = new Map<string, QuoteRow[]>()
+  const { quoteIds, quoteRowsByQuote } = useMemo(() => {
+    const map = new Map<string, PreviewRow[]>()
+    const ids: string[] = []
     for (const row of data.preview) {
       const qid = String(row[quoteIdCol] ?? "")
-      const si = Number(row[scenarioIndexCol] ?? 0)
-      const sv = Number(row[scenarioValueCol] ?? 0)
-      const vals: Record<string, number> = {}
-      for (const col of allSeries) {
-        vals[col] = Number(row[col] ?? 0)
+      const rows = map.get(qid)
+      if (rows) {
+        rows.push(row)
+      } else {
+        map.set(qid, [row])
+        ids.push(qid)
       }
-      if (!map.has(qid)) map.set(qid, [])
-      map.get(qid)!.push({ scenarioIndex: si, scenarioValue: sv, values: vals })
     }
-    // Sort each quote's rows by scenario_index
-    for (const rows of map.values()) {
-      rows.sort((a, b) => a.scenarioIndex - b.scenarioIndex)
-    }
-    const ids = [...map.keys()]
-    return { quoteIds: ids, quoteData: map }
-  }, [data.preview, quoteIdCol, scenarioIndexCol, scenarioValueCol, allSeries])
+    return { quoteIds: ids, quoteRowsByQuote: map }
+  }, [data.preview, quoteIdCol])
 
   // ── Quote navigation ──
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -453,7 +478,12 @@ export default function OptimiserDataPreview({
 
   const clampedIndex = Math.min(currentIndex, Math.max(0, quoteIds.length - 1))
   const currentQuoteId = quoteIds[clampedIndex] ?? ""
-  const currentRows = quoteData.get(currentQuoteId) ?? []
+  const currentRows = useMemo(() => {
+    const rows = quoteRowsByQuote.get(currentQuoteId) ?? []
+    return rows
+      .map((row) => toQuoteRow(row, scenarioIndexCol, scenarioValueCol, allSeries))
+      .sort((a, b) => a.scenarioIndex - b.scenarioIndex)
+  }, [quoteRowsByQuote, currentQuoteId, scenarioIndexCol, scenarioValueCol, allSeries])
 
   const goPrev = useCallback(
     () => setCurrentIndex((i) => Math.max(0, i - 1)),
@@ -482,20 +512,20 @@ export default function OptimiserDataPreview({
   const scenarioIndices = useMemo(() => {
     if (tab !== "statistics") return []
     const idxSet = new Set<number>()
-    for (const rows of quoteData.values()) {
-      for (const r of rows) idxSet.add(r.scenarioIndex)
+    for (const row of data.preview) {
+      idxSet.add(Number(row[scenarioIndexCol] ?? 0))
     }
     return [...idxSet].sort((a, b) => a - b)
-  }, [quoteData, tab])
+  }, [data.preview, scenarioIndexCol, tab])
 
   const scenarioStatsBySeries = useMemo(() => {
     if (tab !== "statistics") return new Map<string, ScenarioStats[]>()
     const map = new Map<string, ScenarioStats[]>()
     for (const col of allSeries) {
-      map.set(col, computeScenarioStats(quoteData, scenarioIndices, col))
+      map.set(col, computeScenarioStats(data.preview, scenarioIndices, col, scenarioIndexCol, scenarioValueCol))
     }
     return map
-  }, [allSeries, quoteData, scenarioIndices, tab])
+  }, [allSeries, data.preview, scenarioIndices, scenarioIndexCol, scenarioValueCol, tab])
 
   // ── No config / no data guards ──
   if (!objectiveCol) {

@@ -179,12 +179,13 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
         <div ref={scrollRef} className="flex-1 overflow-auto" onScroll={handleTableScroll}>
           {(() => {
             const totalRows = data.preview.length
-            const shouldVirtualize = totalRows > VIRTUALIZE_THRESHOLD && viewHeight > 0
+            const effectiveViewHeight = viewHeight || Math.max(ROW_HEIGHT, height - 64)
+            const shouldVirtualize = totalRows > VIRTUALIZE_THRESHOLD
             let startIdx = 0
             let endIdx = totalRows
             if (shouldVirtualize) {
               startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-              endIdx = Math.min(totalRows, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + OVERSCAN)
+              endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
             }
             const topPad = startIdx * ROW_HEIGHT
             const bottomPad = (totalRows - endIdx) * ROW_HEIGHT

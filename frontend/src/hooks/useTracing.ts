@@ -68,7 +68,14 @@ export default function useTracing({
         }
       })
       .catch((err) => {
-        addToast("error", `Trace error: ${err.message}`)
+        const detail = (err as { detail?: unknown })?.detail
+        const message =
+          typeof detail === "string"
+            ? detail
+            : err instanceof Error
+              ? err.message
+              : String(err)
+        addToast("error", `Trace error: ${message}`)
         clearTrace()
       })
   }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, activeSource, addToast, clearTrace])

@@ -15,8 +15,11 @@ import {
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
 import { nodeData } from "../types/node"
-import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, SINK_ONLY_TYPES, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import useToastStore from "../stores/useToastStore"
+import type { FetchPreviewOptions } from "./usePipelineAPI"
+
+const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 
 /** Check whether the target node has reached its maxInputs limit. */
 function wouldExceedMaxInputs(
@@ -32,6 +35,17 @@ function wouldExceedMaxInputs(
   return incomingCount >= meta.maxInputs
 }
 
+function previewOptionsForClick(node: Node): FetchPreviewOptions | null {
+  const nodeType = nodeData(node).nodeType
+  if (nodeType === NODE_TYPES.OPTIMISER) {
+    return {
+      debounceMs: OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS,
+    }
+  }
+  if (SINK_ONLY_TYPES.has(nodeType)) return null
+  return {}
+}
+
 type ContextMenuData = {
   x: number
   y: number
@@ -42,6 +56,7 @@ type ContextMenuData = {
 }
 
 type UseEdgeHandlersParams = {
+  selectedNode: Node | null
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   nodeIdCounter: MutableRefObject<number>
   lastSelectedNodeRef: MutableRefObject<Node | null>
@@ -49,13 +64,16 @@ type UseEdgeHandlersParams = {
   setEdges: (updater: (eds: Edge[]) => Edge[]) => void
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
   setContextMenu: (data: ContextMenuData | null) => void
-  fetchPreview: (node: Node) => void
+  fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
+  cancelPreview: () => void
+  shouldSkipAutomaticPreview?: (node: Node) => boolean
   clearTrace: () => void
   screenToFlowPosition: (pos: { x: number; y: number }) => { x: number; y: number }
   graphRefreshingRef: MutableRefObject<number>
 }
 
 export default function useEdgeHandlers({
+  selectedNode,
   graphRef,
   nodeIdCounter: nodeIdCounterRef,
   lastSelectedNodeRef,
@@ -64,6 +82,8 @@ export default function useEdgeHandlers({
   setSelectedNode,
   setContextMenu,
   fetchPreview,
+  cancelPreview,
+  shouldSkipAutomaticPreview,
   clearTrace,
   screenToFlowPosition,
   graphRefreshingRef,
@@ -106,15 +126,27 @@ export default function useEdgeHandlers({
 
   /** Opens panel on a full click (mousedown+mouseup) — skipped for drags. */
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
-    setSelectedNode((prev) => {
-      if (prev?.id !== node.id) {
-        fetchPreview(node)
-        clearTrace()
-      }
-      return node
-    })
+    const previousNodeId = selectedNode?.id ?? lastSelectedNodeRef.current?.id
+    const shouldRefreshPreview = previousNodeId !== node.id
+    setSelectedNode(node)
     lastSelectedNodeRef.current = node
-  }, [setSelectedNode, fetchPreview, clearTrace, lastSelectedNodeRef])
+    if (!shouldRefreshPreview) return
+
+    clearTrace()
+    cancelPreview()
+    if (shouldSkipAutomaticPreview?.(node)) return
+    const previewOptions = previewOptionsForClick(node)
+    if (!previewOptions) return
+    fetchPreview(node, previewOptions)
+  }, [
+    selectedNode,
+    setSelectedNode,
+    fetchPreview,
+    cancelPreview,
+    shouldSkipAutomaticPreview,
+    clearTrace,
+    lastSelectedNodeRef,
+  ])
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
     setEdges((eds) => eds.filter((e) => e.id !== edgeId))

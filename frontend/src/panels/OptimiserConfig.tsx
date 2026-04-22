@@ -61,7 +61,12 @@ const CONSTRAINT_TYPES = [
   { value: "max_abs", label: "Max (absolute)" },
 ]
 
-export default function OptimiserConfig({ config, onUpdate, accentColor }: OptimiserConfigProps) {
+export default function OptimiserConfig({
+  config,
+  onUpdate,
+  upstreamColumns = [],
+  accentColor,
+}: OptimiserConfigProps) {
   const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
   const nodeId = config._nodeId as string
@@ -110,7 +115,14 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
   const dataInput = configField(config, "data_input", "")
 
   // Columns from the selected data input node — cached in store
-  const dataInputColumns = useDataInputColumns(dataInput, allNodes, edges, submodels)
+  // Prefer columns already collected for the optimiser panel so opening it
+  // does not fire a second row-limit-1 preview request just to populate menus.
+  const hasUpstreamColumns = upstreamColumns.length > 0
+  const fetchedDataInputColumns = useDataInputColumns(dataInput, allNodes, edges, submodels, undefined, {
+    enabled: !hasUpstreamColumns,
+    fallbackColumns: upstreamColumns,
+  })
+  const dataInputColumns = hasUpstreamColumns ? upstreamColumns : fetchedDataInputColumns
 
   const buildGraphCb = useCallback(
     () => buildGraph(allNodes, edges, submodels),

@@ -128,6 +128,23 @@ describe("useTracing", () => {
     })
   })
 
+  it("handleCellClick shows API error detail when present", async () => {
+    const err = Object.assign(new Error("HTTP 409"), {
+      detail: "Trace data does not match the preview row.",
+    })
+    mockTraceCell.mockRejectedValue(err)
+    const { result } = renderHook(() => useTracing(makeParams()))
+    await act(async () => {
+      result.current.handleCellClick(0, "col")
+    })
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(
+        toasts.some((t) => t.text.includes("Trace data does not match the preview row.")),
+      ).toBe(true)
+    })
+  })
+
   it("nodesWithStatus applies status from nodeStatuses", () => {
     const params = makeParams({ nodeStatuses: { n1: "ok", n2: "error" } })
     const { result } = renderHook(() => useTracing(params))

@@ -7,6 +7,15 @@ import useToastStore from "../stores/useToastStore"
 import { buildGraph } from "../utils/buildGraph"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 
+type DataInputColumn = { name: string; dtype: string }
+
+type UseDataInputColumnsOptions = {
+  enabled?: boolean
+  fallbackColumns?: DataInputColumn[]
+}
+
+const EMPTY_COLUMNS: DataInputColumn[] = []
+
 /**
  * Fetches and caches columns from a data input node.
  * Shows cached columns immediately (no loading flash), re-fetches if stale.
@@ -22,10 +31,14 @@ export function useDataInputColumns(
   edges: SimpleEdge[],
   submodels?: Record<string, unknown>,
   preamble?: string,
-): { name: string; dtype: string }[] {
+  options: UseDataInputColumnsOptions = {},
+): DataInputColumn[] {
   const setColumnsCache = useNodeResultsStore((s) => s.setColumns)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
+  const enabled = options.enabled ?? true
+  const fallbackColumns = options.fallbackColumns ?? EMPTY_COLUMNS
+  const fallbackColumnsJson = useMemo(() => JSON.stringify(fallbackColumns), [fallbackColumns])
 
   // Source-aware cache key: "nodeId:source"
   const cacheKey = dataInput ? `${dataInput}:${activeSource}` : ""
@@ -51,11 +64,14 @@ export function useDataInputColumns(
   // Keep fresh refs for allNodes/edges so the effect body reads current data
   const allNodesRef = useRef(allNodes)
   const edgesRef = useRef(edges)
+  const fallbackColumnsRef = useRef(fallbackColumns)
   useEffect(() => { allNodesRef.current = allNodes }, [allNodes])
   useEffect(() => { edgesRef.current = edges }, [edges])
+  useEffect(() => { fallbackColumnsRef.current = fallbackColumns }, [fallbackColumns])
 
-  const [dataInputColumns, setDataInputColumns] = useState<{ name: string; dtype: string }[]>(
-    cachedColumns ?? [],
+  const initialColumns = enabled ? (cachedColumns ?? fallbackColumns) : fallbackColumns
+  const [dataInputColumns, setDataInputColumns] = useState<DataInputColumn[]>(
+    initialColumns,
   )
 
   // Read cache state via refs so the fetch effect doesn't re-fire when the
@@ -70,8 +86,9 @@ export function useDataInputColumns(
   // instance or a WebSocket graph refresh).  Compare by content to avoid
   // triggering a re-render when the store creates a new array reference
   // for the same column data.
-  const prevCacheJson = useRef("")
+  const prevCacheJson = useRef(JSON.stringify(initialColumns))
   useEffect(() => {
+    if (!enabled) return
     if (!cachedColumns) return
     const json = JSON.stringify(cachedColumns)
     if (json !== prevCacheJson.current) {
@@ -79,12 +96,21 @@ export function useDataInputColumns(
       // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing store-owned cache into local state only when content actually changes (ref-equal but value-different arrays are skipped via JSON compare)
       setDataInputColumns(cachedColumns)
     }
-  }, [cachedColumns])
+  }, [cachedColumns, enabled])
 
   useEffect(() => {
+    if (!enabled) {
+      if (fallbackColumnsJson !== prevCacheJson.current) {
+        prevCacheJson.current = fallbackColumnsJson
+        setDataInputColumns(fallbackColumnsRef.current)
+      }
+      return
+    }
     if (!dataInput) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- cleanup path: clear stale columns when the data input is removed
-      setDataInputColumns([])
+      if (fallbackColumnsJson !== prevCacheJson.current) {
+        prevCacheJson.current = fallbackColumnsJson
+        setDataInputColumns(fallbackColumnsRef.current)
+      }
       return
     }
     // Show cached columns immediately (no loading flash)
@@ -120,7 +146,18 @@ export function useDataInputColumns(
     // store-update → effect-refire loop.  The effect should only re-run when
     // the *inputs* change (dataInput, graph structure, source), not when the
     // *output* (cached columns) changes.
-  }, [dataInput, structuralVersion, graphFingerprint, submodels, preamble, activeSource, setColumnsCache, addToast])
+  }, [
+    dataInput,
+    structuralVersion,
+    graphFingerprint,
+    submodels,
+    preamble,
+    activeSource,
+    setColumnsCache,
+    addToast,
+    enabled,
+    fallbackColumnsJson,
+  ])
 
   return dataInputColumns
 }

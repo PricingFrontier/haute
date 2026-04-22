@@ -29,6 +29,7 @@ vi.mock("@xyflow/react", async () => {
 
 function makeParams() {
   return {
+    selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     lastSelectedNodeRef: { current: null as Node | null },
@@ -37,6 +38,8 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setContextMenu: vi.fn(),
     fetchPreview: vi.fn(),
+    cancelPreview: vi.fn(),
+    shouldSkipAutomaticPreview: vi.fn(() => false),
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },

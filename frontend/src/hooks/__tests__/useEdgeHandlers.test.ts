@@ -14,6 +14,7 @@ vi.mock("@xyflow/react", async () => {
 
 function makeParams() {
   return {
+    selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     lastSelectedNodeRef: { current: null as Node | null },
@@ -22,6 +23,8 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setContextMenu: vi.fn(),
     fetchPreview: vi.fn(),
+    cancelPreview: vi.fn(),
+    shouldSkipAutomaticPreview: vi.fn(() => false),
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
@@ -31,6 +34,7 @@ function makeParams() {
 describe("useEdgeHandlers", () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -205,26 +209,126 @@ describe("useEdgeHandlers", () => {
     act(() => {
       result.current.onNodeClick(event, node)
     })
-    expect(params.setSelectedNode).toHaveBeenCalled()
-    const updater = params.setSelectedNode.mock.calls[0][0] as (prev: Node | null) => Node
-    updater(null)
-    expect(params.fetchPreview).toHaveBeenCalledWith(node)
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
     expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
+  })
+
+  it("onNodeClick fetches optimiser preview with an idle delay", () => {
+    const params = makeParams()
+    const node = {
+      id: "optimiser1",
+      position: { x: 0, y: 0 },
+      data: { label: "Optimiser", nodeType: NODE_TYPES.OPTIMISER },
+    } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {
+      debounceMs: 800,
+    })
+  })
+
+  it.each([
+    NODE_TYPES.MODELLING,
+    NODE_TYPES.DATA_SINK,
+    NODE_TYPES.OUTPUT,
+  ])("onNodeClick skips automatic preview for sink-only node type %s", (nodeType) => {
+    const params = makeParams()
+    const node = {
+      id: "sink1",
+      position: { x: 0, y: 0 },
+      data: { label: "Sink", nodeType },
+    } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.fetchPreview).not.toHaveBeenCalled()
+  })
+
+  it("onNodeClick skips automatic preview when a result panel will render", () => {
+    const params = makeParams()
+    params.shouldSkipAutomaticPreview.mockReturnValue(true)
+    const node = {
+      id: "optimiser1",
+      position: { x: 0, y: 0 },
+      data: { label: "Optimiser", nodeType: NODE_TYPES.OPTIMISER },
+    } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.fetchPreview).not.toHaveBeenCalled()
   })
 
   it("onNodeClick skips fetchPreview when re-clicking the same node", () => {
     const params = makeParams()
     const node = { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" } } as Node
+    params.selectedNode = node
     const event = {} as React.MouseEvent
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
       result.current.onNodeClick(event, node)
     })
-    const updater = params.setSelectedNode.mock.calls[0][0] as (prev: Node | null) => Node
-    // Simulate prev === same node
-    updater(node)
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.fetchPreview).not.toHaveBeenCalled()
+    expect(params.clearTrace).not.toHaveBeenCalled()
+    expect(params.cancelPreview).not.toHaveBeenCalled()
+  })
+
+  it("onNodeClick skips duplicate fetch before React re-renders selection props", () => {
+    const params = makeParams()
+    const node = { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" } } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.fetchPreview).toHaveBeenCalledOnce()
+  })
+
+  it("onNodeClick fetches rapid distinct selections immediately", () => {
+    const params = makeParams()
+    const first = { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" } } as Node
+    const second = { id: "n2", position: { x: 0, y: 0 }, data: { label: "B" } } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, first)
+      result.current.onNodeClick(event, second)
+    })
+
+    expect(params.fetchPreview).toHaveBeenNthCalledWith(1, first, {})
+    expect(params.fetchPreview).toHaveBeenNthCalledWith(2, second, {})
+    expect(params.lastSelectedNodeRef.current).toBe(second)
   })
 
   it("handleDeleteEdge removes edge by id", () => {

@@ -212,6 +212,19 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
         # that the user can fix the bad contract in one edit.
         logger.warning("trace_contract_mismatch", error=str(e))
         raise HTTPException(status_code=422, detail=str(e))
+    except ValueError as e:
+        detail = str(e)
+        if detail.startswith("Trace data does not match"):
+            logger.warning("trace_row_mismatch", error=detail)
+            raise HTTPException(status_code=409, detail=detail)
+        if detail.startswith("row_index ") and "out of range" in detail:
+            logger.warning("trace_row_out_of_range", error=detail)
+            raise HTTPException(status_code=400, detail=detail)
+        if detail.startswith("Target node ") and "not found in graph" in detail:
+            logger.warning("trace_target_not_found", error=detail)
+            raise HTTPException(status_code=404, detail=detail)
+        logger.error("trace_failed", error=detail)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     except Exception as e:
         logger.error("trace_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
@@ -236,6 +249,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             target_node_id=body.node_id,
             row_limit=body.row_limit,
             source=body.source,
+            target_preview_only=True,
             timeout=_PREVIEW_TIMEOUT,
             operation="pipeline_preview",
         )

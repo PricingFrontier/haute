@@ -51,6 +51,7 @@ import useGraphStore from "./stores/useGraphStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
+import { previewForActiveNode } from "./utils/activePreview"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
@@ -194,7 +195,6 @@ function FlowEditor() {
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
 
-
   // Refs
   const submodelsRef = useRef<Record<string, unknown>>({})
   const clipboard = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
@@ -251,7 +251,7 @@ function FlowEditor() {
   const {
     loading, previewData, setPreviewData,
     nodeStatuses,
-    fetchPreview, refreshPreview, handleSave,
+    fetchPreview, cancelPreview, refreshPreview, handleSave,
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, submodelsRef, setNodes,
@@ -318,13 +318,24 @@ function FlowEditor() {
     setPreviewData, fitView,
   })
 
+  const shouldSkipAutomaticPreview = useCallback(
+    (node: Node) =>
+      nodeData(node).nodeType === NODE_TYPES.OPTIMISER &&
+      !!getOptimiserPreview(node.id),
+    [getOptimiserPreview],
+  )
+
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
     onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
-    graphRef, nodeIdCounter, lastSelectedNodeRef,
+    selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setSelectedNode, setContextMenu,
-    fetchPreview, clearTrace, screenToFlowPosition,
+    fetchPreview,
+    cancelPreview,
+    shouldSkipAutomaticPreview,
+    clearTrace,
+    screenToFlowPosition,
     graphRefreshingRef,
   })
 
@@ -435,6 +446,7 @@ function FlowEditor() {
           <ErrorBoundary name="DataPreview">
             {(() => {
               const activeNodeId = selectedNode?.id ?? lastSelectedId
+              const activePreviewData = previewForActiveNode(previewData, activeNodeId)
               const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
               if (modelPreview) {
                 return (
@@ -460,20 +472,20 @@ function FlowEditor() {
               if (
                 activeNode &&
                 nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
-                previewData &&
-                previewData.status === "ok" &&
-                previewData.preview.length > 0
+                activePreviewData &&
+                activePreviewData.status === "ok" &&
+                activePreviewData.preview.length > 0
               ) {
                 return (
                   <OptimiserDataPreview
-                    data={previewData}
+                    data={activePreviewData}
                     config={nodeData(activeNode).config ?? {}}
                   />
                 )
               }
               return (
                 <DataPreview
-                  data={previewData}
+                  data={activePreviewData}
                   onCellClick={handleCellClick}
                   tracedCell={tracedCell}
                 />

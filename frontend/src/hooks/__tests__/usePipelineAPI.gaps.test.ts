@@ -287,6 +287,40 @@ describe("usePipelineAPI — gap tests", () => {
       expect(mockPreview).not.toHaveBeenCalled()
     })
 
+    it("honours a custom preview debounce before starting the API request", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"), { debounceMs: 800 })
+      })
+
+      expect(result.current.previewData?.nodeId).toBe("n1")
+      expect(result.current.previewData?.status).toBe("loading")
+
+      act(() => {
+        vi.advanceTimersByTime(799)
+      })
+      expect(mockPreview).not.toHaveBeenCalled()
+
+      await act(async () => {
+        vi.advanceTimersByTime(1)
+        await Promise.resolve()
+      })
+      expect(mockPreview).toHaveBeenCalledTimes(1)
+    })
+
     it("uses graph structuralVersion to decide preview freshness", async () => {
       // Catches: if fetchPreview stops checking structuralVersion, a fresh
       // structural graph change would be missed and the cached preview would
@@ -528,6 +562,30 @@ describe("usePipelineAPI — gap tests", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("fetchPreview abort on new request", () => {
+    it("cancelPreview clears a pending debounced preview before the API request starts", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"), { debounceMs: 800 })
+        result.current.cancelPreview()
+        vi.advanceTimersByTime(800)
+      })
+
+      expect(mockPreview).not.toHaveBeenCalled()
+    })
+
     it("aborts previous in-flight request when a new fetchPreview is called", async () => {
       // Catches: without abort, the response from a slow first request
       // could overwrite the fresher second request's data, showing the

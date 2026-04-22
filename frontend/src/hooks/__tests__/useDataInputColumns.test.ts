@@ -63,6 +63,20 @@ describe("useDataInputColumns", () => {
     expect(result.current).toEqual([])
   })
 
+  it("returns fallback columns without fetching when disabled", () => {
+    const fallbackColumns = [{ name: "expected_margin", dtype: "f64" }]
+
+    const { result } = renderHook(() =>
+      useDataInputColumns("ds1", nodes, edges, undefined, undefined, {
+        enabled: false,
+        fallbackColumns,
+      }),
+    )
+
+    expect(result.current).toEqual(fallbackColumns)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
   it("fetches columns from API when no cache exists", async () => {
     mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))

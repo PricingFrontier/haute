@@ -50,7 +50,9 @@ from haute.graph_utils import (
     PipelineGraph,
     _execute_eager_core,
     _execute_lazy,
+    _prune_live_switch_edges,
     _resolve_sink_path,
+    ancestors,
     graph_fingerprint,
 )
 from haute.schemas import ColumnInfo, NodeResult, SchemaWarning, SinkResponse
@@ -393,6 +395,23 @@ def _extract_column_refs(config: dict[str, Any]) -> set[str]:
     return refs
 
 
+def _result_order_for_target(
+    graph: PipelineGraph,
+    order: list[str],
+    target_node_id: str | None,
+    source: str,
+) -> list[str]:
+    """Return node IDs whose result payloads are relevant to this request."""
+    if target_node_id is None:
+        return order
+    if target_node_id not in graph.node_map:
+        return []
+
+    edges = _prune_live_switch_edges(graph.edges, graph.node_map, source)
+    needed = ancestors(target_node_id, edges, set(graph.node_map))
+    return [nid for nid in order if nid in needed]
+
+
 def execute_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,
@@ -400,6 +419,8 @@ def execute_graph(
     max_preview_rows: int = _MAX_PREVIEW_ROWS,
     source: str = "live",
     enforce_contracts: bool | None = None,
+    *,
+    target_preview_only: bool = False,
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -420,6 +441,12 @@ def execute_graph(
             Pass ``False`` to run without the check — the benchmark
             uses this to measure overhead; production callers should
             leave it at the default.
+        target_preview_only: If ``True`` and ``target_node_id`` is set,
+            build JSON preview rows only for the requested target and omit
+            downstream result payloads from broader cache hits. The GUI
+            preview route uses this to avoid serialising unused cached
+            DataFrames when switching from a downstream result panel back
+            to an upstream table.
 
     Returns:
         Dict mapping node_id → {
@@ -547,9 +574,19 @@ def execute_graph(
     # columns available at the instance's inputs vs the original's inputs.
     node_map = graph.node_map
     parents_of = graph.parents_of
+    result_order = (
+        _result_order_for_target(graph, order, target_node_id, source)
+        if target_preview_only
+        else order
+    )
+    preview_node_ids = (
+        {target_node_id}
+        if target_preview_only and target_node_id is not None
+        else set(result_order)
+    )
 
     schema_warnings: dict[str, list[SchemaWarning]] = {}
-    for nid in order:
+    for nid in result_order:
         ref = node_map[nid].data.config.get("instanceOf")
         if not ref or ref not in node_map:
             continue
@@ -572,7 +609,7 @@ def execute_graph(
             ]
 
     results: dict[str, NodeResult] = {}
-    for nid in order:
+    for nid in result_order:
         if nid in errors:
             results[nid] = NodeResult(
                 status="error",
@@ -614,7 +651,7 @@ def execute_graph(
             column_count=len(df.columns),
             columns=columns,
             available_columns=avail_col_infos,
-            preview=df.head(max_preview_rows).to_dicts(),
+            preview=(df.head(max_preview_rows).to_dicts() if nid in preview_node_ids else []),
             timing_ms=timings.get(nid, 0),
             memory_bytes=memory_bytes.get(nid, 0),
             schema_warnings=node_warnings,
