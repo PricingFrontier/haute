@@ -584,6 +584,84 @@ pipeline.connect("src", "band")
             "outputs": ["age_band"],
         }
 
+    def test_parser_does_not_load_mlflow_for_model_score_contract(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Model-score contract validation must stay offline at parse time.
+
+        ``MODEL_SCORE`` feature names come from the MLflow artifact, but
+        parsing a pipeline is also what happens during ``haute serve``
+        startup.  Loading the model here blocks the backend from binding
+        its port and leaves the GUI talking to an unavailable API.
+        """
+        from haute.parser import parse_pipeline_source
+
+        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        score_config = write_node_config(
+            tmp_path,
+            NodeType.MODEL_SCORE,
+            "score",
+            {
+                "sourceType": "run",
+                "run_id": "run-123",
+                "artifact_path": "model.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+            },
+        )
+
+        def fail_load(*_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("parse must not load MLflow models")
+
+        monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", fail_load)
+
+        source = f'''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("model_score_contract")
+
+
+@pipeline.data_source(config="{source_config}")
+def src() -> pl.LazyFrame:
+    return pl.scan_parquet("x.parquet")
+
+
+@pipeline.model_score(
+    config="{score_config}",
+    contract={{"inputs": ["feature_a"], "outputs": ["prediction"]}},
+)
+def score(src: pl.LazyFrame) -> pl.LazyFrame:
+    return src
+
+
+pipeline.connect("src", "score")
+'''
+        graph = parse_pipeline_source(
+            source,
+            source_file=str(tmp_path / "model_score_contract.py"),
+            _base_dir=tmp_path,
+        )
+
+        score_node = next(n for n in graph.nodes if n.data.label == "score")
+        assert score_node.data.config["contract"] == {
+            "inputs": ["feature_a"],
+            "outputs": ["prediction"],
+        }
+
+        bad_output_source = source.replace(
+            '"outputs": ["prediction"]',
+            '"outputs": ["wrong_prediction"]',
+        )
+        with pytest.raises(getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME)):
+            parse_pipeline_source(
+                bad_output_source,
+                source_file=str(tmp_path / "model_score_bad_output_contract.py"),
+                _base_dir=tmp_path,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Section 4: Executor asserts contracts at node boundaries.

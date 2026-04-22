@@ -211,6 +211,22 @@ def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException]
 _CONTRACT_RESOLVE_FALLBACK_EXCEPTIONS = _compute_contract_resolve_fallback_exceptions()
 
 
+def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
+    """Return the contract shape that is safe to derive while parsing.
+
+    ``MODEL_SCORE`` input columns are model-artifact metadata, so deriving
+    them calls MLflow.  Parsing runs during ``haute serve`` startup, before
+    the backend has bound its port, and must not block on remote model I/O.
+    The output side remains a local config value, so we can still validate
+    that part of a user-declared contract immediately.
+    """
+    if node_type == NodeType.MODEL_SCORE:
+        output = config.get("output_column", "prediction")
+        outputs = frozenset({output} if output else {"prediction"})
+        return Contract(inputs=None, outputs=outputs)
+    return Contract.from_tuple(get_column_contract(node_type, config))
+
+
 def _validate_user_contract(
     node_type: NodeType,
     config: dict[str, Any],
@@ -235,15 +251,14 @@ def _validate_user_contract(
         return
 
     try:
-        derived = Contract.from_tuple(get_column_contract(node_type, config))
+        derived = _derive_parse_time_contract(node_type, config)
     except _CONTRACT_RESOLVE_FALLBACK_EXCEPTIONS:
-        # If the builder contract cannot be resolved right now (MLflow
-        # unreachable during parse of a MODEL_SCORE node whose
-        # ``contract=`` reflects a future load, missing artifact file,
-        # misconfigured required field), treat the builder as fully
-        # opaque for this call.  The check re-runs at execution time
-        # when the model is actually loaded, so a drifted annotation
-        # still surfaces — just not at offline parse-time.
+        # If the builder contract cannot be resolved right now (for
+        # example a missing artifact file or temporarily unavailable
+        # external dependency), treat the builder as fully opaque for
+        # this call. The check re-runs at execution time when runtime
+        # resources are actually loaded, so a drifted annotation still
+        # surfaces - just not at offline parse-time.
         # Programmer errors (AttributeError / TypeError / KeyError)
         # propagate so they aren't masked as a "harmless parse-time
         # fallback to opaque".
