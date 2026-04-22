@@ -519,7 +519,7 @@ export default function OptimiserDataPreview({
   if (quoteIds.length === 0 || currentRows.length === 0) {
     return (
       <StatusBar>
-        <Target size={14} style={{ color: "#f59e0b" }} className="mr-2" />
+        <Target size={14} style={{ color: "var(--warning-strong)" }} className="mr-2" />
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>
           No scenario data in preview. Ensure upstream nodes produce{" "}
           <span className="font-mono">{quoteIdCol}</span> and{" "}
@@ -574,7 +574,7 @@ export default function OptimiserDataPreview({
           background: "var(--bg-elevated)",
         }}
       >
-        <Target size={14} style={{ color: "#f59e0b" }} />
+        <Target size={14} style={{ color: "var(--warning-strong)" }} />
         <span
           className="text-xs font-bold"
           style={{ color: "var(--text-primary)" }}

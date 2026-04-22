@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import polars as pl
+import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.trace import (
@@ -1384,6 +1385,7 @@ class TestJoinsAndRowLineage:
 class TestOpaquePatterns:
     """Verify opaque/unrecognised expression patterns."""
 
+    @pytest.mark.filterwarnings("ignore::polars.exceptions.PolarsInefficientMapWarning")
     def test_map_elements_opaque(self, tmp_path):
         """.map_elements(lambda ...) -- verify expression_type='opaque' or expression is None."""
         p = tmp_path / "data.parquet"

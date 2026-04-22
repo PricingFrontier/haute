@@ -149,7 +149,6 @@ def estimate_gpu_vram_bytes(
     *,
     border_count: int = 128,
     depth: int = 6,
-    **_kwargs: object,  # accept and ignore split params for backward compat
 ) -> int:
     """Estimate CatBoost GPU VRAM needed for *n_rows* × *n_features*."""
     feature_bytes = n_rows * n_features * 5  # float32 + binarised
@@ -435,8 +434,6 @@ def estimate_safe_training_rows(
     target_node_id: str,
     build_node_fn: object | None = None,
     *,
-    probe_rows: int = 0,  # kept for backward compat, unused
-    overhead_multiplier: float = 1.0,  # kept for backward compat
     safety_factor: float = _RAM_SAFETY_FACTOR,
     preamble_ns: dict | None = None,
     source: str = "live",

@@ -20,7 +20,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from haute._functools_cache_adapter import FunctoolsLRUCacheAdapter
 from haute._hashing import content_hash
 from haute._logging import get_logger
 from haute._mlflow_utils import resolve_mlflow_source
@@ -47,9 +46,6 @@ def _load_artifact_cached(
     with open(path, encoding="utf-8") as f:
         artifact: dict[str, Any] = json.load(f)
     return artifact
-
-
-_artifact_cache = FunctoolsLRUCacheAdapter(_load_artifact_cached)
 
 
 def load_optimiser_artifact(path: str) -> dict[str, Any]:
@@ -117,9 +113,6 @@ def _load_mlflow_cached(
         mode=artifact.get("mode"),
     )
     return artifact
-
-
-_mlflow_cache = FunctoolsLRUCacheAdapter(_load_mlflow_cached)
 
 
 def load_mlflow_optimiser_artifact(

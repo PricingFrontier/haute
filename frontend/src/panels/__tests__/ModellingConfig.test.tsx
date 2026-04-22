@@ -291,8 +291,8 @@ describe("ModellingConfig", () => {
       const textarea = document.querySelector("textarea")!
       fireEvent.change(textarea, { target: { value: "{bad json" } })
       fireEvent.blur(textarea)
-      // Error message text varies by JS engine — just check the border turned red
-      expect(textarea.style.border).toContain("rgb(239, 68, 68)")
+      // Error message text varies by JS engine — just check the border uses the danger token.
+      expect(textarea.style.border).toContain("var(--danger)")
       // onUpdate should not have been called with params
       expect(props.onUpdate).not.toHaveBeenCalledWith("params", expect.anything())
     })
@@ -342,7 +342,7 @@ describe("ModellingConfig", () => {
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "temporal", test_size: 0.2, seed: 42 },
+          split: { strategy: "temporal", validation_size: 0.2, seed: 42 },
         },
       })
       expect(screen.getByText("Date column")).toBeTruthy()
@@ -356,7 +356,7 @@ describe("ModellingConfig", () => {
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "group", test_size: 0.2, seed: 42 },
+          split: { strategy: "group", validation_size: 0.2, seed: 42 },
         },
       })
       expect(screen.getByText("Group column")).toBeTruthy()
@@ -965,7 +965,7 @@ describe("ModellingConfig", () => {
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "temporal", test_size: 0.2, seed: 42 },
+          split: { strategy: "temporal", validation_size: 0.2, seed: 42 },
         },
       })
       fireEvent.click(screen.getByRole("button", { name: "random" }))

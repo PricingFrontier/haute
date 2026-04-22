@@ -280,7 +280,11 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.OPTIMISER_APPLY,
-                {"optimiser_apply": True, "artifact_path": "opt.json"},
+                {
+                    "optimiser_apply": True,
+                    "source_type": "file",
+                    "artifact_path": "opt.json",
+                },
                 "",
                 ["df"],
                 id="optimiser_apply",
@@ -534,9 +538,9 @@ class TestParserSourceTypeMapping:
             NodeType.OPTIMISER_APPLY,
             {
                 "optimiser_apply": True,
+                "source_type": "file",
                 "artifact_path": "opt.json",
                 "version_column": "__v__",
-                "sourceType": "registered",
                 "registered_model": "m",
                 "version": "2",
                 "experiment_id": "eid",

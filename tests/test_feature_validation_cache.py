@@ -172,6 +172,26 @@ class TestValidationCacheHitsAndMisses:
         assert usable == ["a", "b"]
         assert missing == []
 
+    def test_new_schema_object_same_content_hits_cache(self) -> None:
+        """Fresh schema objects with identical content share the same cache key."""
+        import haute._model_scorer as ms
+
+        sm = _make_scoring_model(["a", "b"])
+
+        # Prime with one Schema instance.
+        _validate_features(sm, _schema_for(["a", "b"]))
+
+        # Production callers build a fresh Schema on each collect_schema()
+        # call, so the cache key must be content-based rather than
+        # object-identity-based.
+        equivalent_schema = _schema_for(["a", "b"])
+        with patch.object(ms, "_validate_features_uncached") as spy:
+            usable, missing = _validate_features(sm, equivalent_schema)
+
+        spy.assert_not_called()
+        assert usable == ["a", "b"]
+        assert missing == []
+
     def test_cache_returns_identical_tuple_content(self) -> None:
         """Cache hit must not mutate or re-order the result.
 
@@ -602,6 +622,8 @@ class TestValidationCacheBenchmark:
     directly — no same-object shortcut — so the assertion matches what
     ``score_frame`` actually observes.
     """
+
+    pytestmark = pytest.mark.perf
 
     def test_bulk_hit_path_under_fixed_budget(self) -> None:
         """1000 hits on a 50-feature frame complete well under 200 ms.

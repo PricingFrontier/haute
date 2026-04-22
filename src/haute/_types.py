@@ -17,7 +17,6 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from haute._graph_utils import build_parents_of
-from haute.errors import HauteError as HauteError
 
 # Type alias - nodes pass lazy frames between each other
 _Frame = pl.LazyFrame
@@ -562,7 +561,7 @@ class PipelineGraph(BaseModel):
 
         Overrides :meth:`pydantic.BaseModel.model_copy` so that the
         returned instance starts with a fresh property cache — both the
-        legacy ``node_map``/``parents_of`` memos and the
+        ``node_map``/``parents_of`` memos and the
         ``_haute_base_fingerprint`` cache introduced for graph-fingerprint
         caching.
 

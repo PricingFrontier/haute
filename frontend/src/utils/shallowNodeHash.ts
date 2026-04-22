@@ -1,12 +1,12 @@
 /**
  * Graph structural fingerprint helper — shallow hash over input-identity keys.
  *
- * The App-level graph-version bump invalidates the preview cache.  Previously
+ * The graph structuralVersion invalidates the preview cache.  Previously
  * the fingerprint was built by JSON.stringify()-ing every node's entire
  * ``data`` blob, which included result keys (_columns, _availableColumns,
  * _schemaWarnings, _status, and trace/hover flags).  Those keys are
  * downstream products of a preview — including them in the fingerprint
- * creates a feedback loop where every preview completion bumps graphVersion
+ * creates a feedback loop where every preview completion changes structuralVersion
  * and invalidates the cache it just filled.
  *
  * ``INPUT_KEYS`` is the minimal set of keys that — if all unchanged —

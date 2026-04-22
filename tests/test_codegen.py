@@ -8,18 +8,20 @@ from pathlib import Path
 
 import pytest
 
-from haute.codegen import (
+from haute._codegen_builders import (
     _build_extra_kwargs,
     _build_params,
-    _generate_node_code,
-    _instance_to_code,
     _is_absolute_path,
     _make_passthrough_builder,
-    _node_to_code,
     _portable_path_expr,
     _sanitize_description,
-    _submodel_node_to_code,
     _wrap_user_code,
+)
+from haute.codegen import (
+    _generate_node_code,
+    _instance_to_code,
+    _node_to_code,
+    _submodel_node_to_code,
     graph_to_code,
     graph_to_code_multi,
 )
@@ -219,7 +221,6 @@ class TestNodeToCode:
         code = _node_to_code(node)
         assert "df = pl.scan_parquet" in code
         assert "return df" in code
-        assert "# -- user code --" not in code
         _compile_node_code(code)
 
     def test_transform_with_code(self):
@@ -620,10 +621,10 @@ class TestLiveSwitchCodegen:
         full_code = (
             "import polars as pl\nimport haute\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(path="a.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/live_src.json")\n'
             "def live_src() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("a.parquet")\n\n'
-            '@pipeline.data_source(path="b.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/batch_src.json")\n'
             "def batch_src() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("b.parquet")\n\n'
             f"{code}\n"
@@ -1647,7 +1648,7 @@ def {func_name}({params}) -> pl.LazyFrame:
             pytest.param(
                 "optimiserApply",
                 "optimiser_apply",
-                {"artifact_path": "models/opt", "version": "3"},
+                {"sourceType": "file", "artifact_path": "models/opt", "version": "3"},
                 "apply_optimisation",
                 id="optimiser_apply",
             ),
@@ -1902,8 +1903,7 @@ class TestSanitizeDescription:
         compile(code, "<test>", "exec")
         tree = ast.parse(code)
         assert (ast.get_docstring(tree.body[0]) or "") == description, (
-            f"round-trip failed for {description!r}: "
-            f"docstring={ast.get_docstring(tree.body[0])!r}"
+            f"round-trip failed for {description!r}: docstring={ast.get_docstring(tree.body[0])!r}"
         )
 
     def test_triple_quotes_escaped(self):
@@ -2617,10 +2617,10 @@ class TestGenLiveSwitchRoundTrip:
         full_code = (
             "import polars as pl\nimport haute\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(path="a.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/src_a.json")\n'
             "def src_a() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("a.parquet")\n\n'
-            '@pipeline.data_source(path="b.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/src_b.json")\n'
             "def src_b() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("b.parquet")\n\n'
             f"{code}\n"

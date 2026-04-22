@@ -403,7 +403,7 @@ def _wrap_user_code(code: str, source_names: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public type alias — pre-refactor callers imported this from haute.codegen.
+# Codegen builder callable signature.
 # ---------------------------------------------------------------------------
 
 #: Builder signature: (node, source_names) -> generated Python code string.

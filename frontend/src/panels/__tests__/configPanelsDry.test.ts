@@ -1,7 +1,7 @@
 /**
  * Structural DRY regression guard for Phase 2 Package 3B.
  *
- * After extracting `useConfigEstimate` and centralising the shared
+ * After extracting `useStaleConfigEstimate` and centralising the shared
  * polling loop via `useJobPolling` / `useBackgroundJobs`, the two panels
  * — ModellingConfig.tsx and OptimiserConfig.tsx — must not re-inline
  * the patterns that now live in shared hooks.
@@ -25,7 +25,7 @@ const optimiserSrc = readFileSync(path.join(panelsDir, "OptimiserConfig.tsx"), "
 describe("configPanels DRY guard", () => {
   it("neither panel re-inlines the RAM / estimate useState+abort pattern", () => {
     // The old inline block used `setRamEstimate*` plus an `estimateAbortRef`
-    // useRef<AbortController>. That lives inside useConfigEstimate now.
+    // useRef<AbortController>. That lives inside useStaleConfigEstimate now.
     for (const src of [modellingSrc, optimiserSrc]) {
       expect(src).not.toMatch(/setRamEstimate\s*\(/)
       expect(src).not.toMatch(/setRamEstimateLoading\s*\(/)
@@ -64,10 +64,10 @@ describe("configPanels DRY guard", () => {
     }
   })
 
-  it("both panels call the shared useConfigEstimate hook", () => {
+  it("both panels call the shared useStaleConfigEstimate hook", () => {
     // The reviewer gate for item #67 requires 2+ callers, so both panels
     // must flow through the shared hook (even if the endpoint differs).
-    expect(modellingSrc).toMatch(/\buseConfigEstimate\s*\(/)
-    expect(optimiserSrc).toMatch(/\buseConfigEstimate\s*\(/)
+    expect(modellingSrc).toMatch(/\buseStaleConfigEstimate\s*\(/)
+    expect(optimiserSrc).toMatch(/\buseStaleConfigEstimate\s*\(/)
   })
 })

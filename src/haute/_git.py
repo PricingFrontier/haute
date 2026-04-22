@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from haute._logging import get_logger
-from haute._types import HauteError
+from haute.errors import HauteError
 from haute.schemas import (
     GitBranchItem,
     GitBranchListResponse,
@@ -159,7 +159,7 @@ def _get_current_branch(cwd: Path | None = None) -> str:
 @lru_cache(maxsize=32)
 def _get_default_branch_cached(cwd_str: str) -> str:
     """Cached inner implementation.  Keyed on stringified *cwd* because
-    ``Path`` is unhashable and we need ``lru_cache`` compatibility.
+    ``Path`` is unhashable and ``lru_cache`` keys must be hashable.
     """
     cwd = Path(cwd_str) if cwd_str else None
     ok, ref = _run_git_ok(
@@ -683,8 +683,10 @@ def pull_latest(cwd: Path | None = None) -> GitPullResponse:
     if ok and status.strip():
         _auto_commit(cwd)
 
-    # Fetch latest
-    _run_git("fetch", "origin", default, cwd=cwd)
+    # Fetch latest. Serialise with status polling fetches so git never has
+    # two subprocesses racing on the local object store.
+    with _fetch_exec_lock:
+        _run_git("fetch", "origin", default, cwd=cwd)
 
     # Count how many commits we're pulling
     ok_count, count_str = _run_git_ok(

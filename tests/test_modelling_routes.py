@@ -38,7 +38,7 @@ def _make_modelling_graph(
         "algorithm": algorithm,
         "task": task,
         "params": params or {"iterations": 10, "depth": 3},
-        "split": {"strategy": "random", "test_size": 0.2, "seed": 42},
+        "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
         "metrics": ["gini", "rmse"] if task == "regression" else ["auc", "logloss"],
     }
     if weight:
@@ -1215,7 +1215,8 @@ class TestClearModelCacheDirect:
         with patch("haute._mlflow_io.clear_model_cache", return_value=5) as mock:
             result = await clear_model_cache(run_id=None)
             mock.assert_called_once_with(None)
-            assert result == {"removed": 5, "run_id": None}
+            assert result.removed == 5
+            assert result.run_id is None
 
     @pytest.mark.asyncio
     async def test_clears_specific_run(self):
@@ -1224,7 +1225,8 @@ class TestClearModelCacheDirect:
         with patch("haute._mlflow_io.clear_model_cache", return_value=2) as mock:
             result = await clear_model_cache(run_id="run_xyz")
             mock.assert_called_once_with("run_xyz")
-            assert result == {"removed": 2, "run_id": "run_xyz"}
+            assert result.removed == 2
+            assert result.run_id == "run_xyz"
 
 
 class TestMlflowCheckDirect:

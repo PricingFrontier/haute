@@ -18,6 +18,7 @@ import click
 
 from haute._project import resolve_pipeline_file
 from haute.cli._helpers import ENDPOINT_SUFFIX_HELP
+from haute.errors import DeployError
 
 # Map of provider-name → env var set by that provider when a job is running.
 # Each provider is recognised explicitly so detection is obvious to anyone
@@ -152,11 +153,19 @@ def handle_deploy(config: DeployCliConfig) -> None:
     click.echo(f"  \u2713 Inferred output schema ({len(resolved_deploy.output_schema)} columns)")
 
     # 3. Validate
-    errors = validate_deploy(resolved_deploy)
-    if errors:
+    try:
+        validate_deploy(resolved_deploy)
+    except DeployError as exc:
         click.echo("\n  \u2717 Validation failed:", err=True)
-        for err in errors:
-            click.echo(f"    - {err}", err=True)
+        context = getattr(exc, "context", {})
+        structural_errors = context.get("structural_errors") if isinstance(context, dict) else None
+        test_quote_errors = context.get("test_quote_errors") if isinstance(context, dict) else None
+        details = [*(structural_errors or []), *(test_quote_errors or [])]
+        if details:
+            for err in details:
+                click.echo(f"    - {err}", err=True)
+        else:
+            click.echo(f"    - {exc}", err=True)
         raise SystemExit(1)
     click.echo("  \u2713 Validation passed")
 

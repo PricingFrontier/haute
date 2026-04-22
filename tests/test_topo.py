@@ -117,7 +117,7 @@ class TestCycleDetection:
 
     def test_cycle_error_is_haute_error(self):
         """CycleError is a HauteError subclass."""
-        from haute._types import HauteError
+        from haute.errors import HauteError
 
         with pytest.raises(HauteError):
             topo_sort_ids(["a", "b"], [_e("a", "b"), _e("b", "a")])

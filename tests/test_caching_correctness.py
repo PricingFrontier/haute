@@ -34,8 +34,8 @@ from pathlib import Path
 import pytest
 
 from haute._cache import graph_fingerprint
-from haute._io import _object_cache, load_external_object
-from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+from haute._io import _load_cached, load_external_object
+from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 from haute._types import GraphNode, NodeData, PipelineGraph
 
 # ---------------------------------------------------------------------------
@@ -43,14 +43,22 @@ from haute._types import GraphNode, NodeData, PipelineGraph
 # ---------------------------------------------------------------------------
 
 
+def _object_cache_size() -> int:
+    return _load_cached.cache_info().currsize
+
+
+def _artifact_cache_size() -> int:
+    return _load_artifact_cached.cache_info().currsize
+
+
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """Ensure a clean slate between tests for both object caches."""
-    _object_cache.clear()
-    _artifact_cache.clear()
+    _load_cached.cache_clear()
+    _load_artifact_cached.cache_clear()
     yield
-    _object_cache.clear()
-    _artifact_cache.clear()
+    _load_cached.cache_clear()
+    _load_artifact_cached.cache_clear()
 
 
 def _make_graph(config: dict) -> PipelineGraph:
@@ -358,7 +366,7 @@ class TestLoadExternalObjectUnchangedUsesCache:
         # Object identity proves the cache was used (no re-parse).
         assert r1 is r2
         # Cache should contain exactly one entry.
-        assert len(_object_cache) == 1
+        assert _object_cache_size() == 1
 
 
 class TestLoadOptimiserArtifactSameSecondOverwrite:
@@ -440,7 +448,7 @@ class TestLoadOptimiserArtifactUnchangedUsesCache:
         assert r1 == r2
         # Two reads of the same unchanged file must yield exactly one
         # cache entry — if the key were non-deterministic, there'd be two.
-        assert len(_artifact_cache) == 1
+        assert _artifact_cache_size() == 1
 
 
 # ===========================================================================
@@ -461,11 +469,11 @@ class TestCacheKeyStability:
         path.write_text('{"k": "v"}')
         for _ in range(5):
             load_external_object(str(path), "json")
-        assert len(_object_cache) == 1
+        assert _object_cache_size() == 1
 
     def test_many_optimiser_reads_produce_one_entry(self, tmp_path: Path) -> None:
         path = tmp_path / "opt.json"
         path.write_text(json.dumps({"mode": "ratebook"}))
         for _ in range(5):
             load_optimiser_artifact(str(path))
-        assert len(_artifact_cache) == 1
+        assert _artifact_cache_size() == 1

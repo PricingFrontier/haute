@@ -26,7 +26,7 @@ logger = get_logger(component="cache")
 # ``monkeypatch.setattr(haute._cache, "ALGO_VERSION", ...)`` to
 # simulate a bump and confirm cache entries do not collide across
 # versions — pinned by
-# ``tests/test_routes_hygiene_phase5.py::TestBumpVersionInvalidatesCache``.
+# ``tests/test_routes_hygiene.py::TestBumpVersionInvalidatesCache``.
 ALGO_VERSION: int = 1
 
 

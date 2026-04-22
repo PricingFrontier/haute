@@ -5,8 +5,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { configField } from "../utils/configField"
 import { buildGraph } from "../utils/buildGraph"
-import { useConfigEstimate } from "../hooks/useConfigEstimate"
-import { useConfigStaleness } from "../hooks/useConfigStaleness"
+import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { FeatureAndAlgorithmConfig } from "./modelling/FeatureAndAlgorithmConfig"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
@@ -37,10 +36,6 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
   const trainProgress: TrainProgress | null = trainJob?.progress ?? null
   const trainResult: TrainResult | null = cachedResult?.result ?? null
 
-  // Staleness detection — also re-triggers the RAM estimate when anything in
-  // the config changes (GPU toggle, excludes, etc.) via its hash.
-  const { configHash: currentConfigHash, isStale } = useConfigStaleness(config, cachedResult)
-
   // ── RAM + VRAM estimate, via the shared config-estimate hook ──
   // The hook owns the AbortController, loading/error state, and toast
   // emission; this panel only tells it *what* to fetch.
@@ -57,12 +52,15 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
     [allNodes, edges, submodels, preamble, nodeId],
   )
   const {
+    configHash: currentConfigHash,
+    isStale,
     estimate: ramEstimate,
     loading: ramEstimateLoading,
     error: ramEstimateError,
-  } = useConfigEstimate(
+  } = useStaleConfigEstimate(
     nodeId,
-    currentConfigHash,
+    config,
+    cachedResult,
     estimateEndpoint,
     { toastLabel: "RAM estimate failed" },
   )

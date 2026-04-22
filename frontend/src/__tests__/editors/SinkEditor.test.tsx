@@ -34,7 +34,7 @@ const DEFAULT_PROPS = {
   config: {} as Record<string, unknown>,
   onUpdate: vi.fn(),
   nodeId: "sink_1",
-  accentColor: "#60a5fa",
+  accentColor: "var(--accent-hover)",
 }
 
 /**
@@ -134,9 +134,9 @@ describe("SinkEditor", () => {
       expect(screen.getByText("Written successfully")).toBeTruthy()
     })
 
-    // The success message container should have green-ish color (ok status)
+    // The success message container should use the success token.
     const resultDiv = screen.getByText("Written successfully").closest("div")!
-    expect(resultDiv.style.background).toContain("34, 197, 94")
+    expect(resultDiv.style.background).toBe("var(--success-soft)")
   })
 
   it("failed write shows error message", async () => {
@@ -152,9 +152,9 @@ describe("SinkEditor", () => {
       expect(screen.getByText("Network error")).toBeTruthy()
     })
 
-    // The error message container should have red-ish background (error status)
+    // The error message container should use the danger token.
     const resultDiv = screen.getByText("Network error").closest("div")!
-    expect(resultDiv.style.background).toContain("239, 68, 68")
+    expect(resultDiv.style.background).toBe("var(--danger-soft)")
   })
 
   it("path input has no placeholder text", () => {

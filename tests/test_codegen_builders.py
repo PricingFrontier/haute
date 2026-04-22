@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from haute.codegen import _build_extra_kwargs, _node_to_code, graph_to_code
+from haute._codegen_builders import _build_extra_kwargs
+from haute.codegen import _node_to_code, graph_to_code
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n

@@ -150,54 +150,17 @@ class TestTrainingJobSourceHasNoCV:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: cv_folds attribute has no runtime effect
+# Test 2: cv_folds kwarg is gone
 # ---------------------------------------------------------------------------
 
 
-class TestCvFoldsHasNoRuntimeEffect:
-    """After the delete, one of two outcomes is acceptable:
+class TestCvFoldsKwargRemoved:
+    """``cv_folds`` must be removed from ``TrainingJob.__init__`` entirely."""
 
-      (a) ``cv_folds`` is removed from ``TrainingJob.__init__`` entirely —
-          passing it as a kwarg would raise ``TypeError``.
-      (b) ``cv_folds`` survives as a soft-deprecated no-op — passing it
-          does not change training output.
-
-    This test accepts either. It first tries to build a job with
-    ``cv_folds=5`` — if that raises ``TypeError`` we're done (outcome
-    (a)). Otherwise we compare the metrics of a ``cv_folds=5`` run
-    against a ``cv_folds=1`` run with the same seed; they must be
-    identical because CV was never affecting the primary model fit.
-    """
-
-    def test_cv_folds_kwarg_is_removed_or_noop(self, tmp_path) -> None:
-        """Setting ``cv_folds=5`` either raises ``TypeError`` (arg gone)
-        or produces metrics identical to ``cv_folds=1`` (no-op)."""
-        # (a) attribute removed — kwarg is rejected at the constructor
-        try:
-            result_cv5 = _fit_tiny_glm(tmp_path / "cv5", cv_folds=5)
-        except TypeError as e:
-            # Accepted: the argument has been fully removed.
-            assert "cv_folds" in str(e), (
-                f"TypeError raised for cv_folds kwarg should mention 'cv_folds' "
-                f"in its message, got: {e}"
-            )
-            return
-
-        # (b) argument still exists but must be a no-op. Same seed → same
-        # metrics regardless of cv_folds value. We compare against a
-        # cv_folds=1 run (which even pre-delete skipped the CV branch).
-        result_cv1 = _fit_tiny_glm(tmp_path / "cv1", cv_folds=1)
-
-        # Primary metrics must be identical — CV never fed back into the
-        # model fit, so changing cv_folds must not perturb them. This is
-        # the core "no runtime effect" contract: the delete is removing
-        # a branch whose only output was side-channel cv_results, so the
-        # primary training output is unchanged. Whether the side-channel
-        # is also gone is enforced separately by TestTrainResultHasNoCvFields.
-        assert result_cv5.metrics == result_cv1.metrics, (
-            "cv_folds survived as a kwarg but changed primary metrics — "
-            "the CV branch must be a complete no-op after the delete."
-        )
+    def test_cv_folds_kwarg_is_rejected(self, tmp_path) -> None:
+        """Setting ``cv_folds=5`` raises ``TypeError``."""
+        with pytest.raises(TypeError, match="cv_folds"):
+            _fit_tiny_glm(tmp_path / "cv5", cv_folds=5)
 
 
 # ---------------------------------------------------------------------------

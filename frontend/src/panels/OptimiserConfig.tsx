@@ -4,8 +4,7 @@ import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
 import { solveOptimiser, estimateOptimiserSolve } from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
-import { useConfigEstimate } from "../hooks/useConfigEstimate"
-import { useConfigStaleness } from "../hooks/useConfigStaleness"
+import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import type { SolveResult } from "./OptimiserPreview"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -76,8 +75,6 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
   const solveProgress = solveJob?.progress ?? null
   const solveError = solveJob?.error ?? null
   const solveResult: SolveResult | null = cachedResult?.result ?? null
-  // Staleness + hash derived by the shared hook (shared with ModellingConfig).
-  const { configHash: currentConfigHash, isStale } = useConfigStaleness(config, cachedResult)
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
   const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
@@ -133,9 +130,14 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
       ),
     [buildGraphCb, nodeId],
   )
-  const { estimate: solveEstimate } = useConfigEstimate(
+  const {
+    configHash: currentConfigHash,
+    isStale,
+    estimate: solveEstimate,
+  } = useStaleConfigEstimate(
     nodeId,
-    currentConfigHash,
+    config,
+    cachedResult,
     solveEstimateEndpoint,
     { toastLabel: "Solve estimate failed" },
   )
@@ -591,9 +593,9 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
 
       {/* Staleness indicator */}
       {isStale && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.08)", border: "1px solid rgba(245,158,11,.2)" }}>
-          <RefreshCw size={12} style={{ color: "#f59e0b" }} className="shrink-0" />
-          <span style={{ color: "#fbbf24" }}>Config changed since last solve</span>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)" }}>
+          <RefreshCw size={12} style={{ color: "var(--warning-strong)" }} className="shrink-0" />
+          <span style={{ color: "var(--warning)" }}>Config changed since last solve</span>
           <button
             onClick={handleSolve}
             disabled={solving || !canSolve}
@@ -661,12 +663,12 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
 
       {/* Error */}
       {solveError && (
-        <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)" }}>
+        <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
           <div className="flex items-start gap-2">
-            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "#ef4444" }} />
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} />
             <div className="space-y-1 min-w-0">
-              <div className="font-semibold" style={{ color: "#ef4444" }}>Optimisation failed</div>
-              <div style={{ color: "#fca5a5", lineHeight: "1.5" }}>{solveError}</div>
+              <div className="font-semibold" style={{ color: "var(--danger)" }}>Optimisation failed</div>
+              <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{solveError}</div>
             </div>
           </div>
         </div>
@@ -677,11 +679,11 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
         <div className="space-y-2">
           {/* Non-convergence warning banner */}
           {!solveResult.converged && (
-            <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.1)", border: "1px solid rgba(245,158,11,.25)" }}>
-              <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "#f59e0b" }} />
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-strong)", border: "1px solid var(--warning-border-strong)" }}>
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--warning-strong)" }} />
               <div>
-                <div className="font-semibold" style={{ color: "#f59e0b" }}>Solver did not converge</div>
-                <div style={{ color: "#fbbf24", lineHeight: "1.5" }}>
+                <div className="font-semibold" style={{ color: "var(--warning-strong)" }}>Solver did not converge</div>
+                <div style={{ color: "var(--warning)", lineHeight: "1.5" }}>
                   {solveResult.warning || "Try increasing max iterations or relaxing the tolerance."}
                 </div>
               </div>
@@ -689,8 +691,8 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
           )}
 
           {/* Convergence status */}
-          <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "rgba(34,197,94,.1)" : "rgba(245,158,11,.06)", border: `1px solid ${solveResult.converged ? "rgba(34,197,94,.2)" : "rgba(245,158,11,.15)"}` }}>
-            <div style={{ color: solveResult.converged ? "#22c55e" : "#f59e0b" }}>
+          <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "var(--success-soft)" : "var(--warning-soft-subtle)", border: `1px solid ${solveResult.converged ? "var(--success-border)" : "var(--warning-soft-selected)"}` }}>
+            <div style={{ color: solveResult.converged ? "var(--success)" : "var(--warning-strong)" }}>
               {solveResult.converged ? "Converged" : "Did not converge"}
               {solveResult.mode === "ratebook"
                 ? ` in ${solveResult.cd_iterations ?? "?"} CD iterations`

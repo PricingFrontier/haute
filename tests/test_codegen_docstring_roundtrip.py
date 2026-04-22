@@ -97,12 +97,7 @@ def _extract_docstring(code: str, func_name: str) -> str:
     (``import polars as pl`` + pipeline stub) so standalone node code
     parses cleanly.
     """
-    wrapper = (
-        "import polars as pl\n"
-        "import haute\n"
-        "pipeline = haute.Pipeline('test')\n\n"
-        f"{code}\n"
-    )
+    wrapper = f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
     tree = ast.parse(wrapper)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == func_name:
@@ -112,12 +107,7 @@ def _extract_docstring(code: str, func_name: str) -> str:
 
 def _assert_generated_parses(code: str) -> None:
     """Assert the generated node code is syntactically valid Python."""
-    wrapper = (
-        "import polars as pl\n"
-        "import haute\n"
-        "pipeline = haute.Pipeline('test')\n\n"
-        f"{code}\n"
-    )
+    wrapper = f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
     ast.parse(wrapper)  # raises SyntaxError on failure
 
 
@@ -135,7 +125,7 @@ _COMPILE_CASES_SAFE_TODAY = [
     # 2. Escape sequences (stored as literal backslash-letter in the
     #    Python source, resolved by the interpreter at load time).
     pytest.param(r"newline=\n tab=\t", id="escape-n-t"),
-    pytest.param(r'a \" b', id="escaped-quote"),
+    pytest.param(r"a \" b", id="escaped-quote"),
     # 4. Unicode (multi-byte, combining marks, mathematical symbols).
     pytest.param("café — 42°C — 数学 — 𝓜𝒶𝓉𝒽", id="unicode-mixed"),
     pytest.param("RTL: שלום עולם", id="rtl"),
@@ -159,9 +149,7 @@ _COMPILE_CASES_SAFE_TODAY = [
     # 10. Leading # lines that look like code comments.
     pytest.param("# this looks like a comment\nreal text", id="comment-leader"),
     # 11. Other common gotchas.
-    pytest.param(
-        "description with 'single' and \"double\" quotes", id="mixed-quotes"
-    ),
+    pytest.param("description with 'single' and \"double\" quotes", id="mixed-quotes"),
     pytest.param(
         "description with { format } braces {that mean} nothing",
         id="format-braces",
@@ -387,9 +375,7 @@ class TestTortureEndToEnd:
     ]
 
     @pytest.mark.parametrize("description", TORTURE_DESCRIPTIONS)
-    def test_submodel_nested_pathological_description_compiles(
-        self, description: str
-    ) -> None:
+    def test_submodel_nested_pathological_description_compiles(self, description: str) -> None:
         """End-to-end: submodel file with pathological docstring must compile.
 
         Asserts invariant (1): the generated submodel file is
@@ -442,9 +428,7 @@ class TestTortureEndToEnd:
         tree = ast.parse(sm_code)
         # Must contain the Inner function
         inner_fns = [
-            n
-            for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == "Inner"
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "Inner"
         ]
         assert len(inner_fns) == 1, f"expected 1 Inner() function, got {len(inner_fns)}"
         # The function must have a non-None docstring.  We do not assert
@@ -504,8 +488,7 @@ class TestTortureEndToEnd:
         files = graph_to_code_multi(graph, pipeline_name="main")
         tree = ast.parse(files["modules/torture_sm.py"])
         inner_fn = next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == "Inner"
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "Inner"
         )
         # Strict round-trip: assert equality.  Fails today; post-fix
         # this must pass and the xfail marker must be removed.

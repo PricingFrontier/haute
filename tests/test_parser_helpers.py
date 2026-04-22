@@ -42,7 +42,6 @@ from haute._parser_helpers import (
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
-    _extract_sentinel_user_code,
     _extract_source_user_code,
     _extract_submodel_meta,
     _extract_user_code,
@@ -734,11 +733,10 @@ class TestBuildNodeConfigExtended:
         assert config["min_value"] == 0.8
         assert config["steps"] == 5
 
-    def test_scenario_expander_config_extracts_sentinel_code(self):
+    def test_scenario_expander_config_extracts_user_code_after_boilerplate(self):
         body = (
             '    """Expand."""\n'
             "    df = source\n"
-            "    # -- user code --\n"
             '    df = df.filter(pl.col("sv") > 0.9)\n'
             "    return df"
         )
@@ -774,10 +772,15 @@ class TestBuildNodeConfigExtended:
     def test_optimiser_apply_config(self):
         config = _build_node_config(
             NodeType.OPTIMISER_APPLY,
-            {"optimiser_apply": True, "artifact_path": "/path/to/artifact.json"},
+            {
+                "optimiser_apply": True,
+                "source_type": "file",
+                "artifact_path": "/path/to/artifact.json",
+            },
             "",
             [],
         )
+        assert config["sourceType"] == "file"
         assert config["artifact_path"] == "/path/to/artifact.json"
 
     def test_modelling_config(self):
@@ -831,8 +834,15 @@ class TestBuildNodeConfigExtended:
         )
         assert config["sourceType"] == "run"
 
-    def test_model_score_code_from_sentinel(self):
-        body = "    result = df.lazy()\n    # -- user code --\n    x = 1\n    return result"
+    def test_model_score_code_after_scoring_call(self):
+        body = (
+            "    result = score_from_config(\n"
+            "        df,\n"
+            '        config="config/model_scoring/model.json",\n'
+            "    )\n"
+            "    x = 1\n"
+            "    return result"
+        )
         config = _build_node_config(NodeType.MODEL_SCORE, {}, body, [])
         assert "x = 1" in config["code"]
 
@@ -843,19 +853,34 @@ class TestBuildNodeConfigExtended:
 
 
 class TestResolveNodeConfig:
-    def test_inline_kwargs_path(self):
-        """Without config= key, falls through to _build_node_config."""
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+    def test_config_node_without_config_reference_raises(self):
+        """Config-backed node types must reference their JSON sidecar."""
+        from haute.errors import ConfigError
+
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
+            with pytest.raises(ConfigError):
+                _resolve_node_config(
+                    {"path": "data.parquet"},
+                    "",
+                    [],
+                    0,
+                    None,
+                    explicit_node_type=NodeType.DATA_SOURCE,
+                )
+
+    def test_polars_without_config_reference_builds_from_body(self):
+        """Polars nodes keep code in the function body and need no sidecar."""
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, config = _resolve_node_config(
-                {"path": "data.parquet"},
-                "",
-                [],
-                0,
+                {},
+                "    return df",
+                ["df"],
+                1,
                 None,
-                explicit_node_type=NodeType.DATA_SOURCE,
+                explicit_node_type=NodeType.POLARS,
             )
-        assert node_type == NodeType.DATA_SOURCE
-        assert config["path"] == "data.parquet"
+        assert node_type == NodeType.POLARS
+        assert isinstance(config["code"], str)
 
     def test_external_config_file(self, tmp_path):
         """With config= key, loads JSON from file."""
@@ -865,7 +890,7 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, loaded = _resolve_node_config(
                 {"config": "config/data_source/my_source.json"},
                 "",
@@ -877,8 +902,8 @@ class TestResolveNodeConfig:
         assert node_type == NodeType.DATA_SOURCE
         assert loaded["path"] == "data.csv"
 
-    def test_data_source_extracts_code_from_sentinel(self, tmp_path):
-        """DataSource with sentinel extracts user code from function body."""
+    def test_data_source_extracts_code_after_boilerplate(self, tmp_path):
+        """DataSource extracts user code from the function body."""
         cfg = {"path": "data.parquet", "sourceType": "flat_file"}
         cfg_dir = tmp_path / "config" / "data_source"
         cfg_dir.mkdir(parents=True)
@@ -888,11 +913,10 @@ class TestResolveNodeConfig:
         body = (
             '    """Load data."""\n'
             '    df = pl.scan_parquet("data.parquet")\n'
-            "    # -- user code --\n"
             "    df = df.filter(pl.col('x') > 0)\n"
             "    return df"
         )
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, loaded = _resolve_node_config(
                 {"config": "config/data_source/my_source.json"},
                 body,
@@ -913,7 +937,7 @@ class TestResolveNodeConfig:
         cfg_file.write_text(json.dumps(cfg))
 
         body = '    """Load data."""\n    return pl.scan_parquet("data.parquet")'
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, loaded = _resolve_node_config(
                 {"config": "config/data_source/my_source.json"},
                 body,
@@ -933,7 +957,7 @@ class TestResolveNodeConfig:
         """
         from haute.errors import ConfigError
 
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
                     {"config": "config/data_source/missing.json"},
@@ -953,7 +977,7 @@ class TestResolveNodeConfig:
 
         body = '    """doc"""\n    df = df.filter(pl.col("x") > 0)\n    return df'
 
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             node_type, config = _resolve_node_config(
                 {"config": "config/banding/my_transform.json"},
                 body,
@@ -968,17 +992,17 @@ class TestResolveNodeConfig:
         """_resolve_node_config must not modify the caller's dict (B21)."""
         kwargs: dict[str, Any] = {"config": "config/data_source/x.json", "extra": True}
         original = dict(kwargs)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
-            with patch("haute._parser_helpers.load_node_config", return_value={}):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
+            with patch("haute._config_builder.load_node_config", return_value={}):
                 _resolve_node_config(kwargs, "", [], 0, None)
         # The original dict must be untouched — "config" key stays.
         assert kwargs == original
 
-    def test_no_mutation_inline_kwargs_path(self):
-        """Even the inline-kwargs path must not mutate the input dict (B21)."""
+    def test_no_mutation_polars_path(self):
+        """The no-sidecar path must not mutate the input dict (B21)."""
         kwargs: dict[str, Any] = {"path": "data.parquet"}
         original = dict(kwargs)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             _resolve_node_config(kwargs, "", [], 0, None)
         assert kwargs == original
 
@@ -990,8 +1014,8 @@ class TestResolveNodeConfig:
             "format": "parquet",
         }
         original = dict(kwargs)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
-            with patch("haute._parser_helpers.load_node_config", return_value={}):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
+            with patch("haute._config_builder.load_node_config", return_value={}):
                 _resolve_node_config(kwargs, "", [], 0, None)
         assert kwargs == original
 
@@ -1011,7 +1035,7 @@ class TestResolveNodeConfig:
         cfg_file.write_text(json.dumps(cfg))
 
         mangled_path = "config/\x08anding/age_band.json"
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
                     {"config": mangled_path},
@@ -1069,50 +1093,6 @@ class TestDedentEdgeCases:
 # ===========================================================================
 
 
-class TestExtractSentinelUserCode:
-    def test_extracts_code_between_sentinel_and_return_df(self):
-        body = (
-            '    df = pl.scan_parquet("data.parquet")\n'
-            "    # -- user code --\n"
-            "    df = df.filter(pl.col('x') > 0)\n"
-            "    return df"
-        )
-        result = _extract_sentinel_user_code(body, "df")
-        assert "filter" in result
-        assert "return" not in result
-
-    def test_no_sentinel_returns_empty(self):
-        body = '    return pl.scan_parquet("data.parquet")'
-        assert _extract_sentinel_user_code(body, "df") == ""
-
-    def test_sentinel_with_no_code_returns_empty(self):
-        body = '    df = pl.scan_parquet("data.parquet")\n    # -- user code --\n    return df'
-        assert _extract_sentinel_user_code(body, "df") == ""
-
-    def test_model_score_compat_return_result(self):
-        """Works with return_var='result' for MODEL_SCORE backward compat."""
-        body = (
-            "    result = score(df)\n"
-            "    # -- user code --\n"
-            "    result = result.with_columns(x=1)\n"
-            "    return result"
-        )
-        result = _extract_sentinel_user_code(body, "result")
-        assert "with_columns" in result
-        assert "return" not in result
-
-    def test_multiline_code(self):
-        body = (
-            '    df = pl.scan_parquet("data.parquet")\n'
-            "    # -- user code --\n"
-            "    df = df.filter(pl.col('x') > 0).select('x', 'y')\n"
-            "    return df"
-        )
-        result = _extract_sentinel_user_code(body, "df")
-        assert "filter" in result
-        assert "select" in result
-
-
 class TestExtractUserCodeEdgeCases:
     def test_whitespace_only_body(self):
         assert _extract_user_code("   \n   \n", []) == ""
@@ -1139,7 +1119,7 @@ class TestExtractUserCodeEdgeCases:
 
     def test_multi_statement_roundtrip_stable(self):
         """Regression: repeated wrap→extract must not accumulate bare 'df'."""
-        from haute.codegen import _wrap_user_code
+        from haute._codegen_builders import _wrap_user_code
 
         code = "df = df.rename({'a': 'b'})\ndf = df.select('b')"
         for _ in range(5):
@@ -1200,13 +1180,18 @@ class TestExtractDecoratedNodes:
         func_bodies = _extract_function_bodies(source, tree=tree)
         return tree, func_bodies
 
-    def test_extracts_pipeline_nodes(self):
+    def test_extracts_pipeline_nodes(self, tmp_path):
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text(
+            json.dumps({"path": "data.parquet", "sourceType": "flat_file"})
+        )
         source = (
             "import polars as pl\n"
             "import haute\n"
             'pipeline = haute.Pipeline("test")\n'
             "\n"
-            "@pipeline.data_source(path='data.parquet')\n"
+            '@pipeline.data_source(config="config/data_source/source.json")\n'
             "def source():\n"
             '    """Load data."""\n'
             "    return pl.scan_parquet('data.parquet')\n"
@@ -1216,12 +1201,12 @@ class TestExtractDecoratedNodes:
             "    return source\n"
         )
         tree, bodies = self._parse_source(source)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             nodes = _extract_decorated_nodes(
                 tree,
                 _is_pipeline_node_decorator,
                 bodies,
-                None,
+                tmp_path,
             )
         assert len(nodes) == 2
         assert nodes[0]["func_name"] == "source"
@@ -1239,7 +1224,7 @@ class TestExtractDecoratedNodes:
             "    return data\n"
         )
         tree, bodies = self._parse_source(source)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             nodes = _extract_decorated_nodes(
                 tree,
                 _is_submodel_node_decorator,
@@ -1260,7 +1245,7 @@ class TestExtractDecoratedNodes:
             "    return 1\n"
         )
         tree, bodies = self._parse_source(source)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             nodes = _extract_decorated_nodes(
                 tree,
                 _is_pipeline_node_decorator,
@@ -1273,7 +1258,7 @@ class TestExtractDecoratedNodes:
     def test_ignores_non_function_stmts(self):
         source = "x = 1\ny = 2\n@pipeline.polars\ndef only_func():\n    return 1\n"
         tree, bodies = self._parse_source(source)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             nodes = _extract_decorated_nodes(
                 tree,
                 _is_pipeline_node_decorator,
@@ -1284,7 +1269,7 @@ class TestExtractDecoratedNodes:
 
     def test_empty_tree_returns_empty(self):
         tree, bodies = self._parse_source("x = 1\n")
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             nodes = _extract_decorated_nodes(
                 tree,
                 _is_pipeline_node_decorator,
@@ -1296,7 +1281,7 @@ class TestExtractDecoratedNodes:
     def test_extracts_param_names(self):
         source = "@pipeline.polars\ndef transform(a, b, c):\n    return a\n"
         tree, bodies = self._parse_source(source)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             nodes = _extract_decorated_nodes(
                 tree,
                 _is_pipeline_node_decorator,
@@ -1308,7 +1293,7 @@ class TestExtractDecoratedNodes:
     def test_extracts_docstring(self):
         source = '@pipeline.polars\ndef transform(a):\n    """My transform doc."""\n    return a\n'
         tree, bodies = self._parse_source(source)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             nodes = _extract_decorated_nodes(
                 tree,
                 _is_pipeline_node_decorator,
@@ -1320,7 +1305,7 @@ class TestExtractDecoratedNodes:
     def test_pipeline_checker_does_not_match_submodel(self):
         source = "@submodel.polars\ndef calc(x):\n    return x\n"
         tree, bodies = self._parse_source(source)
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             # submodel checker matches @submodel.polars
             nodes = _extract_decorated_nodes(
                 tree,
@@ -1425,17 +1410,6 @@ class TestExtractSourceUserCode:
         result = _extract_source_user_code(body)
         assert result == ""
 
-    def test_sentinel_format_detection(self):
-        body = (
-            '    df = pl.scan_parquet("data.parquet")\n'
-            "    # -- user code --\n"
-            "    df = df.filter(pl.col('x') > 0)\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert "filter" in result
-        assert "scan_parquet" not in result
-
 
 # ===========================================================================
 # _extract_model_score_user_code
@@ -1453,10 +1427,9 @@ class TestExtractModelScoreUserCode:
         result = _extract_model_score_user_code(body)
         assert "with_columns" in result
 
-    def test_extracts_code_after_sentinel(self):
+    def test_extracts_code_after_scoring_call(self):
         body = (
             '    result = score_from_config(df, Path("model.json"))\n'
-            "    # -- user code --\n"
             "    result = result.filter(pl.col('x') > 0)\n"
             "    return result"
         )

@@ -35,6 +35,8 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from tests.conftest import write_data_source_config
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -52,6 +54,8 @@ def pipeline_project(tmp_path: Path) -> Path:
     data_dir.mkdir()
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data_dir / "input.parquet")
     data_path = (data_dir / "input.parquet").as_posix()
+    source_a_config = write_data_source_config(tmp_path, "source_a", data_path)
+    source_b_config = write_data_source_config(tmp_path, "source_b", data_path)
 
     # haute.toml points at the first pipeline; discover_pipelines() will also
     # pick up the second via the root-level .py glob fallback.
@@ -64,7 +68,7 @@ import haute
 pipeline = haute.Pipeline("pipeline_a")
 
 
-@pipeline.data_source(path="{data_path}")
+@pipeline.data_source(config="{source_a_config}")
 def source_a() -> pl.DataFrame:
     return pl.scan_parquet("{data_path}")
 
@@ -84,7 +88,7 @@ import haute
 pipeline = haute.Pipeline("pipeline_b")
 
 
-@pipeline.data_source(path="{data_path}")
+@pipeline.data_source(config="{source_b_config}")
 def source_b() -> pl.DataFrame:
     return pl.scan_parquet("{data_path}")
 
@@ -284,6 +288,7 @@ class TestFileWatcherRebuildsCache:
 
         # Write a third pipeline to disk — this is what the watcher would see.
         data_path = (pipeline_project / "data" / "input.parquet").as_posix()
+        source_c_config = write_data_source_config(pipeline_project, "source_c", data_path)
         (pipeline_project / "pipeline_c.py").write_text(
             f'''\
 import polars as pl
@@ -292,7 +297,7 @@ import haute
 pipeline = haute.Pipeline("pipeline_c")
 
 
-@pipeline.data_source(path="{data_path}")
+@pipeline.data_source(config="{source_c_config}")
 def source_c() -> pl.DataFrame:
     return pl.scan_parquet("{data_path}")
 

@@ -35,6 +35,7 @@ from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
 from haute._types import GraphNode, NodeType, _Frame
+from haute._user_exec import _exec_user_code
 
 logger = get_logger(component="executor")
 
@@ -274,9 +275,8 @@ def _register(
             f"_register({node_type!r}): pass either columns= or opaque=True, not both.",
         )
 
-    # Resolve the contract callback eagerly so both the registry entry and
-    # the legacy mirror reference the *same* callable (test_column_contracts
-    # asserts identity across mirrors).
+    # Resolve the contract callback eagerly so every registry view references
+    # the same callable (test_column_contracts asserts identity).
     contract_fn: ColumnContractFn | None
     if opaque:
         contract_fn = _opaque_columns
@@ -395,8 +395,6 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, base_fn, True
 
     def source_with_code() -> _Frame:
-        from haute.executor import _exec_user_code
-
         raw = base_fn()
         return _exec_user_code(code, ["df"], (raw,), extra_ns=_preamble)
 
@@ -483,8 +481,6 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if code:
 
         def external_fn(*dfs: _Frame) -> _Frame:
-            from haute.executor import _exec_user_code
-
             ens = {"obj": load_external_object(path, file_type, model_class)}
             ens.update(_preamble_ext)
             return _exec_user_code(
@@ -656,8 +652,6 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     def scenario_expand_with_code(
         *dfs: _Frame,
     ) -> _Frame:
-        from haute.executor import _exec_user_code
-
         expanded = scenario_expand_fn(*dfs)
         return _exec_user_code(code, ["df"], (expanded,), extra_ns=_preamble)
 
@@ -699,7 +693,14 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> ColumnContract:
     # once a source is configured do the referenced columns become
     # artifact-driven and therefore opaque.
     source_type = config.get("sourceType", "")
-    has_file = bool(config.get("artifact_path", "")) and source_type in ("", "file")
+    if config.get("artifact_path", "") and not source_type:
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            "optimiserApply node with artifact_path requires sourceType='file'",
+            missing_field="sourceType",
+        )
+    has_file = bool(config.get("artifact_path", "")) and source_type == "file"
     has_mlflow = source_type in ("run", "registered") and (
         (source_type == "run" and config.get("run_id"))
         or (source_type == "registered" and config.get("registered_model"))
@@ -720,7 +721,14 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _opt_version = config.get("version", "latest")
 
     # Determine if we have a valid source configured
-    _has_file = bool(_artifact_path) and _source_type in ("", "file")
+    if _artifact_path and not _source_type:
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            "optimiserApply node with artifact_path requires sourceType='file'",
+            missing_field="sourceType",
+        )
+    _has_file = bool(_artifact_path) and _source_type == "file"
     _has_mlflow = _source_type in ("run", "registered") and (
         (_source_type == "run" and _run_id) or (_source_type == "registered" and _registered_model)
     )
@@ -881,8 +889,6 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if code:
 
         def transform_fn(*dfs: _Frame) -> _Frame:
-            from haute.executor import _exec_user_code
-
             return _exec_user_code(
                 code,
                 _src_names,

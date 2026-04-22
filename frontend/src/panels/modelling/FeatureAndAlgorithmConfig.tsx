@@ -108,7 +108,7 @@ export function FeatureAndAlgorithmConfig({
                 <button
                   onClick={() => onUpdate("exclude", [])}
                   className="px-1.5 py-0.5 rounded text-[10px] font-mono"
-                  style={{ background: "rgba(34,197,94,.1)", color: "#22c55e", border: "1px solid rgba(34,197,94,.2)" }}
+                  style={{ background: "var(--success-soft)", color: "var(--success)", border: "1px solid var(--success-border)" }}
                 >
                   Select all
                 </button>
@@ -120,7 +120,7 @@ export function FeatureAndAlgorithmConfig({
                     onUpdate("exclude", allFeatures)
                   }}
                   className="px-1.5 py-0.5 rounded text-[10px] font-mono"
-                  style={{ background: "rgba(239,68,68,.1)", color: "#ef4444", border: "1px solid rgba(239,68,68,.2)" }}
+                  style={{ background: "var(--danger-soft)", color: "var(--danger)", border: "1px solid var(--danger-border)" }}
                 >
                   Deselect all
                 </button>
@@ -142,11 +142,11 @@ export function FeatureAndAlgorithmConfig({
                   // Stale entry: orange name + X button
                   return (
                     <div key={name} className="flex items-center gap-2">
-                      <span className="text-[11px] font-mono flex-1 truncate" style={{ color: "#f59e0b" }}>{name}</span>
+                      <span className="text-[11px] font-mono flex-1 truncate" style={{ color: "var(--warning-strong)" }}>{name}</span>
                       <span className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>not found</span>
                       <button
                         onClick={() => removeExclude(name)}
-                        className="p-0.5 rounded transition-colors shrink-0 hover:text-[#ef4444]"
+                        className="p-0.5 rounded transition-colors shrink-0 hover:text-[var(--danger)]"
                         style={{ color: "var(--text-muted)" }}
                         title={`Remove "${name}" from exclude list`}
                       >
@@ -173,13 +173,13 @@ export function FeatureAndAlgorithmConfig({
                         className="px-1.5 py-0.5 rounded text-[10px] font-mono"
                         style={{
                           background: (isExclude ? excluded : !excluded)
-                            ? (isExclude ? "rgba(239,68,68,.15)" : "rgba(34,197,94,.15)")
+                            ? (isExclude ? "var(--danger-soft-strong)" : "var(--success-soft-strong)")
                             : "var(--chrome-hover)",
                           color: (isExclude ? excluded : !excluded)
-                            ? (isExclude ? "#ef4444" : "#22c55e")
+                            ? (isExclude ? "var(--danger)" : "var(--success)")
                             : "var(--text-muted)",
                           border: `1px solid ${(isExclude ? excluded : !excluded)
-                            ? (isExclude ? "rgba(239,68,68,.3)" : "rgba(34,197,94,.3)")
+                            ? (isExclude ? "var(--danger-border-strong)" : "var(--success-border-strong)")
                             : "transparent"}`,
                         }}
                       >
@@ -197,7 +197,7 @@ export function FeatureAndAlgorithmConfig({
                 <button
                   onClick={() => onUpdate("exclude", exclude.filter(e => upstreamNames.has(e)))}
                   className="px-1.5 py-0.5 rounded text-[10px] font-mono"
-                  style={{ background: "rgba(245,158,11,.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,.2)" }}
+                  style={{ background: "var(--warning-soft-strong)", color: "var(--warning-strong)", border: "1px solid var(--warning-border)" }}
                 >
                   Remove all stale ({staleExcludes.length})
                 </button>
@@ -230,13 +230,13 @@ export function FeatureAndAlgorithmConfig({
           className="w-full mt-1.5 px-2.5 py-2 rounded-lg text-xs font-mono"
           style={{
             background: "var(--bg-input)",
-            border: `1px solid ${parseError ? "#ef4444" : "var(--border)"}`,
+            border: `1px solid ${parseError ? "var(--danger)" : "var(--border)"}`,
             color: "var(--text-primary)",
             resize: "vertical",
           }}
         />
         {parseError && (
-          <p className="text-[10px] mt-0.5" style={{ color: "#ef4444" }}>
+          <p className="text-[10px] mt-0.5" style={{ color: "var(--danger)" }}>
             {parseError}
           </p>
         )}

@@ -6,10 +6,6 @@
  * Application settings (MLflow, sources, caches) live in useSettingsStore.
  * Graph-shaped state (nodes, edges, preamble) and the dirty-tracking
  * `lastSavedSnapshot` live in useGraphStore (Wave 7E consolidation).
- *
- * `serializeSnapshot` and `selectIsDirty` are re-exported here for
- * existing import paths — the implementations live in
- * `utils/graphSnapshot.ts` and are shared with `useGraphStore`.
  */
 import { create } from "zustand"
 
@@ -92,14 +88,5 @@ const useUIStore = create<UIState>()((set) => ({
     }
   },
 }))
-
-// ---------------------------------------------------------------------------
-// Re-exports — the canonical `serializeSnapshot` / `selectIsDirty`
-// helpers live in `utils/graphSnapshot.ts`.  These are kept here so
-// existing import paths (`useUIStore, { serializeSnapshot, selectIsDirty }`)
-// continue to resolve after the Wave 7E consolidation.
-// ---------------------------------------------------------------------------
-
-export { serializeSnapshot, selectIsDirty } from "../utils/graphSnapshot"
 
 export default useUIStore

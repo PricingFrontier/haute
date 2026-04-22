@@ -7,6 +7,7 @@ verify all stages interoperate correctly.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -28,7 +29,7 @@ PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_json_cache(tmp_path, monkeypatch):
+def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     """Redirect the JSON parquet cache to a temp dir and pre-populate it.
 
     Without this, a stale .haute_cache/ in the working directory (from a
@@ -44,11 +45,16 @@ def _isolate_json_cache(tmp_path, monkeypatch):
     cache_dir = str(tmp_path / "json_cache")
     monkeypatch.setattr(jf, "_CACHE_DIR", cache_dir)
 
-    # Pre-cache the fixture JSON file as parquet
-    data_path = "tests/fixtures/data/api_input.json"
-    cache_path = jf._json_cache_path(data_path)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    pl.read_json(data_path).write_parquet(cache_path)
+    runtime_data_dir = tmp_path / "data"
+    shutil.copytree(FIXTURE_DIR / "data", runtime_data_dir, dirs_exist_ok=True)
+
+    for data_path in (
+        (FIXTURE_DIR / "data/api_input.json").resolve(),
+        (runtime_data_dir / "api_input.json").resolve(),
+    ):
+        cache_path = jf._json_cache_path(str(data_path))
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        pl.read_json(data_path).write_parquet(cache_path)
 
 
 class TestEndToEnd:
@@ -430,6 +436,7 @@ class TestAllNodeTypesRoundtrip:
                 "opt_apply",
                 NodeType.OPTIMISER_APPLY,
                 {
+                    "sourceType": "file",
                     "artifact_path": "optimiser.json",
                 },
             ),

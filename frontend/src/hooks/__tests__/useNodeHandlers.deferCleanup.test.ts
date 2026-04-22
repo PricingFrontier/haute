@@ -49,7 +49,6 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
       solveJobs: {},
       trainResults: {},
       trainJobs: {},
-      graphVersion: 0,
     })
     useUIStore.setState({ renameDialog: null, submodelDialog: null })
   })

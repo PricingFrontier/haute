@@ -1178,6 +1178,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
+                                "sourceType": "file",
                                 "artifact_path": "artifacts/opt_artifact.json",
                                 "version_column": "__opt_v__",
                             },
@@ -2443,8 +2444,14 @@ class TestValidateDeployEdgeCases:
             input_node_ids=["src"],
         )
 
-        errors = validate_deploy(resolved)
-        assert any("missing_output" in e and "not in pruned graph" in e for e in errors)
+        from haute.errors import DeployError
+
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "missing_output" in e and "not in pruned graph" in e
+            for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_empty_input_schema_reported(self):
         """Validation must report an error when input_schema is empty."""
@@ -2466,8 +2473,13 @@ class TestValidateDeployEdgeCases:
             output_node_id="output",
         )
 
-        errors = validate_deploy(resolved)
-        assert any("Input schema is empty" in e for e in errors)
+        from haute.errors import DeployError
+
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "Input schema is empty" in e for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_empty_output_schema_reported(self):
         """Validation must report an error when output_schema is empty."""
@@ -2489,8 +2501,13 @@ class TestValidateDeployEdgeCases:
             output_node_id="output",
         )
 
-        errors = validate_deploy(resolved)
-        assert any("Output schema is empty" in e for e in errors)
+        from haute.errors import DeployError
+
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "Output schema is empty" in e for e in exc_info.value.context["structural_errors"]
+        )
 
 
 class TestScoreTestQuotesEdgeCases:

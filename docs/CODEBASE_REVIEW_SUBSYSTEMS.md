@@ -20,7 +20,7 @@ Cross-references:
 - Deep hierarchies (`ConfigError → HautePathError → ...`) — rejected: one layer is enough for the distinctions we make.
 - `pydantic.ValidationError` for config — rejected: only fits Pydantic-validated cases; doesn't help parser / executor.
 
-**Open questions.** None material. The hierarchy is unified (`_types.HauteError` re-exports from `haute.errors.HauteError`) so all legacy subclasses and new ones share one `__mro__` root.
+**Open questions.** None material. The hierarchy is unified around `haute.errors.HauteError`; module-specific subclasses share one `__mro__` root and the public package export points at that canonical class.
 
 ---
 
@@ -106,7 +106,7 @@ Cross-references:
 
 **Alternatives considered.**
 - Keep everything in `_types.py` — rejected because 669 LOC mixed concerns is the god-file pattern.
-- Add backward-compat shim for external callers — tried initially; removed during audit (zero in-repo callers, and "No Backward Compatibility" per COMMIT_STANDARDS).
+- Add a transition shim for external callers — rejected during audit because there were zero in-repo callers and no existing users.
 
 **Open questions.** None.
 

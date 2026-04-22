@@ -10,6 +10,7 @@ E8: Verify ``_execute_eager_core`` logs node failures at ``error`` level,
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,15 +101,20 @@ def pipeline_graph(tmp_path: Path):
     data_dir.mkdir()
     data_path = data_dir / "input.parquet"
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data_path)
+    cfg_dir = tmp_path / "config" / "data_source"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "source.json").write_text(
+        json.dumps({"path": data_path.as_posix(), "sourceType": "flat_file"})
+    )
 
     # ``as_posix`` ensures the path emitted into the f-string stays
     # parseable on Windows, where ``C:\Users\...`` would otherwise be
     # read as a ``\U`` unicode escape.
-    code = f"""\
+    code = """\
 import haute
 pipeline = haute.Pipeline("test")
 
-@pipeline.data_source(path="{data_path.as_posix()}")
+@pipeline.data_source(config="config/data_source/source.json")
 def source(config):
     pass
 """
@@ -1253,7 +1259,7 @@ class TestUserCodeErrorSanitization:
     the wrapping exec()/sandbox internals."""
 
     def test_user_code_nameerror_no_exec_frame(self) -> None:
-        from haute.executor import _exec_user_code
+        from haute._user_exec import _exec_user_code
 
         with pytest.raises(NameError) as exc_info:
             _exec_user_code(
@@ -1268,7 +1274,7 @@ class TestUserCodeErrorSanitization:
         assert "exec(" not in error_msg
 
     def test_user_code_typeerror_no_sandbox_path(self) -> None:
-        from haute.executor import _exec_user_code
+        from haute._user_exec import _exec_user_code
 
         with pytest.raises(TypeError) as exc_info:
             _exec_user_code(

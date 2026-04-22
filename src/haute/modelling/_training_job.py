@@ -93,7 +93,7 @@ class TrainResult:
     feature_importance: list[dict[str, Any]]
     model_path: str
     train_rows: int
-    test_rows: int  # validation rows (kept as test_rows for backward compat)
+    test_rows: int  # validation rows
     features: list[str]
     cat_features: list[str]
     holdout_rows: int = 0
@@ -209,7 +209,7 @@ class TrainingJob:
     params : dict | None
         Algorithm-specific hyperparameters.
     split : dict | SplitConfig | None
-        Split configuration (strategy, test_size, seed, etc.).
+        Split configuration (strategy, validation_size, seed, etc.).
     metrics : list[str] | None
         Metrics to compute (default: ["gini", "rmse"]).
     mlflow_experiment : str | None

@@ -136,9 +136,9 @@ class TestWatcherLongSaveRace:
         mark_times: list[float] = []
         original_mark = helpers.mark_self_write
 
-        def tracked_mark() -> None:
+        def tracked_mark(path: Path | None = None) -> None:
             mark_times.append(time.monotonic())
-            original_mark()
+            original_mark(path)
 
         monkeypatch.setattr(helpers, "mark_self_write", tracked_mark)
         monkeypatch.setattr("haute.routes._save_pipeline.mark_self_write", tracked_mark)

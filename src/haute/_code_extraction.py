@@ -17,8 +17,8 @@ Design (item #52 of CODEBASE_REVIEW.md):
   single consolidated entrypoint — it does the shared work (docstring
   strip, dedent, trailing-return strip) and dispatches the
   kind-specific logic through the registry.
-* The four legacy ``_extract_*_user_code`` functions remain as thin
-  shims over the engine, keeping the existing public surface intact.
+* The four ``_extract_*_user_code`` functions remain thin wrappers over
+  the engine for the parser modules that call them directly.
 
 Return-boundary detection (#137):
 
@@ -38,7 +38,6 @@ Return-boundary detection (#137):
 from __future__ import annotations
 
 import ast
-import textwrap
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -47,7 +46,6 @@ from haute.errors import ParseError
 
 __all__ = [
     "_extract_user_code",
-    "_extract_sentinel_user_code",
     "_extract_source_user_code",
     "_extract_model_score_user_code",
     "_extract_external_user_code",
@@ -86,9 +84,9 @@ class _UserCodeParseError(ParseError, ValueError):
 
     Multiple inheritance with :class:`ParseError` (via ``HauteError``)
     puts the error into Haute's canonical hierarchy so GUI callers
-    that catch ``ParseError`` see this too; keeping ``ValueError`` in
-    the bases preserves backwards compatibility with callers written
-    against the pre-Phase-6 raw-``ValueError`` contract.
+    that catch ``ParseError`` see this too; ``ValueError`` is kept in
+    the bases because the parser treats syntax failures as value-level
+    extraction errors.
     """
 
 
@@ -188,15 +186,15 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
     Nested returns (inside ``def`` / ``class`` / ``lambda`` bodies) are
     invisible to this check.
 
-    Also strips trailing blank lines from the result for parity with the
-    legacy line-heuristic.
+    Also strips trailing blank lines from the result, matching the previous
+    line-based implementation.
     """
     if not source.strip():
         return source
 
     returns = _outermost_returns(source, context="user code")
     if not returns:
-        # Nothing to strip — just trim trailing blanks for legacy parity.
+        # Nothing to strip — just trim trailing blanks.
         return _rstrip_blank_lines(source)
 
     last = returns[-1]
@@ -227,7 +225,7 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
 def _rstrip_blank_lines(source: str) -> str:
     """Remove trailing whitespace and blank lines from *source*.
 
-    Matches the behaviour of the legacy ``while stripped[-1].strip() == "":
+    Matches the behaviour of the previous ``while stripped[-1].strip() == "":
     stripped.pop()`` loop — any tail composed solely of whitespace
     characters (spaces, tabs, newlines) is removed.
     """
@@ -264,47 +262,6 @@ def _unwrap_chain_assignment(
     ):
         extracted = "\n".join(lines[1:])
     return extracted
-
-
-def _extract_sentinel_user_code(body_source: str, return_var: str = "result") -> str:
-    """Extract user code between ``# -- user code --`` sentinel and trailing return.
-
-    **Legacy support** — older pipeline files use a sentinel comment to
-    delimit auto-generated boilerplate from user code.  New codegen no
-    longer writes the sentinel; the ``_extract_source_user_code`` and
-    ``_extract_model_score_user_code`` functions handle both old and new
-    formats.
-
-    If no sentinel is found returns an empty string (caller should try
-    the non-sentinel extraction path).
-
-    The trailing ``return <return_var>`` is detected via
-    :func:`_strip_outer_trailing_return` — an AST walk that sees only
-    OUTER-scope returns, so an inner helper whose last line happens to
-    be ``return <return_var>`` is preserved.
-    """
-    sentinel = "# -- user code --"
-    if sentinel not in body_source:
-        return ""
-
-    # Take everything after the sentinel
-    _, _, after = body_source.partition(sentinel)
-    if not after.strip():
-        return ""
-
-    # Dedent so ``ast.parse`` sees module-level statements (the snippet
-    # comes from a function body and therefore arrives pre-indented).
-    # ``textwrap.dedent`` is the right tool here — it preserves the
-    # RELATIVE indentation of nested constructs while stripping the
-    # common leading whitespace introduced by the enclosing ``def``.
-    dedented = textwrap.dedent(after).strip()
-    if not dedented:
-        return ""
-
-    # Drop the codegen-generated trailing ``return <return_var>`` using
-    # the AST — nested helpers with the same textual tail are preserved.
-    result = _strip_outer_trailing_return(dedented, return_var).strip()
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -462,13 +419,12 @@ def _strip_trailing_return(code_lines: list[str], return_var: str) -> list[str]:
     identify whether the LAST OUTER-scope statement is literally
     ``return <return_var>``.  A nested helper whose final line happens
     to be ``return <return_var>`` textually is therefore preserved —
-    only the outer sentinel is removed.
+    only the outer return is removed.
 
     Also pops any trailing blank lines in the process.
 
-    The list-of-lines signature is kept for API compatibility with the
-    existing ``extract_user_code`` engine — internally we glue the
-    lines back together, delegate to the AST helper, and split again.
+    Internally we glue the lines back together, delegate to the AST helper,
+    and split again.
     """
     if not code_lines:
         return []
@@ -580,7 +536,7 @@ def extract_user_code(
 ) -> str:
     """Extract user code from a function body, dispatching via the matcher registry.
 
-    This is the consolidated engine that backs the four legacy
+    This is the consolidated engine that backs the four per-kind
     ``_extract_*_user_code`` extractors (item #52).  It performs the
     shared work (strip docstring → dedent → skip matcher-specific
     boilerplate → strip trailing ``return <var>``) and delegates the
@@ -632,7 +588,7 @@ def extract_user_code(
 
 
 # ---------------------------------------------------------------------------
-# Legacy per-kind shims — thin wrappers over the consolidated engine
+# Per-kind wrappers over the consolidated engine
 # ---------------------------------------------------------------------------
 
 
@@ -654,13 +610,8 @@ def _extract_source_user_code(body_source: str) -> str:
     top (e.g. ``df = pl.scan_parquet("...")``).  Everything after that
     assignment — minus the trailing ``return df`` — is user code.
 
-    Supports both the legacy sentinel format (``# -- user code --``)
-    and the new sentinel-free format where user code follows the
-    boilerplate directly.
+    User code follows the generated boilerplate directly.
     """
-    legacy = _extract_sentinel_user_code(body_source, "df")
-    if legacy:
-        return legacy
     return extract_user_code(body_source, kind="source")
 
 
@@ -672,12 +623,8 @@ def _extract_model_score_user_code(body_source: str) -> str:
     ``result = score_from_config(...)`` line (minus ``return result``)
     is user code.
 
-    Supports both the legacy sentinel format and the new sentinel-free
-    format.
+    User code follows the generated scoring block directly.
     """
-    legacy = _extract_sentinel_user_code(body_source, "result")
-    if legacy:
-        return legacy
     return extract_user_code(body_source, kind="model_score")
 
 

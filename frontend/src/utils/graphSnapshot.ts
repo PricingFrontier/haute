@@ -1,13 +1,11 @@
 /**
  * Canonical serialization + dirty-derivation helpers for graph snapshots.
  *
- * Consolidated out of `stores/useUIStore.ts` (Wave 7E): both the UI
- * store's legacy dirty-tracking API *and* `useGraphStore.isDirty()` now
- * share a single serializer.  This avoids the split where the UI store
- * stripped presentation fields (`selected`, `dragging`, …) before
- * comparing but the graph store's internal serializer did not — the
- * latter would have flagged the workspace dirty every time a node was
- * selected.
+ * Consolidated out of `stores/useUIStore.ts` (Wave 7E): dirty tracking
+ * now shares a single serializer.  This avoids split behaviour where one
+ * code path stripped presentation fields (`selected`, `dragging`, …)
+ * before comparing but another did not — the latter would have flagged
+ * the workspace dirty every time a node was selected.
  *
  * These helpers are **pure** — they operate on the raw inputs supplied
  * by the caller (nodes/edges/preamble or just the lastSaved string) and

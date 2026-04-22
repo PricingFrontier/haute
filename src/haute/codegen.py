@@ -5,12 +5,6 @@ The per-type ``_gen_*`` builders and the codegen-side registry live in
 assembly logic (``graph_to_code`` / ``graph_to_code_multi``) and the
 single-node dispatcher that drives the unified
 :data:`haute._registry.NODE_REGISTRY`.
-
-Helpers that predate the refactor (``_safe_str``, ``_portable_path_expr``,
-``_wrap_user_code``, ``_make_passthrough_builder``, and every ``_gen_*``
-function) are re-exported here so that callers importing them from
-``haute.codegen`` continue to work.  New code should import them directly
-from :mod:`haute._codegen_builders`.
 """
 
 from __future__ import annotations
@@ -22,39 +16,11 @@ from haute._builders import (
     Contract,
     get_column_contract,
 )
-from haute._codegen_builders import (  # noqa: F401  (legacy re-exports)
-    # Helpers re-exported for legacy import paths (tests and external callers
-    # still import these from haute.codegen).  The canonical
-    # ``_CODEGEN_BUILDERS`` registry lives in :mod:`haute._codegen_builders`
-    # and is intentionally NOT re-exported here — see
-    # ``TestCodegenModuleSplit.test_codegen_py_has_no_module_level_registry``
-    # in ``tests/test_codegen_split.py``.
-    _api_input_template,
-    _build_extra_kwargs,
+from haute._codegen_builders import (
     _build_params,
-    _common_node_fields,
-    _data_source_parts,
-    _first_source,
-    _gen_api_input,
-    _gen_banding,
-    _gen_constant,
-    _gen_data_sink,
-    _gen_data_source,
-    _gen_external_file,
-    _gen_live_switch,
-    _gen_model_score,
-    _gen_output,
-    _gen_rating_step,
-    _gen_scenario_expander,
-    _gen_transform,
-    _is_absolute_path,
-    _make_passthrough_builder,
-    _portable_path_expr,
     _safe_path,
     _safe_str,
     _sanitize_description,
-    _wrap_external_code,
-    _wrap_user_code,
 )
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._logging import get_logger
@@ -657,9 +623,13 @@ def graph_to_code_multi(
     # Separate nodes into root-level vs submodel children ----------------
     all_child_ids: set[str] = set()
     submodel_node_ids: set[str] = set()
+    submodel_child_ids: dict[str, set[str]] = {}
     for sm_name, sm_meta in submodels.items():
-        all_child_ids.update(sm_meta.get("childNodeIds", []))
-        submodel_node_ids.add(f"submodel__{sm_name}")
+        child_ids = set(sm_meta.get("childNodeIds", []))
+        all_child_ids.update(child_ids)
+        submodel_node_id = f"submodel__{sm_name}"
+        submodel_node_ids.add(submodel_node_id)
+        submodel_child_ids[submodel_node_id] = child_ids
 
     nodes = graph.nodes
     edges = graph.edges
@@ -694,6 +664,7 @@ def graph_to_code_multi(
         # edge and we fail loudly rather than silently dropping it.
         sm_node_id = f"submodel__{sm_name}"
         sm_child_ids = {n.id for n in sm_nodes}
+        submodel_child_ids[sm_node_id] = sm_child_ids
         for edge in edges:
             if edge.target != sm_node_id:
                 continue
@@ -723,6 +694,31 @@ def graph_to_code_multi(
             existing = sm_node_sources.setdefault(child_id, [])
             if src_name not in existing:
                 existing.append(src_name)
+        for edge in edges:
+            if edge.source != sm_node_id:
+                continue
+            handle = edge.sourceHandle
+            if not handle or not handle.startswith("out__"):
+                raise ParseError(
+                    "Submodel cross-boundary edge has missing or malformed "
+                    "sourceHandle; expected 'out__<child_id>'.",
+                    edge_id=edge.id,
+                    handle=handle,
+                    submodel=sm_name,
+                    source=edge.source,
+                    target=edge.target,
+                )
+            child_id = handle[len("out__") :]
+            if child_id not in sm_child_ids:
+                raise ParseError(
+                    "Submodel cross-boundary edge references a child node "
+                    "that does not exist in the submodel.",
+                    edge_id=edge.id,
+                    handle=handle,
+                    child_id=child_id,
+                    submodel=sm_name,
+                    known_children=sorted(sm_child_ids),
+                )
 
         # Build connect pairs from internal edges
         sm_connect_pairs = [
@@ -763,6 +759,41 @@ def graph_to_code_multi(
             nd = GraphNode.model_validate(n) if isinstance(n, dict) else n
             root_id_to_func[nd.id] = _sanitize_func_name(nd.data.label)
 
+    def _resolve_submodel_endpoint(
+        edge: GraphEdge,
+        node_id: str,
+        handle: str,
+        *,
+        prefix: str,
+        endpoint: str,
+    ) -> str:
+        """Resolve a submodel boundary handle to a child node id."""
+        if node_id not in submodel_node_ids:
+            return node_id
+        if not handle or not handle.startswith(prefix):
+            raise ParseError(
+                "Submodel cross-boundary edge has missing or malformed "
+                f"{endpoint}Handle; expected '{prefix}<child_id>'.",
+                edge_id=edge.id,
+                handle=handle or None,
+                submodel=node_id.removeprefix("submodel__"),
+                source=edge.source,
+                target=edge.target,
+            )
+        child_id = handle[len(prefix) :]
+        known_children = submodel_child_ids.get(node_id, set())
+        if child_id not in known_children:
+            raise ParseError(
+                "Submodel cross-boundary edge references a child node "
+                "that does not exist in the submodel.",
+                edge_id=edge.id,
+                handle=handle,
+                child_id=child_id,
+                submodel=node_id.removeprefix("submodel__"),
+                known_children=sorted(known_children),
+            )
+        return child_id
+
     # Build source names per root node from root-level edges AND
     # cross-boundary edges (resolving submodel handles to child node names).
     root_node_sources: dict[str, list[str]] = {}
@@ -773,12 +804,20 @@ def graph_to_code_multi(
         th = edge.targetHandle or ""
 
         # Resolve submodel handles to actual child node names
-        actual_src = src
-        if src in submodel_node_ids and sh:
-            actual_src = sh.removeprefix("out__")
-        actual_tgt = tgt
-        if tgt in submodel_node_ids and th:
-            actual_tgt = th.removeprefix("in__")
+        actual_src = _resolve_submodel_endpoint(
+            edge,
+            src,
+            sh,
+            prefix="out__",
+            endpoint="source",
+        )
+        actual_tgt = _resolve_submodel_endpoint(
+            edge,
+            tgt,
+            th,
+            prefix="in__",
+            endpoint="target",
+        )
 
         # Only care about edges feeding into root nodes
         if actual_tgt not in root_node_ids:
@@ -795,12 +834,20 @@ def graph_to_code_multi(
         th = edge.targetHandle or ""
 
         # Resolve submodel handles to actual node names
-        actual_src = src
-        if src in submodel_node_ids and sh:
-            actual_src = sh.removeprefix("out__")
-        actual_tgt = tgt
-        if tgt in submodel_node_ids and th:
-            actual_tgt = th.removeprefix("in__")
+        actual_src = _resolve_submodel_endpoint(
+            edge,
+            src,
+            sh,
+            prefix="out__",
+            endpoint="source",
+        )
+        actual_tgt = _resolve_submodel_endpoint(
+            edge,
+            tgt,
+            th,
+            prefix="in__",
+            endpoint="target",
+        )
 
         src_func = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
         tgt_func = root_id_to_func.get(actual_tgt, _sanitize_func_name(actual_tgt))

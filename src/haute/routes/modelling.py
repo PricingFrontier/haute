@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
@@ -20,6 +21,7 @@ from haute.schemas import (
     LogExperimentRequest,
     LogExperimentResponse,
     MlflowCheckResponse,
+    ModelCacheClearResponse,
     TrainEstimateRequest,
     TrainEstimateResponse,
     TrainRequest,
@@ -221,7 +223,8 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             best_iteration=result.best_iteration,
         )
 
-        log_result = log_experiment(
+        log_result = await run_in_threadpool(
+            log_experiment,
             experiment_name=experiment_name,
             run_name=node_label,
             metrics=result.metrics,
@@ -269,8 +272,8 @@ async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
     return ExportScriptResponse(script=script, filename=filename)
 
 
-@router.delete("/model-cache")
-async def clear_model_cache(run_id: str | None = None) -> dict:
+@router.delete("/model-cache", response_model=ModelCacheClearResponse)
+async def clear_model_cache(run_id: str | None = None) -> ModelCacheClearResponse:
     """Clear cached model artifacts downloaded from MLflow.
 
     Pass ``?run_id=...`` to clear a specific run's cache, or omit to
@@ -279,5 +282,5 @@ async def clear_model_cache(run_id: str | None = None) -> dict:
     """
     from haute._mlflow_io import clear_model_cache as _clear
 
-    removed = _clear(run_id)
-    return {"removed": removed, "run_id": run_id}
+    removed = await run_in_threadpool(_clear, run_id)
+    return ModelCacheClearResponse(removed=removed, run_id=run_id)

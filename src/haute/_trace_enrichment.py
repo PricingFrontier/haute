@@ -221,10 +221,18 @@ def enrich_rating_step(
             "rate_value": rate_value,
             "matched": matched,
         }
-    except Exception:
-        logger.debug("enrichment_failed", node_type="rating_step", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "enrichment_failed",
+            node_type="rating_step",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         return {
             "detail_type": "rating_step",
+            "error": f"rating step enrichment failed: {exc}",
+            "error_type": type(exc).__name__,
             "matched_key": {},
             "rate_value": None,
             "matched": False,
@@ -389,10 +397,18 @@ def enrich_banding(
             "is_default": is_default,
             "input_value": input_value,
         }
-    except Exception:
-        logger.debug("enrichment_failed", node_type="banding", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "enrichment_failed",
+            node_type="banding",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         return {
             "detail_type": "banding",
+            "error": f"banding enrichment failed: {exc}",
+            "error_type": type(exc).__name__,
             "selected_band": None,
             "rule_index": -1,
             "is_default": False,
@@ -443,10 +459,18 @@ def enrich_model_score(
             "feature_values": {f: input_row.get(f) for f in feature_columns},
             "model_identity": model_identity,
         }
-    except Exception:
-        logger.debug("enrichment_failed", node_type="model_score", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "enrichment_failed",
+            node_type="model_score",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         return {
             "detail_type": "model_score",
+            "error": f"model score enrichment failed: {exc}",
+            "error_type": type(exc).__name__,
             "prediction_value": None,
             "prediction_column": "",
             "feature_columns": [],
@@ -481,9 +505,21 @@ def enrich_scenario_expansion(
                 "steps": config.get("steps"),
             },
         }
-    except Exception:
-        logger.debug("enrichment_failed", node_type="scenario_expander", exc_info=True)
-        return {"detail_type": "scenario_expander", "scenario_value": None, "scenario_column": ""}
+    except Exception as exc:
+        logger.warning(
+            "enrichment_failed",
+            node_type="scenario_expander",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        return {
+            "detail_type": "scenario_expander",
+            "error": f"scenario expansion enrichment failed: {exc}",
+            "error_type": type(exc).__name__,
+            "scenario_value": None,
+            "scenario_column": "",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -516,10 +552,18 @@ def enrich_live_switch(
             "active_scenario": active_scenario,
             "pruned_branches": pruned_branches,
         }
-    except Exception:
-        logger.debug("enrichment_failed", node_type="live_switch", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "enrichment_failed",
+            node_type="live_switch",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         return {
             "detail_type": "live_switch",
+            "error": f"live switch enrichment failed: {exc}",
+            "error_type": type(exc).__name__,
             "active_branch": "",
             "active_scenario": "",
             "pruned_branches": [],
@@ -589,9 +633,15 @@ def detect_row_lineage_type(
             return "expanded"
 
         return "passthrough"
-    except Exception:
-        logger.debug("enrichment_failed", node_type="row_lineage", exc_info=True)
-        return "passthrough"
+    except Exception as exc:
+        logger.warning(
+            "enrichment_failed",
+            node_type="row_lineage",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        return f"error: row lineage enrichment failed: {exc}"
 
 
 # ---------------------------------------------------------------------------

@@ -8,12 +8,12 @@ export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
 export interface PipelineGraph {
   nodes: import("@xyflow/react").Node[]
   edges: import("@xyflow/react").Edge[]
-  pipeline_name?: string
-  pipeline_description?: string
-  preamble?: string
-  source_file?: string
-  submodels?: Record<string, unknown>
-  warning?: string
+  pipeline_name?: string | null
+  pipeline_description?: string | null
+  preamble?: string | null
+  source_file?: string | null
+  submodels?: Record<string, unknown> | null
+  warning?: string | null
   sources?: string[]
   active_source?: string
 }

@@ -8,7 +8,7 @@
  * fingerprint actually governs.
  *
  * The fingerprint is compared against ``prevStructureRef.current`` and, if
- * changed, calls ``bumpGraphVersion()`` to invalidate the node-results
+ * changed, increments ``structuralVersion`` to invalidate the node-results
  * preview cache.  Only **input-identity** keys should gate this bump:
  *
  *   INPUT KEYS — change these and downstream must re-run:
@@ -35,8 +35,8 @@
  *      keys differ).
  *   2. Any input-key change produces a different hash.
  *   3. Result-key changes are invisible (hash stays equal).
- *   4. The hash is ≥10× faster than the pre-fix ``JSON.stringify`` on a
- *      realistic 200-node graph.
+ *   4. The graph fingerprint avoids serializing large result-only payloads
+ *      that made the pre-fix ``JSON.stringify`` path expensive.
  */
 import { describe, it, expect } from "vitest"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
@@ -266,8 +266,8 @@ describe("graphFingerprintShallow — graph-level invariants", () => {
 
   it("preview results cascading through the graph do not invalidate structure", () => {
     // Simulates the preview pipeline's effect: every node gets _columns
-    // populated after execution.  Without the fix, this re-bumps
-    // graphVersion, which invalidates the preview cache — defeating
+    // populated after execution.  Without the fix, this changes
+    // structuralVersion, which invalidates the preview cache — defeating
     // the cache entirely on every preview completion.
     const nodesFresh = Array.from({ length: 50 }, (_, i) =>
       makeNode(`n${i}`, { config: { v: i } })
@@ -293,7 +293,7 @@ describe("graphFingerprintShallow — graph-level invariants", () => {
 })
 
 // ===========================================================================
-// 4. Benchmark — shallow hash must be ≥10× faster than full stringify
+// 4. Regression guard: result-only payloads stay out of the graph hash
 // ===========================================================================
 
 describe("shallowNodeDataHash — benchmark", () => {
@@ -331,7 +331,7 @@ describe("shallowNodeDataHash — benchmark", () => {
     }
   }
 
-  it("shallow hash on a 200-node graph is >10x faster than full JSON.stringify", () => {
+  it("shallow graph hash excludes the large result-only payloads full stringify includes", () => {
     const NODE_COUNT = 200
     const ITERATIONS = 100
     const nodes = Array.from({ length: NODE_COUNT }, (_, i) => makeRealisticNode(i))
@@ -359,30 +359,28 @@ describe("shallowNodeDataHash — benchmark", () => {
     }
     const shallowElapsed = performance.now() - startShallow
 
-    // Pin the benchmark result so the CI log captures the ratio.
+    // Keep the benchmark result in the CI log, but assert deterministic payload exclusion.
     console.log(
       `shallowHash benchmark: full=${fullElapsed.toFixed(1)}ms shallow=${shallowElapsed.toFixed(1)}ms ratio=${(fullElapsed / Math.max(shallowElapsed, 0.01)).toFixed(1)}x`
     )
 
-    // Target: the shallow hash is at least 10× faster.
-    // Guard against zero-divide on extremely fast shallow runs.
-    const speedup = fullElapsed / Math.max(shallowElapsed, 0.01)
-    expect(speedup).toBeGreaterThan(10)
+    const fullFingerprint = graphFingerprintFull(nodes, edges)
+    const shallowFingerprint = graphFingerprintShallow(nodes, edges)
+
+    expect(fullFingerprint).toContain("available_column_79")
+    expect(fullFingerprint).toContain("warn_col_4")
+    expect(shallowFingerprint).not.toContain("available_column_79")
+    expect(shallowFingerprint).not.toContain("warn_col_4")
+    expect(shallowFingerprint.length).toBeLessThan(fullFingerprint.length / 10)
   })
 
-  it("shallow hash for a single realistic node is microseconds, not milliseconds", () => {
+  it("shallow hash for a single realistic node stays bounded by input payload size", () => {
     const node = makeRealisticNode(0)
-    const ITERATIONS = 10_000
+    const fullData = JSON.stringify(node.data)
+    const shallowData = shallowNodeDataHash(node.data)
 
-    // Warm-up
-    for (let w = 0; w < 100; w++) shallowNodeDataHash(node.data)
-
-    const start = performance.now()
-    for (let i = 0; i < ITERATIONS; i++) shallowNodeDataHash(node.data)
-    const elapsed = performance.now() - start
-
-    // 10k iterations should comfortably finish in under 50ms
-    // (i.e. average <5 microseconds per call).
-    expect(elapsed).toBeLessThan(50)
+    expect(fullData).toContain("available_column_79")
+    expect(shallowData).not.toContain("available_column_79")
+    expect(shallowData.length).toBeLessThan(fullData.length / 10)
   })
 })

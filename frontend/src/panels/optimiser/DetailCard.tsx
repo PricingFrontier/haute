@@ -83,7 +83,7 @@ export default function DetailCard({
         <div className="mt-0.5 flex items-baseline justify-between text-xs font-mono gap-2">
           <span style={{ color: "var(--text-primary)" }}>{formatNumber(objValue)}</span>
           {objVsBaseline != null && (
-            <span style={{ color: "#f59e0b" }}>{objVsBaseline >= 0 ? "+" : ""}{objVsBaseline.toFixed(2)}% vs baseline</span>
+            <span style={{ color: "var(--warning-strong)" }}>{objVsBaseline >= 0 ? "+" : ""}{objVsBaseline.toFixed(2)}% vs baseline</span>
           )}
         </div>
       </div>
@@ -105,7 +105,7 @@ export default function DetailCard({
               return (
                 <div key={name} className="flex items-center justify-between text-xs font-mono gap-2">
                   <span className="flex items-center gap-1.5">
-                    <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: met ? "#22c55e" : "#ef4444" }} />
+                    <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: met ? "var(--success)" : "var(--danger)" }} />
                     <span style={{ color: "var(--text-secondary)" }}>{name}</span>
                   </span>
                   <span>
@@ -151,9 +151,9 @@ export default function DetailCard({
           disabled={saving || logging}
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
           style={{
-            background: saving || logging ? "var(--chrome-hover)" : "rgba(245,158,11,.12)",
-            color: saving || logging ? "var(--text-muted)" : "#f59e0b",
-            border: "1px solid rgba(245,158,11,.25)",
+            background: saving || logging ? "var(--chrome-hover)" : "var(--warning-soft-emphasis)",
+            color: saving || logging ? "var(--text-muted)" : "var(--warning-strong)",
+            border: "1px solid var(--warning-border-strong)",
           }}
         >
           {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}

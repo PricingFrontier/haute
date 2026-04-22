@@ -14,7 +14,7 @@ Audit of every commit on `node-ui-improvements` against `docs/COMMIT_STANDARDS.m
 | §5 Linter Clean | `ruff format --check` wanted 16 files reformatted | `ruff format` applied. Format clean. |
 | §4 Type Safety | `mypy src/haute` reported 3 errors (variance on `ColSpec/TensorSpec`, a stale import of `_sanitize_func_name` in `_builders.py`) | Widened list annotation + imported `TensorSpec`; migrated `_builders.py` to `_graph_utils`. **Now: `Success: no issues found`** |
 | §6 No Dead Code | 2A-4 introduced `_HAS_EXPRESSION_PARSER` / `_HAS_TRACE_ENRICHMENT` try/except guards that were dead at runtime (reviewer flagged) | Removed guards; migrated `_trace_enrichment.py` consumers to use the imports unconditionally. |
-| §COMPAT (No Backward Compat) | 2A-1 added `from haute._graph_utils import X as X` re-export shims in `_types.py` for 5 symbols with zero in-repo callers | Deleted the shims (kept only `build_parents_of` which `_types.py` itself uses). |
+| §API (No Transition Shims) | 2A-1 added `from haute._graph_utils import X as X` re-export shims in `_types.py` for 5 symbols with zero in-repo callers | Deleted the shims (kept only `build_parents_of` which `_types.py` itself uses). |
 | §26 Fix It If You See It | Test fixture in `test_cli_impact.py` broke under 1G's broadened predicate | Broadened the fixture's container-target check (done in 1G follow-up commit). |
 | §21 Minimal API Surface | trace.py's monkeypatch-surface names weren't in `__all__`, so ruff flagged them as unused | Added the 9 monkeypatch-surface names to `__all__`. |
 
@@ -108,13 +108,13 @@ The review plan explicitly called out these patterns as forbidden. Spot-checked 
 
 ---
 
-## Backward Compatibility audit
+## Transition-Layer Audit
 
-Standard: "No compatibility shims, version flags, or migration code."
+Standard: "No transition shims, version flags, or migration code."
 
 One violation was caught and removed in this audit: `_types.py` had 5 `as X` re-export shims for symbols moved to `_graph_utils.py`. No in-repo callers used them, so per the "bad APIs are replaced, not versioned alongside" rule they were deleted.
 
-The `_container.py` re-export of `_CONTAINER_BASED_TARGETS` is preserved with `__all__` — this is a rename avoidance (the frozenset moved between modules during the 1G follow-up fix), not a backwards-compat shim for an old API.
+The `_container.py` re-export of `_CONTAINER_BASED_TARGETS` was removed later; callers import it from `_config.py` directly.
 
 ---
 
@@ -157,7 +157,7 @@ Run after commit `43d43b3`, against the full COMMIT_STANDARDS.md checklist:
 | §20 Canonical Data Types | ✓ | Grep shows zero `.data["...` dict-access on Pydantic models in src. `FeatureContract`, `TraceResult`, `DeployConfig`, etc. are all Pydantic / dataclass. |
 | §21 Minimal API Surface | ✓ | All new helpers underscored. `haute.errors` adds 5 public error classes (used across modules). `haute/__init__.py` still exports only `HauteError`, `Pipeline`, `Submodel`. |
 | §22 Test Quality | ✓ deterministic/focused/independent/readable; ⚠ fast | Phase 1/2 tests all sub-second. Full suite remains at ~5min because of CatBoost training (documented divergence — ML pipeline libraries can't hit the <10s target). |
-| §23 Module Boundaries | ✓ | No new circular imports. 2A-1 used `TYPE_CHECKING` for the one backward-pointing type reference in `_graph_utils`. |
+| §23 Module Boundaries | ✓ | No new circular imports. 2A-1 used `TYPE_CHECKING` for the one type-only reference in `_graph_utils`. |
 | §24 Logging | ✓ | Every new module that does work has `logger = get_logger(component=...)`. Phase 1B systematically replaced silent debug-level catches with structured `logger.warning(..., exc_info=True)` + visible failure markers. One `print()` remains in a docstring example block (not runtime code). |
 | §25 Background Job Pattern | n/a | No new background routes added. |
 | §26 Fix It If You See It | ✓ | Audit cleared 147 legacy test ruff errors + 7 pre-existing structlog test-ordering flakes + 5 new react-refresh eslint errors + 4 react-hooks warnings + format drift in 10 files + 3 obsolete test-model-scorer references to the deleted `__getattr__` proxy. |
@@ -181,11 +181,11 @@ Run after commit `43d43b3`, against the full COMMIT_STANDARDS.md checklist:
 | Frontend silent catches | ✓ Zero `.catch(() => {})` hits. |
 | Import bloat | ✓ F401 clean. |
 
-### Backward Compatibility audit
+### Transition-Layer Audit
 
 | Check | Status |
 |---|---|
-| No compat shims / version flags / migration | ✓ Audit explicitly deleted the one shim found (`_types.py` backward-compat re-exports from `_graph_utils`) |
+| No transition shims / version flags / migration | ✓ Audit explicitly deleted the one shim found (`_types.py` re-exports from `_graph_utils`) |
 | Bad APIs replaced, not versioned | ✓ `ScoringModel.__getattr__` deleted rather than deprecated; `cv_folds` field removed rather than soft-nullified. |
 
 Frontend checks (run pre-audit):

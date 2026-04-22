@@ -6,13 +6,13 @@
  * when clicking away from a node and back.
  *
  * Cache invalidation:
- *   - Previews: keyed on (nodeId, graphVersion). Stale entries are still
- *     returned for instant display but flagged via getPreview().
+ *   - Previews/columns: keyed on (nodeId, source, rowLimit, structuralVersion).
  *   - Solve/train results: keyed on (nodeId, configHash). A config change
  *     doesn't delete the old result — it's kept with a staleness flag so
  *     the panel can show "config changed since last run".
  */
 import { create } from "zustand"
+import useGraphStore from "./useGraphStore"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SolveResult, OptimiserPreviewData } from "../panels/OptimiserPreview"
 import type { FrontierSelectResponse, FrontierData } from "../api/types"
@@ -34,7 +34,7 @@ export type TrainResult = {
   feature_importance: { feature: string; importance: number }[]
   model_path: string
   train_rows: number
-  test_rows: number  // validation rows (kept as test_rows for backward compat)
+  test_rows: number  // validation rows
   holdout_rows?: number
   holdout_metrics?: Record<string, number>
   diagnostics_set?: string  // "train" | "validation" | "holdout"
@@ -76,7 +76,9 @@ export type TrainProgress = {
 
 interface CachedPreview {
   data: PreviewData
-  graphVersion: number
+  structuralVersion: number
+  source?: string
+  rowLimit?: number
 }
 
 interface CachedSolveResult {
@@ -166,21 +168,18 @@ interface NodeResultsState {
   trainResults: Record<string, CachedTrainResult>
   trainJobs: Record<string, ActiveTrainJob>
 
-  // Column cache — keyed by "nodeId:source", cached across panel mounts
-  columnCache: Record<string, { columns: ColumnInfo[]; graphVersion: number }>
-
-  // Graph version — bumped on any node/edge change
-  graphVersion: number
+  // Column cache — keyed by "nodeId:source", cached across panel mounts.
+  // structuralVersion stores the graph version captured at fetch time.
+  columnCache: Record<string, { columns: ColumnInfo[]; structuralVersion: number }>
 
   // ── Column cache actions ──
-  setColumns: (sourceNodeId: string, columns: ColumnInfo[], graphVersion: number, source?: string) => void
+  setColumns: (sourceNodeId: string, columns: ColumnInfo[], structuralVersion: number, source?: string) => void
   getColumns: (sourceNodeId: string, source?: string) => { columns: ColumnInfo[]; fresh: boolean } | null
 
   // ── Preview actions ──
-  setPreview: (nodeId: string, data: PreviewData, graphVersion: number) => void
-  /** Returns cached preview, or null if no entry exists. Caller checks graphVersion for staleness. */
+  setPreview: (nodeId: string, data: PreviewData, structuralVersion: number, source?: string, rowLimit?: number) => void
+  /** Returns cached preview, or null if no entry exists. */
   getPreview: (nodeId: string) => CachedPreview | null
-  bumpGraphVersion: () => void
 
   // ── Optimiser actions ──
   startSolveJob: (nodeId: string, jobId: string, nodeLabel: string, constraints: Record<string, Record<string, number>>, configHash: string) => void
@@ -213,14 +212,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   solveJobs: {},
   trainResults: {},
   trainJobs: {},
-  graphVersion: 0,
 
   // ── Column cache ──
 
-  setColumns: (sourceNodeId, columns, graphVersion, source) => {
+  setColumns: (sourceNodeId, columns, structuralVersion, source) => {
     const key = source ? `${sourceNodeId}:${source}` : sourceNodeId
     set((s) => ({
-      columnCache: { ...s.columnCache, [key]: { columns, graphVersion } },
+      columnCache: { ...s.columnCache, [key]: { columns, structuralVersion } },
     }))
   },
 
@@ -228,19 +226,17 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     const key = source ? `${sourceNodeId}:${source}` : sourceNodeId
     const entry = get().columnCache[key]
     if (!entry) return null
-    return { columns: entry.columns, fresh: entry.graphVersion === get().graphVersion }
+    return { columns: entry.columns, fresh: entry.structuralVersion === useGraphStore.getState().structuralVersion }
   },
 
   // ── Preview ──
 
-  setPreview: (nodeId, data, graphVersion) =>
+  setPreview: (nodeId, data, structuralVersion, source, rowLimit) =>
     set((s) => ({
-      previews: { ...s.previews, [nodeId]: { data, graphVersion } },
+      previews: { ...s.previews, [nodeId]: { data, structuralVersion, source, rowLimit } },
     })),
 
   getPreview: (nodeId) => get().previews[nodeId] ?? null,
-
-  bumpGraphVersion: () => set((s) => ({ graphVersion: s.graphVersion + 1 })),
 
   // ── Optimiser ──
 

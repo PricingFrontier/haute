@@ -64,7 +64,12 @@ vi.mock("../../stores/useUIStore.ts", () => {
 
 // Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { markSaved: vi.fn() }
+  const store = {
+    nodes: [{ id: "previous", position: { x: 1, y: 1 }, data: {} }],
+    edges: [{ id: "old-edge", source: "previous", target: "previous" }],
+    preamble: "old preamble",
+    markSaved: vi.fn(),
+  }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -228,6 +233,45 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     const nodesCount = params.setNodesRaw.mock.calls.length
     const edgesCount = params.setEdgesRaw.mock.calls.length
     expect(nodesCount).toBe(edgesCount)
+  })
+
+  it("setter failure rolls back nodes and edges to the previous graph snapshot", async () => {
+    const params = makeHookParams()
+    params.setEdgesRaw.mockImplementationOnce(() => {
+      throw new Error("edge setter failed")
+    })
+
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
+          },
+        }),
+      }))
+    })
+
+    expect(params.setNodesRaw).toHaveBeenNthCalledWith(
+      1,
+      [expect.objectContaining({ id: "fresh" })],
+    )
+    expect(params.setNodesRaw).toHaveBeenNthCalledWith(
+      2,
+      [expect.objectContaining({ id: "previous" })],
+    )
+    expect(params.setEdgesRaw).toHaveBeenNthCalledWith(
+      2,
+      [expect.objectContaining({ id: "old-edge" })],
+    )
+    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("WebSocket sync error"),
+    )
   })
 
   it("subsequent graph_update after a failed one is handled cleanly", async () => {

@@ -48,9 +48,8 @@ class LRUCache(Generic[K, V]):
         Maximum number of entries.  When exceeded the least-recently-used
         *unpinned* entry is evicted.  Pinned entries are skipped by the
         eviction loop and therefore may push the live entry count beyond
-        *max_size* — this mirrors the pre-refactor ``FingerprintCache``
-        contract where pinned previews survived LRU pressure so the
-        trace could always reuse the exact same DataFrames.
+        *max_size*. Pinned previews survive LRU pressure so the trace
+        can always reuse the exact same DataFrames.
     ttl:
         Optional time-to-live in seconds.  Entries older than *ttl* are
         treated as misses and evicted lazily on the next ``get``.
@@ -114,11 +113,10 @@ class LRUCache(Generic[K, V]):
     def pin(self, key: K) -> None:
         """Exempt *key* from LRU eviction.
 
-        Pinning an unknown key is a silent no-op — this mirrors the
-        pre-refactor ``FingerprintCache.pin`` contract and keeps call
-        sites that race a store with a rollback from needing to
-        coordinate.  Pins on a key that has since been evicted or
-        TTL-expired are also silently dropped on the next ``unpin``.
+        Pinning an unknown key is a silent no-op. This keeps call sites
+        that race a store with a rollback from needing to coordinate.
+        Pins on a key that has since been evicted or TTL-expired are
+        also silently dropped on the next ``unpin``.
         """
         with self._lock:
             if key in self._data:
@@ -186,8 +184,7 @@ class LRUCache(Generic[K, V]):
         ``max_size``.  Caller must hold ``self._lock``.
 
         If every live entry is pinned, the loop exits without evicting
-        and the cache is allowed to exceed capacity — this is the
-        FingerprintCache contract from the pre-refactor world.
+        and the cache is allowed to exceed capacity.
         """
         while len(self._data) > self._max_size:
             evicted = False

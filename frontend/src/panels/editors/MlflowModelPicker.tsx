@@ -64,7 +64,7 @@ export function RegisteredModelPicker({
           ))}
         </select>
         {errorModels && (
-          <span className="text-[10px] mt-0.5" style={{ color: "#ef4444" }}>
+          <span className="text-[10px] mt-0.5" style={{ color: "var(--danger)" }}>
             {errorModels}
           </span>
         )}
@@ -95,7 +95,7 @@ export function RegisteredModelPicker({
           {errorVersions && (
             <span
               className="text-[10px] mt-0.5"
-              style={{ color: "#ef4444" }}
+              style={{ color: "var(--danger)" }}
             >
               {errorVersions}
             </span>
@@ -210,7 +210,7 @@ export function ExperimentRunPicker({
           ))}
         </select>
         {errorExperiments && (
-          <span className="text-[10px] mt-0.5" style={{ color: "#ef4444" }}>
+          <span className="text-[10px] mt-0.5" style={{ color: "var(--danger)" }}>
             {errorExperiments}
           </span>
         )}
@@ -258,7 +258,7 @@ export function ExperimentRunPicker({
           {errorRuns && (
             <span
               className="text-[10px] mt-0.5"
-              style={{ color: "#ef4444" }}
+              style={{ color: "var(--danger)" }}
             >
               {errorRuns}
             </span>

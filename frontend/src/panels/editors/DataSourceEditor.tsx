@@ -51,14 +51,14 @@ export default function DataSourceEditor({
               File
             </label>
             {hasFile && (
-              <div className="px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.2)' }}>
-                <Check size={14} style={{ color: '#22c55e' }} className="shrink-0" />
-                <span className="text-xs font-mono truncate flex-1" style={{ color: '#4ade80' }}>{currentPath}</span>
+              <div className="px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'var(--success-soft)', border: '1px solid var(--success-border)' }}>
+                <Check size={14} style={{ color: 'var(--success)' }} className="shrink-0" />
+                <span className="text-xs font-mono truncate flex-1" style={{ color: 'var(--success-hover)' }}>{currentPath}</span>
                 <button
                   data-testid="file-change-btn"
                   onClick={() => setFileExpanded(!fileExpanded)}
                   className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded transition-colors"
-                  style={{ color: '#4ade80' }}
+                  style={{ color: 'var(--success-hover)' }}
                 >
                   {fileExpanded ? "close" : "change"}
                 </button>

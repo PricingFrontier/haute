@@ -185,10 +185,10 @@ function InstancePanel({
         const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
         if (warnings.length === 0) return null
         return (
-          <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.2)' }}>
+          <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
             <div className="flex items-center gap-1.5">
-              <AlertTriangle size={11} style={{ color: '#f59e0b' }} className="shrink-0" />
-              <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: '#f59e0b' }}>
+              <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
+              <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
                 Missing columns ({warnings.length})
               </span>
             </div>
@@ -197,7 +197,7 @@ function InstancePanel({
             </p>
             <div className="flex flex-wrap gap-1 mt-0.5">
               {warnings.map((w) => (
-                <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'rgba(245,158,11,.12)', color: '#fbbf24' }}>
+                <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'var(--warning-soft-emphasis)', color: 'var(--warning)' }}>
                   {w.column}
                 </span>
               ))}
@@ -498,10 +498,10 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
         if (warnings.length === 0) return null
         return (
           <div className="px-4 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-            <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.2)' }}>
+            <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
               <div className="flex items-center gap-1.5">
-                <AlertTriangle size={11} style={{ color: '#f59e0b' }} className="shrink-0" />
-                <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: '#f59e0b' }}>
+                <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
+                <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
                   Stale columns ({warnings.length})
                 </span>
               </div>
@@ -510,7 +510,7 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
               </p>
               <div className="flex flex-wrap gap-1 mt-0.5">
                 {warnings.map((w) => (
-                  <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'rgba(245,158,11,.12)', color: '#fbbf24' }}>
+                  <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'var(--warning-soft-emphasis)', color: 'var(--warning)' }}>
                     {w.column}
                   </span>
                 ))}

@@ -149,7 +149,7 @@ function SegmentedName({
                 onClick={(e) => { e.stopPropagation(); onStripSegment(i) }}
               >
                 {seg}
-                <span style={{ position: "absolute", left: 0, right: 0, top: "50%", height: "1px", background: "#ef4444", pointerEvents: "none" }} />
+                <span style={{ position: "absolute", left: 0, right: 0, top: "50%", height: "1px", background: "var(--danger)", pointerEvents: "none" }} />
               </span>
             ) : isStrippable ? (
               // Clickable segment that can be stripped
@@ -446,7 +446,7 @@ export default function GroupedColumnsTab({ config, onUpdate, availableColumns, 
                   >
                     {group.prefix}
                     {stripped && (
-                      <span style={{ position: "absolute", left: 0, right: 0, top: "50%", height: "1px", background: "#ef4444", pointerEvents: "none" }} />
+                      <span style={{ position: "absolute", left: 0, right: 0, top: "50%", height: "1px", background: "var(--danger)", pointerEvents: "none" }} />
                     )}
                   </span>
                 ) : (

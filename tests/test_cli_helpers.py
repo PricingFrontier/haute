@@ -122,10 +122,10 @@ class TestFindFrontendDir:
 # ---------------------------------------------------------------------------
 # Note: ``_load_deploy_config`` was removed in Phase 5 Wave 9B (#131) and
 # replaced by :meth:`DeployConfig.from_toml` / :meth:`DeployConfig.from_cli_args`
-# which are exercised by tests/test_cli_architecture_phase5.py.
+# which are exercised by tests/test_cli_architecture.py.
 #
 # Note: ``resolve_pipeline_file`` moved to :mod:`haute._project` in Phase 5
 # Wave 9B (#129) with simpler semantics:  ``None`` → ``<cwd>/main.py``,
 # directory → ``<dir>/main.py``, missing path → ``FileNotFoundError``.  The
-# new contract is pinned by tests/test_cli_architecture_phase5.py.
+# new contract is pinned by tests/test_cli_architecture.py.
 # ---------------------------------------------------------------------------

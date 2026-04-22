@@ -15,6 +15,14 @@ logger = get_logger(component="deploy.schema")
 _SCHEMA_CACHE_FILE = ".haute_cache/output_schema.json"
 
 
+def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
+    """Resolve a graph config path against the pipeline file directory."""
+    raw = Path(path)
+    if raw.is_absolute() or not graph.source_file:
+        return str(raw)
+    return str((Path(graph.source_file).parent / raw).resolve())
+
+
 def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, str]:
     """Infer the input schema by reading the input source node's data file.
 
@@ -40,7 +48,8 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
         )
 
     try:
-        lf = read_source(path)
+        resolved_path = _resolve_pipeline_path(graph, path)
+        lf = read_source(resolved_path)
         schema = lf.collect_schema()
     except Exception as exc:
         raise ValueError(
@@ -99,7 +108,8 @@ def infer_output_schema(
         )
 
     try:
-        sample = read_source(path).head(1).collect()
+        resolved_path = _resolve_pipeline_path(graph, path)
+        sample = read_source(resolved_path).head(1).collect()
     except Exception as exc:
         raise ValueError(f"Failed to read sample from '{path}': {exc}") from exc
 

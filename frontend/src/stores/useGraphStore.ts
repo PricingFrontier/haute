@@ -3,7 +3,7 @@
  * integrated undo/redo history.
  *
  * Phase 3 Wave 7 package 7E — consolidation of state previously scattered
- * across `useUndoRedo` (React Flow state + past/future refs), `App.tsx`
+ * across `useGraphCanvasState` (React Flow state + past/future refs), `App.tsx`
  * (preamble + dirty refs), `useUIStore.dirty`, and the implicit graph
  * version in `useNodeResultsStore`.
  *
@@ -49,6 +49,8 @@
 import { create } from "zustand"
 import type { Node, Edge } from "@xyflow/react"
 import { serializeSnapshot, EMPTY_SNAPSHOT } from "../utils/graphSnapshot"
+import { shallowNodeDataHash } from "../utils/shallowNodeHash"
+import { nodeData } from "../types/node"
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -66,6 +68,8 @@ export interface GraphStore {
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: GraphSnapshot[]
   redoStack: GraphSnapshot[]
+  structuralVersion: number
+  structuralFingerprint: string
 
   // History-aware actions
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -95,6 +99,14 @@ export interface GraphStore {
 
 export const MAX_HISTORY = 100
 
+type StructuralNode = { id: string; data: Record<string, unknown> }
+type StructuralEdge = {
+  source: string
+  target: string
+  sourceHandle?: string | null
+  targetHandle?: string | null
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /**
@@ -116,6 +128,20 @@ function captureSnapshot(state: Pick<GraphStore, "nodes" | "edges" | "preamble">
  */
 function applyUpdater<T>(current: T, updater: T | ((prev: T) => T)): T {
   return typeof updater === "function" ? (updater as (prev: T) => T)(current) : updater
+}
+
+export function computeStructuralFingerprint(
+  nodes: StructuralNode[],
+  edges: StructuralEdge[],
+  preamble = "",
+): string {
+  const nodeParts = nodes
+    .map((n) => `${n.id}:${shallowNodeDataHash(nodeData(n) as unknown as Record<string, unknown>)}`)
+    .sort()
+  const edgeParts = edges
+    .map((e) => `${e.source}:${e.sourceHandle ?? ""}->${e.target}:${e.targetHandle ?? ""}`)
+    .sort()
+  return `nodes:${nodeParts.join("|")}||edges:${edgeParts.join("|")}||preamble:${JSON.stringify(preamble)}`
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────
@@ -142,6 +168,8 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     lastSavedSnapshot: null,
     undoStack: [],
     redoStack: [],
+    structuralVersion: 0,
+    structuralFingerprint: computeStructuralFingerprint([], [], ""),
 
     // ── History-aware actions ────────────────────────────────────────────
 
@@ -149,7 +177,17 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       set((state) => ({
         undoStack: pushSnapshotInternal(),
         redoStack: [],
-        nodes: applyUpdater(state.nodes, updater),
+        ...(() => {
+          const nodes = applyUpdater(state.nodes, updater)
+          const nextFingerprint = computeStructuralFingerprint(nodes, state.edges, state.preamble)
+          return nextFingerprint === state.structuralFingerprint
+            ? { nodes }
+            : {
+                nodes,
+                structuralFingerprint: nextFingerprint,
+                structuralVersion: state.structuralVersion + 1,
+              }
+        })(),
       }))
     },
 
@@ -157,30 +195,78 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       set((state) => ({
         undoStack: pushSnapshotInternal(),
         redoStack: [],
-        edges: applyUpdater(state.edges, updater),
+        ...(() => {
+          const edges = applyUpdater(state.edges, updater)
+          const nextFingerprint = computeStructuralFingerprint(state.nodes, edges, state.preamble)
+          return nextFingerprint === state.structuralFingerprint
+            ? { edges }
+            : {
+                edges,
+                structuralFingerprint: nextFingerprint,
+                structuralVersion: state.structuralVersion + 1,
+              }
+        })(),
       }))
     },
 
     setPreamble: (value) => {
-      set(() => ({
-        undoStack: pushSnapshotInternal(),
-        redoStack: [],
-        preamble: value,
-      }))
+      set((state) => {
+        const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value)
+        return {
+          undoStack: pushSnapshotInternal(),
+          redoStack: [],
+          preamble: value,
+          ...(nextFingerprint === state.structuralFingerprint
+            ? {}
+            : {
+                structuralFingerprint: nextFingerprint,
+                structuralVersion: state.structuralVersion + 1,
+              }),
+        }
+      })
     },
 
     // ── Raw actions ─────────────────────────────────────────────────────
 
     setNodesRaw: (updater) => {
-      set((state) => ({ nodes: applyUpdater(state.nodes, updater) }))
+      set((state) => {
+        const nodes = applyUpdater(state.nodes, updater)
+        const nextFingerprint = computeStructuralFingerprint(nodes, state.edges, state.preamble)
+        return nextFingerprint === state.structuralFingerprint
+          ? { nodes }
+          : {
+              nodes,
+              structuralFingerprint: nextFingerprint,
+              structuralVersion: state.structuralVersion + 1,
+            }
+      })
     },
 
     setEdgesRaw: (updater) => {
-      set((state) => ({ edges: applyUpdater(state.edges, updater) }))
+      set((state) => {
+        const edges = applyUpdater(state.edges, updater)
+        const nextFingerprint = computeStructuralFingerprint(state.nodes, edges, state.preamble)
+        return nextFingerprint === state.structuralFingerprint
+          ? { edges }
+          : {
+              edges,
+              structuralFingerprint: nextFingerprint,
+              structuralVersion: state.structuralVersion + 1,
+            }
+      })
     },
 
     setPreambleRaw: (value) => {
-      set(() => ({ preamble: value }))
+      set((state) => {
+        const nextFingerprint = computeStructuralFingerprint(state.nodes, state.edges, value)
+        return nextFingerprint === state.structuralFingerprint
+          ? { preamble: value }
+          : {
+              preamble: value,
+              structuralFingerprint: nextFingerprint,
+              structuralVersion: state.structuralVersion + 1,
+            }
+      })
     },
 
     // ── Explicit history operations ─────────────────────────────────────
@@ -194,12 +280,17 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (undoStack.length === 0) return
       const prev = undoStack[undoStack.length - 1]
       const newUndo = undoStack.slice(0, -1)
+      const nextFingerprint = computeStructuralFingerprint(prev.nodes, prev.edges, prev.preamble)
       set((state) => ({
         undoStack: newUndo,
         redoStack: [...state.redoStack, captureSnapshot(state)],
         nodes: prev.nodes,
         edges: prev.edges,
         preamble: prev.preamble,
+        structuralFingerprint: nextFingerprint,
+        structuralVersion: nextFingerprint === state.structuralFingerprint
+          ? state.structuralVersion
+          : state.structuralVersion + 1,
       }))
     },
 
@@ -208,12 +299,17 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (redoStack.length === 0) return
       const next = redoStack[redoStack.length - 1]
       const newRedo = redoStack.slice(0, -1)
+      const nextFingerprint = computeStructuralFingerprint(next.nodes, next.edges, next.preamble)
       set((state) => ({
         redoStack: newRedo,
         undoStack: [...state.undoStack, captureSnapshot(state)],
         nodes: next.nodes,
         edges: next.edges,
         preamble: next.preamble,
+        structuralFingerprint: nextFingerprint,
+        structuralVersion: nextFingerprint === state.structuralFingerprint
+          ? state.structuralVersion
+          : state.structuralVersion + 1,
       }))
     },
 

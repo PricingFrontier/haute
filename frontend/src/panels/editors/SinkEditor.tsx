@@ -98,9 +98,9 @@ export default function SinkEditor({
         <div
           className="px-2.5 py-2 rounded-lg text-xs"
           style={{
-            background: writeResult.status === "ok" ? 'rgba(34,197,94,.1)' : 'rgba(239,68,68,.1)',
-            border: writeResult.status === "ok" ? '1px solid rgba(34,197,94,.2)' : '1px solid rgba(239,68,68,.2)',
-            color: writeResult.status === "ok" ? '#4ade80' : '#f87171',
+            background: writeResult.status === "ok" ? 'var(--success-soft)' : 'var(--danger-soft)',
+            border: writeResult.status === "ok" ? '1px solid var(--success-border)' : '1px solid var(--danger-border)',
+            color: writeResult.status === "ok" ? 'var(--success-hover)' : 'var(--danger-text)',
           }}
         >
           {writeResult.message}

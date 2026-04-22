@@ -49,7 +49,7 @@ def _sanitize_func_name(label: str) -> str:
     characters) or reversibly encoded as ``_x<hex>_`` for non-ASCII so
     distinct labels produce distinct identifiers.
 
-    Invariants (see tests/test_parser_sanitize_phase5.py):
+    Invariants (see tests/test_parser_sanitize_contracts.py):
 
     - ASCII inputs are unchanged from pre-fix behaviour.
     - Output is always a valid Python identifier (``str.isidentifier()``).

@@ -57,9 +57,9 @@ export function WarehousePicker({
   }
 
   const stateColor = (state: string) => {
-    if (state === "RUNNING") return "#22c55e"
-    if (state === "STOPPED" || state === "DELETED") return "#ef4444"
-    return "#f59e0b"
+    if (state === "RUNNING") return "var(--success)"
+    if (state === "STOPPED" || state === "DELETED") return "var(--danger)"
+    return "var(--warning-strong)"
   }
 
   return (
@@ -91,7 +91,7 @@ export function WarehousePicker({
       </div>
 
       {error && (
-        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,.1)', color: '#ef4444' }}>
+        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
           {error}
         </div>
       )}
@@ -296,7 +296,7 @@ export function CatalogTablePicker({
       )}
 
       {error && (
-        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,.1)', color: '#ef4444' }}>
+        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
           {error}
         </div>
       )}

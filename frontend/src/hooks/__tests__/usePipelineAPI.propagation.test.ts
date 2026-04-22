@@ -132,7 +132,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
       undoStack: [],
       redoStack: [],
     })
-    useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
   })
@@ -464,10 +464,10 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
 
     // While B is pending, trigger a second cascade from A by previewing A again.
     // The cache stored after A's first resolution would otherwise make the
-    // second fetch skip the API call; bump the graph version so the cache
-    // is considered stale.
+    // second fetch skip the API call; clear it so this test focuses on the
+    // downstream in-flight guard rather than cache freshness.
     act(() => {
-      useNodeResultsStore.setState({ graphVersion: useNodeResultsStore.getState().graphVersion + 1 })
+      useNodeResultsStore.setState({ previews: {} })
       result.current.fetchPreview(A)
     })
 

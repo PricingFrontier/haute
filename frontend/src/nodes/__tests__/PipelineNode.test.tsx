@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, cleanup } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import PipelineNode from "../PipelineNode"
-import type { PipelineNodeData } from "../PipelineNode"
+import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
 import { NODE_TYPES, nodeTypeLabels } from "../../utils/nodeTypes"
 import useSettingsStore from "../../stores/useSettingsStore"
 
@@ -24,7 +24,7 @@ function renderNode(
   const props = {
     id: "test-node",
     type: "custom",
-    data: fullData as unknown as Record<string, unknown>,
+    data: fullData,
     selected,
     isConnectable: true,
     positionAbsoluteX: 0,
@@ -40,7 +40,7 @@ function renderNode(
   }
   return render(
     <ReactFlowProvider>
-      <PipelineNode {...(props as unknown as NodeProps)} />
+      <PipelineNode {...(props as unknown as NodeProps<PipelineFlowNode>)} />
     </ReactFlowProvider>,
   )
 }
@@ -176,11 +176,10 @@ describe("PipelineNode", () => {
       nodeType: NODE_TYPES.POLARS,
       _status: "ok",
     })
-    // jsdom converts hex to rgb: #22c55e -> rgb(34, 197, 94)
     const allSpans = Array.from(container.querySelectorAll("span"))
     const greenDot = allSpans.find((s) => {
       const style = s.getAttribute("style") || ""
-      return style.includes("rgb(34, 197, 94)") || style.includes("#22c55e")
+      return style.includes("var(--success)") || style.includes("rgb(34, 197, 94)")
     })
     expect(greenDot).toBeTruthy()
   })
@@ -191,11 +190,10 @@ describe("PipelineNode", () => {
       nodeType: NODE_TYPES.POLARS,
       _status: "error",
     })
-    // #ef4444 -> rgb(239, 68, 68)
     const allSpans = Array.from(container.querySelectorAll("span"))
     const redDot = allSpans.find((s) => {
       const style = s.getAttribute("style") || ""
-      return style.includes("rgb(239, 68, 68)") || style.includes("#ef4444")
+      return style.includes("var(--danger)") || style.includes("rgb(239, 68, 68)")
     })
     expect(redDot).toBeTruthy()
   })

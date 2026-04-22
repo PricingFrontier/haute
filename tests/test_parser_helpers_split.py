@@ -24,7 +24,7 @@ accepted as any of ``extract_user_code``, ``extract_code``,
 Where the review pins a specific name (all the existing public-surface
 helpers of ``_parser_helpers``), the tests pin that exactly — those names
 must remain importable from *either* the new module *or* from
-``_parser_helpers`` as a back-compat re-export.
+``_parser_helpers`` as a parser-helper facade.
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ PARSER_HELPERS_PUBLIC_NAMES = (
     "_extract_preserved_blocks",
     # Code extraction
     "_extract_user_code",
-    "_extract_sentinel_user_code",
     "_extract_source_user_code",
     "_extract_model_score_user_code",
     "_extract_external_user_code",
@@ -103,7 +102,6 @@ EXPECTED_HOMES: dict[str, tuple[str, ...]] = {
     ),
     "haute._code_extraction": (
         "_extract_user_code",
-        "_extract_sentinel_user_code",
         "_extract_source_user_code",
         "_extract_model_score_user_code",
         "_extract_external_user_code",
@@ -187,41 +185,32 @@ class TestModuleLayout:
 
 
 class TestPublicAPIPreserved:
-    """The original _parser_helpers surface is preserved verbatim.
-
-    The split must not break any existing caller.  _parser_helpers can
-    become a shim of re-exports — the exact names just need to keep
-    resolving through it.
-    """
+    """The _parser_helpers facade exposes the parser helper surface."""
 
     @pytest.mark.parametrize("name", sorted(PARSER_HELPERS_PUBLIC_NAMES))
-    def test_backcompat_reexport(self, name: str):
-        import haute._parser_helpers as legacy
+    def test_parser_helper_facade_exports(self, name: str):
+        import haute._parser_helpers as facade
 
-        assert hasattr(legacy, name), (
+        assert hasattr(facade, name), (
             f"_parser_helpers no longer exports '{name}'. "
-            "Split refactor must preserve back-compat re-exports for every "
-            "name production code and tests currently import."
+            "Split refactor must preserve every helper name production "
+            "code and tests currently import."
         )
-        assert callable(getattr(legacy, name)) or not name.startswith("_"), (
+        assert callable(getattr(facade, name)) or not name.startswith("_"), (
             f"'{name}' is not callable via _parser_helpers — is it really exported?"
         )
 
-    def test_legacy_matches_new_identity(self):
-        """When the legacy name is a re-export, it must be the same object.
-
-        Prevents the split from accidentally shipping two diverging copies
-        of the same function.
-        """
-        import haute._parser_helpers as legacy
+    def test_facade_matches_new_identity(self):
+        """Facade exports must be the same objects as the focused modules."""
+        import haute._parser_helpers as facade
 
         for modname, names in EXPECTED_HOMES.items():
             mod = importlib.import_module(modname)
             for name in names:
-                if not hasattr(legacy, name):
-                    continue  # covered by test_backcompat_reexport
+                if not hasattr(facade, name):
+                    continue
                 new = getattr(mod, name)
-                old = getattr(legacy, name)
+                old = getattr(facade, name)
                 assert new is old, (
                     f"'{name}' diverged between {modname} and _parser_helpers — "
                     "re-export must be the same object, not a separate copy."
@@ -269,14 +258,6 @@ class TestNoCyclicImports:
 # - polars (transform)
 
 
-DATA_SOURCE_BODY_SENTINEL = (
-    '    """load britsure policies"""\n'
-    '    df = pl.scan_parquet("data/britsure.parquet")\n'
-    "    # -- user code --\n"
-    '    df = df.filter(pl.col("year") >= 2020)\n'
-    "    return df"
-)
-
 DATA_SOURCE_BODY_NO_SENTINEL = (
     '    """load britsure policies"""\n'
     '    df = pl.scan_parquet("data/britsure.parquet")\n'
@@ -322,14 +303,6 @@ MODEL_SCORE_BODY_WITH_POST = (
     "    from haute.graph_utils import score_from_config\n"
     '    result = score_from_config(source, config="config/score.json")\n'
     '    df = result.with_columns(doubled=pl.col("prediction") * 2)\n'
-    "    return result"
-)
-
-MODEL_SCORE_BODY_SENTINEL = (
-    '    """legacy sentinel modelScore"""\n'
-    "    result = df_eager.lazy()\n"
-    "    # -- user code --\n"
-    '    df = df.with_columns(boosted=pl.col("prediction") + 1)\n'
     "    return result"
 )
 
@@ -396,7 +369,6 @@ POLARS_BODY_EXPLICIT_ASSIGN = (
 
 
 DATA_SOURCE_CASES = [
-    pytest.param(DATA_SOURCE_BODY_SENTINEL, id="source-sentinel"),
     pytest.param(DATA_SOURCE_BODY_NO_SENTINEL, id="source-no-sentinel"),
     pytest.param(DATA_SOURCE_BODY_IMPORT_PREFIX, id="source-import-prefix"),
     pytest.param(DATA_SOURCE_BODY_JUST_LOAD, id="source-just-load"),
@@ -406,7 +378,6 @@ DATA_SOURCE_CASES = [
 MODEL_SCORE_CASES = [
     pytest.param(MODEL_SCORE_BODY_THIN, id="score-thin"),
     pytest.param(MODEL_SCORE_BODY_WITH_POST, id="score-with-post"),
-    pytest.param(MODEL_SCORE_BODY_SENTINEL, id="score-sentinel"),
     pytest.param(MODEL_SCORE_BODY_MULTILINE_CALL, id="score-multiline-call"),
 ]
 
@@ -426,7 +397,7 @@ POLARS_CASES = [
 
 class TestExtractorCorrectOutputs:
     """Specific output pinning — guards the key invariants independently
-    of identity with the legacy function (so the dedup cannot silently
+    of wrapper identity (so the dedup cannot silently
     break the semantics even if both paths change together).
     """
 
@@ -439,14 +410,6 @@ class TestExtractorCorrectOutputs:
         )
         assert 'filter(pl.col("year") >= 2020)' in result
         assert "return df" not in result
-
-    def test_source_handles_sentinel_marker(self):
-        from haute._code_extraction import _extract_source_user_code
-
-        result = _extract_source_user_code(DATA_SOURCE_BODY_SENTINEL)
-        # Legacy path: sentinel takes precedence
-        assert "scan_parquet" not in result
-        assert "year" in result
 
     def test_source_only_load_returns_empty(self):
         from haute._code_extraction import _extract_source_user_code
@@ -573,15 +536,15 @@ class TestConsolidatedEngineContract:
             assert count >= 4, f"Matcher registry has {count} entries; expected >= 4."
 
     def test_engine_produces_same_output_per_kind(self):
-        """The consolidated engine produces the same output as the legacy
-        per-kind extractor for every representative input.
+        """The consolidated engine produces the same output as the per-kind
+        wrapper for every representative input.
 
         The engine is called with a *kind* argument (whatever the dev
         names it — node_type / matcher / kind / category).  We probe for
         an acceptable calling convention.
         """
         import haute._code_extraction as mod
-        import haute._parser_helpers as legacy
+        import haute._parser_helpers as facade
 
         match = _find_engine_callable(mod)
         if match is None:
@@ -611,7 +574,7 @@ class TestConsolidatedEngineContract:
                     continue
             return None
 
-        # Map kind names to the legacy extractor + parameters it needs
+        # Map kind names to the wrapper + parameters it needs.
         kind_aliases = {
             "source": ("dataSource", "data_source", "source"),
             "model_score": ("modelScore", "model_score"),
@@ -624,25 +587,25 @@ class TestConsolidatedEngineContract:
                 "source",
                 DATA_SOURCE_BODY_NO_SENTINEL,
                 None,
-                legacy._extract_source_user_code(DATA_SOURCE_BODY_NO_SENTINEL),
+                facade._extract_source_user_code(DATA_SOURCE_BODY_NO_SENTINEL),
             ),
             (
                 "model_score",
                 MODEL_SCORE_BODY_WITH_POST,
                 None,
-                legacy._extract_model_score_user_code(MODEL_SCORE_BODY_WITH_POST),
+                facade._extract_model_score_user_code(MODEL_SCORE_BODY_WITH_POST),
             ),
             (
                 "external",
                 EXTERNAL_FILE_BODY_PICKLE,
                 ["df"],
-                legacy._extract_external_user_code(EXTERNAL_FILE_BODY_PICKLE, ["df"]),
+                facade._extract_external_user_code(EXTERNAL_FILE_BODY_PICKLE, ["df"]),
             ),
             (
                 "polars",
                 POLARS_BODY_DF_CHAIN,
                 ["source"],
-                legacy._extract_user_code(POLARS_BODY_DF_CHAIN, ["source"]),
+                facade._extract_user_code(POLARS_BODY_DF_CHAIN, ["source"]),
             ),
         ]
 
@@ -675,9 +638,8 @@ class TestEndToEndParseUnchanged:
     """Full parse_pipeline_source of the test fixture must continue to
     produce the same graph after the refactor.
 
-    This is the ultimate back-compat pin — if any caller has migrated to
-    the new module or if any public name has drifted, the legacy fixture
-    parse will fail here.
+    This keeps the parser split honest: if any public helper name has
+    drifted, the fixture parse will fail here.
     """
 
     @pytest.fixture
@@ -689,7 +651,7 @@ class TestEndToEndParseUnchanged:
     def test_parse_pipeline_source_still_works(self, fixture_source: str):
         from haute.parser import parse_pipeline_source
 
-        graph = parse_pipeline_source(fixture_source)
+        graph = parse_pipeline_source(fixture_source, _base_dir=Path("tests/fixtures"))
         # Every node in the fixture resolves cleanly after the split
         assert graph.pipeline_name == "test_pipeline"
         assert len(graph.nodes) >= 6
@@ -710,7 +672,7 @@ class TestEndToEndParseUnchanged:
         """
         from haute.parser import parse_pipeline_source
 
-        graph = parse_pipeline_source(fixture_source)
+        graph = parse_pipeline_source(fixture_source, _base_dir=Path("tests/fixtures"))
         ext_nodes = [n for n in graph.nodes if n.data.nodeType == "externalFile"]
         assert ext_nodes, "fixture must contain an externalFile node"
         code = ext_nodes[0].data.config.get("code", "")
@@ -721,32 +683,32 @@ class TestEndToEndParseUnchanged:
 
 
 # ---------------------------------------------------------------------------
-# Guard: _parser_helpers is now a shim, not a god file
+# Guard: _parser_helpers is now a facade, not a god file
 # ---------------------------------------------------------------------------
 
 
 class TestGodFileIsGone:
     """After the split, _parser_helpers.py should be dramatically smaller.
 
-    It becomes a thin re-export module.  We don't pin an exact LOC but we
+    It becomes a thin facade module.  We don't pin an exact LOC but we
     pin that the implementations have moved (measured by checking that
     function bodies aren't both owned there AND owned in the split
     modules).
     """
 
     def test_parser_helpers_shrunk(self):
-        """The split must reduce _parser_helpers to a shim."""
-        import haute._parser_helpers as legacy
+        """The split must reduce _parser_helpers to a facade."""
+        import haute._parser_helpers as facade
 
-        legacy_path = Path(legacy.__file__)
-        line_count = legacy_path.read_text().count("\n")
+        facade_path = Path(facade.__file__)
+        line_count = facade_path.read_text().count("\n")
 
-        # The old file was 1011 lines.  A re-export shim should be well
+        # The old file was 1011 lines.  A facade module should be well
         # under 300 lines (room for imports, __all__, docstring, and
-        # optional deprecation shims).
+        # comments).
         assert line_count < 400, (
             f"_parser_helpers.py is still {line_count} lines — the split "
-            "should reduce it to a re-export shim (< 400 lines).  "
+            "should reduce it to a facade (< 400 lines).  "
             "Implementations must move to _ast_helpers, _code_extraction, "
             "_config_builder, and _graph_builders."
         )

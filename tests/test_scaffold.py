@@ -675,16 +675,14 @@ class TestStarterFiles:
         # The three core decorator forms must be present so the parser
         # picks up a source, a transform, and a terminal node.
         assert "@pipeline.data_source(" in result, (
-            "Starter pipeline must include a dataSource node so data can "
-            "flow into the graph."
+            "Starter pipeline must include a dataSource node so data can flow into the graph."
         )
         assert "@pipeline.polars" in result, (
             "Starter pipeline must include a polars transform so users "
             "have a working example of the transform surface."
         )
         assert "@pipeline.output" in result, (
-            "Starter pipeline must include an output node so the "
-            "terminal preview materialises."
+            "Starter pipeline must include an output node so the terminal preview materialises."
         )
 
     def test_starter_utility_features(self) -> None:

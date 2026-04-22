@@ -12,9 +12,16 @@ can optimise the full plan end-to-end.
 
 from __future__ import annotations
 
+import ctypes
 import functools
 import gc
+import importlib as _importlib
+import inspect
+import os
 import shutil
+import signal
+import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -22,7 +29,7 @@ from typing import Any
 
 import polars as pl
 
-from haute._builders import (  # noqa: F401 — re-exported for backward compat
+from haute._builders import (  # noqa: F401
     NodeBuildContext,
     NodeBuilder,
     _apply_online,
@@ -36,16 +43,14 @@ from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
-from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
+from haute._sandbox import safe_globals, validate_user_code
 from haute.graph_utils import (
     HauteError,
     NodeType,
     PipelineGraph,
     _execute_eager_core,
     _execute_lazy,
-    _Frame,
     _resolve_sink_path,
-    build_instance_mapping,
     graph_fingerprint,
 )
 from haute.schemas import ColumnInfo, NodeResult, SchemaWarning, SinkResponse
@@ -64,10 +69,9 @@ ensure_registry_ready()
 _MAX_PREVIEW_ROWS = 10_000  # safety cap for execute_graph JSON payload
 
 # Module-level toggle for column-contract enforcement.  ``True`` by
-# default: contract mismatches should fail loudly.  Benchmarks and
-# legacy integration tests may temporarily flip this to ``False`` to
-# measure the overhead or keep behaviour stable during a ratcheting
-# migration.  ``execute_graph(..., enforce_contracts=...)`` is the
+# default: contract mismatches should fail loudly.  Benchmarks may
+# temporarily flip this to ``False`` to measure overhead.
+# ``execute_graph(..., enforce_contracts=...)`` is the
 # preferred switch for normal code paths; the module flag is the
 # fallback for callers (like the overhead benchmark in
 # ``test_column_contracts_adoption.py``) that need to toggle it
@@ -121,6 +125,40 @@ _DANGEROUS_MODULES = frozenset(
         "importlib",
     }
 )
+_DANGEROUS_MODULE_OBJECTS = frozenset(
+    {
+        os,
+        os.path,
+        sys,
+        subprocess,
+        shutil,
+        signal,
+        ctypes,
+        _importlib,
+    }
+)
+_DANGEROUS_MODULE_NAMES = frozenset(m.__name__ for m in _DANGEROUS_MODULE_OBJECTS)
+
+
+def _is_dangerous_preamble_binding(value: Any) -> bool:
+    if inspect.ismodule(value):
+        module_name = value.__name__
+        return (
+            value in _DANGEROUS_MODULE_OBJECTS
+            or module_name in _DANGEROUS_MODULE_NAMES
+            or module_name.split(".", 1)[0] in _DANGEROUS_MODULES
+        )
+
+    module = inspect.getmodule(value)
+    module_name = (
+        module.__name__ if module is not None else getattr(value, "__module__", "")
+    ) or ""
+    return (
+        module in _DANGEROUS_MODULE_OBJECTS
+        or module_name in _DANGEROUS_MODULE_NAMES
+        or module_name.split(".", 1)[0] in _DANGEROUS_MODULES
+    )
+
 
 _polars_config_lock = threading.Lock()
 
@@ -200,8 +238,7 @@ def _compile_preamble_cached(
         return {
             k: v
             for k, v in ns.items()
-            if k not in base_keys
-            and not (hasattr(v, "__name__") and getattr(v, "__name__", "") in _DANGEROUS_MODULES)
+            if k not in base_keys and not _is_dangerous_preamble_binding(v)
         }
 
 
@@ -288,68 +325,6 @@ def _compile_preamble(
 # to a plain function.
 _compile_preamble.cache_info = _compile_preamble_cached.cache_info  # type: ignore[attr-defined]
 _compile_preamble.cache_clear = _compile_preamble_cached.cache_clear  # type: ignore[attr-defined]
-
-
-def _exec_user_code(
-    code: str,
-    src_names: list[str],
-    dfs: tuple[_Frame, ...],
-    extra_ns: dict[str, Any] | None = None,
-    orig_source_names: list[str] | None = None,
-    input_mapping: dict[str, str] | None = None,
-) -> _Frame:
-    """Execute user-provided code and return the ``df`` variable.
-
-    Shared by transform and externalFile node types.
-    - Injects ``pl``, input DataFrames by name, and ``df`` (first input).
-    - Optionally merges *extra_ns* into the local namespace (e.g. ``obj``).
-    - User code must assign to ``df``; the value of ``df`` after execution
-      is returned.
-    """
-    local_ns: dict[str, Any] = {"pl": pl}
-    for i, d in enumerate(dfs):
-        if i < len(src_names):
-            local_ns[src_names[i]] = d
-    # Instance alias injection: bind original source names so the original's
-    # code can reference variables by their original upstream labels.
-    if orig_source_names:
-        mapping = build_instance_mapping(orig_source_names, src_names, input_mapping)
-        for orig, inst in mapping.items():
-            if orig not in local_ns and inst in local_ns:
-                local_ns[orig] = local_ns[inst]
-    if dfs:
-        local_ns["df"] = dfs[0]
-    if extra_ns:
-        local_ns.update(extra_ns)
-
-    # Validate user code at the AST level before exec().
-    # This blocks dunder access, imports, getattr, class defs, etc.
-    # at the structural level — a stronger layer than restricted builtins.
-    try:
-        validate_user_code(code)
-    except UnsafeCodeError as uce:
-        if isinstance(uce.__cause__, SyntaxError):
-            raise uce.__cause__ from None
-        raise
-
-    try:
-        exec(code, safe_globals(pl=pl, **(extra_ns or {})), local_ns)
-    except Exception as exc:
-        # For errors without "line N" in the message (e.g. NameError),
-        # extract the line from the traceback and attach it.
-        if exc.__traceback__:
-            import traceback as _tb
-
-            for frame in reversed(_tb.extract_tb(exc.__traceback__)):
-                if frame.filename == "<string>" and frame.lineno is not None:
-                    exc._user_code_line = frame.lineno  # type: ignore[attr-defined]
-                    break
-        raise
-
-    result = local_ns.get("df", dfs[0] if dfs else pl.LazyFrame())
-    if isinstance(result, pl.DataFrame):
-        result = result.lazy()
-    return result  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------

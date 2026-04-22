@@ -18,9 +18,9 @@ function formatMemory(bytes: number): string {
 }
 
 const WS_STATUS_CONFIG: Record<WsStatus, { color: string; title: string }> = {
-  connected: { color: "#22c55e", title: "Live sync connected" },
-  reconnecting: { color: "#f59e0b", title: "Reconnecting to server\u2026" },
-  disconnected: { color: "#ef4444", title: "Server unreachable \u2014 restart haute serve" },
+  connected: { color: "var(--success)", title: "Live sync connected" },
+  reconnecting: { color: "var(--warning-strong)", title: "Reconnecting to server\u2026" },
+  disconnected: { color: "var(--danger)", title: "Server unreachable \u2014 restart haute serve" },
 }
 
 interface ToolbarProps {
@@ -171,8 +171,8 @@ export default function Toolbar({
               {activeSource !== "live" && (
                 <button
                   onClick={() => { removeSource(activeSource); setSourceOpen(false) }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[rgba(239,68,68,0.1)]"
-                  style={{ color: '#ef4444' }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--danger-soft)]"
+                  style={{ color: 'var(--danger)' }}
                 >
                   <Trash2 size={12} />
                   Remove "{activeSource}"
@@ -282,7 +282,7 @@ export default function Toolbar({
         </button>
         <button
           onClick={onSave}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[#60a5fa]"
+          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
           style={{ background: 'var(--accent)' }}
           title="Ctrl+S"
         >
@@ -290,8 +290,8 @@ export default function Toolbar({
         </button>
         <button
           onClick={onOpenGit}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1 hover:bg-[#4ade80]"
-          style={{ background: '#22c55e' }}
+          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1 hover:bg-[var(--success-hover)]"
+          style={{ background: 'var(--success)' }}
           title="Git — branch management and version control"
         >
           <GitFork size={13} />

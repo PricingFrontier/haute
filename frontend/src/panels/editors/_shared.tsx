@@ -73,15 +73,15 @@ export function MlflowStatusBadge() {
   const { mlflowStatus, mlflowBackend } = useMlflowStatus()
   return (
     <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px]" style={{
-      background: mlflowStatus === "connected" ? "rgba(34,197,94,.06)" : mlflowStatus === "error" ? "rgba(239,68,68,.06)" : "var(--bg-surface)",
-      border: `1px solid ${mlflowStatus === "connected" ? "rgba(34,197,94,.2)" : mlflowStatus === "error" ? "rgba(239,68,68,.2)" : "var(--border)"}`,
+      background: mlflowStatus === "connected" ? "var(--success-soft-subtle)" : mlflowStatus === "error" ? "var(--danger-soft-faint)" : "var(--bg-surface)",
+      border: `1px solid ${mlflowStatus === "connected" ? "var(--success-border)" : mlflowStatus === "error" ? "var(--danger-border)" : "var(--border)"}`,
     }}>
       {mlflowStatus === "loading" ? (
         <><Loader2 size={11} className="animate-spin" style={{ color: "var(--text-muted)" }} /><span style={{ color: "var(--text-muted)" }}>Connecting to MLflow...</span></>
       ) : mlflowStatus === "connected" ? (
-        <><Check size={11} style={{ color: "#22c55e" }} /><span style={{ color: "var(--text-secondary)" }}>MLflow ({mlflowBackend})</span></>
+        <><Check size={11} style={{ color: "var(--success)" }} /><span style={{ color: "var(--text-secondary)" }}>MLflow ({mlflowBackend})</span></>
       ) : (
-        <><AlertTriangle size={11} style={{ color: "#ef4444" }} /><span style={{ color: "#ef4444" }}>MLflow not available</span></>
+        <><AlertTriangle size={11} style={{ color: "var(--danger)" }} /><span style={{ color: "var(--danger)" }}>MLflow not available</span></>
       )}
     </div>
   )
@@ -151,9 +151,9 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
   return (
     <div>
       {selectedPath && (
-        <div className="mb-2 px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.2)' }}>
-          <Check size={14} style={{ color: '#22c55e' }} className="shrink-0" />
-          <span className="text-xs font-mono truncate" style={{ color: '#4ade80' }}>{selectedPath}</span>
+        <div className="mb-2 px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'var(--success-soft)', border: '1px solid var(--success-border)' }}>
+          <Check size={14} style={{ color: 'var(--success)' }} className="shrink-0" />
+          <span className="text-xs font-mono truncate" style={{ color: 'var(--success-hover)' }}>{selectedPath}</span>
         </div>
       )}
 
@@ -174,7 +174,7 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
           {loading ? (
             <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-muted)' }}>Loading...</div>
           ) : error ? (
-            <div className="px-3 py-2 text-xs" style={{ color: '#f87171' }}>{error}</div>
+            <div className="px-3 py-2 text-xs" style={{ color: 'var(--danger-text)' }}>{error}</div>
           ) : items.length === 0 ? (
             <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-muted)' }}>No matching files</div>
           ) : (
@@ -196,7 +196,7 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
                   style={{ borderBottom: '1px solid var(--border)' }}
                 >
                   {item.type === "directory" ? (
-                    <Folder size={14} style={{ color: '#f59e0b' }} className="shrink-0" />
+                    <Folder size={14} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
                   ) : isSelected ? (
                     <Check size={14} style={{ color: 'var(--accent)' }} className="shrink-0" />
                   ) : (
@@ -324,27 +324,27 @@ const hauteTheme = EditorView.theme({
     backgroundColor: "rgba(255,255,255,.03)",
   },
   ".cm-selectionBackground": {
-    backgroundColor: "rgba(59,130,246,.25) !important",
+    backgroundColor: "var(--accent-selection) !important",
   },
   "&.cm-focused .cm-selectionBackground": {
-    backgroundColor: "rgba(59,130,246,.3) !important",
+    backgroundColor: "var(--accent-ring) !important",
   },
   ".cm-cursor": {
     borderLeftColor: "var(--accent)",
   },
   ".cm-matchingBracket": {
-    backgroundColor: "rgba(59,130,246,.25)",
-    outline: "1px solid rgba(59,130,246,.4)",
+    backgroundColor: "var(--accent-selection)",
+    outline: "1px solid var(--accent-outline)",
   },
   ".cm-selectionMatch": {
-    backgroundColor: "rgba(59,130,246,.15)",
+    backgroundColor: "var(--accent-soft-strong)",
   },
   ".cm-searchMatch": {
-    backgroundColor: "rgba(234,179,8,.3)",
-    outline: "1px solid rgba(234,179,8,.5)",
+    backgroundColor: "var(--warning-search)",
+    outline: "1px solid var(--warning-search-outline)",
   },
   ".cm-searchMatch.cm-searchMatch-selected": {
-    backgroundColor: "rgba(234,179,8,.5)",
+    backgroundColor: "var(--warning-search-selected)",
   },
   ".cm-foldGutter .cm-gutterElement": {
     color: "var(--text-muted)",
@@ -393,8 +393,8 @@ const hauteTheme = EditorView.theme({
   // Lint diagnostics
   ".cm-lintRange-error": {
     backgroundImage: "none",
-    backgroundColor: "rgba(239, 68, 68, 0.15)",
-    borderBottom: "2px solid #ef4444",
+    backgroundColor: "var(--danger-soft-strong)",
+    borderBottom: "2px solid var(--danger)",
   },
   ".cm-gutter-lint": {
     width: "14px",
@@ -406,7 +406,7 @@ const hauteTheme = EditorView.theme({
     width: "8px !important",
     height: "8px !important",
     borderRadius: "50%",
-    backgroundColor: "#ef4444",
+    backgroundColor: "var(--danger)",
     display: "inline-block",
     marginTop: "6px",
   },
@@ -430,19 +430,19 @@ const hauteHighlighting = HighlightStyle.define([
   { tag: tags.number, color: "#fb923c" },                // numeric literals
   { tag: tags.string, color: "#86efac" },                // strings
   { tag: tags.special(tags.string), color: "#86efac" },  // f-strings
-  { tag: tags.regexp, color: "#fbbf24" },
+  { tag: tags.regexp, color: "var(--syntax-warning)" },
   { tag: tags.comment, color: "var(--text-muted)", fontStyle: "italic" },
-  { tag: tags.function(tags.definition(tags.variableName)), color: "var(--text-accent)" },  // function defs
+  { tag: tags.function(tags.definition(tags.variableName)), color: "var(--syntax-accent)" },  // function defs
   { tag: tags.function(tags.variableName), color: "#93c5fd" },  // function calls
-  { tag: tags.className, color: "#fbbf24" },
-  { tag: tags.definition(tags.className), color: "#fbbf24" },
+  { tag: tags.className, color: "var(--syntax-warning)" },
+  { tag: tags.definition(tags.className), color: "var(--syntax-warning)" },
   { tag: tags.propertyName, color: "#67e8f9" },          // .method / .attr
   { tag: tags.operator, color: "#94a3b8" },
   { tag: tags.punctuation, color: "#94a3b8" },
   { tag: tags.bracket, color: "#cbd5e1" },
   { tag: tags.meta, color: "#a78bfa" },                  // decorators
   { tag: tags.variableName, color: "var(--text-primary)" },
-  { tag: tags.typeName, color: "#fbbf24" },
+  { tag: tags.typeName, color: "var(--syntax-warning)" },
 ])
 
 // Focus ring: border change on focus/blur
@@ -454,7 +454,7 @@ const focusRingTheme = EditorView.theme({
     transition: "border-color 0.15s, box-shadow 0.15s",
   },
   "&.cm-focused": {
-    borderColor: "rgba(59,130,246,.3)",
+    borderColor: "var(--accent-ring)",
     boxShadow: "0 0 0 2px var(--accent-soft)",
   },
 })

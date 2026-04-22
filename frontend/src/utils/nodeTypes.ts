@@ -99,7 +99,7 @@ export const PALETTE_TYPES: NodeTypeValue[] = [
   NODE_TYPES.OPTIMISER, NODE_TYPES.OPTIMISER_APPLY,
 ]
 
-/** Derived lookups — backward compatible, prefer NODE_TYPE_META for new code. */
+/** Derived lookups used by components that need one metadata field. */
 export const nodeTypeIcons: Record<string, React.ElementType> =
   Object.fromEntries(Object.entries(NODE_TYPE_META).map(([k, v]) => [k, v.icon]))
 

@@ -125,8 +125,7 @@ def handle_impact(config: ImpactConfig) -> None:
         )
     else:
         click.echo(
-            f"  \u26a0 Impact analysis not yet implemented for target "
-            f"'{deploy_config.target}'.",
+            f"  \u26a0 Impact analysis not yet implemented for target '{deploy_config.target}'.",
             err=True,
         )
         return

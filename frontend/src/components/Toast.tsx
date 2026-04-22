@@ -16,10 +16,10 @@ const icons = {
 }
 
 const accentColors = {
-  success: "#22c55e",
-  error: "#ef4444",
+  success: "var(--success)",
+  error: "var(--danger)",
   info: "#6366f1",
-  warning: "#f59e0b",
+  warning: "var(--warning-strong)",
 }
 
 function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: string) => void }) {

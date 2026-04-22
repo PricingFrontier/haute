@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from "react"
-import WaterfallChart, { WaterfallErrorAlert } from "./WaterfallChart"
+import WaterfallChart from "./WaterfallChart"
+import WaterfallErrorAlert from "./WaterfallErrorAlert"
 import ExpressionChainRow from "./ExpressionChain"
 import InputSourceTree from "./InputSourceTree"
 import {

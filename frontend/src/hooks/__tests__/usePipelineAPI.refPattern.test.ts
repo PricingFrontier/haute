@@ -98,7 +98,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
       undoStack: [],
       redoStack: [],
     })
-    useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
   })

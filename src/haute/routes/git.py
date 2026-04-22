@@ -43,6 +43,7 @@ from haute.schemas import (
     GitCreateBranchRequest,
     GitCreateBranchResponse,
     GitDeleteBranchRequest,
+    GitDeleteBranchResponse,
     GitHistoryResponse,
     GitPullResponse,
     GitRevertRequest,
@@ -51,6 +52,7 @@ from haute.schemas import (
     GitStatusResponse,
     GitSubmitResponse,
     GitSwitchBranchRequest,
+    GitSwitchBranchResponse,
 )
 
 logger = get_logger(component="server.git")
@@ -144,8 +146,8 @@ def git_create_branch(body: GitCreateBranchRequest) -> GitCreateBranchResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/switch")
-def git_switch(body: GitSwitchBranchRequest) -> dict[str, str]:
+@router.post("/switch", response_model=GitSwitchBranchResponse)
+def git_switch(body: GitSwitchBranchRequest) -> GitSwitchBranchResponse:
     """Switch to a branch (auto-commits pending changes first)."""
     try:
         switch_branch(body.branch)
@@ -154,7 +156,7 @@ def git_switch(body: GitSwitchBranchRequest) -> dict[str, str]:
     except Exception as e:
         logger.error("git_switch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return {"status": "ok", "branch": body.branch}
+    return GitSwitchBranchResponse(branch=body.branch)
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +268,8 @@ def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/branches")
-def git_delete_branch(body: GitDeleteBranchRequest) -> dict[str, str]:
+@router.delete("/branches", response_model=GitDeleteBranchResponse)
+def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
     """Permanently delete a branch."""
     try:
         delete_branch(body.branch)
@@ -276,4 +278,4 @@ def git_delete_branch(body: GitDeleteBranchRequest) -> dict[str, str]:
     except Exception as e:
         logger.error("git_delete_branch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return {"status": "ok", "branch": body.branch}
+    return GitDeleteBranchResponse(branch=body.branch)

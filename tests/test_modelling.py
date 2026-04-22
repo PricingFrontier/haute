@@ -30,14 +30,13 @@ from haute.modelling._training_job import TrainingJob, TrainResult
 
 
 class TestSplitConfig:
-    def test_invalid_test_size_zero(self):
-        """test_size=0 is now valid (no validation set). test_size=-1 is not."""
-        # 0 is valid — no validation
-        SplitConfig(test_size=0)
+    def test_invalid_validation_size_zero(self):
+        """validation_size=0 is valid (no validation set)."""
+        SplitConfig(validation_size=0)
         with pytest.raises(ValueError, match="validation_size"):
             SplitConfig(validation_size=-0.1)
 
-    def test_invalid_test_size_one(self):
+    def test_invalid_validation_size_one(self):
         with pytest.raises(ValueError, match="validation_size"):
             SplitConfig(validation_size=1.0)
 
@@ -77,7 +76,7 @@ class TestSplitData:
             split_data(df, SplitConfig())
 
     def test_random_split_proportions(self, sample_df):
-        train, test = split_data(sample_df, SplitConfig(test_size=0.2, seed=42))
+        train, test = split_data(sample_df, SplitConfig(validation_size=0.2, seed=42))
         assert len(train) == 80
         assert len(test) == 20
         # No row overlap
@@ -86,13 +85,13 @@ class TestSplitData:
         assert train_idx & test_idx == set()
 
     def test_random_split_seed_reproducible(self, sample_df):
-        t1, _ = split_data(sample_df, SplitConfig(test_size=0.2, seed=42))
-        t2, _ = split_data(sample_df, SplitConfig(test_size=0.2, seed=42))
+        t1, _ = split_data(sample_df, SplitConfig(validation_size=0.2, seed=42))
+        t2, _ = split_data(sample_df, SplitConfig(validation_size=0.2, seed=42))
         assert t1["x"].to_list() == t2["x"].to_list()
 
     def test_random_split_different_seed(self, sample_df):
-        t1, _ = split_data(sample_df, SplitConfig(test_size=0.2, seed=42))
-        t2, _ = split_data(sample_df, SplitConfig(test_size=0.2, seed=99))
+        t1, _ = split_data(sample_df, SplitConfig(validation_size=0.2, seed=42))
+        t2, _ = split_data(sample_df, SplitConfig(validation_size=0.2, seed=99))
         assert t1["x"].to_list() != t2["x"].to_list()
 
     def test_temporal_split(self, sample_df):
@@ -117,7 +116,7 @@ class TestSplitData:
             split_data(sample_df, config)
 
     def test_group_split(self, sample_df):
-        config = SplitConfig(strategy="group", group_column="group", test_size=0.3, seed=42)
+        config = SplitConfig(strategy="group", group_column="group", validation_size=0.3, seed=42)
         train, test = split_data(sample_df, config)
         assert len(train) + len(test) == len(sample_df)
         # All rows of a group go to the same set
@@ -139,7 +138,7 @@ class TestSplitData:
 class TestSplitMask:
     def test_random_mask_correct_ratio(self):
         n = 1000
-        mask = split_mask(n, SplitConfig(test_size=0.2, seed=42))
+        mask = split_mask(n, SplitConfig(validation_size=0.2, seed=42))
         assert len(mask) == n
         assert mask.dtype == pl.Int8
         train_n = int((mask == PARTITION_TRAIN).sum())
@@ -164,14 +163,14 @@ class TestSplitMask:
         assert int((mask == PARTITION_TRAIN).sum()) == n
 
     def test_random_mask_deterministic(self):
-        cfg = SplitConfig(test_size=0.2, seed=42)
+        cfg = SplitConfig(validation_size=0.2, seed=42)
         m1 = split_mask(500, cfg)
         m2 = split_mask(500, cfg)
         assert m1.to_list() == m2.to_list()
 
     def test_random_mask_different_seed(self):
-        m1 = split_mask(500, SplitConfig(test_size=0.2, seed=42))
-        m2 = split_mask(500, SplitConfig(test_size=0.2, seed=99))
+        m1 = split_mask(500, SplitConfig(validation_size=0.2, seed=42))
+        m2 = split_mask(500, SplitConfig(validation_size=0.2, seed=99))
         assert m1.to_list() != m2.to_list()
 
     def test_temporal_mask_splits_by_date(self):
@@ -200,7 +199,7 @@ class TestSplitMask:
                 "group": [f"g{i % 5}" for i in range(100)],
             }
         )
-        cfg = SplitConfig(strategy="group", group_column="group", test_size=0.3, seed=42)
+        cfg = SplitConfig(strategy="group", group_column="group", validation_size=0.3, seed=42)
         mask = split_mask(len(df), cfg, df=df)
         # Each group should be entirely in one partition
         labeled = df.with_columns(mask)
@@ -375,7 +374,6 @@ class TestSplitMask:
         cfg.date_column = None
         cfg.cutoff_date = None
         cfg.group_column = None
-        cfg.test_size = None
         with pytest.raises(ValueError, match="Unknown split strategy"):
             split_mask(100, cfg)
 
@@ -389,7 +387,6 @@ class TestSplitMask:
         cfg.date_column = None
         cfg.cutoff_date = None
         cfg.group_column = None
-        cfg.test_size = None
         df = pl.DataFrame({"x": [1, 2, 3]})
         with pytest.raises(ValueError, match="Unknown split strategy"):
             split_data(df, cfg)
@@ -412,15 +409,9 @@ class TestSplitConfigEdgeCases:
         with pytest.raises(ValueError, match="must be less than 1"):
             SplitConfig(validation_size=0.5, holdout_size=0.5)
 
-    def test_test_size_alias_overrides_validation_size(self):
-        """test_size should override validation_size as an alias."""
-        cfg = SplitConfig(test_size=0.3)
-        assert cfg.validation_size == 0.3
-        assert cfg.test_size is None
-
-    def test_test_size_negative_raises(self):
+    def test_validation_size_negative_raises(self):
         with pytest.raises(ValueError, match="validation_size"):
-            SplitConfig(test_size=-0.5)
+            SplitConfig(validation_size=-0.5)
 
     def test_valid_temporal_config(self):
         cfg = SplitConfig(
@@ -463,23 +454,23 @@ class TestAssignGroupSplit:
     def test_fallback_forces_first_sorted_group(self):
         """When all groups hash to train, fallback forces first sorted group to test.
 
-        With seed=0 and groups=['A', 'B'], test_size=0.3, both A (frac=0.93)
+        With seed=0 and groups=['A', 'B'], validation_size=0.3, both A (frac=0.93)
         and B (frac=0.60) hash above the threshold, so no groups are
         initially assigned to test.  The fallback should force 'A' (first
         sorted) into the test set.
         """
-        result = _assign_group_split(["A", "B"], test_size=0.3, seed=0)
+        result = _assign_group_split(["A", "B"], validation_size=0.3, seed=0)
         assert result == {"A"}, f"Expected fallback to force 'A', got {result}"
 
     def test_single_group_no_fallback(self):
         """A single group should NOT trigger the fallback (needs >1 group)."""
-        result = _assign_group_split(["only"], test_size=0.3, seed=0)
+        result = _assign_group_split(["only"], validation_size=0.3, seed=0)
         # With 1 group, the condition `len(unique_groups) > 1` is False
         assert result == set()
 
     def test_returns_set_of_strings(self):
         """Even if input groups are integers, result should be string set."""
-        result = _assign_group_split([1, 2, 3, 4, 5], test_size=0.5, seed=42)
+        result = _assign_group_split([1, 2, 3, 4, 5], validation_size=0.5, seed=42)
         assert all(isinstance(g, str) for g in result)
         assert len(result) > 0
 
@@ -901,7 +892,7 @@ class TestTrainingJob:
             target="ClaimCount",
             exclude=["IDpol", "Exposure"],
             params={"iterations": 5},
-            split={"strategy": "random", "test_size": 0.3, "seed": 99},
+            split={"strategy": "random", "validation_size": 0.3, "seed": 99},
             output_dir=str(tmp_path),
         )
         result = job.run()

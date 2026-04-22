@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from haute._types import HauteError
+from haute.errors import HauteError
 
 # ── A9: Exception hierarchy ────────────────────────────────────────
 

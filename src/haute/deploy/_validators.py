@@ -31,18 +31,13 @@ def load_test_quote_file(path: Path) -> list[dict]:
     return [{k: v for k, v in row.items() if not k.startswith("_")} for row in raw]
 
 
-def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
+def validate_deploy(resolved: ResolvedDeploy) -> None:
     """Run all pre-deploy validations.
 
-    Returns a list of structural error strings on the *happy* path — an
-    empty list means the deployment is safe to proceed.
-
-    Item #16 — fail-loud policy: any failing test quote (when
-    ``resolved.config.test_quotes_dir`` is populated) is treated as a
-    fatal error.  Both structural errors and test-quote failures are
-    collected first, then aggregated into a single :class:`DeployError`
-    so the operator sees the full picture in one report rather than a
-    trickle of "fix this, rerun, fix that, rerun" cycles.
+    Structural errors and test-quote failures are collected first, then
+    aggregated into a single :class:`DeployError` so the operator sees the
+    full picture in one report rather than a trickle of "fix this, rerun,
+    fix that, rerun" cycles.
     """
     from haute.errors import DeployError
 
@@ -124,12 +119,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
                     f"test quote {q.get('file', '<unknown>')!r} failed: {q.get('error', '')}"
                 )
 
-    # When a test-quotes directory is configured the function raises on
-    # any failure (structural or quote) so the operator sees the full
-    # aggregated diagnostic in one go.  With no test quotes configured,
-    # fall back to the legacy return-a-list contract for structural
-    # errors — callers in the older deploy path still consume that form.
-    if test_quote_errors or (tq_dir is not None and errors):
+    if errors or test_quote_errors:
         logger.warning(
             "validation_failed",
             structural_errors=len(errors),
@@ -146,7 +136,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
         logger.warning("validation_failed", error_count=len(errors))
     else:
         logger.info("validation_passed")
-    return errors
+    return None
 
 
 def score_test_quotes(

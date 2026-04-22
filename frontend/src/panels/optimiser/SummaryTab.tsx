@@ -34,7 +34,7 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
             {result.baseline_objective !== 0 && (
               <div className="flex justify-between text-xs font-mono gap-4">
                 <span style={{ color: "var(--text-secondary)" }}>Uplift</span>
-                <span style={{ color: "#f59e0b" }}>
+                <span style={{ color: "var(--warning-strong)" }}>
                   {((result.total_objective / result.baseline_objective - 1) * 100).toFixed(2)}%
                 </span>
               </div>
@@ -57,7 +57,7 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
                 return (
                   <div key={name} className="flex items-center justify-between text-xs font-mono gap-4">
                     <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: met ? "#22c55e" : "#ef4444" }} />
+                      <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: met ? "var(--success)" : "var(--danger)" }} />
                       <span style={{ color: "var(--text-secondary)" }}>{name}</span>
                     </span>
                     <span>
@@ -91,7 +91,7 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
         {result.mode === "ratebook" && result.clamp_rate != null && (
           <div className="flex justify-between text-xs font-mono">
             <span style={{ color: "var(--text-muted)" }}>Clamp rate</span>
-            <span style={{ color: "#f59e0b" }}>{(result.clamp_rate * 100).toFixed(1)}%</span>
+            <span style={{ color: "var(--warning-strong)" }}>{(result.clamp_rate * 100).toFixed(1)}%</span>
           </div>
         )}
 
@@ -114,17 +114,17 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
               {counts.map((c, i) => {
                 const barH = maxCount > 0 ? (c / maxCount) * chartH : 0
                 return (
-                  <rect key={i} x={px + i * barW + 0.5} y={py + chartH - barH} width={Math.max(barW - 1, 1)} height={barH} fill="#f59e0b" opacity={0.7} />
+                  <rect key={i} x={px + i * barW + 0.5} y={py + chartH - barH} width={Math.max(barW - 1, 1)} height={barH} fill="var(--warning-strong)" opacity={0.7} />
                 )
               })}
               {oneX != null && oneX >= px && oneX <= px + chartW && (
-                <line x1={oneX} y1={py} x2={oneX} y2={py + chartH} stroke="#ef4444" strokeWidth={1} strokeDasharray="3,2" />
+                <line x1={oneX} y1={py} x2={oneX} y2={py + chartH} stroke="var(--danger)" strokeWidth={1} strokeDasharray="3,2" />
               )}
             </svg>
             <div className="flex gap-3 mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
               <span>{eMin.toFixed(2)}</span>
               <span className="flex-1" />
-              {oneX != null && <span><span style={{ color: "#ef4444" }}>|</span> 1.0</span>}
+              {oneX != null && <span><span style={{ color: "var(--danger)" }}>|</span> 1.0</span>}
               <span className="flex-1" />
               <span>{eMax.toFixed(2)}</span>
             </div>
@@ -136,8 +136,8 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
                 <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>Std</span><span style={{ color: "var(--text-primary)" }}>{result.scenario_value_stats.std.toFixed(4)}</span></div>
                 <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>P5-P95</span><span style={{ color: "var(--text-primary)" }}>{result.scenario_value_stats.p5.toFixed(3)}-{result.scenario_value_stats.p95.toFixed(3)}</span></div>
                 <div className="flex justify-between"><span style={{ color: "var(--text-muted)" }}>Min-Max</span><span style={{ color: "var(--text-primary)" }}>{result.scenario_value_stats.min.toFixed(3)}-{result.scenario_value_stats.max.toFixed(3)}</span></div>
-                <div className="flex justify-between"><span style={{ color: "#22c55e" }}>Increase</span><span style={{ color: "#22c55e" }}>{(result.scenario_value_stats.pct_increase * 100).toFixed(1)}%</span></div>
-                <div className="flex justify-between"><span style={{ color: "#ef4444" }}>Decrease</span><span style={{ color: "#ef4444" }}>{(result.scenario_value_stats.pct_decrease * 100).toFixed(1)}%</span></div>
+                <div className="flex justify-between"><span style={{ color: "var(--success)" }}>Increase</span><span style={{ color: "var(--success)" }}>{(result.scenario_value_stats.pct_increase * 100).toFixed(1)}%</span></div>
+                <div className="flex justify-between"><span style={{ color: "var(--danger)" }}>Decrease</span><span style={{ color: "var(--danger)" }}>{(result.scenario_value_stats.pct_decrease * 100).toFixed(1)}%</span></div>
               </div>
             )}
           </div>

@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { SolveResult } from "../../panels/OptimiserPreview.tsx"
 import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
@@ -11,6 +12,7 @@ import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
 // ── Helpers ──────────────────────────────────────────────────────
 
 function resetStore() {
+  useGraphStore.setState({ structuralVersion: 0 })
   useNodeResultsStore.setState({
     previews: {},
     columnCache: {},
@@ -18,7 +20,6 @@ function resetStore() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    graphVersion: 0,
   })
 }
 
@@ -369,10 +370,10 @@ describe("useNodeResultsStore", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // Preview cache / graph version
+  // Preview cache / structural version
   // ────────────────────────────────────────────────────────────────
 
-  describe("preview cache and graph version", () => {
+  describe("preview cache and structural version", () => {
     it("setPreview then getPreview returns cached data", () => {
       const s = useNodeResultsStore.getState()
       const preview = makePreviewData()
@@ -381,34 +382,11 @@ describe("useNodeResultsStore", () => {
       const cached = s.getPreview("n1")
       expect(cached).not.toBeNull()
       expect(cached!.data).toEqual(preview)
-      expect(cached!.graphVersion).toBe(0)
+      expect(cached!.structuralVersion).toBe(0)
     })
 
     it("getPreview returns null for unknown node", () => {
       expect(useNodeResultsStore.getState().getPreview("unknown")).toBeNull()
-    })
-
-    it("bumpGraphVersion increments graphVersion", () => {
-      expect(useNodeResultsStore.getState().graphVersion).toBe(0)
-      useNodeResultsStore.getState().bumpGraphVersion()
-      expect(useNodeResultsStore.getState().graphVersion).toBe(1)
-      useNodeResultsStore.getState().bumpGraphVersion()
-      expect(useNodeResultsStore.getState().graphVersion).toBe(2)
-    })
-
-    it("setPreview then bumpGraphVersion: preview still returned but graphVersion mismatches", () => {
-      const s = useNodeResultsStore.getState()
-      const preview = makePreviewData()
-      s.setPreview("n1", preview, 0)
-      s.bumpGraphVersion()
-
-      const cached = useNodeResultsStore.getState().getPreview("n1")
-      expect(cached).not.toBeNull()
-      expect(cached!.data).toEqual(preview)
-      // Preview was stored at graphVersion 0 but store is now at 1
-      expect(cached!.graphVersion).toBe(0)
-      expect(useNodeResultsStore.getState().graphVersion).toBe(1)
-      expect(cached!.graphVersion).not.toBe(useNodeResultsStore.getState().graphVersion)
     })
   })
 
@@ -432,49 +410,24 @@ describe("useNodeResultsStore", () => {
       expect(useNodeResultsStore.getState().getColumns("nope")).toBeNull()
     })
 
-    it("columns become stale after bumpGraphVersion", () => {
+    it("columns become stale when structuralVersion changes", () => {
       const s = useNodeResultsStore.getState()
       s.setColumns("src-1", [{ name: "a", dtype: "float64" }], 0)
-      s.bumpGraphVersion()
+      useGraphStore.setState({ structuralVersion: 1 })
 
       const result = useNodeResultsStore.getState().getColumns("src-1")
       expect(result).not.toBeNull()
       expect(result!.fresh).toBe(false)
     })
 
-    it("columns set at current graph version are fresh", () => {
+    it("columns set at current structural version are fresh", () => {
       const s = useNodeResultsStore.getState()
-      s.bumpGraphVersion() // graphVersion is now 1
+      useGraphStore.setState({ structuralVersion: 1 })
       s.setColumns("src-1", [{ name: "a", dtype: "float64" }], 1)
 
       const result = useNodeResultsStore.getState().getColumns("src-1")
       expect(result).not.toBeNull()
       expect(result!.fresh).toBe(true)
-    })
-  })
-
-  // ────────────────────────────────────────────────────────────────
-  // B20: bumpGraphVersion should only fire on structural changes
-  // (tested at the store level — App.tsx fingerprinting is the gate)
-  // ────────────────────────────────────────────────────────────────
-
-  describe("bumpGraphVersion idempotence", () => {
-    it("bumpGraphVersion increments by exactly 1 each call", () => {
-      const s = useNodeResultsStore.getState()
-      const v0 = s.graphVersion
-      s.bumpGraphVersion()
-      expect(useNodeResultsStore.getState().graphVersion).toBe(v0 + 1)
-      useNodeResultsStore.getState().bumpGraphVersion()
-      expect(useNodeResultsStore.getState().graphVersion).toBe(v0 + 2)
-    })
-
-    it("multiple rapid bumps are additive (no dedup at store level)", () => {
-      const s = useNodeResultsStore.getState()
-      const v0 = s.graphVersion
-      for (let i = 0; i < 5; i++) {
-        useNodeResultsStore.getState().bumpGraphVersion()
-      }
-      expect(useNodeResultsStore.getState().graphVersion).toBe(v0 + 5)
     })
   })
 
@@ -830,10 +783,10 @@ describe("useNodeResultsStore", () => {
       expect(useNodeResultsStore.getState().getColumns("src-1", "live")).toBeNull()
     })
 
-    it("source-keyed columns become stale after bumpGraphVersion", () => {
+    it("source-keyed columns become stale when structuralVersion changes", () => {
       const s = useNodeResultsStore.getState()
       s.setColumns("src-1", [{ name: "a", dtype: "float64" }], 0, "staging")
-      s.bumpGraphVersion()
+      useGraphStore.setState({ structuralVersion: 1 })
 
       const result = useNodeResultsStore.getState().getColumns("src-1", "staging")
       expect(result).not.toBeNull()

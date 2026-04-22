@@ -28,7 +28,7 @@ import orjson
 
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim
-from haute._types import HauteError
+from haute.errors import HauteError
 
 if TYPE_CHECKING:
     import polars as pl
@@ -1015,7 +1015,7 @@ def _polars_flatten_to_parquet(
 
 
 # ---------------------------------------------------------------------------
-# Sample loading (kept for backward compat — UI schema preview, tests)
+# Sample loading for UI schema preview and tests.
 # ---------------------------------------------------------------------------
 
 

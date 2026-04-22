@@ -22,7 +22,7 @@
  * What this does NOT mock
  * -----------------------
  *   - ReactFlow (the real `@xyflow/react` module renders the canvas).
- *   - Hooks (usePipelineAPI, useWebSocketSync, useUndoRedo, useTracing,
+ *   - Hooks (usePipelineAPI, useWebSocketSync, useGraphCanvasState, useTracing,
  *     useSubmodelNavigation, useKeyboardShortcuts, useBackgroundJobs,
  *     useNodeHandlers, useEdgeHandlers — all real).
  *   - Sub-components (Toolbar, NodePalette, NodePanel, DataPreview,
@@ -189,7 +189,7 @@ function resetAllStores(): void {
     nodeSearchOpen: false,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
+  useNodeResultsStore.setState({ previews: {}, columnCache: {} })
   useSettingsStore.setState({
     rowLimit: 100,
     mlflow: { status: "pending", backend: "", host: "" },

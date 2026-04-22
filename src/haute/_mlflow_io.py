@@ -32,10 +32,8 @@ _DISK_CACHE_MAX_DIRS = 50
 class _ArtifactNotFoundError(FileNotFoundError):
     """Internal sentinel: a probe completed and no artifact matched.
 
-    Subclasses :class:`FileNotFoundError` so the public surface of
-    helpers like :func:`_find_cbm_artifact` continues to raise
-    ``FileNotFoundError`` (legacy contract honoured by tests and
-    callers), but the *internal* probe callers catch the narrower
+    Subclasses :class:`FileNotFoundError` so callers can catch the broad
+    file-missing category while internal probe callers catch the narrower
     sentinel.  A bare ``FileNotFoundError`` bubbling out of
     ``list_artifacts`` (future MLflow behaviour, local-fs shim, etc.)
     is **not** swallowed by ``except _ArtifactNotFoundError`` — it surfaces

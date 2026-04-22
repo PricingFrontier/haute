@@ -204,7 +204,7 @@ pipeline = haute.Pipeline("test_pipe", description="A test")
 def transform(df):
     return df
 
-@pipeline.output()
+@pipeline.polars()
 def output_node(transform):
     return transform
 

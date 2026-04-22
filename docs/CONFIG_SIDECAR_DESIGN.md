@@ -55,12 +55,11 @@ type means deleting and recreating), so the folder→type mapping is stable.
 
 The canonical mapping lives in `_config_io.NODE_TYPE_TO_FOLDER`.
 
-### Backward compatibility
+### Parser Contract
 
-The parser still accepts inline decorator kwargs (the pre-sidecar format).
-If no `config=` kwarg is present, it falls back to `_build_node_config()`
-from `_parser_helpers.py`. This means hand-edited pipelines without JSON
-files continue to work.
+For node types with JSON sidecar config, the decorator must include a
+`config=` reference. If the reference is missing, points outside the project,
+or contains invalid JSON, parsing raises a structured config error.
 
 ## Key modules
 

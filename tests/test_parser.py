@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from haute.parser import parse_pipeline_file
+from tests.conftest import write_data_source_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -27,14 +28,15 @@ def _write_pipeline(tmp_path: Path, code: str) -> Path:
 
 class TestParsePipelineFile:
     def test_simple_pipeline(self, tmp_path):
-        code = '''\
+        source_config = write_data_source_config(tmp_path, "load_data", "data.parquet")
+        code = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("test", description="A test pipeline")
 
 
-@pipeline.data_source(path="data.parquet")
+@pipeline.data_source(config="{source_config}")
 def load_data() -> pl.DataFrame:
     """Load input data."""
     return pl.scan_parquet("data.parquet")
@@ -72,14 +74,15 @@ pipeline = haute.Pipeline("my_pricing", description="Motor pricing")
         assert graph.pipeline_name == "my_pricing"
 
     def test_edges_from_connect_calls(self, tmp_path):
-        code = """\
+        source_config = write_data_source_config(tmp_path, "a", "data.parquet")
+        code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("edges_test")
 
 
-@pipeline.data_source(path="data.parquet")
+@pipeline.data_source(config="{source_config}")
 def a() -> pl.DataFrame:
     return pl.DataFrame()
 
@@ -97,14 +100,15 @@ pipeline.connect("a", "b")
         assert ("a", "b") in edge_pairs
 
     def test_implicit_edges_from_param_names(self, tmp_path):
-        code = """\
+        source_config = write_data_source_config(tmp_path, "source", "data.parquet")
+        code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("implicit")
 
 
-@pipeline.data_source(path="data.parquet")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.DataFrame:
     return pl.DataFrame()
 
@@ -119,14 +123,15 @@ def transform(source: pl.DataFrame) -> pl.DataFrame:
         assert ("source", "transform") in edge_pairs
 
     def test_node_config_extracted(self, tmp_path):
-        code = '''\
+        source_config = write_data_source_config(tmp_path, "load_data", "data/input.parquet")
+        code = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("config_test")
 
 
-@pipeline.data_source(path="data/input.parquet")
+@pipeline.data_source(config="{source_config}")
 def load_data() -> pl.DataFrame:
     """Read the data."""
     return pl.scan_parquet("data/input.parquet")
@@ -195,14 +200,15 @@ class TestRegexFallbackPath:
 
     def test_syntax_error_triggers_regex_fallback(self, tmp_path):
         """A file with a syntax error should still parse nodes via regex."""
-        code = '''\
+        source_config = write_data_source_config(tmp_path, "load_data", "data.parquet")
+        code = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("broken", description="has syntax error")
 
 
-@pipeline.data_source(path="data.parquet")
+@pipeline.data_source(config="{source_config}")
 def load_data() -> pl.DataFrame:
     """Load data."""
     return pl.scan_parquet("data.parquet")
@@ -224,14 +230,15 @@ def transform(load_data: pl.DataFrame) -> pl.DataFrame:
 
     def test_regex_fallback_extracts_connect_calls(self, tmp_path):
         """Regex fallback should still wire edges from pipeline.connect()."""
-        code = """\
+        source_config = write_data_source_config(tmp_path, "a", "a.parquet")
+        code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("edges_fallback")
 
 
-@pipeline.data_source(path="a.parquet")
+@pipeline.data_source(config="{source_config}")
 def a() -> pl.DataFrame:
     return pl.DataFrame()
 
@@ -244,7 +251,7 @@ def b(a: pl.DataFrame) -> pl.DataFrame:
 pipeline.connect("a", "b")
 
 # syntax bomb below
-x = {
+x = {{
 """
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
@@ -301,14 +308,15 @@ class TestFlattenParameter:
 
     def test_flatten_true_accepted(self, tmp_path):
         """parse_pipeline_file(flatten=True) must not raise."""
-        code = """\
+        source_config = write_data_source_config(tmp_path, "src", "d.parquet")
+        code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("flat_test")
 
 
-@pipeline.data_source(path="d.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.DataFrame:
     return pl.DataFrame()
 """
@@ -411,18 +419,18 @@ from pathlib import Path
 pipeline = haute.Pipeline("malformed_kw")
 
 
-@pipeline.data_source(path=Path("data") / "input.parquet")
-def load() -> pl.DataFrame:
-    """Load with Path object."""
-    return pl.DataFrame()
+@pipeline.polars(selected_columns=[Path("data") / "input.parquet"])
+def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+    """Transform with a non-literal kwarg."""
+    return df
 '''
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
 
-        # Parser must not crash. The path config will be an ast.dump string
-        # instead of the real path, but the node must still exist.
+        # Parser must not crash. The selected_columns config will contain an
+        # ast.dump string instead of the real path, but the node must exist.
         assert len(graph.nodes) == 1
-        assert graph.nodes[0].id == "load"
+        assert graph.nodes[0].id == "transform"
 
 
 class TestFunctionNameCollision:
@@ -626,14 +634,15 @@ class TestParsePipelineRoundtrip:
 
         from haute.codegen import graph_to_code
 
-        code = '''\
+        source_config = write_data_source_config(tmp_path, "source", "data.parquet")
+        code = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("roundtrip")
 
 
-@pipeline.data_source(path="data.parquet")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.DataFrame:
     """Load data."""
     return pl.scan_parquet("data.parquet")
@@ -679,21 +688,23 @@ pipeline.connect("source", "transform")
 
 class TestCircularSubmodelReferences:
     def test_circular_submodel_refs_terminate(self, tmp_path):
-        main_code = """\
+        main_src_config = write_data_source_config(tmp_path, "src", "d.parquet")
+        sub_src_config = write_data_source_config(tmp_path, "b_node", "d.parquet")
+        main_code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("circular_main")
 
 
-@pipeline.data_source(path="d.parquet")
+@pipeline.data_source(config="{main_src_config}")
 def src() -> pl.DataFrame:
     return pl.DataFrame()
 
 
 pipeline.submodel("sub_b.py")
 """
-        sub_b_code = """\
+        sub_b_code = f"""\
 import polars as pl
 import haute
 
@@ -701,7 +712,7 @@ pipeline = haute.Pipeline("circular_b")
 
 pipeline.submodel("test_pipeline.py")
 
-@pipeline.data_source(path="d.parquet")
+@pipeline.data_source(config="{sub_src_config}")
 def b_node() -> pl.DataFrame:
     return pl.DataFrame()
 """
@@ -716,14 +727,15 @@ def b_node() -> pl.DataFrame:
 
 class TestNonExistentSubmodelFilePath:
     def test_nonexistent_submodel_skipped(self, tmp_path):
-        code = """\
+        source_config = write_data_source_config(tmp_path, "src", "d.parquet")
+        code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("missing_sub")
 
 
-@pipeline.data_source(path="d.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.DataFrame:
     return pl.DataFrame()
 
@@ -785,14 +797,15 @@ submodel = haute.Submodel("shared_name", description="second")
 def step_from_b() -> pl.DataFrame:
     return pl.DataFrame()
 """
-        main_code = """\
+        source_config = write_data_source_config(tmp_path, "src", "d.parquet")
+        main_code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("collision_parent")
 
 
-@pipeline.data_source(path="d.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.DataFrame:
     return pl.DataFrame()
 
@@ -811,14 +824,15 @@ pipeline.submodel("sub_b.py")
 
 class TestEmptySubmodelFile:
     def test_empty_submodel_handled_gracefully(self, tmp_path):
-        main_code = """\
+        source_config = write_data_source_config(tmp_path, "src", "d.parquet")
+        main_code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("empty_sub_parent")
 
 
-@pipeline.data_source(path="d.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.DataFrame:
     return pl.DataFrame()
 
@@ -847,14 +861,15 @@ submodel = haute.Submodel("broken_sub")
 def broken_step() -> pl.DataFrame:
     return pl.DataFrame(
 """
-        main_code = """\
+        source_config = write_data_source_config(tmp_path, "src", "d.parquet")
+        main_code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("syntax_err_parent")
 
 
-@pipeline.data_source(path="d.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.DataFrame:
     return pl.DataFrame()
 

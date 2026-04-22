@@ -8,7 +8,8 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, cleanup } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
-import SubmodelNode, { type SubmodelNodeData } from "../../nodes/SubmodelNode"
+import SubmodelNode from "../../nodes/SubmodelNode"
+import type { SubmodelFlowNode, SubmodelNodeData } from "../../types/node"
 
 afterEach(cleanup)
 
@@ -28,7 +29,7 @@ function makeProps(
   return {
     id: "test-node",
     type: "submodel",
-    data: fullData as unknown as Record<string, unknown>,
+    data: fullData,
     selected: overrides.selected ?? false,
     isConnectable: true,
     positionAbsoluteX: 0,
@@ -51,7 +52,7 @@ function renderNode(
   const props = makeProps(data, opts)
   return render(
     <ReactFlowProvider>
-      <SubmodelNode {...(props as unknown as NodeProps)} />
+      <SubmodelNode {...(props as unknown as NodeProps<SubmodelFlowNode>)} />
     </ReactFlowProvider>,
   )
 }
@@ -204,7 +205,7 @@ describe("SubmodelNode", () => {
   it("switches from dashed to solid border when _traceActive toggles", () => {
     const { container, rerender } = render(
       <ReactFlowProvider>
-        <SubmodelNode {...(makeProps({ label: "Toggle" }) as unknown as NodeProps)} />
+        <SubmodelNode {...(makeProps({ label: "Toggle" }) as unknown as NodeProps<SubmodelFlowNode>)} />
       </ReactFlowProvider>,
     )
     const wrapper = () => container.querySelector(".rounded-xl") as HTMLElement
@@ -212,7 +213,9 @@ describe("SubmodelNode", () => {
 
     rerender(
       <ReactFlowProvider>
-        <SubmodelNode {...(makeProps({ label: "Toggle", _traceActive: true }) as unknown as NodeProps)} />
+        <SubmodelNode
+          {...(makeProps({ label: "Toggle", _traceActive: true }) as unknown as NodeProps<SubmodelFlowNode>)}
+        />
       </ReactFlowProvider>,
     )
     expect(wrapper().style.border).toContain("solid")

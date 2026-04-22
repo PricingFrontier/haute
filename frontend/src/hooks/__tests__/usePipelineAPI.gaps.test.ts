@@ -86,8 +86,10 @@ describe("usePipelineAPI — gap tests", () => {
       lastSavedSnapshot: null,
       undoStack: [],
       redoStack: [],
+      structuralVersion: 0,
+      structuralFingerprint: "nodes:||edges:||preamble:\"\"",
     })
-    useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
     mockSave.mockReset()
@@ -258,10 +260,9 @@ describe("usePipelineAPI — gap tests", () => {
         schema_warnings: [],
       }
 
-      // Pre-populate the cache with graphVersion=0 (matching store default)
+      // Pre-populate the cache with structuralVersion=0 (matching graph store default)
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, graphVersion: 0 } },
-        graphVersion: 0,
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
         columnCache: {},
       })
 
@@ -282,12 +283,63 @@ describe("usePipelineAPI — gap tests", () => {
       // Wait for debounce to fire and verify API was NOT called
       await new Promise((r) => setTimeout(r, 500))
 
-      // API should NOT have been called (cache was fresh, same graphVersion)
+      // API should NOT have been called (cache was fresh for the same structuralVersion)
       expect(mockPreview).not.toHaveBeenCalled()
     })
 
-    it("fetches from API when cache exists but graphVersion is stale", async () => {
-      // Catches: if the graphVersion check is removed, the cache would
+    it("uses graph structuralVersion to decide preview freshness", async () => {
+      // Catches: if fetchPreview stops checking structuralVersion, a fresh
+      // structural graph change would be missed and the cached preview would
+      // be treated as current.
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+      const cachedData = {
+        nodeId: "n1",
+        nodeLabel: "Node n1",
+        status: "ok" as const,
+        row_count: 10,
+        column_count: 2,
+        columns: [{ name: "a", dtype: "f64" }],
+        preview: [{ a: 1 }],
+        error: null,
+        timing_ms: 5,
+        memory_bytes: 100,
+        timings: [],
+        memory: [],
+        schema_warnings: [],
+      }
+
+      useNodeResultsStore.setState({
+        previews: { n1: { data: cachedData, structuralVersion: 3, source: "live", rowLimit: 1000 } },
+        columnCache: {},
+      })
+      useGraphStore.setState({ structuralVersion: 4 })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [{ name: "b", dtype: "i64" }],
+        preview: [{ b: 2 }],
+        row_count: 20,
+        column_count: 1,
+      })
+
+      const params = makeParams()
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      const node = makeNode("n1")
+
+      act(() => {
+        result.current.fetchPreview(node)
+      })
+
+      await waitFor(() => {
+        expect(mockPreview).toHaveBeenCalled()
+      }, { timeout: 2000 })
+    })
+
+    it("fetches from API when cache exists but structuralVersion is stale", async () => {
+      // Catches: if the structuralVersion check is removed, the cache would
       // always be considered fresh, showing stale data after the user
       // modifies a node's config.
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
@@ -316,12 +368,12 @@ describe("usePipelineAPI — gap tests", () => {
         schema_warnings: [],
       }
 
-      // Cache at version 0, but store is at version 5 (stale)
+      // Cache at version 0, but graph store is at version 5 (stale)
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, graphVersion: 0 } },
-        graphVersion: 5,
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
         columnCache: {},
       })
+      useGraphStore.setState({ structuralVersion: 5 })
 
       const params = makeParams()
       const { result } = renderHook(() => usePipelineAPI(params))
@@ -337,6 +389,137 @@ describe("usePipelineAPI — gap tests", () => {
       await waitFor(() => {
         expect(mockPreview).toHaveBeenCalled()
       }, { timeout: 2000 })
+    })
+
+    it("refetches when cached preview source differs from active source", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const cachedData = {
+        nodeId: "n1",
+        nodeLabel: "Node n1",
+        status: "ok" as const,
+        row_count: 10,
+        column_count: 1,
+        columns: [],
+        preview: [],
+        error: null,
+        timing_ms: 0,
+        memory_bytes: 0,
+        timings: [],
+        memory: [],
+        schema_warnings: [],
+      }
+
+      useNodeResultsStore.setState({
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "backtest", rowLimit: 1000 } },
+        columnCache: {},
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+
+      await waitFor(() => {
+        expect(mockPreview).toHaveBeenCalled()
+      }, { timeout: 2000 })
+    })
+
+    it("refetches when cached preview row limit differs from current row limit", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const cachedData = {
+        nodeId: "n1",
+        nodeLabel: "Node n1",
+        status: "ok" as const,
+        row_count: 10,
+        column_count: 1,
+        columns: [],
+        preview: [],
+        error: null,
+        timing_ms: 0,
+        memory_bytes: 0,
+        timings: [],
+        memory: [],
+        schema_warnings: [],
+      }
+
+      useSettingsStore.setState({ rowLimit: 250 })
+      useNodeResultsStore.setState({
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
+        columnCache: {},
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+
+      await waitFor(() => {
+        expect(mockPreview).toHaveBeenCalled()
+      }, { timeout: 2000 })
+    })
+
+    it("ignores in-flight preview results after graph execution context changes", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      let resolvePreview!: (value: {
+        node_id: string
+        status: string
+        columns: { name: string; dtype: string }[]
+        preview: { stale: number }[]
+        row_count: number
+        column_count: number
+      }) => void
+      mockPreview.mockReturnValue(new Promise((resolve) => {
+        resolvePreview = resolve
+      }))
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+      await waitFor(() => expect(mockPreview).toHaveBeenCalled(), { timeout: 2000 })
+
+      act(() => {
+        useGraphStore.getState().setPreambleRaw("import polars as pl")
+      })
+
+      await act(async () => {
+        resolvePreview({
+          node_id: "n1",
+          status: "ok",
+          columns: [{ name: "stale", dtype: "i64" }],
+          preview: [{ stale: 1 }],
+          row_count: 1,
+          column_count: 1,
+        })
+        await Promise.resolve()
+      })
+
+      expect(result.current.previewData?.row_count).not.toBe(1)
+      expect(useNodeResultsStore.getState().previews.n1).toBeUndefined()
     })
   })
 

@@ -22,7 +22,8 @@ import graphlib
 from collections import deque
 
 from haute._graph_utils import build_parents_of
-from haute._types import GraphEdge, HauteError
+from haute._types import GraphEdge
+from haute.errors import HauteError
 
 
 class CycleError(HauteError):

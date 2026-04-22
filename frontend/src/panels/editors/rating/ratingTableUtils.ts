@@ -19,17 +19,17 @@ export function relativityColor(value: number): string {
   if (isNaN(value)) return 'transparent'
   const dev = value - 1.0
   const t = Math.min(Math.abs(dev) / 0.5, 1)
-  if (dev > 0.005)  return `rgba(239, 68, 68, ${(t * 0.22).toFixed(3)})`
-  if (dev < -0.005) return `rgba(59, 130, 246, ${(t * 0.22).toFixed(3)})`
+  if (dev > 0.005) return `rgba(var(--danger-rgb), ${(t * 0.22).toFixed(3)})`
+  if (dev < -0.005) return `rgba(var(--chart-below-rgb), ${(t * 0.22).toFixed(3)})`
   return 'transparent'
 }
 
 export function relativityTextColor(value: number): string {
   if (isNaN(value)) return 'var(--text-secondary)'
   const dev = value - 1.0
-  if (dev > 0.005) return '#dc2626'
-  if (dev < -0.005) return '#2563eb'
-  return '#10b981'
+  if (dev > 0.005) return 'var(--danger-solid)'
+  if (dev < -0.005) return 'var(--chart-below)'
+  return 'var(--success)'
 }
 
 export function tableStats(entries: Record<string, string | number>[]): { min: number; max: number; avg: number; count: number } | null {

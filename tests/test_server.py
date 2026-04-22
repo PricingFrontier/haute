@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+from tests.conftest import write_data_source_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -25,6 +28,7 @@ def pipeline_dir(tmp_path: Path) -> Path:
     # Use as_posix() to avoid Windows backslash escape issues in the
     # generated Python source (e.g. \U interpreted as unicode escape).
     data_path = (data_dir / "input.parquet").as_posix()
+    source_config = write_data_source_config(tmp_path, "source", data_path)
 
     code = f'''\
 import polars as pl
@@ -33,7 +37,7 @@ import haute
 pipeline = haute.Pipeline("test_pipeline", description="A test pipeline")
 
 
-@pipeline.data_source(path="{data_path}")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.DataFrame:
     """Read data."""
     return pl.scan_parquet("{data_path}")
@@ -858,7 +862,11 @@ class TestFileWatcher:
 
 
 class TestPipelineTimeouts:
-    """Timeout paths — mock asyncio.wait_for to raise TimeoutError."""
+    """Timeout paths — let asyncio.wait_for cancel pending route work."""
+
+    @staticmethod
+    async def _never_finishes(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(60)
 
     @staticmethod
     def _sink_graph(pipeline_dir: Path) -> dict:
@@ -901,7 +909,7 @@ class TestPipelineTimeouts:
     def test_timeout_returns_504(
         self, client: TestClient, pipeline_dir: Path, endpoint: str, use_parsed_graph: bool
     ):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
         if use_parsed_graph:
             from haute.parser import parse_pipeline_file
@@ -914,10 +922,23 @@ class TestPipelineTimeouts:
         else:
             body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
 
-        with patch(
-            "haute.routes.pipeline.asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=TimeoutError,
+        with (
+            patch(
+                "haute.routes._timeouts.asyncio.to_thread",
+                self._never_finishes,
+            ),
+            patch(
+                "haute.routes.pipeline._TRACE_TIMEOUT",
+                0.001,
+            ),
+            patch(
+                "haute.routes.pipeline._PREVIEW_TIMEOUT",
+                0.001,
+            ),
+            patch(
+                "haute.routes.pipeline._SINK_TIMEOUT",
+                0.001,
+            ),
         ):
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)
         assert resp.status_code == 504
@@ -1063,9 +1084,7 @@ class TestListPipelinesParseError:
         # ``list_pipelines`` calls its own top-level ``parse_pipeline_file``
         # alias, so patching the ``haute.parser`` source module alone no
         # longer affects the code path.
-        with patch.object(
-            pipeline_routes, "parse_pipeline_file", side_effect=_patch_parse
-        ):
+        with patch.object(pipeline_routes, "parse_pipeline_file", side_effect=_patch_parse):
             resp = c.get("/api/pipelines")
         assert resp.status_code == 200
         data = resp.json()
@@ -1219,7 +1238,7 @@ class TestFileWatcherJsonConfig:
 
         # Create a config directory with a JSON file
         config_dir = pipeline_dir / "config"
-        config_dir.mkdir()
+        config_dir.mkdir(exist_ok=True)
         (config_dir / "factors").mkdir(parents=True)
         (config_dir / "factors" / "test.json").write_text('{"key": "value"}')
 
@@ -1525,13 +1544,14 @@ class TestSubmodelEdgeRewiring:
     ):
         """Add a third transform node so we can test outgoing edge rewiring."""
         # Create a 3-node pipeline: source -> transform -> transform2
-        code = """\
+        source_config = write_data_source_config(pipeline_dir, "source", "data/input.parquet")
+        code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("rewire_test", description="Rewire test")
 
-@pipeline.data_source(path="data/input.parquet")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.LazyFrame:
     return pl.scan_parquet("data/input.parquet")
 

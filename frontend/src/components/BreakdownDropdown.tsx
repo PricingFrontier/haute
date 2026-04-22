@@ -66,7 +66,11 @@ export default function BreakdownDropdown({
             </div>
             {data.sorted.map((item) => {
               const pct = item.value / data.maxValue
-              const barColor = pct > 0.7 ? '#ef4444' : pct > 0.3 ? '#eab308' : '#22c55e'
+              const barColor = pct > 0.7
+                ? 'var(--danger)'
+                : pct > 0.3
+                  ? 'var(--warning-strong)'
+                  : 'var(--success)'
               return (
                 <div key={item.node_id} className="flex items-center gap-2 py-0.5">
                   <span

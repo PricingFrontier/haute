@@ -8,7 +8,7 @@ Route modules acquire their ``JobStore`` through the
 instance per prefix (``"training"``, ``"optimiser"``, ...), so every
 caller in the same route module shares a single namespace.  Direct
 ``JobStore()`` instantiation outside of this file is forbidden and
-is pinned by ``tests/test_routes_hygiene_phase5.py::
+is pinned by ``tests/test_routes_hygiene.py::
 TestNoDirectJobStoreInstantiation``.
 """
 
@@ -39,7 +39,7 @@ class JobStore:
     def __init__(self, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._ttl_seconds = ttl_seconds
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -47,14 +47,15 @@ class JobStore:
 
     def _evict_stale(self) -> None:
         """Remove jobs older than TTL to bound memory usage."""
-        cutoff = time.time() - self._ttl_seconds
-        stale = [
-            jid
-            for jid, j in self._jobs.items()
-            if j.get("created_at", 0) < cutoff and j.get("status") not in ("running",)
-        ]
-        for jid in stale:
-            del self._jobs[jid]
+        with self._write_lock:
+            cutoff = time.time() - self._ttl_seconds
+            stale = [
+                jid
+                for jid, j in self._jobs.items()
+                if j.get("created_at", 0) < cutoff and j.get("status") not in ("running",)
+            ]
+            for jid in stale:
+                del self._jobs[jid]
 
     # ------------------------------------------------------------------
     # Public API
@@ -65,19 +66,21 @@ class JobStore:
 
         Automatically evicts stale jobs before inserting.
         """
-        self._evict_stale()
-        job_id = uuid.uuid4().hex[:12]
-        initial_status.setdefault("created_at", time.time())
-        self._jobs[job_id] = initial_status
-        return job_id
+        with self._write_lock:
+            self._evict_stale()
+            job_id = uuid.uuid4().hex[:12]
+            initial_status.setdefault("created_at", time.time())
+            self._jobs[job_id] = dict(initial_status)
+            return job_id
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Return the job dict for *job_id*, or ``None`` if not found.
 
         Evicts stale jobs first so callers never see expired entries.
         """
-        self._evict_stale()
-        return self._jobs.get(job_id)
+        with self._write_lock:
+            self._evict_stale()
+            return self._jobs.get(job_id)
 
     def update_job(self, job_id: str, **fields: Any) -> None:
         """Merge *fields* into the stored job dict — atomic swap.
@@ -169,11 +172,12 @@ class JobStore:
 
         No-op if *job_id* does not exist or keys are already absent.
         """
-        job = self._jobs.get(job_id)
-        if job is None:
-            return
-        cleaned = {k: v for k, v in job.items() if k not in keys}
-        self._jobs[job_id] = cleaned
+        with self._write_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            cleaned = {k: v for k, v in job.items() if k not in keys}
+            self._jobs[job_id] = cleaned
 
     @property
     def jobs(self) -> dict[str, dict[str, Any]]:
@@ -235,7 +239,7 @@ def get_job_store(prefix: str) -> JobStore:
       and ``get_job_store("optimiser")`` return independent stores,
       so a job ID created in one prefix is never visible in another.
     * **Test reset hook** — the autouse fixture in
-      ``tests/test_routes_hygiene_phase5.py`` calls
+      ``tests/test_routes_hygiene.py`` calls
       ``get_job_store.cache_clear()`` between tests so singleton
       state does not leak across test runs.  Production code should
       never call ``cache_clear``; the lifetime is a process-level

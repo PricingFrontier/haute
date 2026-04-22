@@ -315,8 +315,8 @@ def _register_temp_cleanup(path: str) -> None:
 
 # ---------------------------------------------------------------------------
 # Unified scoring entry point — explicit flavor dispatch, single batch/eager
-# path.  The two legacy helpers (``_score_eager`` in ``_mlflow_io``,
-# ``_score_batched_standalone`` below) are now thin delegates onto this.
+# path.  The small wrapper helpers delegate onto this so scoring logic
+# remains centralized.
 # ---------------------------------------------------------------------------
 
 
@@ -386,8 +386,8 @@ def _score_batched_unified(
     Wraps the raw model in a short-lived :class:`ScoringModel` so it can
     flow through :func:`_batch_score_to_parquet` — that helper is still
     directly tested by ``test_model_scorer.py`` and its signature is
-    load-bearing.  Using ``ScoringModel`` here is a scoped compatibility
-    shim, not a return of the ``__getattr__`` proxy pattern.
+    load-bearing.  Using ``ScoringModel`` here is a scoped carrier object,
+    not a return of the ``__getattr__`` proxy pattern.
     """
     from haute._mlflow_io import ScoringModel
 
@@ -540,7 +540,7 @@ def _run_score_pipeline(
         result_lf = _score_batched_standalone(scoring_model, lf, features, output_col, task)
 
     if code:
-        from haute.executor import _exec_user_code
+        from haute._user_exec import _exec_user_code
 
         all_dfs = (result_lf,) + extra_dfs
         result_lf = _exec_user_code(
@@ -561,9 +561,8 @@ def _score_batched_standalone(
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path).
 
-    Thin delegate onto :func:`score_frame` with ``batch=True`` — keeps
-    the legacy symbol callable for any code still referring to it while
-    the actual scoring logic lives in the unified entry point.
+    Thin delegate onto :func:`score_frame` with ``batch=True`` so the
+    actual scoring logic lives in the unified entry point.
     """
     return score_frame(
         model=scoring_model.raw_model,

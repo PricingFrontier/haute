@@ -123,7 +123,7 @@ def vehicle_age_band(df):
 
 Polars nodes store all logic in their Python function body (no config file). The `code` key always lives in the `.py` function body, never in JSON.
 
-The parser is backward-compatible — it still handles old inline decorator kwargs for existing pipelines.
+For node types with JSON sidecar config, the parser requires an explicit `config=` reference and fails loudly if the referenced file is missing or invalid.
 
 ### 3.4 Submodels (Composable Sub-Pipelines)
 

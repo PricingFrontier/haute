@@ -74,7 +74,7 @@ describe("usePipelineAPI", () => {
       undoStack: [],
       redoStack: [],
     })
-    useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
 
@@ -101,6 +101,30 @@ describe("usePipelineAPI", () => {
     expect(params.setNodesRaw).toHaveBeenCalled()
     expect(params.setEdgesRaw).toHaveBeenCalled()
     expect(params.setPreamble).toHaveBeenCalledWith("import polars as pl")
+  })
+
+  it("loads successful backend responses with nullable metadata", async () => {
+    mockLoad.mockResolvedValue({
+      nodes: [],
+      edges: [],
+      pipeline_name: null,
+      pipeline_description: null,
+      preamble: null,
+      source_file: null,
+      submodels: null,
+      warning: null,
+    })
+
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    const toasts = useToastStore.getState().toasts
+    expect(toasts.some((t) => t.type === "error" && t.text.includes("Failed to load pipeline"))).toBe(false)
+    expect(params.setNodesRaw).toHaveBeenCalledWith([])
+    expect(params.setEdgesRaw).toHaveBeenCalledWith([])
+    expect(params.setPreamble).not.toHaveBeenCalled()
   })
 
   it("shows toast on load failure", async () => {

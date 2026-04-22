@@ -93,7 +93,7 @@ def _materialise_referenced_data_files(pipeline_file: Path, project_root: Path) 
             continue
         target = Path(path_str)
         if not target.is_absolute():
-            target = project_root / target
+            target = pipeline_file.parent / target
         if target.exists():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)

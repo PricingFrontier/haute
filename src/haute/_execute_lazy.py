@@ -19,6 +19,7 @@ from haute._graph_utils import (
     resolve_orig_source_names,
 )
 from haute._logging import get_logger
+from haute._path_resolution import resolve_runtime_file_path
 from haute._polars_utils import _malloc_trim, safe_sink
 from haute._topo import ancestors, topo_sort_ids
 from haute._types import (
@@ -31,6 +32,50 @@ from haute._types import (
 from haute.errors import ContractMismatchError
 
 logger = get_logger(component="execute")
+
+
+_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
+    NodeType.API_INPUT: "path",
+    NodeType.DATA_SOURCE: "path",
+    NodeType.EXTERNAL_FILE: "path",
+    NodeType.DATA_SINK: "path",
+}
+
+
+def _resolve_graph_paths(graph: PipelineGraph) -> PipelineGraph:
+    """Resolve project/pipeline-relative file paths before building node functions."""
+    if not graph.source_file:
+        return graph
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        config = node.data.config
+        key = _PATH_CONFIG_BY_NODE_TYPE.get(node.data.nodeType)
+        if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file":
+            key = "artifact_path"
+        if key is None:
+            nodes.append(node)
+            continue
+        raw_path = config.get(key)
+        if isinstance(raw_path, str) and raw_path:
+            resolved = str(
+                resolve_runtime_file_path(
+                    raw_path,
+                    source_file=graph.source_file,
+                    prefer="project",
+                )
+            )
+            if resolved != raw_path:
+                data = node.data.model_copy(update={"config": {**config, key: resolved}})
+                nodes.append(node.model_copy(update={"data": data}))
+                changed = True
+            else:
+                nodes.append(node)
+        else:
+            nodes.append(node)
+    if not changed:
+        return graph
+    return graph.model_copy(update={"nodes": nodes})
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +587,7 @@ def _execute_lazy(
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
     """
+    graph = _resolve_graph_paths(graph)
     node_map, order, parents_of, id_to_name = _prepare_graph(
         graph,
         target_node_id,
@@ -857,6 +903,7 @@ def _execute_eager_core(
         parents_of, node_map, id_to_name, errors, timings, and
         memory_bytes.
     """
+    graph = _resolve_graph_paths(graph)
     node_map, order, parents_of, id_to_name = _prepare_graph(
         graph,
         target_node_id,

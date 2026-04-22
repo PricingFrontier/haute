@@ -24,20 +24,8 @@ jobs:
 
       - run: uv sync --group dev
 
-      - name: Ruff lint
-        run: uv run ruff check src/
-
-      - name: Ruff format check
-        run: uv run ruff format --check src/
-
-      - name: Mypy type check
-        run: uv run mypy src/haute/
-
-      - name: Tests with coverage
-        run: uv run pytest tests/ -q --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85
-
-      - name: Verify wheel builds
-        run: uv build
+      - name: Backend preflight
+        run: bash scripts/preflight.sh --backend-only
 
   frontend:
     runs-on: ubuntu-latest
@@ -52,7 +40,4 @@ jobs:
           node-version: 22
 
       - run: npm ci
-      - run: npx tsc -b --noEmit
-      - run: npm run build
-      - run: npm run lint
-      - run: npm test
+      - run: cd .. && bash scripts/preflight.sh --frontend-only

@@ -2,15 +2,17 @@
  * Tests for preview cache hit/miss/stale paths using useNodeResultsStore.
  *
  * These tests focus specifically on the preview cache behaviour and
- * staleness detection via graphVersion.
+ * staleness detection via structuralVersion.
  */
 import { describe, it, expect, beforeEach } from "vitest"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function resetStore() {
+  useGraphStore.setState({ structuralVersion: 0 })
   useNodeResultsStore.setState({
     previews: {},
     columnCache: {},
@@ -18,7 +20,6 @@ function resetStore() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    graphVersion: 0,
   })
 }
 
@@ -74,7 +75,7 @@ describe("preview cache", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("cache hit", () => {
-    it("returns cached data with matching graphVersion", () => {
+    it("returns cached data with matching structuralVersion", () => {
       const s = useNodeResultsStore.getState()
       const preview = makePreviewData()
       s.setPreview("n1", preview, 0)
@@ -82,9 +83,8 @@ describe("preview cache", () => {
       const cached = useNodeResultsStore.getState().getPreview("n1")
       expect(cached).not.toBeNull()
       expect(cached!.data).toEqual(preview)
-      expect(cached!.graphVersion).toBe(0)
-      // graphVersion matches store's current version
-      expect(cached!.graphVersion).toBe(useNodeResultsStore.getState().graphVersion)
+      expect(cached!.structuralVersion).toBe(0)
+      expect(cached!.structuralVersion).toBe(useGraphStore.getState().structuralVersion)
     })
 
     it("returns the latest preview when set multiple times", () => {
@@ -111,71 +111,64 @@ describe("preview cache", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("cache stale", () => {
-    it("preview becomes stale after bumpGraphVersion", () => {
+    it("preview becomes stale when structuralVersion changes", () => {
       const s = useNodeResultsStore.getState()
       const preview = makePreviewData()
       s.setPreview("n1", preview, 0)
 
-      // Bump graph version (simulates node/edge change)
-      s.bumpGraphVersion()
+      useGraphStore.setState({ structuralVersion: 1 })
 
       const cached = useNodeResultsStore.getState().getPreview("n1")
       // Data is still returned for instant display
       expect(cached).not.toBeNull()
       expect(cached!.data).toEqual(preview)
-      // But graphVersion doesn't match — caller detects staleness
-      expect(cached!.graphVersion).toBe(0)
-      expect(useNodeResultsStore.getState().graphVersion).toBe(1)
-      expect(cached!.graphVersion).not.toBe(useNodeResultsStore.getState().graphVersion)
+      expect(cached!.structuralVersion).toBe(0)
+      expect(cached!.structuralVersion).not.toBe(useGraphStore.getState().structuralVersion)
     })
 
-    it("preview remains stale across multiple bumps", () => {
+    it("preview remains stale across structuralVersion changes", () => {
       const s = useNodeResultsStore.getState()
       s.setPreview("n1", makePreviewData(), 0)
-      s.bumpGraphVersion()
-      s.bumpGraphVersion()
-      s.bumpGraphVersion()
+      useGraphStore.setState({ structuralVersion: 3 })
 
       const cached = useNodeResultsStore.getState().getPreview("n1")
-      expect(cached!.graphVersion).toBe(0)
-      expect(useNodeResultsStore.getState().graphVersion).toBe(3)
+      expect(cached!.structuralVersion).toBe(0)
+      expect(useGraphStore.getState().structuralVersion).toBe(3)
     })
 
-    it("re-setting preview at current graphVersion makes it fresh again", () => {
+    it("re-setting preview at current structuralVersion makes it fresh again", () => {
       const s = useNodeResultsStore.getState()
       s.setPreview("n1", makePreviewData(), 0)
-      s.bumpGraphVersion()
+      useGraphStore.setState({ structuralVersion: 1 })
 
       // Verify stale
-      expect(useNodeResultsStore.getState().getPreview("n1")!.graphVersion)
-        .not.toBe(useNodeResultsStore.getState().graphVersion)
+      expect(useNodeResultsStore.getState().getPreview("n1")!.structuralVersion)
+        .not.toBe(useGraphStore.getState().structuralVersion)
 
-      // Re-set at new graphVersion
       const freshPreview = makePreviewData({ row_count: 99 })
       useNodeResultsStore.getState().setPreview("n1", freshPreview, 1)
 
       const cached = useNodeResultsStore.getState().getPreview("n1")
-      expect(cached!.graphVersion).toBe(1)
-      expect(cached!.graphVersion).toBe(useNodeResultsStore.getState().graphVersion)
+      expect(cached!.structuralVersion).toBe(1)
+      expect(cached!.structuralVersion).toBe(useGraphStore.getState().structuralVersion)
       expect(cached!.data.row_count).toBe(99)
     })
 
     it("stale preview for one node does not affect freshness of another", () => {
       const s = useNodeResultsStore.getState()
       s.setPreview("a", makePreviewData({ nodeId: "a" }), 0)
-      s.bumpGraphVersion()
-      // Set "b" at the new graphVersion — it should be fresh
+      useGraphStore.setState({ structuralVersion: 1 })
       s.setPreview("b", makePreviewData({ nodeId: "b" }), 1)
 
       const cachedA = useNodeResultsStore.getState().getPreview("a")
       const cachedB = useNodeResultsStore.getState().getPreview("b")
-      const currentVersion = useNodeResultsStore.getState().graphVersion
+      const currentVersion = useGraphStore.getState().structuralVersion
 
-      expect(cachedA!.graphVersion).toBe(0)
-      expect(cachedA!.graphVersion).not.toBe(currentVersion)
+      expect(cachedA!.structuralVersion).toBe(0)
+      expect(cachedA!.structuralVersion).not.toBe(currentVersion)
 
-      expect(cachedB!.graphVersion).toBe(1)
-      expect(cachedB!.graphVersion).toBe(currentVersion)
+      expect(cachedB!.structuralVersion).toBe(1)
+      expect(cachedB!.structuralVersion).toBe(currentVersion)
     })
   })
 })

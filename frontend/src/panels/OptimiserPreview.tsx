@@ -230,9 +230,9 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
       {/* Header */}
       <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
-        <Target size={14} style={{ color: "#f59e0b" }} />
+        <Target size={14} style={{ color: "var(--warning-strong)" }} />
         <span className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{data.nodeLabel}</span>
-        <span className="text-[11px]" style={{ color: result.converged ? "#22c55e" : "#f59e0b" }}>
+        <span className="text-[11px]" style={{ color: result.converged ? "var(--success)" : "var(--warning-strong)" }}>
           {result.converged ? "Converged" : "Not converged"}
           {result.mode === "ratebook"
             ? ` · ${result.cd_iterations ?? "?"} CD iters`
@@ -476,8 +476,8 @@ function ExportTab({
           disabled={saving || logging}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
           style={{
-            background: saving || logging ? "var(--chrome-hover)" : "rgba(245,158,11,.12)",
-            color: saving || logging ? "var(--text-muted)" : "#f59e0b",
+            background: saving || logging ? "var(--chrome-hover)" : "var(--warning-soft-emphasis)",
+            color: saving || logging ? "var(--text-muted)" : "var(--warning-strong)",
           }}
         >
           {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
@@ -527,7 +527,7 @@ function ExportTab({
           </div>
           <div className="flex justify-between">
             <span style={{ color: "var(--text-muted)" }}>Status</span>
-            <span style={{ color: result.converged ? "#22c55e" : "#f59e0b" }}>
+            <span style={{ color: result.converged ? "var(--success)" : "var(--warning-strong)" }}>
               {result.converged ? "Converged" : "Not converged"}
             </span>
           </div>

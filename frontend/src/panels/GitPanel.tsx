@@ -19,7 +19,7 @@ import {
   gitArchiveBranch,
   gitDeleteBranch,
 } from "../api/client"
-import type { GitStatus, GitBranch as GitBranchType, GitHistoryEntry } from "../api/client"
+import type { GitStatus, GitBranchInfo as GitBranchType, GitHistoryEntry } from "../api/types"
 
 interface GitPanelProps {
   onClose: () => void
@@ -241,11 +241,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     <PanelShell
       title="Git"
       onClose={onClose}
-      icon={<GitFork size={14} style={{ color: '#22c55e' }} />}
+      icon={<GitFork size={14} style={{ color: 'var(--success)' }} />}
     >
       {/* Error banner */}
       {error && (
-        <div className="px-3 py-2 text-[11px] flex items-start gap-2 shrink-0" style={{ color: '#ef4444', background: 'rgba(239,68,68,.08)', borderBottom: '1px solid var(--border)' }}>
+        <div className="px-3 py-2 text-[11px] flex items-start gap-2 shrink-0" style={{ color: 'var(--danger)', background: 'var(--danger-soft-subtle)', borderBottom: '1px solid var(--border)' }}>
           <AlertTriangle size={12} className="shrink-0 mt-0.5" />
           <span className="flex-1">{error}</span>
           <button onClick={() => setError(null)} className="opacity-60 hover:opacity-100 shrink-0">✕</button>
@@ -254,7 +254,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
       {/* Confirmation dialog */}
       {confirmAction && (
-        <div className="px-3 py-3 shrink-0" style={{ background: 'rgba(239,68,68,.06)', borderBottom: '1px solid var(--border)' }}>
+        <div className="px-3 py-3 shrink-0" style={{ background: 'var(--danger-soft-faint)', borderBottom: '1px solid var(--border)' }}>
           <p className="text-[12px] mb-2" style={{ color: 'var(--text-primary)' }}>
             {confirmAction.type === "delete"
               ? `Permanently delete "${confirmAction.label}"? This cannot be undone.`
@@ -270,7 +270,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                 else handleRevert(confirmAction.target)
               }}
               className="px-3 py-1 text-[12px] font-medium rounded-md"
-              style={{ background: confirmAction.type === "delete" ? '#ef4444' : 'var(--accent)', color: '#fff' }}
+              style={{ background: confirmAction.type === "delete" ? 'var(--danger)' : 'var(--accent)', color: '#fff' }}
             >
               {confirmAction.type === "delete" ? "Delete" : confirmAction.type === "archive" ? "Archive" : "Revert"}
             </button>
@@ -292,12 +292,12 @@ export default function GitPanel({ onClose }: GitPanelProps) {
           <div className="flex items-center gap-2 mb-2">
             <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Branch</span>
             {isOnMain && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'rgba(239,68,68,.15)', color: '#f87171' }}>
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)' }}>
                 read-only
               </span>
             )}
             {!isOnMain && isReadOnly && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'rgba(245,158,11,.15)', color: '#fbbf24' }}>
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'var(--warning-soft-selected)', color: 'var(--warning)' }}>
                 read-only
               </span>
             )}
@@ -415,7 +415,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             ) : (
               <button
                 onClick={() => setCreating(true)}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-medium rounded-md transition-colors hover:bg-[rgba(59,130,246,0.2)]"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-medium rounded-md transition-colors hover:bg-[var(--accent-soft-hover)]"
                 style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
               >
                 <Plus size={13} />
@@ -464,7 +464,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               <button
                 onClick={handleSubmit}
                 disabled={loading}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold text-white rounded-md transition-colors disabled:opacity-40 hover:bg-[#60a5fa]"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold text-white rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--accent-hover)]"
                 style={{ background: 'var(--accent)' }}
               >
                 <ExternalLink size={12} />
@@ -476,8 +476,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             {status?.main_ahead && (
               <div className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
                 <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle size={12} style={{ color: '#fbbf24' }} />
-                  <span className="text-[11px]" style={{ color: '#fbbf24' }}>
+                  <AlertTriangle size={12} style={{ color: 'var(--warning)' }} />
+                  <span className="text-[11px]" style={{ color: 'var(--warning)' }}>
                     Main updated ({status.main_ahead_by} commit{status.main_ahead_by !== 1 ? "s" : ""} ahead)
                   </span>
                 </div>
@@ -549,7 +549,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               <button
                 onClick={() => setConfirmAction({ type: "delete", target: currentBranch, label: currentBranch.split("/").pop() ?? currentBranch })}
                 disabled={loading}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[rgba(239,68,68,0.1)] hover:text-[#ef4444]"
+                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                 style={{ color: 'var(--text-muted)' }}
               >
                 <Trash2 size={11} />

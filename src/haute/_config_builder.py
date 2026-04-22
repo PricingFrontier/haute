@@ -19,6 +19,8 @@ from haute._code_extraction import (
     _extract_source_user_code,
     _extract_user_code,
 )
+from haute._config_io import has_config_folder, load_node_config
+from haute._config_validation import warn_unrecognized_config_keys
 from haute._logging import get_logger
 from haute.errors import ConfigError, ContractMismatchError
 from haute.graph_utils import (
@@ -29,37 +31,6 @@ from haute.graph_utils import (
     SCENARIO_EXPANDER_CONFIG_KEYS,
     NodeType,
 )
-
-
-def _warn_unrecognized_config_keys(
-    node_type: NodeType | str,
-    config: dict[str, Any],
-    *,
-    node_label: str = "",
-) -> list[str]:
-    """Dispatch to the shim's ``warn_unrecognized_config_keys``.
-
-    The concrete callable is looked up on ``haute._parser_helpers`` at
-    call time so that test patches (``patch("haute._parser_helpers.
-    warn_unrecognized_config_keys")``) continue to take effect after the
-    module split.  The shim re-exports the underlying helper from
-    ``haute._config_validation``.
-    """
-    from haute import _parser_helpers
-
-    return _parser_helpers.warn_unrecognized_config_keys(node_type, config, node_label=node_label)
-
-
-def _load_node_config(ref: str, *, base_dir: Path) -> dict[str, Any]:
-    """Dispatch to the shim's ``load_node_config``.
-
-    Late-bound through ``haute._parser_helpers`` for the same reason as
-    ``_warn_unrecognized_config_keys`` — preserves test patch points.
-    """
-    from haute import _parser_helpers
-
-    return _parser_helpers.load_node_config(ref, base_dir=base_dir)
-
 
 __all__ = [
     "_copy_config_keys",
@@ -119,7 +90,7 @@ def _build_node_config(
             decorator_key = "source_type" if key == "sourceType" else key
             if decorator_key in decorator_kwargs:
                 config[key] = decorator_kwargs[decorator_key]
-        # Only extract user post-processing code (after sentinel), not the
+        # Only extract user post-processing code after the scoring call, not the
         # auto-generated scoring scaffolding that codegen produces.
         config["code"] = _extract_model_score_user_code(body) if body else ""
     elif node_type == NodeType.BANDING:
@@ -180,7 +151,10 @@ def _build_node_config(
         _copy_config_keys(config, decorator_kwargs, SCENARIO_EXPANDER_CONFIG_KEYS)
         config["code"] = _extract_source_user_code(body) if body else ""
     elif node_type == NodeType.OPTIMISER_APPLY:
-        _copy_config_keys(config, decorator_kwargs, OPTIMISER_APPLY_CONFIG_KEYS)
+        for key in OPTIMISER_APPLY_CONFIG_KEYS:
+            decorator_key = "source_type" if key == "sourceType" else key
+            if decorator_key in decorator_kwargs:
+                config[key] = decorator_kwargs[decorator_key]
     elif node_type == NodeType.OPTIMISER:
         _copy_config_keys(config, decorator_kwargs, OPTIMISER_CONFIG_KEYS)
     elif node_type == NodeType.MODELLING:
@@ -313,8 +287,9 @@ def _resolve_node_config(
 ) -> tuple[NodeType, dict[str, Any]]:
     """Resolve node type and config from decorator kwargs.
 
-    Handles both the new ``config="config/…/name.json"`` format (external
-    JSON file) and the legacy inline-kwargs format.
+    Node types with external JSON config must provide
+    ``config="config/…/name.json"``. Node types without a config folder are
+    built directly from the decorator kwargs and function body.
 
     The *explicit_node_type* is provided by the type-specific decorator
     (e.g. ``@pipeline.polars``) and is used directly as the node type.
@@ -334,7 +309,7 @@ def _resolve_node_config(
         normalised_ref = config_ref.replace("\\", "/")
         base = base_dir or Path.cwd()
         try:
-            loaded = _load_node_config(normalised_ref, base_dir=base)
+            loaded = load_node_config(normalised_ref, base_dir=base)
         except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
             raise ConfigError(
                 "Failed to load node config; check that the path exists and "
@@ -357,6 +332,13 @@ def _resolve_node_config(
             config["code"] = _extract_source_user_code(body) if body else ""
         elif node_type == NodeType.SCENARIO_EXPANDER:
             config["code"] = _extract_source_user_code(body) if body else ""
+    elif has_config_folder(node_type):
+        raise ConfigError(
+            "Node config must be stored in a JSON sidecar and referenced with "
+            'config="config/<type>/<name>.json".',
+            func_name=func_name,
+            node_type=node_type.value,
+        )
     else:
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
 
@@ -373,5 +355,5 @@ def _resolve_node_config(
     if user_contract is not None:
         config["contract"] = user_contract
 
-    _warn_unrecognized_config_keys(node_type, config)
+    warn_unrecognized_config_keys(node_type, config)
     return node_type, config

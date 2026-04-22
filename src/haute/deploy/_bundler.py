@@ -54,9 +54,14 @@ def collect_artifacts(
             artifacts[artifact_name] = abs_path
 
         elif node_type == NodeType.OPTIMISER_APPLY:
+            source_type = config.get("sourceType", "")
             raw_path = config.get("artifact_path", "")
             if not raw_path:
                 continue
+            if source_type != "file":
+                raise ValueError(
+                    f"optimiserApply node {nid!r} with artifact_path must set sourceType='file'"
+                )
             abs_path = _resolve_path(raw_path, pipeline_dir)
             artifact_name = _artifact_name(nid, abs_path)
             _check_exists(abs_path, nid, "optimiserApply")
@@ -211,11 +216,6 @@ def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:
     2. Relative paths are first resolved against ``pipeline_dir`` — the
        directory containing the pipeline source file.  When the
        pipeline-relative file exists, that absolute path is returned.
-    3. Only if the pipeline-relative path does not exist on disk do we
-       fall back to ``Path.cwd() / raw_path``.  This preserves backward
-       compatibility with pipelines that reference artifacts via
-       project-root-relative paths.
-
     The key invariant — enforced by the test in
     ``test_deploy_config_and_bundle`` — is that a file existing under
     ``pipeline_dir`` **always wins** over a same-named file elsewhere.  The
@@ -233,12 +233,6 @@ def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:
     pipeline_abs = (pipeline_dir / p).resolve()
     if pipeline_abs.exists():
         return pipeline_abs
-    cwd_abs = (Path.cwd() / p).resolve()
-    if cwd_abs.exists():
-        return cwd_abs
-    # Neither exists — return the pipeline-relative absolute so the
-    # subsequent ``_check_exists`` error points at where the user would
-    # expect the file to live given their pipeline layout.
     return pipeline_abs
 
 

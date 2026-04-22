@@ -18,10 +18,10 @@ import ast
 
 import pytest
 
+from haute._codegen_builders import _sanitize_description
 from haute.codegen import (
     _instance_to_code,
     _node_to_code,
-    _sanitize_description,
     graph_to_code,
 )
 from tests.conftest import compile_node_code as _compile_node_code
@@ -237,15 +237,11 @@ class TestTripleQuoteInjection:
         _ast_parse_node_code(code)
         # Round-trip: the extracted docstring equals the original.
         wrapper = (
-            "import polars as pl\n"
-            "import haute\n"
-            "pipeline = haute.Pipeline('test')\n\n"
-            f"{code}\n"
+            f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
         )
         tree = ast.parse(wrapper)
         fn = next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == "TestNode"
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "TestNode"
         )
         assert (ast.get_docstring(fn) or "") == description
 
@@ -790,15 +786,11 @@ class TestDescriptionRegression:
         # Wrap the generated node in a minimal pipeline preamble so we
         # can parse it and verify the docstring is empty.
         wrapper = (
-            "import polars as pl\n"
-            "import haute\n"
-            "pipeline = haute.Pipeline('test')\n\n"
-            f"{code}\n"
+            f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
         )
         tree = ast.parse(wrapper)
         fn = next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == "MyLabel"
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "MyLabel"
         )
         assert (ast.get_docstring(fn) or "") == ""
 

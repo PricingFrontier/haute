@@ -36,12 +36,12 @@ import type { Edge, Node } from "@xyflow/react"
 export interface PipelineResponse {
   nodes: Node[]
   edges: Edge[]
-  pipeline_name?: string
-  pipeline_description?: string
-  preamble?: string
-  source_file?: string
-  submodels?: Record<string, unknown>
-  warning?: string
+  pipeline_name?: string | null
+  pipeline_description?: string | null
+  preamble?: string | null
+  source_file?: string | null
+  submodels?: Record<string, unknown> | null
+  warning?: string | null
   sources?: string[]
   active_source?: string
 }
@@ -49,6 +49,27 @@ export interface PipelineResponse {
 /** Narrow helper — any non-null object (but not an array). */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+
+function typeName(v: unknown): string {
+  if (v === null) return "null"
+  if (Array.isArray(v)) return "array"
+  return typeof v
+}
+
+function isOptionalNullableString(v: unknown): v is string | null | undefined {
+  return v === undefined || v === null || typeof v === "string"
+}
+
+function assertOptionalNullableString(
+  value: unknown,
+  field: string,
+): asserts value is string | null | undefined {
+  if (!isOptionalNullableString(value)) {
+    throw new Error(
+      `parsePipelineResponse: expected field \`${field}\` to be a string or null, got ${typeName(value)}`,
+    )
+  }
 }
 
 /**
@@ -62,13 +83,13 @@ export function isPipelineResponse(v: unknown): v is PipelineResponse {
   if (!Array.isArray(v.edges)) return false
   // Optional fields — if present, they must match their declared type.
   // Any mismatch is a hard fail, not a coerce-to-default silent bug.
-  if (v.pipeline_name !== undefined && typeof v.pipeline_name !== "string") return false
-  if (v.pipeline_description !== undefined && typeof v.pipeline_description !== "string") return false
-  if (v.preamble !== undefined && typeof v.preamble !== "string") return false
-  if (v.source_file !== undefined && typeof v.source_file !== "string") return false
-  if (v.warning !== undefined && typeof v.warning !== "string") return false
+  if (!isOptionalNullableString(v.pipeline_name)) return false
+  if (!isOptionalNullableString(v.pipeline_description)) return false
+  if (!isOptionalNullableString(v.preamble)) return false
+  if (!isOptionalNullableString(v.source_file)) return false
+  if (!isOptionalNullableString(v.warning)) return false
   if (v.active_source !== undefined && typeof v.active_source !== "string") return false
-  if (v.submodels !== undefined && !isPlainObject(v.submodels)) return false
+  if (v.submodels !== undefined && v.submodels !== null && !isPlainObject(v.submodels)) return false
   if (v.sources !== undefined) {
     if (!Array.isArray(v.sources)) return false
     for (const s of v.sources) if (typeof s !== "string") return false
@@ -91,62 +112,42 @@ export function parsePipelineResponse(v: unknown): PipelineResponse {
   if (!Array.isArray(v.nodes)) {
     throw new Error(
       `parsePipelineResponse: expected field \`nodes\` to be an array, got ${
-        v.nodes === undefined ? "missing" : typeof v.nodes
+        v.nodes === undefined ? "missing" : typeName(v.nodes)
       }`,
     )
   }
   if (!Array.isArray(v.edges)) {
     throw new Error(
       `parsePipelineResponse: expected field \`edges\` to be an array, got ${
-        v.edges === undefined ? "missing" : typeof v.edges
+        v.edges === undefined ? "missing" : typeName(v.edges)
       }`,
     )
   }
-  if (v.pipeline_name !== undefined && typeof v.pipeline_name !== "string") {
-    throw new Error(
-      `parsePipelineResponse: expected field \`pipeline_name\` to be a string, got ${typeof v.pipeline_name}`,
-    )
-  }
-  if (v.pipeline_description !== undefined && typeof v.pipeline_description !== "string") {
-    throw new Error(
-      `parsePipelineResponse: expected field \`pipeline_description\` to be a string, got ${typeof v.pipeline_description}`,
-    )
-  }
-  if (v.preamble !== undefined && typeof v.preamble !== "string") {
-    throw new Error(
-      `parsePipelineResponse: expected field \`preamble\` to be a string, got ${typeof v.preamble}`,
-    )
-  }
-  if (v.source_file !== undefined && typeof v.source_file !== "string") {
-    throw new Error(
-      `parsePipelineResponse: expected field \`source_file\` to be a string, got ${typeof v.source_file}`,
-    )
-  }
-  if (v.warning !== undefined && typeof v.warning !== "string") {
-    throw new Error(
-      `parsePipelineResponse: expected field \`warning\` to be a string, got ${typeof v.warning}`,
-    )
-  }
+  assertOptionalNullableString(v.pipeline_name, "pipeline_name")
+  assertOptionalNullableString(v.pipeline_description, "pipeline_description")
+  assertOptionalNullableString(v.preamble, "preamble")
+  assertOptionalNullableString(v.source_file, "source_file")
+  assertOptionalNullableString(v.warning, "warning")
   if (v.active_source !== undefined && typeof v.active_source !== "string") {
     throw new Error(
-      `parsePipelineResponse: expected field \`active_source\` to be a string, got ${typeof v.active_source}`,
+      `parsePipelineResponse: expected field \`active_source\` to be a string, got ${typeName(v.active_source)}`,
     )
   }
-  if (v.submodels !== undefined && !isPlainObject(v.submodels)) {
+  if (v.submodels !== undefined && v.submodels !== null && !isPlainObject(v.submodels)) {
     throw new Error(
-      `parsePipelineResponse: expected field \`submodels\` to be an object, got ${typeof v.submodels}`,
+      `parsePipelineResponse: expected field \`submodels\` to be an object or null, got ${typeName(v.submodels)}`,
     )
   }
   if (v.sources !== undefined) {
     if (!Array.isArray(v.sources)) {
       throw new Error(
-        `parsePipelineResponse: expected field \`sources\` to be an array, got ${typeof v.sources}`,
+        `parsePipelineResponse: expected field \`sources\` to be an array, got ${typeName(v.sources)}`,
       )
     }
     for (let i = 0; i < v.sources.length; i++) {
       if (typeof v.sources[i] !== "string") {
         throw new Error(
-          `parsePipelineResponse: expected field \`sources[${i}]\` to be a string, got ${typeof v.sources[i]}`,
+          `parsePipelineResponse: expected field \`sources[${i}]\` to be a string, got ${typeName(v.sources[i])}`,
         )
       }
     }

@@ -687,24 +687,12 @@ class TestRefactorStructuralInvariants:
 
 
 # ===========================================================================
-# Class 4 — ScoringModel wrapper removal invariants (#58)
+# Class 4 - ScoringModel wrapper invariants (#58)
 # ===========================================================================
 
 
-class TestScoringModelWrapperDeprecation:
-    """After #58, ``ScoringModel`` should no longer be *required* to carry
-    around a flavor tag + model.  Either:
-
-    * the class is removed outright, and callers work with explicit
-      flavor-specific objects + a tiny metadata dataclass; OR
-    * the class remains as a thin compatibility shim, but the internal
-      scoring path no longer uses ``__getattr__`` proxying to access
-      flavor-specific attributes — it goes through explicit branches.
-
-    We accept either outcome.  What we DON'T accept is the ``__getattr__``
-    proxy staying the primary access pattern for scoring internals,
-    because that's the code smell the refactor targets.
-    """
+class TestScoringModelWrapperDispatch:
+    """The scoring wrapper is only a metadata carrier; dispatch must be explicit."""
 
     def test_scoring_model_has_explicit_flavor_tag(self) -> None:
         """Regardless of whether ``ScoringModel`` survives, the flavor tag
@@ -720,43 +708,21 @@ class TestScoringModelWrapperDeprecation:
 
     def test_unknown_flavor_on_scoring_model_surfaces_loudly(self) -> None:
         """Constructing a ``ScoringModel`` with a made-up flavor string must
-        either raise at construction OR be immediately rejected by the
-        scoring path (not silently fall through to pyfunc).
-
-        Before the refactor: unknown flavors may route to pyfunc branches.
-        After the refactor: explicit dispatch rejects the unknown flavor.
-
-        This test checks the *scoring* side — a pipeline call with an
-        unknown flavor must not silently produce garbage predictions.
+        be rejected by the scoring path, not silently fall through to pyfunc.
         """
         model = MagicMock()
         model.predict.return_value = np.array([1.0])
-        # Construct a ScoringModel with an unsupported flavor tag.
         sm = ScoringModel(model, ["a"], frozenset(), "tensorflow")
         df = pl.DataFrame({"a": [1.0]})
 
-        # Either the scoring pipeline raises (post-refactor explicit
-        # dispatch) or it silently treats unknown as pyfunc and produces
-        # a prediction.  Post-refactor, this should raise — but we allow
-        # the test to pass pre-refactor by not asserting a specific error,
-        # so this is purely a post-refactor guard.
-        try:
-            result = _run_score_pipeline(
+        with pytest.raises(ConfigError):
+            _run_score_pipeline(
                 sm,
                 df.lazy(),
                 task="regression",
                 output_col="pred",
                 source="live",
             ).collect()
-        except (ConfigError, ValueError, FeatureMismatchError):
-            # Post-refactor: explicit dispatch raises. Good.
-            return
-
-        # Pre-refactor fallthrough: at least the output must be consistent
-        # with the model's predict return so no silent drift happens.
-        # We don't fail the test here — the other unknown-flavor test in
-        # Class 1 covers the post-refactor assertion.
-        assert "pred" in result.columns
 
 
 # ===========================================================================

@@ -378,13 +378,13 @@ export function GLMFactorConfig({
               className="w-full px-2.5 py-2 rounded-lg text-xs font-mono"
               style={{
                 background: "var(--bg-input)",
-                border: `1px solid ${jsonError ? "#ef4444" : "var(--border)"}`,
+                border: `1px solid ${jsonError ? "var(--danger)" : "var(--border)"}`,
                 color: "var(--text-primary)",
                 resize: "vertical",
               }}
             />
             {jsonError && (
-              <p className="text-[10px] mt-0.5" style={{ color: "#ef4444" }}>
+              <p className="text-[10px] mt-0.5" style={{ color: "var(--danger)" }}>
                 {jsonError}
               </p>
             )}

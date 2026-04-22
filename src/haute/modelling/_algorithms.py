@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from haute._polars_utils import _malloc_trim  # noqa: F401 — re-exported for backward compat
+from haute._polars_utils import _malloc_trim
 from haute._ram_estimate import available_ram_bytes
 
 _MEM_LOG = Path(os.environ.get("HAUTE_MEM_LOG", str(Path.home() / "training_mem.log")))

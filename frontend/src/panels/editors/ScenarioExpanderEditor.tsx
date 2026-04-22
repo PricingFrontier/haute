@@ -113,7 +113,7 @@ export default function ScenarioExpanderEditor({
             Value Range
           </label>
           {minValue !== "" && maxValue !== "" && Number(minValue) >= Number(maxValue) && (
-            <div className="mb-1.5 px-2 py-1 rounded text-[10px]" style={{ background: 'rgba(245,158,11,.1)', color: '#f59e0b', border: '1px solid rgba(245,158,11,.2)' }}>
+            <div className="mb-1.5 px-2 py-1 rounded text-[10px]" style={{ background: 'var(--warning-soft-strong)', color: 'var(--warning-strong)', border: '1px solid var(--warning-border)' }}>
               Warning: min value should be less than max value
             </div>
           )}

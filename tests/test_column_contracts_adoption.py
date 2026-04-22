@@ -27,6 +27,7 @@ from haute import errors as haute_errors
 from haute._builders import get_column_contract
 from haute._registry import NODE_REGISTRY
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests.conftest import write_data_source_config, write_node_config
 from tests.fixtures.expected_contracts import (
     ALL_NODE_KINDS,
     ALLOWED_OPAQUE_NODE_TYPES,
@@ -301,27 +302,36 @@ class TestCodegenEmitsContractMetadata:
         from haute.codegen import graph_to_code
         from haute.parser import parse_pipeline_source
 
-        src_code = '''\
+        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band",
+            {
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
+                    }
+                ]
+            },
+        )
+        src_code = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("roundtrip")
 
 
-@pipeline.data_source(path="x.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.LazyFrame:
     """Source."""
     return pl.scan_parquet("x.parquet")
 
 
-@pipeline.banding(
-    factors=[{
-        "column": "age",
-        "output_column": "age_band",
-        "banding": "continuous",
-        "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
-    }],
-)
+@pipeline.banding(config="{band_config}")
 def band(src: pl.LazyFrame) -> pl.LazyFrame:
     """Band age."""
     return src
@@ -409,27 +419,38 @@ class TestParserValidatesUserDeclaredContracts:
         # Banding factor says column='age', outputColumn='age_band',
         # but the user's explicit contract says 'height' / 'height_band'.
         # The parser must detect the disagreement and raise.
-        bad_src = '''\
+        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band",
+            {
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "rules": [{"max": 25, "value": "0"}],
+                    }
+                ]
+            },
+        )
+        bad_src = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("bad")
 
 
-@pipeline.data_source(path="x.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.LazyFrame:
     """Source."""
     return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(
-    factors=[{
-        "column": "age",
-        "output_column": "age_band",
-        "banding": "continuous",
-        "rules": [{"max": 25, "value": "0"}],
-    }],
-    contract={"inputs": ["height"], "outputs": ["height_band"]},
+    config="{band_config}",
+    contract={{"inputs": ["height"], "outputs": ["height_band"]}},
 )
 def band(src: pl.LazyFrame) -> pl.LazyFrame:
     """Band age but declare height."""
@@ -439,7 +460,11 @@ def band(src: pl.LazyFrame) -> pl.LazyFrame:
 pipeline.connect("src", "band")
 '''
         with pytest.raises(cls) as excinfo:
-            parse_pipeline_source(bad_src, source_file=str(tmp_path / "bad.py"))
+            parse_pipeline_source(
+                bad_src,
+                source_file=str(tmp_path / "bad.py"),
+                _base_dir=tmp_path,
+            )
         msg = str(excinfo.value)
         # The error message must identify *which* node and *what* differs.
         assert "band" in msg or "banding" in msg.lower(), (
@@ -454,27 +479,38 @@ pipeline.connect("src", "band")
             pytest.skip("ContractMismatchError not yet defined")
         from haute.parser import parse_pipeline_source
 
-        good_src = '''\
+        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band",
+            {
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "rules": [{"max": 25, "value": "0"}],
+                    }
+                ]
+            },
+        )
+        good_src = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("good")
 
 
-@pipeline.data_source(path="x.parquet")
+@pipeline.data_source(config="{source_config}")
 def src() -> pl.LazyFrame:
     """Source."""
     return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(
-    factors=[{
-        "column": "age",
-        "output_column": "age_band",
-        "banding": "continuous",
-        "rules": [{"max": 25, "value": "0"}],
-    }],
-    contract={"inputs": ["age"], "outputs": ["age_band"]},
+    config="{band_config}",
+    contract={{"inputs": ["age"], "outputs": ["age_band"]}},
 )
 def band(src: pl.LazyFrame) -> pl.LazyFrame:
     """Band age."""
@@ -484,7 +520,11 @@ def band(src: pl.LazyFrame) -> pl.LazyFrame:
 pipeline.connect("src", "band")
 '''
         # Should not raise
-        g = parse_pipeline_source(good_src, source_file=str(tmp_path / "good.py"))
+        g = parse_pipeline_source(
+            good_src,
+            source_file=str(tmp_path / "good.py"),
+            _base_dir=tmp_path,
+        )
         assert any(n.data.label == "band" for n in g.nodes), (
             "Parser should accept a matching contract and still produce "
             "a node — this confirms the validation path isn't over-eager."
@@ -795,12 +835,12 @@ class TestContractOverheadBenchmark:
             "meaningless because both runs execute identical code."
         )
 
-    def test_overhead_under_five_percent(self, tmp_path: Path):
-        """~100-node pipeline with contracts is <5% slower than without.
+    def test_default_suite_catches_gross_contract_overhead_regressions(self, tmp_path: Path):
+        """Small default-suite check that contracts are not wildly slower.
 
         Uses a realistic-shape pipeline alternating banding (concrete
         contract) and polars (opaque contract) to exercise both paths.
-        The threshold is the <5% target named in the plan.
+        The full 100-node, <5% benchmark is reserved for the perf lane.
 
         Clearing ``_preview_cache`` before every timed iteration is
         essential — otherwise the first pass in each mode is cold and
@@ -821,10 +861,10 @@ class TestContractOverheadBenchmark:
         from haute.executor import _preview_cache
 
         pq = tmp_path / "bench.parquet"
-        # 10k rows is large enough to dominate the per-node overhead and
-        # small enough to keep the test under a second on CI.
-        pl_.DataFrame({"age": [float(i) for i in range(10_000)]}).write_parquet(pq)
-        graph = self._build_chain_graph(100, str(pq))
+        # Enough rows/nodes to exercise the boundary checks, small enough
+        # to keep regular pytest runs focused on regressions.
+        pl_.DataFrame({"age": [float(i) for i in range(1_000)]}).write_parquet(pq)
+        graph = self._build_chain_graph(20, str(pq))
 
         # Warm-up run (imports, JIT) — also fails fast if the
         # enforcement toggle isn't wired up yet.
@@ -834,6 +874,45 @@ class TestContractOverheadBenchmark:
         # cache so every timed pass is a cold execution — without this
         # clear, the second+ iteration in a mode is a cache hit and
         # the delta collapses to measurement noise.
+        iterations = 2
+        t_without_total = 0.0
+        t_with_total = 0.0
+        for _ in range(iterations):
+            _preview_cache.invalidate()
+            t0 = time.perf_counter()
+            self._execute(graph, enforce=False)
+            t_without_total += time.perf_counter() - t0
+
+            _preview_cache.invalidate()
+            t0 = time.perf_counter()
+            self._execute(graph, enforce=True)
+            t_with_total += time.perf_counter() - t0
+
+        t_without = t_without_total / iterations
+        t_with = t_with_total / iterations
+        overhead = (
+            (t_with_total - t_without_total) / t_without_total if t_without_total > 0 else 0.0
+        )
+        assert overhead < 0.30, (
+            f"Contract enforcement overhead is {overhead:.1%} "
+            f"({t_without * 1000:.1f}ms → {t_with * 1000:.1f}ms), exceeds "
+            "the 30% smoke-test threshold. Run pytest -m perf for the "
+            "full 100-node, <5% benchmark."
+        )
+
+    @pytest.mark.perf
+    def test_hundred_node_overhead_under_five_percent(self, tmp_path: Path):
+        """100-node benchmark for the <5% contract-overhead target."""
+        import polars as pl_
+
+        from haute.executor import _preview_cache
+
+        pq = tmp_path / "bench.parquet"
+        pl_.DataFrame({"age": [float(i) for i in range(10_000)]}).write_parquet(pq)
+        graph = self._build_chain_graph(100, str(pq))
+
+        self._execute(graph, enforce=False)
+
         iterations = 5
         t_without_total = 0.0
         t_with_total = 0.0
@@ -855,10 +934,8 @@ class TestContractOverheadBenchmark:
         )
         assert overhead < 0.05, (
             f"Contract enforcement overhead is {overhead:.1%} "
-            f"({t_without * 1000:.1f}ms → {t_with * 1000:.1f}ms), exceeds "
-            "the 5% threshold from the plan. Either the boundary check "
-            "is too expensive (consider caching schema fingerprints) or "
-            "the plan's threshold needs to be renegotiated."
+            f"({t_without * 1000:.1f}ms -> {t_with * 1000:.1f}ms), exceeds "
+            "the 5% perf threshold from the plan."
         )
 
 

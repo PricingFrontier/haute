@@ -14,7 +14,6 @@ class SplitConfig:
     """Configuration for train/validation/holdout splitting.
 
     Both ``validation_size`` and ``holdout_size`` are optional (0 = disabled).
-    ``test_size`` is a backward-compatible alias for ``validation_size``.
     """
 
     strategy: Literal["random", "temporal", "group"] = "random"
@@ -24,14 +23,8 @@ class SplitConfig:
     date_column: str | None = None
     cutoff_date: str | None = None
     group_column: str | None = None
-    # Backward compat alias — ignored if validation_size is explicitly set
-    test_size: float | None = None
 
     def __post_init__(self) -> None:
-        # Backward compat: test_size is alias for validation_size
-        if self.test_size is not None:
-            self.validation_size = self.test_size
-            self.test_size = None
         if not 0 <= self.validation_size < 1:
             raise ValueError(f"validation_size must be between 0 and 1, got {self.validation_size}")
         if not 0 <= self.holdout_size < 1:
@@ -52,7 +45,7 @@ class SplitConfig:
 
 DEFAULT_SPLIT_DICT: dict[str, Any] = {
     "strategy": "random",
-    "test_size": 0.2,
+    "validation_size": 0.2,
     "seed": 42,
 }
 
@@ -133,12 +126,12 @@ def split_mask(
 
 def _random_split(
     df: pl.DataFrame,
-    test_size: float,
+    validation_size: float,
     seed: int,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Split by random sampling with seed for reproducibility."""
     n = len(df)
-    train_n = int(n * (1 - test_size))
+    train_n = int(n * (1 - validation_size))
 
     # Add row index, sample train indices, derive test via anti-join
     indexed = df.with_row_index("__split_idx__")
@@ -172,7 +165,7 @@ def _temporal_split(
 
 def _assign_group_split(
     unique_groups: list,
-    test_size: float,
+    validation_size: float,
     seed: int,
 ) -> set[str]:
     """Deterministically assign groups to the test set via MD5 hashing.
@@ -184,7 +177,7 @@ def _assign_group_split(
         h = hashlib.md5(f"{seed}:{g}".encode()).hexdigest()
         # Use first 8 hex chars as a fraction
         frac = int(h[:8], 16) / 0x100000000
-        if frac < test_size:
+        if frac < validation_size:
             test_groups.add(g)
 
     # If no groups assigned to test (small dataset), force at least one
@@ -197,7 +190,7 @@ def _assign_group_split(
 def _group_split(
     df: pl.DataFrame,
     group_column: str,
-    test_size: float,
+    validation_size: float,
     seed: int,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Split by hashing group values — all rows in a group go to the same set."""
@@ -205,7 +198,7 @@ def _group_split(
         raise ValueError(f"Group column '{group_column}' not found in DataFrame")
 
     unique_groups = df[group_column].unique().to_list()
-    test_groups = _assign_group_split(unique_groups, test_size, seed)
+    test_groups = _assign_group_split(unique_groups, validation_size, seed)
 
     is_test = pl.col(group_column).cast(pl.Utf8).is_in(list(test_groups))
     train = df.filter(~is_test)

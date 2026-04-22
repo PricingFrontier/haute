@@ -113,12 +113,14 @@ class TestBuildConfig:
             node_type=NodeType.OPTIMISER_APPLY,
             decorator_kwargs={
                 "optimiser_apply": True,
+                "source_type": "file",
                 "artifact_path": "artifacts/opt_v1.json",
                 "version_column": "__opt_ver__",
             },
             body="",
             param_names=["df"],
         )
+        assert config["sourceType"] == "file"
         assert config["artifact_path"] == "artifacts/opt_v1.json"
         assert config["version_column"] == "__opt_ver__"
 
@@ -136,7 +138,7 @@ class TestBuildConfig:
             node_type=NodeType.OPTIMISER_APPLY,
             decorator_kwargs={
                 "optimiser_apply": True,
-                "sourceType": "registered",
+                "source_type": "registered",
                 "registered_model": "my_opt_model",
                 "version": "3",
             },
@@ -156,7 +158,7 @@ class TestBuildConfig:
 class TestCodegen:
     def test_codegen_with_path(self):
         node = _make_node(
-            {"artifact_path": "artifacts/opt_v1.json"},
+            {"sourceType": "file", "artifact_path": "artifacts/opt_v1.json"},
             label="apply_optimised_price",
         )
         code = _node_to_code(node, source_names=["score_models"])
@@ -192,7 +194,7 @@ class TestCodegen:
 
     def test_codegen_version_column(self):
         node = _make_node(
-            {"artifact_path": "a.json", "version_column": "__ver__"},
+            {"sourceType": "file", "artifact_path": "a.json", "version_column": "__ver__"},
         )
         code = _node_to_code(node, source_names=["df"])
         assert 'config="config/apply_optimisation/apply_opt.json"' in code
@@ -214,7 +216,7 @@ class TestExecutorPassthrough:
         assert len(result) == 2
 
     def test_passthrough_when_empty_path(self):
-        node = _make_node({"artifact_path": ""})
+        node = _make_node({"sourceType": "file", "artifact_path": ""})
         _, fn, _ = _build_node_fn(node, source_names=["s"])
         lf = pl.DataFrame({"x": [1]}).lazy()
         assert fn(lf).collect().columns == ["x"]
@@ -232,7 +234,6 @@ class TestExecutorPassthrough:
         assert fn(lf).collect().columns == ["x"]
 
     def test_file_source_type_with_path(self):
-        """sourceType='file' with artifact_path should work like legacy mode."""
         path = _write_artifact(_make_online_artifact())
         try:
             node = _make_node({"sourceType": "file", "artifact_path": path})
@@ -243,21 +244,14 @@ class TestExecutorPassthrough:
         finally:
             os.unlink(path)
 
-    def test_legacy_no_source_type_with_path(self):
-        """No sourceType (empty string) with artifact_path should still work."""
+    def test_missing_source_type_with_path_raises(self):
+        from haute.errors import ConfigError
+
         path = _write_artifact(_make_ratebook_artifact())
         try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1"],
-                    "region": ["London"],
-                    "price": [100.0],
-                }
-            )
             node = _make_node({"artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            assert "region_optimised_factor" in result.columns
+            with pytest.raises(ConfigError, match="sourceType"):
+                _build_node_fn(node, source_names=["base"])
         finally:
             os.unlink(path)
 
@@ -271,7 +265,7 @@ class TestExecutorOnline:
     def test_online_apply_basic(self):
         path = _write_artifact(_make_online_artifact())
         try:
-            node = _make_node({"artifact_path": path})
+            node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["scored"])
             result = fn(_scored_df().lazy()).collect()
             assert len(result) == 2  # one row per quote
@@ -285,7 +279,9 @@ class TestExecutorOnline:
     def test_online_custom_version_column(self):
         path = _write_artifact(_make_online_artifact())
         try:
-            node = _make_node({"artifact_path": path, "version_column": "__v__"})
+            node = _make_node(
+                {"sourceType": "file", "artifact_path": path, "version_column": "__v__"}
+            )
             _, fn, _ = _build_node_fn(node, source_names=["scored"])
             result = fn(_scored_df().lazy()).collect()
             assert "__v__" in result.columns
@@ -297,7 +293,7 @@ class TestExecutorOnline:
         artifact = _make_online_artifact(version="")
         path = _write_artifact(artifact)
         try:
-            node = _make_node({"artifact_path": path})
+            node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["scored"])
             result = fn(_scored_df().lazy()).collect()
             # Version column should not be present when version is empty
@@ -310,7 +306,7 @@ class TestExecutorOnline:
         artifact = _make_online_artifact(lambdas={"predicted_volume": 0.0})
         path = _write_artifact(artifact)
         try:
-            node = _make_node({"artifact_path": path})
+            node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["scored"])
             result = fn(_scored_df().lazy()).collect()
             # Step 2 (scenario_value=1.1) has highest income for both quotes
@@ -335,7 +331,7 @@ class TestExecutorRatebook:
                     "price": [100.0, 200.0, 150.0],
                 }
             )
-            node = _make_node({"artifact_path": path})
+            node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["base"])
             result = fn(df.lazy()).collect()
             assert "region_optimised_factor" in result.columns
@@ -369,7 +365,7 @@ class TestExecutorRatebook:
                     "price": [100.0, 200.0],
                 }
             )
-            node = _make_node({"artifact_path": path})
+            node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["base"])
             result = fn(df.lazy()).collect()
             assert "region_optimised_factor" in result.columns
@@ -392,7 +388,7 @@ class TestExecutorRatebook:
                     "price": [100.0],
                 }
             )
-            node = _make_node({"artifact_path": path})
+            node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["base"])
             result = fn(df.lazy()).collect()
             # Should get default value of 1.0
@@ -407,7 +403,7 @@ class TestExecutorRatebook:
         path = _write_artifact(artifact)
         try:
             df = pl.DataFrame({"x": [1, 2]})
-            node = _make_node({"artifact_path": path})
+            node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["base"])
             result = fn(df.lazy()).collect()
             # Should pass through with version column added
@@ -521,7 +517,7 @@ class TestBundler:
                         data=NodeData(
                             label="Apply Opt",
                             nodeType=NodeType.OPTIMISER_APPLY,
-                            config={"artifact_path": path},
+                            config={"sourceType": "file", "artifact_path": path},
                         ),
                     ),
                 ],
@@ -546,7 +542,7 @@ class TestBundler:
                     data=NodeData(
                         label="Apply Opt",
                         nodeType=NodeType.OPTIMISER_APPLY,
-                        config={"artifact_path": ""},
+                        config={"sourceType": "file", "artifact_path": ""},
                     ),
                 ),
             ],

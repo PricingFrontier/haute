@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from haute._config_io import config_path_for_node
 from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
 
 
@@ -106,6 +107,38 @@ def make_source_node(nid: str, path: str = "data.parquet") -> GraphNode:
     return GraphNode(
         id=nid,
         data=NodeData(label=nid, nodeType="dataSource", config={"path": path}),
+    )
+
+
+def write_node_config(
+    base_dir: Path,
+    node_type: NodeType,
+    func_name: str,
+    config: dict,
+) -> str:
+    """Write a canonical node JSON sidecar and return its relative path."""
+    rel_path = config_path_for_node(node_type, func_name)
+    abs_path = base_dir / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    import json
+
+    abs_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    return rel_path.as_posix()
+
+
+def write_data_source_config(
+    base_dir: Path,
+    func_name: str,
+    path: str,
+    *,
+    source_type: str = "flat_file",
+) -> str:
+    """Write the canonical sidecar for a ``dataSource`` node."""
+    return write_node_config(
+        base_dir,
+        NodeType.DATA_SOURCE,
+        func_name,
+        {"path": path, "sourceType": source_type},
     )
 
 

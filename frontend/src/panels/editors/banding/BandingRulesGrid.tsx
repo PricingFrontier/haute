@@ -77,7 +77,7 @@ function parsePastedRules(
   return parsed
 }
 
-const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors text-[var(--text-muted)] hover:text-[#ef4444] focus-visible:text-[#ef4444]"
+const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors text-[var(--text-muted)] hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
 
 export function BandingRulesGrid({
   factor,
@@ -206,7 +206,7 @@ export function BandingRulesGrid({
                   </td>
                   {showMatchCounts && (
                     <td className="px-1 py-1.5 text-right text-[10px]">
-                      <span style={{ color: matchCounts[i] === 0 ? '#ef4444b3' : 'var(--text-muted)' }}>
+                      <span style={{ color: matchCounts[i] === 0 ? 'var(--danger)' : 'var(--text-muted)', opacity: matchCounts[i] === 0 ? 0.7 : 1 }}>
                         {matchCounts[i] ?? ""}
                       </span>
                     </td>
@@ -254,7 +254,7 @@ export function BandingRulesGrid({
                   </td>
                   {showMatchCounts && (
                     <td className="px-1 py-1.5 text-right text-[10px]">
-                      <span style={{ color: matchCounts[i] === 0 ? '#ef4444b3' : 'var(--text-muted)' }}>
+                      <span style={{ color: matchCounts[i] === 0 ? 'var(--danger)' : 'var(--text-muted)', opacity: matchCounts[i] === 0 ? 0.7 : 1 }}>
                         {matchCounts[i] ?? ""}
                       </span>
                     </td>

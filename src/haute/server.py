@@ -110,12 +110,8 @@ def _ws_parse_error_subscriber(payload: dict[str, Any]) -> None:
     _broadcast_event_as_ws_message("parse_error", payload)
 
 
-_unsubscribe_graph_update = default_bus.subscribe(
-    "graph.update", _ws_graph_update_subscriber
-)
-_unsubscribe_parse_error = default_bus.subscribe(
-    "parse.error", _ws_parse_error_subscriber
-)
+_unsubscribe_graph_update = default_bus.subscribe("graph.update", _ws_graph_update_subscriber)
+_unsubscribe_parse_error = default_bus.subscribe("parse.error", _ws_parse_error_subscriber)
 
 
 def _clear_bytecache() -> None:
@@ -297,15 +293,18 @@ async def _file_watcher() -> None:
         to_process = set(pending_changes)
         pending_changes.clear()
 
-        if is_self_write():
-            return
-
         # Collect changed files from pending set
         changed_files: list[Path] = []
         module_stems: list[str] = []
         config_changed = False
+        self_write_keys: set[str] = set()
         for change_type, changed_path in to_process:
             p = Path(changed_path)
+            key = str(p.resolve())
+            if key in self_write_keys or is_self_write(p, consume=True):
+                self_write_keys.add(key)
+                logger.debug("file_watcher_skipped_self_write", file=str(p))
+                continue
             if change_type not in (Change.modified, Change.added):
                 continue
             # JSON config files in config/ directory

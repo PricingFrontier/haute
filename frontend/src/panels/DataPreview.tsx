@@ -117,7 +117,7 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
 
         {data.status === "ok" && (
           <>
-            <CheckCircle2 size={13} className="ml-1" style={{ color: '#22c55e' }} />
+            <CheckCircle2 size={13} className="ml-1" style={{ color: 'var(--success)' }} />
             <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
               {data.row_count.toLocaleString()} rows · {data.column_count} cols
             </span>
@@ -126,8 +126,8 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
 
         {data.status === "error" && (
           <>
-            <AlertCircle size={13} className="ml-1" style={{ color: '#ef4444' }} />
-            <span className="text-[11px] truncate" style={{ color: '#ef4444' }}>{data.error}</span>
+            <AlertCircle size={13} className="ml-1" style={{ color: 'var(--danger)' }} />
+            <span className="text-[11px] truncate" style={{ color: 'var(--danger)' }}>{data.error}</span>
           </>
         )}
 
@@ -171,8 +171,8 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
       ) : data.status === "error" ? (
         <div className="flex-1 flex items-center justify-center p-4">
           <div className="text-center">
-            <AlertCircle size={24} className="mx-auto mb-2" style={{ color: '#ef4444', opacity: 0.5 }} />
-            <div className="text-xs max-w-md" style={{ color: '#ef4444' }}>{data.error}</div>
+            <AlertCircle size={24} className="mx-auto mb-2" style={{ color: 'var(--danger)', opacity: 0.5 }} />
+            <div className="text-xs max-w-md" style={{ color: 'var(--danger)' }}>{data.error}</div>
           </div>
         </div>
       ) : (

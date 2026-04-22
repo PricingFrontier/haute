@@ -225,7 +225,7 @@ def resolve_transport(config: DeployConfig) -> TransportInfo:
     available) are populated from ``config.ci``.  Raises ``SystemExit``
     if the staging URL is required but missing.
     """
-    from haute.deploy._container import _CONTAINER_BASED_TARGETS
+    from haute.deploy._config import _CONTAINER_BASED_TARGETS
 
     if config.target == "databricks":
         return TransportInfo(kind="databricks")

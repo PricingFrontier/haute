@@ -8,7 +8,8 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, cleanup } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
-import SubmodelPortNode, { type SubmodelPortData } from "../../nodes/SubmodelPortNode"
+import SubmodelPortNode from "../../nodes/SubmodelPortNode"
+import type { SubmodelPortData, SubmodelPortFlowNode } from "../../types/node"
 
 afterEach(cleanup)
 
@@ -25,7 +26,7 @@ function makeProps(
   return {
     id: "test-port-node",
     type: "submodelPort",
-    data: fullData as Record<string, unknown>,
+    data: fullData,
     selected: false,
     isConnectable: true,
     positionAbsoluteX: 0,
@@ -47,7 +48,7 @@ function renderPortNode(
   const props = makeProps(data)
   return render(
     <ReactFlowProvider>
-      <SubmodelPortNode {...(props as unknown as NodeProps)} />
+      <SubmodelPortNode {...(props as unknown as NodeProps<SubmodelPortFlowNode>)} />
     </ReactFlowProvider>,
   )
 }
@@ -190,7 +191,7 @@ describe("SubmodelPortNode", () => {
     })
     const { container } = render(
       <ReactFlowProvider>
-        <SubmodelPortNode {...(props as unknown as NodeProps)} />
+        <SubmodelPortNode {...(props as unknown as NodeProps<SubmodelPortFlowNode>)} />
       </ReactFlowProvider>,
     )
     expect(screen.getByText("no_direction")).toBeTruthy()

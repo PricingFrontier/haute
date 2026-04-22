@@ -20,7 +20,7 @@ def _minimal_kwargs() -> dict:
             train_rows=800,
             test_rows=200,
             features=["x1", "x2"],
-            split_config={"strategy": "random", "test_size": 0.2},
+            split_config={"strategy": "random", "validation_size": 0.2},
         ),
     }
 
@@ -159,7 +159,7 @@ class TestModelCardAllSections:
             test_rows=200,
             holdout_rows=500,
             features=["x1", "x2"],
-            split_config={"strategy": "random", "test_size": 0.2},
+            split_config={"strategy": "random", "validation_size": 0.2},
             best_iteration=50,
         )
         html = generate_model_card(**kwargs)

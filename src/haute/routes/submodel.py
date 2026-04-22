@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from haute._file_ops import Writer
 from haute._logging import get_logger
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
@@ -25,6 +26,11 @@ from haute.schemas import (
 logger = get_logger(component="server.submodel")
 
 router = APIRouter(prefix="/api/submodel", tags=["submodel"])
+
+
+def _write_self_marked_text(path: Path, content: str) -> None:
+    with Writer(path, mark_self_write=mark_self_write) as writer:
+        writer.write_text(content)
 
 
 @router.post("/create", response_model=CreateSubmodelResponse)
@@ -65,8 +71,6 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     cwd = Path.cwd()
     py_path = validate_safe_path(cwd, body.source_file)
 
-    # Write files to disk
-    mark_self_write()
     files = graph_to_code_multi(
         result.graph,
         pipeline_name=body.pipeline_name,
@@ -77,7 +81,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     for rel_path, code in files.items():
         out_path = validate_safe_path(cwd, rel_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(code)
+        _write_self_marked_text(out_path, code)
 
     # Also materialise the per-node config sidecar JSON files so a
     # subsequent reparse of the submodel .py file can resolve
@@ -98,7 +102,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     for rel_path, json_content in configs.items():
         cfg_path = validate_safe_path(cwd, rel_path)
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        cfg_path.write_text(json_content)
+        _write_self_marked_text(cfg_path, json_content)
 
     # Save sidecar
     save_sidecar(py_path, result.graph)
@@ -178,8 +182,6 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
     from haute.codegen import graph_to_code
 
     cwd = Path.cwd()
-    mark_self_write()
-
     if not body.source_file:
         raise HTTPException(
             status_code=400,
@@ -194,7 +196,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
         description=body.pipeline_description or "",
         preamble=body.preamble,
     )
-    py_path.write_text(code)
+    _write_self_marked_text(py_path, code)
     save_sidecar(py_path, flat)
 
     # Delete the submodel file

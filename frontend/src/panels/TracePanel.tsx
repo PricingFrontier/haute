@@ -35,7 +35,7 @@ function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
         )}
         {matched != null && <div style={valueStyle}>Matched row: {String(matched)}</div>}
         {defaultUsed && (
-          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: "rgba(251,191,36,.15)", color: "#fbbf24" }}>
+          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: "var(--warning-bright-soft-strong)", color: "var(--warning)" }}>
             default used
           </span>
         )}
@@ -78,7 +78,7 @@ function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
             {shapValues.map((s) => (
               <div key={s.feature} className="flex gap-2 font-mono text-[10px]">
                 <span>{s.feature}</span>
-                <span style={{ color: s.value >= 0 ? "#4ade80" : "#f87171" }}>{s.value >= 0 ? "+" : ""}{s.value}</span>
+                <span style={{ color: s.value >= 0 ? "var(--success-hover)" : "var(--danger-text)" }}>{s.value >= 0 ? "+" : ""}{s.value}</span>
               </div>
             ))}
           </div>
@@ -141,8 +141,8 @@ function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep
   }
 
   const tagColors = {
-    added: { bg: "rgba(34,197,94,.12)", color: "var(--color-added, #4ade80)", label: "+" },
-    modified: { bg: "rgba(251,191,36,.12)", color: "var(--color-modified, #fbbf24)", label: "~" },
+    added: { bg: "var(--success-soft-mid)", color: "var(--color-added, var(--success-hover))", label: "+" },
+    modified: { bg: "var(--warning-bright-soft)", color: "var(--color-modified, var(--warning))", label: "~" },
     value: { bg: "rgba(255,255,255,.06)", color: "var(--text-secondary)", label: "=" },
   }
 
@@ -273,13 +273,13 @@ function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep
           {/* Schema changes summary */}
           <div className="flex flex-wrap gap-2 py-2 text-[10px]">
             {columns_added.length > 0 && (
-              <span style={{ color: "var(--color-added, #4ade80)" }}>+{columns_added.length} added</span>
+              <span style={{ color: "var(--color-added, var(--success-hover))" }}>+{columns_added.length} added</span>
             )}
             {columns_modified.length > 0 && (
-              <span style={{ color: "var(--color-modified, #fbbf24)" }}>~{columns_modified.length} modified</span>
+              <span style={{ color: "var(--color-modified, var(--warning))" }}>~{columns_modified.length} modified</span>
             )}
             {columns_removed.length > 0 && (
-              <span style={{ color: "var(--color-removed, #f87171)" }}>-{columns_removed.length} removed</span>
+              <span style={{ color: "var(--color-removed, var(--danger-text))" }}>-{columns_removed.length} removed</span>
             )}
             <span style={{ color: "var(--text-muted)" }}>
               {step.schema_diff.columns_passed.length} passed through
@@ -299,13 +299,13 @@ function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep
               let rowColor = "var(--text-secondary)"
               let prefix = ""
               if (isAdded) {
-                rowColor = "var(--color-added, #4ade80)"
+                rowColor = "var(--color-added, var(--success-hover))"
                 prefix = "+"
               } else if (isModified) {
-                rowColor = "var(--color-modified, #fbbf24)"
+                rowColor = "var(--color-modified, var(--warning))"
                 prefix = "~"
               } else if (isRemoved) {
-                rowColor = "var(--color-removed, #f87171)"
+                rowColor = "var(--color-removed, var(--danger-text))"
                 prefix = "-"
               }
 
@@ -431,7 +431,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         <button
           onClick={handleCopy}
           className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-          style={{ color: copied ? "var(--color-added, #4ade80)" : "var(--text-muted)" }}
+          style={{ color: copied ? "var(--color-added, var(--success-hover))" : "var(--text-muted)" }}
           title="Copy trace as markdown"
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -461,8 +461,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                   flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 600,
                   borderRadius: 4, border: "none", cursor: "pointer",
                   transition: "all 150ms ease",
-                  background: active ? "rgba(59,130,246,.12)" : "transparent",
-                  color: active ? "#60a5fa" : "rgba(255,255,255,.35)",
+                  background: active ? "var(--accent-soft)" : "transparent",
+                  color: active ? "var(--accent-hover)" : "rgba(255,255,255,.35)",
                   boxShadow: active ? "0 1px 3px rgba(0,0,0,.2)" : "none",
                 }}
               >
@@ -477,7 +477,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
       {activeTab === "calculation" ? (
         /* Calculation tab — full derivation */
         <div className="flex-1 overflow-y-auto" style={{
-          background: "linear-gradient(180deg, rgba(59,130,246,.04) 0%, rgba(59,130,246,.01) 100%)",
+          background: "linear-gradient(180deg, var(--accent-soft-faint) 0%, var(--accent-soft-whisper) 100%)",
         }}>
           {targetStep && trace.column ? (
             <CalculationHero
@@ -519,8 +519,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                       flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 600,
                       borderRadius: 4, border: "none", cursor: "pointer",
                       transition: "all 150ms ease",
-                      background: active ? "rgba(59,130,246,.12)" : "transparent",
-                      color: active ? "#60a5fa" : "rgba(255,255,255,.35)",
+                      background: active ? "var(--accent-soft)" : "transparent",
+                      color: active ? "var(--accent-hover)" : "rgba(255,255,255,.35)",
                       boxShadow: active ? "0 1px 3px rgba(0,0,0,.2)" : "none",
                     }}
                   >

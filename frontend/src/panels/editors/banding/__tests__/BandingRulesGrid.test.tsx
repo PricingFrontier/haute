@@ -303,15 +303,15 @@ describe("BandingRulesGrid", () => {
     ] as unknown as ContinuousRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[0]} />)
     const zeroCell = screen.getByText("0")
-    // Should have warning color applied (browser normalizes hex to rgba)
+    // Should have warning color applied.
     const zeroColor = zeroCell.style.color
-    expect(zeroColor === '#ef4444b3' || zeroColor === 'rgba(239, 68, 68, 0.7)').toBe(true)
+    expect(zeroColor === 'var(--danger)' || zeroColor === 'rgba(239, 68, 68, 0.7)').toBe(true)
     // Verify the non-zero case in a separate render
     cleanup()
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[5]} />)
     const fiveCell = screen.getByText("5")
     const fiveColor = fiveCell.style.color
-    expect(fiveColor !== '#ef4444b3' && fiveColor !== 'rgba(239, 68, 68, 0.7)').toBe(true)
+    expect(fiveColor !== 'var(--danger)' && fiveColor !== 'rgba(239, 68, 68, 0.7)').toBe(true)
   })
 
   it("match counts column hidden when not provided", () => {

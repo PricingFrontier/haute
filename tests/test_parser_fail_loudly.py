@@ -34,10 +34,11 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from haute._codegen_builders import _gen_transform
 from haute._graph_utils import build_instance_mapping
 from haute._parser_helpers import _resolve_node_config
 from haute._types import NodeType
-from haute.codegen import _gen_transform, _instance_to_code, graph_to_code_multi
+from haute.codegen import _instance_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.executor import execute_graph
 from tests.conftest import (
@@ -92,7 +93,7 @@ class TestItem18ConfigPathFailsLoudly:
     def test_missing_config_raises_config_error(self, tmp_path: Path) -> None:
         """Legitimately missing config file → ``ConfigError``, not silent empty dict."""
         # No config file exists at the referenced path.
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
                     {"config": "config/data_source/does_not_exist.json"},
@@ -108,7 +109,7 @@ class TestItem18ConfigPathFailsLoudly:
         """The raised ``ConfigError`` must surface the original (possibly
         mangled) path so the user can see what was actually referenced."""
         referenced_path = "config/data_source/missing_file.json"
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError) as exc_info:
                 _resolve_node_config(
                     {"config": referenced_path},
@@ -135,7 +136,7 @@ class TestItem18ConfigPathFailsLoudly:
     def test_missing_config_error_contains_remediation_hint(self, tmp_path: Path) -> None:
         """Users should get actionable guidance (e.g. "check the path",
         "create the file", or similar) — not a bare error string."""
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError) as exc_info:
                 _resolve_node_config(
                     {"config": "config/banding/no_such_band.json"},
@@ -157,7 +158,7 @@ class TestItem18ConfigPathFailsLoudly:
     def test_no_silent_load_error_marker_written(self, tmp_path: Path) -> None:
         """After the fix, a missing config must NOT silently return a dict
         containing ``_load_error`` — it must raise instead."""
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             # The old behaviour returned ``(node_type, {"_load_error": ...})``.
             # The new behaviour is to raise.  Either way the internal
             # marker must never surface.
@@ -194,7 +195,7 @@ class TestItem18ConfigPathFailsLoudly:
         # silently recovered from this via ``find_config_by_func_name``.
         mangled_path = "config/\x08anding/age_band.json"
 
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             # Expected post-fix: either (a) raise ConfigError because the
             # original path was bogus, or (b) require an explicit opt-in
             # kwarg for recovery.  Default behaviour must NOT silently load
@@ -227,7 +228,7 @@ class TestItem18ConfigPathFailsLoudly:
         bad = cfg_dir / "broken.json"
         bad.write_text("{ this is not valid json")
 
-        with patch("haute._parser_helpers.warn_unrecognized_config_keys"):
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
             with pytest.raises(ConfigError):
                 _resolve_node_config(
                     {"config": "config/data_source/broken.json"},
@@ -429,6 +430,49 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
             },
         }
 
+    @staticmethod
+    def _submodel_graph_with_source_handle(handle: str | None) -> dict:
+        """Build a graph with an outgoing submodel edge."""
+        edge_dict: dict = {
+            "id": "e_out",
+            "source": "submodel__sm1",
+            "target": "out",
+        }
+        if handle is not None:
+            edge_dict["sourceHandle"] = handle
+        return {
+            "nodes": [
+                {
+                    "id": "out",
+                    "data": {"label": "Out", "nodeType": "output", "config": {}},
+                },
+                {
+                    "id": "child_a",
+                    "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                },
+            ],
+            "edges": [edge_dict],
+            "submodels": {
+                "sm1": {
+                    "file": "modules/sm1.py",
+                    "childNodeIds": ["child_a"],
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "child_a",
+                                "data": {
+                                    "label": "ChildA",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            },
+                        ],
+                        "edges": [],
+                    },
+                },
+            },
+        }
+
     def test_happy_path_valid_in_prefix_handle(self) -> None:
         """Well-formed handle ``in__child_a`` wires the edge correctly."""
         graph = _g(self._submodel_graph_with_handle("in__child_a"))
@@ -485,6 +529,17 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
         # Either a ParseError or a ConfigError is acceptable; HauteError
         # covers both.
         with pytest.raises(HauteError):
+            graph_to_code_multi(graph, pipeline_name="main")
+
+    def test_source_edge_without_out_prefix_raises_parse_error(self) -> None:
+        """Outgoing submodel edges must use ``out__<child_id>`` handles."""
+        graph = _g(self._submodel_graph_with_source_handle("child_a"))
+        with pytest.raises(ParseError):
+            graph_to_code_multi(graph, pipeline_name="main")
+
+    def test_source_edge_nonexistent_child_raises_parse_error(self) -> None:
+        graph = _g(self._submodel_graph_with_source_handle("out__ghost_child"))
+        with pytest.raises(ParseError):
             graph_to_code_multi(graph, pipeline_name="main")
 
 

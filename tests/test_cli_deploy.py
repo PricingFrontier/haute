@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from haute.cli import cli
+from haute.errors import DeployError
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -103,7 +104,14 @@ class TestDeploy:
 
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
-            patch("haute.deploy._validators.validate_deploy", return_value=["Missing artifact"]),
+            patch(
+                "haute.deploy._validators.validate_deploy",
+                side_effect=DeployError(
+                    "Deploy validation failed",
+                    structural_errors=["Missing artifact"],
+                    test_quote_errors=[],
+                ),
+            ),
         ):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 

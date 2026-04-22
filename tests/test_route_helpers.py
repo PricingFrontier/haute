@@ -159,6 +159,40 @@ class TestSelfWriteTracking:
         with patch.object(time, "monotonic", return_value=original() + _SELF_WRITE_COOLDOWN + 1):
             assert is_self_write() is False
 
+    def test_path_mark_survives_legacy_cooldown_until_watcher_consumes_it(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        fake_time = [100.0]
+        monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
+        path = tmp_path / "pipeline.py"
+
+        try:
+            mark_self_write(path)
+            fake_time[0] += _SELF_WRITE_COOLDOWN + 5.0
+
+            assert is_self_write() is False
+            assert is_self_write(path) is True
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_path_mark_can_be_consumed_once(self, tmp_path: Path):
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "pipeline.py"
+
+        try:
+            mark_self_write(path)
+            assert is_self_write(path, consume=True) is True
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
 
 # ===========================================================================
 # load_sidecar / load_sidecar_positions

@@ -219,7 +219,7 @@ class TestModelScorerScore:
         with pytest.raises(FeatureMismatchError, match="Missing feature"):
             scorer.score()  # no dfs passed -- empty LazyFrame has no feature columns
 
-    @patch("haute.executor._exec_user_code")
+    @patch("haute._user_exec._exec_user_code")
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
     def test_user_code_applied_after_scoring(self, mock_load, mock_score_eager, mock_exec):
@@ -494,7 +494,7 @@ class TestScoreFromConfig:
 
     @patch("haute._mlflow_io.load_mlflow_model")
     def test_base_dir_none_falls_back_to_cwd(self, mock_load, tmp_path, monkeypatch):
-        """Without base_dir, config is resolved relative to CWD (backward compat)."""
+        """Without base_dir, config is resolved relative to CWD."""
         sm = _make_scoring_model(predictions=np.array([0.5]))
         mock_load.return_value = sm
 
@@ -762,7 +762,7 @@ class TestRunScorePipeline:
         assert exc_info.value is original_err
         assert exc_info.value.__cause__ is None
 
-    @patch("haute.executor._exec_user_code")
+    @patch("haute._user_exec._exec_user_code")
     @patch("haute._mlflow_io._score_eager")
     def test_post_processing_code_executed(self, mock_eager, mock_exec):
         """User code is executed after scoring."""
@@ -785,7 +785,7 @@ class TestRunScorePipeline:
         call_kwargs = mock_exec.call_args[1]
         assert "model" in call_kwargs["extra_ns"]
 
-    @patch("haute.executor._exec_user_code")
+    @patch("haute._user_exec._exec_user_code")
     @patch("haute._mlflow_io._score_eager")
     def test_source_names_none_becomes_empty_list_in_code(self, mock_eager, mock_exec):
         """source_names=None is converted to [] when passed to user code."""

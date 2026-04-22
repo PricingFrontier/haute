@@ -119,6 +119,8 @@ def parse_pipeline_source(
         flatten: If True, dissolve submodels into flat graph.
         _base_dir: Directory to resolve relative submodel paths against.
     """
+    if not source_file and _base_dir is not None:
+        source_file = str((_base_dir / "__source__.py").resolve())
 
     # Syntax check - fall back to regex if the file has errors
     try:

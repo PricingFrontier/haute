@@ -15,10 +15,11 @@ from typing import Any
 
 from haute._ast_helpers import _extract_preamble, _get_docstring
 from haute._config_builder import _build_node_config
-from haute._config_io import find_config_by_func_name
+from haute._config_io import find_config_by_func_name, has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes
 from haute._logging import get_logger
 from haute._types import DECORATOR_TO_NODE_TYPE
+from haute.errors import ConfigError
 from haute.graph_utils import NodeType, PipelineGraph
 
 logger = get_logger(component="parser.regex")
@@ -182,9 +183,7 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     if not isinstance(call, ast.Call):
         raise ValueError(f"decorator kwargs body is not a call expression: {inner!r}")
     return {
-        kw.arg: _resolve_kwarg_value(kw.arg, kw.value)
-        for kw in call.keywords
-        if kw.arg is not None
+        kw.arg: _resolve_kwarg_value(kw.arg, kw.value) for kw in call.keywords if kw.arg is not None
     }
 
 
@@ -284,16 +283,22 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
             has_syntax_error = True
 
         body = block["body_text"] if not has_syntax_error else ""
-        config = (
-            loaded_config
-            if loaded_config is not None
-            else _build_node_config(
+        if loaded_config is not None:
+            config = loaded_config
+        elif has_config_folder(node_type):
+            raise ConfigError(
+                "Node config must be stored in a JSON sidecar and referenced with "
+                'config="config/<type>/<name>.json".',
+                func_name=func_name,
+                node_type=node_type.value,
+            )
+        else:
+            config = _build_node_config(
                 node_type,
                 decorator_kwargs,
                 body,
                 param_names,
             )
-        )
 
         raw_nodes.append(
             {

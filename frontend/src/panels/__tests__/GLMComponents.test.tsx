@@ -464,7 +464,7 @@ describe("GLMFactorConfig", () => {
     const textarea = document.querySelector("textarea")!
     fireEvent.change(textarea, { target: { value: "{bad" } })
     fireEvent.blur(textarea)
-    expect(textarea.style.border).toContain("rgb(239, 68, 68)")
+    expect(textarea.style.border).toContain("var(--danger)")
   })
 
   it("switching back to Builder after JSON edit shows updated factors", () => {

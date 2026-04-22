@@ -303,9 +303,9 @@ class TestOptimiserArtifactDeepCopy:
 
     def test_mutation_does_not_affect_cache(self, tmp_path):
         """Mutating the returned dict should not change cached data."""
-        from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         f = tmp_path / "artifact.json"
         data = {"mode": "online", "lambdas": {"x": 1.5}}
@@ -319,13 +319,13 @@ class TestOptimiserArtifactDeepCopy:
         assert result2["mode"] == "online"
         assert result2["lambdas"]["x"] == 1.5
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
     def test_two_results_are_independent(self, tmp_path):
         """Two calls return independent dict objects."""
-        from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         f = tmp_path / "artifact.json"
         f.write_text(json.dumps({"items": [1, 2, 3]}))
@@ -338,7 +338,7 @@ class TestOptimiserArtifactDeepCopy:
         r1["items"].append(4)
         assert r2["items"] == [1, 2, 3]
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
 
 class TestOptimiserArtifactMtimeZero:
@@ -346,15 +346,15 @@ class TestOptimiserArtifactMtimeZero:
 
     def test_mtime_defaults_to_zero_on_oserror(self, tmp_path):
         """When os.path.getmtime raises, mtime defaults to 0.0 but open() still fails."""
-        from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         nonexistent = str(tmp_path / "does_not_exist.json")
         with pytest.raises(FileNotFoundError):
             load_optimiser_artifact(nonexistent)
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
 
 class TestLoadMlflowOptimiserArtifactDeepCopy:
@@ -362,9 +362,9 @@ class TestLoadMlflowOptimiserArtifactDeepCopy:
 
     def test_mutation_does_not_affect_mlflow_cache(self, tmp_path):
         """Mutating result from MLflow path should not affect cache."""
-        from haute._optimiser_io import _mlflow_cache, load_mlflow_optimiser_artifact
+        from haute._optimiser_io import _load_mlflow_cached, load_mlflow_optimiser_artifact
 
-        _mlflow_cache.clear()
+        _load_mlflow_cached.cache_clear()
 
         artifact_data = {"mode": "ratebook", "constraints": [1, 2]}
         artifact_path = tmp_path / "optimiser_result.json"
@@ -382,7 +382,7 @@ class TestLoadMlflowOptimiserArtifactDeepCopy:
             r2 = load_mlflow_optimiser_artifact(source_type="run", run_id="run_id_1")
             assert r2["mode"] == "ratebook"
 
-        _mlflow_cache.clear()
+        _load_mlflow_cached.cache_clear()
 
 
 # ===========================================================================

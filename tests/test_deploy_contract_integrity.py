@@ -199,9 +199,7 @@ class TestValidateDeployFailsOnTestQuotes:
         assert "bad.json" in msg or "test quote" in msg.lower() or "quote" in msg.lower()
 
     def test_validate_deploy_succeeds_when_no_test_quotes(self, tmp_path: Path) -> None:
-        """Without a test_quotes directory, validate_deploy proceeds — but
-        must still return the list form for structural-error callers.
-        """
+        """Without a test_quotes directory, validate_deploy succeeds."""
         from haute.deploy._validators import validate_deploy
 
         config = DeployConfig(
@@ -219,9 +217,7 @@ class TestValidateDeployFailsOnTestQuotes:
             output_node_id="output",
             config=config,
         )
-        # With no test quotes and all structural checks passing, must return [].
-        errors = validate_deploy(resolved)
-        assert errors == []
+        assert validate_deploy(resolved) is None
 
     def test_validate_deploy_aggregates_structural_and_test_errors(self, tmp_path: Path) -> None:
         """If there are BOTH structural errors AND failing test quotes, the

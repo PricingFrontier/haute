@@ -105,6 +105,13 @@ packages = ["src/haute"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Root-level generated/demo pipelines are arbitrary user code; keep repo lint
+# focused on the package, tests, docs tooling, and scripts.
+extend-exclude = [
+    "modules/",
+    "rating/",
+    "outputs/",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
@@ -115,6 +122,16 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-m 'not perf'"
+markers = [
+    "slow: marks tests as slow but still part of the default suite",
+    "perf: marks benchmark-style tests excluded from default pytest runs",
+]
+filterwarnings = [
+    "error::RuntimeWarning",
+    "ignore:Mean of empty slice:RuntimeWarning",
+    "ignore:invalid value encountered in scalar divide:RuntimeWarning",
+]
 
 [tool.coverage.run]
 source = ["src/haute"]

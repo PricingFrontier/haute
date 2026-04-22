@@ -396,6 +396,11 @@ class UtilityWriteResponse(BaseModel):
     error_line: int | None = None
 
 
+class UtilityDeleteResponse(BaseModel):
+    status: str = "ok"
+    module: str
+
+
 # ---------------------------------------------------------------------------
 # /api/submodel/*
 # ---------------------------------------------------------------------------
@@ -456,7 +461,7 @@ class TrainResponse(BaseModel):
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
     model_path: str = ""
     train_rows: int = 0
-    test_rows: int = 0  # validation rows (kept as test_rows for backward compat)
+    test_rows: int = 0  # validation rows
     holdout_rows: int = 0
     holdout_metrics: dict[str, float] = Field(default_factory=dict)
     diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"
@@ -554,6 +559,11 @@ class MlflowCheckResponse(BaseModel):
     mlflow_installed: bool
     backend: str = ""
     databricks_host: str = ""
+
+
+class ModelCacheClearResponse(BaseModel):
+    removed: int
+    run_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +756,11 @@ class GitSwitchBranchRequest(BaseModel):
     branch: str
 
 
+class GitSwitchBranchResponse(BaseModel):
+    status: str = "ok"
+    branch: str
+
+
 class GitSaveResponse(BaseModel):
     commit_sha: str
     message: str
@@ -794,4 +809,9 @@ class GitArchiveResponse(BaseModel):
 
 
 class GitDeleteBranchRequest(BaseModel):
+    branch: str
+
+
+class GitDeleteBranchResponse(BaseModel):
+    status: str = "ok"
     branch: str

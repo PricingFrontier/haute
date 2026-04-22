@@ -66,10 +66,10 @@ def _mark_self_write_cb(_path: Path) -> None:
     """Writer callback — signals the file-watcher for each rename.
 
     Writer passes the path it is about to rename; our self-write tracker
-    records a timestamp, so the watcher sees a coherent event sequence
-    regardless of how long the overall save takes.
+    records that path, so the watcher can skip the exact event without
+    relying on the total save duration.
     """
-    mark_self_write()
+    mark_self_write(_path)
 
 
 class SavePipelineService:
@@ -128,18 +128,15 @@ class SavePipelineService:
         # remain on disk and will be cleaned up on the next successful save.
         self._remove_stale_config_files(graph)
 
-        # Final save-level self-write marker keeps the existing behaviour
-        # for callers that wait on the cooldown rather than per-file
-        # callbacks.  Item #7's per-rename callbacks fire inside Writer.
+        # Final save-level self-write marker covers save-wide notifications.
+        # The watcher uses per-path Writer callbacks above.
         mark_self_write()
 
-        # The file-watcher's ``_flush`` early-returns on ``is_self_write()``
-        # BEFORE it would otherwise invalidate the pipeline index, so a
-        # save that renames a pipeline (or adds/removes one) would leave
-        # ``_pipeline_index`` mapping the stale name → path.  The save
-        # path knows exactly when invalidation is required: right after
-        # all files land successfully.  Don't rely on the file-watcher
-        # to do it for us — self-writes skip the watcher on purpose.
+        # The file-watcher skips self-written paths before invalidating the
+        # pipeline index, so a save that renames a pipeline (or adds/removes
+        # one) would leave ``_pipeline_index`` mapping the stale name → path.
+        # The save path knows exactly when invalidation is required: right
+        # after all files land successfully.
         invalidate_pipeline_index()
 
         return SavePipelineResponse(
@@ -416,7 +413,7 @@ class SavePipelineService:
         protected: set[str] = getattr(self, "_protected_config_files", set())
 
         if prev is None:
-            # First save — fall back to full-scan cleanup so pre-existing
+            # First save — fall back to full-scan cleanup so current
             # stale files from manual edits or other tools are removed.
             from haute._config_io import NODE_TYPE_TO_FOLDER
 

@@ -444,11 +444,8 @@ class TestPickleAndPublicAlias:
 
         assert haute.HauteError is NewRoot
 
-    def test_legacy_subclasses_still_catchable_via_public_alias(self):
-        """Pre-existing subclasses (PreambleError, GitError, CycleError, etc.)
-        that inherit from the legacy _types.HauteError must still be catchable
-        via haute.HauteError after hierarchy unification.
-        """
+    def test_module_subclasses_are_catchable_via_public_alias(self):
+        """Module-specific subclasses must be catchable via haute.HauteError."""
         import haute
         from haute._git import GitError
         from haute._sandbox import UnsafeCodeError

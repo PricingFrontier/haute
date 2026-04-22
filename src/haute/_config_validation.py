@@ -1,8 +1,8 @@
 """Lightweight config validation for pipeline node types.
 
 Warns on unrecognized config keys so typos and stale keys surface early
-instead of being silently ignored.  Never raises -- existing pipelines
-keep working.
+instead of being silently ignored.  Returns the unexpected keys so callers
+can choose whether to warn, fail, or report them in tests.
 """
 
 from __future__ import annotations

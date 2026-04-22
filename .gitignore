@@ -138,6 +138,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.venv-*/
 env/
 venv/
 ENV/
@@ -208,6 +209,8 @@ __marimo__/
 
 # Pipeline output files
 output/
+outputs/
+mlruns/
 
 # CatBoost training logs and model binaries
 catboost_info/

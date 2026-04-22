@@ -400,9 +400,9 @@ def _valid_pipeline_source_strategy():
             "",
             'pipeline = haute.Pipeline("fuzz")',
             "",
-            '@pipeline.data_source(path="data.parquet")',
+            "@pipeline.polars",
             "def source() -> pl.LazyFrame:",
-            '    return pl.scan_parquet("data.parquet")',
+            '    return pl.LazyFrame({"x": [1]})',
             "",
         ]
         prev = "source"
@@ -423,7 +423,7 @@ def _valid_pipeline_source_strategy():
         lines.extend(
             [
                 "",
-                "@pipeline.output()",
+                "@pipeline.polars",
                 f"def output({prev}: pl.LazyFrame) -> pl.LazyFrame:",
                 f"    return {prev}",
                 "",

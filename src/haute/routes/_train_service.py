@@ -148,9 +148,6 @@ def _check_gpu_vram(
     effective_rows: int,
     probe_columns: int,
     params: dict[str, Any],
-    *,
-    validation_size: float = 0.2,
-    holdout_size: float = 0.0,
 ) -> _VramCheck:
     """Estimate GPU VRAM requirements and return a check result."""
     if effective_rows <= 0 or probe_columns <= 0:
@@ -163,8 +160,6 @@ def _check_gpu_vram(
         probe_columns,
         border_count=params.get("border_count", _DEFAULT_BORDER_COUNT),
         depth=params.get("depth", _DEFAULT_DEPTH),
-        validation_size=validation_size,
-        holdout_size=holdout_size,
     )
     estimated_mb = round(vram_needed / 1024**2, 1)
 
@@ -254,7 +249,6 @@ class TrainService:
                 if k in config and k not in train_params:
                     train_params[k] = config[k]
 
-            split_cfg = config.get("split", {})
             ram_warning = self._check_gpu_fallback(
                 train_params,
                 row_limit,
@@ -262,10 +256,6 @@ class TrainService:
                 probe_columns,
                 ram_warning,
                 job_id,
-                validation_size=float(
-                    split_cfg.get("validation_size", split_cfg.get("test_size", 0.2))
-                ),
-                holdout_size=float(split_cfg.get("holdout_size", 0.0)),
             )
 
             # Build the list of columns that must survive projection
@@ -409,9 +399,6 @@ class TrainService:
         probe_columns: int,
         ram_warning: str | None,
         job_id: str,
-        *,
-        validation_size: float = 0.2,
-        holdout_size: float = 0.0,
     ) -> str | None:
         """Check GPU VRAM; fall back to CPU if insufficient.
 
@@ -426,8 +413,6 @@ class TrainService:
                 effective_rows,
                 probe_columns,
                 train_params,
-                validation_size=validation_size,
-                holdout_size=holdout_size,
             )
             if vram_check.warning:
                 train_params["task_type"] = "CPU"

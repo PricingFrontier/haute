@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -61,7 +62,11 @@ class TestBuildJsonCache:
         assert data["size_bytes"] == 2048
         assert data["cache_seconds"] == 1.2
 
-    def test_build_with_config_path(self, client: TestClient) -> None:
+    def test_build_with_config_path(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
         """Config path is forwarded to the build function."""
         fake_result = {
             "path": ".haute_cache/json_data_jsonl.parquet",
@@ -85,8 +90,8 @@ class TestBuildJsonCache:
 
         assert resp.status_code == 200
         mock_build.assert_called_once_with(
-            data_path="data.jsonl",
-            config_path="config/quote_input/my_api.json",
+            data_path=str(tmp_path / "data.jsonl"),
+            config_path=str(tmp_path / "config" / "quote_input" / "my_api.json"),
         )
 
     def test_build_internal_error_returns_500(self, client: TestClient) -> None:
@@ -104,11 +109,16 @@ class TestBuildJsonCache:
     def test_build_timeout_returns_504(self, client: TestClient) -> None:
         """Build exceeding timeout returns 504."""
 
-        async def _slow_build(*args, **kwargs):
-            raise TimeoutError("timed out")
+        async def _never_finishes(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(60)
 
-        # Patch asyncio.wait_for to raise TimeoutError directly
-        with patch("asyncio.wait_for", side_effect=TimeoutError("timed out")):
+        with (
+            patch("haute.routes._timeouts.asyncio.to_thread", _never_finishes),
+            patch(
+                "haute.routes.json_cache._BUILD_TIMEOUT",
+                0.001,
+            ),
+        ):
             resp = client.post("/api/json-cache/build", json={"path": "data.jsonl"})
 
         assert resp.status_code == 504
@@ -118,6 +128,63 @@ class TestBuildJsonCache:
         """Missing required 'path' field returns 422."""
         resp = client.post("/api/json-cache/build", json={})
         assert resp.status_code == 422
+
+    def test_build_cache_matches_preview_when_pipeline_is_nested(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """The cache endpoint and preview executor resolve file paths identically.
+
+        The GUI file browser returns project-root-relative paths.  A pipeline
+        may still live in a subdirectory (``rating/main.py``), so the cache
+        build route must write the same cache key that the preview executor
+        checks for the API input node.
+        """
+        import orjson
+
+        data_path = tmp_path / "data" / "quotes" / "sample_quote.json"
+        data_path.parent.mkdir(parents=True)
+        data_path.write_bytes(orjson.dumps([{"quote_id": "q-1", "premium": 123.45}]))
+
+        pipeline_dir = tmp_path / "rating"
+        pipeline_dir.mkdir()
+        (pipeline_dir / "main.py").write_text("import haute\n", encoding="utf-8")
+        (tmp_path / "haute.toml").write_text(
+            '[project]\npipeline = "rating/main.py"\n',
+            encoding="utf-8",
+        )
+
+        rel_path = "data/quotes/sample_quote.json"
+        build_resp = client.post("/api/json-cache/build", json={"path": rel_path})
+        assert build_resp.status_code == 200
+
+        graph = {
+            "source_file": "rating/main.py",
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "quotes",
+                        "nodeType": "apiInput",
+                        "config": {"path": rel_path},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+        preview_resp = client.post(
+            "/api/pipeline/preview",
+            json={"graph": graph, "node_id": "quotes", "row_limit": 10},
+        )
+
+        assert preview_resp.status_code == 200
+        preview = preview_resp.json()
+        assert preview["status"] == "ok"
+        assert preview["row_count"] == 1
+        assert preview["preview"][0]["quote_id"] == "q-1"
 
 
 # ---------------------------------------------------------------------------

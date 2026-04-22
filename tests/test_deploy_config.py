@@ -368,9 +368,11 @@ class TestValidateDeploy:
             input_node_ids=["input1"],
             output_node_id="output1",
         )
-        assert validate_deploy(resolved) == []
+        assert validate_deploy(resolved) is None
 
     def test_input_node_not_in_pruned_graph(self) -> None:
+        from haute.errors import DeployError
+
         out = _make_node("output1")
         resolved = _make_resolved(
             nodes=[out],
@@ -378,10 +380,16 @@ class TestValidateDeploy:
             input_node_ids=["missing_input"],
             output_node_id="output1",
         )
-        errors = validate_deploy(resolved)
-        assert any("missing_input" in e and "not in pruned graph" in e for e in errors)
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "missing_input" in e and "not in pruned graph" in e
+            for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_input_node_has_incoming_edges(self) -> None:
+        from haute.errors import DeployError
+
         inp = _make_node("input1")
         mid = _make_node("mid1")
         out = _make_node("output1")
@@ -395,10 +403,16 @@ class TestValidateDeploy:
             input_node_ids=["input1"],
             output_node_id="output1",
         )
-        errors = validate_deploy(resolved)
-        assert any("input1" in e and "incoming edges" in e for e in errors)
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "input1" in e and "incoming edges" in e
+            for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_artifact_file_not_found(self, tmp_path: Path) -> None:
+        from haute.errors import DeployError
+
         inp = _make_node("input1")
         out = _make_node("output1")
         edge = GraphEdge(id="e1", source="input1", target="output1")
@@ -410,10 +424,15 @@ class TestValidateDeploy:
             output_node_id="output1",
             artifacts={"model": missing_path},
         )
-        errors = validate_deploy(resolved)
-        assert any("model" in e and "not found" in e for e in errors)
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "model" in e and "not found" in e for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_databricks_source_node_detected(self) -> None:
+        from haute.errors import DeployError
+
         inp = _make_node("input1")
         db_src = _make_node(
             "db_src",
@@ -431,10 +450,16 @@ class TestValidateDeploy:
             input_node_ids=["input1"],
             output_node_id="output1",
         )
-        errors = validate_deploy(resolved)
-        assert any("db_src" in e and "Databricks dataSource" in e for e in errors)
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "db_src" in e and "Databricks dataSource" in e
+            for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_multiple_validation_errors_returned_together(self, tmp_path: Path) -> None:
+        from haute.errors import DeployError
+
         db_src = _make_node(
             "db_src",
             node_type=NodeType.DATA_SOURCE,
@@ -449,8 +474,9 @@ class TestValidateDeploy:
             output_node_id="output1",
             artifacts={"m": missing_artifact},
         )
-        errors = validate_deploy(resolved)
-        assert len(errors) >= 3
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert len(exc_info.value.context["structural_errors"]) >= 3
 
 
 # ---------------------------------------------------------------------------

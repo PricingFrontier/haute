@@ -25,9 +25,9 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
     <div className="flex gap-6 flex-wrap">
       {/* Warning banner */}
       {result.warning && (
-        <div className="w-full flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.06)", border: "1px solid rgba(245,158,11,.2)" }}>
-          <span className="shrink-0 mt-0.5" style={{ color: "#f59e0b" }}>&#9888;</span>
-          <span style={{ color: "#fbbf24" }}>{result.warning}</span>
+        <div className="w-full flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
+          <span className="shrink-0 mt-0.5" style={{ color: "var(--warning-strong)" }}>&#9888;</span>
+          <span style={{ color: "var(--warning)" }}>{result.warning}</span>
         </div>
       )}
 

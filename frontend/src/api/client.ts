@@ -48,11 +48,6 @@ import type {
   GitHistoryEntry,
 } from "./types"
 
-// Re-export types so existing consumers importing from client.ts still work
-export type { TrainEstimate, OptimiserEstimate, UtilityFile, UtilityWriteResult, GitStatus, GitHistoryEntry } from "./types"
-/** @deprecated Import GitBranchInfo from api/types instead. */
-export type GitBranch = GitBranchInfo
-
 export class ApiError extends Error {
   status: number
   detail?: string

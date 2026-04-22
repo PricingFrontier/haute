@@ -194,10 +194,13 @@ class TestMetricsList:
 
 class TestSplitConfiguration:
     def test_random_split(self):
-        config = {**MINIMAL_CONFIG, "split": {"strategy": "random", "test_size": 0.3, "seed": 99}}
+        config = {
+            **MINIMAL_CONFIG,
+            "split": {"strategy": "random", "validation_size": 0.3, "seed": 99},
+        }
         script = generate_training_script(config, "d.parquet")
         assert "'strategy': 'random'" in script
-        assert "'test_size': 0.3" in script
+        assert "'validation_size': 0.3" in script
         assert "'seed': 99" in script
         compile(script, "<test>", "exec")
 
@@ -222,7 +225,7 @@ class TestSplitConfiguration:
             "split": {
                 "strategy": "group",
                 "group_column": "policy_id",
-                "test_size": 0.2,
+                "validation_size": 0.2,
                 "seed": 42,
             },
         }
@@ -399,7 +402,7 @@ class TestFullConfig:
             "algorithm": "lightgbm",
             "task": "regression",
             "params": {"num_leaves": 31, "learning_rate": 0.05},
-            "split": {"strategy": "random", "test_size": 0.25, "seed": 123},
+            "split": {"strategy": "random", "validation_size": 0.25, "seed": 123},
             "metrics": ["gini", "rmse", "mae"],
             "loss_function": "Tweedie",
             "variance_power": 1.5,

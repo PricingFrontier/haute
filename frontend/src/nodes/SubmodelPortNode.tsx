@@ -1,19 +1,11 @@
 import { memo } from "react"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
 import { ArrowRight, ArrowLeft } from "lucide-react"
-
-export type SubmodelPortData = {
-  label: string
-  portDirection: "input" | "output"
-  portName: string
-  _traceActive?: boolean
-  _traceDimmed?: boolean
-}
+import type { SubmodelPortFlowNode } from "../types/node"
 
 const portColor = "#94a3b8"
 
-function SubmodelPortNode({ data }: NodeProps) {
-  const nodeData = data as unknown as SubmodelPortData
+function SubmodelPortNode({ data: nodeData }: NodeProps<SubmodelPortFlowNode>) {
   const isInput = nodeData.portDirection === "input"
   const Icon = isInput ? ArrowRight : ArrowLeft
   const traceActive = !!nodeData._traceActive

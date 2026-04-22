@@ -200,7 +200,7 @@ def log_experiment(
         # Log the trained model with a ModelSignature so downstream
         # scorers can detect train-vs-score feature drift from the MLflow
         # artifact alone.  Falls back to a plain artifact upload if we
-        # lack contract metadata (legacy runs) — the signature is the
+        # lack contract metadata — the signature is the
         # whole point of this branch, so losing it silently would defeat
         # the deploy-time contract check.
         if model_path and Path(model_path).exists():
@@ -468,8 +468,8 @@ def _build_signature_for_log(
     Tries in order:
 
     1. Caller-supplied ``features`` + ``feature_types`` → full contract.
-    2. Inspect a ``.cbm`` model file for ``feature_names_`` so legacy
-       callers that haven't plumbed metadata through still get a signature.
+    2. Inspect a ``.cbm`` model file for ``feature_names_`` when callers
+       have not plumbed metadata through.
     3. ``None`` — surfaces the missing-metadata case to the caller via an
        explicit ``signature=None`` kwarg on the log call.
     """

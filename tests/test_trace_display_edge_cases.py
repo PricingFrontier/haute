@@ -1005,6 +1005,7 @@ class TestExpressionParserIntegration:
         assert step.expression is not None
         assert step.expression["expression_type"] == "conditional"
 
+    @pytest.mark.filterwarnings("ignore::polars.exceptions.PolarsInefficientMapWarning")
     def test_opaque_pattern_map_elements(self, tmp_path):
         """map_elements: verify expression_type='opaque'."""
         p = tmp_path / "data.parquet"

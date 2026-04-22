@@ -14,13 +14,12 @@
  *   - 7E: the `lastSavedSnapshot` state moves into `useGraphStore` (which
  *     owns graph-shaped state), together with `markSaved()`.  The pure
  *     helpers `serializeSnapshot` and `selectIsDirty` move to
- *     `utils/graphSnapshot` and are re-exported from `useUIStore` for
- *     back-compat imports.
+ *     `utils/graphSnapshot`.
  *
  * What this file pins after 7E:
  *
- *   - `serializeSnapshot` and `selectIsDirty` are still importable from
- *     `../useUIStore` (they're re-exports from the utility module).
+ *   - `serializeSnapshot` and `selectIsDirty` are imported from their
+ *     canonical utility module.
  *   - `useUIStore` no longer carries `lastSavedSnapshot` / `markSaved` —
  *     those live on `useGraphStore`.
  *   - `selectIsDirty` is a pure function of its arguments; it does not
@@ -28,8 +27,9 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest"
-import useUIStore, { selectIsDirty, serializeSnapshot } from "../useUIStore"
+import useUIStore from "../useUIStore"
 import useGraphStore from "../useGraphStore"
+import { selectIsDirty, serializeSnapshot } from "../../utils/graphSnapshot"
 import type { Node, Edge } from "@xyflow/react"
 
 // ---------------------------------------------------------------------------
@@ -84,8 +84,7 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
   // -----------------------------------------------------------------------
   // Shape / surface area
   //
-  // Pins that the post-7E `useUIStore` has no dirty-state fields left,
-  // and that the helper exports are still in place.
+  // Pins that the post-7E `useUIStore` has no dirty-state fields left.
   // -----------------------------------------------------------------------
 
   describe("store shape", () => {
@@ -112,11 +111,11 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
       expect(initial).not.toHaveProperty("markSaved")
     })
 
-    it("exports a `selectIsDirty` pure selector", () => {
+    it("uses the canonical `selectIsDirty` pure selector", () => {
       expect(typeof selectIsDirty).toBe("function")
     })
 
-    it("exports a `serializeSnapshot` helper used to produce the canonical string", () => {
+    it("uses the canonical `serializeSnapshot` helper", () => {
       expect(typeof serializeSnapshot).toBe("function")
     })
   })

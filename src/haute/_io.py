@@ -7,7 +7,6 @@ from pathlib import Path
 
 import polars as pl
 
-from haute._functools_cache_adapter import FunctoolsLRUCacheAdapter
 from haute._hashing import content_hash
 from haute._logging import get_logger
 
@@ -17,7 +16,7 @@ logger = get_logger(component="io")
 def read_user_text(path: str | Path) -> str:
     """Read a user-supplied text file, tolerating non-UTF-8 bytes.
 
-    User files may contain Windows-1252 or other legacy-encoded bytes
+    User files may contain Windows-1252 or other non-UTF-8 bytes
     (e.g. en-dash ``0x96`` pasted from Excel).  ``errors="replace"``
     substitutes invalid bytes with U+FFFD rather than raising
     ``UnicodeDecodeError``.
@@ -109,9 +108,6 @@ def _load_cached(
     purposes.
     """
     return _load_external_object_uncached(path, file_type, model_class)
-
-
-_object_cache = FunctoolsLRUCacheAdapter(_load_cached)
 
 
 def load_external_object(path: str, file_type: str, model_class: str = "classifier") -> object:

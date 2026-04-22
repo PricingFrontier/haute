@@ -949,10 +949,12 @@ runnable end-to-end as delivered so ``haute run`` and the generated
 
 Recipe:
 1. Drop a ``.parquet`` (or ``.csv``) into ``data/`` and point the
-   ``@pipeline.data_source`` node at it.
+   source node's JSON sidecar at it.
 2. Replace the transform body with your pricing logic.
 3. Extend with ``@pipeline.banding``, ``@pipeline.rating_step``, etc.
 """
+
+from pathlib import Path
 
 import polars as pl
 
@@ -964,15 +966,16 @@ pipeline = haute.Pipeline(
 )
 
 
-@pipeline.data_source(path="data/sample.parquet")
+@pipeline.data_source(config="config/data_source/raw_rows.json")
 def raw_rows() -> pl.LazyFrame:
     """Load raw policy rows from parquet.
 
     Point this at your own ``data/<whatever>.parquet`` file.  Haute
     dispatches on the extension, so CSV and NDJSON files work too —
-    just update the ``path=`` argument and this function body.
+    just update the source sidecar and this function body.
     """
-    return pl.scan_parquet("data/sample.parquet")
+    df = pl.scan_parquet(Path(__file__).parent / "../data/sample.parquet")
+    return df
 
 
 @pipeline.polars
@@ -988,7 +991,7 @@ def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.output()
+@pipeline.output(config="config/quote_response/priced.json")
 def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
     """Terminal node — the DataFrame produced here is the pipeline output.
 
@@ -1168,7 +1171,7 @@ def _materialise_missing_source_files() -> None:
             continue
         target = Path(path_str)
         if not target.is_absolute():
-            target = PROJECT_ROOT / target
+            target = PIPELINE_FILE.parent / target
         if target.exists():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)

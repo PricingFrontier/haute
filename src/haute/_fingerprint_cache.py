@@ -109,8 +109,7 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
 
         Useful for the preview cache's "extend" path where only some
         slots are merged.  If *fingerprint* is not found, a warning is
-        logged and the call is a no-op — matching the pre-refactor
-        contract.
+        logged and the call is a no-op.
         """
         if slot not in self._slots:
             raise ValueError(f"Unknown slot: {slot!r}. Declared slots: {sorted(self._slots)}")

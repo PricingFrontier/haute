@@ -402,6 +402,18 @@ def handle_init(config: InitConfig) -> None:
     # -- rating/ placeholder directories (used once the pipeline grows) --------
     for sub in ("config", "models", "outputs"):
         (rating_dir / sub).mkdir(exist_ok=True)
+    data_source_config_dir = rating_dir / "config" / "data_source"
+    data_source_config_dir.mkdir(parents=True, exist_ok=True)
+    (data_source_config_dir / "raw_rows.json").write_text(
+        '{\n  "path": "../data/sample.parquet",\n  "sourceType": "flat_file"\n}\n',
+        encoding="utf-8",
+    )
+    output_config_dir = rating_dir / "config" / "quote_response"
+    output_config_dir.mkdir(parents=True, exist_ok=True)
+    (output_config_dir / "priced.json").write_text(
+        '{\n  "fields": []\n}\n',
+        encoding="utf-8",
+    )
 
     # -- haute.toml - project + deploy + safety + CI config --------------------
     (project_dir / "haute.toml").write_text(

@@ -31,6 +31,7 @@ from haute._flatten import flatten_graph
 from haute._parser_submodels import merge_submodels
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.parser import parse_pipeline_file
+from tests.conftest import write_data_source_config
 
 # ---------------------------------------------------------------------------
 # Helpers — build parent + child graphs
@@ -257,16 +258,17 @@ class TestParsePipelineFlattenRegression:
             submodel.connect("Transform", "Finalise")
             """,
         )
+        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
         _write_file(
             tmp_path,
             "main.py",
-            """\
+            f"""\
             import polars as pl
             import haute
 
             pipeline = haute.Pipeline("root")
 
-            @pipeline.data_source(path="data/in.parquet")
+            @pipeline.data_source(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
@@ -310,16 +312,17 @@ class TestParsePipelineFlattenRegression:
                 return Source.select("x")
             """,
         )
+        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
         _write_file(
             tmp_path,
             "main.py",
-            """\
+            f"""\
             import polars as pl
             import haute
 
             pipeline = haute.Pipeline("root")
 
-            @pipeline.data_source(path="data/in.parquet")
+            @pipeline.data_source(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 

@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef } from "react"
+import { useEffect, useCallback, useState, useRef, useMemo } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -36,7 +36,7 @@ import ImportsPanel from "./panels/ImportsPanel"
 import GitPanel from "./panels/GitPanel"
 import NodeSearch from "./components/NodeSearch"
 
-import useUndoRedo from "./hooks/useUndoRedo"
+import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
 import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing from "./hooks/useTracing"
@@ -51,12 +51,11 @@ import useGraphStore from "./stores/useGraphStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
-import { shallowNodeDataHash } from "./utils/shallowNodeHash"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
-// Module-level constants (no dynamic values — avoids re-creating each render)
+// Module-level constants (no dynamic values â€” avoids re-creating each render)
 // ---------------------------------------------------------------------------
 
 const defaultEdgeOptions = {
@@ -71,8 +70,27 @@ const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
 
+function toSimpleNode(node: Node): SimpleNode {
+  const data = nodeData(node)
+  return {
+    id: node.id,
+    type: node.type,
+    data: {
+      ...node.data,
+      label: data.label || node.id,
+      description: data.description ?? "",
+      nodeType: data.nodeType || node.type || "",
+      config: data.config,
+    },
+  }
+}
+
+function toSimpleEdge(edge: Edge): SimpleEdge {
+  return { id: edge.id, source: edge.source, target: edge.target }
+}
+
 // ---------------------------------------------------------------------------
-// ReactFlow node type → component registry
+// ReactFlow node type â†’ component registry
 // ---------------------------------------------------------------------------
 
 const nodeTypes = {
@@ -96,10 +114,12 @@ const nodeTypes = {
 }
 
 // ---------------------------------------------------------------------------
-// FlowEditor — main orchestrator
+// FlowEditor â€” main orchestrator
 // ---------------------------------------------------------------------------
 
 function FlowEditor() {
+  const graphRefreshingRef = useRef(0)
+
   // Core ReactFlow state with undo/redo
   const {
     nodes, edges,
@@ -107,7 +127,7 @@ function FlowEditor() {
     setNodesRaw, setEdgesRaw,
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo,
-  } = useUndoRedo()
+  } = useGraphCanvasState([], [], graphRefreshingRef)
   const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow()
 
   // UI state from Zustand store (leaf-subscribed values live in their own components)
@@ -141,12 +161,9 @@ function FlowEditor() {
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
-  // Preamble lives in useGraphStore (Wave 7E consolidation).  We
-  // subscribe to the string directly — sibling state slices (nodes,
-  // edges, lastSavedSnapshot) mutate independently without re-rendering
-  // this component.  `setPreamble` is a stable wrapper that writes to
-  // the store (raw variant — matches the pre-consolidation behaviour of
-  // a React useState setter: no undo snapshot).
+  // Preamble lives in useGraphStore. Subscribe to the string directly so
+  // sibling state slices can change without re-rendering this component.
+  // The raw setter avoids adding text edits to the graph undo stack.
   const preamble = useGraphStore((s) => s.preamble)
   const setPreamble = useCallback((value: string) => {
     useGraphStore.getState().setPreambleRaw(value)
@@ -154,12 +171,12 @@ function FlowEditor() {
   const lastSelectedNodeRef = useRef<Node | null>(null)
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
 
-  // Keep lastSelectedId in sync — updates only when a node is actively selected
+  // Keep lastSelectedId in sync â€” updates only when a node is actively selected
   useEffect(() => {
     if (selectedNode) setLastSelectedId(selectedNode.id)
   }, [selectedNode])
 
-  // Ref for setPreviewData — resolved after usePipelineAPI hook below.
+  // Ref for setPreviewData â€” resolved after usePipelineAPI hook below.
   // Needed because closePanel is defined before the hook for hook-ordering rules.
   const setPreviewDataRef = useRef<(d: null) => void>(() => {})
 
@@ -173,8 +190,7 @@ function FlowEditor() {
     setGitOpen(false)
   }, [setUtilityOpen, setImportsOpen, setGitOpen])
 
-  // Node results store — background jobs + cached results
-  const bumpGraphVersion = useNodeResultsStore((s) => s.bumpGraphVersion)
+  // Node results store â€” background jobs + cached results
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
 
@@ -188,47 +204,38 @@ function FlowEditor() {
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
   const sourceFileRef = useRef("")
-  const graphRefreshingRef = useRef(0)
   const nodeIdCounter = useRef(0)
 
-  // Keep graphRef in sync so callbacks never see stale state.
-  // Only bump graphVersion for structural changes (add/remove/data), not position-only drags.
-  //
-  // We hash only the input-identity keys (see shallowNodeDataHash) so that
-  // preview-populated result fields like _columns do not cause the fingerprint
-  // to change — including them would invalidate the preview cache on every
-  // preview completion, defeating the cache entirely.
-  //
-  // TODO(Phase 8): Move graphVersion bumping into useGraphStore so this
-  // cross-store effect disappears (Wave 7E leftover).  The straightforward
-  // migrations (pushSnapshot → bumpGraphVersion, or graphVersion =
-  // undoStack.length) both regress preview caching: pushSnapshot fires on
-  // drag-start, and drag-start would then invalidate every preview even
-  // though nothing changed structurally.  The fix needs a structural-hash
-  // check inside setNodes/setEdges (and their Raw variants), which is a
-  // larger refactor than the rest of 7E wants to absorb — tracked for
-  // Phase 8.
-  const prevStructureRef = useRef<string>("")
+  // Keep graphRef in sync so callbacks never see stale state. Cache freshness
+  // is versioned inside useGraphStore, not by an App-level cross-store effect.
   useEffect(() => {
     graphRef.current = { nodes, edges }
-    // Build a fingerprint that ignores position and result-only data keys.
-    const nodeFingerprint = nodes
-      .map((n) => `${n.id}:${shallowNodeDataHash(n.data as Record<string, unknown>)}`)
-      .join("|")
-    const edgeFingerprint = edges.map((e) => `${e.id}:${e.source}:${e.target}`).join("|")
-    const fingerprint = `${nodeFingerprint}||${edgeFingerprint}`
-    if (fingerprint !== prevStructureRef.current) {
-      prevStructureRef.current = fingerprint
-      bumpGraphVersion()
-    }
-  }, [nodes, edges, bumpGraphVersion])
+  }, [nodes, edges])
+
+  const activePanelNodeId = selectedNode?.id ?? lastSelectedId
+  const panelNodes = useMemo(() => nodes.map(toSimpleNode), [nodes])
+  const panelEdges = useMemo(() => edges.map(toSimpleEdge), [edges])
+  const panelNode = useMemo(() => {
+    if (!activePanelNodeId) return null
+    const node = nodes.find((n) => n.id === activePanelNodeId)
+    return node ? toSimpleNode(node) : null
+  }, [nodes, activePanelNodeId])
+
+  useEffect(() => {
+    if (!activePanelNodeId) return
+    if (nodes.some((n) => n.id === activePanelNodeId)) return
+    setSelectedNode(null)
+    lastSelectedNodeRef.current = null
+    setLastSelectedId(null)
+    setPreviewDataRef.current(null)
+  }, [nodes, activePanelNodeId])
 
   // Derived dirty flag (item #99, Wave 7E consolidation).
   //
   // `isDirty` is a pure selector on useGraphStore that canonicalises the
   // current {nodes, edges, preamble} and string-compares against the
   // saved snapshot.  Zustand reruns the selector on every store update
-  // but re-renders only when the returned boolean flips — so position
+  // but re-renders only when the returned boolean flips â€” so position
   // drags and other no-op changes don't thrash App.tsx.
   const dirty = useGraphStore((s) => s.isDirty())
 
@@ -380,9 +387,9 @@ function FlowEditor() {
         <main className="flex-1 flex flex-col min-w-0">
           {syncBanner && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
-              style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', borderBottom: '1px solid rgba(239, 68, 68, 0.3)' }}>
+              style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>
               <span className="flex-1 truncate">{syncBanner}</span>
-              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">✕</button>
+              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">âœ•</button>
             </div>
           )}
           <ErrorBoundary name="Canvas">
@@ -506,29 +513,25 @@ function FlowEditor() {
               <TracePanel trace={traceResult} onClose={clearTrace} />
             ) : (
               <GraphProvider
-                allNodes={nodes as unknown as SimpleNode[]}
-                edges={edges as unknown as SimpleEdge[]}
+                allNodes={panelNodes}
+                edges={panelEdges}
                 submodels={submodelsSnapshot}
                 preamble={preamble}
               >
                 <NodePanel
-                  node={(() => {
-                    const id = selectedNode?.id ?? lastSelectedId
-                    if (!id) return null
-                    return (nodes.find((n) => n.id === id) ?? null) as unknown as SimpleNode | null
-                  })()}
+                  node={panelNode}
                   onClose={closePanel}
                   onUpdateNode={onUpdateNode}
                   onDeleteEdge={handleDeleteEdge}
                   onRefreshPreview={() => { if (selectedNode) refreshPreview(selectedNode) }}
                   dimmed={!selectedNode && !!lastSelectedId}
                   errorLine={
-                    previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
+                    previewData?.nodeId === activePanelNodeId
                       ? previewData?.error_line ?? null
                       : null
                   }
                   previewRows={
-                    previewData?.status === "ok" && previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
+                    previewData?.status === "ok" && previewData?.nodeId === activePanelNodeId
                       ? previewData.preview
                       : undefined
                   }

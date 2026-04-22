@@ -18,6 +18,7 @@ from haute._logging import get_logger
 from haute.routes._helpers import pipeline_dir, validate_safe_path
 from haute.schemas import (
     UtilityCreateRequest,
+    UtilityDeleteResponse,
     UtilityFileItem,
     UtilityListResponse,
     UtilityReadResponse,
@@ -188,8 +189,8 @@ async def update_utility_file(module: str, body: UtilityWriteRequest) -> Utility
     )
 
 
-@router.delete("/{module}")
-async def delete_utility_file(module: str) -> dict[str, str]:
+@router.delete("/{module}", response_model=UtilityDeleteResponse)
+async def delete_utility_file(module: str) -> UtilityDeleteResponse:
     """Delete a utility file."""
     _validate_module_name(module)
     base = _utility_dir()
@@ -199,4 +200,4 @@ async def delete_utility_file(module: str) -> dict[str, str]:
 
     target.unlink()
     logger.info("utility_file_deleted", module=module)
-    return {"status": "ok", "module": module}
+    return UtilityDeleteResponse(module=module)

@@ -12,7 +12,7 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
-import type { UtilityFile } from "../api/client"
+import type { UtilityFile } from "../api/types"
 
 /**
  * Extract syntax error info from an ApiError's flat string detail.
@@ -243,7 +243,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
             {activeModule && (
               <button
                 onClick={handleDelete}
-                className="p-1.5 rounded-md transition-colors hover:bg-[rgba(239,68,68,0.1)] hover:text-[#ef4444]"
+                className="p-1.5 rounded-md transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                 style={{ color: 'var(--text-muted)' }}
                 title={`Delete ${activeModule}`}
               >
@@ -267,7 +267,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
               />
             </div>
             {errorMsg && (
-              <div className="px-3 py-2 text-[11px] shrink-0" style={{ color: '#ef4444', borderTop: '1px solid var(--border)' }}>
+              <div className="px-3 py-2 text-[11px] shrink-0" style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}>
                 {errorMsg}
               </div>
             )}
@@ -279,7 +279,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
                 <p>No utility files yet.</p>
                 <button
                   onClick={() => setCreating(true)}
-                  className="mt-2 px-3 py-1 text-[12px] font-medium rounded-md transition-colors hover:bg-[rgba(59,130,246,0.2)]"
+                  className="mt-2 px-3 py-1 text-[12px] font-medium rounded-md transition-colors hover:bg-[var(--accent-soft-hover)]"
                   style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
                 >
                   Create one

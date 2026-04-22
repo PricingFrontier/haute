@@ -7,7 +7,8 @@ import pytest
 
 from haute._rating import _breakpoints_to_rules
 from haute.executor import _apply_banding, _build_node_fn
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
+from haute.graph_utils import GraphNode, NodeData, NodeType, PipelineGraph
+from tests.conftest import write_node_config
 
 # ---------------------------------------------------------------------------
 # Helper builders
@@ -224,26 +225,36 @@ class TestBuildNodeFn:
 
 
 class TestBandingParser:
-    def test_parse_banding_node(self):
+    def test_parse_banding_node(self, tmp_path):
         from haute.parser import parse_pipeline_source
 
-        code = '''\
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band_age",
+            {
+                "factors": [
+                    {
+                        "banding": "continuous",
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "rules": [{"op1": "<=", "val1": 25, "assignment": "young"}],
+                    }
+                ]
+            },
+        )
+        code = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("test")
 
-@pipeline.banding(
-    banding="continuous",
-    column="age",
-    output_column="age_band",
-    rules=[{"op1": "<=", "val1": 25, "assignment": "young"}],
-)
+@pipeline.banding(config="{band_config}")
 def band_age(df: pl.LazyFrame) -> pl.LazyFrame:
     """Band age into age_band"""
     return df
 '''
-        graph = parse_pipeline_source(code)
+        graph = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(graph.nodes) == 1
         node = graph.nodes[0]
         assert node.data.nodeType == "banding"
@@ -256,26 +267,36 @@ def band_age(df: pl.LazyFrame) -> pl.LazyFrame:
         assert len(f["rules"]) == 1
         assert f["rules"][0]["assignment"] == "young"
 
-    def test_parse_categorical_banding(self):
+    def test_parse_categorical_banding(self, tmp_path):
         from haute.parser import parse_pipeline_source
 
-        code = '''\
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band_prop",
+            {
+                "factors": [
+                    {
+                        "banding": "categorical",
+                        "column": "prop",
+                        "outputColumn": "prop_band",
+                        "rules": [{"value": "House", "assignment": "Residential"}],
+                    }
+                ]
+            },
+        )
+        code = f'''\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("test")
 
-@pipeline.banding(
-    banding="categorical",
-    column="prop",
-    output_column="prop_band",
-    rules=[{"value": "House", "assignment": "Residential"}],
-)
+@pipeline.banding(config="{band_config}")
 def band_prop(df: pl.LazyFrame) -> pl.LazyFrame:
     """Band property type"""
     return df
 '''
-        graph = parse_pipeline_source(code)
+        graph = parse_pipeline_source(code, _base_dir=tmp_path)
         node = graph.nodes[0]
         assert node.data.nodeType == "banding"
         assert node.data.config["factors"][0]["banding"] == "categorical"

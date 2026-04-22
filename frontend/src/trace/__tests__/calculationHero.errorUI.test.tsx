@@ -15,8 +15,7 @@
  *
  * Intentional failure mode (TDD): these tests are written BEFORE the
  * production fix and so must FAIL until:
- *   1. `WaterfallErrorAlert` is actually exported from `WaterfallChart.tsx`
- *      (it is imported but undefined at the moment — TS error).
+ *   1. `WaterfallErrorAlert` is extracted as a shared component.
  *   2. The `isOpaque && !calculation` path is changed to render an error
  *      UI instead of a misleading "computed" label.
  *   3. The existing `renderUnifiedBox` null-calculation alert keeps its
@@ -28,7 +27,7 @@ import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, cleanup, within } from "@testing-library/react"
 import CalculationHero from "../CalculationHero"
 import type { CalculationHeroProps } from "../CalculationHero"
-import { WaterfallErrorAlert } from "../WaterfallChart"
+import WaterfallErrorAlert from "../WaterfallErrorAlert"
 
 // ---------------------------------------------------------------------------
 // Factories — mirror the style used in panels/__tests__/CalculationHero.test.tsx
@@ -146,10 +145,9 @@ describe("CalculationHero \u2014 error-silent null branches must surface visible
   })
 
   // -------------------------------------------------------------------------
-  // Case C: backend reported a waterfall build error. The code imports
-  // `WaterfallErrorAlert` from `./WaterfallChart` but it is not exported
-  // today (TS error). The dev must export a real component and it must
-  // render the backend-supplied error string visibly.
+  // Case C: backend reported a waterfall build error. The shared
+  // WaterfallErrorAlert component must render the backend-supplied error
+  // string visibly.
   // -------------------------------------------------------------------------
   it("C: backend waterfall error \u2014 renders WaterfallErrorAlert with error message visible", () => {
     const backendError = "Waterfall build failed: non-multiplicative operator encountered"

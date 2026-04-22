@@ -61,7 +61,7 @@ export function SplitAndMetricsConfig({
                   <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Validation</label>
                   <input
                     type="number" step={0.05} min={0} max={0.5}
-                    value={(split.validation_size as number) ?? (split.test_size as number) ?? 0.2}
+                    value={(split.validation_size as number) ?? 0.2}
                     onChange={(e) => onSplitUpdate("validation_size", parseFloat(e.target.value) || 0)}
                     className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                     style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
@@ -89,14 +89,14 @@ export function SplitAndMetricsConfig({
                 </div>
               </div>
               {(() => {
-                const valSize = (split.validation_size as number) ?? (split.test_size as number) ?? 0.2
+                const valSize = (split.validation_size as number) ?? 0.2
                 const holdoutSize = (split.holdout_size as number) ?? 0
                 const trainSize = Math.max(0, 1 - valSize - holdoutSize)
                 return (
                   <div className="flex gap-0.5 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--chrome-hover)" }}>
                     <div style={{ width: `${trainSize * 100}%`, background: "#a855f7" }} title={`Train: ${(trainSize * 100).toFixed(0)}%`} />
                     {valSize > 0 && <div style={{ width: `${valSize * 100}%`, background: "#3b82f6" }} title={`Validation: ${(valSize * 100).toFixed(0)}%`} />}
-                    {holdoutSize > 0 && <div style={{ width: `${holdoutSize * 100}%`, background: "#22c55e" }} title={`Holdout: ${(holdoutSize * 100).toFixed(0)}%`} />}
+                    {holdoutSize > 0 && <div style={{ width: `${holdoutSize * 100}%`, background: "var(--signif-high)" }} title={`Holdout: ${(holdoutSize * 100).toFixed(0)}%`} />}
                   </div>
                 )
               })()}
@@ -147,7 +147,7 @@ export function SplitAndMetricsConfig({
                   <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Validation</label>
                   <input
                     type="number" step={0.05} min={0} max={0.5}
-                    value={(split.validation_size as number) ?? (split.test_size as number) ?? 0.2}
+                    value={(split.validation_size as number) ?? 0.2}
                     onChange={(e) => onSplitUpdate("validation_size", parseFloat(e.target.value) || 0)}
                     className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                     style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
@@ -265,9 +265,9 @@ export function SplitAndMetricsConfig({
                           }}
                           className="px-1.5 py-0.5 rounded text-[10px] font-mono"
                           style={{
-                            background: val === v ? (v === 1 ? "rgba(34,197,94,.15)" : v === -1 ? "rgba(239,68,68,.15)" : "var(--accent-soft)") : "var(--chrome-hover)",
-                            color: val === v ? (v === 1 ? "#22c55e" : v === -1 ? "#ef4444" : "var(--accent)") : "var(--text-muted)",
-                            border: `1px solid ${val === v ? (v === 1 ? "rgba(34,197,94,.3)" : v === -1 ? "rgba(239,68,68,.3)" : "var(--accent)") : "transparent"}`,
+                            background: val === v ? (v === 1 ? "var(--success-soft-strong)" : v === -1 ? "var(--danger-soft-strong)" : "var(--accent-soft)") : "var(--chrome-hover)",
+                            color: val === v ? (v === 1 ? "var(--signif-high)" : v === -1 ? "var(--danger)" : "var(--accent)") : "var(--text-muted)",
+                            border: `1px solid ${val === v ? (v === 1 ? "var(--success-border-strong)" : v === -1 ? "var(--danger-border-strong)" : "var(--accent)") : "transparent"}`,
                           }}
                         >
                           {v === 1 ? "+1" : v === -1 ? "-1" : "0"}

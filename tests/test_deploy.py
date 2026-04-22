@@ -615,7 +615,7 @@ class TestBundler:
         assert "ms_explicit_run__model.cbm" in artifacts
 
     def test_model_score_defaults_to_run_source_type(self, tmp_path, monkeypatch):
-        """MODEL_SCORE without sourceType defaults to 'run' (backward compat)."""
+        """MODEL_SCORE without sourceType defaults to 'run'."""
         from haute.deploy._bundler import collect_artifacts
 
         monkeypatch.chdir(tmp_path)
@@ -1028,8 +1028,7 @@ class TestValidators:
             removed_node_ids=removed,
         )
 
-        errors = validate_deploy(resolved)
-        assert errors == [], f"Unexpected validation errors: {errors}"
+        validate_deploy(resolved)
 
     def test_score_test_quotes(self, full_graph: dict) -> None:
         from haute.deploy._bundler import collect_artifacts

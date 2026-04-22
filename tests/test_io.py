@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from haute._io import _object_cache, load_external_object, read_source
+from haute._io import _load_cached, load_external_object, read_source
 
 # ---------------------------------------------------------------------------
 # read_source
@@ -111,9 +111,13 @@ class TestReadSourceErrors:
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """Ensure the object cache is empty before and after each test."""
-    _object_cache.clear()
+    _load_cached.cache_clear()
     yield
-    _object_cache.clear()
+    _load_cached.cache_clear()
+
+
+def _object_cache_size() -> int:
+    return _load_cached.cache_info().currsize
 
 
 class TestLoadExternalObjectJSON:
@@ -133,7 +137,7 @@ class TestLoadExternalObjectJSON:
         r2 = load_external_object(str(path), "json")
         assert r1 == r2
         # Cache should contain exactly one entry
-        assert len(_object_cache) == 1
+        assert _object_cache_size() == 1
 
 
 class TestLoadExternalObjectPickle:
@@ -241,7 +245,7 @@ class TestObjectCacheDifferentModelClass:
         r2 = load_external_object(str(path), "json", model_class="regressor")
         # Both calls load the same data, but cache has 2 entries (different keys)
         assert r1 == r2
-        assert len(_object_cache) == 2
+        assert _object_cache_size() == 2
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_same_key_is_cache_hit(self, tmp_path: Path) -> None:
@@ -250,4 +254,4 @@ class TestObjectCacheDifferentModelClass:
         r1 = load_external_object(str(path), "json")
         r2 = load_external_object(str(path), "json")
         assert r1 is r2  # exact same object from cache
-        assert len(_object_cache) == 1
+        assert _object_cache_size() == 1

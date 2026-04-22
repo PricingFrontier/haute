@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from haute._databricks_io import _TABLE_NAME_RE
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from haute.routes._timeouts import run_blocking_with_response_timeout
 from haute.schemas import (
     CacheStatusResponse,
     CatalogItem,
@@ -150,18 +151,15 @@ def list_databricks_tables(catalog: str, schema: str) -> TableListResponse:
 async def fetch_databricks_table(body: FetchTableRequest) -> FetchTableResponse:
     """Fetch a Databricks table and cache it locally as parquet."""
     try:
-        import asyncio
-
         from haute._databricks_io import fetch_and_cache
 
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                fetch_and_cache,
-                table=body.table,
-                http_path=body.http_path,
-                query=body.query,
-            ),
+        result = await run_blocking_with_response_timeout(
+            fetch_and_cache,
+            table=body.table,
+            http_path=body.http_path,
+            query=body.query,
             timeout=_FETCH_TIMEOUT,
+            operation="databricks_fetch",
         )
         return FetchTableResponse.model_validate(result)
     except TimeoutError:

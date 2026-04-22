@@ -28,6 +28,7 @@ from haute.routes._helpers import (
     raise_pipeline_not_found,
 )
 from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._timeouts import run_blocking_with_response_timeout
 from haute.schemas import (
     NodeMemoryInfo,
     NodeTimingInfo,
@@ -173,25 +174,24 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
         raise HTTPException(status_code=400, detail="Empty graph")
 
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_trace,
-                graph,
-                row_index=body.row_index,
-                target_node_id=body.target_node_id,
-                column=body.column,
-                row_limit=body.row_limit,
-                source=body.source,
-                row_values=body.row_values,
-                # Inject the executor's preview cache explicitly so the
-                # trace module is not coupled to a private singleton on
-                # another module (item #104).  ``FingerprintCache``
-                # already satisfies the :class:`~haute.trace.PreviewReader`
-                # protocol — its ``try_get`` returns the slot dict on hit
-                # or ``None`` on miss.
-                preview=_preview_cache,
-            ),
+        result = await run_blocking_with_response_timeout(
+            execute_trace,
+            graph,
+            row_index=body.row_index,
+            target_node_id=body.target_node_id,
+            column=body.column,
+            row_limit=body.row_limit,
+            source=body.source,
+            row_values=body.row_values,
+            # Inject the executor's preview cache explicitly so the
+            # trace module is not coupled to a private singleton on
+            # another module (item #104).  ``FingerprintCache``
+            # already satisfies the :class:`~haute.trace.PreviewReader`
+            # protocol — its ``try_get`` returns the slot dict on hit
+            # or ``None`` on miss.
+            preview=_preview_cache,
             timeout=_TRACE_TIMEOUT,
+            operation="pipeline_trace",
         )
         return TraceResponse(
             status="ok",
@@ -230,15 +230,14 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         raise HTTPException(status_code=400, detail="Empty graph")
 
     try:
-        results = await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_graph,
-                graph,
-                target_node_id=body.node_id,
-                row_limit=body.row_limit,
-                source=body.source,
-            ),
+        results = await run_blocking_with_response_timeout(
+            execute_graph,
+            graph,
+            target_node_id=body.node_id,
+            row_limit=body.row_limit,
+            source=body.source,
             timeout=_PREVIEW_TIMEOUT,
+            operation="pipeline_preview",
         )
         node_result = results.get(body.node_id)
         if not node_result:
@@ -342,14 +341,13 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
         raise HTTPException(status_code=400, detail="Empty graph")
 
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_sink,
-                graph,
-                sink_node_id=body.node_id,
-                source=body.source,
-            ),
+        result = await run_blocking_with_response_timeout(
+            execute_sink,
+            graph,
+            sink_node_id=body.node_id,
+            source=body.source,
             timeout=_SINK_TIMEOUT,
+            operation="pipeline_sink",
         )
         return result
     except TimeoutError:

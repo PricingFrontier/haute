@@ -38,8 +38,8 @@ class TestAveMaxFeaturesDefault:
         result = compute_ave_per_feature(df, [f"f{i}" for i in range(20)], [], y_true, y_pred)
         assert len(result) == 20
 
-    def test_explicit_max_features_still_works(self):
-        """Backward compat: passing max_features=3 still limits output."""
+    def test_explicit_max_features_limits_output(self):
+        """Passing max_features=3 limits output."""
         n = 50
         df = pl.DataFrame({f"f{i}": np.random.randn(n) for i in range(10)})
         y_true = np.random.randn(n)

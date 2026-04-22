@@ -25,7 +25,43 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
-from haute.executor import _build_node_fn, _exec_user_code
+from haute.executor import _build_node_fn
+
+_RUNTIME_PATH_NODE_TYPES = frozenset(
+    {
+        NodeType.API_INPUT,
+        NodeType.DATA_SOURCE,
+        NodeType.EXTERNAL_FILE,
+        NodeType.DATA_SINK,
+    }
+)
+
+
+def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
+    """Resolve path config values against ``graph.source_file`` for deploy scoring."""
+    if not graph.source_file:
+        return graph
+    base_dir = Path(graph.source_file).parent
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        config = node.data.config
+        raw_path = config.get("path")
+        if (
+            node.data.nodeType in _RUNTIME_PATH_NODE_TYPES
+            and isinstance(raw_path, str)
+            and raw_path
+            and not Path(raw_path).is_absolute()
+        ):
+            resolved = str((base_dir / raw_path).resolve())
+            data = node.data.model_copy(update={"config": {**config, "path": resolved}})
+            nodes.append(node.model_copy(update={"data": data}))
+            changed = True
+        else:
+            nodes.append(node)
+    if not changed:
+        return graph
+    return graph.model_copy(update={"nodes": nodes})
 
 
 def _remap_artifact(
@@ -150,6 +186,7 @@ def score_graph(
     Returns:
         Output DataFrame (1 or N rows).
     """
+    graph = _resolve_runtime_graph_paths(graph)
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
     remap = artifact_paths or {}
@@ -188,6 +225,8 @@ def score_graph(
                         _code: str = code,
                         _sn: list[str] = _src_names,
                     ) -> _Frame:
+                        from haute._user_exec import _exec_user_code
+
                         obj = load_external_object(_p, _ft, _mc)
                         return _exec_user_code(_code, _sn, dfs, extra_ns={"obj": obj})
 
@@ -205,7 +244,7 @@ def score_graph(
             _st = config.get("sourceType", "")
 
             # File-based with remap
-            if remap:
+            if _st == "file" and remap:
                 remapped_path = _remap_artifact(nid, config, remap, "artifact_path")
                 if remapped_path is not None:
                     _opt_remapped: str = remapped_path

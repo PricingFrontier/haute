@@ -55,7 +55,7 @@ class ModelCardMetadata:
     split_config: dict[str, Any] = field(default_factory=dict)
     best_iteration: int | None = None
     # Feature contract inputs for ``build_signature``.  Absent values keep
-    # MLflow logging working on legacy runs that don't yet populate them.
+    # MLflow logging working when a training path has not populated them.
     feature_types: dict[str, str] = field(default_factory=dict)
     categorical_features: list[str] = field(default_factory=list)
     target_name: str = ""

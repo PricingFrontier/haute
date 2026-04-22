@@ -190,14 +190,14 @@ class TestBugB19MutableCachedDicts:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_cached_artifact_is_not_shared_reference(self, tmp_path: Path) -> None:
         """Returned artifact dicts should be copies, not shared cache references."""
-        from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
         # Create a test artifact file
         artifact = {"lambdas": {"a": 1.0}, "version": "1", "mode": "online"}
         path = tmp_path / "artifact.json"
         path.write_text(json.dumps(artifact), encoding="utf-8")
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         result1 = load_optimiser_artifact(str(path))
         # Mutate the returned dict

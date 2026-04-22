@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import threading
 import time
+import tomllib
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
 logger = get_logger(component="server")
@@ -38,14 +40,14 @@ class SidecarModel(BaseModel):
 
     Every field has a sensible default so a sidecar missing a
     newly-introduced field still parses.  That forward-compat guarantee
-    is pinned by ``tests/test_routes_hygiene_phase5.py::
+    is pinned by ``tests/test_routes_hygiene.py::
     TestSidecarForwardCompat``.
 
     Write path: ``save_sidecar`` constructs a ``SidecarModel`` and
     serialises via :meth:`model_dump_json`, excluding defaults so a
     freshly-saved pipeline with ``sources=["live"]`` does not bloat the
-    file with redundant state (matching pre-refactor on-disk shape —
-    see ``tests/test_route_helpers.py::test_default_source_not_saved``).
+    file with redundant state (see
+    ``tests/test_route_helpers.py::test_default_source_not_saved``).
     Read path: ``load_sidecar``/``parse_pipeline_to_graph`` still parses
     as plain JSON today, but consumers may upgrade to
     :meth:`model_validate_json` for typed access.
@@ -59,8 +61,7 @@ class SidecarModel(BaseModel):
     def _active_source_must_be_in_sources(self) -> SidecarModel:
         if self.active_source not in self.sources:
             raise ValueError(
-                f"active_source={self.active_source!r} is not in "
-                f"sources={self.sources!r}"
+                f"active_source={self.active_source!r} is not in sources={self.sources!r}"
             )
         return self
 
@@ -113,10 +114,6 @@ def pipeline_dir() -> Path:
     (``AttributeError``, ``KeyError``) are deliberately NOT caught so
     they surface as normal tracebacks during development.
     """
-    import tomllib
-
-    from haute.errors import ConfigError
-
     toml_path = Path.cwd() / "haute.toml"
     if not toml_path.exists():
         logger.error(
@@ -227,17 +224,49 @@ def find_typed_node(
 # ---------------------------------------------------------------------------
 _last_self_write: float = 0.0
 _SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debounce)
+_SELF_WRITE_RETENTION = 60.0
+_self_write_paths: dict[str, float] = {}
+_self_write_lock = threading.Lock()
 
 
-def mark_self_write() -> None:
-    """Record that we just wrote a pipeline file ourselves."""
+def _self_write_key(path: str | Path) -> str:
+    return str(Path(path).resolve())
+
+
+def _prune_self_write_paths(now: float) -> None:
+    stale = [
+        key
+        for key, marked_at in _self_write_paths.items()
+        if now - marked_at > _SELF_WRITE_RETENTION
+    ]
+    for key in stale:
+        _self_write_paths.pop(key, None)
+
+
+def mark_self_write(path: str | Path | None = None) -> None:
+    """Record that the server is about to write a pipeline-related file."""
     global _last_self_write
-    _last_self_write = time.monotonic()
+    now = time.monotonic()
+    with _self_write_lock:
+        _last_self_write = now
+        if path is not None:
+            _prune_self_write_paths(now)
+            _self_write_paths[_self_write_key(path)] = now
 
 
-def is_self_write() -> bool:
-    """Return True if a self-write happened within the cooldown window."""
-    return (time.monotonic() - _last_self_write) < _SELF_WRITE_COOLDOWN
+def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> bool:
+    """Return True when a watcher event belongs to a server-originated write."""
+    now = time.monotonic()
+    with _self_write_lock:
+        if path is None:
+            return (now - _last_self_write) < _SELF_WRITE_COOLDOWN
+
+        _prune_self_write_paths(now)
+        key = _self_write_key(path)
+        matched = key in _self_write_paths
+        if matched and consume:
+            _self_write_paths.pop(key, None)
+        return matched
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +497,7 @@ def load_sidecar(py_path: Path) -> dict[str, Any]:
 
 
 def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
-    """Return only the positions dict — backward-compatible alias for submodel.py."""
+    """Return only the positions dict for submodel sidecar loading."""
     result = load_sidecar(py_path).get("positions", {})
     return dict(result) if isinstance(result, dict) else {}
 
@@ -516,8 +545,7 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     # typed and forward-compatible.  We still omit default source state
     # so a freshly-saved pipeline with ``sources=["live"]`` does not
     # bloat the file — callers that never touched the source selector
-    # should not see spurious sidecar keys appear.  This mirrors the
-    # pre-refactor manual-JSON path and is pinned by
+    # should not see spurious sidecar keys appear.  This is pinned by
     # ``test_route_helpers.py::test_default_source_not_saved``.
     model_kwargs: dict[str, Any] = {"positions": positions}
     if graph.sources and graph.sources != ["live"]:

@@ -5,7 +5,7 @@
  *
  * Today the graph-shaped state is scattered across:
  *
- *   1. `useUndoRedo` — owns `nodes`, `edges` (via ReactFlow's `useNodesState`
+ *   1. `useGraphCanvasState` — owns `nodes`, `edges` (via ReactFlow's `useNodesState`
  *      / `useEdgesState`) plus `past`/`future` refs and `canUndo`/`canRedo`.
  *   2. `App.tsx` local `useState` — `preamble`.
  *   3. `App.tsx` refs — `lastSavedRef` (JSON snapshot for dirty derivation),
@@ -54,7 +54,7 @@
  *
  *   C. UNDO/REDO SEMANTICS — push-new clears redo; undo pops past and
  *      pushes current to redo; redo pops future and pushes current to
- *      past.  Parity with the current `useUndoRedo`.
+ *      past.  Parity with the current `useGraphCanvasState`.
  *
  *   D. DIRTY DERIVATION — `isDirty()` is a pure selector over
  *      `(nodes, edges, preamble, lastSavedSnapshot)`, not an effect.
@@ -62,14 +62,11 @@
  *      set to the current state and `isDirty()` returns false without
  *      any `setDirty` plumbing.
  *
- *   E. MIGRATION COMPATIBILITY — the old `useUIStore.dirty` imperative
- *      API is EITHER (a) preserved as a read-only alias of
- *      `useGraphStore.getState().isDirty()`, OR (b) removed. The
- *      decision is pinned explicitly by a test that fails loudly if
- *      the removed-vs-aliased story is inconsistent (we don't want a
- *      leftover `setDirty` no-op that silently does nothing).
+ *   E. UI STORE BOUNDARY — the old `useUIStore.dirty` imperative API
+ *      is removed entirely. `useGraphStore` is the only owner of graph
+ *      dirty state.
  *
- *   F. MAX_HISTORY — the 100-entry cap from `useUndoRedo` is
+ *   F. MAX_HISTORY — the 100-entry cap from `useGraphCanvasState` is
  *      preserved; 101st push evicts the oldest entry.
  *
  * Tests are written against the PROPOSED store API (see `GraphStore`
@@ -355,7 +352,7 @@ describe("useGraphStore — consolidation", () => {
   })
 
   // ───────────────────────────────────────────────────────────────
-  // C. Undo/redo semantics — parity with the current useUndoRedo.
+  // C. Undo/redo semantics — parity with the current useGraphCanvasState.
   // ───────────────────────────────────────────────────────────────
 
   describe("undo/redo semantics", () => {
@@ -614,59 +611,16 @@ describe("useGraphStore — consolidation", () => {
   })
 
   // ───────────────────────────────────────────────────────────────
-  // E. Migration compatibility.
-  //
-  // We pin one of two acceptable outcomes. The test should fail if
-  // the production code is in a half-migrated state — e.g. old
-  // `useUIStore.dirty` is still exported but no longer wired up.
+  // E. UI store boundary.
   // ───────────────────────────────────────────────────────────────
 
-  describe("migration compatibility — useUIStore.dirty", () => {
-    it("either (a) useUIStore.dirty is removed, or (b) it aliases useGraphStore.isDirty()", async () => {
+  describe("useUIStore dirty boundary", () => {
+    it("does not expose dirty or setDirty on useUIStore", async () => {
       const uiStoreModule = await import("../useUIStore")
       const uiState = uiStoreModule.default.getState() as unknown as Record<string, unknown>
 
-      const hasDirty = "dirty" in uiState
-      const hasSetDirty = "setDirty" in uiState
-
-      if (!hasDirty && !hasSetDirty) {
-        // Path (a) — fully migrated. Nothing else to check.
-        return
-      }
-
-      // Path (b) — alias / shim is kept. In that case:
-      //   1. It MUST read from useGraphStore, not its own state.
-      //   2. An alias must exist for BOTH dirty and setDirty (or neither),
-      //      otherwise consumers using `setDirty` silently no-op.
-      expect(
-        hasDirty,
-        "useUIStore exposes setDirty without dirty — consumers reading the flag will see a phantom value",
-      ).toBe(hasSetDirty)
-
-      // If the alias is there, it must follow the graph store.  Property
-      // access goes through a Record<string, unknown> view because the
-      // typed UIState surface has already dropped `dirty` per path (a).
-      const readUiDirty = () =>
-        (uiStoreModule.default.getState() as unknown as Record<string, unknown>).dirty
-      const graph = requireStore()
-      act(() => {
-        graph.setState({
-          nodes: [makeNode("n1")],
-          edges: [],
-          preamble: "",
-          lastSavedSnapshot: null,
-        })
-        graph.getState().markSaved()
-      })
-      expect(readUiDirty()).toBe(false)
-
-      act(() => {
-        graph.getState().setNodesRaw([makeNode("n1"), makeNode("n2")])
-      })
-      expect(
-        readUiDirty(),
-        "useUIStore.dirty did not update when useGraphStore became dirty — the alias is broken",
-      ).toBe(true)
+      expect(uiState).not.toHaveProperty("dirty")
+      expect(uiState).not.toHaveProperty("setDirty")
     })
 
     it("graph-shaped state (nodes/edges/preamble) is NOT duplicated in useUIStore", async () => {

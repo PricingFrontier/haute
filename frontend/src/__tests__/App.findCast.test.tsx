@@ -34,7 +34,7 @@ vi.mock("@xyflow/react", () => ({
 
 // Mock stateful hooks
 let mockNodes: Array<{ id: string; position: { x: number; y: number }; data: Record<string, unknown> }> = []
-vi.mock("../hooks/useUndoRedo", () => ({
+vi.mock("../hooks/useGraphCanvasState", () => ({
   default: () => ({
     nodes: mockNodes,
     edges: [],

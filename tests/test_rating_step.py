@@ -7,9 +7,10 @@ import pytest
 
 from haute.codegen import graph_to_code
 from haute.executor import _build_node_fn
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.parser import parse_pipeline_source
 from tests.conftest import make_source_node as _source_node
+from tests.conftest import write_node_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -257,20 +258,33 @@ class TestRatingStepExecutor:
 class TestRatingStepParser:
     """Parser extracts tables config from decorated functions."""
 
-    def test_parse_rating_step(self):
-        code = '''
+    def test_parse_rating_step(self, tmp_path):
+        rating_config = write_node_config(
+            tmp_path,
+            NodeType.RATING_STEP,
+            "rating",
+            {
+                "tables": [
+                    {
+                        "name": "T1",
+                        "factors": ["age"],
+                        "outputColumn": "af",
+                        "defaultValue": 1.0,
+                        "entries": [{"age": "young", "value": 1.5}],
+                    }
+                ]
+            },
+        )
+        code = f'''
 import polars as pl
 from haute import pipeline
 
-@pipeline.rating_step(tables=[
-    {"name": "T1", "factors": ["age"], "output_column": "af",
-     "default_value": 1.0, "entries": [{"age": "young", "value": 1.5}]},
-])
+@pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
     """Apply rating."""
     return df
 '''
-        parsed = parse_pipeline_source(code)
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(parsed.nodes) == 1
         n = parsed.nodes[0]
         assert n.data.nodeType == "ratingStep"
@@ -281,37 +295,61 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         assert tables[0]["defaultValue"] == 1.0
         assert len(tables[0]["entries"]) == 1
 
-    def test_parse_empty_tables(self):
-        code = '''
+    def test_parse_empty_tables(self, tmp_path):
+        rating_config = write_node_config(
+            tmp_path,
+            NodeType.RATING_STEP,
+            "rating",
+            {"tables": []},
+        )
+        code = f'''
 import polars as pl
 from haute import pipeline
 
-@pipeline.rating_step(tables=[])
+@pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
     """Empty."""
     return df
 '''
-        parsed = parse_pipeline_source(code)
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         n = parsed.nodes[0]
         assert n.data.nodeType == "ratingStep"
         assert n.data.config["tables"] == []
 
-    def test_parse_operation_and_combined(self):
-        code = '''
+    def test_parse_operation_and_combined(self, tmp_path):
+        rating_config = write_node_config(
+            tmp_path,
+            NodeType.RATING_STEP,
+            "rating",
+            {
+                "tables": [
+                    {
+                        "name": "T1",
+                        "factors": ["band"],
+                        "outputColumn": "f1",
+                        "entries": [{"band": "A", "value": 1.0}],
+                    },
+                    {
+                        "name": "T2",
+                        "factors": ["band"],
+                        "outputColumn": "f2",
+                        "entries": [{"band": "A", "value": 2.0}],
+                    },
+                ],
+                "operation": "add",
+                "combinedColumn": "total",
+            },
+        )
+        code = f'''
 import polars as pl
 from haute import pipeline
 
-@pipeline.rating_step(tables=[
-    {"name": "T1", "factors": ["band"], "output_column": "f1",
-     "entries": [{"band": "A", "value": 1.0}]},
-    {"name": "T2", "factors": ["band"], "output_column": "f2",
-     "entries": [{"band": "A", "value": 2.0}]},
-], operation="add", combined_column="total")
+@pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
     """Combined."""
     return df
 '''
-        parsed = parse_pipeline_source(code)
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         n = parsed.nodes[0]
         assert n.data.config["operation"] == "add"
         assert n.data.config["combinedColumn"] == "total"

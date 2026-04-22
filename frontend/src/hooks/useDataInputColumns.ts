@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react"
 import { previewNode } from "../api/client"
+import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
@@ -24,6 +25,7 @@ export function useDataInputColumns(
 ): { name: string; dtype: string }[] {
   const setColumnsCache = useNodeResultsStore((s) => s.setColumns)
   const activeSource = useSettingsStore((s) => s.activeSource)
+  const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
   // Source-aware cache key: "nodeId:source"
   const cacheKey = dataInput ? `${dataInput}:${activeSource}` : ""
@@ -36,17 +38,15 @@ export function useDataInputColumns(
   const isCacheFresh = useNodeResultsStore((s) => {
     if (!cacheKey) return false
     const entry = s.columnCache[cacheKey]
-    return entry ? entry.graphVersion === s.graphVersion : false
+    return entry ? entry.structuralVersion === structuralVersion : false
   })
 
   const addToast = useToastStore((s) => s.addToast)
 
-  // Derive a fingerprint from node IDs + edge connections to avoid array-reference deps
-  const graphFingerprint = useMemo(() => {
-    const nodeIds = allNodes.map(n => n.id).sort().join(",")
-    const edgeIds = edges.map(e => `${e.source}-${e.target}`).sort().join(",")
-    return `${nodeIds}|${edgeIds}`
-  }, [allNodes, edges])
+  const graphFingerprint = useMemo(
+    () => computeStructuralFingerprint(allNodes, edges, preamble),
+    [allNodes, edges, preamble],
+  )
 
   // Keep fresh refs for allNodes/edges so the effect body reads current data
   const allNodesRef = useRef(allNodes)
@@ -95,6 +95,7 @@ export function useDataInputColumns(
     // Abort in-flight request when deps change (prevents stale responses overwriting fresh data)
     const controller = new AbortController()
     // Fetch fresh columns (cached value shown meanwhile)
+    const requestStructuralVersion = structuralVersion
     const graph = buildGraph(allNodesRef.current, edgesRef.current, submodels, preamble)
     previewNode(graph, dataInput, 1, activeSource, { signal: controller.signal })
       .then((result) => {
@@ -105,9 +106,7 @@ export function useDataInputColumns(
             prevCacheJson.current = json
             setDataInputColumns(result.columns)
           }
-          // getState() in .then() callback: reads graphVersion at completion time,
-          // not at effect setup time, so the cached version stays accurate.
-          setColumnsCache(dataInput, result.columns, useNodeResultsStore.getState().graphVersion, activeSource)
+          setColumnsCache(dataInput, result.columns, requestStructuralVersion, activeSource)
         }
       })
       .catch((e) => {
@@ -121,7 +120,7 @@ export function useDataInputColumns(
     // store-update → effect-refire loop.  The effect should only re-run when
     // the *inputs* change (dataInput, graph structure, source), not when the
     // *output* (cached columns) changes.
-  }, [dataInput, graphFingerprint, submodels, preamble, activeSource, setColumnsCache, addToast])
+  }, [dataInput, structuralVersion, graphFingerprint, submodels, preamble, activeSource, setColumnsCache, addToast])
 
   return dataInputColumns
 }

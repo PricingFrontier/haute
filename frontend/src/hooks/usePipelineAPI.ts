@@ -135,14 +135,14 @@ export default function usePipelineAPI({
         const pipelineEdges = data.edges
         setNodesRaw(pipelineNodes)
         setEdgesRaw(normalizeEdges(pipelineEdges))
-        if (data.preamble !== undefined) {
+        if (data.preamble != null) {
           setPreamble(data.preamble)
           preambleRef.current = data.preamble
         }
         if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
-        if (data.pipeline_description !== undefined) descriptionRef.current = data.pipeline_description
+        if (data.pipeline_description != null) descriptionRef.current = data.pipeline_description
         if (data.source_file) sourceFileRef.current = data.source_file
-        if (data.submodels) submodelsRef.current = data.submodels
+        if (data.submodels != null) submodelsRef.current = data.submodels
         // Populate source state from backend sidecar
         if (data.sources) {
           useSettingsStore.getState().setSources(data.sources)
@@ -173,7 +173,8 @@ export default function usePipelineAPI({
     previewAbort.current = controller
 
     const label = nodeLabel(node)
-    const { getPreview, setPreview: storePreview, graphVersion } = useNodeResultsStore.getState()
+    const { getPreview, setPreview: storePreview } = useNodeResultsStore.getState()
+    const structuralVersion = useGraphStore.getState().structuralVersion
 
     // Capture settings at the moment the fetch starts so the whole
     // cascade (this preview + any downstream propagation) uses a
@@ -183,13 +184,19 @@ export default function usePipelineAPI({
     // the cascade across two different sources.
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
+    const matchesRequestContext = (cached: { structuralVersion: number; source?: string; rowLimit?: number }) =>
+      cached.structuralVersion === structuralVersion &&
+      cached.source === snapshotSource &&
+      cached.rowLimit === snapshotRowLimit
+    const requestStillCurrent = () =>
+      useGraphStore.getState().structuralVersion === structuralVersion
 
     // Cache-first: show cached data immediately if available
     const cached = getPreview(node.id)
-    if (cached) {
+    if (cached && cached.source === snapshotSource && cached.rowLimit === snapshotRowLimit) {
       setPreviewData(cached.data)
-      // If cache is fresh (same graph version), skip the API call
-      if (cached.graphVersion === graphVersion) return
+      // If cache is fresh for the same execution context, skip the API call.
+      if (matchesRequestContext(cached)) return
       // Otherwise continue to fetch fresh data in background (cached data shown meanwhile)
     } else {
       setPreviewData(makePreviewData(node.id, label, { status: "loading" }))
@@ -212,6 +219,7 @@ export default function usePipelineAPI({
         const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
         previewNode(cascadeGraph, dsId, snapshotRowLimit, snapshotSource)
           .then((result) => {
+            if (!requestStillCurrent()) return
             if (result.columns) {
               const newColumns = result.columns as ColumnDef[]
               setNodes((nds) => nds.map((n) =>
@@ -233,10 +241,11 @@ export default function usePipelineAPI({
 
     previewNode(graph, node.id, snapshotRowLimit, snapshotSource, { signal: controller.signal })
       .then((result) => {
+        if (!requestStillCurrent()) return
         const preview = resultToPreview(node.id, label, result)
         setPreviewData(preview)
         // Cache the result for next time
-        storePreview(node.id, preview, useNodeResultsStore.getState().graphVersion)
+        storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
         if (result.node_statuses) {
           setNodeStatuses(result.node_statuses as Record<string, "ok" | "error" | "running">)
         }
@@ -262,7 +271,7 @@ export default function usePipelineAPI({
     if (previewDebounce.current) clearTimeout(previewDebounce.current)
     // Show cached data immediately if available (no loading flash)
     const cached = useNodeResultsStore.getState().getPreview(node.id)
-    if (cached) {
+    if (cached && cached.source === activeSourceRef.current && cached.rowLimit === rowLimitRef.current) {
       setPreviewData(cached.data)
     } else {
       setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))

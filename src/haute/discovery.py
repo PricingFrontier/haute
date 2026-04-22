@@ -94,7 +94,7 @@ def discover_pipelines(root: Path | None = None, *, strict: bool = False) -> lis
                 found.append(configured)
                 seen.add(configured.resolve())
 
-    # 2. Fall back to root-level *.py glob for backward compatibility
+    # 2. Fall back to root-level *.py glob when no configured file matched.
     for f in sorted(root.glob("*.py")):
         if f.name in _SKIP:
             continue

@@ -7,11 +7,11 @@ import json
 import polars as pl
 import pytest
 
+from haute._user_exec import _exec_user_code
 from haute.executor import (
     PreambleError,
     _build_node_fn,
     _compile_preamble,
-    _exec_user_code,
     _resolve_batch_scenario,
     execute_graph,
     execute_sink,
@@ -136,6 +136,17 @@ class TestCompilePreamble:
         ns = _compile_preamble("def make_lit():\n    return pl.lit(42)\n")
         expr = ns["make_lit"]()
         assert isinstance(expr, pl.Expr)
+
+    def test_filters_indirect_dangerous_os_path_helpers(self):
+        ns = _compile_preamble("from os.path import join\nSAFE = 1\n")
+        assert "SAFE" in ns
+        assert "join" not in ns
+
+    def test_filters_rebound_dangerous_modules(self):
+        ns = _compile_preamble("import os\nmy_path = os.path\nSAFE = 1\n")
+        assert "SAFE" in ns
+        assert "os" not in ns
+        assert "my_path" not in ns
 
     def test_utility_modules_evicted_between_calls(self, tmp_path, monkeypatch):
         """Ensure utility modules are re-imported fresh each call, not cached."""
@@ -956,9 +967,8 @@ class TestDataSourceUserCode:
             )
 
     def test_parser_extracts_data_source_code_no_sentinel(self, tmp_path):
-        """Parser extracts user code from a dataSource body WITHOUT a sentinel.
+        """Parser extracts user code from a dataSource body.
 
-        New codegen no longer writes the ``# -- user code --`` sentinel.
         The parser identifies user code as everything after the
         auto-generated ``df = pl.scan_parquet(...)`` boilerplate line.
         """
@@ -991,34 +1001,6 @@ class TestDataSourceUserCode:
         assert "limit(2)" in code, (
             f"Parser should extract .limit(2) from the function body, got: {code!r}"
         )
-
-    def test_parser_extracts_data_source_code_legacy_sentinel(self, tmp_path):
-        """Parser still works with the legacy sentinel format."""
-        py_file = tmp_path / "pipeline.py"
-        parquet_path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": [1, 2, 3]}).write_parquet(parquet_path)
-
-        py_file.write_text(
-            f"import polars as pl\n"
-            f"import haute\n"
-            f'pipeline = haute.Pipeline("test")\n\n'
-            f'@pipeline.data_source(config="config/data_source/my_src.json")\n'
-            f"def my_src() -> pl.LazyFrame:\n"
-            f'    """my_src node"""\n'
-            f'    df = pl.scan_parquet("{parquet_path.as_posix()}")\n'
-            f"    # -- user code --\n"
-            f"    df = df.limit(2)\n"
-            f"    return df\n"
-        )
-        cfg_dir = tmp_path / "config" / "data_source"
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "my_src.json").write_text(json.dumps({"path": str(parquet_path)}))
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(py_file)
-        code = graph.nodes[0].data.config.get("code", "")
-        assert "limit(2)" in code
 
     def test_parsed_data_source_code_executes_correctly(self, tmp_path):
         """Full round-trip: parse .py → execute_graph → user code applied."""
