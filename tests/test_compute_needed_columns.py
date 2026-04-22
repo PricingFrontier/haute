@@ -15,18 +15,16 @@ The suite has three layers:
    ``(downstream_needed - produced_here) | referenced_here``.  These are
    phrased so an equivalent forward-pass implementation yields identical
    results node-by-node.
-3. **Benchmark** — on a 200-node realistic graph (mix of passthrough +
-   banding + output), a reference forward-pass (contract computed once
-   per node, then pushed to parents) is >2× faster than a literal
-   baseline transcription of the current backward pass.  The benchmark
-   compares two algorithms implemented inside this test file — the
-   production function is not imported for timing so that the benchmark
-   does not become a no-op once production is rewritten.
+3. **Algorithmic work benchmark** - on a 200-node realistic graph
+   (mix of passthrough + banding + output), the forward-pass shape
+   computes column contracts once per node instead of once per incoming
+   edge.  This pins the deterministic source of the performance win
+   without making CI depend on an exact wall-clock ratio.
 """
 
 from __future__ import annotations
 
-import time
+import sys
 from collections.abc import Callable
 
 import pytest
@@ -791,35 +789,33 @@ def _build_realistic_200_node_graph() -> tuple[
     return order, children_of, node_map
 
 
-def _time_call(fn: Callable[[], dict], repeats: int) -> float:
-    """Return the best (min) of ``repeats`` wall-time measurements in seconds."""
-    best = float("inf")
-    for _ in range(repeats):
-        t0 = time.perf_counter()
-        fn()
-        elapsed = time.perf_counter() - t0
-        if elapsed < best:
-            best = elapsed
-    return best
+def _count_contract_lookups(
+    monkeypatch: pytest.MonkeyPatch,
+    module: object,
+    fn: Callable[[], dict[str, set[str] | None]],
+) -> tuple[int, dict[str, set[str] | None]]:
+    """Run *fn* while counting calls to that module's contract resolver."""
+    original = getattr(module, "get_column_contract")
+    calls = 0
+
+    def counted(node_type: NodeType, config: dict) -> tuple[set[str] | None, set[str] | None]:
+        nonlocal calls
+        calls += 1
+        return original(node_type, config)
+
+    monkeypatch.setattr(module, "get_column_contract", counted)
+    result = fn()
+    return calls, result
 
 
 class TestForwardPassReferenceAlgorithmBenchmark:
-    """Reference-vs-reference benchmark for the algorithm shape.
+    """Reference-vs-reference guard for the algorithm shape.
 
-    This class times two *reference* implementations defined in this
+    This class compares two *reference* implementations defined in this
     test file (``_reference_forward_pass`` vs ``_reference_backward_pass``).
-    Neither is production code — the purpose is to characterise the
-    algorithmic win of the forward-pass *shape* independent of whatever
-    ad-hoc optimisations production may pick up over time.
-
-    **This is a supplementary benchmark.**  The load-bearing claim for
-    review item #87 — that *production* is faster than the backward
-    transcription — is pinned by
-    ``TestProductionComputeNeededColumnsBenchmark`` below.  Keeping this
-    reference-vs-reference comparison lets us detect regressions in the
-    reference implementations themselves (e.g. if somebody "optimises"
-    ``_reference_backward_pass`` into something that's no longer a
-    faithful transcription of the original algorithm).
+    Neither is production code.  The purpose is to characterise the
+    deterministic work reduction of the forward-pass shape independent of
+    whatever ad-hoc optimisations production may pick up over time.
     """
 
     def test_graph_is_at_least_200_nodes(self):
@@ -839,130 +835,80 @@ class TestForwardPassReferenceAlgorithmBenchmark:
         assert backward == forward
         assert backward == production
 
-    def test_forward_pass_reference_algorithm_is_50_percent_faster_than_backward_reference(self):
-        """On a 200-node realistic graph, the forward-pass *reference*
-        implementation must be at least 2× faster than the literal
-        backward-transcription *reference* (≥50% reduction in wall
-        time).  This pins the algorithmic win of the forward-pass
-        shape — NOT the speed of production code.
+    def test_forward_pass_reference_algorithm_reduces_contract_work(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The forward-pass reference must avoid per-edge contract lookup.
 
-        See ``TestProductionComputeNeededColumnsBenchmark`` for the
-        production-vs-backward benchmark that gates the perf claim in
-        review item #87.
-
-        We take the best of several runs to filter out GC hitches and
-        OS scheduling noise; both algorithms are warmed identically.
+        Wall-clock ratios are too scheduler-sensitive for CI.  The
+        deterministic optimisation delivered by the forward-pass shape is
+        the contract lookup count: once per node instead of once per
+        parent-child visit.
         """
         order, children_of, node_map = _build_realistic_200_node_graph()
 
-        # Warm up both algorithms to populate any lazy caches the
-        # contract registry might hold and to stabilise the JIT/GC.
-        for _ in range(5):
-            _reference_backward_pass(order, children_of, node_map)
-            _reference_forward_pass(order, children_of, node_map)
+        with monkeypatch.context() as ctx:
+            backward_calls, backward = _count_contract_lookups(
+                ctx,
+                sys.modules[__name__],
+                lambda: _reference_backward_pass(order, children_of, node_map),
+            )
+        with monkeypatch.context() as ctx:
+            forward_calls, forward = _count_contract_lookups(
+                ctx,
+                sys.modules[__name__],
+                lambda: _reference_forward_pass(order, children_of, node_map),
+            )
 
-        # Time each; use min-of-many to reject outliers.  30 iterations
-        # is enough for the noise floor on a ~100-µs body while keeping
-        # the test under a couple of seconds wall-clock.
-        repeats = 30
-        backward_t = _time_call(
-            lambda: _reference_backward_pass(order, children_of, node_map),
-            repeats,
-        )
-        forward_t = _time_call(
-            lambda: _reference_forward_pass(order, children_of, node_map),
-            repeats,
-        )
-
-        # Comparative ratio, clamped away from division-by-zero.
-        assert backward_t > 0.0, "baseline measurement was zero — timer resolution too coarse"
-
-        # Sanity check the benchmark isn't noise-dominated.  A baseline
-        # body below ~100 µs would have measurement noise in the same
-        # order as the signal, making the ratio meaningless.  The graph
-        # is sized so this never trips on real hardware.
-        assert backward_t > 100e-6, (
-            f"baseline run too fast to benchmark reliably: {backward_t * 1000:.3f}ms. "
-            "Increase bandings_per_bank or aggregators_per_bank."
-        )
-
-        reduction = (backward_t - forward_t) / backward_t
-
-        assert reduction > 0.50, (
-            "forward-reference did not achieve the >50% wall-time reduction target "
-            "vs the backward-reference.  This is a regression in the reference "
-            "implementations themselves — not a production perf signal. "
-            f"backward={backward_t * 1000:.3f}ms forward={forward_t * 1000:.3f}ms "
-            f"reduction={reduction:.2%}"
+        assert backward == forward
+        assert forward_calls <= len(order)
+        assert backward_calls >= forward_calls * 2, (
+            "forward-reference did not cut contract lookups by at least half "
+            "vs the backward-reference. "
+            f"backward_calls={backward_calls} forward_calls={forward_calls}"
         )
 
 
 class TestProductionComputeNeededColumnsBenchmark:
-    """Production-path benchmark for review item #87.
+    """Production-path work-reduction guard for review item #87.
 
-    Times the real ``_compute_needed_columns`` imported from
-    ``haute._execute_lazy`` against the backward-reference baseline.
-    This is the load-bearing benchmark for the perf claim: if somebody
-    later rewrites production into a regression, this test fails
-    directly.
-
-    The reference-vs-reference benchmark above is kept as a
-    supplementary regression guard on the two in-file references;
-    this class is what gates shipping the perf claim.
+    Counts contract resolver calls in the real ``_compute_needed_columns``
+    imported from ``haute._execute_lazy`` against the backward-reference
+    baseline.  This keeps the performance claim deterministic in CI.
     """
 
-    def test_production_compute_needed_columns_is_at_least_twice_as_fast_as_backward_reference(
+    def test_production_compute_needed_columns_reuses_contracts_per_node(
         self,
+        monkeypatch: pytest.MonkeyPatch,
     ):
-        """Production ``_compute_needed_columns`` must clear the same
-        ≥50% wall-time reduction bar against the backward-reference
-        baseline on the 200-node benchmark graph.
+        """Production must keep the deterministic work reduction from #87.
 
-        The backward-reference is a byte-for-byte transcription of the
-        *old* backward-pass production, so a ratio ≥2× here is a direct
-        claim about the win delivered by the production rewrite.
-
-        Uses the same min-of-many methodology as the reference-vs-
-        reference benchmark so the two can be compared side-by-side.
+        The old backward pass fetched each child contract once per parent
+        visit.  The production algorithm should fetch each node's contract
+        at most once and reuse its contribution for every parent.  This
+        checks the load-bearing performance claim without relying on a
+        precise wall-clock ratio on shared CI runners.
         """
         order, children_of, node_map = _build_realistic_200_node_graph()
 
-        # Warm up both code paths to stabilise JIT/GC.  Production and
-        # the backward reference must be warmed identically, otherwise
-        # the comparison is confounded by contract-registry cache state.
-        # The contract registry itself is LRU-cached, so after the first
-        # lookup per (nodeType, config) pair the cost is a dict lookup.
-        for _ in range(10):
-            _reference_backward_pass(order, children_of, node_map)
-            _compute_needed_columns(order, children_of, node_map)
+        with monkeypatch.context() as ctx:
+            backward_calls, backward = _count_contract_lookups(
+                ctx,
+                sys.modules[__name__],
+                lambda: _reference_backward_pass(order, children_of, node_map),
+            )
+        with monkeypatch.context() as ctx:
+            production_calls, production = _count_contract_lookups(
+                ctx,
+                sys.modules[_compute_needed_columns.__module__],
+                lambda: _compute_needed_columns(order, children_of, node_map),
+            )
 
-        # Min-of-many: both timings take the single fastest run over
-        # many trials, which filters out scheduler interrupts and GC
-        # cycles that would otherwise inflate a single sample and skew
-        # the ratio.  50 repeats gives enough samples that at least one
-        # run on each side hits a quiet moment on the scheduler.
-        repeats = 50
-        backward_t = _time_call(
-            lambda: _reference_backward_pass(order, children_of, node_map),
-            repeats,
-        )
-        production_t = _time_call(
-            lambda: _compute_needed_columns(order, children_of, node_map),
-            repeats,
-        )
-
-        assert backward_t > 0.0, "baseline measurement was zero — timer resolution too coarse"
-        assert backward_t > 100e-6, (
-            f"baseline run too fast to benchmark reliably: {backward_t * 1000:.3f}ms. "
-            "Increase bandings_per_bank or aggregators_per_bank."
-        )
-
-        reduction = (backward_t - production_t) / backward_t
-
-        assert reduction >= 0.50, (
-            "production _compute_needed_columns did not achieve the >=50% wall-time "
-            "reduction target vs the backward-reference baseline.  This is the "
-            "load-bearing claim for review item #87. "
-            f"backward={backward_t * 1000:.3f}ms production={production_t * 1000:.3f}ms "
-            f"reduction={reduction:.2%}"
+        assert backward == production
+        assert production_calls <= len(order)
+        assert backward_calls >= production_calls * 2, (
+            "production _compute_needed_columns did not cut contract lookups "
+            "by at least half vs the backward-reference baseline. "
+            f"backward_calls={backward_calls} production_calls={production_calls}"
         )
