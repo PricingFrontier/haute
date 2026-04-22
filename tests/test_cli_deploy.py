@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from haute.cli import cli
+from haute.cli._deploy import _CI_PROVIDER_ENV_VARS
 from haute.errors import DeployError
 
 if TYPE_CHECKING:
@@ -37,6 +38,12 @@ def _mock_resolved() -> MagicMock:
     return resolved
 
 
+def _clear_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every CI marker recognised by the deploy guard."""
+    for var in _CI_PROVIDER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 class TestDeploy:
     def test_non_ci_non_dry_run_blocked(
         self,
@@ -47,9 +54,7 @@ class TestDeploy:
         """Deploys must go through CI/CD unless --dry-run is used."""
         monkeypatch.chdir(tmp_path)
         _make_toml(tmp_path)
-        monkeypatch.delenv("CI", raising=False)
-        monkeypatch.delenv("TF_BUILD", raising=False)
-        monkeypatch.delenv("GITLAB_CI", raising=False)
+        _clear_ci_env(monkeypatch)
 
         result = runner.invoke(cli, ["deploy"])
         assert result.exit_code == 1

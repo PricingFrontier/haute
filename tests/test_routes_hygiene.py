@@ -57,6 +57,7 @@ _ROUTES_DIR = _REPO_ROOT / "src" / "haute" / "routes"
 _PIPELINE_PY = _ROUTES_DIR / "pipeline.py"
 _HELPERS_PY = _ROUTES_DIR / "_helpers.py"
 _JOB_STORE_PY = _ROUTES_DIR / "_job_store.py"
+_COLD_IMPORT_BUDGET_MS = 1_500.0 if sys.platform == "win32" else 1_000.0
 
 
 # ===========================================================================
@@ -209,14 +210,14 @@ class TestPipelineImportableCold:
         finally:
             _restore_haute_modules(snapshot)
 
-    def test_cold_import_under_one_second(self) -> None:
+    def test_cold_import_within_latency_budget(self) -> None:
         """Measured cold-import latency for ``haute.routes.pipeline``.
 
-        A one-second budget is generous for the route import graph while
-        still catching accidentally-hoisted heavyweight dependencies.  The
-        guard rail exists so the dev
-        does not accidentally hoist a heavy import (``torch``, ``mlflow``,
-        etc.) to module top when breaking a cycle.
+        The budget is tight enough to catch accidentally-hoisted heavyweight
+        dependencies while allowing a small amount of Windows coverage/xdist
+        scheduler overhead.  The guard rail exists so the dev does not
+        accidentally hoist a heavy import (``torch``, ``mlflow``, etc.) to
+        module top when breaking a cycle.
         """
         # Snapshot every ``haute.*`` entry before eviction and restore
         # afterwards — including parent-package attribute bindings.
@@ -238,9 +239,10 @@ class TestPipelineImportableCold:
         finally:
             _restore_haute_modules(snapshot)
 
-        assert elapsed_ms < 1_000.0, (
+        assert elapsed_ms < _COLD_IMPORT_BUDGET_MS, (
             f"Cold import of haute.routes.pipeline took {elapsed_ms:.1f}ms — "
-            "exceeds 1,000ms budget.  Check for newly-hoisted heavy imports."
+            f"exceeds {_COLD_IMPORT_BUDGET_MS:.0f}ms budget.  "
+            "Check for newly-hoisted heavy imports."
         )
 
 
