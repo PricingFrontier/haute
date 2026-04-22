@@ -441,8 +441,8 @@ class CatBoostAlgorithm(BaseAlgorithm):
             metric_path = os.path.join(_gpu_train_dir, "learn_error.tsv")
             last_seen = 0  # number of data lines already processed
 
-            while t.is_alive():
-                t.join(timeout=2.0)
+            def _poll_metric_file() -> None:
+                nonlocal last_seen
                 try:
                     if os.path.exists(metric_path):
                         with open(metric_path) as mf:
@@ -462,6 +462,14 @@ class CatBoostAlgorithm(BaseAlgorithm):
                             last_seen = len(data_lines)
                 except OSError:
                     pass
+
+            while t.is_alive():
+                t.join(timeout=2.0)
+                _poll_metric_file()
+
+            # Fast fits can complete before the first liveness check, so
+            # drain the metric file once more after the worker exits.
+            _poll_metric_file()
 
             # Clean up metric files
             shutil.rmtree(_gpu_train_dir, ignore_errors=True)
