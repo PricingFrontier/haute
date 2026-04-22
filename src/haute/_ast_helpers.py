@@ -43,7 +43,38 @@ def _eval_ast_literal(node: ast.expr) -> Any:
     try:
         return ast.literal_eval(node)
     except (ValueError, TypeError):
+        contract = _eval_contract_constructor(node)
+        if contract is not None:
+            return contract
         return ast.dump(node)
+
+
+def _eval_contract_constructor(node: ast.expr) -> dict[str, Any] | tuple[Any, Any] | None:
+    """Evaluate ``Contract(...)`` decorator kwargs into literal data.
+
+    ``ast.literal_eval`` deliberately rejects constructor calls.  The
+    parser still needs to accept the public ``contract=Contract(...)``
+    spelling, so we lower only that narrow constructor shape into the
+    same dict/tuple forms accepted by ``Contract.from_user_declared``.
+    """
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    is_contract = isinstance(func, ast.Name) and func.id == "Contract"
+    is_qualified_contract = isinstance(func, ast.Attribute) and func.attr == "Contract"
+    if not (is_contract or is_qualified_contract):
+        return None
+    if len(node.args) == 2 and not node.keywords:
+        return (_eval_ast_literal(node.args[0]), _eval_ast_literal(node.args[1]))
+    if node.args:
+        return None
+    kwargs: dict[str, Any] = {}
+    for kw in node.keywords:
+        key = kw.arg
+        if key is None or key not in {"inputs", "outputs"}:
+            return None
+        kwargs[key] = _eval_ast_literal(kw.value)
+    return kwargs
 
 
 # ---------------------------------------------------------------------------

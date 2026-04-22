@@ -361,7 +361,7 @@ async def _file_watcher() -> None:
                 # ``_ws_graph_update_subscriber`` below turns the event
                 # back into a WebSocket frame; tests and other subscribers
                 # can hang off the same event without touching this
-                # watcher body (item #127).
+                # watcher body.
                 default_bus.publish(
                     "graph.update",
                     {

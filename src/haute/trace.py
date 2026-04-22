@@ -5,7 +5,7 @@ Runs a pipeline graph on a single row and captures per-node snapshots
 foundation for the data-lineage / explainability feature described in
 ARCHITECTURE.md §9.3.
 
-Phase A - what's here now:
+Current surface:
   • execute_trace()  - run graph, collect 1-row snapshots at every node
   • SchemaDiff       - classify columns as added/removed/modified/passed
   • TraceStep / TraceResult dataclasses
@@ -156,7 +156,7 @@ class TraceStep:
     # Execution time for this node (ms)
     execution_ms: float = 0.0
 
-    # Expression parsing & enrichment (Phase B — populated by _enrich_steps)
+    # Expression parsing and enrichment, populated by _enrich_steps.
     expression: dict[str, Any] | None = None
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
@@ -254,9 +254,8 @@ def execute_trace(
                  ``eager_outputs`` slot.  When provided the trace reuses
                  the materialised DataFrames instead of re-executing the
                  upstream graph; when ``None`` (tests, CLI, cold requests)
-                 the trace falls back to a fresh execution.  Replaces the
-                 pre-Wave-9E reach-through into
-                 ``haute.executor._preview_cache``.
+                 the trace falls back to a fresh execution.  This keeps the
+                 trace module decoupled from ``haute.executor._preview_cache``.
 
     Returns:
         TraceResult with per-node steps showing how the row was produced.

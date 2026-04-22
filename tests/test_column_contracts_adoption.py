@@ -530,6 +530,60 @@ pipeline.connect("src", "band")
             "a node — this confirms the validation path isn't over-eager."
         )
 
+    def test_parser_accepts_matching_contract_constructor(self, tmp_path: Path):
+        """The public ``Contract(...)`` decorator spelling parses from source."""
+        from haute.parser import parse_pipeline_source
+
+        source_config = write_data_source_config(tmp_path, "src", "x.parquet")
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band",
+            {
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "rules": [{"max": 25, "value": "0"}],
+                    }
+                ]
+            },
+        )
+        good_src = f'''\
+import polars as pl
+import haute
+from haute._builders import Contract
+
+pipeline = haute.Pipeline("contract_ctor")
+
+
+@pipeline.data_source(config="{source_config}")
+def src() -> pl.LazyFrame:
+    return pl.scan_parquet("x.parquet")
+
+
+@pipeline.banding(
+    config="{band_config}",
+    contract=Contract(inputs=["age"], outputs=["age_band"]),
+)
+def band(src: pl.LazyFrame) -> pl.LazyFrame:
+    return src
+
+
+pipeline.connect("src", "band")
+'''
+        graph = parse_pipeline_source(
+            good_src,
+            source_file=str(tmp_path / "contract_ctor.py"),
+            _base_dir=tmp_path,
+        )
+        band_node = next(n for n in graph.nodes if n.data.label == "band")
+        assert band_node.data.config["contract"] == {
+            "inputs": ["age"],
+            "outputs": ["age_band"],
+        }
+
 
 # ---------------------------------------------------------------------------
 # Section 4: Executor asserts contracts at node boundaries.

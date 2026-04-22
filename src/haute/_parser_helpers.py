@@ -1,7 +1,6 @@
 """Facade for the pipeline-parser helper modules.
 
-The implementation was split into four focused modules (Phase 2 Wave 4
-package 4A — items #52 and #61 of ``docs/CODEBASE_REVIEW.md``):
+The implementation is split into four focused modules:
 
 * :mod:`haute._ast_helpers`      — pure AST / source utilities
 * :mod:`haute._code_extraction`  — user-code extraction engine

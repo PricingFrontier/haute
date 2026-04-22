@@ -6,8 +6,8 @@ Split into:
 * :func:`handle_serve` — the pure function that does the work.
 * :func:`serve` — the thin ``@click.command`` entry point.
 
-Host-binding safety (Wave 10A #118)
------------------------------------
+Host-binding safety
+-------------------
 Haute is a dev-only tool with no authentication.  The default bind has
 to be loopback-only (``127.0.0.1``) so a user running ``haute serve``
 on a corporate LAN does not accidentally expose an unauthenticated
@@ -137,6 +137,15 @@ class ServeConfig:
     host: str = "127.0.0.1"
 
 
+def _socket_family_for_host(host: str) -> socket.AddressFamily:
+    """Return the socket family needed to probe a host bind target."""
+    try:
+        address = ipaddress.ip_address(host.strip())
+    except ValueError:
+        return socket.AF_INET
+    return socket.AF_INET6 if address.version == 6 else socket.AF_INET
+
+
 def _port_is_available(host: str, port: int) -> bool:
     """Return ``True`` iff a TCP socket can bind to ``(host, port)``.
 
@@ -149,7 +158,8 @@ def _port_is_available(host: str, port: int) -> bool:
     the pre-flight check. On POSIX, the default behaviour is already
     strict enough.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    family = _socket_family_for_host(host)
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
         # On Windows the default allows a second bind to succeed when the
         # first socket used SO_REUSEADDR. SO_EXCLUSIVEADDRUSE asks the OS to
         # reject any overlapping bind, matching what uvicorn will observe a

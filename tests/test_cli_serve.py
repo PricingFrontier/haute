@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from haute.cli import cli
+from haute.cli._serve import _socket_family_for_host
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -42,6 +44,11 @@ class TestServe:
 
         assert result.exit_code == 1
         assert "frontend" in result.output.lower() or "npm" in result.output.lower()
+
+    def test_ipv6_loopback_uses_ipv6_probe_socket(self) -> None:
+        """The port probe must match IPv6 hosts such as ``::1``."""
+        assert _socket_family_for_host("::1") == socket.AF_INET6
+        assert _socket_family_for_host("127.0.0.1") == socket.AF_INET
 
     def test_prod_mode_with_static_dir(
         self,

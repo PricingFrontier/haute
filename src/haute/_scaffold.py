@@ -1115,12 +1115,9 @@ def cols_matching(all_cols: list[str], pattern_fn: Callable[[str], bool]) -> lis
 def starter_test(name: str) -> str:
     """Generate a starter ``tests/test_pipeline.py`` that actually runs the pipeline.
 
-    The pre-Wave-10A version only called ``compile()`` + a substring
-    match for ``"haute.Pipeline"`` in the source — a tautology that
-    passed for any syntactically-valid file containing the literal
-    characters.  The replacement runs the pipeline through the real
-    Haute parser and executor so a broken pipeline fails the test —
-    which is the whole point of having a test.
+    The starter test runs the pipeline through the real Haute parser
+    and executor so a broken pipeline fails the test, which is the
+    whole point of having a test.
 
     Two test functions are emitted:
 

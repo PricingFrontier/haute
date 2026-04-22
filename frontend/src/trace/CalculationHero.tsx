@@ -233,10 +233,9 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   // Unified calculation box — all entries top-down in one well
   // ---------------------------------------------------------------------------
   const renderUnifiedBox = (formulaText: string | null, subText: string) => {
-    // Reached the default render path with no calculation data. Prior to
-    // review item #85 this silently returned null; now we surface the gap
-    // loudly so the user knows trace data is missing rather than seeing an
-    // empty pane.
+    // Reached the default render path with no calculation data. Surface the
+    // gap loudly so the user knows trace data is missing rather than seeing
+    // an empty pane.
     if (!calculation) {
       return (
         <div

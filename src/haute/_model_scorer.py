@@ -30,7 +30,7 @@ _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystat
 
 
 # ---------------------------------------------------------------------------
-# Feature-validation cache (item #93)
+# Feature-validation cache
 # ---------------------------------------------------------------------------
 #
 # ``_validate_features`` is invoked on every ``score`` call.  In the batch /

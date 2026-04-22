@@ -17,6 +17,7 @@ export type ConfigEstimateEndpoint<TEstimate> = (
 
 export interface UseStaleConfigEstimateOptions {
   toastLabel?: string
+  estimateKey?: string | number
 }
 
 interface EstimateState<TEstimate> {
@@ -53,7 +54,7 @@ export function useStaleConfigEstimate<TEstimate>(
   endpoint: ConfigEstimateEndpoint<TEstimate>,
   options: UseStaleConfigEstimateOptions = {},
 ): UseStaleConfigEstimateResult<TEstimate> {
-  const { toastLabel = "Estimate failed" } = options
+  const { toastLabel = "Estimate failed", estimateKey = "" } = options
   const configHash = useMemo(() => hashConfig(config), [config])
   const isStale = !!cachedResult && cachedResult.configHash !== configHash
   const [state, dispatch] = useReducer(
@@ -66,7 +67,7 @@ export function useStaleConfigEstimate<TEstimate>(
   useEffect(() => {
     endpointRef.current = endpoint
     toastLabelRef.current = toastLabel
-  })
+  }, [endpoint, toastLabel])
 
   useEffect(() => {
     if (!nodeId) return
@@ -95,7 +96,7 @@ export function useStaleConfigEstimate<TEstimate>(
       })
 
     return () => controller.abort()
-  }, [nodeId, configHash])
+  }, [nodeId, configHash, estimateKey])
 
   return { ...state, configHash, isStale }
 }

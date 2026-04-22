@@ -106,18 +106,49 @@
   --chart-above: #a855f7;
   --chart-below: #3b82f6;
   --chart-below-rgb: 59, 130, 246;
+  --chart-train: var(--model-accent);
+  --chart-eval: var(--success);
+  --chart-best: var(--warning-strong);
+  --chart-actual: var(--success);
+  --chart-predicted: var(--model-accent);
+  --chart-objective: var(--warning-strong);
+  --chart-lambda-change: var(--accent);
+  --chart-residual-zero: var(--danger);
+  --chart-cyan: #06b6d4;
+  --chart-banding-accent: #22d3ee;
   --chart-positive: #4caf50;
   --chart-negative: #f44336;
   --chart-neutral: #9e9e9e;
+  --chart-series-1: var(--warning-strong);
+  --chart-series-2: var(--accent);
+  --chart-series-3: var(--success);
+  --chart-series-4: var(--danger);
+  --chart-series-5: var(--model-accent);
+  --chart-series-6: var(--chart-cyan);
+  --chart-series-7: #f97316;
+  --chart-series-8: #ec4899;
   --model-accent: #a855f7;
   --model-accent-soft: rgba(168,85,247,.15);
   --model-accent-border: rgba(168,85,247,.30);
+  --model-log-action: var(--accent);
   --structure-action: #64748b;
   --structure-action-hover: #94a3b8;
+  --structure-port: var(--structure-action-hover);
+  --status-running: #6366f1;
+  --status-info: var(--status-running);
 
   /* Code editor syntax */
   --syntax-accent: #60a5fa;
   --syntax-warning: #fbbf24;
+  --syntax-keyword: #c084fc;
+  --syntax-self: #f472b6;
+  --syntax-literal: #fb923c;
+  --syntax-string: #86efac;
+  --syntax-function: #93c5fd;
+  --syntax-property: #67e8f9;
+  --syntax-operator: var(--structure-action-hover);
+  --syntax-bracket: #cbd5e1;
+  --syntax-meta: #a78bfa;
 
   /* Node shadows - subtle, single layer */
   --node-shadow: 0 1px 4px rgba(0,0,0,.4);
@@ -410,7 +441,7 @@ html, body, #root {
 }
 
 /* ────────────────────────────────────────────────────────────────
-   Inspector-panel hover / focus classes (Phase 4 Wave 8 Package 8B)
+   Inspector-panel hover / focus classes
    Replaces inline `e.currentTarget.style.*` mutations in
    NodePanel / TracePanel / PanelShell with CSS-driven state.
    ──────────────────────────────────────────────────────────────── */
@@ -459,7 +490,7 @@ html, body, #root {
 }
 
 /* ────────────────────────────────────────────────────────────────
-   Editor-panel focus / hover classes (Phase 4 Wave 8 Package 8C)
+   Editor-panel focus / hover classes
    Replaces inline `e.currentTarget.style.*` mutations inside
    panels/editors/* with CSS-driven state.
    ──────────────────────────────────────────────────────────────── */

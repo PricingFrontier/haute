@@ -95,6 +95,32 @@ describe("useStaleConfigEstimate", () => {
     expect(endpoint).toHaveBeenCalledTimes(2)
   })
 
+  it("refetches when the estimate key changes even if the config hash is stable", async () => {
+    const endpoint = vi
+      .fn<(payload: unknown, opts: { signal: AbortSignal }) => Promise<FakeEstimate>>()
+      .mockResolvedValueOnce({ estimated_mb: 100, available_mb: 1000 })
+      .mockResolvedValueOnce({ estimated_mb: 250, available_mb: 1000 })
+
+    const { result, rerender } = renderHook(
+      ({ estimateKey }: { estimateKey: string }) =>
+        useStaleConfigEstimate<FakeEstimate>(
+          "node_1",
+          configA,
+          null,
+          endpoint,
+          { estimateKey },
+        ),
+      { initialProps: { estimateKey: "live:1" } },
+    )
+
+    await waitFor(() => expect(result.current.estimate?.estimated_mb).toBe(100))
+    expect(endpoint).toHaveBeenCalledTimes(1)
+
+    rerender({ estimateKey: "batch:1" })
+    await waitFor(() => expect(result.current.estimate?.estimated_mb).toBe(250))
+    expect(endpoint).toHaveBeenCalledTimes(2)
+  })
+
   it("aborts the in-flight fetch when the config changes mid-request", async () => {
     let firstSignal = null as AbortSignal | null
     const endpoint = vi

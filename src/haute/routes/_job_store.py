@@ -218,9 +218,8 @@ def get_job_store(prefix: str) -> JobStore:
     a :class:`JobStore`.  Route modules (``modelling.py``,
     ``optimiser.py``, ...) must acquire their store through this
     helper so every caller in the same route ends up with the same
-    in-memory dict — previously each module independently called
-    ``JobStore()`` and ended up with four disjoint job-ID namespaces
-    (see item #126 of the Phase 5 review).
+    in-memory dict.  Constructing stores independently would create
+    disjoint job-ID namespaces.
 
     Raises :class:`ValueError` on any prefix not listed in
     :data:`_KNOWN_PREFIXES`.  This closes the door on an

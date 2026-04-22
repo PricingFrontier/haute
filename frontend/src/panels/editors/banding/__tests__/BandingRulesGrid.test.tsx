@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { BandingRulesGrid } from "../BandingRulesGrid"
 import type { BandingFactor, ContinuousRule, CategoricalRule } from "../../../../types/banding"
+import { CHART_COLORS } from "../../../../theme/colors"
 
 function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
   return {
@@ -448,14 +449,13 @@ describe("BandingRulesGrid", () => {
     expect(assignmentInput.style.color === '#ff0000' || assignmentInput.style.color === 'rgb(255, 0, 0)').toBe(true)
   })
 
-  it("accentColor defaults to #22d3ee when not provided", () => {
+  it("accentColor defaults to the banding-accent token when not provided", () => {
     const rules = [
       { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "ac2" },
     ] as unknown as ContinuousRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     const assignmentInput = screen.getByLabelText("Rule 1 label")
-    // Browser may normalize to rgb()
-    expect(assignmentInput.style.color === '#22d3ee' || assignmentInput.style.color === 'rgb(34, 211, 238)').toBe(true)
+    expect(assignmentInput.style.color).toBe(CHART_COLORS.bandingAccent)
   })
 
   // --- Paste 3-column TSV for continuous ---

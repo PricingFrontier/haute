@@ -86,7 +86,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     # Also materialise the per-node config sidecar JSON files so a
     # subsequent reparse of the submodel .py file can resolve
     # @pipeline.<type>(config="...") references.  Without this the
-    # parser (post fail-loudly contract, Item #18) raises ConfigError.
+    # parser raises ConfigError.
     # Walk both the parent graph and every nested submodel graph so
     # child-node configs are written alongside their parent's.
     from haute._config_io import collect_node_configs

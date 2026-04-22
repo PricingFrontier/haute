@@ -9,6 +9,7 @@ import type { SolveResult } from "./OptimiserPreview"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useGraphStore from "../stores/useGraphStore"
 import { formatElapsed } from "../utils/formatValue"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import { withAlpha } from "../utils/color"
@@ -67,6 +68,8 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
   const solveJob = useNodeResultsStore((s) => s.solveJobs[nodeId])
   const cachedResult = useNodeResultsStore((s) => s.solveResults[nodeId])
   const startSolveJob = useNodeResultsStore((s) => s.startSolveJob)
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
   // ── Local UI state (cheap, ok to recreate) ──
   const [submitting, setSubmitting] = useState(false)
@@ -124,11 +127,11 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
         {
           graph: buildGraphCb(),
           node_id: nodeId,
-          source: useSettingsStore.getState().activeSource,
+          source: activeSource,
         },
         { signal },
       ),
-    [buildGraphCb, nodeId],
+    [buildGraphCb, nodeId, activeSource],
   )
   const {
     configHash: currentConfigHash,
@@ -139,7 +142,10 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
     config,
     cachedResult,
     solveEstimateEndpoint,
-    { toastLabel: "Solve estimate failed" },
+    {
+      toastLabel: "Solve estimate failed",
+      estimateKey: `${activeSource}:${structuralVersion}`,
+    },
   )
 
   // --- Constraints helpers ---

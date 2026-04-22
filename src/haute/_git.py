@@ -65,8 +65,7 @@ class GitError(HauteError):
     By default any ``GitError`` that bubbles to the HTTP layer may
     embed raw subprocess stderr (absolute paths, remote URLs, SSL
     errors, credentials) and is therefore sanitized before reaching
-    the client (item #11 — the full detail remains in the structured
-    log).
+    the client.  The full detail remains in the structured log.
 
     Hand-written, user-facing messages (missing repo, duplicate
     branch, "no changes to save") use :class:`GitDomainError` so the
@@ -116,7 +115,7 @@ def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
     The raw subprocess stderr is wrapped in a plain :class:`GitError`
     (the sanitize-by-default class) so the HTTP handler collapses the
     detail to ``_INTERNAL_ERROR_DETAIL`` — raw stderr commonly contains
-    absolute paths, remote URLs, SSL errors, and credentials (item #11).
+    absolute paths, remote URLs, SSL errors, and credentials.
     Full detail is retained in the ``git_command_failed`` structured log.
     """
     cmd = ["git"] + list(args)

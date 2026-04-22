@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest"
 import { toggleButtonStyle } from "../styles"
+import { MODEL_COLORS } from "../../../theme/colors"
 
 describe("toggleButtonStyle", () => {
   it("selected returns purple background, border, and color", () => {
     const style = toggleButtonStyle(true)
-    expect(style.background).toBe("rgba(168,85,247,.15)")
-    expect(style.color).toBe("#a855f7")
-    expect(style.border).toBe("1px solid rgba(168,85,247,.3)")
+    expect(style.background).toBe(MODEL_COLORS.accentSoft)
+    expect(style.color).toBe(MODEL_COLORS.accent)
+    expect(style.border).toBe(`1px solid ${MODEL_COLORS.accentBorder}`)
   })
 
   it("unselected returns chrome-hover background, transparent border, and muted color", () => {
@@ -23,8 +24,8 @@ describe("toggleButtonStyle", () => {
     expect(style).toHaveProperty("border")
   })
 
-  it("selected background contains rgba", () => {
-    expect(toggleButtonStyle(true).background).toContain("rgba")
+  it("selected background uses the model soft-accent token", () => {
+    expect(toggleButtonStyle(true).background).toBe(MODEL_COLORS.accentSoft)
   })
 
   it("unselected background contains var(--chrome-hover)", () => {

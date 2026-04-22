@@ -230,7 +230,7 @@ function FlowEditor() {
     setPreviewDataRef.current(null)
   }, [nodes, activePanelNodeId])
 
-  // Derived dirty flag (item #99, Wave 7E consolidation).
+  // Derived dirty flag.
   //
   // `isDirty` is a pure selector on useGraphStore that canonicalises the
   // current {nodes, edges, preamble} and string-compares against the

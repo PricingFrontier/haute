@@ -380,9 +380,9 @@ class UtilityWriteRequest(BaseModel):
 
 class UtilityCreateRequest(BaseModel):
     # Pattern validation lives in ``_validate_module_name`` so bad names
-    # surface as a 400 with a flat string ``detail`` (item #76 contract)
-    # rather than the structured-list body that Pydantic ``Field(pattern=)``
-    # would produce via FastAPI's 422 handler.
+    # surface as a 400 with a flat string ``detail`` rather than the
+    # structured-list body that Pydantic ``Field(pattern=)`` would produce
+    # via FastAPI's 422 handler.
     name: str  # filename without .py extension
     content: str = ""
 

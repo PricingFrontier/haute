@@ -282,7 +282,7 @@ def _compute_needed_columns(
     pre-computed sets instead of re-running contract lookup and set
     algebra ``k`` times.  This turns the pass from
     ``O(edges × contract_lookups)`` into ``O(V + E)`` with one contract
-    lookup per node (review item #87).
+    lookup per node.
 
     Opaque contribution (``None``) from any child forces the parent's
     ``needed`` to ``None`` as a short-circuit, matching the previous

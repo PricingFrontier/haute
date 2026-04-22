@@ -1,8 +1,7 @@
 /**
  * Canonical serialization + dirty-derivation helpers for graph snapshots.
  *
- * Consolidated out of `stores/useUIStore.ts` (Wave 7E): dirty tracking
- * now shares a single serializer.  This avoids split behaviour where one
+ * Dirty tracking now shares a single serializer.  This avoids split behaviour where one
  * code path stripped presentation fields (`selected`, `dragging`, …)
  * before comparing but another did not — the latter would have flagged
  * the workspace dirty every time a node was selected.

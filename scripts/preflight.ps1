@@ -118,7 +118,19 @@ if ($RunBackend) {
         } "Python tests"
 
         Invoke-Check "Python package build" {
-            & uv build
+            $previous = $env:HAUTE_BUILD_FRONTEND
+            $env:HAUTE_BUILD_FRONTEND = "1"
+            try {
+                & uv build
+            }
+            finally {
+                if ($null -eq $previous) {
+                    Remove-Item Env:\HAUTE_BUILD_FRONTEND -ErrorAction SilentlyContinue
+                }
+                else {
+                    $env:HAUTE_BUILD_FRONTEND = $previous
+                }
+            }
         } "Python package build"
     }
     else {

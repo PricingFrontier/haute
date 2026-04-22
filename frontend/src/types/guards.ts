@@ -8,14 +8,9 @@
  * logic testable in isolation and lets consumers narrow once at the
  * ingestion point rather than scattering casts downstream.
  *
- * Audit context (Phase 5 Wave 10C):
- *   - #116 — `usePipelineAPI.ts` previously punched through `node.data`
- *            with `as Record<string, unknown>` casts.  Those casts
- *            disappear once the top-level API response has been narrowed
- *            once via `parsePipelineResponse`.
- *   - #117 — `useSubmodelNavigation.ts` constructed port-node literals
- *            with `as Node` casts.  `validateReactFlowNode` narrows them
- *            at construction time.
+ * These guards exist to keep pipeline API parsing and synthetic ReactFlow
+ * nodes on the same fail-loud contract: narrow unknown values at the boundary,
+ * then pass typed values through the rest of the app.
  */
 
 import type { Edge, Node } from "@xyflow/react"

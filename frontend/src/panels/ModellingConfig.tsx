@@ -3,6 +3,7 @@ import type { OnUpdateConfig } from "./editors"
 import { trainModel, estimateTrainingRam } from "../api/client"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useGraphStore from "../stores/useGraphStore"
 import { configField } from "../utils/configField"
 import { buildGraph } from "../utils/buildGraph"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
@@ -30,6 +31,8 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
   const trainJob = useNodeResultsStore((s) => s.trainJobs[nodeId])
   const cachedResult = useNodeResultsStore((s) => s.trainResults[nodeId])
   const startTrainJob = useNodeResultsStore((s) => s.startTrainJob)
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
   const [submitting, setSubmitting] = useState(false)
   const training = !!trainJob
@@ -45,11 +48,11 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
         {
           graph: buildGraph(allNodes, edges, submodels, preamble),
           node_id: nodeId,
-          source: useSettingsStore.getState().activeSource,
+          source: activeSource,
         },
         { signal },
       ),
-    [allNodes, edges, submodels, preamble, nodeId],
+    [allNodes, edges, submodels, preamble, nodeId, activeSource],
   )
   const {
     configHash: currentConfigHash,
@@ -62,7 +65,10 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
     config,
     cachedResult,
     estimateEndpoint,
-    { toastLabel: "RAM estimate failed" },
+    {
+      toastLabel: "RAM estimate failed",
+      estimateKey: `${activeSource}:${structuralVersion}`,
+    },
   )
 
   // Collapse state from UI store (persisted)

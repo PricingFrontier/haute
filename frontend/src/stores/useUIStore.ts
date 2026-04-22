@@ -5,7 +5,7 @@
  * Toast notifications live in useToastStore.
  * Application settings (MLflow, sources, caches) live in useSettingsStore.
  * Graph-shaped state (nodes, edges, preamble) and the dirty-tracking
- * `lastSavedSnapshot` live in useGraphStore (Wave 7E consolidation).
+ * `lastSavedSnapshot` live in useGraphStore.
  */
 import { create } from "zustand"
 

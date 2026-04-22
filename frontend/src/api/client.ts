@@ -61,7 +61,7 @@ export class ApiError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Retry policy (Phase 5 Wave 10B, Item #115)
+// Retry policy
 // ---------------------------------------------------------------------------
 //
 // Idempotent verbs (GET, HEAD, PUT, DELETE, OPTIONS) retry transient failures

@@ -1,7 +1,7 @@
 """Thread-safe bounded LRU cache with pinning.
 
 Unified eviction + pinning layer consolidated from the three overlapping
-cache modules reviewed in Phase 2 Package 3A:
+cache modules:
 
 * this module — bounded LRU with optional TTL, now absorbing pinning.
 * ``_fingerprint_cache.py`` — multi-slot fingerprint cache, reduced to

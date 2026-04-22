@@ -138,7 +138,7 @@ def _sanitize_description(desc: str) -> str:
        (no matter what escape sequences, backslashes, or triple-quote
        runs appear in *desc*).
     2. *Round-trip* — ``ast.get_docstring(fn) == desc`` for every
-       pathological *desc* in the Phase 5 Wave 9D matrix.
+       pathological *desc* covered by the docstring round-trip tests.
 
     Implementation:
 

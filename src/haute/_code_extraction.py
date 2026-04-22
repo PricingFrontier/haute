@@ -7,7 +7,7 @@ backs them.  Each extractor (``_extract_user_code``,
 matcher* — the logic that decides how much of the function body is
 auto-generated boilerplate to be stripped before user code begins.
 
-Design (item #52 of CODEBASE_REVIEW.md):
+Design:
 
 * ``BOILERPLATE_MATCHERS`` is a registry mapping a kind string to a
   ``BoilerplateMatcher`` that returns the *start index* of the user
@@ -20,7 +20,7 @@ Design (item #52 of CODEBASE_REVIEW.md):
 * The four ``_extract_*_user_code`` functions remain thin wrappers over
   the engine for the parser modules that call them directly.
 
-Return-boundary detection (#137):
+Return-boundary detection:
 
 * The trailing-return strip and the ``return <expr>`` → ``df = <expr>``
   rewrite both need to know which ``return`` statements belong to the
@@ -537,7 +537,7 @@ def extract_user_code(
     """Extract user code from a function body, dispatching via the matcher registry.
 
     This is the consolidated engine that backs the four per-kind
-    ``_extract_*_user_code`` extractors (item #52).  It performs the
+    ``_extract_*_user_code`` extractors.  It performs the
     shared work (strip docstring → dedent → skip matcher-specific
     boilerplate → strip trailing ``return <var>``) and delegates the
     kind-specific pre- and post-processing to the registry.

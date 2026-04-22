@@ -2,10 +2,10 @@
  * Zustand store for graph-shaped state (nodes, edges, preamble) with
  * integrated undo/redo history.
  *
- * Phase 3 Wave 7 package 7E — consolidation of state previously scattered
- * across `useGraphCanvasState` (React Flow state + past/future refs), `App.tsx`
- * (preamble + dirty refs), `useUIStore.dirty`, and the implicit graph
- * version in `useNodeResultsStore`.
+ * Consolidates state previously scattered across `useGraphCanvasState`
+ * (React Flow state + past/future refs), `App.tsx` (preamble + dirty refs),
+ * `useUIStore.dirty`, and the implicit graph version in
+ * `useNodeResultsStore`.
  *
  * ── Selector contract ─────────────────────────────────────────────────
  *

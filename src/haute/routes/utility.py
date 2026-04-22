@@ -57,7 +57,7 @@ def _validate_syntax(content: str) -> tuple[bool, str | None, int | None]:
 
 
 def _format_syntax_error(err_msg: str | None, err_line: int | None) -> str:
-    """Build a user-facing flat string describing a syntax error (item #76).
+    """Build a user-facing flat string describing a syntax error.
 
     The line number is embedded in the string itself so the frontend can
     extract it with a ``/line (\\d+)/`` regex — structured ``{error,

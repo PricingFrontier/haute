@@ -10,7 +10,7 @@ Save is an all-or-nothing commit.  Every intended write is staged first:
 existing files are snapshotted (bytes) and new files are recorded so
 they can be deleted on rollback.  Writes land through
 :class:`haute._file_ops.Writer` so the file-watcher's self-write callback
-fires immediately before each rename (item #7 — no 2-second cooldown).
+fires immediately before each rename.
 
 If any write, config step, or the sidecar raises, we restore the
 snapshotted content for every file we touched and delete the files we
@@ -46,7 +46,7 @@ _SINGLETON_NODE_TYPES: list[tuple[NodeType, str]] = [
     (NodeType.LIVE_SWITCH, "Source Switch"),
 ]
 
-# Allowlist for codegen output paths (item #12 — path traversal hardening).
+# Allowlist for codegen output paths.
 # Module files must live directly under ``modules/`` (no nested escapes).
 _MODULES_PREFIX = "modules/"
 
@@ -193,13 +193,13 @@ class SavePipelineService:
         return validate_safe_path(self._root, source_file)
 
     # ------------------------------------------------------------------
-    # Path allowlist — item #12
+    # Path allowlist
     # ------------------------------------------------------------------
 
     def _validate_output_rel_path(self, rel_path: str, source_file: str) -> Path:
         """Return the absolute output path for *rel_path* after safety checks.
 
-        Accepts only two families of codegen output paths (item #12):
+        Accepts only two families of codegen output paths:
 
         * The main pipeline file, matching *source_file* exactly
           (normalised POSIX form).
@@ -315,10 +315,10 @@ class SavePipelineService:
     ) -> None:
         """Generate and write the ``.py`` file(s).
 
-        All writes pass through ``Writer`` (item #7 — per-rename
-        mark_self_write callback) and the allowlist gate (item #12).
+        All writes pass through ``Writer`` (per-rename
+        mark_self_write callback) and the allowlist gate.
         *touched* records rollback state for the surrounding save
-        transaction (item #50); when ``None`` the method owns an
+        transaction; when ``None`` the method owns an
         internal list (used by unit tests that drive ``_write_code``
         directly without the broader save pipeline).
         """
@@ -469,7 +469,7 @@ class SavePipelineService:
         """Persist node positions and source state to ``.haute.json``.
 
         Returns the list of non-fatal warnings emitted by
-        ``save_sidecar`` (sanitized-name collisions — item #51).
+        ``save_sidecar`` (sanitized-name collisions).
         *touched* records rollback state when called from the
         transactional save path; unit tests can omit it.
         """

@@ -17,9 +17,9 @@ import type { UtilityFile } from "../api/types"
 /**
  * Extract syntax error info from an ApiError's flat string detail.
  *
- * Server responses are ``{"detail": "Syntax error on line N: <msg>"}`` per
- * item #76.  The line number is extracted via a ``/line (\d+)/`` regex for
- * the editor's gutter; the raw message is shown to the user.
+ * Server responses are ``{"detail": "Syntax error on line N: <msg>"}``.
+ * The line number is extracted via a ``/line (\d+)/`` regex for the editor's
+ * gutter; the raw message is shown to the user.
  */
 function parseSyntaxError(err: unknown): { error: string; error_line: number | null } | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null

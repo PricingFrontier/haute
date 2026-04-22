@@ -339,7 +339,7 @@ async def broadcast(data: dict[str, Any]) -> None:
 
 # Lightweight index: pipeline_name → file_path.
 #
-# Lifecycle (Phase 2 Wave 5 / item #75 of the review):
+# Lifecycle:
 #   1. Populated at server startup by ``haute.server._lifespan``.
 #   2. Rebuilt on file-watcher events by ``haute.server._file_watcher``, which
 #      is the *only* production caller of ``invalidate_pipeline_index``.

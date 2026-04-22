@@ -869,8 +869,8 @@ def _prepare_predict_frame(
             [pl.col(c).fill_null("_MISSING_").cast(pl.Categorical) for c in cat_cols]
         )
     # Categorical dtype only round-trips through pandas; numeric-only
-    # paths skip the pandas wrapper entirely (pyfunc + sklearn accept
-    # numpy directly, see item #91).
+    # paths skip the pandas wrapper entirely because pyfunc and sklearn
+    # accept numpy directly.
     if cat_cols:
         return selected.to_pandas()
     return selected.to_numpy()

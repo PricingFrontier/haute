@@ -336,13 +336,11 @@ def _error_on_name_collisions(labels: list[str]) -> None:
     """Raise :class:`ParseError` on any pair of labels that sanitize to the
     same identifier.
 
-    Phase 5 #124 — shipped directly as Phase B (raise) rather than going
-    through a Phase A warning window.  Haute has no deployed user base
-    that needs a migration path, so the earlier "warn-then-raise one
-    release later" plan is churn — a collision is a silent
-    user-data-loss bug (codegen emits two ``def <name>(...)`` blocks
-    and the second shadows the first at import time), so we fail at
-    codegen time rather than corrupting the pipeline on disk.
+    Haute has no deployed user base that needs a migration path, so a
+    collision is treated as a hard error.  It is a silent user-data-loss
+    bug: codegen emits two ``def <name>(...)`` blocks and the second
+    shadows the first at import time.  Failing at codegen time prevents
+    corrupting the pipeline on disk.
 
     Pass a flat list of every label that will ultimately become a
     function name in any emitted file (root graph + every submodel).
@@ -574,9 +572,9 @@ def graph_to_code_multi(
         description = graph.pipeline_description
     submodels = graph.submodels or {}
 
-    # Detect colliding labels across the whole graph and emit a Phase A
-    # warning.  Done once, eagerly, so duplicate-function-name collisions
-    # are reported even when the file-generation path short-circuits.
+    # Detect colliding labels across the whole graph once, eagerly, so
+    # duplicate-function-name collisions are reported even when the
+    # file-generation path short-circuits.
     collision_labels: list[str] = [n.data.label for n in graph.nodes]
     for sm_meta in submodels.values():
         for raw in sm_meta.get("graph", {}).get("nodes", []):

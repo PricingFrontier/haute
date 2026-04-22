@@ -148,15 +148,20 @@ def _discover_root_pipelines(root: Path) -> list[Path]:
     """
     found: list[Path] = []
     for candidate in sorted(root.glob("*.py")):
-        if candidate.name in _NOT_A_PIPELINE:
-            continue
-        try:
-            text = candidate.read_text(errors="replace")
-        except OSError:
-            continue
-        if "haute.Pipeline" in text:
+        if _looks_like_pipeline_file(candidate):
             found.append(candidate)
     return found
+
+
+def _looks_like_pipeline_file(candidate: Path) -> bool:
+    """Return True when *candidate* appears to contain a Haute pipeline."""
+    if candidate.name in _NOT_A_PIPELINE or candidate.suffix != ".py":
+        return False
+    try:
+        text = candidate.read_text(errors="replace")
+    except OSError:
+        return False
+    return "haute.Pipeline" in text
 
 
 def _resolve_default_in(root: Path) -> Path:
@@ -175,8 +180,8 @@ def _resolve_default_in(root: Path) -> Path:
        resolution; the user can still pick a sibling explicitly.
     3. **Single-match auto-discovery** — exactly one root-level ``.py``
        file containing ``haute.Pipeline``, no ``main.py`` in sight →
-       pick it.  This is the case Wave 9B regressed: a dir with just
-       ``motor.py`` must work without renaming.
+       pick it.  A directory with just ``motor.py`` must work without
+       renaming.
     4. **No candidates** — raise :class:`FileNotFoundError` enumerating
        what was checked so the user knows the three user-facing fixes
        (write a haute.toml, add ``haute.Pipeline`` to a ``.py`` file,
@@ -195,6 +200,12 @@ def _resolve_default_in(root: Path) -> Path:
                 f"Pipeline file configured in haute.toml [project].pipeline "
                 f"does not exist: {configured}. "
                 "Fix the path in haute.toml or create the file."
+            )
+        if not _looks_like_pipeline_file(configured):
+            raise FileNotFoundError(
+                f"Pipeline file configured in haute.toml [project].pipeline "
+                f"does not look like a Haute pipeline: {configured}. "
+                "Point [project].pipeline at a .py file containing 'haute.Pipeline'."
             )
         return configured.resolve()
 

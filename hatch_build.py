@@ -1,9 +1,8 @@
 """Hatchling custom build hook for packaged frontend assets.
 
-By default the hook packages the already-built files in
-``src/haute/static/`` and never installs Node dependencies. Release
-builds that need to refresh those assets can opt in with
-``HAUTE_BUILD_FRONTEND=1``.
+By default the hook packages already-built files in ``src/haute/static/``
+and verifies they are present and current. Release or preflight builds
+that need to refresh those assets can opt in with ``HAUTE_BUILD_FRONTEND=1``.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ class FrontendBuildHook(BuildHookInterface):
         index_html = static_dir / "index.html"
 
         if not self._should_build_frontend():
-            self._validate_static_assets(index_html)
+            self._validate_static_assets(frontend_dir, index_html)
             return
 
         # Install deps if node_modules is missing
@@ -68,17 +67,23 @@ class FrontendBuildHook(BuildHookInterface):
         )
         raise RuntimeError(msg)
 
-    @staticmethod
-    def _validate_static_assets(index_html: Path) -> None:
-        """Fail clearly when a wheel build would package no frontend."""
-        if index_html.exists():
-            return
-        msg = (
-            f"Built frontend assets are missing at {index_html}. "
-            f"Run 'cd frontend && npm ci && npm run build', or set "
-            f"{_BUILD_FRONTEND_ENV}=1 for an explicit release build."
-        )
-        raise RuntimeError(msg)
+    @classmethod
+    def _validate_static_assets(cls, frontend_dir: Path, index_html: Path) -> None:
+        """Fail clearly when a wheel build would package missing or stale frontend."""
+        if not index_html.exists():
+            msg = (
+                f"Built frontend assets are missing at {index_html}. "
+                f"Run 'cd frontend && npm ci && npm run build', or set "
+                f"{_BUILD_FRONTEND_ENV}=1 for an explicit release build."
+            )
+            raise RuntimeError(msg)
+        if cls._is_stale(frontend_dir, index_html):
+            msg = (
+                f"Built frontend assets at {index_html.parent} are older than "
+                f"the frontend source. Run 'cd frontend && npm run build', or "
+                f"set {_BUILD_FRONTEND_ENV}=1 so the package build refreshes them."
+            )
+            raise RuntimeError(msg)
 
     @staticmethod
     def _is_stale(frontend_dir: Path, index_html: Path) -> bool:

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest"
 import { render, cleanup } from "@testing-library/react"
 import { LossChart } from "../LossChart"
 import type { LossEntry } from "../LossChart"
+import { CHART_COLORS } from "../../../theme/colors"
 
 describe("LossChart", () => {
   afterEach(cleanup)
@@ -41,8 +42,7 @@ describe("LossChart", () => {
     const { container } = render(<LossChart lossHistory={data} />)
     const paths = container.querySelectorAll("svg path")
     expect(paths.length).toBe(2)
-    // Eval path is green
-    expect(paths[1].getAttribute("stroke")).toBe("#22c55e")
+    expect(paths[1].getAttribute("stroke")).toBe(CHART_COLORS.eval)
   })
 
   it("renders best iteration line", () => {
@@ -54,7 +54,7 @@ describe("LossChart", () => {
     const { container } = render(<LossChart lossHistory={data} bestIteration={1} />)
     const line = container.querySelector("svg line")!
     expect(line).toBeInTheDocument()
-    expect(line.getAttribute("stroke")).toBe("#f59e0b")
+    expect(line.getAttribute("stroke")).toBe(CHART_COLORS.best)
     expect(line.getAttribute("stroke-dasharray")).toBe("3,2")
   })
 })

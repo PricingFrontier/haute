@@ -102,8 +102,8 @@ def collect_artifacts(
             artifact_name = _artifact_name(nid, local_path)
             artifacts[artifact_name] = local_path
 
-            # Item #17: bundle the feature contract alongside the model so
-            # the deploy scorer can verify train-vs-score drift at load time.
+            # Bundle the feature contract alongside the model so the deploy
+            # scorer can verify train-vs-score drift at load time.
             # The training pipeline writes ``feature_contract.json`` into
             # the same cache directory; when present, include it as an
             # explicit artifact keyed to this node.
@@ -116,8 +116,8 @@ def collect_artifacts(
             abs_path = _resolve_path(raw_path, pipeline_dir)
             artifact_name = _artifact_name(nid, abs_path)
             _check_exists(abs_path, nid, "dataSource (static)")
-            # Item #14: when the pipeline declares an expected column
-            # order for the static source, verify the file agrees.  A
+            # When the pipeline declares an expected column order for the
+            # static source, verify the file agrees.  A
             # silent reorder leads to wrong joins at runtime.
             _verify_static_source_schema(nid, abs_path, config)
             artifacts[artifact_name] = abs_path
@@ -208,7 +208,7 @@ def _verify_static_source_schema(
 
 
 def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:
-    """Resolve ``raw_path`` to an absolute path at bundle time (Item #48).
+    """Resolve ``raw_path`` to an absolute path at bundle time.
 
     Resolution order:
 

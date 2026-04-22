@@ -5,6 +5,7 @@ import PipelineNode from "../PipelineNode"
 import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
 import { NODE_TYPES, nodeTypeLabels } from "../../utils/nodeTypes"
 import useSettingsStore from "../../stores/useSettingsStore"
+import { STATUS_COLORS } from "../../theme/colors"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -207,8 +208,7 @@ describe("PipelineNode", () => {
     const dot = container.querySelector(".animate-pulse-dot") as HTMLElement
     expect(dot).not.toBeNull()
     const rawStyle = dot.getAttribute("style") || ""
-    // #6366f1 -> rgb(99, 102, 241) in jsdom
-    expect(rawStyle).toMatch(/rgb\(99, 102, 241\)|#6366f1/)
+    expect(rawStyle).toContain(STATUS_COLORS.running)
   })
 
   // ── Instance badge ─────────────────────────────────────────────────

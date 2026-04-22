@@ -724,6 +724,26 @@ class TestProjectResolvePipelineFileAutoDiscovery:
             resolve_pipeline_file(None)
         assert "typoed.py" in str(excinfo.value)
 
+    def test_toml_configured_plain_python_file_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``[project].pipeline`` must point at an actual Haute pipeline file."""
+        from haute._project import resolve_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "x"\npipeline = "helpers.py"\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "helpers.py").write_text("VALUE = 1\n", encoding="utf-8")
+        with pytest.raises(FileNotFoundError) as excinfo:
+            resolve_pipeline_file(None)
+        msg = str(excinfo.value)
+        assert "helpers.py" in msg
+        assert "haute.Pipeline" in msg
+
 
 class TestCliNoAdHocPipelineResolution:
     """The CLI source tree must not contain ad-hoc pipeline resolution.

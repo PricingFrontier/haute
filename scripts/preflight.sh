@@ -132,7 +132,7 @@ if [[ "$RUN_BACKEND" == true ]]; then
     fi
 
     step "Python package build"
-    if uv build; then
+    if HAUTE_BUILD_FRONTEND=1 uv build; then
       pass "Python package build"
     else
       fail "Python package build"

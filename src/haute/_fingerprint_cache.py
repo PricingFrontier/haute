@@ -1,7 +1,7 @@
 """Thin slot-dict sugar layer over ``LRUCache``.
 
-After the Phase 2 Package 3A consolidation, the heavy lifting (bounded
-LRU eviction, pinning, thread safety) lives in ``_lru_cache.LRUCache``.
+The heavy lifting (bounded LRU eviction, pinning, thread safety) lives
+in ``_lru_cache.LRUCache``.
 ``FingerprintCache`` is a thin subclass that adds multi-slot dict-valued
 semantics on top: each cache entry is a dict keyed by a fixed set of
 declared slot names, so callers can do::

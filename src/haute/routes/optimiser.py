@@ -43,8 +43,8 @@ logger = get_logger(component="server.optimiser")
 router = APIRouter(prefix="/api/optimiser", tags=["optimiser"])
 
 # In-memory job store — same pattern as modelling, acquired through
-# the central factory (item #126) so the "optimiser" prefix is a
-# single source of truth for every importer.
+# the central factory so the "optimiser" prefix is a single source of
+# truth for every importer.
 _store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
 

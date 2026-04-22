@@ -142,7 +142,7 @@ async def get_schema(path: str) -> SchemaResponse:
         # trace via ``exc_info=True`` so ops can diagnose the real
         # error.  Respond with a sanitized 500 — OS errors, polars
         # decoder crashes, and platform paths must never leak through
-        # ``str(exc)`` (item #11).  The broad except is deliberate:
+        # ``str(exc)``.  The broad except is deliberate:
         # every exception class needs the same treatment here, and we
         # do NOT swallow silently — the structured log always fires
         # with explicit ``error_class`` / ``error_message`` keys.
@@ -217,6 +217,6 @@ async def get_databricks_schema(table: str) -> SchemaResponse:
         # Fail loudly server-side with the full stack trace (filesystem
         # error, corrupt parquet, etc.) and return a sanitized 500 so
         # cache paths and parquet internals never surface in the HTTP
-        # body (item #11).
+        # body.
         logger.error("databricks_schema_read_failed", table=table, exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None

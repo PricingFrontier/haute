@@ -1,10 +1,8 @@
 """In-process pub/sub event bus for Haute server events.
 
-Replaces the pre-Wave-9E pattern of the file-watcher hand-building
-message dicts like ``{"type": "graph_update", ...}`` and calling
-``broadcast(...)`` directly.  Instead the watcher publishes a typed
-event (``"graph.update"``, ``"parse.error"``) to the bus; subscribers —
-most notably the WebSocket broadcaster — translate the event into
+The file watcher publishes typed events (``"graph.update"``,
+``"parse.error"``) to the bus; subscribers — most notably the WebSocket
+broadcaster — translate each event into
 whatever wire format their transport needs.  Decoupling the producer
 from the consumer makes the watcher trivial to unit-test and lets new
 subscribers (metrics, audit logs, test harnesses) hang off the same

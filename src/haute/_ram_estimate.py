@@ -335,8 +335,8 @@ def estimate_source_rows(graph: PipelineGraph) -> int | None:
 #   3. Diagnostics — SHAP, PDP, feature importance.
 #   4. Cross-validation (if enabled).
 #
-# Phase 0 (pipeline execution) is typically the peak because it holds
-# join intermediates in memory.  Empirically validated: the peak is
+# Pipeline execution is typically the peak because it holds join
+# intermediates in memory.  Empirically validated: the peak is
 # approximately 3× the raw dataset size at the training node.
 #
 # We use: N_rows × N_cols × 8 bytes (Float64) × 3.0

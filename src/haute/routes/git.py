@@ -7,8 +7,8 @@ guardrails (no writes to protected branches, backup tags before revert).
 All handlers are plain ``def`` (not ``async def``) so that FastAPI runs
 them in a thread pool, avoiding event-loop blocking on slow git operations.
 
-``_git`` returns Pydantic response models directly (item #74), so each
-route body collapses to a single ``return _git.<op>(...)`` inside the
+``_git`` returns Pydantic response models directly, so each route body
+collapses to a single ``return _git.<op>(...)`` inside the
 try/except — no dataclass-to-dict-to-model shim here.
 """
 
@@ -63,7 +63,7 @@ router = APIRouter(prefix="/api/git", tags=["git"])
 def _handle_git_error(e: GitError) -> NoReturn:
     """Convert git errors to appropriate HTTP responses.
 
-    Three error families are distinguished (item #11):
+    Three error families are distinguished:
 
     * :class:`GitGuardrailError` — hand-written guardrail block
       (protected branch, already-archived branch) → 403 with verbatim
