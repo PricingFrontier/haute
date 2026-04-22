@@ -6,6 +6,7 @@ Set-Location $RepoRoot
 $Quick = $false
 $RunBackend = $true
 $RunFrontend = $true
+$PytestWorkers = if ([string]::IsNullOrWhiteSpace($env:PYTEST_WORKERS)) { "4" } else { $env:PYTEST_WORKERS }
 
 foreach ($Arg in $args) {
     switch ($Arg) {
@@ -113,7 +114,7 @@ if ($RunBackend) {
 
     if (-not $Quick) {
         Invoke-Check "Python tests with coverage" {
-            & uv run pytest tests/ -q --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85
+            & uv run pytest tests/ -q -n $PytestWorkers --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85
         } "Python tests"
 
         Invoke-Check "Python package build" {

@@ -317,9 +317,9 @@ export function GLMFactorConfig({
                         }}
                         className="px-1 py-0.5 rounded text-[10px] font-mono"
                         style={{
-                          background: spec.monotonicity ? "rgba(168,85,247,.15)" : "var(--chrome-hover)",
+                          background: spec.monotonicity ? "var(--model-accent-soft)" : "var(--chrome-hover)",
                           color: spec.monotonicity ? "var(--chart-above)" : "var(--text-muted)",
-                          border: `1px solid ${spec.monotonicity ? "rgba(168,85,247,.3)" : "transparent"}`,
+                          border: `1px solid ${spec.monotonicity ? "var(--model-accent-border)" : "transparent"}`,
                           minWidth: "20px",
                         }}
                         title={

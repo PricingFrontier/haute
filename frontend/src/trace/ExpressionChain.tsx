@@ -82,18 +82,18 @@ const ExpressionChainRow: React.FC<ExpressionChainRowProps> = ({
     {/* Vertical line */}
     <div style={{
       position: "absolute", left: 6, top: 0, bottom: -6,
-      width: 1, background: "rgba(96,165,250,.15)",
+      width: 1, background: "var(--text-accent-line)",
     }} />
     {/* Horizontal connector */}
     <div style={{
       position: "absolute", left: 6, top: 9, width: 14, height: 1,
-      background: "rgba(96,165,250,.15)",
+      background: "var(--text-accent-line)",
     }} />
     {/* Dot */}
     <div style={{
       position: "absolute", left: 4, top: 7, width: 5, height: 5,
-      borderRadius: "50%", background: "rgba(96,165,250,.25)",
-      border: "1px solid rgba(96,165,250,.4)",
+      borderRadius: "50%", background: "var(--text-accent-dot)",
+      border: "1px solid var(--text-accent-strong)",
     }} />
     <ExpressionChainRowContentView {...content} />
     {children}

@@ -651,7 +651,7 @@ export default function OptimiserConfig({ config, onUpdate, accentColor }: Optim
             className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
             style={{
               background: accentColor,
-              color: "#fff",
+              color: "var(--text-on-accent)",
               opacity: !canSolve ? 0.5 : 1,
             }}
           >

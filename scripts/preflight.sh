@@ -61,6 +61,7 @@ NC='\033[0m'
 QUICK=false
 RUN_BACKEND=true
 RUN_FRONTEND=true
+PYTEST_WORKERS="${PYTEST_WORKERS:-4}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -124,7 +125,7 @@ if [[ "$RUN_BACKEND" == true ]]; then
 
   if [[ "$QUICK" == false ]]; then
     step "Python tests with coverage"
-    if uv run pytest tests/ -q --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85; then
+    if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85; then
       pass "Python tests (coverage >=85%)"
     else
       fail "Python tests"

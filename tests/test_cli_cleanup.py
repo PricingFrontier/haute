@@ -402,6 +402,7 @@ class TestFindFrontendDirRaisesWhenAbsent:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._port_is_available", return_value=True),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
         ):

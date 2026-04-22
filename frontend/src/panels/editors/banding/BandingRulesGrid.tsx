@@ -1,5 +1,6 @@
 import { useRef, useEffect, useMemo, useCallback } from "react"
 import { Trash } from "lucide-react"
+import { CHART_COLORS } from "../../../theme/colors"
 import type { BandingFactor, ContinuousRule, CategoricalRule, BreakpointRule } from "../../../types/banding"
 
 const OPS = ["<", "<=", ">", ">=", "="]
@@ -82,7 +83,7 @@ const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors text-[var(--text-mu
 export function BandingRulesGrid({
   factor,
   onUpdateFactor,
-  accentColor = '#22d3ee',
+  accentColor = CHART_COLORS.bandingAccent,
   matchCounts,
   onAddRule,
 }: {

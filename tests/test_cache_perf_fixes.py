@@ -36,11 +36,12 @@ classes based on which state they expect:
     chars" assertion is marked ``xfail(strict=True)`` pre-refactor
     (current SHA-256 produces 64 hex chars) and passes post-refactor.
 
-  * ``TestCacheKeyBenchmark`` and ``TestPreambleCacheBenchmark`` — the
-    two performance targets from the review.  Both target the
-    post-refactor state; pre-refactor they may run but the bench assertion
-    will fail (the point of the migration).  Marked ``xfail`` so CI
-    stays green until the refactor lands.
+  * ``TestCacheKeyAlgorithmContract`` — deterministic wiring checks for
+    the xxh64 cache-key migration.  Optional wall-clock benchmark reports
+    live outside the merge gate so CPU variance cannot fail CI.
+
+  * ``TestPreambleCacheBenchmark`` — a low-noise benchmark for the
+    preamble cache refactor.
 
 No production code is edited here.  The refactor itself lives in a
 separate PR.
@@ -50,7 +51,6 @@ from __future__ import annotations
 
 import gc
 import hashlib
-import os
 import secrets
 import threading
 import time
@@ -549,10 +549,8 @@ class TestCacheKeyXxhashMigration:
         sample_xxh64 = content_hash_bytes(b"probe")
         assert len(digest) == len(sample_xxh64) == 16
 
-    def test_legacy_sha256_cache_keys_are_not_readable_as_xxh64(self) -> None:
-        """Old caches keyed on SHA-256 digests will NOT collide with
-        xxh64 digests for the same input — confirming that the
-        migration invalidates existing on-disk / persistent caches.
+    def test_sha256_cache_keys_are_not_readable_as_xxh64(self) -> None:
+        """Caches keyed on SHA-256 digests will NOT collide with xxh64 digests.
 
         Why test this?  The review note says "existing tests that pin
         specific hash values must update".  This test makes the
@@ -566,7 +564,7 @@ class TestCacheKeyXxhashMigration:
         This holds both pre- and post-refactor; it's a property of the
         two algorithms, not the production wiring.
         """
-        payload = b"graph-fingerprint-legacy-key-probe"
+        payload = b"graph-fingerprint-algorithm-key-probe"
         old_key = hashlib.sha256(payload).hexdigest()
         new_key = content_hash_bytes(payload)
         # Different length → different strings by construction.
@@ -587,53 +585,35 @@ def _perf_ratio(slow_seconds: float, fast_seconds: float) -> float:
     return slow_seconds / fast_seconds
 
 
-class TestCacheKeyBenchmark:
-    """Benchmark for item #89 — xxhash must be ``>3x`` faster than SHA-256
-    on a 1 MB payload.
+class TestCacheKeyAlgorithmContract:
+    """Deterministic contract for item #89.
 
-    The review note claims 10-100x; we set the pass bar to ``>3x`` to
-    give ample headroom for slow CI machines (Windows GitHub Actions
-    runners in particular), while still catching a failed migration
-    that would leave SHA-256 in place.
-
-    This benchmark is **algorithm-level** (direct call to
-    ``hashlib.sha256`` and ``content_hash_bytes``), so it passes both
-    pre- and post-refactor as long as the xxhash library is installed.
-    It exists to *justify* the swap in item #89, not gate on it.
+    Wall-clock speed ratios belong in optional benchmark reports, not the
+    default CI suite.  The merge gate should prove the production cache
+    fingerprint path is wired through the xxh64 helper.
     """
 
-    def test_xxhash_is_over_3x_faster_than_sha256_on_1mb_payload(self) -> None:
-        """Direct algorithm benchmark — hash a 1 MB payload 100 times
-        with each algorithm.  Justifies the F3 migration target."""
-        payload = os.urandom(1024 * 1024)  # 1 MB
-        iterations = 100
+    def test_graph_fingerprint_uses_content_hash_helper(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Pin production wiring without depending on machine speed."""
+        import haute._cache as cache
 
-        # Warm-up so JIT / C import costs don't skew the first run.
-        _ = hashlib.sha256(payload).hexdigest()
-        _ = content_hash_bytes(payload)
+        calls: list[bytes] = []
+        digests = iter(("b" * 16, "c" * 16))
 
-        # Interleave to average out unrelated CPU jitter.
-        t_sha_total = 0.0
-        t_xxh_total = 0.0
-        rounds = 3
-        for _ in range(rounds):
-            t0 = time.perf_counter()
-            for _ in range(iterations):
-                hashlib.sha256(payload).hexdigest()
-            t_sha_total += time.perf_counter() - t0
+        def fake_content_hash_bytes(data: bytes) -> str:
+            calls.append(data)
+            return next(digests)
 
-            t0 = time.perf_counter()
-            for _ in range(iterations):
-                content_hash_bytes(payload)
-            t_xxh_total += time.perf_counter() - t0
+        monkeypatch.setattr(cache, "content_hash_bytes", fake_content_hash_bytes)
 
-        ratio = _perf_ratio(t_sha_total, t_xxh_total)
-        assert ratio > 3.0, (
-            f"xxh64 must be >3x faster than SHA-256 on 1MB payload; "
-            f"got {ratio:.2f}x (sha256={t_sha_total * 1000:.1f}ms, "
-            f"xxh64={t_xxh_total * 1000:.1f}ms over "
-            f"{iterations * rounds} iterations)"
-        )
+        g = _make_graph({"x": 1})
+
+        assert cache.graph_fingerprint(g) == f"v{cache.ALGO_VERSION}:{'b' * 16}"
+        assert cache.graph_fingerprint(g, "target") == f"v{cache.ALGO_VERSION}:{'c' * 16}"
+        assert len(calls) == 2
 
 
 class TestPreambleCacheBenchmark:

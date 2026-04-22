@@ -14,6 +14,13 @@ if TYPE_CHECKING:
     from click.testing import CliRunner
 
 
+@pytest.fixture(autouse=True)
+def _serve_port_available():
+    """Keep serve-mode tests independent of the developer's local port 8000."""
+    with patch("haute.cli._serve._port_is_available", return_value=True):
+        yield
+
+
 class TestServe:
     def test_prod_mode_no_static_fails(
         self,

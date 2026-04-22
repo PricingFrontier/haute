@@ -36,8 +36,8 @@ const InputSourceTree: React.FC<InputSourceTreeProps> = ({ subSources }) => {
           : null
         return (
           <div key={subCol} style={{ position: "relative", paddingLeft: 24, marginBottom: 4 }}>
-            <div style={{ position: "absolute", left: 6, top: 9, width: 14, height: 1, background: "rgba(96,165,250,.15)" }} />
-            <div style={{ position: "absolute", left: 4, top: 7, width: 5, height: 5, borderRadius: "50%", background: "rgba(96,165,250,.25)", border: "1px solid rgba(96,165,250,.4)" }} />
+            <div style={{ position: "absolute", left: 6, top: 9, width: 14, height: 1, background: "var(--text-accent-line)" }} />
+            <div style={{ position: "absolute", left: 4, top: 7, width: 5, height: 5, borderRadius: "50%", background: "var(--text-accent-dot)", border: "1px solid var(--text-accent-strong)" }} />
             <ExpressionChainRowContentView
               column={subCol}
               formulaText={sfm}

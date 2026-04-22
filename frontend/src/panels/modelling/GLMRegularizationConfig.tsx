@@ -2,6 +2,7 @@ import { useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
+import { MODEL_COLORS } from "../../theme/colors"
 import { toggleButtonStyle } from "./styles"
 
 const REGULARIZATION_TYPES = [
@@ -34,7 +35,7 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
         Regularization
         {isActive && (
           <span className="font-normal text-[10px] px-1.5 py-0.5 rounded-full"
-            style={{ background: "rgba(168,85,247,.15)", color: "#a855f7" }}>
+            style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}>
             {regularization}
           </span>
         )}

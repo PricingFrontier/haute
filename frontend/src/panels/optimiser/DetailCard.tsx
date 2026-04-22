@@ -8,6 +8,7 @@
  */
 
 import { ChevronLeft, ChevronRight, Loader2, Save, Upload } from "lucide-react"
+import { MODEL_COLORS } from "../../theme/colors"
 import { formatNumber } from "../../utils/formatValue"
 import type { SolveResult } from "../OptimiserPreview"
 import { isConstraintMet } from "./optimiserHelpers"
@@ -165,9 +166,9 @@ export default function DetailCard({
             disabled={saving || logging}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
             style={{
-              background: saving || logging ? "var(--chrome-hover)" : "rgba(168,85,247,.12)",
-              color: saving || logging ? "var(--text-muted)" : "#a855f7",
-              border: "1px solid rgba(168,85,247,.25)",
+              background: saving || logging ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+              color: saving || logging ? "var(--text-muted)" : MODEL_COLORS.accent,
+              border: `1px solid ${MODEL_COLORS.accentSoft}`,
             }}
           >
             {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}

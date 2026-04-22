@@ -7,6 +7,7 @@
  */
 
 import { useMemo } from "react"
+import { CHART_COLORS } from "../../theme/colors"
 import { formatAxisLabel, yTicks } from "../../utils/chartHelpers"
 
 // ─── Chart constants ─────────────────────────────────────────────
@@ -100,8 +101,8 @@ export default function FrontierChart({
             cx={xScale(x)}
             cy={yScale(y)}
             r={isSel ? 6 : 4}
-            fill={isSel ? "#f59e0b" : "var(--accent)"}
-            stroke={isSel ? "#fff" : "none"}
+            fill={isSel ? CHART_COLORS.objective : "var(--accent)"}
+            stroke={isSel ? "var(--text-on-accent)" : "none"}
             strokeWidth={isSel ? 2 : 0}
             opacity={isSel ? 1 : 0.7}
             style={{ cursor: "pointer" }}
@@ -122,14 +123,14 @@ export default function FrontierChart({
             cy={yScale(currentY)}
             r={6}
             fill="none"
-            stroke="#f59e0b"
+            stroke={CHART_COLORS.objective}
             strokeWidth={2}
           />
           <circle
             cx={xScale(currentX)}
             cy={yScale(currentY)}
             r={2.5}
-            fill="#f59e0b"
+            fill={CHART_COLORS.objective}
           />
         </g>
       )}

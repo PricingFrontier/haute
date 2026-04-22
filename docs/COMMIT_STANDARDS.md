@@ -213,7 +213,7 @@ if not str(target).startswith(str(base)):
 ## 22. Test Quality
 
 - **Deterministic.** Tests must not depend on wall-clock time, random seeds, filesystem ordering, or network. Flaky tests erode trust and get ignored.
-- **Fast.** The full suite should run in under 10 seconds. If a test needs heavy I/O, use `tmp_path` with minimal data. Never load production-scale data in tests.
+- **Fast.** Unit tests should stay sub-second where practical, and the full preflight suite should stay comfortably under 10 minutes on a normal developer machine. If a test needs heavy I/O, use `tmp_path` with minimal data and mark genuinely expensive cases as `slow` or `perf`. Never load production-scale data in tests.
 - **Focused.** Each test verifies one behaviour. If a test name needs "and" in it, split it into two tests.
 - **Independent.** Tests must not depend on execution order. No shared mutable state between tests. Use fixtures, not module-level setup.
 - **Readable.** A test is documentation. The arrange/act/assert structure should be obvious. Use helper functions (e.g. `_make_graph`, `_n`, `_g`) to keep test bodies short and intention-clear.
@@ -417,7 +417,7 @@ The repo includes one-command verification scripts that mirror CI exactly. Windo
 priority local development environment, so use PowerShell there:
 
 ```powershell
-# Windows full check: lint + types + tests (~5 min)
+# Windows full check: lint + types + tests (~6 min)
 powershell -ExecutionPolicy Bypass -File .\scripts\preflight.ps1
 
 # Windows quick check: lint + types only (~30s)
@@ -443,10 +443,10 @@ The script runs these checks in order and reports every selected failure:
 | `mypy src/haute/` | Python type errors | 5s |
 | `tsc -b --noEmit` (frontend) | TypeScript type errors | 5s |
 | `eslint .` (frontend) | JS/TS lint errors (no-explicit-any, unused vars, React hooks rules) | 3s |
-| `pytest tests/` | Python test failures, coverage < 85% | 4 min |
+| `pytest tests/ -n 4 --cov=src/haute` | Python test failures, coverage < 85% | 4 min |
 | `npm test` (frontend) | Frontend test failures | 20s |
 
-Use `--quick` during active development (catches ~80% of CI failures in 15 seconds). Run the full version before opening a PR.
+Use `--quick` during active development (catches ~80% of CI failures in 15 seconds). Run the full version before opening a PR. Set `PYTEST_WORKERS=<n>` to tune the backend test worker count for unusually small or large machines.
 
 ### Pre-commit hooks
 

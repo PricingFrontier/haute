@@ -2,6 +2,7 @@ import { useMemo } from "react"
 import { Play, Loader2, AlertTriangle, RefreshCw, CheckCircle2, Database } from "lucide-react"
 import type { TrainResult, TrainProgress } from "../../stores/useNodeResultsStore"
 import type { TrainEstimate } from "../../api/types"
+import { MODEL_COLORS } from "../../theme/colors"
 import { TrainingProgress as TrainingProgressPanel } from "./TrainingProgress"
 
 // The backend's bytes_per_row already includes full phase-model overhead
@@ -97,7 +98,7 @@ export function TrainingActionsAndResults({
             onClick={onTrain}
             disabled={training || submitting || !target}
             className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium"
-            style={{ background: "rgba(168,85,247,.15)", color: "#a855f7" }}
+            style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
           >
             Re-train
           </button>
@@ -106,8 +107,8 @@ export function TrainingActionsAndResults({
 
       {/* RAM Estimate */}
       {ramEstimateLoading && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(168,85,247,.06)", border: "1px solid rgba(168,85,247,.15)" }}>
-          <Loader2 size={12} className="animate-spin" style={{ color: "#a855f7" }} />
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}>
+          <Loader2 size={12} className="animate-spin" style={{ color: MODEL_COLORS.accent }} />
           <span style={{ color: "var(--text-muted)" }}>Estimating dataset size...</span>
         </div>
       )}
@@ -176,8 +177,8 @@ export function TrainingActionsAndResults({
           disabled={busy || !target}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
           style={{
-            background: busy ? "var(--chrome-hover)" : "#a855f7",
-            color: busy ? "var(--text-muted)" : "#fff",
+            background: busy ? "var(--chrome-hover)" : MODEL_COLORS.accent,
+            color: busy ? "var(--text-muted)" : "var(--text-on-accent)",
             opacity: !target ? 0.5 : 1,
           }}
         >

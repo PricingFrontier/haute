@@ -41,7 +41,7 @@ This file is written *before* the refactor lands.  Tests split into:
     inspect call arguments directly.
   * ``TestEdgeCases`` — empty features, missing columns, and the
     ``Int64``-with-nulls -> ``Float32`` cast contract.
-  * ``TestPreparePredictFrameBenchmark`` — walltime and peak-memory
+  * ``TestPreparePredictFrameBenchmark`` — opt-in ``perf`` walltime and peak-memory
     benchmark comparing the pre-refactor ``to_pandas`` blanket against the
     post-refactor ``to_numpy`` path.  Targets: >=30% walltime reduction
     AND >=50% peak-memory reduction on a 50k x 20 numeric frame.
@@ -540,6 +540,7 @@ def _baseline_prepare_with_to_pandas(
     return selected.to_pandas()
 
 
+@pytest.mark.perf
 class TestPreparePredictFrameBenchmark:
     """Benchmark for item #91 — narrow the pyfunc ``to_pandas`` blanket.
 

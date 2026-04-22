@@ -350,64 +350,53 @@ class TestSidecarRoundTrip:
         assert reloaded == initial
 
 
-class TestSidecarForwardCompat:
-    """Old-shape JSON (from the pre-refactor manual-dump code) must still parse.
+class TestSidecarDefaults:
+    """Sidecar JSON uses explicit defaults for optional editor state.
 
-    The currently-persisted shape looks like::
+    The supported persisted shape looks like::
 
         {
             "positions": {"alpha": {"x": 1.0, "y": 2.0}},
             "sources": ["live", "batch"],
             "active_source": "batch"
         }
-
-    Users have these files on disk right now.  The refactor must not
-    invalidate them.
     """
 
-    def test_legacy_full_shape_parses(self) -> None:
+    def test_full_shape_parses(self) -> None:
         from haute.routes._helpers import SidecarModel
 
-        legacy = json.dumps(
+        payload = json.dumps(
             {
                 "positions": {"alpha": {"x": 1.0, "y": 2.0}},
                 "sources": ["live", "batch"],
                 "active_source": "batch",
             }
         )
-        parsed = SidecarModel.model_validate_json(legacy)
+        parsed = SidecarModel.model_validate_json(payload)
         assert parsed.positions == {"alpha": {"x": 1.0, "y": 2.0}}
         assert parsed.sources == ["live", "batch"]
         assert parsed.active_source == "batch"
 
-    def test_legacy_positions_only_parses(self) -> None:
-        """Sidecars that pre-date the source-state feature only carry positions."""
+    def test_positions_only_shape_uses_source_defaults(self) -> None:
+        """Positions-only sidecars are valid and default source state explicitly."""
         from haute.routes._helpers import SidecarModel
 
-        legacy = json.dumps(
+        payload = json.dumps(
             {"positions": {"alpha": {"x": 1.0, "y": 2.0}}},
         )
-        parsed = SidecarModel.model_validate_json(legacy)
+        parsed = SidecarModel.model_validate_json(payload)
         assert parsed.positions == {"alpha": {"x": 1.0, "y": 2.0}}
         # Missing fields receive their defaults — default sources/active_source
         # should not round-trip as None for the write path, so the model must
         # default them sensibly (empty / "live").  We only assert the parse
         # succeeds; the specific default values are pinned alongside save_sidecar.
 
-    def test_missing_future_field_uses_default(self) -> None:
-        """Forward migration: a sidecar missing a newly-added field must parse
-        with the default value.
-
-        Models of record for on-disk data should never require a field
-        that was added after the file was written.  This pin forces the
-        dev to give every new field a sensible default.
-        """
+    def test_missing_optional_fields_use_defaults(self) -> None:
+        """Sparse sidecars parse through the model without materialising defaults."""
         from haute.routes._helpers import SidecarModel
 
         minimal = json.dumps({"positions": {}})
         parsed = SidecarModel.model_validate_json(minimal)
-        # If the dev adds a new field (say, ``schema_version``) later,
-        # ``.model_dump(exclude_unset=True)`` must not include it here.
         dumped = parsed.model_dump(exclude_unset=True)
         assert dumped.get("positions") == {}
 

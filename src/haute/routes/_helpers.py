@@ -38,10 +38,9 @@ class SidecarModel(BaseModel):
       pipeline (``"live"`` is always first).
     * ``active_source`` — which source is currently selected in the UI.
 
-    Every field has a sensible default so a sidecar missing a
-    newly-introduced field still parses.  That forward-compat guarantee
-    is pinned by ``tests/test_routes_hygiene.py::
-    TestSidecarForwardCompat``.
+    Every optional field has a sensible default so sparse sidecars still
+    parse.  That current-shape defaulting contract is pinned by
+    ``tests/test_routes_hygiene.py::TestSidecarDefaults``.
 
     Write path: ``save_sidecar`` constructs a ``SidecarModel`` and
     serialises via :meth:`model_dump_json`, excluding defaults so a
@@ -542,10 +541,10 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     positions = {_sanitize_func_name(node.data.label): node.position for node in graph.nodes}
 
     # Build the on-disk payload via ``SidecarModel`` so the schema is
-    # typed and forward-compatible.  We still omit default source state
-    # so a freshly-saved pipeline with ``sources=["live"]`` does not
-    # bloat the file — callers that never touched the source selector
-    # should not see spurious sidecar keys appear.  This is pinned by
+    # typed and validated.  We still omit default source state so a
+    # freshly-saved pipeline with ``sources=["live"]`` does not bloat the
+    # file — callers that never touched the source selector should not
+    # see spurious sidecar keys appear.  This is pinned by
     # ``test_route_helpers.py::test_default_source_not_saved``.
     model_kwargs: dict[str, Any] = {"positions": positions}
     if graph.sources and graph.sources != ["live"]:

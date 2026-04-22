@@ -159,7 +159,7 @@ class TestSelfWriteTracking:
         with patch.object(time, "monotonic", return_value=original() + _SELF_WRITE_COOLDOWN + 1):
             assert is_self_write() is False
 
-    def test_path_mark_survives_legacy_cooldown_until_watcher_consumes_it(
+    def test_path_mark_survives_global_cooldown_until_watcher_consumes_it(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,

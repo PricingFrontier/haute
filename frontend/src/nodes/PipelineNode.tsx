@@ -5,12 +5,13 @@ import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
 import { formatValueCompact } from "../utils/formatValue"
 import useSettingsStore from "../stores/useSettingsStore"
+import { STATUS_COLORS } from "../theme/colors"
 import type { PipelineFlowNode } from "../types/node"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
   error: "var(--danger)",
-  running: "#6366f1",
+  running: STATUS_COLORS.running,
 }
 
 /** Isolated component so only LiveSwitch nodes subscribe to the settings store. */

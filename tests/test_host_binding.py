@@ -37,6 +37,13 @@ if TYPE_CHECKING:
     from click.testing import CliRunner
 
 
+@pytest.fixture(autouse=True)
+def _serve_port_available():
+    """Host-binding tests should not depend on the real port 8000 state."""
+    with patch("haute.cli._serve._port_is_available", return_value=True):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers — small seams so each test is a one-liner.
 # ---------------------------------------------------------------------------

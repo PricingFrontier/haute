@@ -88,7 +88,7 @@ export default function SinkEditor({
         onClick={handleWrite}
         disabled={!hasPath || writing}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold rounded-lg transition-opacity disabled:opacity-40 enabled:hover:opacity-85"
-        style={{ background: accentColor, color: '#000' }}
+        style={{ background: accentColor, color: 'var(--text-on-light-accent)' }}
       >
         <HardDriveDownload size={14} />
         {writing ? "Writing..." : "Write"}

@@ -21,6 +21,17 @@
   --text-secondary: #828899;
   --text-muted: #4e5463;
   --text-accent: #60a5fa;
+  --text-accent-rgb: 96, 165, 250;
+  --text-accent-muted: rgba(96,165,250,.5);
+  --text-accent-soft: rgba(96,165,250,.08);
+  --text-accent-border: rgba(96,165,250,.12);
+  --text-accent-line: rgba(96,165,250,.15);
+  --text-accent-dot: rgba(96,165,250,.25);
+  --text-accent-glow: rgba(96,165,250,.35);
+  --text-accent-strong: rgba(96,165,250,.4);
+  --text-accent-heavy: rgba(96,165,250,.6);
+  --text-on-accent: #fff;
+  --text-on-light-accent: #000;
 
   /* Accent - clean blue */
   --accent: #3b82f6;
@@ -95,6 +106,14 @@
   --chart-above: #a855f7;
   --chart-below: #3b82f6;
   --chart-below-rgb: 59, 130, 246;
+  --chart-positive: #4caf50;
+  --chart-negative: #f44336;
+  --chart-neutral: #9e9e9e;
+  --model-accent: #a855f7;
+  --model-accent-soft: rgba(168,85,247,.15);
+  --model-accent-border: rgba(168,85,247,.30);
+  --structure-action: #64748b;
+  --structure-action-hover: #94a3b8;
 
   /* Code editor syntax */
   --syntax-accent: #60a5fa;

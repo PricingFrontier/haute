@@ -270,7 +270,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                 else handleRevert(confirmAction.target)
               }}
               className="px-3 py-1 text-[12px] font-medium rounded-md"
-              style={{ background: confirmAction.type === "delete" ? 'var(--danger)' : 'var(--accent)', color: '#fff' }}
+              style={{ background: confirmAction.type === "delete" ? 'var(--danger)' : 'var(--accent)', color: 'var(--text-on-accent)' }}
             >
               {confirmAction.type === "delete" ? "Delete" : confirmAction.type === "archive" ? "Archive" : "Revert"}
             </button>

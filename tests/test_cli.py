@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -621,6 +622,7 @@ class TestServe:
         # Mock STATIC_DIR to a non-existent path so we hit the error branch
         # (the real STATIC_DIR may exist from a previous npm run build)
         monkeypatch.setattr("haute.server.STATIC_DIR", tmp_path / "nonexistent_static")
-        result = runner.invoke(cli, ["serve", "--no-browser"])
+        with patch("haute.cli._serve._port_is_available", return_value=True):
+            result = runner.invoke(cli, ["serve", "--no-browser"])
         assert result.exit_code == 1
         assert "frontend" in result.output.lower() or "npm" in result.output.lower()

@@ -79,7 +79,7 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
                     <div className="absolute inset-y-0 left-0 rounded-full transition-all"
                       style={{
                         width: `${barWidth}%`,
-                        background: val >= 1 ? 'rgba(239, 68, 68, 0.35)' : 'rgba(59, 130, 246, 0.35)',
+                        background: val >= 1 ? "rgba(var(--danger-rgb), .35)" : "rgba(var(--chart-below-rgb), .35)",
                       }} />
                   </div>
                 </td>

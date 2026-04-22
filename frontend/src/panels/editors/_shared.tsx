@@ -13,6 +13,7 @@ import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap, t
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search"
 import { lintGutter, setDiagnostics } from "@codemirror/lint"
 import { tags } from "@lezer/highlight"
+import { SYNTAX_COLORS } from "../../theme/colors"
 
 // ─── Shared Styles ───────────────────────────────────────────────
 export const INPUT_STYLE = {
@@ -419,28 +420,28 @@ const hauteTheme = EditorView.theme({
 
 // Syntax highlighting colours for Python
 const hauteHighlighting = HighlightStyle.define([
-  { tag: tags.keyword, color: "#c084fc" },             // purple — def, return, if, for, import
-  { tag: tags.controlKeyword, color: "#c084fc" },
-  { tag: tags.definitionKeyword, color: "#c084fc" },
-  { tag: tags.operatorKeyword, color: "#c084fc" },      // and, or, not, in, is
-  { tag: tags.modifier, color: "#c084fc" },
-  { tag: tags.self, color: "#f472b6" },                  // self
-  { tag: tags.bool, color: "#fb923c" },                  // True, False
-  { tag: tags.null, color: "#fb923c" },                  // None
-  { tag: tags.number, color: "#fb923c" },                // numeric literals
-  { tag: tags.string, color: "#86efac" },                // strings
-  { tag: tags.special(tags.string), color: "#86efac" },  // f-strings
+  { tag: tags.keyword, color: SYNTAX_COLORS.keyword },             // def, return, if, for, import
+  { tag: tags.controlKeyword, color: SYNTAX_COLORS.keyword },
+  { tag: tags.definitionKeyword, color: SYNTAX_COLORS.keyword },
+  { tag: tags.operatorKeyword, color: SYNTAX_COLORS.keyword },      // and, or, not, in, is
+  { tag: tags.modifier, color: SYNTAX_COLORS.keyword },
+  { tag: tags.self, color: SYNTAX_COLORS.self },
+  { tag: tags.bool, color: SYNTAX_COLORS.literal },
+  { tag: tags.null, color: SYNTAX_COLORS.literal },
+  { tag: tags.number, color: SYNTAX_COLORS.literal },
+  { tag: tags.string, color: SYNTAX_COLORS.string },
+  { tag: tags.special(tags.string), color: SYNTAX_COLORS.string },  // f-strings
   { tag: tags.regexp, color: "var(--syntax-warning)" },
   { tag: tags.comment, color: "var(--text-muted)", fontStyle: "italic" },
   { tag: tags.function(tags.definition(tags.variableName)), color: "var(--syntax-accent)" },  // function defs
-  { tag: tags.function(tags.variableName), color: "#93c5fd" },  // function calls
+  { tag: tags.function(tags.variableName), color: SYNTAX_COLORS.function },  // function calls
   { tag: tags.className, color: "var(--syntax-warning)" },
   { tag: tags.definition(tags.className), color: "var(--syntax-warning)" },
-  { tag: tags.propertyName, color: "#67e8f9" },          // .method / .attr
-  { tag: tags.operator, color: "#94a3b8" },
-  { tag: tags.punctuation, color: "#94a3b8" },
-  { tag: tags.bracket, color: "#cbd5e1" },
-  { tag: tags.meta, color: "#a78bfa" },                  // decorators
+  { tag: tags.propertyName, color: SYNTAX_COLORS.property },          // .method / .attr
+  { tag: tags.operator, color: SYNTAX_COLORS.operator },
+  { tag: tags.punctuation, color: SYNTAX_COLORS.operator },
+  { tag: tags.bracket, color: SYNTAX_COLORS.bracket },
+  { tag: tags.meta, color: SYNTAX_COLORS.meta },                  // decorators
   { tag: tags.variableName, color: "var(--text-primary)" },
   { tag: tags.typeName, color: "var(--syntax-warning)" },
 ])

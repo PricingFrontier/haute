@@ -23,7 +23,7 @@ export default function ImportsPanel({ preamble, onPreambleChange, onClose }: Im
       {/* Info */}
       <div className="px-3 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         <p className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
-          <span style={{ color: 'rgba(96,165,250,.5)' }}>import polars as pl</span> and <span style={{ color: 'rgba(96,165,250,.5)' }}>import haute</span> are always included
+          <span style={{ color: "var(--text-accent-muted)" }}>import polars as pl</span> and <span style={{ color: "var(--text-accent-muted)" }}>import haute</span> are always included
         </p>
       </div>
 

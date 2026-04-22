@@ -7,6 +7,7 @@
  */
 
 import { formatNumber } from "../../utils/formatValue"
+import { CHART_COLORS } from "../../theme/colors"
 import type { SolveResult } from "../OptimiserPreview"
 
 interface ConvergenceChartProps {
@@ -37,12 +38,12 @@ export default function ConvergenceChart({ result }: ConvergenceChartProps) {
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Convergence</label>
         <svg width={w} height={h} className="mt-1" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
-          <path d={objPath} fill="none" stroke="#f59e0b" strokeWidth={1.5} />
-          <path d={lcPath} fill="none" stroke="#3b82f6" strokeWidth={1.5} />
+          <path d={objPath} fill="none" stroke={CHART_COLORS.objective} strokeWidth={1.5} />
+          <path d={lcPath} fill="none" stroke={CHART_COLORS.lambdaChange} strokeWidth={1.5} />
         </svg>
         <div className="flex gap-3 mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-          <span><span style={{ color: "#f59e0b" }}>--</span> Objective</span>
-          <span><span style={{ color: "#3b82f6" }}>--</span> Lambda change</span>
+          <span><span style={{ color: CHART_COLORS.objective }}>--</span> Objective</span>
+          <span><span style={{ color: CHART_COLORS.lambdaChange }}>--</span> Lambda change</span>
         </div>
       </div>
 

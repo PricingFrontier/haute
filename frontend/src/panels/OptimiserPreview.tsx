@@ -21,6 +21,7 @@ import { useDragResize } from "../hooks/useDragResize"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
+import { MODEL_COLORS } from "../theme/colors"
 import type { FrontierData } from "../api/types"
 import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
@@ -498,8 +499,8 @@ function ExportTab({
             disabled={saving || logging}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
             style={{
-              background: saving || logging ? "var(--chrome-hover)" : "rgba(168,85,247,.12)",
-              color: saving || logging ? "var(--text-muted)" : "#a855f7",
+              background: saving || logging ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+              color: saving || logging ? "var(--text-muted)" : MODEL_COLORS.accent,
             }}
           >
             {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}

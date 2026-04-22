@@ -8,6 +8,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { CHART_COLORS } from "../../theme/colors"
 import { FeatureBrowser, type FeatureItem } from "./FeatureBrowser"
 
 interface PdpTabProps {
@@ -17,8 +18,8 @@ interface PdpTabProps {
 const GRID_COLOR = "rgba(255,255,255,.06)"
 const AXIS_TEXT_COLOR = "var(--text-muted)"
 const AXIS_FONT_SIZE = 10
-const LINE_COLOR = "#a855f7"
-const BAR_COLOR = "#a855f7"
+const LINE_COLOR = CHART_COLORS.predicted
+const BAR_COLOR = CHART_COLORS.predicted
 
 type PdpGridPoint = { value: number | string; avg_prediction: number }
 type PdpFeature = { feature: string; type: string; grid: PdpGridPoint[] }

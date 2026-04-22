@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
 import { configField, safeParseInt } from "../../utils/configField"
+import { CHART_COLORS } from "../../theme/colors"
 
 type Column = { name: string; dtype: string }
 
@@ -94,8 +95,8 @@ export function SplitAndMetricsConfig({
                 const trainSize = Math.max(0, 1 - valSize - holdoutSize)
                 return (
                   <div className="flex gap-0.5 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--chrome-hover)" }}>
-                    <div style={{ width: `${trainSize * 100}%`, background: "#a855f7" }} title={`Train: ${(trainSize * 100).toFixed(0)}%`} />
-                    {valSize > 0 && <div style={{ width: `${valSize * 100}%`, background: "#3b82f6" }} title={`Validation: ${(valSize * 100).toFixed(0)}%`} />}
+                    <div style={{ width: `${trainSize * 100}%`, background: CHART_COLORS.train }} title={`Train: ${(trainSize * 100).toFixed(0)}%`} />
+                    {valSize > 0 && <div style={{ width: `${valSize * 100}%`, background: CHART_COLORS.lambdaChange }} title={`Validation: ${(valSize * 100).toFixed(0)}%`} />}
                     {holdoutSize > 0 && <div style={{ width: `${holdoutSize * 100}%`, background: "var(--signif-high)" }} title={`Holdout: ${(holdoutSize * 100).toFixed(0)}%`} />}
                   </div>
                 )

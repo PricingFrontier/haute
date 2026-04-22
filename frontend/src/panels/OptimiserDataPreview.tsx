@@ -16,20 +16,12 @@ import {
   Search,
 } from "lucide-react"
 import { useDragResize } from "../hooks/useDragResize"
+import { CHART_COLORS } from "../theme/colors"
 import { formatAxisLabel, yTicks } from "../utils/chartHelpers"
 import type { PreviewData } from "./DataPreview"
 
 // ─── Colours for series lines (CVD-safe Okabe-Ito subset) ─────────
-const SERIES_COLORS = [
-  "#f59e0b", // amber  – objective (first)
-  "#3b82f6", // blue
-  "#22c55e", // green
-  "#ef4444", // red
-  "#a855f7", // purple
-  "#06b6d4", // cyan
-  "#f97316", // orange
-  "#ec4899", // pink
-]
+const SERIES_COLORS = CHART_COLORS.optimiserSeries
 
 // ─── Types ────────────────────────────────────────────────────────
 

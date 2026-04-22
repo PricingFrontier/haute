@@ -6,6 +6,7 @@ import { useState, useCallback } from "react"
 import { Loader2, FlaskConical } from "lucide-react"
 import { logToMlflow } from "../../api/client"
 import { configField } from "../../utils/configField"
+import { MODEL_COLORS } from "../../theme/colors"
 
 type MlflowResult = {
   status: string
@@ -58,7 +59,7 @@ export function MlflowExportSection({ trainJobId, mlflowBackend, config, onMlflo
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
         style={{
           background: loggingToMlflow ? "var(--chrome-hover)" : "var(--accent-soft-strong)",
-          color: loggingToMlflow ? "var(--text-muted)" : "#3b82f6",
+          color: loggingToMlflow ? "var(--text-muted)" : MODEL_COLORS.logAction,
           border: "1px solid var(--accent-ring)",
         }}
       >
@@ -67,7 +68,7 @@ export function MlflowExportSection({ trainJobId, mlflowBackend, config, onMlflo
       </button>
       {mlflowResult && mlflowResult.status === "ok" && (
         <div className="px-3 py-2 rounded-lg text-xs space-y-0.5" style={{ background: "var(--accent-soft-subtle)", border: "1px solid var(--accent-soft-hover)" }}>
-          <div style={{ color: "#3b82f6" }}>Logged to {mlflowResult.experiment_name}</div>
+          <div style={{ color: MODEL_COLORS.logAction }}>Logged to {mlflowResult.experiment_name}</div>
           {mlflowResult.run_url && (
             <a href={mlflowResult.run_url} target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--text-accent)" }}>
               Open in Databricks

@@ -171,7 +171,7 @@ describe("SubmodelPortNode", () => {
     })
     const wrapper = container.querySelector(".rounded-full") as HTMLElement
     expect(wrapper.style.boxShadow).not.toBe("none")
-    expect(wrapper.style.boxShadow).toContain("rgba")
+    expect(wrapper.style.boxShadow).toContain("var(--text-accent-glow)")
   })
 
   it("displays portName when both portName and label are provided", () => {

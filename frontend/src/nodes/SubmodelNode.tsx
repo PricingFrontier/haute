@@ -1,10 +1,11 @@
 import { memo } from "react"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
 import { Package } from "lucide-react"
+import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
 import type { SubmodelFlowNode } from "../types/node"
 
-const accent = nodeTypeColors.submodel || "#64748b"
+const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
 
 function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>) {
   const config = nodeData.config || {}

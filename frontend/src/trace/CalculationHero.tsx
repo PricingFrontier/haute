@@ -215,10 +215,10 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
             padding: "2px 10px",
             ...(resultIsNull
               ? { fontStyle: "italic", opacity: 0.5, color: "var(--text-muted)" }
-              : {
+                : {
                     color: "var(--accent)",
-                    background: "rgba(96,165,250,.08)",
-                    border: "1px solid rgba(96,165,250,.12)",
+                    background: "var(--text-accent-soft)",
+                    border: "1px solid var(--text-accent-border)",
                   }),
           }}
           title={resultFormattedFull !== resultFormatted ? resultFormattedFull : undefined}
@@ -243,10 +243,10 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
           role="alert"
           style={{
             padding: "8px 12px",
-            border: "1px solid var(--accent-error, #d97706)",
+            border: "1px solid var(--warning-border)",
             borderRadius: 4,
-            background: "var(--bg-error-subtle, rgba(217, 119, 6, 0.08))",
-            color: "var(--text-error, #b45309)",
+            background: "var(--warning-soft)",
+            color: "var(--warning-strong)",
             fontSize: 12,
             marginTop: 4,
           }}
@@ -330,8 +330,8 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
           <div style={{
             position: "absolute", left: 3, top: hasEntries ? 15 : 7, width: 7, height: 7,
             borderRadius: "50%",
-            background: "rgba(96,165,250,.4)",
-            border: "1px solid rgba(96,165,250,.6)",
+            background: "var(--text-accent-strong)",
+            border: "1px solid var(--text-accent-heavy)",
           }} />
           {/* Formula */}
           {formulaText && (
@@ -356,7 +356,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
                 borderRadius: 4, padding: "1px 8px",
                 ...(resultIsNull
                   ? { fontStyle: "italic", opacity: 0.5, color: "var(--text-secondary)" }
-                  : { color: "var(--accent)", background: "rgba(96,165,250,.08)" }),
+                  : { color: "var(--accent)", background: "var(--text-accent-soft)" }),
               }}
               title={resultFormattedFull !== resultFormatted ? resultFormattedFull : undefined}
             >
@@ -400,10 +400,10 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
             role="alert"
             style={{
               padding: "8px 12px",
-              border: "1px solid var(--accent-error, #d97706)",
+              border: "1px solid var(--warning-border)",
               borderRadius: 4,
-              background: "var(--bg-error-subtle, rgba(217, 119, 6, 0.08))",
-              color: "var(--text-error, #b45309)",
+              background: "var(--warning-soft)",
+              color: "var(--warning-strong)",
               fontSize: 12,
               marginTop: 4,
             }}
@@ -582,7 +582,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
           onClick={handleCopy}
           style={{
             background: "none",
-            border: "1px solid var(--border, #ccc)",
+            border: "1px solid var(--border)",
             borderRadius: 4,
             cursor: "pointer",
             padding: "2px 8px",

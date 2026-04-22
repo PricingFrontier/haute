@@ -84,10 +84,10 @@ const WaterfallChart: React.FC<WaterfallChartProps> = ({ steps, resultValue }) =
                 width: animated ? `${barWidth}%` : "0%",
                 backgroundColor:
                   step.direction === "positive"
-                    ? "var(--color-positive, #4caf50)"
+                    ? "var(--color-positive, var(--chart-positive))"
                     : step.direction === "negative"
-                      ? "var(--color-negative, #f44336)"
-                      : "var(--color-neutral, #9e9e9e)",
+                      ? "var(--color-negative, var(--chart-negative))"
+                      : "var(--color-neutral, var(--chart-neutral))",
                 borderRadius: 2,
                 minWidth: animated ? 2 : 0,
                 transition: `width 400ms cubic-bezier(0.22, 1, 0.36, 1)`,

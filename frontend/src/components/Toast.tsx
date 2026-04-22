@@ -1,6 +1,7 @@
 import { useEffect } from "react"
 import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from "lucide-react"
 import useToastStore from "../stores/useToastStore"
+import { STATUS_COLORS } from "../theme/colors"
 
 export interface ToastMessage {
   id: string
@@ -18,7 +19,7 @@ const icons = {
 const accentColors = {
   success: "var(--success)",
   error: "var(--danger)",
-  info: "#6366f1",
+  info: STATUS_COLORS.info,
   warning: "var(--warning-strong)",
 }
 

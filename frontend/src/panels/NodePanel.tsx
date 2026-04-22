@@ -80,7 +80,7 @@ function InstancePanel({
   }
   return (
     <div className="px-4 py-3 flex flex-col gap-3">
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-soft)', border: '1px solid rgba(96,165,250,.15)' }}>
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-soft)', border: '1px solid var(--text-accent-line)' }}>
         <Link2 size={13} style={{ color: 'var(--accent)' }} className="shrink-0" />
         <div className="min-w-0">
           <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--accent)' }}>Instance of</div>
@@ -443,14 +443,14 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
           <button
             onClick={onRefreshPreview}
             className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
-            style={{ background: 'var(--accent)', color: '#fff' }}
+            style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
             title="Refresh preview"
           >
             <RefreshCw size={11} />
             Refresh
           </button>
         )}
-        <button onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: '#fff' }}
+        <button onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: 'var(--text-on-accent)' }}
           title="Close"
         >
           <X size={14} strokeWidth={2.5} />

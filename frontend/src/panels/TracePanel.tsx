@@ -6,6 +6,7 @@ import { formatValue as _formatValue } from "../utils/formatValue"
 import { formatExpression } from "../utils/formatTrace"
 import PanelShell from "./PanelShell"
 import CalculationHero from "../trace/CalculationHero"
+import { CHART_COLORS } from "../theme/colors"
 import { findTargetStep, collapsePassthroughs } from "./trace/traceGrouping"
 import { traceToMarkdown } from "./trace/traceToMarkdown"
 
@@ -116,7 +117,7 @@ function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
 
 function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep; index: number; tracedColumn: string | null; isTargetStep?: boolean }) {
   const [expanded, setExpanded] = useState(false)
-  const accent = nodeTypeColors[step.node_type] || "#06b6d4"
+  const accent = nodeTypeColors[step.node_type] || CHART_COLORS.cyan
   const typeLabel = nodeTypeLabels[step.node_type] || "NODE"
   const relevant = step.column_relevant
 

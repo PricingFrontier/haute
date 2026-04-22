@@ -615,11 +615,7 @@ class TestCorruptSidecar:
         assert result == {}
 
     def test_sidecar_with_extra_fields_still_loads(self, tmp_path: Path) -> None:
-        """Sidecar with unknown keys loads without error (forward compat).
-
-        Catches: strict validation rejecting sidecars written by a newer
-        version of haute.
-        """
+        """Sidecar loader preserves unknown keys for caller-owned metadata."""
         py_path = tmp_path / "pipeline.py"
         py_path.write_text("# placeholder")
         sidecar = py_path.with_suffix(".haute.json")
