@@ -24,6 +24,11 @@ class FrontendBuildHook(BuildHookInterface):
     PLUGIN_NAME = "frontend-build"
 
     def initialize(self, version: str, build_data: dict) -> None:  # noqa: ARG002
+        # Editable installs happen during dependency sync; wheel builds still
+        # validate packaged frontend assets below.
+        if version == "editable":
+            return
+
         frontend_dir = Path(self.root) / "frontend"
         if not frontend_dir.exists():
             # Source dist or CI without frontend — skip

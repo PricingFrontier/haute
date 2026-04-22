@@ -170,9 +170,7 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
       if (nodeId === "A") {
         aSignal = opts?.signal
         return new Promise((resolve) => {
-          // Resolve A's response 50ms after it was started, regardless
-          // of abort — this simulates a race where the network returns
-          // after the user has already moved on.
+          // Resolve A only after the user has already moved on.
           setTimeout(() => {
             resolve({
               node_id: "A",
@@ -182,7 +180,7 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
               columns: [{ name: "stale", dtype: "f64" }],
               preview: Array.from({ length: 99 }, (_, i) => ({ stale: i })),
             })
-          }, 50)
+          }, 10_000)
         })
       }
       // B's request just hangs — we care about A's late response not
@@ -194,22 +192,25 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
+    vi.useFakeTimers()
+
     act(() => { result.current.fetchPreview(makeNode("A")) })
     // Wait for debounce to fire so A's request is in flight
-    await new Promise((r) => setTimeout(r, 250))
+    await act(async () => {
+      vi.advanceTimersByTime(200)
+      await Promise.resolve()
+    })
+    expect(aSignal).toBeDefined()
 
-    // Switch to B — aborts A's in-flight request.  Need to also wait
-    // for B's debounce to fire so fetchPreviewImmediate runs (which is
-    // where previewAbort.current?.abort() lives).
+    // Switch to B: the hook aborts A immediately when selection changes.
     act(() => { result.current.fetchPreview(makeNode("B")) })
-    await new Promise((r) => setTimeout(r, 250))
-
-    // Abort flag should be set now that B's debounce fired
     expect(aSignal?.aborted).toBe(true)
 
-    // Wait for A's late response (arrived 50ms after A started → at
-    // least one tick) to race through the .then().
-    await new Promise((r) => setTimeout(r, 200))
+    // Let A's late response race through the .then().
+    await act(async () => {
+      vi.advanceTimersByTime(10_000)
+      await Promise.resolve()
+    })
 
     // previewData must never be equal to A's stale rows
     expect(result.current.previewData?.nodeId).not.toBe("A")
