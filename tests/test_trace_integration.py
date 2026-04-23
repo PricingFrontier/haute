@@ -11,31 +11,30 @@ This file defines the complete specification for the trace enhancement.
 from __future__ import annotations
 
 import json
-import math
 import time
-from datetime import date, datetime
-from pathlib import Path
-from typing import Any
+from datetime import date
 
 import polars as pl
 import pytest
 
+from haute.executor import _preview_cache, execute_graph
 from haute.trace import (
-    SchemaDiff,
     TraceResult,
     TraceStep,
-    _compute_schema_diff,
-    _jsonify_row,
     execute_trace,
     trace_result_to_dict,
 )
 from haute.trace import _cache as _trace_cache
-from haute.executor import _preview_cache, execute_graph
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
-    make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
@@ -221,7 +220,8 @@ class TestLinearPipelineMultipleWithColumns:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.col('x') * 3)\ndf = df.with_columns(z=pl.col('y') + pl.col('x'))",
+                        "df = df.with_columns(y=pl.col('x') * 3)\n"
+                        "df = df.with_columns(z=pl.col('y') + pl.col('x'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -345,7 +345,19 @@ class TestJoinTraceNullLeftJoin:
         preview_rows = results["join"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["key"] == 2)
 
-        result = execute_trace(graph, row_index=null_row_idx, target_node_id="join", column="val_b")
+        # Pass the executor's preview cache explicitly so the trace
+        # reuses the exact DataFrames ``execute_graph`` just populated
+        # — a cold re-execution would pick a different row ordering
+        # for non-deterministic polars joins.  Wave 9E (#104) removed
+        # the implicit reach-through that used to happen inside the
+        # trace module.
+        result = execute_trace(
+            graph,
+            row_index=null_row_idx,
+            target_node_id="join",
+            column="val_b",
+            preview=_preview_cache,
+        )
         assert result.output_value is None
 
 
@@ -476,7 +488,8 @@ class TestRatingStepSingleTable:
                     _transform_node(
                         "rated",
                         "df = data.join(rates, on='region')\n"
-                        "df = df.with_columns(rated_premium=pl.col('base') * pl.col('region_factor'))",
+                        "df = df.with_columns("
+                        "rated_premium=pl.col('base') * pl.col('region_factor'))",
                     ),
                 ],
                 "edges": [_edge("data", "rated"), _edge("rates", "rated")],
@@ -534,8 +547,8 @@ class TestRatingStepMultiplyTables:
                     _transform_node("join_region", "df = join_age.join(region_tbl, on='region')"),
                     _transform_node(
                         "calc",
-                        "df = df.with_columns("
-                        "final_premium=pl.col('base_premium') * pl.col('age_factor') * pl.col('region_factor'))",
+                        "df = df.with_columns(final_premium="
+                        "pl.col('base_premium') * pl.col('age_factor') * pl.col('region_factor'))",
                     ),
                 ],
                 "edges": [
@@ -802,11 +815,13 @@ class TestScenarioExpanderTrace:
                     # Simulate scenario expansion: cross-join with multipliers
                     _transform_node(
                         "expand",
-                        "df = df.join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),how='cross')",
+                        "df = df.join("
+                        "pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(),how='cross')",
                     ),
                     _transform_node(
                         "calc",
-                        "df = df.with_columns(scenario_premium=pl.col('premium') * pl.col('multiplier'))",
+                        "df = df.with_columns("
+                        "scenario_premium=pl.col('premium') * pl.col('multiplier'))",
                     ),
                 ],
                 "edges": [_edge("src", "expand"), _edge("expand", "calc")],
@@ -841,7 +856,8 @@ class TestOptimiserApplyTrace:
                     _source_node("src", str(p)),
                     _transform_node(
                         "opt",
-                        "df = df.with_columns(optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
+                        "df = df.with_columns("
+                        "optimised_premium=pl.col('premium') * pl.col('lambda_adj'))",
                     ),
                 ],
                 "edges": [_edge("src", "opt")],
@@ -1382,7 +1398,8 @@ class TestRowCorrelationScenarioExpansion:
                     _source_node("src", str(p)),
                     _transform_node(
                         "expand",
-                        "df = df.join(pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
+                        "df = df.join("
+                        "pl.DataFrame({'multiplier': [0.9, 1.0, 1.1]}).lazy(), how='cross')",
                     ),
                 ],
                 "edges": [_edge("src", "expand")],
@@ -2356,8 +2373,15 @@ class TestBurnCostExample:
         preview_rows = results["join_premiums"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["quote_id"] == 102)
 
+        # Pass the executor's preview cache so the trace correlates
+        # against the exact same join output ``execute_graph`` produced.
+        # See the matching note in ``test_trace_null_from_left_join``.
         result = execute_trace(
-            graph, row_index=null_row_idx, target_node_id="join_premiums", column="burn_cost"
+            graph,
+            row_index=null_row_idx,
+            target_node_id="join_premiums",
+            column="burn_cost",
+            preview=_preview_cache,
         )
         assert result.output_value is None
 

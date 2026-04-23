@@ -108,10 +108,7 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
       {/* Drag handle */}
       <div
         onMouseDown={onDragStart}
-        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10 transition-colors"
-        style={{ background: 'var(--chrome-border)' }}
-        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--accent)'}
-        onMouseLeave={(e) => e.currentTarget.style.background = 'var(--chrome-border)'}
+        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
       />
       {/* Header bar */}
       <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
@@ -120,7 +117,7 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
 
         {data.status === "ok" && (
           <>
-            <CheckCircle2 size={13} className="ml-1" style={{ color: '#22c55e' }} />
+            <CheckCircle2 size={13} className="ml-1" style={{ color: 'var(--success)' }} />
             <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
               {data.row_count.toLocaleString()} rows · {data.column_count} cols
             </span>
@@ -129,8 +126,8 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
 
         {data.status === "error" && (
           <>
-            <AlertCircle size={13} className="ml-1" style={{ color: '#ef4444' }} />
-            <span className="text-[11px] truncate" style={{ color: '#ef4444' }}>{data.error}</span>
+            <AlertCircle size={13} className="ml-1" style={{ color: 'var(--danger)' }} />
+            <span className="text-[11px] truncate" style={{ color: 'var(--danger)' }}>{data.error}</span>
           </>
         )}
 
@@ -157,10 +154,8 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
           </div>
           <button
             onClick={() => setCollapsed(true)}
-            className="p-1 rounded transition-colors"
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
             style={{ color: 'var(--text-muted)' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
           >
             <ChevronDown size={14} />
           </button>
@@ -176,20 +171,21 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
       ) : data.status === "error" ? (
         <div className="flex-1 flex items-center justify-center p-4">
           <div className="text-center">
-            <AlertCircle size={24} className="mx-auto mb-2" style={{ color: '#ef4444', opacity: 0.5 }} />
-            <div className="text-xs max-w-md" style={{ color: '#ef4444' }}>{data.error}</div>
+            <AlertCircle size={24} className="mx-auto mb-2" style={{ color: 'var(--danger)', opacity: 0.5 }} />
+            <div className="text-xs max-w-md" style={{ color: 'var(--danger)' }}>{data.error}</div>
           </div>
         </div>
       ) : (
         <div ref={scrollRef} className="flex-1 overflow-auto" onScroll={handleTableScroll}>
           {(() => {
             const totalRows = data.preview.length
-            const shouldVirtualize = totalRows > VIRTUALIZE_THRESHOLD && viewHeight > 0
+            const effectiveViewHeight = viewHeight || Math.max(ROW_HEIGHT, height - 64)
+            const shouldVirtualize = totalRows > VIRTUALIZE_THRESHOLD
             let startIdx = 0
             let endIdx = totalRows
             if (shouldVirtualize) {
               startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-              endIdx = Math.min(totalRows, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + OVERSCAN)
+              endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
             }
             const topPad = startIdx * ROW_HEIGHT
             const bottomPad = (totalRows - endIdx) * ROW_HEIGHT

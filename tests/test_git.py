@@ -35,9 +35,8 @@ from haute._git import (
     submit_for_review,
     switch_branch,
 )
-
-from tests._git_helpers import git_run as _git, init_repo as _init_repo
-
+from tests._git_helpers import git_run as _git
+from tests._git_helpers import init_repo as _init_repo
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1323,7 +1322,7 @@ class TestDetachedHead:
     branch info.
     """
 
-    def test_detached_head_reports_HEAD(self, tmp_path: Path) -> None:
+    def test_detached_head_reports_HEAD(self, tmp_path: Path) -> None:  # noqa: N802 - references git's literal `HEAD` token
         """get_status reports branch='HEAD' when in detached HEAD state."""
         repo = _init_repo(tmp_path)
         sha = _git(repo, "rev-parse", "HEAD")
@@ -1480,7 +1479,7 @@ class TestSaveProgressStagesSensitiveFiles:
 
         (repo / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nfake\n")
 
-        result = save_progress(repo)
+        save_progress(repo)
         committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
         assert "id_rsa" in committed_files
 
@@ -1496,7 +1495,7 @@ class TestSaveProgressStagesSensitiveFiles:
         (repo / ".env").write_text("SECRET_KEY=super-secret-value\n")
         (repo / "real_change.py").write_text("x = 1\n")
 
-        result = save_progress(repo)
+        save_progress(repo)
         committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
         assert ".env" not in committed_files
         assert ".gitignore" in committed_files
@@ -1514,22 +1513,22 @@ class TestProtectedBranchCaseSensitivity:
     is a different branch from "main".
     """
 
-    def test_uppercase_MAIN_is_not_protected(self) -> None:
+    def test_uppercase_MAIN_is_not_protected(self) -> None:  # noqa: N802 - literal branch name variant under test
         assert _is_protected("MAIN") is False
 
-    def test_titlecase_Main_is_not_protected(self) -> None:
+    def test_titlecase_Main_is_not_protected(self) -> None:  # noqa: N802 - literal branch name variant under test
         assert _is_protected("Main") is False
 
-    def test_mixed_case_mAiN_is_not_protected(self) -> None:
+    def test_mixed_case_mAiN_is_not_protected(self) -> None:  # noqa: N802 - literal branch name variant under test
         assert _is_protected("mAiN") is False
 
-    def test_uppercase_MASTER_is_not_protected(self) -> None:
+    def test_uppercase_MASTER_is_not_protected(self) -> None:  # noqa: N802 - literal branch name variant under test
         assert _is_protected("MASTER") is False
 
-    def test_uppercase_DEVELOP_is_not_protected(self) -> None:
+    def test_uppercase_DEVELOP_is_not_protected(self) -> None:  # noqa: N802 - literal branch name variant under test
         assert _is_protected("DEVELOP") is False
 
-    def test_uppercase_PRODUCTION_is_not_protected(self) -> None:
+    def test_uppercase_PRODUCTION_is_not_protected(self) -> None:  # noqa: N802 - literal branch name variant under test
         assert _is_protected("PRODUCTION") is False
 
     def test_lowercase_variants_still_protected(self) -> None:
@@ -1570,7 +1569,7 @@ class TestSensitiveFileStagingCredentials:
         (repo / "credentials.json").write_text('{"api_key": "sk-12345"}\n')
         (repo / "app.py").write_text("print('hello')\n")
 
-        result = save_progress(repo)
+        save_progress(repo)
         committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
         assert ".env" not in committed_files
         assert "credentials.json" not in committed_files

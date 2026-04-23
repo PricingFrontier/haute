@@ -45,7 +45,6 @@ _GLM_CONFIG_KEYS: tuple[str, ...] = (
     "intercept",
     "var_power",
     "offset",
-    "cv_folds",
 )
 
 
@@ -149,9 +148,6 @@ def _check_gpu_vram(
     effective_rows: int,
     probe_columns: int,
     params: dict[str, Any],
-    *,
-    validation_size: float = 0.2,
-    holdout_size: float = 0.0,
 ) -> _VramCheck:
     """Estimate GPU VRAM requirements and return a check result."""
     if effective_rows <= 0 or probe_columns <= 0:
@@ -164,8 +160,6 @@ def _check_gpu_vram(
         probe_columns,
         border_count=params.get("border_count", _DEFAULT_BORDER_COUNT),
         depth=params.get("depth", _DEFAULT_DEPTH),
-        validation_size=validation_size,
-        holdout_size=holdout_size,
     )
     estimated_mb = round(vram_needed / 1024**2, 1)
 
@@ -255,7 +249,6 @@ class TrainService:
                 if k in config and k not in train_params:
                     train_params[k] = config[k]
 
-            split_cfg = config.get("split", {})
             ram_warning = self._check_gpu_fallback(
                 train_params,
                 row_limit,
@@ -263,10 +256,6 @@ class TrainService:
                 probe_columns,
                 ram_warning,
                 job_id,
-                validation_size=float(
-                    split_cfg.get("validation_size", split_cfg.get("test_size", 0.2))
-                ),
-                holdout_size=float(split_cfg.get("holdout_size", 0.0)),
             )
 
             # Build the list of columns that must survive projection
@@ -410,9 +399,6 @@ class TrainService:
         probe_columns: int,
         ram_warning: str | None,
         job_id: str,
-        *,
-        validation_size: float = 0.2,
-        holdout_size: float = 0.0,
     ) -> str | None:
         """Check GPU VRAM; fall back to CPU if insufficient.
 
@@ -427,8 +413,6 @@ class TrainService:
                 effective_rows,
                 probe_columns,
                 train_params,
-                validation_size=validation_size,
-                holdout_size=holdout_size,
             )
             if vram_check.warning:
                 train_params["task_type"] = "CPU"
@@ -491,6 +475,8 @@ class TrainService:
             _mem_checkpoint("before _execute_lazy")
 
             checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
+            from haute.executor import ENFORCE_CONTRACTS
+
             lazy_outputs, _order, _parents, _id_to_name = _execute_lazy(
                 body.graph,
                 _build_node_fn,
@@ -498,6 +484,7 @@ class TrainService:
                 preamble_ns=preamble_ns,
                 source=body.source,
                 checkpoint_dir=checkpoint_dir,
+                enforce_contracts=ENFORCE_CONTRACTS,
             )
 
             target_lf = lazy_outputs.get(body.node_id)
@@ -616,7 +603,6 @@ class TrainService:
             offset=config.get("offset") or None,
             monotone_constraints=config.get("monotone_constraints") or None,
             feature_weights=config.get("feature_weights") or None,
-            cv_folds=config.get("cv_folds"),
         )
 
         def _train_background() -> None:
@@ -637,7 +623,6 @@ class TrainService:
                     double_lift=train_result.double_lift,
                     shap_summary=train_result.shap_summary,
                     feature_importance_loss=train_result.feature_importance_loss,
-                    cv_results=train_result.cv_results,
                     ave_per_feature=train_result.ave_per_feature,
                     residuals_histogram=train_result.residuals_histogram,
                     residuals_stats=train_result.residuals_stats,

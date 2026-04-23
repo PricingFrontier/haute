@@ -15,7 +15,11 @@ import {
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
 import { nodeData } from "../types/node"
-import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, SINK_ONLY_TYPES, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import useToastStore from "../stores/useToastStore"
+import type { FetchPreviewOptions } from "./usePipelineAPI"
+
+const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 
 /** Check whether the target node has reached its maxInputs limit. */
 function wouldExceedMaxInputs(
@@ -31,6 +35,17 @@ function wouldExceedMaxInputs(
   return incomingCount >= meta.maxInputs
 }
 
+function previewOptionsForClick(node: Node): FetchPreviewOptions | null {
+  const nodeType = nodeData(node).nodeType
+  if (nodeType === NODE_TYPES.OPTIMISER) {
+    return {
+      debounceMs: OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS,
+    }
+  }
+  if (SINK_ONLY_TYPES.has(nodeType)) return null
+  return {}
+}
+
 type ContextMenuData = {
   x: number
   y: number
@@ -41,6 +56,7 @@ type ContextMenuData = {
 }
 
 type UseEdgeHandlersParams = {
+  selectedNode: Node | null
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   nodeIdCounter: MutableRefObject<number>
   lastSelectedNodeRef: MutableRefObject<Node | null>
@@ -48,13 +64,16 @@ type UseEdgeHandlersParams = {
   setEdges: (updater: (eds: Edge[]) => Edge[]) => void
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
   setContextMenu: (data: ContextMenuData | null) => void
-  fetchPreview: (node: Node) => void
+  fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
+  cancelPreview: () => void
+  shouldSkipAutomaticPreview?: (node: Node) => boolean
   clearTrace: () => void
   screenToFlowPosition: (pos: { x: number; y: number }) => { x: number; y: number }
   graphRefreshingRef: MutableRefObject<number>
 }
 
 export default function useEdgeHandlers({
+  selectedNode,
   graphRef,
   nodeIdCounter: nodeIdCounterRef,
   lastSelectedNodeRef,
@@ -63,10 +82,14 @@ export default function useEdgeHandlers({
   setSelectedNode,
   setContextMenu,
   fetchPreview,
+  cancelPreview,
+  shouldSkipAutomaticPreview,
   clearTrace,
   screenToFlowPosition,
   graphRefreshingRef,
 }: UseEdgeHandlersParams) {
+  const addToast = useToastStore((s) => s.addToast)
+
   const onConnect: OnConnect = useCallback(
     (params) => {
       if (params.source === params.target) return
@@ -103,15 +126,27 @@ export default function useEdgeHandlers({
 
   /** Opens panel on a full click (mousedown+mouseup) — skipped for drags. */
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
-    setSelectedNode((prev) => {
-      if (prev?.id !== node.id) {
-        fetchPreview(node)
-        clearTrace()
-      }
-      return node
-    })
+    const previousNodeId = selectedNode?.id ?? lastSelectedNodeRef.current?.id
+    const shouldRefreshPreview = previousNodeId !== node.id
+    setSelectedNode(node)
     lastSelectedNodeRef.current = node
-  }, [setSelectedNode, fetchPreview, clearTrace, lastSelectedNodeRef])
+    if (!shouldRefreshPreview) return
+
+    clearTrace()
+    cancelPreview()
+    if (shouldSkipAutomaticPreview?.(node)) return
+    const previewOptions = previewOptionsForClick(node)
+    if (!previewOptions) return
+    fetchPreview(node, previewOptions)
+  }, [
+    selectedNode,
+    setSelectedNode,
+    fetchPreview,
+    cancelPreview,
+    shouldSkipAutomaticPreview,
+    clearTrace,
+    lastSelectedNodeRef,
+  ])
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
     setEdges((eds) => eds.filter((e) => e.id !== edgeId))
@@ -141,10 +176,24 @@ export default function useEdgeHandlers({
       const type = event.dataTransfer.getData("application/reactflow-type")
       if (!type) return
 
-      let config = {}
+      // Parse the drag-config JSON. Malformed payloads must fail loudly
+      // (Issue #35) — silently swallowing the error would create a node
+      // with an empty config, which violates downstream node-type
+      // invariants and is invisible to the user.
+      const rawConfig = event.dataTransfer.getData("application/reactflow-config") || "{}"
+      let config: Record<string, unknown>
       try {
-        config = JSON.parse(event.dataTransfer.getData("application/reactflow-config") || "{}")
-      } catch { /* ignore */ }
+        const parsed = JSON.parse(rawConfig)
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          addToast("error", "Drop rejected: node config must be a JSON object")
+          return
+        }
+        config = parsed as Record<string, unknown>
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        addToast("error", `Drop rejected: invalid node config JSON (${message})`)
+        return
+      }
 
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
       nodeIdCounterRef.current += 1
@@ -168,7 +217,7 @@ export default function useEdgeHandlers({
       ])
       setSelectedNode(newNode)
     },
-    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode],
+    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, addToast],
   )
 
   return {

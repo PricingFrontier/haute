@@ -34,9 +34,9 @@ class TestTopoSortIds:
         assert set(order) == {"a", "b", "c", "d"}
 
     def test_disconnected_nodes(self):
-        """Disconnected nodes appear in sorted order (heap-based)."""
+        """Disconnected nodes preserve insertion order (graphlib tie-break)."""
         order = topo_sort_ids(["c", "a", "b"], [])
-        assert order == ["a", "b", "c"]
+        assert order == ["c", "a", "b"]
 
     def test_single_node(self):
         order = topo_sort_ids(["x"], [])
@@ -70,11 +70,12 @@ class TestTopoSortIds:
         assert order[0] == "root"
         assert set(order[1:]) == set(children)
 
-    def test_deterministic_alphabetical_ordering(self):
+    def test_deterministic_insertion_ordering(self):
+        """Ties are broken by insertion order (graphlib stdlib behaviour)."""
         ids = ["z", "m", "a", "f"]
         for _ in range(5):
             order = topo_sort_ids(ids, [])
-            assert order == ["a", "f", "m", "z"]
+            assert order == ["z", "m", "a", "f"]
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +117,7 @@ class TestCycleDetection:
 
     def test_cycle_error_is_haute_error(self):
         """CycleError is a HauteError subclass."""
-        from haute._types import HauteError
+        from haute.errors import HauteError
 
         with pytest.raises(HauteError):
             topo_sort_ids(["a", "b"], [_e("a", "b"), _e("b", "a")])

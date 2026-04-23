@@ -225,8 +225,9 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("shows syntax error from auto-save", async () => {
+    // Item #76: backend emits a flat string detail "Syntax error on line N: <msg>".
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, JSON.stringify({ error: "unexpected EOF", error_line: 3 })),
+      new MockApiError("HTTP 400", 400, "Syntax error on line 3: unexpected EOF"),
     )
 
     render(<UtilityPanel {...defaultProps} />)
@@ -235,13 +236,15 @@ describe("UtilityPanel auto-save", () => {
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "def foo(\n" } })
     await act(async () => { vi.advanceTimersByTime(600) })
 
-    await waitFor(() => expect(screen.getByText("unexpected EOF")).toBeInTheDocument())
+    await waitFor(() => expect(
+      screen.getByText("Syntax error on line 3: unexpected EOF"),
+    ).toBeInTheDocument())
   })
 
   it("clears error when user edits again", async () => {
     mockUpdateFile
       .mockRejectedValueOnce(
-        new MockApiError("HTTP 400", 400, JSON.stringify({ error: "unexpected EOF", error_line: 3 })),
+        new MockApiError("HTTP 400", 400, "Syntax error on line 3: unexpected EOF"),
       )
       .mockResolvedValueOnce({
         status: "ok", name: "features.py", module: "features", import_line: "",
@@ -253,16 +256,18 @@ describe("UtilityPanel auto-save", () => {
     // Trigger error
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "def foo(\n" } })
     await act(async () => { vi.advanceTimersByTime(600) })
-    await waitFor(() => expect(screen.getByText("unexpected EOF")).toBeInTheDocument())
+    await waitFor(() => expect(
+      screen.getByText("Syntax error on line 3: unexpected EOF"),
+    ).toBeInTheDocument())
 
     // Edit again — error should clear immediately
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "def foo(): pass\n" } })
-    expect(screen.queryByText("unexpected EOF")).toBeNull()
+    expect(screen.queryByText("Syntax error on line 3: unexpected EOF")).toBeNull()
   })
 
   it("shows error from failed auto-save", async () => {
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, JSON.stringify({ error: "Save failed", error_line: 1 })),
+      new MockApiError("HTTP 400", 400, "Syntax error on line 1: Save failed"),
     )
 
     render(<UtilityPanel {...defaultProps} />)
@@ -271,12 +276,15 @@ describe("UtilityPanel auto-save", () => {
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 2\n" } })
     await act(async () => { vi.advanceTimersByTime(600) })
 
-    await waitFor(() => expect(screen.getByText("Save failed")).toBeInTheDocument())
+    await waitFor(() => expect(
+      screen.getByText("Syntax error on line 1: Save failed"),
+    ).toBeInTheDocument())
   })
 
-  it("sets error-line attribute on editor when save returns error_line", async () => {
+  it("sets error-line attribute on editor when save detail mentions a line", async () => {
+    // parseSyntaxError extracts the line number from the flat string via /line (\d+)/.
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, JSON.stringify({ error: "syntax error", error_line: 5 })),
+      new MockApiError("HTTP 400", 400, "Syntax error on line 5: unexpected token"),
     )
 
     render(<UtilityPanel {...defaultProps} />)

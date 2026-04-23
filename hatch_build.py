@@ -1,8 +1,8 @@
-"""Hatchling custom build hook — builds the frontend before packaging.
+"""Hatchling custom build hook for packaged frontend assets.
 
-This runs automatically during ``hatch build``, ``uv build``, or
-``pip install .`` so that ``src/haute/static/`` always contains the
-latest compiled frontend assets.
+By default the hook packages already-built files in ``src/haute/static/``
+and verifies they are present and current. Release or preflight builds
+that need to refresh those assets can opt in with ``HAUTE_BUILD_FRONTEND=1``.
 """
 
 from __future__ import annotations
@@ -15,11 +15,20 @@ from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
+_BUILD_FRONTEND_ENV = "HAUTE_BUILD_FRONTEND"
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_VALUES = frozenset({"", "0", "false", "no", "off"})
+
 
 class FrontendBuildHook(BuildHookInterface):
     PLUGIN_NAME = "frontend-build"
 
     def initialize(self, version: str, build_data: dict) -> None:  # noqa: ARG002
+        # Editable installs happen during dependency sync; wheel builds still
+        # validate packaged frontend assets below.
+        if version == "editable":
+            return
+
         frontend_dir = Path(self.root) / "frontend"
         if not frontend_dir.exists():
             # Source dist or CI without frontend — skip
@@ -27,6 +36,10 @@ class FrontendBuildHook(BuildHookInterface):
 
         static_dir = Path(self.root) / "src" / "haute" / "static"
         index_html = static_dir / "index.html"
+
+        if not self._should_build_frontend():
+            self._validate_static_assets(frontend_dir, index_html)
+            return
 
         # Install deps if node_modules is missing
         node_modules = frontend_dir / "node_modules"
@@ -43,6 +56,38 @@ class FrontendBuildHook(BuildHookInterface):
         # Sanity check
         if not index_html.exists():
             msg = f"Frontend build did not produce {index_html}"
+            raise RuntimeError(msg)
+
+    @staticmethod
+    def _should_build_frontend() -> bool:
+        """Return True when the caller explicitly opts into a frontend build."""
+        raw = os.environ.get(_BUILD_FRONTEND_ENV, "").strip().lower()
+        if raw in _TRUE_VALUES:
+            return True
+        if raw in _FALSE_VALUES:
+            return False
+        msg = (
+            f"{_BUILD_FRONTEND_ENV} must be one of "
+            f"{sorted(_TRUE_VALUES | _FALSE_VALUES)!r}; got {raw!r}"
+        )
+        raise RuntimeError(msg)
+
+    @classmethod
+    def _validate_static_assets(cls, frontend_dir: Path, index_html: Path) -> None:
+        """Fail clearly when a wheel build would package missing or stale frontend."""
+        if not index_html.exists():
+            msg = (
+                f"Built frontend assets are missing at {index_html}. "
+                f"Run 'cd frontend && npm ci && npm run build', or set "
+                f"{_BUILD_FRONTEND_ENV}=1 for an explicit release build."
+            )
+            raise RuntimeError(msg)
+        if cls._is_stale(frontend_dir, index_html):
+            msg = (
+                f"Built frontend assets at {index_html.parent} are older than "
+                f"the frontend source. Run 'cd frontend && npm run build', or "
+                f"set {_BUILD_FRONTEND_ENV}=1 so the package build refreshes them."
+            )
             raise RuntimeError(msg)
 
     @staticmethod

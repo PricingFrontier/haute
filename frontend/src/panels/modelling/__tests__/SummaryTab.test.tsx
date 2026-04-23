@@ -83,19 +83,6 @@ describe("SummaryTab", () => {
     expect(holdoutLabels).toHaveLength(1)
   })
 
-  it("shows CV results when present", () => {
-    const result = makeTrainResult({
-      cv_results: {
-        n_folds: 5,
-        mean_metrics: { gini: 0.44 },
-        std_metrics: { gini: 0.02 },
-      },
-    })
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
-    expect(screen.getByText("Cross-Validation (5-fold)")).toBeInTheDocument()
-    expect(screen.getByText("0.4400")).toBeInTheDocument()
-  })
-
   it("shows best iteration when present", () => {
     const result = makeTrainResult({ best_iteration: 750 })
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)

@@ -12,8 +12,14 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
-from haute._builders import get_column_contract
+from haute._builders import Contract, _passthrough_fn, get_column_contract
+from haute._graph_utils import (
+    _sanitize_func_name,
+    build_parents_of,
+    resolve_orig_source_names,
+)
 from haute._logging import get_logger
+from haute._path_resolution import resolve_runtime_file_path
 from haute._polars_utils import _malloc_trim, safe_sink
 from haute._topo import ancestors, topo_sort_ids
 from haute._types import (
@@ -22,12 +28,234 @@ from haute._types import (
     NodeType,
     PipelineGraph,
     _Frame,
-    _sanitize_func_name,
-    build_parents_of,
-    resolve_orig_source_names,
 )
+from haute.errors import ContractMismatchError
 
 logger = get_logger(component="execute")
+
+
+_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
+    NodeType.API_INPUT: "path",
+    NodeType.DATA_SOURCE: "path",
+    NodeType.EXTERNAL_FILE: "path",
+    NodeType.DATA_SINK: "path",
+}
+
+
+def _resolve_graph_paths(graph: PipelineGraph) -> PipelineGraph:
+    """Resolve project/pipeline-relative file paths before building node functions."""
+    if not graph.source_file:
+        return graph
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        config = node.data.config
+        key = _PATH_CONFIG_BY_NODE_TYPE.get(node.data.nodeType)
+        if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file":
+            key = "artifact_path"
+        if key is None:
+            nodes.append(node)
+            continue
+        raw_path = config.get(key)
+        if isinstance(raw_path, str) and raw_path:
+            resolved = str(
+                resolve_runtime_file_path(
+                    raw_path,
+                    source_file=graph.source_file,
+                    prefer="project",
+                )
+            )
+            if resolved != raw_path:
+                data = node.data.model_copy(update={"config": {**config, key: resolved}})
+                nodes.append(node.model_copy(update={"data": data}))
+                changed = True
+            else:
+                nodes.append(node)
+        else:
+            nodes.append(node)
+    if not changed:
+        return graph
+    return graph.model_copy(update={"nodes": nodes})
+
+
+# ---------------------------------------------------------------------------
+# Column contract enforcement
+# ---------------------------------------------------------------------------
+
+
+def _compute_boundary_check_exceptions() -> tuple[type[BaseException], ...]:
+    """Exception classes the boundary contract check treats as recoverable.
+
+    We only catch classes that describe genuine "can't resolve the
+    contract right now" conditions — bad config, missing files, MLflow
+    reachability.  Programmer bugs (``AttributeError``, ``TypeError``,
+    ``KeyError``) propagate so they aren't silently masked.
+
+    Narrowed deliberately:
+
+    * ``RuntimeError`` is **not** included.  The
+      ``"Persistently corrupt model artifact"`` ``RuntimeError`` raised by
+      ``_load_with_bounded_retry`` is a real infrastructure problem the
+      operator must see — swallowing it at contract-check time and
+      falling back to opaque hides the failure until the node itself
+      runs, by which point the log signal is buried under whatever
+      follow-on noise the rewrap produced.
+    * ``ImportError`` is **not** included.  A missing optional backend
+      (catboost / rustystats) is a deploy-configuration bug and should
+      surface loudly at the first site that notices it, not be silently
+      downgraded to an opaque contract.
+
+    MLflow's ``MlflowException`` covers the legitimate "tracking store
+    unreachable" case and is included when the dep is importable.
+    """
+    from haute.errors import ConfigError
+
+    exc_types: list[type[BaseException]] = [ConfigError, OSError]
+    try:
+        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+
+        exc_types.append(MlflowException)
+    except ImportError:
+        pass
+    return tuple(exc_types)
+
+
+_BOUNDARY_CHECK_EXCEPTIONS = _compute_boundary_check_exceptions()
+
+
+def _effective_contract(node: GraphNode) -> Contract:
+    """Return the effective contract for a node at boundary-check time.
+
+    Combines the builder-derived contract with any user-declared
+    contract on the node's config so the executor has a single answer
+    to "what columns does this node read / produce?".
+
+    User-declared sides override the builder when they are concrete
+    (non-None).  This lets a user tighten an opaque POLARS contract to
+    a concrete set; the reverse — a user declaring opaque on top of a
+    concrete builder contract — is accepted silently because the parser
+    has already cross-checked against ``get_column_contract``.
+
+    If the builder contract raises (MLflow unreachable, config mis-set
+    in a way only the builder knows about), the executor treats the
+    node as opaque rather than failing the whole run: the runtime path
+    for such nodes is typically ``_passthrough_fn`` and the caller will
+    still get the original error on the direct ``_model_score_columns``
+    call path that the loud-errors suite exercises.  Silencing here is
+    scoped strictly to the boundary check; it does not hide the
+    configuration issue elsewhere in the system.
+    """
+    from haute.errors import ConfigError
+
+    try:
+        builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+    except _BOUNDARY_CHECK_EXCEPTIONS as exc:
+        # Contract resolution for MODEL_SCORE etc. may touch MLflow /
+        # external stores.  A transient or deploy-mode lookup failure
+        # (ConfigError, OSError, MLflow REST) must not prevent the
+        # pipeline from running — the fn builder path has its own
+        # error reporting and will surface the real problem when the
+        # node actually executes.  We fall back to opaque so the
+        # boundary check is skipped for this node; the actual node
+        # code path still runs and still fails loudly via whichever
+        # error it has always produced.  Programmer errors
+        # (AttributeError / TypeError / KeyError) propagate.
+        if not isinstance(exc, ConfigError):
+            logger.debug(
+                "effective_contract_unresolved",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                error=repr(exc),
+            )
+        builder = Contract.opaque()
+    declared_raw = node.data.config.get("contract")
+    if declared_raw is None:
+        return builder
+    try:
+        declared = Contract.from_user_declared(declared_raw)
+    except ValueError as exc:
+        # Malformed contract on a user's graph should raise up so the
+        # mistake is visible.  The executor is the wrong place to
+        # silently drop it.
+        raise ContractMismatchError(
+            "Node contract annotation is malformed and cannot be interpreted.",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            reason=str(exc),
+        ) from exc
+    if declared is None:
+        return builder
+    inputs = declared.inputs if declared.inputs is not None else builder.inputs
+    outputs = declared.outputs if declared.outputs is not None else builder.outputs
+    return Contract(inputs=inputs, outputs=outputs)
+
+
+def _assert_inputs_satisfy_contract(
+    node: GraphNode,
+    contract: Contract,
+    upstream_columns: frozenset[str],
+) -> None:
+    """Raise ``ContractMismatchError`` if *upstream_columns* is missing
+    any column the node's contract says it reads.
+
+    No-op when the contract's input side is opaque (``None``).
+    """
+    if contract.inputs is None:
+        return
+    missing = contract.inputs - upstream_columns
+    if not missing:
+        return
+    raise ContractMismatchError(
+        "Input columns required by the node's contract are missing from the upstream frame.",
+        node_id=node.id,
+        node_type=node.data.nodeType.value,
+        missing=sorted(missing),
+        extra=sorted(upstream_columns - contract.inputs),
+        declared_inputs=sorted(contract.inputs),
+        upstream_columns=sorted(upstream_columns),
+    )
+
+
+def _assert_outputs_satisfy_contract(
+    node: GraphNode,
+    contract: Contract,
+    output_columns: frozenset[str],
+) -> None:
+    """Raise ``ContractMismatchError`` if *output_columns* is missing
+    any column the node's contract promised to produce.
+
+    We check ⊇ (outputs must be present) rather than == because
+    pass-through style nodes legitimately carry additional columns
+    through from their input.  A declared output that is absent is a
+    bug (typo or buggy user code); an extra column is expected.
+
+    No-op when the contract's output side is opaque (``None``).
+    """
+    if contract.outputs is None:
+        return
+    missing = contract.outputs - output_columns
+    if not missing:
+        return
+    raise ContractMismatchError(
+        "Output columns promised by the node's contract are missing from the node's result.",
+        node_id=node.id,
+        node_type=node.data.nodeType.value,
+        missing=sorted(missing),
+        extra=sorted(output_columns - contract.outputs),
+        declared_outputs=sorted(contract.outputs),
+        observed_columns=sorted(output_columns),
+    )
+
+
+def _should_check_contract(contract: Contract) -> bool:
+    """Return ``True`` iff either side of *contract* is concrete.
+
+    A fully-opaque contract cannot be disproven, so skipping the check
+    saves the per-node column-set computation entirely.  This matters
+    for the <5% overhead bound when a pipeline is dominated by opaque
+    nodes (user polars transforms).
+    """
+    return contract.inputs is not None or contract.outputs is not None
 
 
 # ---------------------------------------------------------------------------
@@ -40,19 +268,31 @@ def _compute_needed_columns(
     children_of: dict[str, list[str]],
     node_map: dict[str, GraphNode],
 ) -> dict[str, set[str] | None]:
-    """Backward pass: compute minimal columns needed from each node's output.
+    """Single reverse-topological sweep computing per-node column needs.
 
-    Walks the graph in reverse topological order.  For each node *n*,
-    ``needed[n]`` is the set of columns from *n*'s output that any
-    downstream consumer actually uses.  ``None`` means "all columns"
-    (cannot be determined — an opaque node is downstream).
+    For each node *n*, ``needed[n]`` is the set of columns from *n*'s
+    output that any downstream consumer actually uses.  ``None`` means
+    "all columns" (the requirement cannot be determined — an opaque
+    node is downstream, or an OUTPUT asks for everything).
 
-    Column contracts (which columns each node creates and reads) are
-    provided by the builder registry via ``get_column_contract``.  This
-    keeps the column knowledge colocated with the builder that defines
-    the node's runtime behaviour.
+    Each node also has a *contribution* — the set a parent must union
+    in for this node as a child, namely
+    ``(needed[n] - produced_n) | referenced_n``.  Contributions are
+    cached per node so a parent with fan-in ``k`` folds ``k``
+    pre-computed sets instead of re-running contract lookup and set
+    algebra ``k`` times.  This turns the pass from
+    ``O(edges × contract_lookups)`` into ``O(V + E)`` with one contract
+    lookup per node.
+
+    Opaque contribution (``None``) from any child forces the parent's
+    ``needed`` to ``None`` as a short-circuit, matching the previous
+    backward-pass semantics byte-for-byte.
     """
     needed: dict[str, set[str] | None] = {}
+    # Per-node contribution to parents.  ``None`` means "parent must
+    # fall to None" — either this node is opaque or any of its
+    # descendants is.  Each entry is written exactly once per node.
+    contribution: dict[str, set[str] | None] = {}
 
     for nid in reversed(order):
         node = node_map[nid]
@@ -65,35 +305,37 @@ def _compute_needed_columns(
                 needed[nid] = set(fields) if fields else None
             else:
                 needed[nid] = None
+        else:
+            # Union of pre-computed child contributions.  Each
+            # contribution was set in this same loop when the child
+            # was visited (reverse topo order guarantees children are
+            # processed before parents).  A single ``None`` child
+            # contribution short-circuits the union to ``None``.
+            acc: set[str] | None = set()
+            for cid in children:
+                child_contrib = contribution.get(cid)
+                if child_contrib is None:
+                    acc = None
+                    break
+                acc |= child_contrib  # type: ignore[operator]
+            needed[nid] = acc
+
+        # Cache this node's contribution to its parents.  Computed
+        # once here; every parent that visits this node as a child
+        # reads the cached value instead of re-fetching the contract
+        # and re-doing the set algebra.
+        my_needed = needed[nid]
+        if my_needed is None:
+            contribution[nid] = None
             continue
-
-        # Union of what all children need from this node's output.
-        needed_by_children: set[str] | None = set()
-        for cid in children:
-            child_node = node_map[cid]
-            child_needed = needed.get(cid)
-
-            if child_needed is None:
-                # Child needs all columns → we need all columns.
-                needed_by_children = None
-                break
-
-            produced, referenced = get_column_contract(
-                child_node.data.nodeType,
-                child_node.data.config,
-            )
-
-            if produced is None or referenced is None:
-                # Opaque child — can't determine what it needs.
-                needed_by_children = None
-                break
-
-            # Child needs from this node: columns needed downstream
-            # (minus what child creates) plus columns child reads.
-            from_parent = (child_needed - produced) | referenced
-            needed_by_children |= from_parent  # type: ignore[operator]
-
-        needed[nid] = needed_by_children
+        produced, referenced = get_column_contract(
+            node.data.nodeType,
+            node.data.config,
+        )
+        if produced is None or referenced is None:
+            contribution[nid] = None
+        else:
+            contribution[nid] = (my_needed - produced) | referenced
 
     return needed
 
@@ -282,15 +524,20 @@ def _prepare_graph(
     """
     node_map = graph.node_map
     edges = _prune_live_switch_edges(graph.edges, node_map, source)
-    all_ids = set(node_map.keys())
 
+    # ``node_map`` is an insertion-ordered ``dict``; deriving the ID list
+    # by iterating it preserves that order all the way into
+    # ``topo_sort_ids``'s insertion-order tie-break.  Going through a
+    # ``set`` would have introduced hash-randomisation into sibling
+    # execution order.
+    all_ids = set(node_map)
     if target_node_id:
         needed = ancestors(target_node_id, edges, all_ids)
     else:
         needed = all_ids
 
     relevant_edges = [e for e in edges if e.source in needed and e.target in needed]
-    order = topo_sort_ids([nid for nid in all_ids if nid in needed], relevant_edges)
+    order = topo_sort_ids([nid for nid in node_map if nid in needed], relevant_edges)
 
     parents_of = build_parents_of(relevant_edges, set(order))
 
@@ -309,6 +556,7 @@ def _execute_lazy(
     preamble_ns: dict | None = None,
     source: str = "live",
     checkpoint_dir: Path | None = None,
+    enforce_contracts: bool = False,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -328,10 +576,18 @@ def _execute_lazy(
             references.  This breaks both chained-join memory
             accumulation and plan duplication across branches
             (GitHub pola-rs/polars#24206).
+        enforce_contracts: When ``True`` (see ``executor.ENFORCE_CONTRACTS``
+            for the default), assert declared column contracts at each
+            node boundary via ``.collect_schema()``.  Polars computes
+            schemas without executing the query, so this stays cheap.
+            Production code paths (batch sink, deploy scoring, training,
+            optimiser) run through here — enforcement on the lazy path
+            is what makes contract coverage real end-to-end.
 
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
     """
+    graph = _resolve_graph_paths(graph)
     node_map, order, parents_of, id_to_name = _prepare_graph(
         graph,
         target_node_id,
@@ -389,8 +645,29 @@ def _execute_lazy(
     # cyclic Python garbage (rare here) and adds 50-200 ms per call.
     checkpoints_since_gc = 0
 
+    # Per-node column sets used by the boundary contract checks.  Polars
+    # computes schema without executing the query, so collect_schema()
+    # is cheap; caching keeps repeated lookups free when the same
+    # upstream feeds multiple consumers.
+    column_cache: dict[str, frozenset[str]] = {}
+
+    def _columns_of(frame: pl.LazyFrame | pl.DataFrame) -> frozenset[str]:
+        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
+        return frozenset(lazy_frame.collect_schema().names())
+
     for nid in order:
         fn, is_source = funcs[nid]
+        node = node_map[nid]
+        contract = _effective_contract(node) if enforce_contracts else None
+        check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
+        # Builder-wired ``_passthrough_fn`` means the node is in a stub
+        # state (MODEL_SCORE without a model, OPTIMISER_APPLY without
+        # an artifact).  Its declared contract describes the configured
+        # shape the runtime does not produce yet; skip the output check
+        # to preserve the "configure later" UX while still enforcing
+        # contracts the moment a real function is wired.
+        is_passthrough_runtime = fn is _passthrough_fn
+
         if is_source:
             lf = fn()
         else:
@@ -404,6 +681,15 @@ def _execute_lazy(
             input_lfs = [lazy_outputs[pid] for pid in input_ids]
             if not input_lfs:
                 raise ValueError(f"No input data available for node '{nid}'")
+
+            if check_here and contract is not None and contract.inputs is not None:
+                upstream_pid = input_ids[0]
+                upstream_cols = column_cache.get(upstream_pid)
+                if upstream_cols is None:
+                    upstream_cols = _columns_of(input_lfs[0])
+                    column_cache[upstream_pid] = upstream_cols
+                _assert_inputs_satisfy_contract(node, contract, upstream_cols)
+
             lf = fn(*input_lfs)
 
         if isinstance(lf, pl.DataFrame):
@@ -413,6 +699,16 @@ def _execute_lazy(
         # then column renames on the surviving columns.
         lf = _apply_selected_columns(lf, node_map[nid].data.config)
         lf = _apply_column_renames(lf, node_map[nid].data.config)
+
+        if (
+            check_here
+            and contract is not None
+            and contract.outputs is not None
+            and not is_passthrough_runtime
+        ):
+            out_cols = _columns_of(lf)
+            column_cache[nid] = out_cols
+            _assert_outputs_satisfy_contract(node, contract, out_cols)
 
         # Adaptive checkpoint to break Polars plan duplication and
         # chained-join memory accumulation (pola-rs/polars#24206).
@@ -582,6 +878,7 @@ def _execute_eager_core(
     swallow_errors: bool = False,
     preamble_ns: dict | None = None,
     source: str = "live",
+    enforce_contracts: bool = True,
 ) -> EagerResult:
     """Execute the graph eagerly in topo order and collect DataFrames.
 
@@ -595,12 +892,18 @@ def _execute_eager_core(
         swallow_errors: If ``True``, record per-node errors and continue
             (preview behaviour).  If ``False``, raise immediately (trace).
         source: Active execution source (``"live"`` = eager scoring).
+        enforce_contracts: If ``True`` (default), assert each node's
+            column contract at its input and output boundaries.  A
+            mismatch always raises ``ContractMismatchError`` regardless
+            of *swallow_errors* — the contract is an API-level claim
+            and a silent error would defeat the adoption effort.
 
     Returns:
         An ``EagerResult`` with named fields for outputs, order,
         parents_of, node_map, id_to_name, errors, timings, and
         memory_bytes.
     """
+    graph = _resolve_graph_paths(graph)
     node_map, order, parents_of, id_to_name = _prepare_graph(
         graph,
         target_node_id,
@@ -629,8 +932,41 @@ def _execute_eager_core(
     memory_bytes: dict[str, int] = {}
     available_columns: dict[str, list[tuple[str, str]]] = {}
 
+    # Per-node column sets used by the boundary contract checks.  We
+    # compute each frame's column set exactly once and reuse it — both
+    # as an output check for the producing node and as an input check
+    # for its consumer(s).  Polars' ``.columns`` is O(n) in the number
+    # of columns, but frozenset construction dominates anyway; caching
+    # keeps the contract-enforced path within the <5% budget.
+    column_cache: dict[str, frozenset[str]] = {}
+
+    # Fan-out count per node — how many direct children consume this
+    # node's output.  Used to add a Polars ``.cache()`` hint when the
+    # parent feeds >1 consumer so the optimiser reuses one materialized
+    # plan across branches (diamond graphs) instead of duplicating the
+    # upstream work.  Each eager_outputs entry is already a concrete
+    # DataFrame, so the cache hint only matters once we re-enter a
+    # LazyFrame via ``.lazy()`` for the next node's inputs.
+    children_count: dict[str, int] = dict.fromkeys(order, 0)
+    for _nid, _pids in parents_of.items():
+        for _pid in _pids:
+            if _pid in children_count:
+                children_count[_pid] += 1
+
     for nid in order:
         fn, is_source = funcs[nid]
+        node = node_map[nid]
+        contract = _effective_contract(node) if enforce_contracts else None
+        check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
+        # A node that the builder chose to wire to ``_passthrough_fn`` is
+        # running in a stub/unconfigured state (MODEL_SCORE without a
+        # loaded model, OPTIMISER_APPLY without an artifact, etc.).  Its
+        # contract describes the *configured* shape, which the runtime
+        # intentionally does not produce yet.  Skip the output-side
+        # check to preserve the "drag node onto canvas, configure later"
+        # UX while still enforcing contracts the moment a real function
+        # is wired in.
+        is_passthrough_runtime = fn is _passthrough_fn
         t0 = time.perf_counter()
         try:
             if is_source:
@@ -649,15 +985,40 @@ def _execute_eager_core(
                 if failed_parents:
                     eager_outputs[nid] = None
                     continue
-                input_lfs = [
-                    df.lazy()
-                    for pid in input_ids
-                    if pid in eager_outputs and (df := eager_outputs[pid]) is not None
-                ]
+                # Add ``.cache()`` on parents that feed >1 consumer so a
+                # downstream ``.collect()`` re-uses the materialised plan
+                # across branches instead of duplicating upstream work.
+                # This is the diamond optimisation: src -> (left, right)
+                # -> sink should compute src's plan once, not twice.
+                # Parents with exactly one consumer skip the hint — it's
+                # cheap but non-zero overhead and adds no value there.
+                input_lfs = []
+                for pid in input_ids:
+                    if pid not in eager_outputs:
+                        continue
+                    parent_df = eager_outputs[pid]
+                    if parent_df is None:
+                        continue
+                    parent_lf = parent_df.lazy()
+                    if children_count.get(pid, 0) > 1:
+                        parent_lf = parent_lf.cache()
+                    input_lfs.append(parent_lf)
                 if not input_lfs:
                     raise ValueError(
                         f"No input data available for node '{nid}'",
                     )
+
+                # Input-side contract check: every column the node's
+                # contract says it reads must be present upstream.
+                # Using the union across all parents matches how the
+                # node's function receives inputs — multi-input joins
+                # combine them before the contract columns are read.
+                if check_here and contract.inputs is not None:  # type: ignore[union-attr]
+                    upstream_cols: frozenset[str] = frozenset().union(
+                        *(column_cache[pid] for pid in input_ids if pid in column_cache)
+                    )
+                    _assert_inputs_satisfy_contract(node, contract, upstream_cols)  # type: ignore[arg-type]
+
                 result = fn(*input_lfs)
 
             df = result.collect(engine="streaming") if isinstance(result, pl.LazyFrame) else result
@@ -672,8 +1033,28 @@ def _execute_eager_core(
             renamed = _apply_column_renames(df, node_map[nid].data.config)
             df = renamed if isinstance(renamed, pl.DataFrame) else renamed.collect()
 
+            # Output-side contract check: every column the node promises
+            # to produce must be present on the result.  We check the
+            # post-rename/post-select frame because that's what
+            # downstream consumers actually see.  Passthrough-runtime
+            # nodes are exempt — see the ``is_passthrough_runtime``
+            # note above.
+            final_cols = frozenset(df.columns)
+            if (
+                check_here
+                and contract.outputs is not None  # type: ignore[union-attr]
+                and not is_passthrough_runtime
+            ):
+                _assert_outputs_satisfy_contract(node, contract, final_cols)  # type: ignore[arg-type]
+            column_cache[nid] = final_cols
+
             eager_outputs[nid] = df
             memory_bytes[nid] = int(df.estimated_size("b"))
+        except ContractMismatchError:
+            # Contract errors are API-level — raise even in swallow mode
+            # so GUI users see the crisp error instead of a silent
+            # per-node "failed" status card.
+            raise
         except Exception as exc:
             if not swallow_errors:
                 raise

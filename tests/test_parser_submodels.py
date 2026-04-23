@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import ast
 
-import pytest
-
 from haute._parser_submodels import (
     extract_submodel_calls,
     merge_submodels,
     parse_submodel_source,
 )
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-
+from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 
 # ---------------------------------------------------------------------------
 # extract_submodel_calls

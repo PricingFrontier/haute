@@ -7,9 +7,6 @@ with malformed, hostile, or boundary-condition inputs.
 
 from __future__ import annotations
 
-import json
-import sys
-
 import pytest
 from pydantic import ValidationError
 
@@ -22,7 +19,6 @@ from haute.schemas import (
     GitCreateBranchRequest,
     GitRevertRequest,
     Graph,
-    GraphNodeData,
     JsonCacheBuildRequest,
     OptimiserApplyRequest,
     OptimiserFrontierRequest,
@@ -37,7 +33,6 @@ from haute.schemas import (
     UtilityCreateRequest,
     UtilityWriteRequest,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -347,7 +342,7 @@ class TestUnicodeEdgeCases:
             data=NodeData(label=label, nodeType="polars"),
         )
         # _sanitize_func_name should strip non-ASCII
-        from haute._types import _sanitize_func_name
+        from haute._graph_utils import _sanitize_func_name
 
         sanitized = _sanitize_func_name(node.data.label)
         assert "\u202e" not in sanitized
@@ -400,7 +395,7 @@ class TestUnicodeEdgeCases:
 
     def test_sanitize_strips_all_non_ascii(self):
         """_sanitize_func_name must produce a valid Python identifier for any input."""
-        from haute._types import _sanitize_func_name
+        from haute._graph_utils import _sanitize_func_name
 
         cases = [
             "\u200b",  # zero-width space only
@@ -842,7 +837,7 @@ class TestBinaryDataInStrings:
         Real failure: label containing \\n produces a newline in the
         generated function name, breaking Python syntax.
         """
-        from haute._types import _sanitize_func_name
+        from haute._graph_utils import _sanitize_func_name
 
         # Actual newline in label
         label = "line1\nline2"
@@ -875,7 +870,7 @@ class TestBinaryDataInStrings:
 
     def test_all_control_chars_in_sanitize(self):
         """Every ASCII control char should be stripped by _sanitize_func_name."""
-        from haute._types import _sanitize_func_name
+        from haute._graph_utils import _sanitize_func_name
 
         label = "".join(chr(i) for i in range(32)) + "valid"
         sanitized = _sanitize_func_name(label)

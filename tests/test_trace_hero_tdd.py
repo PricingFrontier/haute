@@ -16,27 +16,29 @@ Categories:
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import polars as pl
 import pytest
 
-from haute._expression_parser import EvaluatedExpression, evaluate_expression
+from haute._expression_parser import evaluate_expression
 from haute.trace import (
     TraceResult,
     TraceStep,
     execute_trace,
 )
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
-    make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -162,7 +164,8 @@ class TestConditionalBranchIndication:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
+                        "df = df.with_columns("
+                        "factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -504,7 +507,14 @@ class TestIntraNodeDependencyChain:
         assert chain[0].target_column == "x"
 
     def test_chain_in_trace_step(self, tmp_path):
-        """Full trace: verify step has expression_chain field."""
+        """Full trace: verify step has expression_chain field.
+
+        Uses two sequential ``.with_columns()`` calls because Polars
+        cannot resolve forward references within a single
+        ``.with_columns()`` call.  The chain enrichment still detects the
+        dependency because ``parse_expression_chain`` walks backward
+        through sequential ``with_columns`` statements in the node code.
+        """
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {
@@ -516,6 +526,7 @@ class TestIntraNodeDependencyChain:
         code = (
             "df = df.with_columns(\n"
             "    exposure=pl.col('months') / 12,\n"
+            ").with_columns(\n"
             "    earned_premium=pl.col('written_premium') * pl.col('exposure'),\n"
             ")"
         )

@@ -13,25 +13,25 @@ import haute
 pipeline = haute.Pipeline("test_pipeline", description="Test fixture pipeline")
 
 
-@pipeline.api_input(path="tests/fixtures/data/api_input.json", row_id_column="IDpol")
+@pipeline.api_input(config="config/quote_input/quotes.json")
 def quotes() -> pl.LazyFrame:
     """API input source."""
     return pl.read_json("tests/fixtures/data/api_input.json").lazy()
 
 
-@pipeline.data_source(path="tests/fixtures/data/policies.parquet")
+@pipeline.data_source(config="config/data_source/batch_quotes.json")
 def batch_quotes() -> pl.LazyFrame:
     """Batch data source."""
     return pl.scan_parquet("tests/fixtures/data/policies.parquet")
 
 
-@pipeline.live_switch(input_scenario_map={"quotes": "live", "batch_quotes": "test_batch"})
+@pipeline.live_switch(config="config/source_switch/policies.json")
 def policies(quotes: pl.LazyFrame, batch_quotes: pl.LazyFrame) -> pl.LazyFrame:
     """Live/batch switch."""
     return quotes
 
 
-@pipeline.external_file(path="tests/fixtures/data/area_factors.json", file_type="json")
+@pipeline.external_file(config="config/load_file/area_lookup.json")
 def area_lookup(policies: pl.LazyFrame) -> pl.LazyFrame:
     """External file node — loads a JSON lookup table.
 
@@ -57,13 +57,13 @@ def calculate_premium(area_lookup: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.output()
+@pipeline.output(config="config/quote_response/output.json")
 def output(calculate_premium: pl.LazyFrame) -> pl.LazyFrame:
     """Output node."""
     return calculate_premium
 
 
-@pipeline.data_sink(path="tests/fixtures/output/results.parquet", format="parquet")
+@pipeline.data_sink(config="config/data_sink/results_write.json")
 def results_write(calculate_premium: pl.LazyFrame) -> pl.LazyFrame:
     """Sink node."""
     return calculate_premium

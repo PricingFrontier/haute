@@ -6,18 +6,13 @@ Tests are grouped by bug ID from the review report.
 
 from __future__ import annotations
 
-import asyncio
-import copy
 import json
 import os
-import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # B9: RustyStats scoring passes unfiltered DataFrame to predict
@@ -121,9 +116,7 @@ class TestBugB13StreamingChunkSizeRestore:
 class TestBugB15EmptyDatabricksFetch:
     def test_empty_fetch_writes_valid_parquet(self, tmp_path: Path) -> None:
         """Fetching a table with zero rows should produce valid empty parquet."""
-        from haute._databricks_io import _TABLE_NAME_RE
 
-        out_path = tmp_path / "output.parquet"
         tmp_file = tmp_path / "output.parquet.tmp"
 
         # Simulate: writer is None (no rows fetched), tmp_path doesn't exist
@@ -145,20 +138,27 @@ class TestBugB15EmptyDatabricksFetch:
 
 class TestBugB17WsClientsSetIteration:
     def test_broadcast_uses_snapshot(self) -> None:
-        """broadcast() should iterate a snapshot of ws_clients, not the live set."""
-        from haute.routes._helpers import broadcast, ws_clients
+        """broadcast() should iterate a snapshot of ws_clients, not the live set.
 
-        # The fix is: for ws in list(ws_clients): instead of for ws in ws_clients:
+        Post Package 1C the snapshot is taken by ``ws_clients_snapshot()``,
+        a lock-protected helper in routes/_helpers.py.  Accept any of the
+        known snapshot mechanisms.
+        """
         import inspect
 
+        from haute.routes._helpers import broadcast
+
         source = inspect.getsource(broadcast)
-        # After fix, should iterate over list(ws_clients) or similar snapshot
-        assert (
-            "list(ws_clients)" in source
-            or "set(ws_clients)" in source
-            or "ws_clients.copy()" in source
-        ), (
-            "broadcast() should iterate a snapshot of ws_clients to prevent RuntimeError during concurrent mutation"
+        snapshot_patterns = (
+            "list(ws_clients)",
+            "set(ws_clients)",
+            "ws_clients.copy()",
+            "ws_clients_snapshot()",
+        )
+        assert any(pat in source for pat in snapshot_patterns), (
+            "broadcast() must iterate a snapshot of ws_clients (one of "
+            f"{snapshot_patterns}) to prevent RuntimeError during concurrent "
+            "mutation"
         )
 
 
@@ -171,6 +171,7 @@ class TestBugB18CacheTOCTOU:
     def test_load_external_object_single_get(self) -> None:
         """Cache lookup should use a single get() call, not __contains__ then get."""
         import inspect
+
         from haute._io import load_external_object
 
         source = inspect.getsource(load_external_object)
@@ -189,14 +190,14 @@ class TestBugB19MutableCachedDicts:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_cached_artifact_is_not_shared_reference(self, tmp_path: Path) -> None:
         """Returned artifact dicts should be copies, not shared cache references."""
-        from haute._optimiser_io import load_optimiser_artifact, _artifact_cache
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
         # Create a test artifact file
         artifact = {"lambdas": {"a": 1.0}, "version": "1", "mode": "online"}
         path = tmp_path / "artifact.json"
         path.write_text(json.dumps(artifact), encoding="utf-8")
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         result1 = load_optimiser_artifact(str(path))
         # Mutate the returned dict
@@ -248,6 +249,7 @@ class TestBugB22MissingUtf8Encoding:
     def test_io_uses_utf8_encoding(self) -> None:
         """All JSON file reads in _io.py should use encoding='utf-8'."""
         import inspect
+
         import haute._io as io_mod
 
         source = inspect.getsource(io_mod)
@@ -273,6 +275,7 @@ class TestBugB22MissingUtf8Encoding:
     def test_optimiser_io_uses_utf8_encoding(self) -> None:
         """All JSON file reads in _optimiser_io.py should use encoding='utf-8'."""
         import inspect
+
         import haute._optimiser_io as opt_io
 
         source = inspect.getsource(opt_io)
@@ -298,8 +301,8 @@ class TestBugB22MissingUtf8Encoding:
 class TestBugB5PrunerLiveBranchSelection:
     def test_live_branch_from_scenario_map_not_position(self) -> None:
         """Pruner should use input_scenario_map, not hardcode inputs[0] as live."""
-        from haute.deploy._pruner import _live_only_edges
         from haute._types import PipelineGraph
+        from haute.deploy._pruner import _live_only_edges
 
         def _node(nid, ntype="polars", config=None):
             return {
@@ -347,8 +350,6 @@ class TestBugB5PrunerLiveBranchSelection:
 class TestBugB7DissolveTargetOnly:
     def test_dissolve_preserves_other_submodels(self) -> None:
         """Dissolving one submodel should not flatten others."""
-        from haute._flatten import flatten_graph
-        from haute._types import PipelineGraph
 
         # This is a design-level test: flatten_graph currently flattens ALL.
         # The fix should support targeted dissolve.
@@ -404,6 +405,7 @@ class TestBugB13B14ChunkSizeRestore:
         must be skipped — there is no API to "unset" the streaming chunk size.
         """
         import inspect
+
         from haute import executor
 
         source = inspect.getsource(executor.execute_sink)
@@ -425,6 +427,7 @@ class TestBugB15EmptyDatabricksFetchV2:
         """Fetching a zero-row table should not raise FileNotFoundError."""
         # Verify the code handles the writer=None case by writing empty parquet
         import inspect
+
         from haute._databricks_io import fetch_and_cache
 
         source = inspect.getsource(fetch_and_cache)
@@ -444,6 +447,7 @@ class TestBugB16ValidateDeployCall:
     def test_deploy_calls_validate(self) -> None:
         """The programmatic deploy() function should call validate_deploy."""
         import inspect
+
         from haute.deploy import deploy
 
         source = inspect.getsource(deploy)
@@ -452,12 +456,7 @@ class TestBugB16ValidateDeployCall:
         )
 
 
-class TestBugB8GlmCvRegularization:
-    def test_cross_validate_forwards_alpha(self) -> None:
-        """cross_validate should forward alpha from params to the fit call."""
-        import inspect
-        from haute.modelling._rustystats import GLMAlgorithm
-
-        source = inspect.getsource(GLMAlgorithm.cross_validate)
-        # The fix should extract alpha from params and pass it
-        assert "alpha" in source, "cross_validate should extract and forward the alpha parameter"
+# TestBugB8GlmCvRegularization deleted in Phase 2 Package 2C-5: the
+# ``GLMAlgorithm.cross_validate`` method was removed along with the dead
+# GLM CV code path in ``TrainingJob``. Alpha is still forwarded by
+# ``GLMAlgorithm.fit`` (covered by tests/test_rustystats_algorithm.py).

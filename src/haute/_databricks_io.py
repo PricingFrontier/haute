@@ -23,7 +23,7 @@ from typing import TypedDict
 import polars as pl
 
 from haute._logging import get_logger
-from haute._types import HauteError
+from haute.errors import HauteError
 
 logger = get_logger(component="databricks_io")
 

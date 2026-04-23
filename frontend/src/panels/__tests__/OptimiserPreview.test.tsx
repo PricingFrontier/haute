@@ -413,7 +413,7 @@ describe("OptimiserPreview", () => {
       })
       const { container } = renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const dots = container.querySelectorAll('span[style*="background: rgb(34, 197, 94)"]')
+      const dots = container.querySelectorAll('span[style*="background: var(--success)"]')
       expect(dots.length).toBeGreaterThanOrEqual(1)
     })
 
@@ -427,7 +427,7 @@ describe("OptimiserPreview", () => {
       })
       const { container } = renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const redDots = container.querySelectorAll('span[style*="background: rgb(239, 68, 68)"]')
+      const redDots = container.querySelectorAll('span[style*="background: var(--danger)"]')
       expect(redDots.length).toBeGreaterThanOrEqual(1)
     })
   })

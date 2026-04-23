@@ -64,10 +64,7 @@ export default function ConstantEditor({
             />
             <button
               onClick={() => removeRow(i)}
-              className="p-1 rounded transition-colors shrink-0"
-              style={{ color: "var(--text-muted)" }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = "#ef4444")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-muted)")}
+              className="icon-danger-btn p-1 rounded shrink-0"
               title="Remove"
             >
               <Trash2 size={12} />
@@ -78,14 +75,11 @@ export default function ConstantEditor({
 
       <button
         onClick={addRow}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors w-full justify-center"
+        className="add-row-btn flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg w-full justify-center"
         style={{
-          background: "var(--chrome-hover)",
           color: "var(--text-secondary)",
           border: "1px solid var(--border)",
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--chrome-active)")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "var(--chrome-hover)")}
       >
         <Plus size={12} />
         Add value

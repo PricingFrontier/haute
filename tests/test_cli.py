@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import polars as pl
 import pytest
 
 from haute.cli import cli
+from tests.conftest import write_data_source_config
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -26,6 +28,13 @@ def project_dir(tmp_path: Path) -> Path:
     data.mkdir()
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data / "input.parquet")
 
+    # ``as_posix`` is required on Windows: the raw string form contains
+    # ``C:\Users\...`` which Python's parser sees as an invalid
+    # ``\U``-prefixed escape.  Forward slashes are accepted by both
+    # Polars and os.path on every platform, so the generated pipeline
+    # file loads without a ``SyntaxError`` cross-platform.
+    input_path = (data / "input.parquet").as_posix()
+    source_config = write_data_source_config(tmp_path, "source", input_path)
     code = f'''\
 import polars as pl
 import haute
@@ -33,10 +42,10 @@ import haute
 pipeline = haute.Pipeline("test_cli", description="CLI test pipeline")
 
 
-@pipeline.data_source(path="{data / "input.parquet"}")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.DataFrame:
     """Read data."""
-    return pl.scan_parquet("{data / "input.parquet"}")
+    return pl.scan_parquet("{input_path}")
 
 
 @pipeline.polars
@@ -361,11 +370,22 @@ class TestRun:
     def test_run_no_pipeline_found(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        """Empty cwd → error tells the user nothing was found and how to fix it.
+
+        The resolver enumerates what it checked (TOML config, discovery,
+        main.py) so the user isn't left guessing — the test just makes
+        sure we reference "no pipeline file" and "main.py" so the hint
+        lands.
+        """
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["run"])
         assert result.exit_code == 1
-        assert "pipeline file not found" in result.output.lower(), (
-            f"Expected 'pipeline file not found' in output, got: {result.output!r}"
+        msg = result.output.lower()
+        assert "pipeline file" in msg and "not found" in msg or "no pipeline" in msg, (
+            f"Expected a 'no pipeline file found' style error, got: {result.output!r}"
+        )
+        assert "main.py" in msg, (
+            "Error must point at the main.py default so the user knows the convention"
         )
 
     def test_run_file_not_found(self, runner: CliRunner):
@@ -389,6 +409,11 @@ class TestRun:
         data.mkdir()
         pl.DataFrame({"x": [1]}).write_parquet(data / "d.parquet")
 
+        # Forward slashes keep the generated pipeline cross-platform:
+        # a raw Windows path in an f-string produces ``C:\Users\...``
+        # which the Python parser then misreads as a ``\U`` escape.
+        path = (data / "d.parquet").as_posix()
+        source_config = write_data_source_config(tmp_path, "source", path)
         code = f'''\
 import polars as pl
 import haute
@@ -396,9 +421,9 @@ import haute
 pipeline = haute.Pipeline("broken")
 
 
-@pipeline.data_source(path="{data / "d.parquet"}")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.DataFrame:
-    return pl.scan_parquet("{data / "d.parquet"}")
+    return pl.scan_parquet("{path}")
 
 
 @pipeline.polars
@@ -470,7 +495,7 @@ pipeline.connect("source", "bad")
         mock_graph.pipeline_name = "test"
 
         with (
-            patch("haute.cli._helpers.resolve_pipeline_file", return_value=tmp_path / "x.py"),
+            patch("haute._project.resolve_pipeline_file", return_value=tmp_path / "x.py"),
             patch("haute.parser.parse_pipeline_file", return_value=mock_graph),
             patch(
                 "haute.executor.execute_graph",
@@ -597,6 +622,7 @@ class TestServe:
         # Mock STATIC_DIR to a non-existent path so we hit the error branch
         # (the real STATIC_DIR may exist from a previous npm run build)
         monkeypatch.setattr("haute.server.STATIC_DIR", tmp_path / "nonexistent_static")
-        result = runner.invoke(cli, ["serve", "--no-browser"])
+        with patch("haute.cli._serve._port_is_available", return_value=True):
+            result = runner.invoke(cli, ["serve", "--no-browser"])
         assert result.exit_code == 1
         assert "frontend" in result.output.lower() or "npm" in result.output.lower()

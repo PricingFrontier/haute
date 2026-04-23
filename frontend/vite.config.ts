@@ -43,10 +43,12 @@ export default defineConfig({
             id.includes("/react/") ||
             id.includes("/scheduler/") ||
             id.includes("/use-sync-external-store/") ||
-            id.includes("@xyflow/") ||
-            id.includes("/elkjs/")
+            id.includes("@xyflow/")
           ) {
             return "vendor-react";
+          }
+          if (id.includes("/elkjs/")) {
+            return "vendor-layout";
           }
           if (id.includes("@codemirror/") || id.includes("@lezer/")) {
             return "vendor-codemirror";

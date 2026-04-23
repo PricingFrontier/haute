@@ -33,6 +33,58 @@ logger = get_logger(component="training_job")
 _MODEL_EXT_MAP: dict[str, str] = {"catboost": ".cbm", "glm": ".rsglm"}
 
 
+# Mapping used by the feature-contract artifact and the MLflow signature.
+# Polars dtype repr -> canonical contract dtype name.  Uncovered dtypes
+# fall back to the str(dtype) form; the signature builder will raise if
+# the resulting string isn't a supported MLflow type so bugs surface
+# loudly rather than being coerced into a wrong type silently.
+_POLARS_DTYPE_CANONICAL: dict[Any, str] = {}
+
+
+def _polars_dtype_name(dtype: Any) -> str:
+    """Canonical dtype name used by the MLflow signature and feature contract.
+
+    Collapses Polars' many integer/float variants to the four dtypes the
+    ``build_signature`` helper understands (``Int64``, ``Float64``,
+    ``String``, ``Boolean``).  Unknown dtypes return their str() form so
+    bugs are loud at contract-build time.
+    """
+    if dtype == pl.Boolean:
+        return "Boolean"
+    if dtype in (pl.Utf8, pl.String, pl.Categorical):
+        return "String"
+    if dtype.is_integer() if hasattr(dtype, "is_integer") else False:
+        return "Int64"
+    if dtype.is_float() if hasattr(dtype, "is_float") else False:
+        return "Float64"
+    return str(dtype)
+
+
+def _record_diag_error(
+    errors: list[dict[str, str]],
+    diagnostic: str,
+    exc: BaseException,
+) -> None:
+    """Record an optional-diagnostic failure without aborting training.
+
+    Writes a structured entry into ``errors`` so the caller (and eventually
+    the UI) sees that the named diagnostic was skipped and why — replaces
+    the old warning-only swallow that silently degraded runs.
+    """
+    entry = {
+        "diagnostic": diagnostic,
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+    }
+    errors.append(entry)
+    logger.warning(
+        "diagnostic_skipped",
+        diagnostic=diagnostic,
+        error=str(exc),
+        error_type=type(exc).__name__,
+    )
+
+
 @dataclass
 class TrainResult:
     """Result of a training job."""
@@ -41,7 +93,7 @@ class TrainResult:
     feature_importance: list[dict[str, Any]]
     model_path: str
     train_rows: int
-    test_rows: int  # validation rows (kept as test_rows for backward compat)
+    test_rows: int  # validation rows
     features: list[str]
     cat_features: list[str]
     holdout_rows: int = 0
@@ -52,7 +104,6 @@ class TrainResult:
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     shap_summary: list[dict[str, Any]] = field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
-    cv_results: dict[str, Any] | None = None
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
     residuals_stats: dict[str, float] = field(default_factory=dict)
@@ -65,6 +116,10 @@ class TrainResult:
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
     glm_regularization_path: dict[str, Any] | None = None
+    # Optional-diagnostic failures surfaced to callers so a degraded
+    # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
+    # in test suites, instead of being silently swallowed.
+    diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +131,10 @@ class _PreparedData:
     features: list[str]
     cat_features: list[str]
     total_rows: int
+    # Feature dtype snapshot captured at data-prep time, used to build
+    # the MLflow signature and the feature contract artifact.
+    feature_dtypes: dict[str, str] = field(default_factory=dict)
+    target_dtype: str = ""
 
 
 @dataclass
@@ -110,7 +169,6 @@ class _MetricsResult:
     double_lift: list[dict[str, Any]]
     shap_summary: list[dict[str, float]]
     feature_importance_loss: list[dict[str, Any]]
-    cv_results: dict[str, Any] | None
     ave_per_feature: list[dict[str, Any]]
     residuals_histogram: list[dict[str, Any]]
     residuals_stats: dict[str, float]
@@ -123,6 +181,9 @@ class _MetricsResult:
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
     glm_regularization_path: dict[str, Any] | None = None
+    # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
+    # surfaced rather than silently swallowed.
+    diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
 
 
 class TrainingJob:
@@ -148,7 +209,7 @@ class TrainingJob:
     params : dict | None
         Algorithm-specific hyperparameters.
     split : dict | SplitConfig | None
-        Split configuration (strategy, test_size, seed, etc.).
+        Split configuration (strategy, validation_size, seed, etc.).
     metrics : list[str] | None
         Metrics to compute (default: ["gini", "rmse"]).
     mlflow_experiment : str | None
@@ -180,7 +241,6 @@ class TrainingJob:
         offset: str | None = None,
         monotone_constraints: dict[str, int] | None = None,
         feature_weights: dict[str, float] | None = None,
-        cv_folds: int | None = None,
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | None = data
@@ -199,7 +259,6 @@ class TrainingJob:
         self.offset = offset
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
-        self.cv_folds = cv_folds
 
         # Parse split config
         if isinstance(split, SplitConfig):
@@ -208,6 +267,12 @@ class TrainingJob:
             self.split_config = SplitConfig(**split)
         else:
             self.split_config = SplitConfig()
+
+        # Contract snapshot — populated during ``_prepare_data`` so that
+        # ``_log_to_mlflow`` and the feature-contract artifact writer can
+        # reach the exact dtypes the trainer saw.
+        self._contract_feature_dtypes: dict[str, str] = {}
+        self._contract_target_dtype: str = ""
 
     def run(
         self,
@@ -240,6 +305,11 @@ class TrainingJob:
 
         _report("Loading data", 0.0)
         prepared = self._prepare_data(_report)
+        # Cache the dtype snapshot so downstream artifact writers
+        # (MLflow signature, feature contract) see the same types the
+        # trainer saw — not whatever the post-fit DataFrame reports.
+        self._contract_feature_dtypes = dict(prepared.feature_dtypes)
+        self._contract_target_dtype = prepared.target_dtype
 
         # GLM: narrow features to only the terms the user selected.
         # CatBoost uses all features; GLM should only carry the columns
@@ -262,6 +332,10 @@ class TrainingJob:
                     features=[f for f in prepared.features if f in term_names],
                     cat_features=[f for f in prepared.cat_features if f in term_names],
                     total_rows=prepared.total_rows,
+                    feature_dtypes={
+                        f: dt for f, dt in prepared.feature_dtypes.items() if f in term_names
+                    },
+                    target_dtype=prepared.target_dtype,
                 )
                 _report(
                     f"GLM: using {len(prepared.features)} term features "
@@ -296,7 +370,11 @@ class TrainingJob:
         )
 
         _report("Saving model", 0.9)
-        model_path = self._save_artifacts(train_result)
+        model_path = self._save_artifacts(
+            train_result,
+            features=prepared.features,
+            cat_features=prepared.cat_features,
+        )
 
         result = TrainResult(
             metrics=metrics_result.metrics,
@@ -314,7 +392,6 @@ class TrainingJob:
             double_lift=metrics_result.double_lift,
             shap_summary=metrics_result.shap_summary,
             feature_importance_loss=metrics_result.feature_importance_loss,
-            cv_results=metrics_result.cv_results,
             ave_per_feature=metrics_result.ave_per_feature,
             residuals_histogram=metrics_result.residuals_histogram,
             residuals_stats=metrics_result.residuals_stats,
@@ -326,6 +403,7 @@ class TrainingJob:
             glm_relativities=metrics_result.glm_relativities,
             glm_fit_statistics=metrics_result.glm_fit_statistics,
             glm_regularization_path=metrics_result.glm_regularization_path,
+            diagnostics_errors=metrics_result.diagnostics_errors,
         )
 
         if self.mlflow_experiment:
@@ -418,6 +496,14 @@ class TrainingJob:
 
         # Derive features from schema
         features, cat_features = self._derive_features(schema_df)
+        # Snapshot dtypes before we drop the schema frame — downstream
+        # consumers (MLflow signature, feature contract) need them.
+        feature_dtypes = {f: _polars_dtype_name(schema_df[f].dtype) for f in features}
+        target_dtype = (
+            _polars_dtype_name(schema_df[self.target].dtype)
+            if self.target in schema_df.columns
+            else ""
+        )
         del schema_df, schema_lf
         _report(f"Using {len(features)} features ({len(cat_features)} categorical)", 0.1)
 
@@ -427,6 +513,8 @@ class TrainingJob:
             features=features,
             cat_features=cat_features,
             total_rows=pq_meta["row_count"],
+            feature_dtypes=feature_dtypes,
+            target_dtype=target_dtype,
         )
 
     def _split_data(
@@ -713,13 +801,18 @@ class TrainingJob:
         data_path = split_result.split_path
         algo = train_result.algo
         model = train_result.model
-        need_cv = bool(self.cv_folds and self.cv_folds > 1)
+
+        # Optional-diagnostic error surface — see fail-loud policy:
+        # mandatory failures (feature_importance, compute_metrics) must
+        # propagate, optional ones (SHAP, PDP, GLM info) are skipped
+        # but recorded so callers see the degraded state.
+        diagnostics_errors: list[dict[str, str]] = []
 
         has_validation = split_result.n_validation > 0
         has_holdout = split_result.n_holdout > 0
         glm_columns = self._glm_select_columns(features)
 
-        # Feature importance (doesn't need eval data)
+        # Feature importance (MANDATORY — doesn't need eval data)
         importance = algo.feature_importance(model)
         sorted_features = [fi["feature"] for fi in importance if fi["feature"] in features]
         sorted_features += [f for f in features if f not in sorted_features]
@@ -790,7 +883,8 @@ class TrainingJob:
             w,
         )
 
-        # SHAP + LossFunctionChange importance
+        # SHAP + LossFunctionChange importance (OPTIONAL: failures
+        # surface in diagnostics_errors so the UI can flag a degraded run.)
         _report("Computing SHAP values", 0.85)
         shap_summary: list[dict[str, float]] = []
         feature_importance_loss: list[dict[str, Any]] = []
@@ -798,7 +892,7 @@ class TrainingJob:
             try:
                 shap_summary = algo.shap_summary(model, diag_df, features, cat_features)
             except Exception as exc:
-                logger.warning("shap_summary_failed", error=str(exc))
+                _record_diag_error(diagnostics_errors, "shap", exc)
         if hasattr(algo, "feature_importance_typed"):
             try:
                 _diag_pool = _build_pool(
@@ -814,7 +908,7 @@ class TrainingJob:
                 )
                 del _diag_pool
             except Exception as exc:
-                logger.warning("feature_importance_loss_failed", error=str(exc))
+                _record_diag_error(diagnostics_errors, "feature_importance_loss", exc)
 
         # Residuals, scatter, Lorenz
         _report("Computing diagnostics", 0.86)
@@ -822,11 +916,17 @@ class TrainingJob:
         actual_vs_predicted = compute_actual_vs_predicted(y_true, y_pred, w)
         lorenz_model, lorenz_perfect = compute_lorenz_curve(y_true, y_pred, w)
 
-        # PDP
+        # PDP (OPTIONAL — numerically fragile on small subsamples; its
+        # output is diagnostic-only, so record failures in diagnostics_errors
+        # rather than aborting an otherwise-successful run.)
         _report("Computing partial dependence", 0.87)
-        pdp_data = compute_pdp(model, algo, diag_df, sorted_features, cat_features)
+        pdp_data: list[dict[str, Any]] = []
+        try:
+            pdp_data = compute_pdp(model, algo, diag_df, sorted_features, cat_features)
+        except Exception as exc:
+            _record_diag_error(diagnostics_errors, "pdp", exc)
 
-        # ── GLM-specific diagnostics ──
+        # ── GLM-specific diagnostics (all OPTIONAL) ──
         glm_coefficients: list[dict[str, Any]] = []
         glm_relativities: list[dict[str, Any]] = []
         glm_fit_statistics: dict[str, float] = {}
@@ -836,17 +936,17 @@ class TrainingJob:
             try:
                 glm_coefficients = algo.coefficients_table(model)
             except Exception as exc:
-                logger.warning("glm_coefficients_failed", error=str(exc))
+                _record_diag_error(diagnostics_errors, "glm_coefficients", exc)
         if hasattr(algo, "relativities"):
             try:
                 glm_relativities = algo.relativities(model)
             except Exception as exc:
-                logger.warning("glm_relativities_failed", error=str(exc))
+                _record_diag_error(diagnostics_errors, "glm_relativities", exc)
         if hasattr(algo, "fit_statistics"):
             try:
                 glm_fit_statistics = algo.fit_statistics(model)
             except Exception as exc:
-                logger.warning("glm_fit_statistics_failed", error=str(exc))
+                _record_diag_error(diagnostics_errors, "glm_fit_statistics", exc)
         if hasattr(model, "regularization_path") and model.regularization_path:
             try:
                 rp = model.regularization_path
@@ -855,36 +955,10 @@ class TrainingJob:
                     "n_nonzero": int(model.n_nonzero()) if hasattr(model, "n_nonzero") else 0,
                 }
             except Exception as exc:
-                logger.warning("glm_regularization_path_failed", error=str(exc))
+                _record_diag_error(diagnostics_errors, "glm_regularization_path", exc)
 
         del diag_df
         gc.collect()
-
-        # ── Cross-validation ──
-        cv_results: dict[str, Any] | None = None
-        if need_cv and hasattr(algo, "cross_validate"):
-            _report("Running cross-validation", 0.88)
-            try:
-                _cv_df = (
-                    self._scan_with_columns(data_path, features)
-                    .filter(pl.col("_partition") == PARTITION_TRAIN)
-                    .drop("_partition")
-                    .collect()
-                )
-                cv_results = algo.cross_validate(
-                    _cv_df,
-                    features,
-                    cat_features,
-                    self.target,
-                    self.weight,
-                    train_result.fit_params,
-                    self.task,
-                    n_folds=self.cv_folds,
-                )
-                del _cv_df
-                gc.collect()
-            except Exception as exc:
-                logger.warning("cv_failed", error=str(exc))
 
         # Clean up split parquet
         if split_result.owns_tmp and os.path.exists(data_path):
@@ -898,7 +972,6 @@ class TrainingJob:
             double_lift=double_lift,
             shap_summary=shap_summary,
             feature_importance_loss=feature_importance_loss,
-            cv_results=cv_results,
             ave_per_feature=ave_per_feature,
             residuals_histogram=residuals_histogram,
             residuals_stats=residuals_stats,
@@ -910,13 +983,52 @@ class TrainingJob:
             glm_relativities=glm_relativities,
             glm_fit_statistics=glm_fit_statistics,
             glm_regularization_path=glm_regularization_path,
+            diagnostics_errors=diagnostics_errors,
         )
 
-    def _save_artifacts(self, train_result: _TrainModelResult) -> Path:
-        """Save the trained model to disk and return the model path."""
+    def _save_artifacts(
+        self,
+        train_result: _TrainModelResult,
+        *,
+        features: list[str] | None = None,
+        cat_features: list[str] | None = None,
+    ) -> Path:
+        """Save the trained model and its feature contract to disk.
+
+        Writes into ``output_dir``:
+
+        * the native model file (``.cbm`` / ``.rsglm`` / ``.model``),
+        * ``feature_contract.json`` — the train-vs-score contract
+          consumed by the deploy bundler and scorer, written when the
+          caller supplies ``features`` (the real ``run()`` path does).
+
+        ``features`` and ``cat_features`` default to ``None`` so the
+        helper remains callable from unit tests that mock the earlier
+        training steps; the contract is only written when the caller
+        has the real feature list in hand.
+        """
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
         ext = _MODEL_EXT_MAP.get(self.algorithm, ".model")
-        model_path = Path(self.output_dir) / f"{self.name}{ext}"
+        output_dir = Path(self.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        model_path = output_dir / f"{self.name}{ext}"
         train_result.algo.save(train_result.model, model_path)
+
+        if features:
+            contract = build_contract(
+                features=list(features),
+                feature_types=self._feature_dtypes_for_contract(features),
+                categorical_features=list(cat_features or []),
+                target_name=self.target,
+                target_type=self._target_dtype_for_contract(),
+                task="classification" if self.task == "classification" else "regression",
+            )
+            save_contract(contract, output_dir / CONTRACT_FILENAME)
         return model_path
 
     # ------------------------------------------------------------------
@@ -988,6 +1100,20 @@ class TrainingJob:
 
         return features, cat_features
 
+    def _feature_dtypes_for_contract(self, features: list[str]) -> dict[str, str]:
+        """Return a ``{feature: dtype_name}`` map for the contract/signature.
+
+        Reads the dtype snapshot captured during ``_prepare_data``.  GLM
+        narrows the feature set after prep, so we may be asked about fewer
+        features than we snapshotted — iterate ``features`` to preserve
+        the training order.
+        """
+        return {f: self._contract_feature_dtypes.get(f, "Float64") for f in features}
+
+    def _target_dtype_for_contract(self) -> str:
+        """Return the target dtype seen at data-prep time."""
+        return self._contract_target_dtype or "Float64"
+
     def _log_to_mlflow(self, result: TrainResult) -> None:
         """Log training run to MLflow (conditional import).
 
@@ -1012,7 +1138,6 @@ class TrainingJob:
             feature_importance_loss=result.feature_importance_loss,
             double_lift=result.double_lift,
             loss_history=result.loss_history,
-            cv_results=result.cv_results,
             ave_per_feature=result.ave_per_feature,
             residuals_histogram=result.residuals_histogram,
             residuals_stats=result.residuals_stats,
@@ -1027,6 +1152,9 @@ class TrainingJob:
             holdout_metrics=result.holdout_metrics,
             diagnostics_set=result.diagnostics_set,
         )
+        # Populate the feature-contract metadata so ``log_experiment``
+        # can attach an MLflow ``ModelSignature`` to the logged model.
+        feature_types = self._feature_dtypes_for_contract(result.features)
         metadata = ModelCardMetadata(
             algorithm=self.algorithm,
             task=self.task,
@@ -1036,6 +1164,10 @@ class TrainingJob:
             features=result.features,
             split_config=asdict(self.split_config) if self.split_config else {},
             best_iteration=result.best_iteration,
+            feature_types=feature_types,
+            categorical_features=list(result.cat_features),
+            target_name=self.target,
+            target_type=self._target_dtype_for_contract(),
         )
 
         log_experiment(

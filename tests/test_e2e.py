@@ -7,7 +7,7 @@ verify all stages interoperate correctly.
 from __future__ import annotations
 
 import json
-import os
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -18,7 +18,7 @@ import pytest
 from haute._config_io import collect_node_configs
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
-from haute.executor import _compile_preamble, execute_graph
+from haute.executor import execute_graph
 from haute.graph_utils import _prune_live_switch_edges, flatten_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
@@ -29,7 +29,7 @@ PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_json_cache(tmp_path, monkeypatch):
+def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     """Redirect the JSON parquet cache to a temp dir and pre-populate it.
 
     Without this, a stale .haute_cache/ in the working directory (from a
@@ -45,11 +45,16 @@ def _isolate_json_cache(tmp_path, monkeypatch):
     cache_dir = str(tmp_path / "json_cache")
     monkeypatch.setattr(jf, "_CACHE_DIR", cache_dir)
 
-    # Pre-cache the fixture JSON file as parquet
-    data_path = "tests/fixtures/data/api_input.json"
-    cache_path = jf._json_cache_path(data_path)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    pl.read_json(data_path).write_parquet(cache_path)
+    runtime_data_dir = tmp_path / "data"
+    shutil.copytree(FIXTURE_DIR / "data", runtime_data_dir, dirs_exist_ok=True)
+
+    for data_path in (
+        (FIXTURE_DIR / "data/api_input.json").resolve(),
+        (runtime_data_dir / "api_input.json").resolve(),
+    ):
+        cache_path = jf._json_cache_path(str(data_path))
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        pl.read_json(data_path).write_parquet(cache_path)
 
 
 class TestEndToEnd:
@@ -132,18 +137,27 @@ class TestEndToEnd:
         new_types = sorted(n.data.nodeType for n in reparsed.nodes)
         assert orig_types == new_types
 
-    def test_codegen_roundtrip_preserves_node_count(self):
+    def test_codegen_roundtrip_preserves_node_count(self, tmp_path):
         """Re-parsed graph has the same number of nodes."""
         graph = parse_pipeline_file(PIPELINE_FILE)
         code = graph_to_code(graph, pipeline_name="roundtrip")
-        reparsed = parse_pipeline_source(code)
+        # Post Item #18: parser requires config sidecar files to exist.
+        for rel_path, content in collect_node_configs(graph).items():
+            cfg_file = tmp_path / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content)
+        reparsed = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(reparsed.nodes) == len(graph.nodes)
 
-    def test_codegen_roundtrip_preserves_edge_count(self):
+    def test_codegen_roundtrip_preserves_edge_count(self, tmp_path):
         """Re-parsed graph has the same number of edges."""
         graph = parse_pipeline_file(PIPELINE_FILE)
         code = graph_to_code(graph, pipeline_name="roundtrip")
-        reparsed = parse_pipeline_source(code)
+        for rel_path, content in collect_node_configs(graph).items():
+            cfg_file = tmp_path / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content)
+        reparsed = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(reparsed.edges) == len(graph.edges)
 
     def test_full_lifecycle(self, tmp_path):
@@ -159,7 +173,6 @@ class TestEndToEnd:
         output_result = results["output"]
         assert output_result.status == "ok"
         orig_row_count = output_result.row_count
-        orig_columns = sorted(c.name for c in output_result.columns)
 
         # Step 3: Trace
         trace = execute_trace(graph, row_index=0, target_node_id="output")
@@ -343,7 +356,10 @@ class TestAllNodeTypesRoundtrip:
                     "input_scenario_map": {"ds": "test_batch", "api": "live"},
                 },
             ),
-            _make_node("transform", "transform", NodeType.POLARS, {"code": ""}),
+            # Transform has two upstreams (switch + const). Post Item #22
+            # codegen forbids empty code + multiple sources, so explicitly
+            # name which input to forward.
+            _make_node("transform", "transform", NodeType.POLARS, {"code": "df = switch"}),
             _make_node(
                 "band",
                 "band",
@@ -420,6 +436,7 @@ class TestAllNodeTypesRoundtrip:
                 "opt_apply",
                 NodeType.OPTIMISER_APPLY,
                 {
+                    "sourceType": "file",
                     "artifact_path": "optimiser.json",
                 },
             ),

@@ -12,18 +12,24 @@ can optimise the full plan end-to-end.
 
 from __future__ import annotations
 
+import ctypes
+import functools
 import gc
+import importlib as _importlib
+import inspect
+import os
 import shutil
+import signal
+import subprocess
+import sys
 import tempfile
 import threading
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
-from haute._builders import (  # noqa: F401 — re-exported for backward compat
-    _NODE_BUILDERS,
+from haute._builders import (  # noqa: F401
     NodeBuildContext,
     NodeBuilder,
     _apply_online,
@@ -36,24 +42,43 @@ from haute._builders import (  # noqa: F401 — re-exported for backward compat
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
-from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
+from haute._registry import ensure_registry_ready
+from haute._sandbox import safe_globals, validate_user_code
 from haute.graph_utils import (
     HauteError,
     NodeType,
     PipelineGraph,
     _execute_eager_core,
     _execute_lazy,
-    _Frame,
+    _prune_live_switch_edges,
     _resolve_sink_path,
-    build_instance_mapping,
+    ancestors,
     graph_fingerprint,
 )
 from haute.schemas import ColumnInfo, NodeResult, SchemaWarning, SinkResponse
 
 logger = get_logger(component="executor")
 
+# Validate the registry at executor-import time so every production code
+# path that executes a graph — preview, trace, deploy scoring, training,
+# the optimiser — trips the missing-builder check, not just the codegen
+# path.  ``ensure_registry_ready`` is idempotent: subsequent calls from
+# ``haute.codegen`` hit the ``sys.modules`` cache and the validator
+# short-circuits on an already-populated registry.
+ensure_registry_ready()
+
 # ── Default constants ─────────────────────────────────────────────
 _MAX_PREVIEW_ROWS = 10_000  # safety cap for execute_graph JSON payload
+
+# Module-level toggle for column-contract enforcement.  ``True`` by
+# default: contract mismatches should fail loudly.  Benchmarks may
+# temporarily flip this to ``False`` to measure overhead.
+# ``execute_graph(..., enforce_contracts=...)`` is the
+# preferred switch for normal code paths; the module flag is the
+# fallback for callers (like the overhead benchmark in
+# ``test_column_contracts_adoption.py``) that need to toggle it
+# without threading the kwarg through their call chain.
+ENFORCE_CONTRACTS: bool = True
 
 # Lock to prevent concurrent module eviction + re-import in _compile_preamble.
 # Without this, two threads (e.g. preview + estimate) can race: one evicts
@@ -85,13 +110,11 @@ class PreambleError(HauteError):
         self.source_line = source_line
 
 
-# Cache compiled preamble results by content hash so unchanged preambles
-# (common during training / optimiser runs where the preamble doesn't
-# change between invocations) skip the expensive module eviction +
-# re-import cycle.  The cache is invalidated when the preamble text
-# changes (hash mismatch).
-_PREAMBLE_CACHE_MAX = 64
-_preamble_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+# Cache compiled preamble results by (content, pipeline_dir) so unchanged
+# preambles (common during training / optimiser runs where the preamble
+# doesn't change between invocations) skip the expensive module eviction +
+# re-import cycle.  ``functools.lru_cache`` is C-implemented, gives O(1)
+# eviction, and ships with ``cache_info()`` diagnostics for free.
 
 _DANGEROUS_MODULES = frozenset(
     {
@@ -104,74 +127,77 @@ _DANGEROUS_MODULES = frozenset(
         "importlib",
     }
 )
+_DANGEROUS_MODULE_OBJECTS = frozenset(
+    {
+        os,
+        os.path,
+        sys,
+        subprocess,
+        shutil,
+        signal,
+        ctypes,
+        _importlib,
+    }
+)
+_DANGEROUS_MODULE_NAMES = frozenset(m.__name__ for m in _DANGEROUS_MODULE_OBJECTS)
+
+
+def _is_dangerous_preamble_binding(value: Any) -> bool:
+    if inspect.ismodule(value):
+        module_name = value.__name__
+        return (
+            value in _DANGEROUS_MODULE_OBJECTS
+            or module_name in _DANGEROUS_MODULE_NAMES
+            or module_name.split(".", 1)[0] in _DANGEROUS_MODULES
+        )
+
+    module = inspect.getmodule(value)
+    module_name = (
+        module.__name__ if module is not None else getattr(value, "__module__", "")
+    ) or ""
+    return (
+        module in _DANGEROUS_MODULE_OBJECTS
+        or module_name in _DANGEROUS_MODULE_NAMES
+        or module_name.split(".", 1)[0] in _DANGEROUS_MODULES
+    )
+
 
 _polars_config_lock = threading.Lock()
 
 
-def _compile_preamble(
+@functools.lru_cache(maxsize=128)
+def _compile_preamble_cached(
     preamble: str,
-    *,
-    force_refresh: bool = True,
-    pipeline_dir: str | Path | None = None,
+    pipeline_dir_str: str | None,
 ) -> dict[str, Any]:
-    """Compile user-defined preamble code into a namespace dict.
+    """Pure cache-facing worker — compiles preamble bytes into a namespace.
 
-    The preamble (helper functions, constants, lambdas) is defined at the
-    top of a pipeline file between imports and the first ``@pipeline.<type>`` decorator.
-    This compiles it once and returns a dict of bindings that can be
-    injected into ``_exec_user_code`` via ``extra_ns``.
+    Keyed on ``(preamble, pipeline_dir_str)`` so different pipelines sharing
+    an identical preamble text but different working directories still get
+    distinct cache slots — important because relative imports resolve
+    against the pipeline's parent directory.
 
-    Uses a single dict for globals/locals so preamble functions can call
-    each other (they share the same ``__globals__``).
+    ``pipeline_dir_str`` is a normalised ``str`` (or ``None``) rather than a
+    ``Path`` so that ``lru_cache``'s hash lookup produces the same key for
+    ``Path("/x")`` and ``"/x"`` — normalisation happens at the public
+    entry point.
 
-    When *force_refresh* is ``False`` (default), a cached result from a
-    previous call with the same preamble text is returned immediately,
-    skipping utility-module eviction and ``exec()``.  The preview path
-    passes ``force_refresh=True`` so that edits to utility modules in the
-    GUI are always picked up.
-
-    Raises ``PreambleError`` with a human-readable message and optional
-    source line number when the preamble fails to execute (e.g. a utility
-    module has a NameError).
+    The ``_preamble_lock`` serialises the ``sys.modules`` eviction + ``exec()``
+    work so two threads can't observe a partially-evicted ``sys.modules``
+    (which raises ``KeyError`` inside ``importlib._bootstrap._load_unlocked``).
     """
-    if not preamble or not preamble.strip():
-        return {}
-
-    import hashlib
-
-    cache_key = hashlib.sha256(preamble.encode()).hexdigest()
-
-    # Preamble may contain imports (e.g. from utility.features import …)
-    # which are legitimate, but still validate against other dangerous
-    # patterns (dunder access, eval, exec, etc.).
-    validate_user_code(preamble, allow_imports=True)
-    # Ensure project root is importable so `from utility.xxx import …` works
-    # even when the server process was spawned by uvicorn reload.
-    # We add *both* cwd and the pipeline's parent directory because the
-    # utility/ folder may live next to the pipeline file (e.g. inside a
-    # rating/ subfolder) rather than at the project root.
-    import os  # noqa: E401
     import sys
 
-    cwd = os.getcwd()
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
-    if pipeline_dir is not None:
-        pdir = str(Path(pipeline_dir).resolve())
-        if pdir not in sys.path:
-            sys.path.insert(0, pdir)
-    # Evict cached utility modules so edits in the GUI are picked up
-    # on every run instead of serving stale bytecode from sys.modules.
-    # The lock prevents a concurrent request from seeing partially-evicted
-    # state (which causes KeyError inside importlib._load_unlocked).
-    ns = safe_globals(pl=pl, allow_imports=True)
-    base_keys = set(ns.keys())
     with _preamble_lock:
-        if not force_refresh and cache_key in _preamble_cache:
-            return _preamble_cache[cache_key]
-
+        # Evict cached utility modules so edits in the GUI are picked up
+        # on every cache miss instead of serving stale bytecode from
+        # sys.modules.  The lock prevents a concurrent request from seeing
+        # partially-evicted state.
         for mod_name in [k for k in sys.modules if k == "utility" or k.startswith("utility.")]:
             del sys.modules[mod_name]
+
+        ns = safe_globals(pl=pl, allow_imports=True)
+        base_keys = set(ns.keys())
         try:
             exec(preamble, ns)  # noqa: S102  — single dict = shared globals
         except Exception as exc:
@@ -211,78 +237,96 @@ def _compile_preamble(
 
             raise PreambleError(msg, source_line=source_line) from exc
 
-        result = {
+        return {
             k: v
             for k, v in ns.items()
-            if k not in base_keys
-            and not (hasattr(v, "__name__") and getattr(v, "__name__", "") in _DANGEROUS_MODULES)
+            if k not in base_keys and not _is_dangerous_preamble_binding(v)
         }
-        _preamble_cache[cache_key] = result
-        if len(_preamble_cache) > _PREAMBLE_CACHE_MAX:
-            _preamble_cache.popitem(last=False)
-        return result
 
 
-def _exec_user_code(
-    code: str,
-    src_names: list[str],
-    dfs: tuple[_Frame, ...],
-    extra_ns: dict[str, Any] | None = None,
-    orig_source_names: list[str] | None = None,
-    input_mapping: dict[str, str] | None = None,
-) -> _Frame:
-    """Execute user-provided code and return the ``df`` variable.
+def _compile_preamble(
+    preamble: str,
+    *,
+    force_refresh: bool = True,
+    pipeline_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Compile user-defined preamble code into a namespace dict.
 
-    Shared by transform and externalFile node types.
-    - Injects ``pl``, input DataFrames by name, and ``df`` (first input).
-    - Optionally merges *extra_ns* into the local namespace (e.g. ``obj``).
-    - User code must assign to ``df``; the value of ``df`` after execution
-      is returned.
+    The preamble (helper functions, constants, lambdas) is defined at the
+    top of a pipeline file between imports and the first
+    ``@pipeline.<type>`` decorator.  This compiles it once and returns a
+    dict of bindings that can be injected into ``_exec_user_code`` via
+    ``extra_ns``.
+
+    Uses a single dict for globals/locals so preamble functions can call
+    each other (they share the same ``__globals__``).
+
+    When *force_refresh* is ``True`` (default), the cache is cleared and
+    the preamble is re-compiled — so edits to utility modules in the GUI
+    are always picked up.  When *force_refresh* is ``False`` (e.g.
+    optimiser / sink paths that run in tight loops), a cached result from
+    a previous call with the same preamble text and pipeline directory is
+    returned immediately.
+
+    Caching diagnostics are exposed directly on this function via
+    ``_compile_preamble.cache_info()`` and ``_compile_preamble.cache_clear()``
+    — delegating to the underlying ``functools.lru_cache`` wrapper.
+
+    Raises ``PreambleError`` with a human-readable message and optional
+    source line number when the preamble fails to execute (e.g. a utility
+    module has a NameError).
     """
-    local_ns: dict[str, Any] = {"pl": pl}
-    for i, d in enumerate(dfs):
-        if i < len(src_names):
-            local_ns[src_names[i]] = d
-    # Instance alias injection: bind original source names so the original's
-    # code can reference variables by their original upstream labels.
-    if orig_source_names:
-        mapping = build_instance_mapping(orig_source_names, src_names, input_mapping)
-        for orig, inst in mapping.items():
-            if orig not in local_ns and inst in local_ns:
-                local_ns[orig] = local_ns[inst]
-    if dfs:
-        local_ns["df"] = dfs[0]
-    if extra_ns:
-        local_ns.update(extra_ns)
+    # Short-circuit empty / whitespace preambles BEFORE touching the cache
+    # — empty preambles are common and shouldn't evict cache entries.
+    if not preamble or not preamble.strip():
+        return {}
 
-    # Validate user code at the AST level before exec().
-    # This blocks dunder access, imports, getattr, class defs, etc.
-    # at the structural level — a stronger layer than restricted builtins.
-    try:
-        validate_user_code(code)
-    except UnsafeCodeError as uce:
-        if isinstance(uce.__cause__, SyntaxError):
-            raise uce.__cause__ from None
-        raise
+    # Preamble may contain imports (e.g. from utility.features import …)
+    # which are legitimate, but still validate against other dangerous
+    # patterns (dunder access, eval, exec, etc.).
+    validate_user_code(preamble, allow_imports=True)
 
-    try:
-        exec(code, safe_globals(pl=pl, **(extra_ns or {})), local_ns)
-    except Exception as exc:
-        # For errors without "line N" in the message (e.g. NameError),
-        # extract the line from the traceback and attach it.
-        if exc.__traceback__:
-            import traceback as _tb
+    # Ensure project root is importable so `from utility.xxx import …` works
+    # even when the server process was spawned by uvicorn reload.  We add
+    # both cwd and the pipeline's parent directory because the ``utility/``
+    # folder may live next to the pipeline file (e.g. inside a ``rating/``
+    # subfolder) rather than at the project root.  These inserts are
+    # idempotent (gated on ``not in sys.path``) so the list doesn't grow
+    # on every call.
+    import os
+    import sys
 
-            for frame in reversed(_tb.extract_tb(exc.__traceback__)):
-                if frame.filename == "<string>" and frame.lineno is not None:
-                    exc._user_code_line = frame.lineno  # type: ignore[attr-defined]
-                    break
-        raise
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
-    result = local_ns.get("df", dfs[0] if dfs else pl.LazyFrame())
-    if isinstance(result, pl.DataFrame):
-        result = result.lazy()
-    return result  # type: ignore[no-any-return]
+    # Normalise pipeline_dir to a string at the boundary so lru_cache's
+    # argument-hashing treats ``Path("/x")`` and ``"/x"`` identically.
+    pipeline_dir_str: str | None = None
+    if pipeline_dir is not None:
+        pipeline_dir_str = str(Path(pipeline_dir).resolve())
+        if pipeline_dir_str not in sys.path:
+            sys.path.insert(0, pipeline_dir_str)
+
+    if force_refresh:
+        # lru_cache has no per-key eviction API, so clear the whole cache
+        # and let the next call repopulate it.  Targeted eviction would
+        # require a parallel dict — the simplicity of ``cache_clear()``
+        # outweighs the cost of evicting peers, especially because
+        # ``force_refresh=True`` is reserved for the GUI preview path
+        # where the user is actively editing utility modules.
+        _compile_preamble_cached.cache_clear()
+
+    return _compile_preamble_cached(preamble, pipeline_dir_str)
+
+
+# Expose the cache diagnostics (``cache_info``, ``cache_clear``) directly on
+# the public wrapper so callers and tests can inspect the cache without
+# having to know about the internal ``_compile_preamble_cached`` symbol.
+# Using ``cast`` keeps mypy happy about attaching non-standard attributes
+# to a plain function.
+_compile_preamble.cache_info = _compile_preamble_cached.cache_info  # type: ignore[attr-defined]
+_compile_preamble.cache_clear = _compile_preamble_cached.cache_clear  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -351,12 +395,32 @@ def _extract_column_refs(config: dict[str, Any]) -> set[str]:
     return refs
 
 
+def _result_order_for_target(
+    graph: PipelineGraph,
+    order: list[str],
+    target_node_id: str | None,
+    source: str,
+) -> list[str]:
+    """Return node IDs whose result payloads are relevant to this request."""
+    if target_node_id is None:
+        return order
+    if target_node_id not in graph.node_map:
+        return []
+
+    edges = _prune_live_switch_edges(graph.edges, graph.node_map, source)
+    needed = ancestors(target_node_id, edges, set(graph.node_map))
+    return [nid for nid in order if nid in needed]
+
+
 def execute_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,
     row_limit: int | None = None,
     max_preview_rows: int = _MAX_PREVIEW_ROWS,
     source: str = "live",
+    enforce_contracts: bool | None = None,
+    *,
+    target_preview_only: bool = False,
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -369,6 +433,20 @@ def execute_graph(
         row_limit: If set, apply .head(row_limit) to source nodes so only
                    that many rows flow through the pipeline.
         max_preview_rows: Max rows to include in the JSON preview payload.
+        enforce_contracts: If ``True``, every node's column contract is
+            asserted at the input and output boundaries.  Default
+            (``None``) falls back to the module-level
+            :data:`ENFORCE_CONTRACTS` flag (itself ``True`` by default),
+            so contract violations surface as ``ContractMismatchError``.
+            Pass ``False`` to run without the check — the benchmark
+            uses this to measure overhead; production callers should
+            leave it at the default.
+        target_preview_only: If ``True`` and ``target_node_id`` is set,
+            build JSON preview rows only for the requested target and omit
+            downstream result payloads from broader cache hits. The GUI
+            preview route uses this to avoid serialising unused cached
+            DataFrames when switching from a downstream result panel back
+            to an upstream table.
 
     Returns:
         Dict mapping node_id → {
@@ -379,10 +457,16 @@ def execute_graph(
             "error": str | None,
         }
     """
+    if enforce_contracts is None:
+        enforce_contracts = ENFORCE_CONTRACTS
     if not graph.nodes:
         return {}
 
-    fp = graph_fingerprint(graph, f"{row_limit}:{source}")
+    # Include enforce_contracts in the cache key so a toggle flips
+    # between distinct cache slots instead of serving a stale entry
+    # computed under a different enforcement mode.  Without this, the
+    # contract-overhead benchmark measures cache-hit-vs-cache-hit.
+    fp = graph_fingerprint(graph, f"{row_limit}:{source}:contracts={int(enforce_contracts)}")
 
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
@@ -421,14 +505,17 @@ def execute_graph(
                     target_node_id,
                     row_limit,
                     source=source,
+                    enforce_contracts=enforce_contracts,
                 )
             )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-            # Keep cached DataFrames for nodes that were already computed.
-            # Overriding them with fresh outputs from a different execution
-            # would introduce non-deterministic row ordering from Polars
-            # joins, breaking trace row identity.
-            merged = {**eager_outputs, **prev_outputs}
+            # Fresh eager outputs win over prev_outputs for any overlap:
+            # the prev_outputs may contain stale entries for nodes that were
+            # re-executed (e.g. delete-then-re-add with same id) and serving
+            # the stale DataFrame would hide legitimate config changes from
+            # the caller.  The extend-path only needs prev_outputs for nodes
+            # the current execution did NOT recompute.
+            merged = {**prev_outputs, **eager_outputs}
             merged_errors = {**cached["errors"], **errors}
             merged_timings = {**cached["timings"], **timings}
             merged_memory = {**cached["memory_bytes"], **memory_bytes}
@@ -466,6 +553,7 @@ def execute_graph(
             target_node_id,
             row_limit,
             source=source,
+            enforce_contracts=enforce_contracts,
         )
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
         _preview_cache.store(
@@ -486,9 +574,19 @@ def execute_graph(
     # columns available at the instance's inputs vs the original's inputs.
     node_map = graph.node_map
     parents_of = graph.parents_of
+    result_order = (
+        _result_order_for_target(graph, order, target_node_id, source)
+        if target_preview_only
+        else order
+    )
+    preview_node_ids = (
+        {target_node_id}
+        if target_preview_only and target_node_id is not None
+        else set(result_order)
+    )
 
     schema_warnings: dict[str, list[SchemaWarning]] = {}
-    for nid in order:
+    for nid in result_order:
         ref = node_map[nid].data.config.get("instanceOf")
         if not ref or ref not in node_map:
             continue
@@ -511,7 +609,7 @@ def execute_graph(
             ]
 
     results: dict[str, NodeResult] = {}
-    for nid in order:
+    for nid in result_order:
         if nid in errors:
             results[nid] = NodeResult(
                 status="error",
@@ -553,7 +651,7 @@ def execute_graph(
             column_count=len(df.columns),
             columns=columns,
             available_columns=avail_col_infos,
-            preview=df.head(max_preview_rows).to_dicts(),
+            preview=(df.head(max_preview_rows).to_dicts() if nid in preview_node_ids else []),
             timing_ms=timings.get(nid, 0),
             memory_bytes=memory_bytes.get(nid, 0),
             schema_warnings=node_warnings,
@@ -579,6 +677,7 @@ def _eager_execute(
     target_node_id: str | None,
     row_limit: int | None,
     source: str = "live",
+    enforce_contracts: bool = True,
 ) -> tuple[
     dict[str, pl.DataFrame | None],
     list[str],
@@ -620,6 +719,7 @@ def _eager_execute(
         swallow_errors=True,
         preamble_ns=preamble_ns or None,
         source=source,
+        enforce_contracts=enforce_contracts,
     )
     errors = result.errors
     if preamble_error:
@@ -744,6 +844,7 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
                 preamble_ns=preamble_ns or None,
                 source=sink_scenario,
                 checkpoint_dir=checkpoint_path,
+                enforce_contracts=ENFORCE_CONTRACTS,
             )
             lf = lazy_outputs.get(sink_node_id)
             if lf is None:

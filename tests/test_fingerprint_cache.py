@@ -404,4 +404,9 @@ class TestGraphFingerprint:
         fp2 = graph_fingerprint(g2)
         assert fp1 == fp2
         assert isinstance(fp1, str)
-        assert len(fp1) == 64
+        # Non-empty lowercase hex digest after the Wave 9C ``v<N>:``
+        # prefix; the exact algorithm (xxh64) is an implementation
+        # detail of ``_cache.py``.
+        assert fp1
+        _, _, digest = fp1.partition(":")
+        assert all(c in "0123456789abcdef" for c in digest)

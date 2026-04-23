@@ -1,5 +1,6 @@
-import { useEffect, useRef, useCallback, type ReactNode } from "react"
+import { useEffect, useRef, useCallback, useState, type ReactNode } from "react"
 import useUIStore from "../stores/useUIStore"
+import PanelHeader from "./PanelHeader"
 
 const MIN_PANEL_W = 320
 const LEFT_PALETTE_W = 180
@@ -22,11 +23,34 @@ function maxPanelWidth(): number {
   return Math.max(MIN_PANEL_W, Math.floor(availableSpace() * 0.75))
 }
 
-interface PanelShellProps {
+interface PanelShellBaseProps {
   children: ReactNode
   /** Additional opacity/transition styles (e.g. dimmed NodePanel) */
   style?: React.CSSProperties
 }
+
+/**
+ * Either no header at all (children render raw, suitable for panels like
+ * TracePanel/NodePanel that build their own bespoke header), OR a full
+ * header with both a title and an onClose handler.  The discriminated union
+ * makes it impossible to pass `title` without `onClose` — TypeScript catches
+ * the mistake at compile time, no runtime guard needed.
+ */
+type PanelShellHeaderProps =
+  | {
+      title?: undefined
+      onClose?: undefined
+      icon?: undefined
+      subtitle?: undefined
+    }
+  | {
+      title: string | ReactNode
+      onClose: () => void
+      icon?: ReactNode
+      subtitle?: ReactNode
+    }
+
+type PanelShellProps = PanelShellBaseProps & PanelShellHeaderProps
 
 /**
  * Shared wrapper for all right-side panels (NodePanel, UtilityPanel,
@@ -35,8 +59,17 @@ interface PanelShellProps {
  * - A visible left-edge drag handle for resizing
  * - Slide-in animation
  * - Consistent background color
+ * - Optional inlined header (title/icon/subtitle/actions/close) so callers
+ *   don't repeat the `<PanelShell><PanelHeader ...>` boilerplate.
  */
-export default function PanelShell({ children, style }: PanelShellProps) {
+export default function PanelShell({
+  children,
+  style,
+  title,
+  onClose,
+  icon,
+  subtitle,
+}: PanelShellProps) {
   const storedWidth = useUIStore((s) => s.nodePanelWidth)
   const setNodePanelWidth = useUIStore((s) => s.setNodePanelWidth)
   // 0 = sentinel: use dynamic default (50% of available space)
@@ -47,6 +80,12 @@ export default function PanelShell({ children, style }: PanelShellProps) {
   const startW = useRef(panelWidth)
   const widthRef = useRef(panelWidth)
   const panelRef = useRef<HTMLDivElement>(null)
+  // Visual drag state drives the `.dragging` class on the handle so the
+  // accent colour stays visible even when the pointer wanders off the
+  // narrow hit area.  The `isDragging` ref remains the source of truth
+  // for the mousemove/mouseup handlers; this state only mirrors it for
+  // the render path.
+  const [dragActive, setDragActive] = useState(false)
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
@@ -65,6 +104,7 @@ export default function PanelShell({ children, style }: PanelShellProps) {
         document.body.style.cursor = ""
         document.body.style.userSelect = ""
         setNodePanelWidth(widthRef.current)
+        setDragActive(false)
       }
     }
     window.addEventListener("mousemove", onMouseMove)
@@ -83,6 +123,7 @@ export default function PanelShell({ children, style }: PanelShellProps) {
       widthRef.current = panelWidth
       document.body.style.cursor = "col-resize"
       document.body.style.userSelect = "none"
+      setDragActive(true)
     },
     [panelWidth],
   )
@@ -93,19 +134,27 @@ export default function PanelShell({ children, style }: PanelShellProps) {
       className="h-full shrink-0 flex flex-row animate-slide-in"
       style={{ width: panelWidth, background: "var(--bg-panel)", ...style }}
     >
-      {/* Drag handle */}
+      {/* Drag handle — hover and drag-active states are driven by CSS
+          (`.panel-drag-handle`).  The `.dragging` modifier is synced
+          to the `isDragging` ref via `dragActive` state so the accent
+          colour sticks while the user is mid-drag, even if the
+          pointer wanders off the narrow hit area. */}
       <div
         onMouseDown={onDragStart}
-        className="shrink-0 h-full w-1 cursor-col-resize transition-colors"
+        className={`panel-drag-handle shrink-0 h-full w-1 cursor-col-resize transition-colors${
+          dragActive ? " dragging" : ""
+        }`}
         style={{ background: "var(--chrome-border)" }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "var(--accent)"
-        }}
-        onMouseLeave={(e) => {
-          if (!isDragging.current) e.currentTarget.style.background = "var(--chrome-border)"
-        }}
       />
       <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+        {title !== undefined && (
+          <PanelHeader
+            title={title}
+            onClose={onClose}
+            icon={icon}
+            subtitle={subtitle}
+          />
+        )}
         {children}
       </div>
     </div>

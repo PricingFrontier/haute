@@ -13,16 +13,19 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from haute._logging import get_logger
-from haute._parser_helpers import (
-    _build_edges,
-    _build_rf_nodes,
+from haute._ast_helpers import (
     _extract_connect_calls,
-    _extract_decorated_nodes,
     _extract_function_bodies,
     _extract_submodel_meta,
     _is_submodel_node_decorator,
 )
+from haute._flatten import flatten_graph
+from haute._graph_builders import (
+    _build_edges,
+    _build_rf_nodes,
+    _extract_decorated_nodes,
+)
+from haute._logging import get_logger
 from haute._submodel_graph import (
     build_submodel_placeholder,
     classify_ports,
@@ -106,9 +109,13 @@ def merge_submodels(
 ) -> PipelineGraph:
     """Merge parsed submodels into the parent graph.
 
-    When *flatten* is True, child nodes are inlined directly into the
-    parent graph (for execution).  When False, a single ``submodel``
-    node replaces the group (for the GUI).
+    Always builds the hierarchical form first (a ``submodel__<name>``
+    placeholder node for each child graph, with the full child graph
+    stashed in ``PipelineGraph.submodels``).  When *flatten* is True,
+    delegates to :func:`haute._flatten.flatten_graph` to dissolve the
+    placeholders into their child nodes.  This keeps a single source of
+    truth for the flattening algorithm — it used to live in two files
+    and would silently drift.
     """
     if not submodel_graphs:
         return parent_graph
@@ -131,14 +138,6 @@ def merge_submodels(
         if src in all_child_ids or tgt in all_child_ids:
             parent_edge_list.append(GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt))
             existing_pairs.add((src, tgt))
-
-    if flatten:
-        # Inline all child nodes + edges into the parent graph
-        for _sm_name, sm_graph in submodel_graphs.items():
-            parent_nodes.extend(sm_graph.nodes)
-            parent_edge_list.extend(sm_graph.edges)
-
-        return parent_graph.model_copy(update={"nodes": parent_nodes, "edges": parent_edge_list})
 
     # Hierarchical mode: create submodel placeholder nodes
     submodels_meta: dict[str, dict] = {}
@@ -181,4 +180,13 @@ def merge_submodels(
     update: dict[str, Any] = {"nodes": parent_nodes, "edges": parent_edge_list}
     if submodels_meta:
         update["submodels"] = submodels_meta
-    return parent_graph.model_copy(update=update)
+    hierarchical = parent_graph.model_copy(update=update)
+
+    if flatten:
+        # Single source of truth for the flatten algorithm — the dedicated
+        # flattener in ``_flatten.py`` dissolves every submodel at once,
+        # rewiring the handle-decorated boundary edges back to direct
+        # child→parent / parent→child edges.
+        return flatten_graph(hierarchical)
+
+    return hierarchical

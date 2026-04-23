@@ -78,7 +78,6 @@ The GLM training node stores its config in `config/model_training/<name>.json`, 
   "regularization": null,
   "alpha": 0.0,
   "l1_ratio": 0.0,
-  "cv_folds": 5,
   "split": {
     "strategy": "random",
     "validation_size": 0.2,
@@ -220,7 +219,6 @@ def fit(self, train_df, features, cat_features, target, weight, params, task,
     regularization = params.get("regularization", None)
     alpha = params.get("alpha", 0.0)
     l1_ratio = params.get("l1_ratio", 0.0)
-    cv_folds = params.get("cv_folds", 5)
 
     # If no terms specified, auto-generate from features
     if not terms:
@@ -243,11 +241,13 @@ def fit(self, train_df, features, cat_features, target, weight, params, task,
         interactions=rs_interactions or None,
     )
 
-    # Fit with regularization if specified
+    # Fit with regularization if specified.  sklearn's internal CV for
+    # alpha search is hard-coded to 5 folds — the matching sklearn default
+    # — because it's a numerical implementation detail, not a user knob.
     fit_kwargs = {}
     if regularization:
         fit_kwargs["regularization"] = regularization
-        fit_kwargs["cv"] = cv_folds
+        fit_kwargs["cv"] = 5
         if alpha > 0:
             fit_kwargs["alpha"] = alpha
         if regularization == "elastic_net":

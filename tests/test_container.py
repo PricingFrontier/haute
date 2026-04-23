@@ -4,19 +4,16 @@ from __future__ import annotations
 
 import ast
 import subprocess
-from dataclasses import field
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._container import (
-    _ARTIFACT_EXT_TO_DEP,
+    ContainerBuildResult,
     _check_docker_available,
     _detect_extra_deps,
-    _docker_build,
     _docker_push,
     _generate_app_source,
     _generate_dockerfile,
@@ -28,13 +25,11 @@ from haute.deploy._container import (
     build_and_push_image,
     deploy_to_container,
     deploy_to_platform_container,
-    ContainerBuildResult,
 )
 from haute.deploy._mlflow import DeployResult
 from haute.deploy._utils import build_manifest as _build_manifest
-
+from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._deploy_helpers import make_resolved_deploy
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -50,12 +45,16 @@ def _make_resolved(
     """Build a minimal ResolvedDeploy for container unit tests.
 
     Delegates to the shared helper with container-specific defaults.
+    ``ContainerConfig`` uses a patch-pinned base image so the post-init
+    check in ``DeployConfig`` accepts the target-``container`` config;
+    tests that exercise image validation itself pass an explicit
+    ``container=ContainerConfig(base_image=...)`` override.
     """
     return make_resolved_deploy(
         pipeline_file=Path("main.py"),
         model_name=model_name,
         target=target,
-        container=container or ContainerConfig(),
+        container=container or ContainerConfig(base_image="python:3.11.9-slim"),
         pruned_graph=PipelineGraph(nodes=[GraphNode(id="n1", data=NodeData(label="n1"))]),
         artifacts=artifacts or {},
         input_schema={"age": "int", "region": "str"},
@@ -479,7 +478,11 @@ class TestBuildAndPushImage:
         artifact_file.write_text("fake model data")
         return _make_resolved(
             artifacts={"model.cbm": artifact_file},
-            container=ContainerConfig(registry=registry, port=8080),
+            container=ContainerConfig(
+                registry=registry,
+                port=8080,
+                base_image="python:3.11.9-slim",
+            ),
         )
 
     @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")

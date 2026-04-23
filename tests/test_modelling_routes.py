@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -17,8 +18,10 @@ from haute.routes._train_service import (
     _friendly_error,
     _validate_glm_family_link,
 )
-from haute.server import app
 from tests.conftest import make_edge, make_graph
+
+if TYPE_CHECKING:
+    from fastapi.testclient import TestClient
 
 
 def _make_modelling_graph(
@@ -35,7 +38,7 @@ def _make_modelling_graph(
         "algorithm": algorithm,
         "task": task,
         "params": params or {"iterations": 10, "depth": 3},
-        "split": {"strategy": "random", "test_size": 0.2, "seed": 42},
+        "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
         "metrics": ["gini", "rmse"] if task == "regression" else ["auc", "logloss"],
     }
     if weight:
@@ -435,13 +438,12 @@ class TestOutputDirDefault:
         assert p_dir is None
 
     def test_training_job_default_is_outputs(self):
-        from haute.modelling._training_job import TrainingJob
-
-        job = TrainingJob.__init__.__defaults__  # noqa: B009
-        # output_dir parameter default (7th keyword-only param after name...model_name)
-        # Verify via signature instead
         import inspect
 
+        from haute.modelling._training_job import TrainingJob
+
+        # output_dir parameter default (7th keyword-only param after name...model_name)
+        # Verify via signature
         sig = inspect.signature(TrainingJob.__init__)
         assert sig.parameters["output_dir"].default == "outputs"
 
@@ -646,8 +648,7 @@ class TestMlflowCheckImportError:
         """Simulate mlflow not being installed via sys.modules patch."""
         import sys
 
-        # Temporarily hide mlflow from the import system
-        real_mlflow = sys.modules.get("mlflow")
+        # patch.dict automatically restores sys.modules on exit
         with patch.dict(sys.modules, {"mlflow": None}):
             resp = client.get("/api/modelling/mlflow/check")
         assert resp.status_code == 200
@@ -766,7 +767,6 @@ class TestExecuteAndSinkCheckpointCleanup:
     def test_checkpoint_dir_cleaned_on_error(self, tmp_path):
         """If _execute_lazy raises, checkpoint_dir must still be cleaned up."""
         from pathlib import Path
-        from unittest.mock import MagicMock
 
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
@@ -1014,7 +1014,7 @@ class TestTrainModelDirect:
 
     def test_train_model_delegates_to_service(self):
         """train_model should delegate to _train_service.start()."""
-        from haute.routes.modelling import _store, _train_service, train_model
+        from haute.routes.modelling import _train_service, train_model
         from haute.schemas import TrainRequest, TrainResponse
 
         graph = make_graph(
@@ -1215,7 +1215,8 @@ class TestClearModelCacheDirect:
         with patch("haute._mlflow_io.clear_model_cache", return_value=5) as mock:
             result = await clear_model_cache(run_id=None)
             mock.assert_called_once_with(None)
-            assert result == {"removed": 5, "run_id": None}
+            assert result.removed == 5
+            assert result.run_id is None
 
     @pytest.mark.asyncio
     async def test_clears_specific_run(self):
@@ -1224,7 +1225,8 @@ class TestClearModelCacheDirect:
         with patch("haute._mlflow_io.clear_model_cache", return_value=2) as mock:
             result = await clear_model_cache(run_id="run_xyz")
             mock.assert_called_once_with("run_xyz")
-            assert result == {"removed": 2, "run_id": "run_xyz"}
+            assert result.removed == 2
+            assert result.run_id == "run_xyz"
 
 
 class TestMlflowCheckDirect:

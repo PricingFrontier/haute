@@ -1,8 +1,8 @@
 """Lightweight config validation for pipeline node types.
 
 Warns on unrecognized config keys so typos and stale keys surface early
-instead of being silently ignored.  Never raises -- existing pipelines
-keep working.
+instead of being silently ignored.  Returns the unexpected keys so callers
+can choose whether to warn, fail, or report them in tests.
 """
 
 from __future__ import annotations
@@ -60,12 +60,14 @@ _TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
 # Keys that any node type may carry (set by the parser / executor, not by config authors).
 # ``selected_columns`` is applied by the executor for *all* node types (column
 # filtering for downstream propagation), so it must be universally accepted.
+# ``contract`` is the column-contract annotation — may appear on any type.
 _UNIVERSAL_KEYS: frozenset[str] = frozenset(
     {
         "instanceOf",
         "inputMapping",
         "selected_columns",
         "column_renames",
+        "contract",
     }
 )
 

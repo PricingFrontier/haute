@@ -15,13 +15,22 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
 from haute._logging import get_logger
-from haute._types import HauteError
+from haute.errors import HauteError
+from haute.schemas import (
+    GitBranchItem,
+    GitBranchListResponse,
+    GitHistoryEntry,
+    GitPullResponse,
+    GitRevertResponse,
+    GitSaveResponse,
+    GitStatusResponse,
+    GitSubmitResponse,
+)
 
 logger = get_logger(component="git")
 
@@ -35,6 +44,10 @@ _ARCHIVE_PREFIX = "archive"
 _FETCH_COOLDOWN_SECONDS: float = 30.0
 _last_fetch_time: float = 0.0
 _fetch_time_lock = threading.Lock()
+# Serialises the actual ``git fetch`` subprocess — two concurrent callers
+# that both pass the cooldown window must not launch parallel fetches
+# because git races on the local .git/objects index.
+_fetch_exec_lock = threading.Lock()
 
 # Characters that have no business in a branch name or SHA — used by
 # ``_validate_ref_name`` to block argument injection.
@@ -47,79 +60,48 @@ _BAD_REF_CHARS = re.compile(r"[\x00-\x1f\x7f~^:?*\[\]\\]")
 
 
 class GitError(HauteError):
-    """User-facing git operation error."""
+    """Raw ``git`` operation error — unsafe to surface to HTTP.
+
+    By default any ``GitError`` that bubbles to the HTTP layer may
+    embed raw subprocess stderr (absolute paths, remote URLs, SSL
+    errors, credentials) and is therefore sanitized before reaching
+    the client.  The full detail remains in the structured log.
+
+    Hand-written, user-facing messages (missing repo, duplicate
+    branch, "no changes to save") use :class:`GitDomainError` so the
+    HTTP handler can pass them through verbatim.  Guardrail blocks
+    (protected branches) use :class:`GitGuardrailError`.
+    """
 
 
-class GitGuardrailError(GitError):
-    """Blocked by a safety guardrail (e.g. writing to main)."""
+class GitDomainError(GitError):
+    """Hand-written user-facing git error; HTTP layer keeps it verbatim.
+
+    Use this for any message we author ourselves (e.g. "Not a git
+    repository", "Branch already exists", "No changes to save") that
+    should surface to the user unchanged.  Never pass raw subprocess
+    stderr into this class — it bypasses the sanitization performed
+    for plain :class:`GitError`.
+    """
+
+
+class GitGuardrailError(GitDomainError):
+    """Blocked by a safety guardrail (e.g. writing to main).
+
+    Inherits from :class:`GitDomainError` — the message is
+    hand-written and surfaces verbatim — and is distinguished from
+    plain domain errors so the HTTP layer can return 403 rather than
+    400.
+    """
 
 
 # ---------------------------------------------------------------------------
-# Data classes
+# Public result types
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class GitStatus:
-    branch: str
-    is_main: bool
-    is_read_only: bool
-    changed_files: list[str]
-    main_ahead: bool
-    main_ahead_by: int
-    main_last_updated: str | None
-
-
-@dataclass
-class BranchInfo:
-    name: str
-    is_yours: bool
-    is_current: bool
-    is_archived: bool
-    last_commit_time: str
-    commit_count: int
-
-
-@dataclass
-class BranchListResult:
-    current: str
-    branches: list[BranchInfo]
-
-
-@dataclass
-class SaveResult:
-    commit_sha: str
-    message: str
-    timestamp: str
-
-
-@dataclass
-class HistoryEntry:
-    sha: str
-    short_sha: str
-    message: str
-    timestamp: str
-    files_changed: list[str]
-
-
-@dataclass
-class RevertResult:
-    backup_tag: str
-    reverted_to: str
-
-
-@dataclass
-class PullResult:
-    success: bool
-    conflict: bool
-    conflict_message: str | None
-    commits_pulled: int
-
-
-@dataclass
-class SubmitResult:
-    compare_url: str | None
-    branch: str
+#
+# ``_git`` hands back the same Pydantic models that the HTTP layer exposes so
+# the routes can pass results through verbatim — no dataclass-to-dict-to-model
+# round-trip.
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +110,14 @@ class SubmitResult:
 
 
 def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
-    """Run a git command and return stdout.  Raises ``GitError`` on failure."""
+    """Run a git command and return stdout.  Raises ``GitError`` on failure.
+
+    The raw subprocess stderr is wrapped in a plain :class:`GitError`
+    (the sanitize-by-default class) so the HTTP handler collapses the
+    detail to ``_INTERNAL_ERROR_DETAIL`` — raw stderr commonly contains
+    absolute paths, remote URLs, SSL errors, and credentials.
+    Full detail is retained in the ``git_command_failed`` structured log.
+    """
     cmd = ["git"] + list(args)
     result = subprocess.run(
         cmd,
@@ -169,7 +158,7 @@ def _get_current_branch(cwd: Path | None = None) -> str:
 @lru_cache(maxsize=32)
 def _get_default_branch_cached(cwd_str: str) -> str:
     """Cached inner implementation.  Keyed on stringified *cwd* because
-    ``Path`` is unhashable and we need ``lru_cache`` compatibility.
+    ``Path`` is unhashable and ``lru_cache`` keys must be hashable.
     """
     cwd = Path(cwd_str) if cwd_str else None
     ok, ref = _run_git_ok(
@@ -223,11 +212,11 @@ def _validate_ref_name(name: str) -> None:
     branch names or SHAs are passed to git CLI commands.
     """
     if not name:
-        raise GitError("Ref name cannot be empty.")
+        raise GitDomainError("Ref name cannot be empty.")
     if name.startswith("-"):
-        raise GitError(f"Invalid ref name: {name!r} (must not start with '-').")
+        raise GitDomainError(f"Invalid ref name: {name!r} (must not start with '-').")
     if _BAD_REF_CHARS.search(name):
-        raise GitError(f"Invalid ref name: {name!r} (contains forbidden characters).")
+        raise GitDomainError(f"Invalid ref name: {name!r} (contains forbidden characters).")
 
 
 def _is_protected(branch: str) -> bool:
@@ -243,7 +232,7 @@ def _assert_not_protected(branch: str) -> None:
 
 def _assert_git_repo(cwd: Path | None = None) -> None:
     if not _is_git_repo(cwd):
-        raise GitError("Not a git repository. Run 'git init' first.")
+        raise GitDomainError("Not a git repository. Run 'git init' first.")
 
 
 def _is_own_branch(branch: str, user_slug: str) -> bool:
@@ -328,7 +317,7 @@ def ensure_repo(cwd: Path | None = None) -> None:
     _assert_git_repo(cwd)
 
 
-def get_status(cwd: Path | None = None) -> GitStatus:
+def get_status(cwd: Path | None = None) -> GitStatusResponse:
     """Get the current git status for the panel."""
     _assert_git_repo(cwd)
 
@@ -363,7 +352,10 @@ def get_status(cwd: Path | None = None) -> GitStatus:
                 _last_fetch_time = now
                 should_fetch = True
         if should_fetch:
-            _run_git_ok("fetch", "origin", default, "--quiet", cwd=cwd)
+            # Serialise the actual subprocess — git fetch races on the
+            # local object store if two processes run concurrently.
+            with _fetch_exec_lock:
+                _run_git_ok("fetch", "origin", default, "--quiet", cwd=cwd)
 
         ok_count, count_str = _run_git_ok(
             "rev-list",
@@ -385,7 +377,7 @@ def get_status(cwd: Path | None = None) -> GitStatus:
             if ok_time:
                 main_last_updated = timestamp
 
-    return GitStatus(
+    return GitStatusResponse(
         branch=branch,
         is_main=is_main,
         is_read_only=is_read_only,
@@ -401,11 +393,11 @@ def create_branch(description: str, cwd: Path | None = None) -> str:
     _assert_git_repo(cwd)
 
     if not description.strip():
-        raise GitError("Branch description cannot be empty.")
+        raise GitDomainError("Branch description cannot be empty.")
 
     slug = _slugify(description)
     if not slug:
-        raise GitError("Branch description cannot be empty.")
+        raise GitDomainError("Branch description cannot be empty.")
 
     user_slug = _get_user_slug(cwd)
     branch_name = f"{_BRANCH_PREFIX}/{user_slug}/{slug}"
@@ -414,7 +406,7 @@ def create_branch(description: str, cwd: Path | None = None) -> str:
     # Check it doesn't already exist
     ok, _ = _run_git_ok("rev-parse", "--verify", branch_name, cwd=cwd)
     if ok:
-        raise GitError(
+        raise GitDomainError(
             f"Branch '{branch_name}' already exists. "
             "Choose a different description or switch to the existing branch."
         )
@@ -425,7 +417,7 @@ def create_branch(description: str, cwd: Path | None = None) -> str:
     return branch_name
 
 
-def list_branches(cwd: Path | None = None) -> BranchListResult:
+def list_branches(cwd: Path | None = None) -> GitBranchListResponse:
     """List all branches, with the user's branches first.
 
     Uses ``%(ahead-behind:<default>)`` (git 2.35+) to get commit counts
@@ -457,7 +449,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
             cwd=cwd,
         )
 
-    branches: list[BranchInfo] = []
+    branches: list[GitBranchItem] = []
     if ok and raw:
         for line in raw.splitlines():
             parts = line.split("\t")
@@ -485,7 +477,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
                     commit_count = int(count_str)
 
             branches.append(
-                BranchInfo(
+                GitBranchItem(
                     name=name,
                     is_yours=_is_own_branch(name, user_slug),
                     is_current=name == current,
@@ -496,7 +488,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
             )
 
     # Sort: yours first, then others, archived last
-    def sort_key(b: BranchInfo) -> tuple[int, str]:
+    def sort_key(b: GitBranchItem) -> tuple[int, str]:
         if b.is_archived:
             return (2, b.name)
         if b.is_yours:
@@ -505,7 +497,7 @@ def list_branches(cwd: Path | None = None) -> BranchListResult:
 
     branches.sort(key=sort_key)
 
-    return BranchListResult(current=current, branches=branches)
+    return GitBranchListResponse(current=current, branches=branches)
 
 
 def switch_branch(branch: str, cwd: Path | None = None) -> None:
@@ -526,7 +518,7 @@ def switch_branch(branch: str, cwd: Path | None = None) -> None:
     logger.info("branch_switched", from_branch=current, to_branch=branch)
 
 
-def save_progress(cwd: Path | None = None) -> SaveResult:
+def save_progress(cwd: Path | None = None) -> GitSaveResponse:
     """Stage all changes, commit, and push.  Returns commit info."""
     _assert_git_repo(cwd)
 
@@ -539,7 +531,7 @@ def save_progress(cwd: Path | None = None) -> SaveResult:
     # Check if there's actually anything to commit
     ok, status = _run_git_ok("diff", "--cached", "--name-only", cwd=cwd)
     if not ok or not status.strip():
-        raise GitError("No changes to save.")
+        raise GitDomainError("No changes to save.")
 
     changed = status.strip().splitlines()
     message = _generate_commit_message(changed)
@@ -555,7 +547,7 @@ def save_progress(cwd: Path | None = None) -> SaveResult:
         _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
 
     logger.info("changes_saved", sha=sha[:8], message=message)
-    return SaveResult(commit_sha=sha, message=message, timestamp=timestamp)
+    return GitSaveResponse(commit_sha=sha, message=message, timestamp=timestamp)
 
 
 def _auto_commit(cwd: Path | None = None) -> None:
@@ -577,7 +569,7 @@ def _auto_commit(cwd: Path | None = None) -> None:
         _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
 
 
-def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
+def get_history(limit: int = 20, cwd: Path | None = None) -> list[GitHistoryEntry]:
     """Get commit history for the current branch.
 
     Uses ``git log --name-only`` to retrieve commit metadata *and*
@@ -608,7 +600,7 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
         cwd=cwd,
     )
 
-    entries: list[HistoryEntry] = []
+    entries: list[GitHistoryEntry] = []
     if ok and raw:
         # Split on the separator to get per-commit blocks.
         blocks = raw.split(_sep)
@@ -627,7 +619,7 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
             files_changed = [f for f in lines[1:] if f.strip()]
 
             entries.append(
-                HistoryEntry(
+                GitHistoryEntry(
                     sha=sha,
                     short_sha=short_sha,
                     message=message,
@@ -639,7 +631,7 @@ def get_history(limit: int = 20, cwd: Path | None = None) -> list[HistoryEntry]:
     return entries
 
 
-def revert_to(sha: str, cwd: Path | None = None) -> RevertResult:
+def revert_to(sha: str, cwd: Path | None = None) -> GitRevertResponse:
     """Reset the current branch to a specific commit (with backup tag)."""
     _assert_git_repo(cwd)
     _validate_ref_name(sha)
@@ -651,7 +643,7 @@ def revert_to(sha: str, cwd: Path | None = None) -> RevertResult:
     # from git options, preventing argument injection.
     ok, _ = _run_git_ok("cat-file", "-t", "--", sha, cwd=cwd)
     if not ok:
-        raise GitError(f"Commit '{sha}' not found.")
+        raise GitDomainError(f"Commit '{sha}' not found.")
 
     # Create a backup tag before resetting
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
@@ -671,10 +663,10 @@ def revert_to(sha: str, cwd: Path | None = None) -> RevertResult:
 
     short_sha = sha[:7]
     logger.info("reverted", to=short_sha, backup=backup_tag)
-    return RevertResult(backup_tag=backup_tag, reverted_to=short_sha)
+    return GitRevertResponse(backup_tag=backup_tag, reverted_to=short_sha)
 
 
-def pull_latest(cwd: Path | None = None) -> PullResult:
+def pull_latest(cwd: Path | None = None) -> GitPullResponse:
     """Pull latest default branch into the current branch."""
     _assert_git_repo(cwd)
 
@@ -683,15 +675,17 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
     default = _get_default_branch(cwd)
 
     if not _has_remote(cwd):
-        raise GitError("No remote configured. Cannot pull latest changes.")
+        raise GitDomainError("No remote configured. Cannot pull latest changes.")
 
     # Auto-commit pending changes first
     ok, status = _run_git_ok("status", "--porcelain", cwd=cwd)
     if ok and status.strip():
         _auto_commit(cwd)
 
-    # Fetch latest
-    _run_git("fetch", "origin", default, cwd=cwd)
+    # Fetch latest. Serialise with status polling fetches so git never has
+    # two subprocesses racing on the local object store.
+    with _fetch_exec_lock:
+        _run_git("fetch", "origin", default, cwd=cwd)
 
     # Count how many commits we're pulling
     ok_count, count_str = _run_git_ok(
@@ -703,7 +697,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
     commits_to_pull = int(count_str) if ok_count and count_str.isdigit() else 0
 
     if commits_to_pull == 0:
-        return PullResult(
+        return GitPullResponse(
             success=True,
             conflict=False,
             conflict_message=None,
@@ -722,7 +716,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
         # Conflict detected — abort the merge
         _run_git_ok("merge", "--abort", cwd=cwd)
         logger.warning("merge_conflict", branch=branch)
-        return PullResult(
+        return GitPullResponse(
             success=False,
             conflict=True,
             conflict_message=(
@@ -738,7 +732,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
         _run_git_ok("push", "origin", branch, cwd=cwd)
 
     logger.info("pull_complete", commits=commits_to_pull)
-    return PullResult(
+    return GitPullResponse(
         success=True,
         conflict=False,
         conflict_message=None,
@@ -746,7 +740,7 @@ def pull_latest(cwd: Path | None = None) -> PullResult:
     )
 
 
-def submit_for_review(cwd: Path | None = None) -> SubmitResult:
+def submit_for_review(cwd: Path | None = None) -> GitSubmitResponse:
     """Push branch and return a comparison URL for PR creation."""
     _assert_git_repo(cwd)
 
@@ -766,7 +760,7 @@ def submit_for_review(cwd: Path | None = None) -> SubmitResult:
     compare_url = _build_compare_url(branch, default, cwd)
 
     logger.info("submitted_for_review", branch=branch, url=compare_url)
-    return SubmitResult(compare_url=compare_url, branch=branch)
+    return GitSubmitResponse(compare_url=compare_url, branch=branch)
 
 
 def archive_branch(branch: str, cwd: Path | None = None) -> str:
@@ -776,7 +770,7 @@ def archive_branch(branch: str, cwd: Path | None = None) -> str:
     _assert_not_protected(branch)
 
     if branch.startswith(f"{_ARCHIVE_PREFIX}/"):
-        raise GitError(f"Branch '{branch}' is already archived.")
+        raise GitDomainError(f"Branch '{branch}' is already archived.")
 
     current = _get_current_branch(cwd)
     default = _get_default_branch(cwd)

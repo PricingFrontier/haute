@@ -1,6 +1,5 @@
 import type { ReactNode } from "react"
 import { X } from "lucide-react"
-import { hoverBg } from "../utils/hoverHandlers"
 
 export interface PanelHeaderProps {
   title: string | ReactNode
@@ -51,9 +50,8 @@ export default function PanelHeader({
       {actions}
       <button
         onClick={onClose}
-        className="p-1 rounded shrink-0 transition-colors"
+        className="p-1 rounded shrink-0 transition-colors hover-bg"
         style={{ color: "var(--text-muted)" }}
-        {...hoverBg("var(--bg-hover)")}
         title="Close"
       >
         <X size={14} />

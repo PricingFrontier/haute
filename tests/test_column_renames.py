@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import polars as pl
-import pytest
 
 from haute._execute_lazy import _apply_column_renames, _apply_selected_columns
 

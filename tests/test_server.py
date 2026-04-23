@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+from tests.conftest import write_data_source_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -25,6 +28,7 @@ def pipeline_dir(tmp_path: Path) -> Path:
     # Use as_posix() to avoid Windows backslash escape issues in the
     # generated Python source (e.g. \U interpreted as unicode escape).
     data_path = (data_dir / "input.parquet").as_posix()
+    source_config = write_data_source_config(tmp_path, "source", data_path)
 
     code = f'''\
 import polars as pl
@@ -33,7 +37,7 @@ import haute
 pipeline = haute.Pipeline("test_pipeline", description="A test pipeline")
 
 
-@pipeline.data_source(path="{data_path}")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.DataFrame:
     """Read data."""
     return pl.scan_parquet("{data_path}")
@@ -456,12 +460,20 @@ class TestCreateSubmodel:
         client: TestClient,
         three_node_graph: dict,
     ):
+        """Phase 1C #11: the handler now returns a sanitized 400 detail
+        so raw ValueError text from ``create_submodel_graph`` (which
+        may embed graph walk internals) never reaches the client.  The
+        full "at least 2 nodes" message is recorded in the
+        ``submodel_create_invalid`` structured log with ``exc_info=True``.
+        """
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
         # Only 1 node — must be at least 2
         node_ids = [three_node_graph["nodes"][0]["id"]]
         payload = self._create_payload(three_node_graph, node_ids)
         resp = client.post("/api/submodel/create", json=payload)
         assert resp.status_code == 400
-        assert "at least 2" in resp.json()["detail"]
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
 
     def test_create_submodel_missing_source_file_returns_400(
         self,
@@ -850,7 +862,11 @@ class TestFileWatcher:
 
 
 class TestPipelineTimeouts:
-    """Timeout paths — mock asyncio.wait_for to raise TimeoutError."""
+    """Timeout paths — let asyncio.wait_for cancel pending route work."""
+
+    @staticmethod
+    async def _never_finishes(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(60)
 
     @staticmethod
     def _sink_graph(pipeline_dir: Path) -> dict:
@@ -893,7 +909,7 @@ class TestPipelineTimeouts:
     def test_timeout_returns_504(
         self, client: TestClient, pipeline_dir: Path, endpoint: str, use_parsed_graph: bool
     ):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
         if use_parsed_graph:
             from haute.parser import parse_pipeline_file
@@ -906,10 +922,23 @@ class TestPipelineTimeouts:
         else:
             body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
 
-        with patch(
-            "haute.routes.pipeline.asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=TimeoutError,
+        with (
+            patch(
+                "haute.routes._timeouts.asyncio.to_thread",
+                self._never_finishes,
+            ),
+            patch(
+                "haute.routes.pipeline._TRACE_TIMEOUT",
+                0.001,
+            ),
+            patch(
+                "haute.routes.pipeline._PREVIEW_TIMEOUT",
+                0.001,
+            ),
+            patch(
+                "haute.routes.pipeline._SINK_TIMEOUT",
+                0.001,
+            ),
         ):
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)
         assert resp.status_code == 504
@@ -950,9 +979,14 @@ class TestPipelineExceptions:
     @pytest.mark.parametrize(
         ("endpoint", "patch_target", "error_msg", "use_parsed_graph"),
         [
-            ("trace", "haute.trace.execute_trace", "trace error", True),
-            ("preview", "haute.executor.execute_graph", "preview error", True),
-            ("sink", "haute.executor.execute_sink", "sink error", False),
+            # Route-side patch targets: the route module imports these
+            # functions at top level (post-#101 hoist), so patching the
+            # source modules (``haute.trace`` / ``haute.executor``) would
+            # be a no-op — the route still calls its own top-level
+            # bindings.
+            ("trace", "haute.routes.pipeline.execute_trace", "trace error", True),
+            ("preview", "haute.routes.pipeline.execute_graph", "preview error", True),
+            ("sink", "haute.routes.pipeline.execute_sink", "sink error", False),
         ],
         ids=["trace_exception", "preview_exception", "sink_exception"],
     )
@@ -996,9 +1030,10 @@ class TestPreviewEdgeCases:
 
         graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
 
-        # Mock execute_graph to return results without the target node
+        # Route-scoped patch target: ``routes/pipeline.py`` imports
+        # ``execute_graph`` at module top-level post-#101.
         with patch(
-            "haute.executor.execute_graph",
+            "haute.routes.pipeline.execute_graph",
             return_value={},  # empty results
         ):
             resp = client.post(
@@ -1034,6 +1069,7 @@ class TestListPipelinesParseError:
             raise RuntimeError("Simulated parse failure")
 
         from haute import parser
+        from haute.routes import pipeline as pipeline_routes
 
         original_parse = parser.parse_pipeline_file
 
@@ -1044,7 +1080,11 @@ class TestListPipelinesParseError:
         invalidate_pipeline_index()
 
         c = TestClient(app)
-        with patch.object(parser, "parse_pipeline_file", side_effect=_patch_parse):
+        # Patch the route-scoped binding — after the #101 import hoist
+        # ``list_pipelines`` calls its own top-level ``parse_pipeline_file``
+        # alias, so patching the ``haute.parser`` source module alone no
+        # longer affects the code path.
+        with patch.object(pipeline_routes, "parse_pipeline_file", side_effect=_patch_parse):
             resp = c.get("/api/pipelines")
         assert resp.status_code == 200
         data = resp.json()
@@ -1198,7 +1238,7 @@ class TestFileWatcherJsonConfig:
 
         # Create a config directory with a JSON file
         config_dir = pipeline_dir / "config"
-        config_dir.mkdir()
+        config_dir.mkdir(exist_ok=True)
         (config_dir / "factors").mkdir(parents=True)
         (config_dir / "factors" / "test.json").write_text('{"key": "value"}')
 
@@ -1504,13 +1544,14 @@ class TestSubmodelEdgeRewiring:
     ):
         """Add a third transform node so we can test outgoing edge rewiring."""
         # Create a 3-node pipeline: source -> transform -> transform2
-        code = """\
+        source_config = write_data_source_config(pipeline_dir, "source", "data/input.parquet")
+        code = f"""\
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("rewire_test", description="Rewire test")
 
-@pipeline.data_source(path="data/input.parquet")
+@pipeline.data_source(config="{source_config}")
 def source() -> pl.LazyFrame:
     return pl.scan_parquet("data/input.parquet")
 
@@ -1599,9 +1640,9 @@ class TestMiddlewareLogging:
 
     def test_5xx_logs_error(self):
         import asyncio
+        from unittest.mock import AsyncMock, MagicMock
 
         import structlog.testing
-        from unittest.mock import AsyncMock, MagicMock
 
         from haute.server import _RequestIdMiddleware
 

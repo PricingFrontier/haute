@@ -5,6 +5,7 @@
  * axis labels, grid lines, and a legend.
  */
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { CHART_COLORS } from "../../theme/colors"
 
 interface LossTabProps {
   result: TrainResult
@@ -15,9 +16,9 @@ interface LossTabProps {
 const GRID_COLOR = "rgba(255,255,255,.06)"
 const AXIS_TEXT_COLOR = "var(--text-muted)"
 const AXIS_FONT_SIZE = 10
-const TRAIN_COLOR = "#a855f7"
-const EVAL_COLOR = "#22c55e"
-const BEST_COLOR = "#f59e0b"
+const TRAIN_COLOR = CHART_COLORS.train
+const EVAL_COLOR = CHART_COLORS.eval
+const BEST_COLOR = CHART_COLORS.best
 
 export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   const lossHistory = result.loss_history

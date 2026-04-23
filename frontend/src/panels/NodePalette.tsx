@@ -28,10 +28,8 @@ export default function NodePalette({ onCollapse, nodes }: { onCollapse?: () => 
         {onCollapse && (
           <button
             onClick={onCollapse}
-            className="p-0.5 rounded transition-colors"
+            className="p-0.5 rounded transition-colors hover:bg-[var(--chrome-hover)] hover:text-[var(--text-secondary)]"
             style={{ color: 'var(--text-muted)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--chrome-hover)'; e.currentTarget.style.color = 'var(--text-secondary)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)' }}
             title="Collapse palette"
           >
             <PanelLeftClose size={14} />
@@ -49,10 +47,7 @@ export default function NodePalette({ onCollapse, nodes }: { onCollapse?: () => 
               key={type}
               draggable={!disabled}
               onDragStart={(e) => { if (!disabled) onDragStart(e, type) }}
-              className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing"}`}
-              style={{ ["--hover-bg" as string]: "var(--chrome-hover)" }}
-              onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "var(--chrome-hover)" }}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing hover:bg-[var(--chrome-hover)]"}`}
               title={disabled ? `Only one ${meta.name} allowed per pipeline` : meta.description}
             >
               <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>

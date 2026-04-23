@@ -19,16 +19,16 @@ import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import numpy as np
 import polars as pl
+import pytest
 
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
     FeatureMismatchError,
     ModelScorer,
     _batch_score_to_parquet,
+    _format_feature_mismatch,
     _register_temp_cleanup,
     _run_score_pipeline,
     _sink_to_temp,
@@ -186,9 +186,9 @@ class TestModelScorerScore:
             scorer.score(lf)
 
         err = exc_info.value
-        assert err.missing == ["missing_col"]
-        assert "a" in err.available
-        assert "b" in err.available
+        assert err.context["missing"] == ["missing_col"]
+        assert "a" in err.context["available"]
+        assert "b" in err.context["available"]
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
@@ -200,7 +200,7 @@ class TestModelScorerScore:
 
         scorer = ModelScorer(source_type="run", run_id="abc", source="live")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = scorer.score(lf)
+        scorer.score(lf)
 
         mock_score_eager.assert_called_once()
         call_args = mock_score_eager.call_args
@@ -219,7 +219,7 @@ class TestModelScorerScore:
         with pytest.raises(FeatureMismatchError, match="Missing feature"):
             scorer.score()  # no dfs passed -- empty LazyFrame has no feature columns
 
-    @patch("haute.executor._exec_user_code")
+    @patch("haute._user_exec._exec_user_code")
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
     def test_user_code_applied_after_scoring(self, mock_load, mock_score_eager, mock_exec):
@@ -414,12 +414,6 @@ class TestScoringModel:
         assert result is not None
         assert isinstance(result, np.ndarray)
 
-    def test_getattr_proxies_to_raw_model(self):
-        """Attribute access falls through to the underlying model."""
-        sm = _make_scoring_model()
-        # Access CatBoost-specific attribute via proxy
-        assert sm.feature_names_ == ["a", "b"]
-
     def test_raw_model_property(self):
         """raw_model exposes the underlying model object."""
         sm = _make_scoring_model()
@@ -500,7 +494,7 @@ class TestScoreFromConfig:
 
     @patch("haute._mlflow_io.load_mlflow_model")
     def test_base_dir_none_falls_back_to_cwd(self, mock_load, tmp_path, monkeypatch):
-        """Without base_dir, config is resolved relative to CWD (backward compat)."""
+        """Without base_dir, config is resolved relative to CWD."""
         sm = _make_scoring_model(predictions=np.array([0.5]))
         mock_load.return_value = sm
 
@@ -575,13 +569,12 @@ class TestScoreFromConfig:
 
 class TestFeatureMismatchError:
     def test_basic_missing_features_message(self):
-        """Error message lists missing features."""
-        err = FeatureMismatchError(
+        """Diagnostic message lists missing features."""
+        msg = _format_feature_mismatch(
             expected=["a", "b", "c"],
             available=["a"],
             missing=["b", "c"],
         )
-        msg = str(err)
         assert "3 feature(s)" in msg
         assert "1 column(s)" in msg
         assert "Missing feature(s) (2):" in msg
@@ -591,37 +584,34 @@ class TestFeatureMismatchError:
     def test_truncation_at_20_missing(self):
         """When more than 20 features are missing, message truncates with '... and N more'."""
         missing = [f"feat_{i}" for i in range(25)]
-        err = FeatureMismatchError(
+        msg = _format_feature_mismatch(
             expected=missing,
             available=[],
             missing=missing,
         )
-        msg = str(err)
         assert "  - feat_0" in msg
         assert "  - feat_19" in msg
-        assert "feat_20" not in msg.split("... and")[0]  # feat_20 not listed individually
+        assert "feat_20" not in msg.split("... and")[0]
         assert "... and 5 more" in msg
 
     def test_type_mismatches_in_message(self):
         """Type mismatch section appears when type_mismatches are provided."""
-        err = FeatureMismatchError(
+        msg = _format_feature_mismatch(
             expected=["a", "b"],
             available=["a", "b"],
             missing=[],
             type_mismatches=[("a", "categorical (String)", "Int64")],
         )
-        msg = str(err)
         assert "Type mismatch(es):" in msg
         assert "'a': model expects categorical (String), got Int64" in msg
 
     def test_no_missing_no_type_mismatch(self):
         """Message is clean when no missing features and no type mismatches."""
-        err = FeatureMismatchError(
+        msg = _format_feature_mismatch(
             expected=["a"],
             available=["a", "b"],
             missing=[],
         )
-        msg = str(err)
         assert "Missing feature(s)" not in msg
         assert "Type mismatch" not in msg
         assert "These features were expected" in msg
@@ -647,7 +637,7 @@ class TestValidateFeatures:
         schema = pl.Schema({"a": pl.Float64, "b": pl.Float64})
         with pytest.raises(FeatureMismatchError) as exc_info:
             _validate_features(sm, schema)
-        assert exc_info.value.missing == ["c"]
+        assert exc_info.value.context["missing"] == ["c"]
 
     def test_no_usable_features_raises(self):
         """Raises FeatureMismatchError when no features match at all."""
@@ -655,20 +645,24 @@ class TestValidateFeatures:
         schema = pl.Schema({"a": pl.Float64, "b": pl.Float64})
         with pytest.raises(FeatureMismatchError) as exc_info:
             _validate_features(sm, schema)
-        assert exc_info.value.missing == ["x", "y"]
+        assert exc_info.value.context["missing"] == ["x", "y"]
 
-    def test_cat_feature_type_mismatch_warns(self):
-        """Categorical feature with numeric dtype produces a type mismatch warning."""
+    def test_cat_feature_type_mismatch_raises(self):
+        """Item #13: categorical feature with numeric dtype must raise —
+        silent cast would let wrong predictions through."""
         sm = _make_scoring_model(
             feature_names=["a", "b"],
             cat_feature_names=frozenset({"a"}),
         )
         # 'a' is expected categorical but schema has it as Int64 (numeric)
         schema = pl.Schema({"a": pl.Int64, "b": pl.Float64})
-        usable, missing = _validate_features(sm, schema)
-        # Should succeed (all features present) but log a warning
-        assert usable == ["a", "b"]
-        assert missing == []
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            _validate_features(sm, schema)
+        # Context must surface the offending column so log consumers can act.
+        ctx = exc_info.value.context
+        assert ctx.get("type_mismatches")
+        offenders = [col for col, *_ in ctx["type_mismatches"]]
+        assert "a" in offenders
 
     def test_cat_feature_string_type_no_mismatch(self):
         """Categorical feature with String dtype does not trigger mismatch."""
@@ -707,9 +701,7 @@ class TestRunScorePipeline:
         mock_batched.return_value = pl.DataFrame({"a": [1]}).lazy()
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _run_score_pipeline(
-            sm, lf, task="regression", output_col="prediction", source="batch"
-        )
+        _run_score_pipeline(sm, lf, task="regression", output_col="prediction", source="batch")
         mock_batched.assert_called_once()
 
     @patch("haute._mlflow_io._score_eager")
@@ -730,20 +722,31 @@ class TestRunScorePipeline:
         mock_eager.assert_called_once()
 
     @patch("haute._mlflow_io._score_eager")
-    def test_generic_exception_wraps_as_feature_mismatch(self, mock_eager):
-        """Non-FeatureMismatchError exceptions are wrapped in FeatureMismatchError."""
+    def test_generic_exception_propagates_unwrapped(self, mock_eager):
+        """Non-FeatureMismatchError exceptions propagate with their real type.
+
+        Previously every non-FMEE failure inside scoring was re-wrapped as
+        ``FeatureMismatchError`` — this laundered the real error type
+        (``RuntimeError`` from a corrupt artifact, ``AttributeError``
+        from a broken predict surface, etc.) behind a misleading mismatch
+        message.  Post-narrowing, the real exception surfaces so on-call
+        engineers see the actual failure class.
+        """
         sm = _make_scoring_model(feature_names=["a", "b"])
         mock_eager.side_effect = RuntimeError("CatBoost internal error")
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        with pytest.raises(FeatureMismatchError) as exc_info:
+        with pytest.raises(RuntimeError, match="CatBoost internal error"):
             _run_score_pipeline(sm, lf, task="regression", output_col="prediction", source="live")
-        assert exc_info.value.__cause__ is not None
-        assert "CatBoost internal error" in str(exc_info.value.__cause__)
 
     @patch("haute._mlflow_io._score_eager")
     def test_feature_mismatch_error_reraised_directly(self, mock_eager):
-        """FeatureMismatchError from scoring is re-raised without wrapping."""
+        """FeatureMismatchError from scoring propagates unchanged.
+
+        The explicit catch-and-rewrap was removed; FMEE now takes the
+        same un-caught path as every other exception, which preserves
+        the original instance and leaves ``__cause__`` as ``None``.
+        """
         sm = _make_scoring_model(feature_names=["a", "b"])
         original_err = FeatureMismatchError(
             expected=["a", "b"],
@@ -759,7 +762,7 @@ class TestRunScorePipeline:
         assert exc_info.value is original_err
         assert exc_info.value.__cause__ is None
 
-    @patch("haute.executor._exec_user_code")
+    @patch("haute._user_exec._exec_user_code")
     @patch("haute._mlflow_io._score_eager")
     def test_post_processing_code_executed(self, mock_eager, mock_exec):
         """User code is executed after scoring."""
@@ -768,7 +771,7 @@ class TestRunScorePipeline:
         mock_exec.return_value = pl.DataFrame({"result": [42]}).lazy()
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _run_score_pipeline(
+        _run_score_pipeline(
             sm,
             lf,
             task="regression",
@@ -782,7 +785,7 @@ class TestRunScorePipeline:
         call_kwargs = mock_exec.call_args[1]
         assert "model" in call_kwargs["extra_ns"]
 
-    @patch("haute.executor._exec_user_code")
+    @patch("haute._user_exec._exec_user_code")
     @patch("haute._mlflow_io._score_eager")
     def test_source_names_none_becomes_empty_list_in_code(self, mock_eager, mock_exec):
         """source_names=None is converted to [] when passed to user code."""
@@ -915,7 +918,7 @@ class TestBatchScoreToParquetMultiBatch:
 
 class TestBatchScoreToParquetSeriesConversion:
     def test_single_column_arrow_batch_handled(self, tmp_path):
-        """When a parquet has a single column, pl.from_arrow may return Series; it gets converted."""
+        """Parquet with one column: pl.from_arrow may return Series; it gets converted."""
         input_path = str(tmp_path / "single_col.parquet")
         df = pl.DataFrame({"a": [1.0, 2.0, 3.0]})
         df.write_parquet(input_path)

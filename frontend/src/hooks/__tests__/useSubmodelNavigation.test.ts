@@ -3,7 +3,7 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useSubmodelNavigation from "../useSubmodelNavigation"
 import useToastStore from "../../stores/useToastStore"
-import useUIStore from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
 import { makeNode } from "../../test-utils/factories"
 
 vi.mock("../../api/client", () => ({
@@ -42,7 +42,7 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
 describe("useSubmodelNavigation", () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
-    useUIStore.setState({ dirty: false })
+    useGraphStore.setState({ lastSavedSnapshot: null })
     mockCreate.mockReset()
     mockLoad.mockReset()
     mockDissolve.mockReset()

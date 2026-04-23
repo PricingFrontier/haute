@@ -71,7 +71,7 @@ const defaultProps = () => ({
   config: {} as Record<string, unknown>,
   onUpdate: vi.fn(),
   inputSources: [] as { varName: string; sourceLabel: string; edgeId: string }[],
-  accentColor: "#f59e0b",
+  accentColor: "var(--warning-strong)",
 })
 
 function resetMlflow() {

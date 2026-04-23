@@ -42,7 +42,7 @@ __all__ = [
 ]
 
 
-from haute.deploy._container import _CONTAINER_BASED_TARGETS
+from haute.deploy._config import _CONTAINER_BASED_TARGETS
 
 _SUPPORTED_TARGETS = {"databricks", "container"}
 _CONTAINER_PLATFORM_TARGETS = _CONTAINER_BASED_TARGETS - {"container"}
@@ -68,9 +68,7 @@ def deploy(config: DeployConfig) -> DeployResult:
 
     resolved = resolve_config(config)
 
-    errors = validate_deploy(resolved)
-    if errors:
-        raise ValueError(f"Deploy validation failed: {errors}")
+    validate_deploy(resolved)
 
     if config.target == "databricks":
         return deploy_to_mlflow(resolved)

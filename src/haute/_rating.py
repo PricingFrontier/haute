@@ -265,7 +265,7 @@ def _apply_rating_table(
     lookup = lookup.unique(subset=factors, keep="last")
 
     # Rename "value" to an internal name to avoid collision with any
-    # pre-existing "value" column in the input frame (Bug #1/#2).
+    # input "value" column in the input frame (Bug #1/#2).
     lookup = lookup.rename({"value": _LOOKUP_VAL})
 
     # Cast factor columns in lookup to Utf8 so the join matches string bands

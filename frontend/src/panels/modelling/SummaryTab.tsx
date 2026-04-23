@@ -25,9 +25,9 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
     <div className="flex gap-6 flex-wrap">
       {/* Warning banner */}
       {result.warning && (
-        <div className="w-full flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.06)", border: "1px solid rgba(245,158,11,.2)" }}>
-          <span className="shrink-0 mt-0.5" style={{ color: "#f59e0b" }}>&#9888;</span>
-          <span style={{ color: "#fbbf24" }}>{result.warning}</span>
+        <div className="w-full flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
+          <span className="shrink-0 mt-0.5" style={{ color: "var(--warning-strong)" }}>&#9888;</span>
+          <span style={{ color: "var(--warning)" }}>{result.warning}</span>
         </div>
       )}
 
@@ -89,29 +89,6 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
         </div>
       )}
 
-      {/* CV results */}
-      {result.cv_results && (
-        <div className="min-w-[200px]">
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Cross-Validation ({result.cv_results.n_folds}-fold)
-          </label>
-          <div className="mt-1 space-y-0.5">
-            {Object.entries(result.cv_results.mean_metrics).map(([k, v]) => (
-              <div key={k} className="flex justify-between text-xs font-mono gap-4">
-                <span style={{ color: "var(--text-secondary)" }}>{k}</span>
-                <span style={{ color: "var(--text-primary)" }}>
-                  {fmt(v)}
-                  {result.cv_results?.std_metrics[k] != null && (
-                    <span style={{ color: "var(--text-muted)" }}>
-                      {" "}&plusmn; {fmt(result.cv_results.std_metrics[k])}
-                    </span>
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* GLM fit statistics */}
       {result.glm_fit_statistics && Object.keys(result.glm_fit_statistics).length > 0 && (

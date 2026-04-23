@@ -43,19 +43,44 @@ export default function ModalShell({
         return
       }
 
-      // Focus trap: wrap Tab within the modal
+      // Focus trap: wrap Tab within the modal (Issue #41 — also redirect
+      // focus back INTO the modal if it has somehow landed on an element
+      // outside — e.g. a background button that retained focus before the
+      // modal mounted).
       if (e.key === "Tab" && containerRef.current) {
         const focusable = containerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-        if (focusable.length === 0) return
+        if (focusable.length === 0) {
+          // Nothing focusable inside — keep focus on the modal container
+          // so Tab cannot escape.  This branch also guards against the
+          // querySelectorAll-returned-empty edge case below.
+          e.preventDefault()
+          containerRef.current.focus()
+          return
+        }
         const first = focusable[0]
         const last = focusable[focusable.length - 1]
+        const active = document.activeElement
+
+        // If focus is currently OUTSIDE the modal, redirect it back in.
+        // Without this, a background element that held focus before the
+        // modal opened can Tab out freely, violating the trap.
+        if (!containerRef.current.contains(active)) {
+          e.preventDefault()
+          if (e.shiftKey) {
+            last.focus()
+          } else {
+            first.focus()
+          }
+          return
+        }
+
         if (e.shiftKey) {
-          if (document.activeElement === first) {
+          if (active === first) {
             e.preventDefault()
             last.focus()
           }
         } else {
-          if (document.activeElement === last) {
+          if (active === last) {
             e.preventDefault()
             first.focus()
           }

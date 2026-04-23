@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from haute._polars_utils import _malloc_trim  # noqa: F401 — re-exported for backward compat
+from haute._polars_utils import _malloc_trim
 from haute._ram_estimate import available_ram_bytes
 
 _MEM_LOG = Path(os.environ.get("HAUTE_MEM_LOG", str(Path.home() / "training_mem.log")))
@@ -441,8 +441,8 @@ class CatBoostAlgorithm(BaseAlgorithm):
             metric_path = os.path.join(_gpu_train_dir, "learn_error.tsv")
             last_seen = 0  # number of data lines already processed
 
-            while t.is_alive():
-                t.join(timeout=2.0)
+            def _poll_metric_file() -> None:
+                nonlocal last_seen
                 try:
                     if os.path.exists(metric_path):
                         with open(metric_path) as mf:
@@ -462,6 +462,14 @@ class CatBoostAlgorithm(BaseAlgorithm):
                             last_seen = len(data_lines)
                 except OSError:
                     pass
+
+            while t.is_alive():
+                t.join(timeout=2.0)
+                _poll_metric_file()
+
+            # Fast fits can complete before the first liveness check, so
+            # drain the metric file once more after the worker exits.
+            _poll_metric_file()
 
             # Clean up metric files
             shutil.rmtree(_gpu_train_dir, ignore_errors=True)
@@ -583,65 +591,6 @@ class CatBoostAlgorithm(BaseAlgorithm):
         mean_abs = np.abs(shap_values).mean(axis=0)
         pairs = sorted(zip(features, mean_abs), key=lambda x: x[1], reverse=True)
         return [{"feature": name, "mean_abs_shap": float(val)} for name, val in pairs]
-
-    def cross_validate(
-        self,
-        train_df: pl.DataFrame,
-        features: list[str],
-        cat_features: list[str],
-        target: str,
-        weight: str | None,
-        params: dict[str, Any],
-        task: str,
-        n_folds: int = 5,
-    ) -> dict[str, Any]:
-        """Run CatBoost's built-in cross-validation.
-
-        Returns a dict with:
-          fold_metrics: list of per-fold metric dicts
-          mean_metrics: mean across folds
-          std_metrics: std across folds
-        """
-        from catboost import cv
-
-        pool = _build_pool(
-            train_df,
-            features,
-            cat_features,
-            target=target,
-            weight=weight,
-        )
-
-        cv_params = {**params}
-        if "verbose" not in cv_params:
-            cv_params["verbose"] = 0
-        if "allow_writing_files" not in cv_params:
-            cv_params["allow_writing_files"] = False
-        # CatBoost cv() requires loss_function to be set explicitly
-        if "loss_function" not in cv_params:
-            cv_params["loss_function"] = "Logloss" if task == "classification" else "RMSE"
-
-        # CatBoost cv returns a DataFrame-like dict of metric columns
-        cv_result = cv(pool, cv_params, fold_count=n_folds, as_pandas=True)
-
-        # Extract final-iteration metrics per fold from the CV result
-        # cv_result columns look like "test-RMSE-mean", "test-RMSE-std", etc.
-        mean_metrics: dict[str, float] = {}
-        std_metrics: dict[str, float] = {}
-        for col in cv_result.columns:
-            if col.startswith("test-") and col.endswith("-mean"):
-                metric_name = col.replace("test-", "").replace("-mean", "")
-                mean_metrics[metric_name] = float(cv_result[col].iloc[-1])
-            if col.startswith("test-") and col.endswith("-std"):
-                metric_name = col.replace("test-", "").replace("-std", "")
-                std_metrics[metric_name] = float(cv_result[col].iloc[-1])
-
-        return {
-            "fold_metrics": [],  # CatBoost cv doesn't expose per-fold, only mean/std
-            "mean_metrics": mean_metrics,
-            "std_metrics": std_metrics,
-            "n_folds": n_folds,
-        }
 
     def save(self, model: Any, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
-
 from haute._parser_regex import (
-    _find_function_blocks,
-    _parse_decorator_kwargs_regex,
     _RE_CONNECT,
     _RE_DECORATOR,
     _RE_PIPELINE_META,
+    _find_function_blocks,
+    _parse_decorator_kwargs_regex,
     fallback_parse,
 )
-
 
 # ---------------------------------------------------------------------------
 # _find_function_blocks
@@ -207,7 +204,7 @@ pipeline = haute.Pipeline("test_pipe", description="A test")
 def transform(df):
     return df
 
-@pipeline.output()
+@pipeline.polars()
 def output_node(transform):
     return transform
 

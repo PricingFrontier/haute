@@ -14,12 +14,41 @@ from haute._logging import configure_logging, get_logger
 
 
 @pytest.fixture(autouse=True)
-def _clean_logging_state() -> None:
-    """Reset root logger and structlog state before each test."""
+def _clean_logging_state():
+    """Reset root logger and structlog state for each test, then restore.
+
+    Test isolation contract:
+        * Before the test: clear root-logger handlers and reset structlog to
+          a known-default state so assertions about renderer/formatter start
+          from a blank slate.
+        * After the test: restore the previous structlog config so any
+          module-level ``logger = get_logger(...)`` proxy that was bound and
+          cached BEFORE this test still emits through the same processors
+          list that ``structlog.testing.capture_logs`` can intercept.
+
+        Without the restore step, a test that calls ``configure_logging``
+        here swaps the global processors list.  Cached lazy proxies (e.g.
+        ``haute.server.logger``) keep their reference to the PRIOR list,
+        and subsequent tests in other files that rely on ``capture_logs``
+        silently lose events — producing test-order-sensitive flakes.
+    """
+    previous_config = structlog.get_config()
+    previous_handlers = list(logging.getLogger().handlers)
+    previous_level = logging.getLogger().level
+
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(logging.WARNING)
     structlog.reset_defaults()
+
+    try:
+        yield
+    finally:
+        root.handlers.clear()
+        for h in previous_handlers:
+            root.addHandler(h)
+        root.setLevel(previous_level)
+        structlog.configure(**previous_config)
 
 
 # ---------------------------------------------------------------------------

@@ -2,13 +2,107 @@
 
 from __future__ import annotations
 
-import hashlib
 import json as _json
+from typing import Any
 
+from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._types import PipelineGraph
 
 logger = get_logger(component="cache")
+
+# ---------------------------------------------------------------------------
+# Algorithm versioning
+# ---------------------------------------------------------------------------
+
+# Fingerprint-algorithm version.  Embedded as a ``"v<N>:"`` prefix on
+# every :func:`graph_fingerprint` output so that a future
+# canonicalisation tweak (node-attribute order, edge representation,
+# hash family, etc.) cannot silently collide with digests produced by
+# the previous algorithm.  Bumping this constant invalidates every
+# previously-cached fingerprint-keyed entry in a single step.
+#
+# Read dynamically inside :func:`graph_fingerprint` so tests can
+# ``monkeypatch.setattr(haute._cache, "ALGO_VERSION", ...)`` to
+# simulate a bump and confirm cache entries do not collide across
+# versions — pinned by
+# ``tests/test_routes_hygiene.py::TestBumpVersionInvalidatesCache``.
+ALGO_VERSION: int = 1
+
+
+def _canonicalise(value: Any) -> Any:
+    """Recursively convert *value* to a JSON-safe, order-independent form.
+
+    The resulting structure is fed to ``json.dumps(..., sort_keys=True)``
+    to produce a digest that is:
+
+      * deterministic across runs (no ``repr()``-based fallbacks that
+        depend on hash-seed or insertion order);
+      * equal for sets / frozensets whose elements are the same regardless
+        of the order they were inserted (unordered containers are sorted).
+
+    Unsupported types raise ``TypeError`` loudly rather than silently
+    reducing to ``repr()``.  This ensures a drift in config shape is
+    caught at fingerprint time instead of producing quietly-wrong digests.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        # ``bool`` is a subclass of ``int`` but that's fine for our use —
+        # both survive ``json.dumps`` losslessly.  We intentionally reject
+        # ``bytes`` and ``complex`` below because neither has a canonical
+        # JSON text form.
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_canonicalise(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        # Canonicalise members first so mixed-type sets raise loudly on
+        # unsupported members rather than hitting the ``sorted`` TypeError
+        # with a confusing message.
+        members = [_canonicalise(v) for v in value]
+        try:
+            return sorted(members, key=_sort_key)
+        except TypeError as exc:  # heterogeneous unsortable set
+            raise TypeError(
+                f"Cannot fingerprint set with unsortable members: {exc}",
+            ) from exc
+    if isinstance(value, dict):
+        canon: dict[str, Any] = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise TypeError(
+                    f"Cannot fingerprint dict with non-string key of type {type(k).__name__!r}",
+                )
+            canon[k] = _canonicalise(v)
+        return canon
+    raise TypeError(
+        f"Cannot fingerprint value of type {type(value).__name__!r} — "
+        f"no deterministic canonical form is defined",
+    )
+
+
+def _sort_key(value: Any) -> tuple[str, Any]:
+    """Key function for sorting canonicalised set members.
+
+    Produces a tuple of (type-tag, value) so mixed-type canonical values
+    (all of which are JSON-safe by construction) can be ordered stably
+    without relying on cross-type ``<`` support.
+    """
+    if value is None:
+        return ("0_none", 0)
+    if isinstance(value, bool):
+        return ("1_bool", value)
+    if isinstance(value, (int, float)):
+        return ("2_num", value)
+    if isinstance(value, str):
+        return ("3_str", value)
+    if isinstance(value, list):
+        # Nested structures: sort by their JSON encoding.  ``sort_keys``
+        # makes the encoding itself deterministic.
+        return ("4_list", _json.dumps(value, sort_keys=True))
+    if isinstance(value, dict):
+        return ("5_dict", _json.dumps(value, sort_keys=True))
+    raise TypeError(
+        f"Cannot produce sort key for canonicalised value of type {type(value).__name__!r}",
+    )
 
 
 def _graph_base_fingerprint(graph: PipelineGraph) -> str:
@@ -19,12 +113,13 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
     """
     parts: list[str] = []
     for n in sorted(graph.nodes, key=lambda n: n.id):
+        canonical_config = _canonicalise(n.data.config)
         parts.append(
-            f"{n.id}|{n.data.nodeType}|{_json.dumps(n.data.config, sort_keys=True, default=repr)}",
+            f"{n.id}|{n.data.nodeType}|{_json.dumps(canonical_config, sort_keys=True)}",
         )
     for e in sorted(graph.edges, key=lambda e: (e.source, e.target)):
         parts.append(f"{e.source}->{e.target}")
-    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    return content_hash_bytes("\n".join(parts).encode())
 
 
 def graph_fingerprint(graph: PipelineGraph, *extra_keys: str) -> str:
@@ -35,14 +130,22 @@ def graph_fingerprint(graph: PipelineGraph, *extra_keys: str) -> str:
     Used by both the trace cache (trace.py) and preview cache (executor.py).
 
     The graph's base fingerprint (node configs + edge topology) is computed
-    once per ``PipelineGraph`` instance and cached; only the extra-key
+    once per ``PipelineGraph`` instance and cached via
+    :attr:`PipelineGraph._haute_base_fingerprint`; only the extra-key
     combination adds overhead on subsequent calls.
+
+    The returned value is prefixed with ``"v<ALGO_VERSION>:"`` so a
+    future canonicalisation change (which bumps
+    :data:`ALGO_VERSION`) cannot collide with stale cache entries.
+    The constant is read **dynamically** on every call so tests (and
+    emergency cache-busts) can monkeypatch it without re-importing.
     """
-    base = _graph_base_fingerprint(graph)
-    if not extra_keys:
-        logger.debug("graph_fingerprint_computed", fingerprint=base[:8], extra_keys=())
-        return base
-    combined = "\n".join(extra_keys) + "\n" + base
-    fp = hashlib.sha256(combined.encode()).hexdigest()
+    base = graph._haute_base_fingerprint
+    if extra_keys:
+        combined = "\n".join(extra_keys) + "\n" + base
+        digest = content_hash_bytes(combined.encode())
+    else:
+        digest = base
+    fp = f"v{ALGO_VERSION}:{digest}"
     logger.debug("graph_fingerprint_computed", fingerprint=fp[:8], extra_keys=extra_keys)
     return fp

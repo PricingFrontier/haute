@@ -25,8 +25,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from haute._event_bus import default_bus
 from haute._logging import configure_logging, get_logger
 from haute.routes._helpers import (
+    _ensure_pipeline_index,
     broadcast,
     discover_pipelines,
     invalidate_pipeline_index,
@@ -35,6 +37,9 @@ from haute.routes._helpers import (
     pipeline_dir,
     pipelines_importing_module,
     ws_clients,
+    ws_clients_add,
+    ws_clients_discard,
+    ws_clients_lock,
 )
 from haute.routes.databricks import router as databricks_router
 from haute.routes.files import router as files_router
@@ -58,6 +63,57 @@ logger = get_logger(component="server")
 _watcher_task: asyncio.Task | None = None
 
 
+# ---------------------------------------------------------------------------
+# Event-bus subscribers — translate domain events into WebSocket frames.
+# Wired at import time so bare ``default_bus.publish(...)`` calls in the
+# file-watcher reach every current WebSocket client without the watcher
+# needing a reference to the broadcaster.  Unsubscribe handles are kept
+# on the module so tests can tear them down if needed.
+# ---------------------------------------------------------------------------
+
+
+def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> None:
+    """Schedule ``broadcast`` of a WebSocket frame derived from *payload*.
+
+    ``broadcast`` is async because ``websocket.send_text`` is; but the
+    event bus is synchronous so a subscriber cannot ``await`` directly.
+    We schedule the coroutine on the running event loop instead — the
+    file-watcher that publishes these events runs on the server's
+    loop, so :func:`asyncio.get_running_loop` is always available in
+    the production path.  A plain-sync call (e.g. from a unit test
+    with no loop) logs the missed broadcast and returns; the test can
+    assert on the event-bus side directly in that case.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug(
+            "event_bus_broadcast_skipped",
+            wire_type=wire_type,
+            reason="no_running_loop",
+        )
+        return
+    frame: dict[str, Any] = {"type": wire_type, **payload}
+    loop.create_task(broadcast(frame))
+
+
+# Keep strong refs to the handlers so the bus cannot collect them, and
+# retain the unsubscribe callables on the module for lifespan teardown
+# / test isolation.
+def _ws_graph_update_subscriber(payload: dict[str, Any]) -> None:
+    """Forward ``graph.update`` bus events to every connected WebSocket."""
+    _broadcast_event_as_ws_message("graph_update", payload)
+
+
+def _ws_parse_error_subscriber(payload: dict[str, Any]) -> None:
+    """Forward ``parse.error`` bus events to every connected WebSocket."""
+    _broadcast_event_as_ws_message("parse_error", payload)
+
+
+_unsubscribe_graph_update = default_bus.subscribe("graph.update", _ws_graph_update_subscriber)
+_unsubscribe_parse_error = default_bus.subscribe("parse.error", _ws_parse_error_subscriber)
+
+
 def _clear_bytecache() -> None:
     """Remove all .pyc files so stale bytecode never masks code changes."""
     import shutil
@@ -74,6 +130,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _clear_bytecache()
     configure_logging()
     _load_env(Path.cwd())
+
+    # Prime the pipeline-name → path index so the first HTTP request doesn't
+    # synchronously pay for discovery + parse of every pipeline in the
+    # project.  Startup is the *only* place besides the file-watcher
+    # callback that is allowed to (re)build this index — see
+    # ``haute.routes._helpers`` for the full contract.
+    _ensure_pipeline_index()
 
     global _watcher_task
     _watcher_task = asyncio.create_task(_file_watcher())
@@ -166,16 +229,20 @@ app.include_router(git_router)
 async def ws_sync(websocket: WebSocket) -> None:
     """WebSocket endpoint for live code ↔ GUI sync."""
     await websocket.accept()
-    ws_clients.add(websocket)
-    logger.info("ws_connected", total_clients=len(ws_clients))
+    ws_clients_add(websocket)
+    with ws_clients_lock:
+        total = len(ws_clients)
+    logger.info("ws_connected", total_clients=total)
     try:
         while True:
             await websocket.receive_text()  # keep-alive / client messages
     except WebSocketDisconnect:
         pass
     finally:
-        ws_clients.discard(websocket)
-        logger.info("ws_disconnected", remaining_clients=len(ws_clients))
+        ws_clients_discard(websocket)
+        with ws_clients_lock:
+            remaining = len(ws_clients)
+        logger.info("ws_disconnected", remaining_clients=remaining)
 
 
 # ---------------------------------------------------------------------------
@@ -226,15 +293,18 @@ async def _file_watcher() -> None:
         to_process = set(pending_changes)
         pending_changes.clear()
 
-        if is_self_write():
-            return
-
         # Collect changed files from pending set
         changed_files: list[Path] = []
         module_stems: list[str] = []
         config_changed = False
+        self_write_keys: set[str] = set()
         for change_type, changed_path in to_process:
             p = Path(changed_path)
+            key = str(p.resolve())
+            if key in self_write_keys or is_self_write(p, consume=True):
+                self_write_keys.add(key)
+                logger.debug("file_watcher_skipped_self_write", file=str(p))
+                continue
             if change_type not in (Change.modified, Change.added):
                 continue
             # JSON config files in config/ directory
@@ -286,12 +356,18 @@ async def _file_watcher() -> None:
                     continue
                 graph = parse_pipeline_to_graph(p)
                 _last_broadcast_fp[fp_key] = fp
-                await broadcast(
+                # Publish through the event bus instead of hand-building a
+                # ``{"type": "graph_update", ...}`` dict for ``broadcast``.
+                # ``_ws_graph_update_subscriber`` below turns the event
+                # back into a WebSocket frame; tests and other subscribers
+                # can hang off the same event without touching this
+                # watcher body.
+                default_bus.publish(
+                    "graph.update",
                     {
-                        "type": "graph_update",
                         "graph": graph.model_dump(),
                         "source_file": str(p),
-                    }
+                    },
                 )
                 n_nodes = len(graph.nodes)
                 logger.info(
@@ -301,12 +377,12 @@ async def _file_watcher() -> None:
                 )
             except Exception as e:
                 logger.error("parse_error", file=p.name, error=str(e))
-                await broadcast(
+                default_bus.publish(
+                    "parse.error",
                     {
-                        "type": "parse_error",
                         "error": str(e),
                         "source_file": str(p),
-                    }
+                    },
                 )
 
     async for changes in awatch(*watch_dirs, recursive=True):

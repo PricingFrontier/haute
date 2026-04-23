@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, mock_open, patch
@@ -461,7 +460,6 @@ class TestCatBoostAlgorithmFitCoverage:
         from haute.modelling._algorithms import CatBoostAlgorithm
 
         algo = CatBoostAlgorithm()
-        df = self._make_df()
 
         mock_model = MagicMock()
         mock_model.best_iteration_ = 8
@@ -701,72 +699,10 @@ class TestShapSummaryCoverage:
 
 
 # ---------------------------------------------------------------------------
-# CatBoostAlgorithm.cross_validate
+# CatBoostAlgorithm.cross_validate — removed in Phase 2 Package 2C-5.
+# The dead GLM CV code path in ``TrainingJob`` was deleted along with the
+# ``cross_validate`` methods on both algorithm classes. No callers remain.
 # ---------------------------------------------------------------------------
-
-
-class TestCrossValidateCoverage:
-    def test_cv_with_mocked_catboost(self):
-        """Cross-validation delegates to catboost.cv and extracts metrics."""
-        import pandas as pd
-
-        from haute.modelling._algorithms import CatBoostAlgorithm
-
-        algo = CatBoostAlgorithm()
-
-        mock_cv_result = pd.DataFrame(
-            {
-                "test-RMSE-mean": [0.5, 0.4, 0.3],
-                "test-RMSE-std": [0.1, 0.08, 0.06],
-                "train-RMSE-mean": [0.4, 0.3, 0.2],
-            }
-        )
-
-        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "y": [0.0, 1.0, 0.0]})
-
-        with (
-            patch("catboost.cv", return_value=mock_cv_result),
-            patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()),
-            patch("haute.modelling._algorithms._mem_checkpoint"),
-        ):
-            result = algo.cross_validate(
-                df,
-                features=["f1"],
-                cat_features=[],
-                target="y",
-                weight=None,
-                params={"iterations": 3},
-                task="regression",
-                n_folds=3,
-            )
-
-        assert result["mean_metrics"]["RMSE"] == pytest.approx(0.3)
-        assert result["std_metrics"]["RMSE"] == pytest.approx(0.06)
-        assert result["n_folds"] == 3
-
-    def test_cv_classification_loss_function(self):
-        """Classification task sets loss_function to Logloss by default."""
-        import pandas as pd
-
-        from haute.modelling._algorithms import CatBoostAlgorithm
-
-        algo = CatBoostAlgorithm()
-        captured_params: dict[str, Any] = {}
-
-        def mock_cv(pool: Any, params: dict, fold_count: int, as_pandas: bool) -> Any:
-            captured_params.update(params)
-            return pd.DataFrame({"test-Logloss-mean": [0.5], "test-Logloss-std": [0.1]})
-
-        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "y": [0, 1, 0]})
-
-        with (
-            patch("catboost.cv", side_effect=mock_cv),
-            patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()),
-            patch("haute.modelling._algorithms._mem_checkpoint"),
-        ):
-            algo.cross_validate(df, ["f1"], [], "y", None, {"iterations": 3}, "classification", 3)
-
-        assert captured_params["loss_function"] == "Logloss"
 
 
 # ---------------------------------------------------------------------------
@@ -1007,7 +943,7 @@ class TestSaveArtifactsCoverage:
 
 class TestLogToMlflowCoverage:
     def test_log_to_mlflow_calls_log_experiment(self, tmp_path):
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="mlflow_test",
@@ -1033,7 +969,6 @@ class TestLogToMlflowCoverage:
             feature_importance_loss=[],
             double_lift=[],
             loss_history=[],
-            cv_results=None,
             ave_per_feature=[],
             residuals_histogram=[],
             residuals_stats={},
@@ -1053,7 +988,7 @@ class TestLogToMlflowCoverage:
         mock_log.assert_called_once()
 
     def test_log_to_mlflow_no_experiment_returns_early(self):
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="test",
@@ -1067,7 +1002,7 @@ class TestLogToMlflowCoverage:
         job._log_to_mlflow(result)
 
     def test_log_to_mlflow_import_error_returns_early(self):
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="test",
@@ -1286,8 +1221,6 @@ class TestGPUOnIterationPath:
             on_iter_calls.append((it, total))
 
         # When model.fit is called in the thread, create a fake metric file
-        import tempfile
-        import threading
 
         real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_test_")
 
@@ -1335,8 +1268,6 @@ class TestGPUOnIterationPath:
             raise RuntimeError("GPU training failed")
 
         mock_model.fit = failing_fit
-
-        import tempfile
 
         real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_err_")
 
@@ -1608,7 +1539,7 @@ class TestTrainingJobGLMPaths:
 class TestLogToMlflowFull:
     def test_log_to_mlflow_constructs_diagnostics_and_metadata(self, tmp_path):
         """Verify _log_to_mlflow constructs ModelDiagnostics and calls log_experiment."""
-        from haute.modelling._training_job import TrainResult, TrainingJob
+        from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
             name="mlflow_full",
@@ -1634,7 +1565,6 @@ class TestLogToMlflowFull:
             feature_importance_loss=[],
             double_lift=[],
             loss_history=[],
-            cv_results=None,
             ave_per_feature=[],
             residuals_histogram=[],
             residuals_stats={},
@@ -1687,7 +1617,7 @@ class TestFitEvalDfAutoPool:
             patch("haute.modelling._algorithms._build_pool", side_effect=mock_build_pool),
             patch("haute.modelling._algorithms._mem_checkpoint"),
         ):
-            result = algo.fit(
+            algo.fit(
                 train_df,
                 features=["x1"],
                 cat_features=[],
@@ -1877,7 +1807,7 @@ class TestPrepareDataWriteError:
             output_dir=str(tmp_path),
         )
 
-        with patch.object(pl.DataFrame, "write_parquet", side_effect=IOError("disk full")):
+        with patch.object(pl.DataFrame, "write_parquet", side_effect=OSError("disk full")):
             with pytest.raises(IOError, match="disk full"):
                 job._prepare_data(lambda msg, frac: None)
 
@@ -1990,7 +1920,7 @@ class TestMlflowExperimentTrigger:
         )
 
         with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            result = job.run()
+            job.run()
 
         mock_log.assert_called_once()
 
@@ -2066,39 +1996,10 @@ class TestFeatureImportanceLossExceptionPath:
 
 
 # ---------------------------------------------------------------------------
-# TrainingJob — CV exception path (lines 886-887)
+# TrainingJob — CV exception path: removed in Phase 2 Package 2C-5.
+# The dead GLM CV branch (and its silent exception swallowing into
+# ``diagnostics_errors``) was deleted. ``cross_validate`` no longer exists.
 # ---------------------------------------------------------------------------
-
-
-class TestCVExceptionPath:
-    def test_cv_exception_is_logged_and_none_returned(self, tmp_path):
-        """When cross_validate raises, cv_results is None."""
-        from haute.modelling._algorithms import CatBoostAlgorithm
-        from haute.modelling._training_job import TrainingJob
-
-        rng = np.random.RandomState(42)
-        n = 50
-        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
-        job = TrainingJob(
-            name="cv_fail",
-            data=df,
-            target="y",
-            params={"iterations": 5},
-            cv_folds=3,
-            output_dir=str(tmp_path),
-        )
-
-        orig_cv = CatBoostAlgorithm.cross_validate
-
-        def failing_cv(self, *args: Any, **kwargs: Any) -> None:
-            raise RuntimeError("CV failed")
-
-        CatBoostAlgorithm.cross_validate = failing_cv
-        try:
-            result = job.run()
-            assert result.cv_results is None
-        finally:
-            CatBoostAlgorithm.cross_validate = orig_cv
 
 
 # ---------------------------------------------------------------------------

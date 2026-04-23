@@ -1,0 +1,4 @@
+{
+  "path": "data/policies.parquet",
+  "sourceType": "flat_file"
+}

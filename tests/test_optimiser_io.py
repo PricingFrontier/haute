@@ -15,13 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from haute._mlflow_utils import resolve_version as _resolve_version
 from haute._optimiser_io import (
-    _artifact_cache,
-    _mlflow_cache,
+    _load_artifact_cached,
+    _load_mlflow_cached,
     load_mlflow_optimiser_artifact,
     load_optimiser_artifact,
 )
-from haute._mlflow_utils import resolve_version as _resolve_version
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -31,11 +31,11 @@ from haute._mlflow_utils import resolve_version as _resolve_version
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """Clear caches before and after every test."""
-    _artifact_cache.clear()
-    _mlflow_cache.clear()
+    _load_artifact_cached.cache_clear()
+    _load_mlflow_cached.cache_clear()
     yield
-    _artifact_cache.clear()
-    _mlflow_cache.clear()
+    _load_artifact_cached.cache_clear()
+    _load_mlflow_cached.cache_clear()
 
 
 @pytest.fixture()

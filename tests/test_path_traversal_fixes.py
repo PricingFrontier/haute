@@ -177,7 +177,7 @@ import haute
 
 submodel = haute.Submodel("pricing", description="Test submodel")
 
-@submodel.data_source
+@submodel.polars
 def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
 """)

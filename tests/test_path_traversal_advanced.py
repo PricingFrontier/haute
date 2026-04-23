@@ -1,10 +1,10 @@
-"""Advanced path traversal tests covering gaps not addressed by test_path_traversal_fixes.py.
+"""Advanced path traversal tests covering gaps beyond test_path_traversal_fixes.py.
 
 Each test class targets a specific module or attack vector:
 
 1. ConfigIOTraversal        -- _config_io.load_node_config / config_path_for_node have no
-                               path validation; attacker-controlled config paths read arbitrary files.
-2. ModelScorerTraversal     -- _model_scorer.score_from_config reads JSON from an unvalidated path.
+                               path validation; attacker-controlled paths read arbitrary files.
+2. ModelScorerTraversal     -- _model_scorer.score_from_config reads JSON from unvalidated path.
 3. SymlinkTraversal         -- is_relative_to is bypassed when a symlink inside the project root
                                points to a directory outside it.
 4. WindowsMixedSeparators   -- Backslash-based traversal (..\\..\\etc\\passwd) on Windows.
@@ -16,13 +16,10 @@ Each test class targets a specific module or attack vector:
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -256,6 +253,7 @@ class TestSymlinkTraversal:
     def test_validate_safe_path_blocks_symlink_escape(self, tmp_path: Path):
         """A symlink inside base pointing outside must be rejected."""
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         outside = tmp_path / "outside_secrets"
@@ -289,6 +287,7 @@ class TestSymlinkTraversal:
     def test_nested_symlink_chain_blocked(self, tmp_path: Path):
         """A chain of symlinks (a -> b -> outside) should still be blocked."""
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         outside = tmp_path / "outside"
@@ -309,6 +308,7 @@ class TestSymlinkTraversal:
     def test_symlink_to_parent_directory_blocked(self, tmp_path: Path):
         """project/escape -> project/.. (parent) allows reading anything."""
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         project = tmp_path / "project"
@@ -409,6 +409,7 @@ class TestWindowsMixedSeparatorTraversal:
         Production failure: reading files from network shares.
         """
         from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
         with pytest.raises(HTTPException) as exc_info:

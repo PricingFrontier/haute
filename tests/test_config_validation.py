@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from haute._config_validation import (
-    VALID_KEYS,
     _UNIVERSAL_KEYS,
+    VALID_KEYS,
     warn_unrecognized_config_keys,
 )
 from haute._types import (
@@ -15,8 +15,6 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
-    DataSinkConfig,
-    DataSourceConfig,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,
@@ -282,7 +280,11 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.OPTIMISER_APPLY,
-                {"optimiser_apply": True, "artifact_path": "opt.json"},
+                {
+                    "optimiser_apply": True,
+                    "source_type": "file",
+                    "artifact_path": "opt.json",
+                },
                 "",
                 ["df"],
                 id="optimiser_apply",
@@ -330,7 +332,7 @@ class TestBuildNodeConfigProducesValidKeys:
         bad = warn_unrecognized_config_keys(node_type, config)
         assert bad == [], f"Unrecognized keys in {node_type}: {bad}"
 
-    def test_model_score_source_type_maps_to_sourceType(self):
+    def test_model_score_source_type_maps_to_sourceType(self):  # noqa: N802 - references camelCase config key `sourceType`
         """Parser should map snake_case source_type to camelCase sourceType."""
         from haute._parser_helpers import _build_node_config
 
@@ -418,7 +420,7 @@ class TestConfigKeyTupleAlignment:
                 f"MODEL_SCORE_CONFIG_KEYS has '{key}' but ModelScoreConfig does not"
             )
 
-    def test_model_score_keys_use_camelCase_sourceType(self):
+    def test_model_score_keys_use_camelCase_sourceType(self):  # noqa: N802 - references camelCase config key `sourceType`
         """MODEL_SCORE_CONFIG_KEYS should use 'sourceType' (camelCase), not 'source_type'."""
         assert "sourceType" in MODEL_SCORE_CONFIG_KEYS
         assert "source_type" not in MODEL_SCORE_CONFIG_KEYS
@@ -536,9 +538,9 @@ class TestParserSourceTypeMapping:
             NodeType.OPTIMISER_APPLY,
             {
                 "optimiser_apply": True,
+                "source_type": "file",
                 "artifact_path": "opt.json",
                 "version_column": "__v__",
-                "sourceType": "registered",
                 "registered_model": "m",
                 "version": "2",
                 "experiment_id": "eid",

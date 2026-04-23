@@ -1,9 +1,11 @@
 /**
  * Zustand store for chrome / layout UI state — panel toggles, modals,
- * sync banner, dirty flag, and node panel width.
+ * sync banner, and node panel width.
  *
  * Toast notifications live in useToastStore.
  * Application settings (MLflow, sources, caches) live in useSettingsStore.
+ * Graph-shaped state (nodes, edges, preamble) and the dirty-tracking
+ * `lastSavedSnapshot` live in useGraphStore.
  */
 import { create } from "zustand"
 
@@ -27,10 +29,6 @@ interface UIState {
   // Sync banner
   syncBanner: string | null
   setSyncBanner: (banner: string | null) => void
-
-  // Dirty flag
-  dirty: boolean
-  setDirty: (dirty: boolean) => void
 
   // Node panel width (persisted across selection changes)
   nodePanelWidth: number
@@ -71,10 +69,6 @@ const useUIStore = create<UIState>()((set) => ({
   // Sync banner
   syncBanner: null,
   setSyncBanner: (banner) => set({ syncBanner: banner }),
-
-  // Dirty flag
-  dirty: false,
-  setDirty: (dirty) => set({ dirty }),
 
   // Node panel width (0 = use dynamic default: 50% of available space)
   nodePanelWidth: 0,

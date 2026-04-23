@@ -38,18 +38,12 @@ vi.mock("../../stores/useToastStore.ts", () => {
 })
 
 vi.mock("../../stores/useUIStore.ts", () => {
-  let dirty = false
   let syncBanner: string | null = null
   const store: Record<string, unknown> = {
-    dirty,
     syncBanner,
     setSyncBanner: vi.fn((banner: string | null) => {
       syncBanner = banner
       store.syncBanner = banner
-    }),
-    setDirty: vi.fn((d: boolean) => {
-      dirty = d
-      store.dirty = d
     }),
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
@@ -60,6 +54,17 @@ vi.mock("../../stores/useUIStore.ts", () => {
     subscribe: vi.fn(),
   })
   return { default: useUIStore }
+})
+
+// Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
+vi.mock("../../stores/useGraphStore.ts", () => {
+  const store = { markSaved: vi.fn() }
+  const useGraphStore = Object.assign(() => store, {
+    getState: () => store,
+    setState: vi.fn(),
+    subscribe: vi.fn(),
+  })
+  return { default: useGraphStore }
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
@@ -123,7 +128,6 @@ describe("useWebSocketSync — gap tests", () => {
 
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
-    useUIStore.getState().dirty = false
   })
 
   afterEach(() => {

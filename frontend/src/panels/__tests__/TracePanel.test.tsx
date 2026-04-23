@@ -385,7 +385,7 @@ describe("TracePanel", () => {
   it("Calculation tab is active by default", () => {
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
     const calcTab = screen.getByText("Calculation")
-    expect(calcTab).toHaveStyle({ color: "#60a5fa" })
+    expect(calcTab).toHaveStyle({ color: "var(--accent-hover)" })
   })
 
   it("Nodes tab shows per-step execution times for multiple steps", () => {

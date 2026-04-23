@@ -7,7 +7,7 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0-dev"
 
-from haute._types import HauteError
+from haute.errors import HauteError
 from haute.pipeline import Pipeline, Submodel
 
 __all__ = ["HauteError", "Pipeline", "Submodel"]

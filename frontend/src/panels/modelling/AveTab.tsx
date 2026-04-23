@@ -9,6 +9,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { CHART_COLORS } from "../../theme/colors"
 import { FeatureBrowser, type FeatureItem } from "./FeatureBrowser"
 
 interface AveTabProps {
@@ -18,8 +19,8 @@ interface AveTabProps {
 const GRID_COLOR = "rgba(255,255,255,.06)"
 const AXIS_TEXT_COLOR = "var(--text-muted)"
 const AXIS_FONT_SIZE = 10
-const ACTUAL_COLOR = "#22c55e"
-const PREDICTED_COLOR = "#a855f7"
+const ACTUAL_COLOR = CHART_COLORS.actual
+const PREDICTED_COLOR = CHART_COLORS.predicted
 const EXPOSURE_COLOR = "rgba(255,255,255,.12)"
 
 type AveBin = { label: string; exposure: number; avg_actual: number; avg_predicted: number }
@@ -56,7 +57,7 @@ export function AveTab({ result }: AveTabProps) {
         setSelectedFeature(names[0])
       }
     }
-  }, [featureKey, selectedFeature])
+  }, [featureKey, selectedFeature, featureItems.length])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleSelect = useCallback((feature: string) => {

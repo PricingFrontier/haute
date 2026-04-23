@@ -11,7 +11,7 @@ import pytest
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.graph_utils import PipelineGraph
 
 
 @pytest.fixture(autouse=True)

@@ -1,22 +1,13 @@
 import { memo } from "react"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
 import { Package } from "lucide-react"
+import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
-import type { HauteNodeData } from "../types/node"
+import type { SubmodelFlowNode } from "../types/node"
 
-export interface SubmodelNodeData extends HauteNodeData {
-  config?: {
-    file?: string
-    childNodeIds?: string[]
-    inputPorts?: string[]
-    outputPorts?: string[]
-  }
-}
+const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
 
-const accent = nodeTypeColors.submodel || "#64748b"
-
-function SubmodelNode({ data, selected }: NodeProps) {
-  const nodeData = data as unknown as SubmodelNodeData
+function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>) {
   const config = nodeData.config || {}
   const inputPorts = config.inputPorts || []
   const outputPorts = config.outputPorts || []

@@ -120,6 +120,25 @@ describe("DataPreview", () => {
     expect(screen.getByText(/Showing 2 of 10,000 rows/)).toBeInTheDocument()
   })
 
+  it("virtualizes large previews on first render before ResizeObserver reports height", () => {
+    const rows = Array.from({ length: 500 }, (_, i) => ({
+      age: i,
+      premium: `row-${i}`,
+    }))
+
+    render(
+      <DataPreview
+        data={makePreview({
+          row_count: 500,
+          preview: rows,
+        })}
+      />,
+    )
+
+    expect(screen.getByText("row-0")).toBeInTheDocument()
+    expect(screen.queryByText("row-499")).not.toBeInTheDocument()
+  })
+
   it("does not show 'Showing X of Y' when preview has all rows", () => {
     render(<DataPreview data={makePreview()} />)
     expect(screen.queryByText(/Showing/)).not.toBeInTheDocument()

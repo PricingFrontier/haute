@@ -10,7 +10,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from haute.executor import NodeBuildContext, _build_node_fn, resolve_instance_node
+from haute.executor import _build_node_fn, resolve_instance_node
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
 
@@ -82,7 +82,7 @@ class TestResolveInstanceNode:
         assert "factors" in resolved.data.config
         assert resolved.data.config["instanceOf"] == "orig"
 
-    def test_empty_instanceOf_returns_node_unchanged(self) -> None:
+    def test_empty_instanceOf_returns_node_unchanged(self) -> None:  # noqa: N802 - references camelCase config key `instanceOf`
         node = _n(
             {
                 "id": "n1",
@@ -166,7 +166,7 @@ class TestResolveInstanceNode:
         assert resolved.data.config["inputMapping"] == {"a": "b"}
         assert resolved.data.config["code"] == "df"
 
-    def test_no_instanceOf_key_returns_unchanged(self) -> None:
+    def test_no_instanceOf_key_returns_unchanged(self) -> None:  # noqa: N802 - references camelCase config key `instanceOf`
         node = _n(
             {
                 "id": "n1",

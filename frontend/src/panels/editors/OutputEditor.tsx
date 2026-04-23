@@ -1,21 +1,19 @@
-import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./_shared"
+import type { OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
 import ColumnTable from "../../components/ColumnTable"
 import { EditorLabel } from "../../components/form"
+import { useGraph } from "../useGraph"
 
 export default function OutputEditor({
   config,
   onUpdate,
   nodeId,
-  allNodes,
-  edges,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   nodeId: string
-  allNodes: SimpleNode[]
-  edges: SimpleEdge[]
 }) {
+  const { allNodes, edges } = useGraph()
   const fields = configField<string[]>(config, "fields", [])
 
   // Read cached columns from the upstream node (populated by preview/run)

@@ -8,19 +8,18 @@ FastAPI endpoint validation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from functools import cached_property
-from typing import Any, Protocol, TypedDict, runtime_checkable
+from typing import Any, ClassVar, Protocol, Self, TypedDict, runtime_checkable
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from haute._graph_utils import build_parents_of
+
 # Type alias - nodes pass lazy frames between each other
 _Frame = pl.LazyFrame
-
-
-class HauteError(Exception):
-    """Base exception for all Haute-specific errors."""
 
 
 class NodeType(StrEnum):
@@ -227,7 +226,6 @@ class ModellingConfig(TypedDict, total=False):
     l1_ratio: float
     intercept: bool
     var_power: float
-    cv_folds: int
     # CatBoost / shared
     loss_function: str
     variance_power: float
@@ -518,18 +516,6 @@ class GraphEdge(BaseModel):
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
 
 
-def build_parents_of(
-    edges: list[GraphEdge],
-    node_ids: set[str] | None = None,
-) -> dict[str, list[str]]:
-    """Build reverse adjacency list: node_id -> list of parent node_ids."""
-    parents: dict[str, list[str]] = {nid: [] for nid in node_ids} if node_ids else {}
-    for e in edges:
-        if node_ids is None or e.target in parents:
-            parents.setdefault(e.target, []).append(e.source)
-    return parents
-
-
 class PipelineGraph(BaseModel):
     """React Flow graph structure used throughout Haute.
 
@@ -551,6 +537,44 @@ class PipelineGraph(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
 
+    # Names of ``@cached_property`` slots that must be invalidated when
+    # ``model_copy`` produces a new instance with changed structure —
+    # Pydantic's default ``model_copy`` shallow-copies ``__dict__``,
+    # which includes any already-materialised ``cached_property`` values.
+    # Without this invalidation, a copied graph would serve the parent's
+    # stale ``node_map`` / ``parents_of`` / ``_haute_base_fingerprint``
+    # after ``update={"nodes": ...}``.  See Pydantic's own docstring on
+    # ``model_copy`` for the original warning about this footgun.
+    _HAUTE_CACHED_PROPERTY_NAMES: ClassVar[tuple[str, ...]] = (
+        "node_map",
+        "parents_of",
+        "_haute_base_fingerprint",
+    )
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Copy this graph, invalidating any cached-property slots.
+
+        Overrides :meth:`pydantic.BaseModel.model_copy` so that the
+        returned instance starts with a fresh property cache — both the
+        ``node_map``/``parents_of`` memos and the
+        ``_haute_base_fingerprint`` cache introduced for graph-fingerprint
+        caching.
+
+        Callers use ``model_copy(update={"nodes": ...})`` as the canonical
+        way to evolve a graph immutably (see
+        ``tests/test_graph_fingerprint_cached.py``); the override makes
+        that pattern correct by construction.
+        """
+        copied = super().model_copy(update=update, deep=deep)
+        for name in self._HAUTE_CACHED_PROPERTY_NAMES:
+            copied.__dict__.pop(name, None)
+        return copied
+
     @cached_property
     def node_map(self) -> dict[str, GraphNode]:
         """Map node ID to node, cached for repeated access."""
@@ -561,109 +585,28 @@ class PipelineGraph(BaseModel):
         """Map each node to its parent node IDs (built from edges)."""
         return build_parents_of(self.edges)
 
+    @cached_property
+    def _haute_base_fingerprint(self) -> str:
+        """Structural fingerprint of the graph (node configs + edge topology).
 
-def _resolve_sink_path(path: str, fmt: str) -> str:
-    """Normalise a sink output path.
+        Cached once per ``PipelineGraph`` instance — the underlying
+        computation (sorted-by-id node walk + canonical JSON + content
+        hash) is measurable (hundreds of microseconds per call for
+        ~100-node pipelines) and was previously recomputed on every
+        preview cache-key lookup.  Callers evolve a pipeline with
+        ``model_copy(update=...)``; the overridden :meth:`model_copy`
+        above clears the memoised digest on the new instance so the
+        cache boundary follows the immutable-copy idiom.
 
-    Prepends ``outputs/`` when the path has no directory component and
-    appends the format extension (``.parquet`` or ``.csv``) when missing.
-    """
-    ext = ".csv" if fmt == "csv" else ".parquet"
-    if "/" not in path and "\\" not in path:
-        path = f"outputs/{path}"
-    if not path.endswith(ext):
-        path = f"{path}{ext}"
-    return path
+        See :func:`haute._cache.graph_fingerprint` for the public
+        wrapper that mixes in per-call extra keys.  The base computation
+        is kept module-level (as ``_graph_base_fingerprint`` in
+        :mod:`haute._cache`) so the call-counting spies in
+        ``tests/test_graph_fingerprint_cached.py`` can ``monkeypatch``
+        the function and observe exactly one call per instance.
+        """
+        # Import here to avoid an import cycle: ``_cache`` imports
+        # ``PipelineGraph`` from this module.
+        from haute._cache import _graph_base_fingerprint
 
-
-def _sanitize_func_name(label: str) -> str:
-    """Convert a human label to a valid Python function name (preserves casing).
-
-    Uses ASCII-only matching to stay in sync with the frontend implementation
-    in frontend/src/utils/sanitizeName.ts.
-    """
-    import keyword
-
-    name = label.strip()
-    name = name.replace(" ", "_").replace("-", "_")
-    name = "".join(c for c in name if c.isascii() and (c.isalnum() or c == "_"))
-    if name and name[0].isdigit():
-        name = f"node_{name}"
-    if keyword.iskeyword(name):
-        name = f"node_{name}"
-    return name or "unnamed_node"
-
-
-def build_instance_mapping(
-    orig_names: list[str],
-    inst_names: list[str],
-    explicit: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Map original input parameter names to instance input names.
-
-    Priority: explicit mapping → exact name match → substring match → positional.
-    Used by the executor (alias injection) and codegen (kwarg generation).
-    The frontend mirrors this algorithm in NodePanel.tsx (InstanceConfig auto-mapping).
-    """
-    mapping: dict[str, str] = {}
-    if explicit:
-        mapping = {k: v for k, v in explicit.items() if v}
-
-    used: set[int] = set()
-    for v in mapping.values():
-        for i, inst in enumerate(inst_names):
-            if inst == v and i not in used:
-                used.add(i)
-                break
-    # Pass 1: exact match
-    for orig in orig_names:
-        if orig in mapping:
-            continue
-        for i, inst in enumerate(inst_names):
-            if i not in used and inst == orig:
-                mapping[orig] = inst
-                used.add(i)
-                break
-    # Pass 2: substring match (e.g. "claims_aggregate" in "claims_aggregate_instance")
-    for orig in orig_names:
-        if orig in mapping:
-            continue
-        for i, inst in enumerate(inst_names):
-            if i not in used and orig in inst:
-                mapping[orig] = inst
-                used.add(i)
-                break
-    # Pass 3: positional fallback for remaining
-    unused = [i for i in range(len(inst_names)) if i not in used]
-    unmatched = [o for o in orig_names if o not in mapping]
-    for orig, i in zip(unmatched, unused):
-        mapping[orig] = inst_names[i]
-
-    return mapping
-
-
-def resolve_orig_source_names(
-    node: GraphNode,
-    node_map: dict[str, GraphNode],
-    all_parents: dict[str, list[str]],
-    id_to_name: dict[str, str],
-) -> list[str] | None:
-    """For an instance node, return the sanitized names of the original's upstream inputs.
-
-    Uses *all_parents* (built from the full edge list, not filtered by
-    ``target_node_id``) so this works even when the original node isn't
-    in the current execution subgraph.
-
-    Returns ``None`` for non-instance nodes.
-    """
-    ref = node.data.config.get("instanceOf")
-    if not ref or ref not in node_map:
-        return None
-    result: list[str] = []
-    for pid in all_parents.get(ref, []):
-        if pid in id_to_name:
-            result.append(id_to_name[pid])
-        else:
-            n = node_map.get(pid)
-            result.append(_sanitize_func_name(n.data.label) if n else pid)
-    return result
+        return _graph_base_fingerprint(self)

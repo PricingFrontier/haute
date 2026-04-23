@@ -36,14 +36,14 @@ export class ErrorBoundary extends Component<Props, State> {
         <div
           style={{
             padding: "16px",
-            background: "var(--bg-secondary, #1e1e2e)",
-            border: "1px solid var(--border, #333)",
+            background: "var(--bg-elevated)",
+            border: "1px solid var(--border)",
             borderRadius: "8px",
-            color: "var(--text-secondary, #999)",
+            color: "var(--text-secondary)",
             fontSize: "12px",
           }}
         >
-          <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text-primary, #ccc)" }}>
+          <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text-primary)" }}>
             Something went wrong
           </p>
           <p style={{ margin: "0 0 12px", fontFamily: "monospace", fontSize: "11px" }}>
@@ -54,10 +54,10 @@ export class ErrorBoundary extends Component<Props, State> {
             style={{
               padding: "4px 12px",
               fontSize: "11px",
-              background: "var(--bg-input, #2a2a3e)",
-              border: "1px solid var(--border, #333)",
+              background: "var(--bg-input)",
+              border: "1px solid var(--border)",
               borderRadius: "4px",
-              color: "var(--text-primary, #ccc)",
+              color: "var(--text-primary)",
               cursor: "pointer",
             }}
           >

@@ -5,8 +5,10 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import (
+    GraphNode,
+    NodeData,
+    PipelineGraph,
     _execute_lazy,
     _prepare_graph,
     _resolve_sink_path,
@@ -51,9 +53,13 @@ class TestSanitizeFuncName:
         """Special characters are stripped, creating potential collisions."""
         assert _sanitize_func_name("foo@bar") == _sanitize_func_name("foobar")
 
-    def test_unicode_stripped(self):
-        """Non-ASCII chars are stripped to stay in sync with the frontend."""
-        assert _sanitize_func_name("café") == "caf"
+    def test_unicode_encoded_reversibly(self):
+        """Non-ASCII chars are reversibly encoded so distinct labels yield
+        distinct identifiers (Wave 9D #123).  ``é`` (U+00E9) → ``_xe9_``.
+        """
+        assert _sanitize_func_name("café") == "caf_xe9_"
+        # And the encoded form is distinct from the ASCII-stripped form.
+        assert _sanitize_func_name("café") != _sanitize_func_name("caf")
 
     def test_all_special_chars_returns_unnamed(self):
         """Label of only special characters becomes unnamed_node."""
@@ -121,16 +127,18 @@ class TestTopoSort:
     def test_single_node(self):
         assert topo_sort_ids(["x"], []) == ["x"]
 
-    def test_no_edges_returns_sorted(self):
+    def test_no_edges_returns_insertion_order(self):
+        """With no edges, ties break on insertion order (graphlib stdlib)."""
         result = topo_sort_ids(["c", "a", "b"], [])
-        assert result == ["a", "b", "c"]
+        assert result == ["c", "a", "b"]
 
     def test_deterministic_ordering(self):
-        """With equal in-degree, nodes should be sorted alphabetically."""
+        """With equal in-degree, ties break on insertion order (graphlib)."""
         ids = ["c", "b", "a"]
         edges = [_e("a", "c"), _e("b", "c")]
         result = topo_sort_ids(ids, edges)
-        assert result == ["a", "b", "c"]
+        # b was inserted before a in node_ids, so b precedes a among ties.
+        assert result == ["b", "a", "c"]
         # Verify topological invariant: every parent before its child
         idx = {nid: i for i, nid in enumerate(result)}
         for e in edges:

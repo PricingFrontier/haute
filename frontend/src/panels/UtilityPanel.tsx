@@ -2,9 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
 import { CodeEditor } from "./editors"
 import PanelShell from "./PanelShell"
-import PanelHeader from "./PanelHeader"
 import useClickOutside from "../hooks/useClickOutside"
-import { hoverHandlers, hoverBg } from "../utils/hoverHandlers"
+import useToastStore from "../stores/useToastStore"
 import {
   ApiError,
   listUtilityFiles,
@@ -13,25 +12,26 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
-import type { UtilityFile } from "../api/client"
+import type { UtilityFile } from "../api/types"
 
-const fileHover = hoverBg("var(--bg-hover)")
-
-/** Extract syntax error info from an ApiError's detail (which may be a JSON object or string). */
+/**
+ * Extract syntax error info from an ApiError's flat string detail.
+ *
+ * Server responses are ``{"detail": "Syntax error on line N: <msg>"}``.
+ * The line number is extracted via a ``/line (\d+)/`` regex for the editor's
+ * gutter; the raw message is shown to the user.
+ */
 function parseSyntaxError(err: unknown): { error: string; error_line: number | null } | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null
   const raw = err.detail
   if (!raw) return null
-  // detail may already be an object (runtime) or a JSON string
-  let parsed: unknown = raw
-  if (typeof raw === "string") {
-    try { parsed = JSON.parse(raw) } catch { return { error: raw, error_line: null } }
+
+  const message = String(raw)
+  const match = /\bline\s+(\d+)\b/i.exec(message)
+  return {
+    error: message,
+    error_line: match ? Number.parseInt(match[1], 10) : null,
   }
-  if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
-    const obj = parsed as { error?: string; error_line?: number | null }
-    return { error: obj.error ?? "Syntax error", error_line: obj.error_line ?? null }
-  }
-  return { error: String(raw), error_line: null }
 }
 
 interface UtilityPanelProps {
@@ -40,6 +40,7 @@ interface UtilityPanelProps {
 }
 
 export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelProps) {
+  const addToast = useToastStore((s) => s.addToast)
   const [files, setFiles] = useState<UtilityFile[]>([])
   const [activeModule, setActiveModule] = useState<string | null>(null)
   const [content, setContent] = useState("")
@@ -78,27 +79,30 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
           setErrorLine(syntaxErr.error_line)
           setErrorMsg(syntaxErr.error)
         } else {
-          console.warn("Failed to save utility file", module, err)
+          const detail = err instanceof Error ? err.message : "unknown error"
+          addToast("error", `Failed to save utility file "${module}": ${detail}`)
           setErrorMsg("Failed to save")
         }
       }
     }, 500)
-  }, [])
+  }, [addToast])
 
   // Cleanup timer on unmount
   useEffect(() => () => clearTimeout(saveTimer.current), [])
 
-  // Load file list
+  // Load file list.  The backend returns `{files: []}` for a missing
+  // utility/ dir, so anything reaching this catch is a real failure
+  // (network, 500, auth) — surface it as a toast, not a silent empty list.
   const loadFiles = useCallback(async () => {
     try {
       const res = await listUtilityFiles()
       setFiles(res.files)
     } catch (err) {
-      // utility/ may not exist yet
-      console.warn("Failed to list utility files", err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to list utility files: ${detail}`)
       setFiles([])
     }
-  }, [])
+  }, [addToast])
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount pattern
   useEffect(() => { loadFiles() }, [loadFiles])
@@ -114,10 +118,11 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       setErrorLine(null)
       setErrorMsg(null)
     } catch (err) {
-      console.warn("Failed to load utility file", module, err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
     }
-  }, [])
+  }, [addToast])
 
   // Auto-select first file
   useEffect(() => {
@@ -160,20 +165,18 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       setContent("")
       await loadFiles()
     } catch (err) {
-      console.warn("Failed to delete utility file", activeModule, err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }
-  }, [activeModule, loadFiles])
+  }, [activeModule, loadFiles, addToast])
 
   return (
-    <PanelShell>
-      {/* Header */}
-      <PanelHeader
-        title="Utility Scripts"
-        onClose={onClose}
-        icon={<FileCode2 size={14} style={{ color: 'var(--accent)' }} />}
-      />
-
+    <PanelShell
+      title="Utility Scripts"
+      onClose={onClose}
+      icon={<FileCode2 size={14} style={{ color: 'var(--accent)' }} />}
+    >
       {/* File selector */}
       <div className="px-3 py-2 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         {creating ? (
@@ -209,30 +212,30 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
               {dropdownOpen && files.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 rounded-lg shadow-2xl z-50 overflow-hidden" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
                   <div className="py-1">
-                    {files.map((f) => (
-                      <button
-                        key={f.module}
-                        onClick={() => { setDropdownOpen(false); if (f.module !== activeModule) loadFile(f.module) }}
-                        className="w-full flex items-center px-3 py-1.5 text-[12px] font-mono text-left transition-colors"
-                        style={{
-                          color: f.module === activeModule ? 'var(--accent)' : 'var(--text-secondary)',
-                          background: f.module === activeModule ? 'var(--accent-soft)' : 'transparent',
-                        }}
-                        onMouseEnter={(e) => { if (f.module !== activeModule) fileHover.onMouseEnter(e) }}
-                        onMouseLeave={(e) => { if (f.module !== activeModule) fileHover.onMouseLeave(e) }}
-                      >
-                        {f.module}
-                      </button>
-                    ))}
+                    {files.map((f) => {
+                      const isActive = f.module === activeModule
+                      return (
+                        <button
+                          key={f.module}
+                          onClick={() => { setDropdownOpen(false); if (!isActive) loadFile(f.module) }}
+                          className={`w-full flex items-center px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isActive ? "" : "hover:bg-[var(--bg-hover)]"}`}
+                          style={{
+                            color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                            background: isActive ? 'var(--accent-soft)' : 'transparent',
+                          }}
+                        >
+                          {f.module}
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
               )}
             </div>
             <button
               onClick={() => setCreating(true)}
-              className="p-1.5 rounded-md transition-colors"
+              className="p-1.5 rounded-md transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--accent)]"
               style={{ color: 'var(--text-muted)' }}
-              {...hoverHandlers("var(--bg-hover)", "var(--accent)", "transparent", "var(--text-muted)")}
               title="New utility file"
             >
               <Plus size={14} />
@@ -240,9 +243,8 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
             {activeModule && (
               <button
                 onClick={handleDelete}
-                className="p-1.5 rounded-md transition-colors"
+                className="p-1.5 rounded-md transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                 style={{ color: 'var(--text-muted)' }}
-                {...hoverHandlers("rgba(239,68,68,.1)", "#ef4444", "transparent", "var(--text-muted)")}
                 title={`Delete ${activeModule}`}
               >
                 <Trash2 size={14} />
@@ -265,7 +267,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
               />
             </div>
             {errorMsg && (
-              <div className="px-3 py-2 text-[11px] shrink-0" style={{ color: '#ef4444', borderTop: '1px solid var(--border)' }}>
+              <div className="px-3 py-2 text-[11px] shrink-0" style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}>
                 {errorMsg}
               </div>
             )}
@@ -277,9 +279,8 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
                 <p>No utility files yet.</p>
                 <button
                   onClick={() => setCreating(true)}
-                  className="mt-2 px-3 py-1 text-[12px] font-medium rounded-md transition-colors"
+                  className="mt-2 px-3 py-1 text-[12px] font-medium rounded-md transition-colors hover:bg-[var(--accent-soft-hover)]"
                   style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
-                  {...hoverBg("rgba(59,130,246,.2)", "var(--accent-soft)")}
                 >
                   Create one
                 </button>

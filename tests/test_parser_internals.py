@@ -178,25 +178,22 @@ class TestExtractExternalUserCode:
 
 
 class TestExtractModelScoreUserCode:
-    def test_no_sentinel_returns_empty(self):
-        """Body without sentinel is entirely auto-generated → empty string."""
+    def test_generated_scoring_body_returns_empty(self):
+        """Body without post-processing is entirely auto-generated → empty string."""
         body = (
             '    """doc"""\n'
-            "    from haute.graph_utils import load_mlflow_model\n"
-            '    model = load_mlflow_model(source_type="run", run_id="abc")\n'
-            "    df_eager = df.collect()\n"
-            "    result = df_eager.lazy()\n"
+            "    from haute.graph_utils import score_from_config\n"
+            '    result = score_from_config(df, config="config/model_scoring/m.json")\n'
             "    return result"
         )
         assert _extract_model_score_user_code(body) == ""
 
-    def test_extracts_code_after_sentinel(self):
-        """User code after sentinel is extracted and dedented."""
+    def test_extracts_code_after_scoring_call(self):
+        """User code after the scoring call is extracted and dedented."""
         body = (
             '    """doc"""\n'
-            "    df_eager = df.collect()\n"
-            "    result = df_eager.lazy()\n"
-            "    # -- user code --\n"
+            "    from haute.graph_utils import score_from_config\n"
+            '    result = score_from_config(df, config="config/model_scoring/m.json")\n'
             '    df = df.with_columns(doubled=pl.col("prediction") * 2)\n'
             "    return result"
         )
@@ -204,19 +201,14 @@ class TestExtractModelScoreUserCode:
         assert "doubled" in result
         assert "return result" not in result
 
-    def test_sentinel_but_only_return(self):
-        """Sentinel present but only 'return result' after → empty string."""
-        body = "    result = df_eager.lazy()\n    # -- user code --\n    return result"
-        assert _extract_model_score_user_code(body) == ""
-
     def test_empty_body(self):
         assert _extract_model_score_user_code("") == ""
 
     def test_multiline_user_code(self):
         """Multiple lines of user code are all extracted."""
         body = (
-            "    result = df_eager.lazy()\n"
-            "    # -- user code --\n"
+            "    from haute.graph_utils import score_from_config\n"
+            '    result = score_from_config(df, config="config/model_scoring/m.json")\n'
             "    x = 1\n"
             "    y = x + 2\n"
             "    df = df.with_columns(z=pl.lit(y))\n"

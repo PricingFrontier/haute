@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -16,8 +17,10 @@ from haute._sandbox import set_project_root
 from haute.graph_utils import NodeType
 from haute.routes._optimiser_service import _compute_scenario_value_stats
 from haute.routes.optimiser import _build_artifact_payload
-from haute.server import app
 from tests.conftest import make_edge, make_graph
+
+if TYPE_CHECKING:
+    from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
@@ -282,6 +285,37 @@ class TestStatusRoute:
     def test_missing_job_returns_404(self, client):
         resp = client.get("/api/optimiser/solve/status/nonexistent")
         assert resp.status_code == 404
+
+
+class TestEstimateRoute:
+    """Exercises ``POST /api/optimiser/estimate`` — the lightweight cost
+    preview consumed by the frontend's shared ``useStaleConfigEstimate`` hook."""
+
+    def test_estimate_returns_total_rows(self, client, scored_data):
+        graph = _make_optimiser_graph(scored_data)
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "opt"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        # Source metadata may or may not resolve depending on the test
+        # fixture; the response must always include total_rows (possibly
+        # null) so the frontend's shared useStaleConfigEstimate hook has a
+        # stable shape to render against.
+        assert "total_rows" in data
+
+    def test_estimate_gracefully_handles_unknown_node(self, client, scored_data):
+        graph = _make_optimiser_graph(scored_data)
+        # Unknown node id — the estimate engine can't find sources, so
+        # total_rows is None but the response is still shaped correctly.
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "nonexistent"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_rows"] is None
 
 
 class TestApplyRoute:
@@ -1249,8 +1283,7 @@ class TestExecutePipelineArgs:
     """Verify _execute_pipeline passes scenario, preamble_ns, and checkpoint_dir."""
 
     def test_execute_pipeline_passes_scenario_and_checkpoint(self, scored_data, tmp_path):
-        """_execute_lazy receives scenario != 'live', the caller's checkpoint_dir, and preamble_ns."""
-        from pathlib import Path
+        """_execute_lazy receives scenario != 'live', caller's checkpoint_dir, and preamble_ns."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -1362,7 +1395,6 @@ class TestBuildGridSinkFallback:
     def test_build_grid_sink_fallback(self, tmp_path):
         """When safe_sink_parquet's streaming sink raises ComputeError,
         the fallback (collect+write) still produces a valid parquet and grid builds."""
-        from unittest.mock import call
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -2880,14 +2912,14 @@ class TestSolveOnlineUnit:
             "record_history": True,
         }
 
-        with patch("price_contour.OnlineOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.OnlineOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             # Also mock frontier to return None (to avoid error)
-            MockSolver.return_value.frontier.side_effect = Exception("skip")
+            mock_solver.return_value.frontier.side_effect = Exception("skip")
 
             _solve_online(mock_grid, config, store, job_id, time.monotonic())
 
-        MockSolver.assert_called_once_with(
+        mock_solver.assert_called_once_with(
             objective="expected_income",
             constraints={"volume": {"min": 0.9}},
             max_iter=20,
@@ -2935,8 +2967,8 @@ class TestSolveOnlineUnit:
             "record_history": False,
         }
 
-        with patch("price_contour.OnlineOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.OnlineOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_online(mock_grid, config, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)
@@ -3019,8 +3051,8 @@ class TestSolveRatebookUnit:
             "quote_id": "quote_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)
@@ -3070,8 +3102,8 @@ class TestSolveRatebookUnit:
             "quote_id": "policy_id",
         }
 
-        with patch("price_contour.RatebookOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)
@@ -3653,8 +3685,8 @@ class TestSolveRatebookFallbackQuoteId:
             "quote_id": "policy_id",  # not in factors_df
         }
 
-        with patch("price_contour.RatebookOptimiser") as MockSolver:
-            MockSolver.return_value.solve.return_value = mock_result
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
 
         job = store.require_job(job_id)

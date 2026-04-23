@@ -311,6 +311,11 @@ class TestLogExperiment:
             patch("mlflow.log_artifact") as m_artifact,
             patch("mlflow.log_metric") as m_metric,
             patch("mlflow.register_model"),
+            # Item #2: log_experiment now attaches a signature via the
+            # flavor-typed logger for .cbm files.  Patch so the fake
+            # bytes don't trigger a real CatBoost save.
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -326,11 +331,6 @@ class TestLogExperiment:
                 diagnostics=ModelDiagnostics(
                     shap_summary=[{"feature": "x1", "mean_abs_shap": 0.3}],
                     feature_importance_loss=[{"feature": "x1", "importance": 0.4}],
-                    cv_results={
-                        "mean_metrics": {"rmse": 0.45},
-                        "std_metrics": {"rmse": 0.02},
-                        "n_folds": 3,
-                    },
                 ),
             )
 
@@ -339,13 +339,12 @@ class TestLogExperiment:
                 call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
                 for call in m_artifact.call_args_list
             ]
-            for expected in ("shap", "importance", "cv", "model_card"):
+            # CV results were removed in Phase 2 Package 2C-5 — the "cv"
+            # artifact dir must no longer be emitted.
+            for expected in ("shap", "importance", "model_card"):
                 assert expected in artifact_dirs, f"Missing artifact dir: {expected}"
-            # model artifact logged without artifact_path subdir
-            artifact_files = [call.args[0] for call in m_artifact.call_args_list]
-            assert any(str(model_file) in str(f) for f in artifact_files)
-            # CV mean metric logged
-            m_metric.assert_called_once_with("cv_mean_rmse", 0.45)
+            assert "cv" not in artifact_dirs
+            m_metric.assert_not_called()
 
     def test_databricks_registers_model(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -369,6 +368,8 @@ class TestLogExperiment:
             patch("mlflow.log_metrics"),
             patch("mlflow.log_artifact"),
             patch("mlflow.register_model") as m_register,
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -413,6 +414,8 @@ class TestLogExperiment:
             patch("mlflow.log_artifact") as m_artifact,
             patch("mlflow.log_metric"),
             patch("mlflow.register_model"),
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -536,6 +539,8 @@ class TestLogExperiment:
             patch("mlflow.log_metrics"),
             patch("mlflow.log_artifact"),
             patch("mlflow.register_model") as m_register,
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -575,6 +580,8 @@ class TestLogExperiment:
             patch("mlflow.log_artifact") as m_artifact,
             patch("mlflow.log_metric") as m_metric,
             patch("mlflow.register_model"),
+            patch("mlflow.catboost.log_model"),
+            patch("mlflow.pyfunc.log_model"),
         ):
             m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
             m_run.return_value.__exit__ = MagicMock(return_value=False)
@@ -591,11 +598,6 @@ class TestLogExperiment:
                     shap_summary=[{"feature": "x1", "mean_abs_shap": 0.3}],
                     feature_importance=[{"feature": "x1", "importance": 0.7}],
                     feature_importance_loss=[{"feature": "x1", "importance": 0.4}],
-                    cv_results={
-                        "mean_metrics": {"rmse": 0.45, "gini": 0.6},
-                        "std_metrics": {"rmse": 0.02},
-                        "n_folds": 5,
-                    },
                     double_lift=[{"decile": 1, "actual": 0.1, "predicted": 0.12, "count": 100}],
                     loss_history=[{"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)],
                     ave_per_feature=[
@@ -634,22 +636,23 @@ class TestLogExperiment:
                 call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
                 for call in m_artifact.call_args_list
             ]
-            # All artifact subdirectories should be present
+            # All artifact subdirectories should be present. The "cv"
+            # artifact dir was removed in Phase 2 Package 2C-5.
             for expected in (
                 "shap",
                 "importance",
-                "cv",
                 "diagnostics",
                 "model_card",
             ):
                 assert expected in artifact_dirs, f"Missing artifact dir: {expected}"
+            assert "cv" not in artifact_dirs
 
             # Holdout metrics should be logged as individual metrics
             holdout_calls = [c for c in m_metric.call_args_list if c.args[0].startswith("holdout_")]
             assert len(holdout_calls) == 2
-            # CV metrics should be logged
+            # CV metrics were removed along with the CV path.
             cv_calls = [c for c in m_metric.call_args_list if c.args[0].startswith("cv_mean_")]
-            assert len(cv_calls) == 2
+            assert cv_calls == []
 
     def test_with_glm_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GLM-specific diagnostics should be logged as artifacts and metrics."""
@@ -875,7 +878,6 @@ class TestLogJsonArtifact:
 
     def test_cleans_up_on_error(self) -> None:
         """Even if log_artifact raises, the temp file should be cleaned up."""
-        import os
 
         mock_mlflow = MagicMock()
         mock_mlflow.log_artifact.side_effect = RuntimeError("boom")

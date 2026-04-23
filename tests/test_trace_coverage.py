@@ -5,7 +5,6 @@ Targets uncovered paths identified by coverage analysis.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -13,6 +12,8 @@ from typing import Any
 import polars as pl
 import pytest
 
+from haute._trace_export import export_trace
+from haute._trace_waterfall import WaterfallEntry, WaterfallResult, build_waterfall
 from haute.trace import (
     SchemaDiff,
     TraceResult,
@@ -23,16 +24,18 @@ from haute.trace import (
     execute_trace,
     trace_result_to_dict,
 )
-from haute._trace_waterfall import WaterfallEntry, WaterfallResult, build_waterfall
-from haute._trace_export import export_trace
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
-    make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
-
 
 # ===========================================================================
 # _jsonify_row — uncovered paths

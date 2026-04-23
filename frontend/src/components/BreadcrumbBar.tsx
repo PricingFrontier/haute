@@ -30,20 +30,9 @@ export default function BreadcrumbBar({ viewStack, onNavigate }: BreadcrumbBarPr
           {i > 0 && <ChevronRight size={12} style={{ color: "var(--text-muted)" }} />}
           <button
             onClick={() => onNavigate(i)}
-            className="text-[12px] font-medium px-1.5 py-0.5 rounded transition-colors"
+            className="text-[12px] font-medium px-1.5 py-0.5 rounded hover-crumb"
             style={{
-              color: i === viewStack.length - 1 ? "var(--text-primary)" : "var(--text-muted)",
               cursor: i === viewStack.length - 1 ? "default" : "pointer",
-            }}
-            onMouseEnter={(e) => {
-              if (i < viewStack.length - 1) {
-                e.currentTarget.style.background = "var(--chrome-hover)"
-                e.currentTarget.style.color = "var(--text-primary)"
-              }
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "transparent"
-              e.currentTarget.style.color = i === viewStack.length - 1 ? "var(--text-primary)" : "var(--text-muted)"
             }}
             disabled={i === viewStack.length - 1}
           >

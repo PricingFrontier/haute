@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from haute._logging import get_logger
+from haute.errors import ConfigError
 
 logger = get_logger(component="discovery")
 
@@ -32,7 +33,7 @@ def _configured_pipeline(root: Path) -> Path | None:
     return None
 
 
-def discover_pipelines(root: Path | None = None) -> list[Path]:
+def discover_pipelines(root: Path | None = None, *, strict: bool = False) -> list[Path]:
     """Find ``.py`` files in *root* that contain ``haute.Pipeline``.
 
     Resolution order:
@@ -45,11 +46,22 @@ def discover_pipelines(root: Path | None = None) -> list[Path]:
     ----------
     root:
         Directory to scan.  Defaults to ``Path.cwd()``.
+    strict:
+        When ``True``, raise :class:`~haute.errors.ConfigError` on any
+        :class:`OSError` encountered while reading a candidate ``.py`` file
+        instead of skipping that file.  The default (``False``) preserves the
+        historical skip-and-continue behaviour, but emits a ``WARNING`` log
+        naming the path and error so the user can diagnose the failure.
 
     Returns
     -------
     list[Path]
         Sorted list of matching files.
+
+    Raises
+    ------
+    ConfigError
+        Only when ``strict=True`` and a candidate file cannot be read.
     """
     if root is None:
         root = Path.cwd()
@@ -62,14 +74,27 @@ def discover_pipelines(root: Path | None = None) -> list[Path]:
     if configured is not None and configured.exists():
         try:
             text = configured.read_text(errors="replace")
-        except OSError:
-            pass
+        except OSError as exc:
+            if strict:
+                raise ConfigError(
+                    "Could not read configured pipeline",
+                    path=str(configured),
+                    error_type=type(exc).__name__,
+                    reason=str(exc),
+                ) from exc
+            logger.warning(
+                "discovery_read_failed",
+                path=str(configured),
+                error_type=type(exc).__name__,
+                reason=str(exc),
+                source="configured_pipeline",
+            )
         else:
             if "haute.Pipeline" in text:
                 found.append(configured)
                 seen.add(configured.resolve())
 
-    # 2. Fall back to root-level *.py glob for backward compatibility
+    # 2. Fall back to root-level *.py glob when no configured file matched.
     for f in sorted(root.glob("*.py")):
         if f.name in _SKIP:
             continue
@@ -77,7 +102,21 @@ def discover_pipelines(root: Path | None = None) -> list[Path]:
             continue
         try:
             text = f.read_text(errors="replace")
-        except OSError:
+        except OSError as exc:
+            if strict:
+                raise ConfigError(
+                    "Could not read candidate pipeline file",
+                    path=str(f),
+                    error_type=type(exc).__name__,
+                    reason=str(exc),
+                ) from exc
+            logger.warning(
+                "discovery_read_failed",
+                path=str(f),
+                error_type=type(exc).__name__,
+                reason=str(exc),
+                source="glob",
+            )
             continue
         if "haute.Pipeline" in text:
             found.append(f)

@@ -76,6 +76,53 @@ class TestRequestValidation:
         assert body["status"] == "ok"
         assert "trace" in body
 
+    def test_row_values_trace_works_when_preview_cache_is_cold(self, client, tmp_path):
+        """Clicked row values should anchor the trace even after cache eviction."""
+        from haute.executor import _preview_cache
+        from haute.trace import _cache as _trace_cache
+
+        _preview_cache.invalidate()
+        _trace_cache.invalidate()
+
+        p = _simple_parquet(tmp_path)
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
+
+        resp = _trace_post(
+            client,
+            graph,
+            row_index=0,
+            target_node_id="t",
+            column="z",
+            row_values={"x": 2, "y": 20, "z": 22},
+        )
+
+        assert resp.status_code == 200
+        trace = resp.json()["trace"]
+        assert trace["output_value"] == 22
+
+    def test_row_values_mismatch_returns_conflict_not_500(self, client, tmp_path):
+        """A stale clicked row is a client/data conflict, not a server crash."""
+        from haute.executor import _preview_cache
+        from haute.trace import _cache as _trace_cache
+
+        _preview_cache.invalidate()
+        _trace_cache.invalidate()
+
+        p = _simple_parquet(tmp_path)
+        graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
+
+        resp = _trace_post(
+            client,
+            graph,
+            row_index=0,
+            target_node_id="t",
+            column="z",
+            row_values={"x": 999, "y": 20, "z": 22},
+        )
+
+        assert resp.status_code == 409
+        assert "Trace data does not match" in resp.json()["detail"]
+
     def test_empty_graph_returns_error(self, client):
         """POST with a graph containing no nodes returns an error."""
         graph = _g({"nodes": [], "edges": []}).model_dump()
@@ -102,8 +149,7 @@ class TestRequestValidation:
 
         resp = _trace_post(client, graph, row_index=9999, target_node_id="t")
 
-        # Out-of-bounds row_index now raises ValueError → 500
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         body = resp.json()
         assert "detail" in body
 
@@ -114,7 +160,7 @@ class TestRequestValidation:
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="nonexistent_node")
 
-        assert resp.status_code == 500
+        assert resp.status_code == 404
         body = resp.json()
         assert "detail" in body
 
@@ -144,6 +190,30 @@ class TestRequestValidation:
         assert trace["column"] == "z"
         # With column filter, output_value should be a scalar, not a dict
         assert not isinstance(trace["output_value"], dict)
+
+    def test_waterfall_error_payload_is_valid_response(self, client, tmp_path):
+        """Trace may return a structured waterfall error without a 500."""
+        from unittest.mock import patch
+
+        from haute.trace import TraceResult
+
+        p = _simple_parquet(tmp_path)
+        graph = _simple_graph(p)
+        result = TraceResult(
+            target_node_id="t",
+            row_index=0,
+            column="z",
+            output_value=1,
+            steps=[],
+            waterfall={"error": "waterfall build failed", "error_type": "ValueError"},
+        )
+
+        with patch("haute.routes.pipeline.execute_trace", return_value=result):
+            resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+
+        assert resp.status_code == 200
+        waterfall = resp.json()["trace"]["waterfall"]
+        assert waterfall["error"] == "waterfall build failed"
 
     def test_row_limit_parameter_is_accepted(self, client, tmp_path):
         """POST with row_limit is accepted and returns 200."""
@@ -454,7 +524,10 @@ class TestErrorHandling:
         def slow_trace(*args, **kwargs):
             time.sleep(2.0)
 
-        with patch("haute.trace.execute_trace", side_effect=slow_trace):
+        # Route-scoped patch — the route imports ``execute_trace`` at
+        # module top-level after the #101 hoist, so the source module's
+        # name no longer intercepts it.
+        with patch("haute.routes.pipeline.execute_trace", side_effect=slow_trace):
             resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
         assert resp.status_code == 504
@@ -507,8 +580,7 @@ class TestErrorHandling:
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
-        # Zero rows means row_index 0 is out of range → 500
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         body = resp.json()
         assert "detail" in body
 

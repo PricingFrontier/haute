@@ -8,11 +8,7 @@ D13 — LogExperimentResponse and OptimiserMlflowLogResponse share MlflowLogResp
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Any
-
-import pytest
-from pydantic import BaseModel
 
 from haute.routes._job_store import JobStore
 
@@ -143,6 +139,7 @@ class TestFinalizeOnline:
         """When solve_result has a dataframe with optimal_scenario_value,
         stats and histogram should be populated."""
         import numpy as np
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         class ResultWithDF(_FakeSolveResult):
@@ -262,6 +259,7 @@ class TestFinalizeFrontier:
     def test_computes_frontier_when_online_with_constraints(self) -> None:
         """Online mode + constraints → frontier_data populated on the job."""
         from unittest.mock import MagicMock
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         result = _FakeSolveResult(
@@ -372,6 +370,7 @@ class TestFinalizeFrontier:
     def test_frontier_exception_non_fatal(self) -> None:
         """solver.frontier() raising does not fail the solve — status is still completed."""
         from unittest.mock import MagicMock
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         result = _FakeSolveResult(
@@ -410,6 +409,7 @@ class TestFinalizeFrontier:
     def test_frontier_skips_zero_baseline(self) -> None:
         """A constraint with baseline=0 is excluded from frontier ranges."""
         from unittest.mock import MagicMock
+
         from haute.routes._optimiser_service import _finalize_solve_result
 
         result = _FakeSolveResult(
@@ -463,166 +463,15 @@ class TestFinalizeFrontier:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# D7: _dc_to_pydantic
+# D7: Pydantic-native git result types (item #74)
 # ──────────────────────────────────────────────────────────────────────
-
-
-class TestDcToPydantic:
-    """D7: Dataclass → Pydantic auto-conversion."""
-
-    def test_flat_dataclass(self) -> None:
-        from haute._git import GitStatus
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitStatusResponse
-
-        dc = GitStatus(
-            branch="pricing/alice/feature",
-            is_main=False,
-            is_read_only=False,
-            changed_files=["main.py", "config.json"],
-            main_ahead=True,
-            main_ahead_by=3,
-            main_last_updated="2026-03-14T10:00:00+00:00",
-        )
-        model = _dc_to_pydantic(dc, GitStatusResponse)
-        assert isinstance(model, GitStatusResponse)
-        assert model.branch == "pricing/alice/feature"
-        assert model.is_main is False
-        assert model.changed_files == ["main.py", "config.json"]
-        assert model.main_ahead_by == 3
-        assert model.main_last_updated == "2026-03-14T10:00:00+00:00"
-
-    def test_nested_dataclass_list(self) -> None:
-        """BranchListResult contains a list of BranchInfo dataclasses."""
-        from haute._git import BranchInfo, BranchListResult
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitBranchListResponse
-
-        dc = BranchListResult(
-            current="main",
-            branches=[
-                BranchInfo(
-                    name="pricing/alice/feat",
-                    is_yours=True,
-                    is_current=False,
-                    is_archived=False,
-                    last_commit_time="2026-03-14T09:00:00",
-                    commit_count=5,
-                ),
-                BranchInfo(
-                    name="archive/old-feat",
-                    is_yours=False,
-                    is_current=False,
-                    is_archived=True,
-                    last_commit_time="2026-01-01T00:00:00",
-                    commit_count=1,
-                ),
-            ],
-        )
-        model = _dc_to_pydantic(dc, GitBranchListResponse)
-        assert isinstance(model, GitBranchListResponse)
-        assert model.current == "main"
-        assert len(model.branches) == 2
-        assert model.branches[0].name == "pricing/alice/feat"
-        assert model.branches[0].is_yours is True
-        assert model.branches[1].is_archived is True
-
-    def test_save_result(self) -> None:
-        from haute._git import SaveResult
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitSaveResponse
-
-        dc = SaveResult(
-            commit_sha="abc123def",
-            message="Updated main",
-            timestamp="2026-03-14T12:00:00+00:00",
-        )
-        model = _dc_to_pydantic(dc, GitSaveResponse)
-        assert isinstance(model, GitSaveResponse)
-        assert model.commit_sha == "abc123def"
-        assert model.message == "Updated main"
-
-    def test_submit_result_with_none_url(self) -> None:
-        from haute._git import SubmitResult
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitSubmitResponse
-
-        dc = SubmitResult(compare_url=None, branch="pricing/alice/feat")
-        model = _dc_to_pydantic(dc, GitSubmitResponse)
-        assert model.compare_url is None
-        assert model.branch == "pricing/alice/feat"
-
-    def test_revert_result(self) -> None:
-        from haute._git import RevertResult
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitRevertResponse
-
-        dc = RevertResult(
-            backup_tag="backup/pricing-alice-feat/2026-03-14T12-00-00", reverted_to="abc1234"
-        )
-        model = _dc_to_pydantic(dc, GitRevertResponse)
-        assert model.backup_tag.startswith("backup/")
-        assert model.reverted_to == "abc1234"
-
-    def test_pull_result_with_conflict(self) -> None:
-        from haute._git import PullResult
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitPullResponse
-
-        dc = PullResult(
-            success=False,
-            conflict=True,
-            conflict_message="Merge conflict in main.py",
-            commits_pulled=0,
-        )
-        model = _dc_to_pydantic(dc, GitPullResponse)
-        assert model.success is False
-        assert model.conflict is True
-        assert model.conflict_message == "Merge conflict in main.py"
-        assert model.commits_pulled == 0
-
-    def test_history_entry(self) -> None:
-        from haute._git import HistoryEntry
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitHistoryEntry
-
-        dc = HistoryEntry(
-            sha="abc123def456",
-            short_sha="abc123d",
-            message="Updated pricing",
-            timestamp="2026-03-14T12:00:00",
-            files_changed=["main.py", "config/banding/opt.json"],
-        )
-        model = _dc_to_pydantic(dc, GitHistoryEntry)
-        assert model.sha == "abc123def456"
-        assert model.files_changed == ["main.py", "config/banding/opt.json"]
-
-    def test_roundtrip_preserves_json_shape(self) -> None:
-        """model_dump() from _dc_to_pydantic matches manual construction."""
-        from haute._git import GitStatus
-        from haute.routes.git import _dc_to_pydantic
-        from haute.schemas import GitStatusResponse
-
-        dc = GitStatus(
-            branch="main",
-            is_main=True,
-            is_read_only=True,
-            changed_files=[],
-            main_ahead=False,
-            main_ahead_by=0,
-            main_last_updated=None,
-        )
-        auto = _dc_to_pydantic(dc, GitStatusResponse)
-        manual = GitStatusResponse(
-            branch="main",
-            is_main=True,
-            is_read_only=True,
-            changed_files=[],
-            main_ahead=False,
-            main_ahead_by=0,
-            main_last_updated=None,
-        )
-        assert auto.model_dump() == manual.model_dump()
+#
+# The ``_git`` module returns ``GitStatusResponse``, ``GitSaveResponse``, etc.
+# directly — the former dataclass → Pydantic shim was dead code and has been
+# removed, and the historical ``GitStatus`` / ``BranchInfo`` / ``SaveResult``
+# aliases have been renamed to their canonical response-model names since
+# nothing outside ``_git`` itself was using the alias form.
+# Dedicated tests for the contract live in ``tests/test_git_routes_pydantic.py``.
 
 
 # ──────────────────────────────────────────────────────────────────────

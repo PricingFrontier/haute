@@ -1,6 +1,7 @@
 import { useEffect } from "react"
 import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from "lucide-react"
 import useToastStore from "../stores/useToastStore"
+import { STATUS_COLORS } from "../theme/colors"
 
 export interface ToastMessage {
   id: string
@@ -16,10 +17,10 @@ const icons = {
 }
 
 const accentColors = {
-  success: "#22c55e",
-  error: "#ef4444",
-  info: "#6366f1",
-  warning: "#f59e0b",
+  success: "var(--success)",
+  error: "var(--danger)",
+  info: STATUS_COLORS.info,
+  warning: "var(--warning-strong)",
 }
 
 function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: string) => void }) {
@@ -46,10 +47,8 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
       <button
         onClick={() => onDismiss(toast.id)}
         aria-label="Dismiss notification"
-        className="p-0.5 rounded shrink-0 transition-colors"
+        className="p-0.5 rounded shrink-0 hover-bg"
         style={{ color: "var(--text-muted)" }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)" }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent" }}
       >
         <X size={12} />
       </button>

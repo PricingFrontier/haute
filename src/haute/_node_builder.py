@@ -15,7 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from haute._types import GraphNode, _Frame, _sanitize_func_name
+from haute._graph_utils import _sanitize_func_name
+from haute._types import GraphNode, _Frame
 
 # (func_name, callable, is_source)
 NodeFnResult = tuple[str, Callable[..., _Frame], bool]

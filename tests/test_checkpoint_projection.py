@@ -75,6 +75,7 @@ def _model_score_node(
     output_column: str = "prediction",
     code: str = "",
     source_type: str = "",
+    run_id: str = "",
 ) -> GraphNode:
     return _node(
         nid,
@@ -82,6 +83,7 @@ def _model_score_node(
         output_column=output_column,
         code=code,
         sourceType=source_type,
+        run_id=run_id,
     )
 
 
@@ -215,12 +217,15 @@ class TestGetColumnContract:
         assert referenced == {"feat_a", "feat_b", "feat_c"}
 
     def test_model_score_model_load_fails(self):
+        """Item #25 (fail-loud policy): a real MLflow load error must
+        propagate — previously the contract-detection silently swallowed
+        it and returned opaque columns, masking config/infra problems."""
         with patch("haute._mlflow_io.load_mlflow_model", side_effect=Exception("fail")):
-            _, referenced = get_column_contract(
-                NodeType.MODEL_SCORE,
-                {"sourceType": "run", "run_id": "abc123", "task": "regression"},
-            )
-        assert referenced is None
+            with pytest.raises(Exception):
+                get_column_contract(
+                    NodeType.MODEL_SCORE,
+                    {"sourceType": "run", "run_id": "abc123", "task": "regression"},
+                )
 
     # -- SCENARIO_EXPANDER ----------------------------------------------
 
@@ -249,17 +254,36 @@ class TestGetColumnContract:
 
     # -- OPTIMISER_APPLY ------------------------------------------------
 
-    def test_optimiser_apply_produced_and_opaque_referenced(self):
+    def test_optimiser_apply_unconfigured_reads_nothing(self):
+        # An unconfigured optimiser_apply node is a pass-through at
+        # runtime (``_build_optimiser_apply`` returns ``_passthrough_fn``
+        # when no artifact source is set), so the contract reports the
+        # read side as ``set()`` rather than opaque.  This distinguishes
+        # "declared pass-through, truly reads nothing" from "opaque
+        # because the schema comes from a runtime artifact" (tested
+        # below).
         produced, referenced = get_column_contract(NodeType.OPTIMISER_APPLY, {})
         assert produced == {"__optimiser_version__"}
-        assert referenced is None
+        assert referenced == set()
 
-    def test_optimiser_apply_custom_version_column(self):
+    def test_optimiser_apply_custom_version_column_unconfigured(self):
         produced, referenced = get_column_contract(
             NodeType.OPTIMISER_APPLY,
             {"version_column": "opt_ver"},
         )
         assert produced == {"opt_ver"}
+        assert referenced == set()
+
+    def test_optimiser_apply_with_artifact_source_is_opaque(self):
+        # Once an artifact source is configured the read side is
+        # honestly opaque — the column dependencies come from the
+        # artifact at runtime (quote_id, scenario_index, constraints,
+        # etc.) which is not introspectable without loading it.
+        produced, referenced = get_column_contract(
+            NodeType.OPTIMISER_APPLY,
+            {"artifact_path": "/tmp/opt.json", "sourceType": "file"},
+        )
+        assert produced == {"__optimiser_version__"}
         assert referenced is None
 
     # -- Passthrough types ----------------------------------------------
@@ -422,7 +446,12 @@ class TestComputeNeededColumns:
 
         nodes = [
             _source_node("src"),
-            _model_score_node("ms", output_column="pred", source_type="run"),
+            _model_score_node(
+                "ms",
+                output_column="pred",
+                source_type="run",
+                run_id="abc123",  # required after Item #25 fail-loud check
+            ),
             _output_node("out", fields=["pred", "extra_col"]),
         ]
         node_map = {n.id: n for n in nodes}

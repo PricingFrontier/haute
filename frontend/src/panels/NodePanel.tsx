@@ -25,16 +25,13 @@ import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
 import ColumnsTab from "./editors/ColumnsTab"
 import GroupedColumnsTab from "./editors/GroupedColumnsTab"
 import PanelShell from "./PanelShell"
+import { useGraph } from "./useGraph"
 
 // Re-export types (preserve public API for App.tsx)
 export type { SimpleNode, SimpleEdge } from "./editors"
 
 type NodePanelProps = {
   node: SimpleNode | null
-  edges: SimpleEdge[]
-  allNodes: SimpleNode[]
-  submodels?: Record<string, unknown>
-  preamble?: string
   onClose: () => void
   onUpdateNode?: (id: string, data: Record<string, unknown>) => void
   onDeleteEdge?: (edgeId: string) => void
@@ -61,29 +58,34 @@ const NO_COLUMNS_TAB = new Set<string>([
 function InstancePanel({
   node,
   config,
-  edges,
-  allNodes,
   nodeMap,
   handleConfigUpdate,
 }: {
   node: SimpleNode
   config: Record<string, unknown>
-  edges: SimpleEdge[]
-  allNodes: SimpleNode[]
   nodeMap: Record<string, SimpleNode>
   handleConfigUpdate: (keyOrUpdates: string | Record<string, unknown>, value?: unknown) => void
 }) {
+  const { edges } = useGraph()
+  const origId = config.instanceOf as string
+  // Fail loud (#84): a broken reference must surface in the ErrorBoundary
+  // rather than rendering the stringified id as a silent fallback.
+  const orig = nodeMap[origId]
+  if (!orig) {
+    throw new Error(
+      `InstancePanel: referenced original node "${origId}" not found in graph. ` +
+        `Either the original was deleted or the instanceOf id is stale; ` +
+        `fix the node's config or recreate the instance.`,
+    )
+  }
   return (
     <div className="px-4 py-3 flex flex-col gap-3">
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-soft)', border: '1px solid rgba(96,165,250,.15)' }}>
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-soft)', border: '1px solid var(--text-accent-line)' }}>
         <Link2 size={13} style={{ color: 'var(--accent)' }} className="shrink-0" />
         <div className="min-w-0">
           <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--accent)' }}>Instance of</div>
           <div className="text-[13px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
-            {(() => {
-              const orig = allNodes.find((n) => n.id === config.instanceOf)
-              return orig ? orig.data.label : String(config.instanceOf)
-            })()}
+            {orig.data.label}
           </div>
         </div>
       </div>
@@ -93,7 +95,6 @@ function InstancePanel({
 
       {/* Input Mapping */}
       {(() => {
-        const origId = config.instanceOf as string
         const origInputs = edges
           .filter((e) => e.target === origId)
           .map((e) => {
@@ -184,10 +185,10 @@ function InstancePanel({
         const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
         if (warnings.length === 0) return null
         return (
-          <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.2)' }}>
+          <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
             <div className="flex items-center gap-1.5">
-              <AlertTriangle size={11} style={{ color: '#f59e0b' }} className="shrink-0" />
-              <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: '#f59e0b' }}>
+              <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
+              <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
                 Missing columns ({warnings.length})
               </span>
             </div>
@@ -196,7 +197,7 @@ function InstancePanel({
             </p>
             <div className="flex flex-wrap gap-1 mt-0.5">
               {warnings.map((w) => (
-                <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'rgba(245,158,11,.12)', color: '#fbbf24' }}>
+                <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'var(--warning-soft-emphasis)', color: 'var(--warning)' }}>
                   {w.column}
                 </span>
               ))}
@@ -231,7 +232,8 @@ function hasUpstreamApiInput(nodeId: string, edges: SimpleEdge[], nodeMap: Recor
 
 // ─── NodePanel ────────────────────────────────────────────────────
 
-export default function NodePanel({ node, edges, allNodes, submodels, preamble, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine, previewRows }: NodePanelProps) {
+export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine, previewRows }: NodePanelProps) {
+  const { allNodes, edges } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
 
@@ -285,8 +287,6 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         <InstancePanel
           node={node}
           config={config}
-          edges={edges}
-          allNodes={allNodes}
           nodeMap={nodeMap}
           handleConfigUpdate={handleConfigUpdate}
         />
@@ -304,13 +304,13 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         return <DataSourceEditor config={config} onUpdate={handleConfigUpdate} onRefreshPreview={onRefreshPreview} accentColor={accentColor} errorLine={errorLine} />
 
       case NODE_TYPES.DATA_SINK:
-        return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble} accentColor={accentColor} />
+        return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} accentColor={accentColor} />
 
       case NODE_TYPES.EXTERNAL_FILE:
         return <ExternalFileEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
 
       case NODE_TYPES.OUTPUT:
-        return <OutputEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} allNodes={allNodes} edges={edges} />
+        return <OutputEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} />
 
       case NODE_TYPES.BANDING:
         return (
@@ -338,7 +338,7 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         )
 
       case NODE_TYPES.RATING_STEP:
-        return <RatingStepEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} allNodes={allNodes} accentColor={accentColor} />
+        return <RatingStepEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />
 
       case NODE_TYPES.MODEL_SCORE:
         return <ModelScoreEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
@@ -353,10 +353,6 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
           <ModellingConfig
             config={configWithNodeId}
             onUpdate={handleConfigUpdate}
-            allNodes={allNodes}
-            edges={edges}
-            submodels={submodels}
-            preamble={preamble}
             upstreamColumns={effectiveCols}
           />
         )
@@ -371,9 +367,6 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
           <OptimiserConfig
             config={configWithNodeId}
             onUpdate={handleConfigUpdate}
-            allNodes={allNodes}
-            edges={edges}
-            submodels={submodels}
             upstreamColumns={effectiveCols}
             accentColor={accentColor}
           />
@@ -443,52 +436,59 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
               onUpdateNode(node.id, { ...node.data, label: e.target.value })
             }
           }}
-          className="flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none focus:ring-2 bg-transparent"
+          className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
           style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent-soft)' }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.boxShadow = 'none' }}
         />
         {onRefreshPreview && (
           <button
             onClick={onRefreshPreview}
-            className="px-2 py-1 rounded shrink-0 transition-colors flex items-center gap-1 text-[11px] font-medium"
-            style={{ background: 'var(--accent)', color: '#fff' }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
+            className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
+            style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
             title="Refresh preview"
           >
             <RefreshCw size={11} />
             Refresh
           </button>
         )}
-        <button onClick={onClose} className="p-1 rounded shrink-0 transition-colors" style={{ background: '#dc2626', color: '#fff' }}
-          onMouseEnter={(e) => e.currentTarget.style.background = '#b91c1c'}
-          onMouseLeave={(e) => e.currentTarget.style.background = '#dc2626'}
+        <button onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: 'var(--text-on-accent)' }}
           title="Close"
         >
           <X size={14} strokeWidth={2.5} />
         </button>
       </div>
 
-      {/* Tab bar — only show when Columns tab is available */}
+      {/* Tab bar — only show when Columns tab is available.  Hover
+          background is applied via Tailwind only for the INACTIVE tab
+          so the accent-soft background of the active tab doesn't
+          flicker on mouseover.  Inactive tabs deliberately omit an
+          inline `background` so the Tailwind `hover:` rule can apply
+          (inline styles would otherwise win over class rules). */}
       {showColumnsTab && (
         <div className="flex shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-          {(["config", "columns"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className="flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors"
-              style={{
-                color: activeTab === tab ? 'var(--accent)' : 'var(--text-muted)',
-                borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
-                background: activeTab === tab ? 'var(--accent-soft)' : 'transparent',
-              }}
-              onMouseEnter={(e) => { if (activeTab !== tab) e.currentTarget.style.background = 'var(--bg-hover)' }}
-              onMouseLeave={(e) => { if (activeTab !== tab) e.currentTarget.style.background = 'transparent' }}
-            >
-              {tab}
-            </button>
-          ))}
+          {(["config", "columns"] as const).map((tab) => {
+            const isActive = activeTab === tab
+            const activeStyle: React.CSSProperties = {
+              color: 'var(--accent)',
+              borderBottom: '2px solid var(--accent)',
+              background: 'var(--accent-soft)',
+            }
+            const inactiveStyle: React.CSSProperties = {
+              color: 'var(--text-muted)',
+              borderBottom: '2px solid transparent',
+            }
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
+                  isActive ? '' : ' hover:bg-[var(--bg-hover)]'
+                }`}
+                style={isActive ? activeStyle : inactiveStyle}
+              >
+                {tab}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -498,10 +498,10 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
         if (warnings.length === 0) return null
         return (
           <div className="px-4 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-            <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.2)' }}>
+            <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
               <div className="flex items-center gap-1.5">
-                <AlertTriangle size={11} style={{ color: '#f59e0b' }} className="shrink-0" />
-                <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: '#f59e0b' }}>
+                <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
+                <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
                   Stale columns ({warnings.length})
                 </span>
               </div>
@@ -510,7 +510,7 @@ export default function NodePanel({ node, edges, allNodes, submodels, preamble, 
               </p>
               <div className="flex flex-wrap gap-1 mt-0.5">
                 {warnings.map((w) => (
-                  <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'rgba(245,158,11,.12)', color: '#fbbf24' }}>
+                  <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'var(--warning-soft-emphasis)', color: 'var(--warning)' }}>
                     {w.column}
                   </span>
                 ))}

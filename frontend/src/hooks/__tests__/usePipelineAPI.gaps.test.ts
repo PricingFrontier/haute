@@ -12,7 +12,7 @@ import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
@@ -69,7 +69,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
-    lastSavedRef: { current: "" },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -80,8 +79,17 @@ describe("usePipelineAPI — gap tests", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
-    useUIStore.setState({ dirty: false })
-    useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
+    useGraphStore.setState({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      lastSavedSnapshot: null,
+      undoStack: [],
+      redoStack: [],
+      structuralVersion: 0,
+      structuralFingerprint: "nodes:||edges:||preamble:\"\"",
+    })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
     mockSave.mockReset()
@@ -185,11 +193,10 @@ describe("usePipelineAPI — gap tests", () => {
       })
     })
 
-    it("second save failure does not corrupt dirty flag from first success", async () => {
-      // Catches: if the dirty flag is set to false by the first save's
-      // .then() but then re-set by the second save's .catch(), the UI
-      // would incorrectly show "unsaved changes" even though data was
-      // persisted.
+    it("second save failure does not corrupt lastSavedSnapshot from first success", async () => {
+      // Catches: if the failure path of the second save somehow cleared
+      // lastSavedSnapshot, dirty derivation would incorrectly mark the
+      // graph as unsaved even though the first save persisted the data.
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
       let callIdx = 0
@@ -201,11 +208,11 @@ describe("usePipelineAPI — gap tests", () => {
 
       const params = makeParams()
       params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+      // markSaved captures from useGraphStore, keep the two in sync.
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
 
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
-
-      useUIStore.setState({ dirty: true })
 
       await act(async () => {
         result.current.handleSave()
@@ -219,6 +226,10 @@ describe("usePipelineAPI — gap tests", () => {
         expect(toasts.some((t) => t.type === "success")).toBe(true)
         expect(toasts.some((t) => t.type === "error")).toBe(true)
       })
+
+      // After the first success, lastSavedSnapshot should be non-null.
+      // The failing second save's catch block must NOT touch it.
+      expect(useGraphStore.getState().lastSavedSnapshot).not.toBeNull()
     })
   })
 
@@ -249,10 +260,9 @@ describe("usePipelineAPI — gap tests", () => {
         schema_warnings: [],
       }
 
-      // Pre-populate the cache with graphVersion=0 (matching store default)
+      // Pre-populate the cache with structuralVersion=0 (matching graph store default)
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, graphVersion: 0 } },
-        graphVersion: 0,
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
         columnCache: {},
       })
 
@@ -273,12 +283,97 @@ describe("usePipelineAPI — gap tests", () => {
       // Wait for debounce to fire and verify API was NOT called
       await new Promise((r) => setTimeout(r, 500))
 
-      // API should NOT have been called (cache was fresh, same graphVersion)
+      // API should NOT have been called (cache was fresh for the same structuralVersion)
       expect(mockPreview).not.toHaveBeenCalled()
     })
 
-    it("fetches from API when cache exists but graphVersion is stale", async () => {
-      // Catches: if the graphVersion check is removed, the cache would
+    it("honours a custom preview debounce before starting the API request", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"), { debounceMs: 800 })
+      })
+
+      expect(result.current.previewData?.nodeId).toBe("n1")
+      expect(result.current.previewData?.status).toBe("loading")
+
+      act(() => {
+        vi.advanceTimersByTime(799)
+      })
+      expect(mockPreview).not.toHaveBeenCalled()
+
+      await act(async () => {
+        vi.advanceTimersByTime(1)
+        await Promise.resolve()
+      })
+      expect(mockPreview).toHaveBeenCalledTimes(1)
+    })
+
+    it("uses graph structuralVersion to decide preview freshness", async () => {
+      // Catches: if fetchPreview stops checking structuralVersion, a fresh
+      // structural graph change would be missed and the cached preview would
+      // be treated as current.
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+      const cachedData = {
+        nodeId: "n1",
+        nodeLabel: "Node n1",
+        status: "ok" as const,
+        row_count: 10,
+        column_count: 2,
+        columns: [{ name: "a", dtype: "f64" }],
+        preview: [{ a: 1 }],
+        error: null,
+        timing_ms: 5,
+        memory_bytes: 100,
+        timings: [],
+        memory: [],
+        schema_warnings: [],
+      }
+
+      useNodeResultsStore.setState({
+        previews: { n1: { data: cachedData, structuralVersion: 3, source: "live", rowLimit: 1000 } },
+        columnCache: {},
+      })
+      useGraphStore.setState({ structuralVersion: 4 })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [{ name: "b", dtype: "i64" }],
+        preview: [{ b: 2 }],
+        row_count: 20,
+        column_count: 1,
+      })
+
+      const params = makeParams()
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      const node = makeNode("n1")
+
+      act(() => {
+        result.current.fetchPreview(node)
+      })
+
+      await waitFor(() => {
+        expect(mockPreview).toHaveBeenCalled()
+      }, { timeout: 2000 })
+    })
+
+    it("fetches from API when cache exists but structuralVersion is stale", async () => {
+      // Catches: if the structuralVersion check is removed, the cache would
       // always be considered fresh, showing stale data after the user
       // modifies a node's config.
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
@@ -307,12 +402,12 @@ describe("usePipelineAPI — gap tests", () => {
         schema_warnings: [],
       }
 
-      // Cache at version 0, but store is at version 5 (stale)
+      // Cache at version 0, but graph store is at version 5 (stale)
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, graphVersion: 0 } },
-        graphVersion: 5,
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
         columnCache: {},
       })
+      useGraphStore.setState({ structuralVersion: 5 })
 
       const params = makeParams()
       const { result } = renderHook(() => usePipelineAPI(params))
@@ -329,6 +424,137 @@ describe("usePipelineAPI — gap tests", () => {
         expect(mockPreview).toHaveBeenCalled()
       }, { timeout: 2000 })
     })
+
+    it("refetches when cached preview source differs from active source", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const cachedData = {
+        nodeId: "n1",
+        nodeLabel: "Node n1",
+        status: "ok" as const,
+        row_count: 10,
+        column_count: 1,
+        columns: [],
+        preview: [],
+        error: null,
+        timing_ms: 0,
+        memory_bytes: 0,
+        timings: [],
+        memory: [],
+        schema_warnings: [],
+      }
+
+      useNodeResultsStore.setState({
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "backtest", rowLimit: 1000 } },
+        columnCache: {},
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+
+      await waitFor(() => {
+        expect(mockPreview).toHaveBeenCalled()
+      }, { timeout: 2000 })
+    })
+
+    it("refetches when cached preview row limit differs from current row limit", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const cachedData = {
+        nodeId: "n1",
+        nodeLabel: "Node n1",
+        status: "ok" as const,
+        row_count: 10,
+        column_count: 1,
+        columns: [],
+        preview: [],
+        error: null,
+        timing_ms: 0,
+        memory_bytes: 0,
+        timings: [],
+        memory: [],
+        schema_warnings: [],
+      }
+
+      useSettingsStore.setState({ rowLimit: 250 })
+      useNodeResultsStore.setState({
+        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
+        columnCache: {},
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+
+      await waitFor(() => {
+        expect(mockPreview).toHaveBeenCalled()
+      }, { timeout: 2000 })
+    })
+
+    it("ignores in-flight preview results after graph execution context changes", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      let resolvePreview!: (value: {
+        node_id: string
+        status: string
+        columns: { name: string; dtype: string }[]
+        preview: { stale: number }[]
+        row_count: number
+        column_count: number
+      }) => void
+      mockPreview.mockReturnValue(new Promise((resolve) => {
+        resolvePreview = resolve
+      }))
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+      await waitFor(() => expect(mockPreview).toHaveBeenCalled(), { timeout: 2000 })
+
+      act(() => {
+        useGraphStore.getState().setPreambleRaw("import polars as pl")
+      })
+
+      await act(async () => {
+        resolvePreview({
+          node_id: "n1",
+          status: "ok",
+          columns: [{ name: "stale", dtype: "i64" }],
+          preview: [{ stale: 1 }],
+          row_count: 1,
+          column_count: 1,
+        })
+        await Promise.resolve()
+      })
+
+      expect(result.current.previewData?.row_count).not.toBe(1)
+      expect(useNodeResultsStore.getState().previews.n1).toBeUndefined()
+    })
   })
 
   // ────────────────────────────────────────────────────────────────
@@ -336,6 +562,30 @@ describe("usePipelineAPI — gap tests", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("fetchPreview abort on new request", () => {
+    it("cancelPreview clears a pending debounced preview before the API request starts", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"), { debounceMs: 800 })
+        result.current.cancelPreview()
+        vi.advanceTimersByTime(800)
+      })
+
+      expect(mockPreview).not.toHaveBeenCalled()
+    })
+
     it("aborts previous in-flight request when a new fetchPreview is called", async () => {
       // Catches: without abort, the response from a slow first request
       // could overwrite the fresher second request's data, showing the

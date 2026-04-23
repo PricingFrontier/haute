@@ -159,6 +159,40 @@ class TestSelfWriteTracking:
         with patch.object(time, "monotonic", return_value=original() + _SELF_WRITE_COOLDOWN + 1):
             assert is_self_write() is False
 
+    def test_path_mark_survives_global_cooldown_until_watcher_consumes_it(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        fake_time = [100.0]
+        monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
+        path = tmp_path / "pipeline.py"
+
+        try:
+            mark_self_write(path)
+            fake_time[0] += _SELF_WRITE_COOLDOWN + 5.0
+
+            assert is_self_write() is False
+            assert is_self_write(path) is True
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_path_mark_can_be_consumed_once(self, tmp_path: Path):
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "pipeline.py"
+
+        try:
+            mark_self_write(path)
+            assert is_self_write(path, consume=True) is True
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
 
 # ===========================================================================
 # load_sidecar / load_sidecar_positions
@@ -313,7 +347,7 @@ class TestSaveSidecar:
             ],
         )
         save_sidecar(py_path, graph)
-        from haute._types import _sanitize_func_name
+        from haute._graph_utils import _sanitize_func_name
 
         data = json.loads((tmp_path / "pipeline.haute.json").read_text())
         expected_key = _sanitize_func_name("My Node")
@@ -470,16 +504,27 @@ class TestPipelineDir:
         assert result == tmp_path.resolve()
         pipeline_dir.cache_clear()
 
-    def test_falls_back_when_toml_is_corrupt(self, tmp_path, monkeypatch):
-        """When haute.toml exists but is unreadable, falls back to cwd."""
+    def test_raises_config_error_when_toml_is_corrupt(self, tmp_path, monkeypatch):
+        """Malformed haute.toml raises ConfigError (changed in Phase 2 audit).
+
+        Previous behaviour silently fell back to cwd, which routed every
+        downstream save/load at the wrong directory and surfaced as
+        confusing "file not found" errors far from the real cause.
+        Narrowing the catch to ``TOMLDecodeError``/``OSError`` and re-
+        raising as ``ConfigError`` keeps the error close to its cause
+        so the user can fix the toml in one edit.
+        """
+        import pytest
+
+        from haute.errors import ConfigError
         from haute.routes._helpers import pipeline_dir
 
         pipeline_dir.cache_clear()
         monkeypatch.chdir(tmp_path)
         toml = tmp_path / "haute.toml"
         toml.write_text("not valid toml {{{}}}}")
-        result = pipeline_dir()
-        assert result == tmp_path.resolve()
+        with pytest.raises(ConfigError):
+            pipeline_dir()
         pipeline_dir.cache_clear()
 
 

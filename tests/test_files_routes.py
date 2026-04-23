@@ -297,10 +297,17 @@ class TestBrowseFilesLargeDirectory:
 
 class TestGetSchemaCorruptedParquet:
     def test_random_bytes_parquet_returns_error(self, client: TestClient, work_dir: Path):
+        """Phase 1C #11: the detail is sanitized (``_INTERNAL_ERROR_DETAIL``)
+        so parquet internals / paths never leak.  The real error is
+        captured in the ``schema_read_failed`` structured log with
+        ``exc_info=True``.
+        """
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
         (work_dir / "corrupt.parquet").write_bytes(b"\x00\x01\x02\x03\xff\xfe\xfd")
         resp = client.get("/api/schema", params={"path": "corrupt.parquet"})
         assert resp.status_code == 500
-        assert "Failed to read schema" in resp.json()["detail"]
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
 
 
 class TestGetSchemaEmptyJsonl:

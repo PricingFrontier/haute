@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-
-from tests._git_helpers import git_run as _git, init_repo as _init_repo
-
 from fastapi import HTTPException
+
+from tests._git_helpers import git_run as _git
+from tests._git_helpers import init_repo as _init_repo
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -437,15 +437,26 @@ class TestHandleGitErrorStatusCodes:
     """_handle_git_error must return 400 for GitError and 403 for GitGuardrailError."""
 
     def test_git_error_raises_400(self) -> None:
+        """Phase 1C #11: ``GitError`` messages may contain raw git stderr
+        (absolute paths, remote URLs, SSL errors, credentials) so they
+        are no longer echoed to the HTTP body.  The handler returns a
+        400 with the sanitized ``_INTERNAL_ERROR_DETAIL`` constant; the
+        full exception text stays in the structured log.
+        """
         from haute._git import GitError
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
         from haute.routes.git import _handle_git_error
 
         with pytest.raises(HTTPException) as exc_info:
             _handle_git_error(GitError("bad ref"))
         assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == "bad ref"
+        assert exc_info.value.detail == _INTERNAL_ERROR_DETAIL
 
     def test_guardrail_error_raises_403(self) -> None:
+        """Guardrail errors are hand-written, user-facing, and preserved
+        verbatim (they describe intentional blocks rather than internal
+        failures).
+        """
         from haute._git import GitGuardrailError
         from haute.routes.git import _handle_git_error
 
@@ -453,65 +464,6 @@ class TestHandleGitErrorStatusCodes:
             _handle_git_error(GitGuardrailError("protected branch"))
         assert exc_info.value.status_code == 403
         assert exc_info.value.detail == "protected branch"
-
-
-# ---------------------------------------------------------------------------
-# _dc_to_pydantic conversion
-# ---------------------------------------------------------------------------
-
-
-class TestDcToPydantic:
-    """_dc_to_pydantic should convert a dataclass to a Pydantic model."""
-
-    def test_converts_simple_dataclass(self) -> None:
-        import dataclasses
-
-        from pydantic import BaseModel
-
-        from haute.routes.git import _dc_to_pydantic
-
-        @dataclasses.dataclass
-        class SimpleDC:
-            name: str
-            count: int
-
-        class SimpleModel(BaseModel):
-            name: str
-            count: int
-
-        dc_inst = SimpleDC(name="test", count=42)
-        result = _dc_to_pydantic(dc_inst, SimpleModel)
-        assert isinstance(result, SimpleModel)
-        assert result.name == "test"
-        assert result.count == 42
-
-    def test_converts_nested_dataclass(self) -> None:
-        import dataclasses
-
-        from pydantic import BaseModel
-
-        from haute.routes.git import _dc_to_pydantic
-
-        @dataclasses.dataclass
-        class Inner:
-            value: str
-
-        @dataclasses.dataclass
-        class Outer:
-            items: list[Inner]
-
-        class InnerModel(BaseModel):
-            value: str
-
-        class OuterModel(BaseModel):
-            items: list[InnerModel]
-
-        dc_inst = Outer(items=[Inner(value="a"), Inner(value="b")])
-        result = _dc_to_pydantic(dc_inst, OuterModel)
-        assert isinstance(result, OuterModel)
-        assert len(result.items) == 2
-        assert result.items[0].value == "a"
-        assert result.items[1].value == "b"
 
 
 # ---------------------------------------------------------------------------
@@ -551,9 +503,8 @@ class TestGitErrorEndpointResponses:
         body: dict | None,
     ) -> None:
         """Patch the underlying _git function to raise a GitError and verify 400."""
-        from haute._git import GitError
-
         import haute.routes.git as git_routes
+        from haute._git import GitError
 
         monkeypatch.setattr(
             git_routes,
@@ -570,8 +521,12 @@ class TestGitErrorEndpointResponses:
         else:
             raise AssertionError(f"Unknown method {method}")
 
+        # Phase 1C #11: raw GitError detail is sanitized to a constant
+        # before reaching the HTTP body.  Full detail is logged.
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
         assert res.status_code == 400
-        assert res.json()["detail"] == "invalid operation"
+        assert res.json()["detail"] == _INTERNAL_ERROR_DETAIL
 
     @pytest.mark.parametrize(
         "git_func,method,path,body",
@@ -588,9 +543,8 @@ class TestGitErrorEndpointResponses:
         body: dict | None,
     ) -> None:
         """Patch the underlying _git function to raise a GitGuardrailError and verify 403."""
-        from haute._git import GitGuardrailError
-
         import haute.routes.git as git_routes
+        from haute._git import GitGuardrailError
 
         monkeypatch.setattr(
             git_routes,

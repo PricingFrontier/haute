@@ -2,30 +2,36 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 import pytest
 
-from haute.codegen import (
+from haute._codegen_builders import (
     _build_extra_kwargs,
     _build_params,
-    _generate_node_code,
-    _instance_to_code,
     _is_absolute_path,
     _make_passthrough_builder,
-    _node_to_code,
     _portable_path_expr,
     _sanitize_description,
-    _submodel_node_to_code,
     _wrap_user_code,
+)
+from haute.codegen import (
+    _generate_node_code,
+    _instance_to_code,
+    _node_to_code,
+    _submodel_node_to_code,
     graph_to_code,
     graph_to_code_multi,
 )
-from haute.parser import parse_pipeline_source
 from tests.conftest import (
     compile_node_code as _compile_node_code,
+)
+from tests.conftest import (
     make_graph as _g,
+)
+from tests.conftest import (
     make_node as _n,
 )
 
@@ -215,7 +221,6 @@ class TestNodeToCode:
         code = _node_to_code(node)
         assert "df = pl.scan_parquet" in code
         assert "return df" in code
-        assert "# -- user code --" not in code
         _compile_node_code(code)
 
     def test_transform_with_code(self):
@@ -247,17 +252,20 @@ class TestNodeToCode:
         assert "return upstream" in code
         _compile_node_code(code)
 
-    def test_transform_without_code_no_sources_returns_df(self):
+    def test_transform_without_code_no_sources_raises(self):
+        """Post Item #22: an orphan polars transform (no code, no inputs)
+        is incoherent — must raise ``ConfigError`` rather than emit
+        ``return df`` where ``df`` is unbound."""
+        from haute.errors import ConfigError
+
         node = _n(
             {
                 "id": "t",
                 "data": {"label": "Pass", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node, source_names=[])
-        assert "def Pass(df: pl.LazyFrame)" in code
-        assert "return df" in code
-        _compile_node_code(code)
+        with pytest.raises(ConfigError):
+            _node_to_code(node, source_names=[])
 
     def test_output_with_fields(self):
         node = _n(
@@ -613,10 +621,10 @@ class TestLiveSwitchCodegen:
         full_code = (
             "import polars as pl\nimport haute\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(path="a.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/live_src.json")\n'
             "def live_src() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("a.parquet")\n\n'
-            '@pipeline.data_source(path="b.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/batch_src.json")\n'
             "def batch_src() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("b.parquet")\n\n'
             f"{code}\n"
@@ -777,11 +785,15 @@ class TestSelectedColumnsCodegen:
         assert "selected_columns=" in code
         # .select() should NOT be in the function body (only in decorator)
         lines = code.split("\n")
-        body_lines = [l for l in lines if not l.startswith("@")]
-        assert not any(".select(" in l for l in body_lines)
+        body_lines = [line for line in lines if not line.startswith("@")]
+        assert not any(".select(" in line for line in body_lines)
 
     def test_transform_no_decorator_kwarg_when_empty(self):
-        """Transform without selected_columns uses bare @pipeline.polars."""
+        """Transform without selected_columns uses ``@pipeline.polars`` with no
+        ``selected_columns=`` kwarg.  Contract kwargs are a separate adoption
+        (see :mod:`tests.test_column_contracts_adoption`) and may appear, but
+        there must be no ``selected_columns=`` attribute when the config lacks it.
+        """
         node = _n(
             {
                 "id": "t1",
@@ -792,8 +804,11 @@ class TestSelectedColumnsCodegen:
                 },
             }
         )
-        code = _node_to_code(node, [])
-        assert code.startswith("@pipeline.polars\n")
+        # Post Item #22: empty code + no inputs raises, so pass a source.
+        code = _node_to_code(node, ["upstream"])
+        first_line = code.splitlines()[0]
+        assert first_line.startswith("@pipeline.polars"), first_line
+        assert "selected_columns" not in first_line
 
 
 class TestCodegenEdgeCases:
@@ -852,7 +867,9 @@ class TestCodegenEdgeCases:
                 },
             }
         )
-        code = _node_to_code(node)
+        # Post Item #22: a polars node with no code requires at least one
+        # source to be wired (otherwise it raises); pass one here.
+        code = _node_to_code(node, source_names=["upstream"])
         assert "def EmptyConfig(" in code
         _compile_node_code(code)
 
@@ -1631,7 +1648,7 @@ def {func_name}({params}) -> pl.LazyFrame:
             pytest.param(
                 "optimiserApply",
                 "optimiser_apply",
-                {"artifact_path": "models/opt", "version": "3"},
+                {"sourceType": "file", "artifact_path": "models/opt", "version": "3"},
                 "apply_optimisation",
                 id="optimiser_apply",
             ),
@@ -1728,18 +1745,25 @@ def {func_name}({params}) -> pl.LazyFrame:
 
 
 # ---------------------------------------------------------------------------
-# E10: Unknown node type logs warning and falls back to transform
+# E10: Missing codegen builder fails loudly (no silent fallback)
 # ---------------------------------------------------------------------------
 
 
 class TestUnknownNodeTypeFallback:
-    def test_unknown_type_logs_warning(self) -> None:
-        """When a node type has no registered builder, log a warning and fall back to transform."""
-        from unittest.mock import patch
+    """Post-Package-4B: codegen dispatch reads a unified registry that must
+    have an entry for every ``NodeType``.  A missing entry is a registration
+    bug and raises ``KeyError`` — the old silent fallback to ``_gen_transform``
+    was removed because it hid misregistered types (CLAUDE.md: fail loudly)."""
 
-        from haute.codegen import _CODEGEN_BUILDERS
+    def test_missing_codegen_builder_raises_keyerror(self) -> None:
+        """Temporarily evict a NodeType from the registry to simulate a
+        missing registration; dispatch must raise KeyError identifying the
+        offending NodeType, not silently emit transform code."""
+        import pytest as _pytest
 
-        # Use a valid nodeType but temporarily remove its builder to trigger fallback
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
+
         node = _n(
             {
                 "id": "n_unknown",
@@ -1751,38 +1775,34 @@ class TestUnknownNodeTypeFallback:
             }
         )
 
-        original_builder = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger") as mock_logger:
-                code = _node_to_code(node, source_names=["src"])
-
-            mock_logger.warning.assert_any_call(
-                "unknown_node_type_fallback",
-                node_type="banding",
-                node_id="n_unknown",
-                label="Mystery",
-            )
-            # Falls back to transform — should still produce valid code
-            assert "def Mystery" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _node_to_code(node, source_names=["src"])
         finally:
-            if original_builder is not None:
-                _CODEGEN_BUILDERS["banding"] = original_builder
+            entry.codegen = saved
 
 
 # ---------------------------------------------------------------------------
-# Gap 1: Unknown node type fallback produces compilable transform code
+# Gap 1: Missing codegen builder — dispatch raises instead of silently
+#       generating a transform.  Deployed pipelines with future node types
+#       must fail at codegen time, not at import time of the generated file.
 # ---------------------------------------------------------------------------
 
 
 class TestUnknownNodeTypeFallbackCode:
-    """Catch: if fallback silently generates broken code for unknown types,
-    deployed pipelines with future node types would fail at import time."""
+    """The old fallback-to-transform was a silent workaround for the two-table
+    drift era.  With a unified registry and one entry per NodeType, a missing
+    codegen builder is a registration bug; raise immediately."""
 
-    def test_fallback_generates_compilable_transform_with_code(self):
-        """Unknown type with user code still wraps it like a polars transform."""
-        from unittest.mock import patch
-        from haute.codegen import _CODEGEN_BUILDERS
+    def test_missing_builder_raises_with_code(self):
+        """Missing registration raises even when user code is provided."""
+        import pytest as _pytest
+
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
 
         node = _n(
             {
@@ -1794,22 +1814,21 @@ class TestUnknownNodeTypeFallbackCode:
                 },
             }
         )
-        saved = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger"):
-                code = _generate_node_code(node, source_names=["upstream"])
-            assert "def FutureNode(upstream: pl.LazyFrame)" in code
-            assert "filter" in code
-            assert "return df" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _generate_node_code(node, source_names=["upstream"])
         finally:
-            if saved is not None:
-                _CODEGEN_BUILDERS["banding"] = saved
+            entry.codegen = saved
 
-    def test_fallback_without_code_returns_first_source(self):
-        """Unknown type with no user code produces passthrough returning first source."""
-        from unittest.mock import patch
-        from haute.codegen import _CODEGEN_BUILDERS
+    def test_missing_builder_raises_without_code(self):
+        """Missing registration raises regardless of user code presence."""
+        import pytest as _pytest
+
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
 
         node = _n(
             {
@@ -1821,15 +1840,14 @@ class TestUnknownNodeTypeFallbackCode:
                 },
             }
         )
-        saved = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger"):
-                code = _generate_node_code(node, source_names=["src"])
-            assert "return src" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _generate_node_code(node, source_names=["src"])
         finally:
-            if saved is not None:
-                _CODEGEN_BUILDERS["banding"] = saved
+            entry.codegen = saved
 
 
 # ---------------------------------------------------------------------------
@@ -1868,49 +1886,48 @@ class TestWrapUserCodeIndentBehavior:
 
 
 class TestSanitizeDescription:
-    """Catch: descriptions containing triple quotes, trailing backslashes,
-    or trailing double-quotes would break the generated docstring, producing
-    a SyntaxError at pipeline import time."""
+    """Descriptions containing triple quotes, trailing backslashes, or
+    trailing double-quotes must not break the generated docstring.
 
-    def test_triple_quotes_replaced(self):
-        """Triple quotes inside description would close the docstring early."""
+    Post Wave 9D #122: the sanitiser backslash-escapes every ``\\`` and
+    every ``"`` and prepends a leading ``\\n`` when needed to neutralise
+    ``inspect.cleandoc``'s indent-stripping.  The result is that
+    ``\"\"\"{sanitize(desc)}\"\"\"`` is always valid Python AND
+    round-trips via ``ast.get_docstring`` for arbitrary user input.
+    """
+
+    @staticmethod
+    def _assert_roundtrip(description: str) -> None:
+        result = _sanitize_description(description)
+        code = f'def f():\n    """{result}"""\n    pass'
+        compile(code, "<test>", "exec")
+        tree = ast.parse(code)
+        assert (ast.get_docstring(tree.body[0]) or "") == description, (
+            f"round-trip failed for {description!r}: docstring={ast.get_docstring(tree.body[0])!r}"
+        )
+
+    def test_triple_quotes_escaped(self):
+        """Triple quotes inside description never appear as a run in output."""
         result = _sanitize_description('hello """world"""')
         assert '"""' not in result
-        assert "'''" in result
-        # Must produce valid docstring
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('hello """world"""')
 
     def test_trailing_double_quote(self):
-        """A trailing " merges with closing triple-quote to form invalid syntax."""
-        result = _sanitize_description('ends with quote"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('ends with quote"')
 
     def test_trailing_multiple_double_quotes(self):
-        """Multiple trailing " chars each need escaping."""
-        result = _sanitize_description('danger""')
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('danger""')
 
     def test_trailing_backslash(self):
-        """A trailing backslash would escape the closing quote."""
-        result = _sanitize_description("ends with backslash\\")
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip("ends with backslash\\")
 
     def test_trailing_backslash_before_quotes(self):
-        r"""Odd backslashes before trailing quotes: ``foo\"`` would absorb escape."""
-        result = _sanitize_description('backslash then quote\\"')
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('backslash then quote\\"')
 
     def test_only_triple_quotes(self):
-        """Description that is nothing but triple quotes."""
         result = _sanitize_description('"""')
         assert '"""' not in result
-        code = f'def f():\n    """{result}"""\n    pass'
-        compile(code, "<test>", "exec")
+        self._assert_roundtrip('"""')
 
     def test_empty_string(self):
         result = _sanitize_description("")
@@ -2174,7 +2191,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "it's a node", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
         assert "def " in code
 
@@ -2185,7 +2202,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": 'say "hello"', "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_label_with_newline(self):
@@ -2196,7 +2213,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "line1\nline2", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_label_with_unicode_emoji(self):
@@ -2206,7 +2223,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "price_update_\u2705", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
 
     def test_label_all_special_chars(self):
@@ -2217,7 +2234,7 @@ class TestSpecialCharacterLabels:
                 "data": {"label": "!@#$%", "nodeType": "polars", "config": {}},
             }
         )
-        code = _node_to_code(node)
+        code = _node_to_code(node, source_names=["upstream"])
         # Must have a def with some valid identifier
         assert "def " in code
         _compile_node_code(code)
@@ -2564,14 +2581,22 @@ class TestGenTransformEdgeCases:
                 },
             }
         )
-        code = _node_to_code(node, source_names=[])
-        assert code.startswith("@pipeline.polars\n")
+        # Post Item #22: empty code + no sources raises, so supply one.
+        code = _node_to_code(node, source_names=["upstream"])
+        # ``@pipeline.polars`` decorator with no ``selected_columns=``.
+        # Contract kwargs may appear (see test_column_contracts_adoption),
+        # but the ``selected_columns=`` attribute must be absent when the
+        # node config lacks it.
+        first_line = code.splitlines()[0]
+        assert first_line.startswith("@pipeline.polars"), first_line
+        assert "selected_columns" not in first_line
         _compile_node_code(code)
 
 
 class TestGenLiveSwitchRoundTrip:
     def test_round_trip_preserves_scenario_map(self, tmp_path):
         import json
+
         from haute.parser import parse_pipeline_file
 
         scenario_map = {"src_a": "live", "src_b": "test_batch"}
@@ -2592,10 +2617,10 @@ class TestGenLiveSwitchRoundTrip:
         full_code = (
             "import polars as pl\nimport haute\n"
             'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_source(path="a.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/src_a.json")\n'
             "def src_a() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("a.parquet")\n\n'
-            '@pipeline.data_source(path="b.parquet")\n'
+            '@pipeline.data_source(config="config/data_source/src_b.json")\n'
             "def src_b() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("b.parquet")\n\n'
             f"{code}\n"
@@ -2711,13 +2736,18 @@ class TestGraphToCodeEdgeCases:
         )
         code = graph_to_code(graph, preamble="MY_CONST = 42")
         lines = code.splitlines()
-        preamble_idx = next(i for i, l in enumerate(lines) if "MY_CONST" in l)
-        pipeline_idx = next(i for i, l in enumerate(lines) if "haute.Pipeline(" in l)
+        preamble_idx = next(i for i, line in enumerate(lines) if "MY_CONST" in line)
+        pipeline_idx = next(i for i, line in enumerate(lines) if "haute.Pipeline(" in line)
         assert preamble_idx < pipeline_idx
 
-    def test_unknown_node_type_falls_back_gracefully(self):
-        from unittest.mock import patch
-        from haute.codegen import _CODEGEN_BUILDERS
+    def test_unknown_node_type_raises_rather_than_falling_back(self):
+        """Post-Package-4B: missing codegen builder is a registration bug.
+        The old silent fallback to ``_gen_transform`` was removed because it
+        masked misregistered NodeTypes — see TestUnknownNodeTypeFallback."""
+        import pytest as _pytest
+
+        from haute._registry import NODE_REGISTRY
+        from haute._types import NodeType
 
         node = _n(
             {
@@ -2729,21 +2759,14 @@ class TestGraphToCodeEdgeCases:
                 },
             }
         )
-        saved = _CODEGEN_BUILDERS.pop("banding", None)
+        entry = NODE_REGISTRY[NodeType.BANDING]
+        saved = entry.codegen
+        entry.codegen = None
         try:
-            with patch("haute.codegen.logger") as mock_logger:
-                code = _generate_node_code(node, source_names=["src"])
-            mock_logger.warning.assert_any_call(
-                "unknown_node_type_fallback",
-                node_type="banding",
-                node_id="u",
-                label="FutureType",
-            )
-            assert "def FutureType(src: pl.LazyFrame)" in code
-            _compile_node_code(code)
+            with _pytest.raises(KeyError, match="banding"):
+                _generate_node_code(node, source_names=["src"])
         finally:
-            if saved is not None:
-                _CODEGEN_BUILDERS["banding"] = saved
+            entry.codegen = saved
 
 
 # ---------------------------------------------------------------------------

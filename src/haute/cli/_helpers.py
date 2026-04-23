@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
-import sys
+
+# ``subprocess`` is intentionally imported at module scope so tests enforcing
+# the cascade-free contract (codebase-review #79) can patch it and assert
+# ``subprocess.call`` / ``subprocess.Popen`` are never invoked. The runtime
+# code does not use subprocess anywhere in this module —
+# :func:`_open_browser` delegates to :mod:`webbrowser` exclusively.
+import subprocess  # noqa: F401
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,113 +25,170 @@ logger = get_logger(component="cli")
 
 
 # ---------------------------------------------------------------------------
-# Pipeline file resolution — single source of truth for all CLI commands
+# Shared Click option help strings
+# ---------------------------------------------------------------------------
+#
+# A single source of truth for option help that appears on more than one
+# command — without this the wording drifts over time and tooling that
+# parses ``--help`` output has to special-case each command.
+#
+# Any command that accepts ``--endpoint-suffix`` MUST use this constant.
+
+ENDPOINT_SUFFIX_HELP = 'Suffix appended to endpoint name (e.g. "-staging").'
+
+
+# ---------------------------------------------------------------------------
+# Model name resolution — CLI > haute.toml > error
 # ---------------------------------------------------------------------------
 
 
-def resolve_pipeline_file(explicit_path: str | None = None) -> Path:
-    """Resolve the pipeline file to use.
+def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
+    """Resolve the model name for a CLI command.
 
-    Priority:
+    Encodes the precedence rule used across every CLI command that accepts
+    a model name:
 
-    1. Explicit path from CLI argument
-    2. ``[project].pipeline`` from ``haute.toml``
-    3. Auto-discovery via :func:`~haute.discovery.discover_pipelines`
-    4. Default to ``main.py``
+        CLI flag  >  haute.toml [deploy].model_name  >  error
 
-    Raises :class:`SystemExit` if the resolved file doesn't exist.
+    Parameters
+    ----------
+    cli_arg:
+        The value supplied on the command line (``--model-name`` flag or
+        positional argument).  ``None`` means no CLI value was given.
+    toml_path:
+        Path to a ``haute.toml`` file to read ``[deploy].model_name`` from.
+        ``None`` means no project config is available.
+
+    Returns
+    -------
+    str
+        The resolved model name.
+
+    Raises
+    ------
+    ValueError
+        When *cli_arg* is ``None`` and no usable TOML source is available
+        — either *toml_path* is ``None``, or the TOML file lacks a
+        ``[deploy].model_name`` entry.  The message always names both
+        user-facing fixes (``--model-name`` flag or
+        ``[deploy].model_name`` in ``haute.toml``).
+    FileNotFoundError
+        When *toml_path* is given but does not exist — a missing config
+        file is a programmer bug (the caller passed a wrong path), not a
+        fallback to auto-discovery.
     """
-    if explicit_path:
-        p = Path(explicit_path)
-    else:
-        # Try haute.toml first
-        toml_path = Path.cwd() / "haute.toml"
-        if toml_path.exists():
-            import tomllib
+    if cli_arg is not None and cli_arg != "":
+        return cli_arg
 
-            with open(toml_path, "rb") as f:
-                data = tomllib.load(f)
-            configured = data.get("project", {}).get("pipeline")
-            if configured:
-                p = Path(configured)
-            else:
-                p = _discover_or_default()
-        else:
-            p = _discover_or_default()
+    if toml_path is None:
+        raise ValueError(
+            "model_name is required — pass --model-name on the command line "
+            "or run inside a Haute project with [deploy].model_name set in "
+            "haute.toml."
+        )
 
-    if not p.exists():
-        click.echo(f"Error: Pipeline file not found: {p}", err=True)
-        raise SystemExit(1)
-    return p
+    if not toml_path.exists():
+        raise FileNotFoundError(
+            f"haute.toml not found at {toml_path}. "
+            "Pass --model-name explicitly or cd to a Haute project."
+        )
 
+    import tomllib
 
-def _discover_or_default() -> Path:
-    """Try :func:`~haute.discovery.discover_pipelines`, fall back to ``main.py``."""
-    from haute.discovery import discover_pipelines
+    with open(toml_path, "rb") as fh:
+        data = tomllib.load(fh)
 
-    found = discover_pipelines()
-    return found[0] if found else Path("main.py")
+    deploy_section = data.get("deploy")
+    if not isinstance(deploy_section, dict):
+        raise ValueError(
+            f"haute.toml at {toml_path} has no [deploy] section. "
+            "Add a [deploy] block with model_name, or pass --model-name."
+        )
+
+    model_name = deploy_section.get("model_name")
+    if not model_name:
+        raise ValueError(
+            f"haute.toml at {toml_path} has no [deploy].model_name. "
+            "Add model_name under [deploy], or pass --model-name."
+        )
+
+    return str(model_name)
 
 
 def _open_browser(url: str) -> None:
-    """Open *url* in the default browser, suppressing noisy stderr from gio."""
+    """Open *url* in the default browser.
+
+    Delegates to :func:`webbrowser.open` which already handles platform
+    detection internally.  When the browser cannot be launched the URL is
+    printed to stdout so the user can paste it themselves — that is the
+    only sensible fallback.
+    """
     try:
-        if sys.platform == "linux":
-            rc = subprocess.call(
-                ["xdg-open", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if rc != 0:
-                webbrowser.open(url)
-        elif sys.platform == "darwin":
-            subprocess.Popen(
-                ["open", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            webbrowser.open(url)
-    except Exception:
-        webbrowser.open(url)
+        opened = webbrowser.open(url)
+    except Exception as exc:
+        click.echo(
+            f"Could not open browser ({exc}). Open this URL manually: {url}",
+        )
+        return
+    if not opened:
+        click.echo(f"Could not open browser. Open this URL manually: {url}")
 
 
 def _node_env() -> dict[str, str] | None:
-    """Return an env dict with Node.js on PATH, or *None* if already available."""
+    """Return ``None`` when Node is on PATH, or raise if it's missing.
+
+    Node is required for the dev-mode frontend.  When :func:`shutil.which`
+    finds ``node`` nothing extra is needed and ``None`` is returned (the
+    caller then inherits the ambient environment).  When Node is absent
+    this function fails loudly with a clear install hint rather than
+    silently injecting the default MSI path — that silent fallback only
+    works on a specific machine layout and hides the real problem (Node
+    isn't installed) from the user.
+    """
     if shutil.which("node"):
-        return None  # already on PATH, no override needed
-    if sys.platform == "win32":
-        nodejs_dir = Path(r"C:\Program Files\nodejs")
-        if (nodejs_dir / "node.exe").exists():
-            env = os.environ.copy()
-            env["PATH"] = f"{nodejs_dir};{env.get('PATH', '')}"
-            return env
-    return None
+        return None
+    msg = (
+        "Node.js is required but was not found on PATH. "
+        "Install Node.js from https://nodejs.org and restart your terminal."
+    )
+    raise click.ClickException(msg)
 
 
 def _npm() -> str:
-    """Return the npm executable, resolving common Windows install paths."""
+    """Return the npm executable from PATH, or fail loud if it's missing.
+
+    Same contract as :func:`_node_env`: no hardcoded Windows install path
+    fallback.  If :func:`shutil.which` can't find ``npm`` the user gets a
+    clear install hint rather than a silent guess at a specific machine
+    layout that hides the real problem (npm isn't on PATH).
+    """
     found = shutil.which("npm")
     if found:
         return found
-    if sys.platform == "win32":
-        candidate = Path(r"C:\Program Files\nodejs\npm.cmd")
-        if candidate.exists():
-            return str(candidate)
     msg = (
         "npm not found on PATH. Install Node.js from https://nodejs.org and restart your terminal."
     )
     raise click.ClickException(msg)
 
 
-def _find_frontend_dir() -> Path | None:
-    """Walk up from cwd looking for a frontend/ directory with package.json."""
+def _find_frontend_dir() -> Path:
+    """Walk up from cwd looking for a ``frontend/`` dir with ``package.json``.
+
+    Raises :class:`FileNotFoundError` when no such directory exists anywhere
+    in the ancestor chain.  Callers are expected to catch the exception
+    when a missing frontend is acceptable (e.g. production mode serves
+    built static files).  Making the absence explicit removes the silent
+    ``None`` that previously forced every call-site to implement its own
+    "dev-vs-prod" check.
+    """
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
         candidate = parent / "frontend"
         if (candidate / "package.json").exists():
             return candidate
-    return None
+    raise FileNotFoundError(
+        f"No frontend/ directory with package.json found in {cwd} or any parent."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +225,7 @@ def resolve_transport(config: DeployConfig) -> TransportInfo:
     available) are populated from ``config.ci``.  Raises ``SystemExit``
     if the staging URL is required but missing.
     """
-    from haute.deploy._container import _CONTAINER_BASED_TARGETS
+    from haute.deploy._config import _CONTAINER_BASED_TARGETS
 
     if config.target == "databricks":
         return TransportInfo(kind="databricks")
@@ -182,59 +243,3 @@ def resolve_transport(config: DeployConfig) -> TransportInfo:
         return TransportInfo(kind="http", staging_url=staging_url, prod_url=prod_url)
 
     return TransportInfo(kind="unsupported")
-
-
-def _load_deploy_config(
-    *,
-    pipeline_file: str | None = None,
-    model_name: str | None = None,
-    require_toml: bool = False,
-) -> DeployConfig:
-    """Load a :class:`DeployConfig` from ``haute.toml`` or CLI arguments.
-
-    Centralises the repeated pattern of:
-
-    1. Check if ``haute.toml`` exists in the current working directory.
-    2. If it does, load a :class:`DeployConfig` from it.
-    3. Otherwise, fall back to constructing one from CLI arguments
-       (only when *require_toml* is ``False`` and *pipeline_file* is given).
-
-    Parameters
-    ----------
-    pipeline_file:
-        Path to the pipeline file (CLI argument fallback).
-    model_name:
-        Model name (CLI argument fallback).
-    require_toml:
-        If ``True``, exit with an error when ``haute.toml`` is missing
-        instead of falling back to CLI arguments.
-
-    Returns
-    -------
-    DeployConfig
-        Loaded (or constructed) deploy configuration.
-
-    Raises
-    ------
-    SystemExit
-        When no config source is available.
-    """
-    from haute.deploy._config import DeployConfig
-
-    toml_path = Path.cwd() / "haute.toml"
-
-    if toml_path.exists():
-        config = DeployConfig.from_toml(toml_path)
-        click.echo("  \u2713 Loaded config from haute.toml")
-        return config
-
-    if require_toml:
-        click.echo("Error: No haute.toml found.", err=True)
-        raise SystemExit(1)
-
-    # No haute.toml — resolve pipeline file using the shared strategy
-    resolved = resolve_pipeline_file(pipeline_file)
-    return DeployConfig(
-        pipeline_file=resolved,
-        model_name=model_name or resolved.stem,
-    )

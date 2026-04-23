@@ -1,12 +1,12 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from "react"
-import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
+import { useState, useCallback } from "react"
+import type { OnUpdateConfig } from "./editors"
 import { trainModel, estimateTrainingRam } from "../api/client"
-import type { TrainEstimate } from "../api/client"
-import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
+import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useToastStore from "../stores/useToastStore"
+import useGraphStore from "../stores/useGraphStore"
 import { configField } from "../utils/configField"
 import { buildGraph } from "../utils/buildGraph"
+import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { FeatureAndAlgorithmConfig } from "./modelling/FeatureAndAlgorithmConfig"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
@@ -14,81 +14,62 @@ import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
 import { GLMFactorConfig } from "./modelling/GLMFactorConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
+import { useGraph } from "./useGraph"
 
 type ModellingConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
-  allNodes: SimpleNode[]
-  edges: SimpleEdge[]
-  submodels?: Record<string, unknown>
-  preamble?: string
 }
 
 import type { TrainResult, TrainProgress } from "../stores/useNodeResultsStore"
 
-export default function ModellingConfig({ config, onUpdate, upstreamColumns, allNodes, edges, submodels, preamble }: ModellingConfigProps) {
+export default function ModellingConfig({ config, onUpdate, upstreamColumns }: ModellingConfigProps) {
+  const { allNodes, edges, submodels, preamble } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
   const nodeId = config._nodeId as string
   const trainJob = useNodeResultsStore((s) => s.trainJobs[nodeId])
   const cachedResult = useNodeResultsStore((s) => s.trainResults[nodeId])
   const startTrainJob = useNodeResultsStore((s) => s.startTrainJob)
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
   const [submitting, setSubmitting] = useState(false)
   const training = !!trainJob
   const trainProgress: TrainProgress | null = trainJob?.progress ?? null
   const trainResult: TrainResult | null = cachedResult?.result ?? null
 
-  // Staleness detection
-  const currentConfigHash = useMemo(() => hashConfig(config), [config])
-  const isStale = !!cachedResult && cachedResult.configHash !== currentConfigHash
-
-  // ── RAM + VRAM estimate (re-fetched when GPU is toggled) ──
-  const [ramEstimate, setRamEstimate] = useState<TrainEstimate | null>(null)
-  const [ramEstimateLoading, setRamEstimateLoading] = useState(false)
-  const [ramEstimateError, setRamEstimateError] = useState<string | null>(null)
-  const estimateAbortRef = useRef<AbortController | null>(null)
-  const addToast = useToastStore((s) => s.addToast)
-  // Ref to capture latest graph inputs without re-triggering the effect
-  const graphInputsRef = useRef({ allNodes, edges, submodels, preamble })
-  graphInputsRef.current = { allNodes, edges, submodels, preamble }
-
-  // Track config that affects the estimate so it re-fetches
-  const isGpu = String((config.params as Record<string, unknown>)?.task_type ?? "").toUpperCase() === "GPU"
-  const excludeCount = (configField<string[]>(config, "exclude", [])).length
-
-  useEffect(() => {
-    if (!nodeId) return
-    // Cancel any in-flight estimate
-    estimateAbortRef.current?.abort()
-    const controller = new AbortController()
-    estimateAbortRef.current = controller
-
-    setRamEstimateLoading(true)
-    setRamEstimate(null)
-    setRamEstimateError(null)
-
-    const { allNodes: n, edges: e, submodels: s, preamble: p } = graphInputsRef.current
-    estimateTrainingRam(
-      { graph: buildGraph(n, e, s, p), node_id: nodeId, source: useSettingsStore.getState().activeSource },
-      { signal: controller.signal },
-    )
-      .then((est) => {
-        if (!controller.signal.aborted) setRamEstimate(est)
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          const msg = err instanceof Error ? err.message : String(err)
-          setRamEstimateError(msg)
-          addToast("warning", `RAM estimate failed: ${msg}`)
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setRamEstimateLoading(false)
-      })
-
-    return () => controller.abort()
-  }, [nodeId, isGpu, excludeCount, addToast])
+  // ── RAM + VRAM estimate, via the shared config-estimate hook ──
+  // The hook owns the AbortController, loading/error state, and toast
+  // emission; this panel only tells it *what* to fetch.
+  const estimateEndpoint = useCallback(
+    (_payload: void, { signal }: { signal: AbortSignal }) =>
+      estimateTrainingRam(
+        {
+          graph: buildGraph(allNodes, edges, submodels, preamble),
+          node_id: nodeId,
+          source: activeSource,
+        },
+        { signal },
+      ),
+    [allNodes, edges, submodels, preamble, nodeId, activeSource],
+  )
+  const {
+    configHash: currentConfigHash,
+    isStale,
+    estimate: ramEstimate,
+    loading: ramEstimateLoading,
+    error: ramEstimateError,
+  } = useStaleConfigEstimate(
+    nodeId,
+    config,
+    cachedResult,
+    estimateEndpoint,
+    {
+      toastLabel: "RAM estimate failed",
+      estimateKey: `${activeSource}:${structuralVersion}`,
+    },
+  )
 
   // Collapse state from UI store (persisted)
   const featuresOpen = useSettingsStore((s) => s.isSectionOpen("modelling.features"))
@@ -157,10 +138,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns, all
           <button
             key={algo.id}
             onClick={() => onUpdate("algorithm", algo.id)}
-            className="w-full flex items-start gap-3 px-3 py-3 rounded-lg text-left transition-colors"
-            style={{ background: "var(--chrome-hover)", border: "1px solid var(--border)" }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-soft)" }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--chrome-hover)" }}
+            className="w-full flex items-start gap-3 px-3 py-3 rounded-lg text-left transition-colors algorithm-gateway-btn"
           >
             <div className="min-w-0">
               <div className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>{algo.name}</div>

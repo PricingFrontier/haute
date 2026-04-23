@@ -21,6 +21,7 @@ import type { Node, Edge } from "@xyflow/react"
 // ── Store imports ────────────────────────────────────────────────
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useSettingsStore from "../../stores/useSettingsStore.ts"
 
@@ -40,7 +41,6 @@ function resetStores() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    graphVersion: 0,
   })
   useUIStore.setState({
     paletteOpen: true,
@@ -51,10 +51,18 @@ function resetStores() {
     submodelDialog: null,
     renameDialog: null,
     syncBanner: null,
-    dirty: false,
     nodePanelWidth: 0,
     hoveredNodeId: null,
     nodeSearchOpen: false,
+  })
+  useGraphStore.setState({
+    nodes: [],
+    edges: [],
+    preamble: "",
+    lastSavedSnapshot: null,
+    undoStack: [],
+    redoStack: [],
+    structuralVersion: 0,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
@@ -347,16 +355,6 @@ describe("3. Very large graph (500 nodes, 1000 edges)", () => {
     expect(elapsed).toBeLessThan(1000)
   })
 
-  it("bumpGraphVersion 500 times does not hang", () => {
-    const start = performance.now()
-    for (let i = 0; i < 500; i++) {
-      useNodeResultsStore.getState().bumpGraphVersion()
-    }
-    const elapsed = performance.now() - start
-
-    expect(useNodeResultsStore.getState().graphVersion).toBe(500)
-    expect(elapsed).toBeLessThan(500)
-  })
 })
 
 // ══════════════════════════════════════════════════════════════════
@@ -412,12 +410,12 @@ describe("4. Rapid undo/redo", () => {
   })
 
   it("100 setNodes calls then 100 undos produces consistent state", async () => {
-    const useUndoRedo = (await import("../../hooks/useUndoRedo.ts")).default
+    const useGraphCanvasState = (await import("../../hooks/useGraphCanvasState.ts")).default
 
     const initialNodes = [makeNode("n0")]
     const initialEdges: Edge[] = []
 
-    const { result } = renderHook(() => useUndoRedo(initialNodes, initialEdges))
+    const { result } = renderHook(() => useGraphCanvasState(initialNodes, initialEdges))
 
     // Make 100 changes
     for (let i = 1; i <= 100; i++) {
@@ -455,9 +453,9 @@ describe("4. Rapid undo/redo", () => {
   })
 
   it("undo on empty history is a no-op", async () => {
-    const useUndoRedo = (await import("../../hooks/useUndoRedo.ts")).default
+    const useGraphCanvasState = (await import("../../hooks/useGraphCanvasState.ts")).default
 
-    const { result } = renderHook(() => useUndoRedo([], []))
+    const { result } = renderHook(() => useGraphCanvasState([], []))
 
     expect(result.current.canUndo).toBe(false)
 
@@ -471,9 +469,9 @@ describe("4. Rapid undo/redo", () => {
   })
 
   it("redo on empty future is a no-op", async () => {
-    const useUndoRedo = (await import("../../hooks/useUndoRedo.ts")).default
+    const useGraphCanvasState = (await import("../../hooks/useGraphCanvasState.ts")).default
 
-    const { result } = renderHook(() => useUndoRedo([], []))
+    const { result } = renderHook(() => useGraphCanvasState([], []))
 
     expect(result.current.canRedo).toBe(false)
 
@@ -486,9 +484,9 @@ describe("4. Rapid undo/redo", () => {
   })
 
   it("history is capped at MAX_HISTORY (100)", async () => {
-    const useUndoRedo = (await import("../../hooks/useUndoRedo.ts")).default
+    const useGraphCanvasState = (await import("../../hooks/useGraphCanvasState.ts")).default
 
-    const { result } = renderHook(() => useUndoRedo([makeNode("n0")], []))
+    const { result } = renderHook(() => useGraphCanvasState([makeNode("n0")], []))
 
     // Make 150 changes (exceeding the 100 cap)
     for (let i = 1; i <= 150; i++) {
@@ -612,7 +610,13 @@ describe("6. Empty graph", () => {
     expect(state.submodelDialog).toBeNull()
     expect(state.renameDialog).toBeNull()
     expect(state.syncBanner).toBeNull()
-    expect(state.dirty).toBe(false)
+  })
+
+  it("GraphStore never-saved sentinel: lastSavedSnapshot starts null (Wave 7E)", () => {
+    // After Wave 7E, dirty-tracking state lives on useGraphStore.
+    // `null` means "never saved this session" — the derived dirty flag
+    // (#99) uses this as its sentinel.
+    expect(useGraphStore.getState().lastSavedSnapshot).toBeNull()
   })
 
   it("SettingsStore handles empty source list gracefully", () => {
@@ -684,7 +688,7 @@ describe("7. Duplicate node IDs", () => {
     const cached = useNodeResultsStore.getState().getPreview("dup")
     // Last write wins
     expect(cached!.data.nodeLabel).toBe("Second")
-    expect(cached!.graphVersion).toBe(1)
+    expect(cached!.structuralVersion).toBe(1)
   })
 
   it("clearNode removes data even if ID was used by multiple logical nodes", () => {
@@ -809,7 +813,6 @@ describe("10. Store state after unmount", () => {
     cleanup()
 
     const store = useNodeResultsStore.getState()
-    expect(() => store.bumpGraphVersion()).not.toThrow()
     expect(() => store.clearNode("any")).not.toThrow()
     expect(() => store.setPreview("x", makePreviewData("x", "X"), 0)).not.toThrow()
     expect(() => store.getPreview("x")).not.toThrow()
@@ -820,15 +823,23 @@ describe("10. Store state after unmount", () => {
 
     const store = useUIStore.getState()
     expect(() => store.setPaletteOpen(false)).not.toThrow()
-    expect(() => store.setDirty(true)).not.toThrow()
     expect(() => store.setHoveredNodeId("n1")).not.toThrow()
     expect(() => store.setSyncBanner("test")).not.toThrow()
 
     // State should be updated
     expect(useUIStore.getState().paletteOpen).toBe(false)
-    expect(useUIStore.getState().dirty).toBe(true)
     expect(useUIStore.getState().hoveredNodeId).toBe("n1")
     expect(useUIStore.getState().syncBanner).toBe("test")
+  })
+
+  it("GraphStore markSaved works after cleanup without memory leaks (Wave 7E)", () => {
+    cleanup()
+
+    const store = useGraphStore.getState()
+    expect(() => store.markSaved()).not.toThrow()
+
+    // markSaved captures the current graph state as the baseline.
+    expect(useGraphStore.getState().lastSavedSnapshot).not.toBeNull()
   })
 
   it("toastStore addToast after cleanup does not throw", () => {
@@ -854,7 +865,7 @@ describe("10. Store state after unmount", () => {
 
     // Store should still function
     const store = useNodeResultsStore.getState()
-    expect(() => store.bumpGraphVersion()).not.toThrow()
+    expect(() => store.clearNode("any")).not.toThrow()
   })
 
   it("rapid setState calls do not cause inconsistent state", () => {

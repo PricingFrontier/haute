@@ -6,7 +6,7 @@ import pytest
 
 from haute.graph_utils import NodeType
 from haute.routes._submodel_ops import SubmodelGraphResult, create_submodel_graph
-from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
+from tests.conftest import make_graph
 
 
 def _simple_graph():
@@ -155,9 +155,6 @@ class TestCreateSubmodelGraph:
         )
         # Group b + c
         result = create_submodel_graph(graph, ["b", "c"], "mid")
-        edge_ids_original = {
-            e.id for e in graph.edges if e.source not in {"b", "c"} and e.target not in {"b", "c"}
-        }
         # No fully-external edges in this case, but rewired ones are present
         assert len(result.graph.edges) == 2  # a→sm, sm→d
 

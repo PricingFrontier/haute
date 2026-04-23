@@ -1,7 +1,23 @@
-import ELK from "elkjs/lib/elk.bundled.js"
 import type { Node, Edge } from "@xyflow/react"
 
-const elk = new ELK()
+type ElkLayout = {
+  children?: Array<{ id: string; x?: number; y?: number }>
+}
+
+type ElkEngine = {
+  layout: (graph: unknown) => Promise<ElkLayout>
+}
+
+let elkPromise: Promise<ElkEngine> | null = null
+
+async function getElk(): Promise<ElkEngine> {
+  if (!elkPromise) {
+    elkPromise = import("elkjs/lib/elk.bundled.js").then(
+      ({ default: ELK }) => new ELK() as unknown as ElkEngine,
+    )
+  }
+  return elkPromise
+}
 
 /**
  * Cluster nearby coordinate values and snap each cluster to its median.
@@ -62,6 +78,7 @@ export async function getLayoutedElements(nodes: Node[], edges: Edge[]): Promise
     })),
   }
 
+  const elk = await getElk()
   const layout = await elk.layout(elkGraph)
   const posMap = new Map<string, { x: number; y: number }>()
   for (const child of layout.children || []) {

@@ -57,9 +57,9 @@ export function WarehousePicker({
   }
 
   const stateColor = (state: string) => {
-    if (state === "RUNNING") return "#22c55e"
-    if (state === "STOPPED" || state === "DELETED") return "#ef4444"
-    return "#f59e0b"
+    if (state === "RUNNING") return "var(--success)"
+    if (state === "STOPPED" || state === "DELETED") return "var(--danger)"
+    return "var(--warning-strong)"
   }
 
   return (
@@ -71,10 +71,8 @@ export function WarehousePicker({
           placeholder="/sql/1.0/warehouses/abc123"
           value={httpPath}
           onChange={(e) => onSelect(e.target.value)}
-          className="flex-1 px-2.5 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
+          className="focus-ring flex-1 px-2.5 py-1.5 text-xs font-mono rounded-lg"
           style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(59,130,246,.3)'; e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent-soft)' }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
         />
         <button
           onClick={fetchWarehouses}
@@ -93,7 +91,7 @@ export function WarehousePicker({
       </div>
 
       {error && (
-        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,.1)', color: '#ef4444' }}>
+        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
           {error}
         </div>
       )}
@@ -298,7 +296,7 @@ export function CatalogTablePicker({
       )}
 
       {error && (
-        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,.1)', color: '#ef4444' }}>
+        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
           {error}
         </div>
       )}

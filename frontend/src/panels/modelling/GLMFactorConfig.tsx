@@ -317,9 +317,9 @@ export function GLMFactorConfig({
                         }}
                         className="px-1 py-0.5 rounded text-[10px] font-mono"
                         style={{
-                          background: spec.monotonicity ? "rgba(168,85,247,.15)" : "var(--chrome-hover)",
+                          background: spec.monotonicity ? "var(--model-accent-soft)" : "var(--chrome-hover)",
                           color: spec.monotonicity ? "var(--chart-above)" : "var(--text-muted)",
-                          border: `1px solid ${spec.monotonicity ? "rgba(168,85,247,.3)" : "transparent"}`,
+                          border: `1px solid ${spec.monotonicity ? "var(--model-accent-border)" : "transparent"}`,
                           minWidth: "20px",
                         }}
                         title={
@@ -378,13 +378,13 @@ export function GLMFactorConfig({
               className="w-full px-2.5 py-2 rounded-lg text-xs font-mono"
               style={{
                 background: "var(--bg-input)",
-                border: `1px solid ${jsonError ? "#ef4444" : "var(--border)"}`,
+                border: `1px solid ${jsonError ? "var(--danger)" : "var(--border)"}`,
                 color: "var(--text-primary)",
                 resize: "vertical",
               }}
             />
             {jsonError && (
-              <p className="text-[10px] mt-0.5" style={{ color: "#ef4444" }}>
+              <p className="text-[10px] mt-0.5" style={{ color: "var(--danger)" }}>
                 {jsonError}
               </p>
             )}

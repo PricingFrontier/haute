@@ -68,7 +68,14 @@ export default function useTracing({
         }
       })
       .catch((err) => {
-        addToast("error", `Trace error: ${err.message}`)
+        const detail = (err as { detail?: unknown })?.detail
+        const message =
+          typeof detail === "string"
+            ? detail
+            : err instanceof Error
+              ? err.message
+              : String(err)
+        addToast("error", `Trace error: ${message}`)
         clearTrace()
       })
   }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, activeSource, addToast, clearTrace])
@@ -147,31 +154,99 @@ export default function useTracing({
     return ids
   }, [hoveredNodeId, edges])
 
+  // Per-node projection cache keyed by the source `Node` reference.
+  // The cache is held via `useState` lazy-init (never reassigned) so it
+  // has a stable identity across renders of this hook instance but does
+  // NOT leak across instances — each useTracing call gets its own Map.
+  // We validate each entry against the current computed flags; if the
+  // projection would be identical we return the cached Node, giving
+  // React Flow's diff a reference-equal object to skip.
+  //
+  // Invalidation shape: an entry is valid iff
+  //   (a) the source node reference is unchanged AND
+  //   (b) every computed flag (_status, _traceActive, _traceDimmed,
+  //       _hoverDimmed, _traceValue) matches what the current render
+  //       would produce.
+  // Nodes no longer in the input list are pruned on each pass so the
+  // Map can't grow without bound.
+  interface CachedProjection {
+    source: Node
+    status: "ok" | "error" | "running" | undefined
+    traceActive: boolean
+    traceDimmed: boolean
+    hoverDimmed: boolean
+    traceValue: unknown
+    projected: Node
+  }
+  const [projectionCache] = useState<Map<string, CachedProjection>>(() => new Map())
+
   const nodesWithStatus = useMemo(() => {
     const hasTrace = traceResult !== null
-    return nodes.map((n) => {
+    const seenIds = new Set<string>()
+    const next: Node[] = new Array(nodes.length)
+
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i]
+      seenIds.add(n.id)
       const status = nodeStatuses[n.id]
+      const traceActive = hasTrace && relevantNodeIds.has(n.id)
       const inTrace = allTraceNodeIds.has(n.id)
       const traceDimmed = hasTrace && !inTrace
       // Hover dim: when hovering a node and no trace is active, dim unconnected nodes
       const hoverDimmed = !hasTrace && hoverConnectedIds !== null && !hoverConnectedIds.has(n.id)
-      return {
+      const traceValue = traceValueMap.get(n.id)
+
+      const cached = projectionCache.get(n.id)
+      if (
+        cached !== undefined &&
+        cached.source === n &&
+        cached.status === status &&
+        cached.traceActive === traceActive &&
+        cached.traceDimmed === traceDimmed &&
+        cached.hoverDimmed === hoverDimmed &&
+        cached.traceValue === traceValue
+      ) {
+        next[i] = cached.projected
+        continue
+      }
+
+      const projected: Node = {
         ...n,
         data: {
           ...n.data,
           _status: status,
-          _traceActive: hasTrace && relevantNodeIds.has(n.id),
+          _traceActive: traceActive,
           _traceDimmed: traceDimmed,
           _hoverDimmed: hoverDimmed,
-          _traceValue: traceValueMap.get(n.id),
+          _traceValue: traceValue,
         },
         style: {
           ...(n.style || {}),
           transition: 'opacity 0.2s ease',
         },
       }
-    })
-  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds])
+      projectionCache.set(n.id, {
+        source: n,
+        status,
+        traceActive,
+        traceDimmed,
+        hoverDimmed,
+        traceValue,
+        projected,
+      })
+      next[i] = projected
+    }
+
+    // Prune cache entries for removed nodes so the Map can't grow without
+    // bound over long sessions.
+    if (projectionCache.size > seenIds.size) {
+      for (const id of projectionCache.keys()) {
+        if (!seenIds.has(id)) projectionCache.delete(id)
+      }
+    }
+
+    return next
+  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, projectionCache])
 
   const edgesWithTrace = useMemo(() => {
     // Trace styling takes priority over hover styling

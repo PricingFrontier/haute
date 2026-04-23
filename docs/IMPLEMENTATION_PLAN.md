@@ -150,9 +150,9 @@
    - `io.py` — `read_source`, `load_external_object`, `_load_external_object_uncached`, `_object_cache`
    - `flatten.py` — `flatten_graph`
 
-2. **Keep `graph_utils.py` as a re-export facade**
+2. **Keep `graph_utils.py` as the canonical graph API facade**
    ```python
-   # graph_utils.py — backward-compatible re-exports
+   # graph_utils.py — graph models, helpers, and runtime imports
    from haute.types import *
    from haute.topo import *
    from haute.cache import *

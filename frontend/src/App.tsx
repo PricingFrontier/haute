@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef } from "react"
+import { useEffect, useCallback, useState, useRef, useMemo } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -16,6 +16,7 @@ import SubmodelNode from "./nodes/SubmodelNode"
 import SubmodelPortNode from "./nodes/SubmodelPortNode"
 import NodePalette from "./panels/NodePalette"
 import NodePanel, { type SimpleNode, type SimpleEdge } from "./panels/NodePanel"
+import { GraphProvider } from "./panels/GraphContext"
 import DataPreview from "./panels/DataPreview"
 import OptimiserPreview from "./panels/OptimiserPreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
@@ -35,7 +36,7 @@ import ImportsPanel from "./panels/ImportsPanel"
 import GitPanel from "./panels/GitPanel"
 import NodeSearch from "./components/NodeSearch"
 
-import useUndoRedo from "./hooks/useUndoRedo"
+import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
 import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing from "./hooks/useTracing"
@@ -46,14 +47,16 @@ import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
+import useGraphStore from "./stores/useGraphStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
+import { previewForActiveNode } from "./utils/activePreview"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
-// Module-level constants (no dynamic values — avoids re-creating each render)
+// Module-level constants (no dynamic values â€” avoids re-creating each render)
 // ---------------------------------------------------------------------------
 
 const defaultEdgeOptions = {
@@ -68,8 +71,27 @@ const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
 
+function toSimpleNode(node: Node): SimpleNode {
+  const data = nodeData(node)
+  return {
+    id: node.id,
+    type: node.type,
+    data: {
+      ...node.data,
+      label: data.label || node.id,
+      description: data.description ?? "",
+      nodeType: data.nodeType || node.type || "",
+      config: data.config,
+    },
+  }
+}
+
+function toSimpleEdge(edge: Edge): SimpleEdge {
+  return { id: edge.id, source: edge.source, target: edge.target }
+}
+
 // ---------------------------------------------------------------------------
-// ReactFlow node type → component registry
+// ReactFlow node type â†’ component registry
 // ---------------------------------------------------------------------------
 
 const nodeTypes = {
@@ -93,10 +115,12 @@ const nodeTypes = {
 }
 
 // ---------------------------------------------------------------------------
-// FlowEditor — main orchestrator
+// FlowEditor â€” main orchestrator
 // ---------------------------------------------------------------------------
 
 function FlowEditor() {
+  const graphRefreshingRef = useRef(0)
+
   // Core ReactFlow state with undo/redo
   const {
     nodes, edges,
@@ -104,7 +128,7 @@ function FlowEditor() {
     setNodesRaw, setEdgesRaw,
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo,
-  } = useUndoRedo()
+  } = useGraphCanvasState([], [], graphRefreshingRef)
   const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow()
 
   // UI state from Zustand store (leaf-subscribed values live in their own components)
@@ -127,8 +151,6 @@ function FlowEditor() {
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
-  const dirty = useUIStore((s) => s.dirty)
-  const setDirty = useUIStore((s) => s.setDirty)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
@@ -140,16 +162,22 @@ function FlowEditor() {
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
-  const [preamble, setPreamble] = useState("")
+  // Preamble lives in useGraphStore. Subscribe to the string directly so
+  // sibling state slices can change without re-rendering this component.
+  // The raw setter avoids adding text edits to the graph undo stack.
+  const preamble = useGraphStore((s) => s.preamble)
+  const setPreamble = useCallback((value: string) => {
+    useGraphStore.getState().setPreambleRaw(value)
+  }, [])
   const lastSelectedNodeRef = useRef<Node | null>(null)
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
 
-  // Keep lastSelectedId in sync — updates only when a node is actively selected
+  // Keep lastSelectedId in sync â€” updates only when a node is actively selected
   useEffect(() => {
     if (selectedNode) setLastSelectedId(selectedNode.id)
   }, [selectedNode])
 
-  // Ref for setPreviewData — resolved after usePipelineAPI hook below.
+  // Ref for setPreviewData â€” resolved after usePipelineAPI hook below.
   // Needed because closePanel is defined before the hook for hook-ordering rules.
   const setPreviewDataRef = useRef<(d: null) => void>(() => {})
 
@@ -163,53 +191,53 @@ function FlowEditor() {
     setGitOpen(false)
   }, [setUtilityOpen, setImportsOpen, setGitOpen])
 
-  // Node results store — background jobs + cached results
-  const bumpGraphVersion = useNodeResultsStore((s) => s.bumpGraphVersion)
+  // Node results store â€” background jobs + cached results
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
-
 
   // Refs
   const submodelsRef = useRef<Record<string, unknown>>({})
   const clipboard = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   const graphRef = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   const parentGraphRef = useRef<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>(null)
-  const lastSavedRef = useRef<string>("")
   const preambleRef = useRef("")
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
   const sourceFileRef = useRef("")
-  const graphRefreshingRef = useRef(0)
   const nodeIdCounter = useRef(0)
 
-  // Keep graphRef in sync so callbacks never see stale state.
-  // Only bump graphVersion for structural changes (add/remove/data), not position-only drags.
-  const prevStructureRef = useRef<string>("")
+  // Keep graphRef in sync so callbacks never see stale state. Cache freshness
+  // is versioned inside useGraphStore, not by an App-level cross-store effect.
   useEffect(() => {
     graphRef.current = { nodes, edges }
-    // Build a fingerprint that ignores position — includes node ids, data, and edge list
-    const nodeFingerprint = nodes.map((n) => `${n.id}:${JSON.stringify(n.data)}`).join("|")
-    const edgeFingerprint = edges.map((e) => `${e.id}:${e.source}:${e.target}`).join("|")
-    const fingerprint = `${nodeFingerprint}||${edgeFingerprint}`
-    if (fingerprint !== prevStructureRef.current) {
-      prevStructureRef.current = fingerprint
-      bumpGraphVersion()
-    }
-  }, [nodes, edges, bumpGraphVersion])
+  }, [nodes, edges])
 
-  // Track dirty state via reference equality (avoids JSON.stringify overhead).
-  // Skip when a WebSocket graph refresh caused the change — the file on disk
-  // is the source of truth in that case, so the GUI is not "dirty".
-  const prevStateRef = useRef<{ nodes: Node[]; edges: Edge[]; preamble: string } | null>(null)
+  const activePanelNodeId = selectedNode?.id ?? lastSelectedId
+  const panelNodes = useMemo(() => nodes.map(toSimpleNode), [nodes])
+  const panelEdges = useMemo(() => edges.map(toSimpleEdge), [edges])
+  const panelNode = useMemo(() => {
+    if (!activePanelNodeId) return null
+    const node = nodes.find((n) => n.id === activePanelNodeId)
+    return node ? toSimpleNode(node) : null
+  }, [nodes, activePanelNodeId])
+
   useEffect(() => {
-    if (lastSavedRef.current && !graphRefreshingRef.current) {
-      const prev = prevStateRef.current
-      if (prev && (prev.nodes !== nodes || prev.edges !== edges || prev.preamble !== preamble)) {
-        setDirty(true)
-      }
-    }
-    prevStateRef.current = { nodes, edges, preamble }
-  }, [nodes, edges, preamble, setDirty])
+    if (!activePanelNodeId) return
+    if (nodes.some((n) => n.id === activePanelNodeId)) return
+    setSelectedNode(null)
+    lastSelectedNodeRef.current = null
+    setLastSelectedId(null)
+    setPreviewDataRef.current(null)
+  }, [nodes, activePanelNodeId])
+
+  // Derived dirty flag.
+  //
+  // `isDirty` is a pure selector on useGraphStore that canonicalises the
+  // current {nodes, edges, preamble} and string-compares against the
+  // saved snapshot.  Zustand reruns the selector on every store update
+  // but re-renders only when the returned boolean flips â€” so position
+  // drags and other no-op changes don't thrash App.tsx.
+  const dirty = useGraphStore((s) => s.isDirty())
 
   // ---------------------------------------------------------------------------
   // Hooks
@@ -223,12 +251,12 @@ function FlowEditor() {
   const {
     loading, previewData, setPreviewData,
     nodeStatuses,
-    fetchPreview, refreshPreview, handleSave,
+    fetchPreview, cancelPreview, refreshPreview, handleSave,
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, submodelsRef, setNodes,
     setNodesRaw, setEdgesRaw, setPreamble,
-    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, lastSavedRef,
+    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
     nodeIdCounter,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
@@ -290,13 +318,24 @@ function FlowEditor() {
     setPreviewData, fitView,
   })
 
+  const shouldSkipAutomaticPreview = useCallback(
+    (node: Node) =>
+      nodeData(node).nodeType === NODE_TYPES.OPTIMISER &&
+      !!getOptimiserPreview(node.id),
+    [getOptimiserPreview],
+  )
+
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
     onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
-    graphRef, nodeIdCounter, lastSelectedNodeRef,
+    selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setSelectedNode, setContextMenu,
-    fetchPreview, clearTrace, screenToFlowPosition,
+    fetchPreview,
+    cancelPreview,
+    shouldSkipAutomaticPreview,
+    clearTrace,
+    screenToFlowPosition,
     graphRefreshingRef,
   })
 
@@ -347,10 +386,8 @@ function FlowEditor() {
             <button
               onClick={() => setPaletteOpen(true)}
               aria-label="Show node palette"
-              className="shrink-0 flex items-center justify-center w-10 h-full transition-colors"
-              style={{ background: 'var(--chrome)', borderRight: '1px solid var(--chrome-border)' }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--chrome-hover)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'var(--chrome)'}
+              className="shrink-0 flex items-center justify-center w-10 h-full hover-chrome-solid"
+              style={{ borderRight: '1px solid var(--chrome-border)' }}
               title="Show node palette"
             >
               <PanelLeftOpen size={16} style={{ color: 'var(--text-muted)' }} />
@@ -361,9 +398,9 @@ function FlowEditor() {
         <main className="flex-1 flex flex-col min-w-0">
           {syncBanner && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
-              style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', borderBottom: '1px solid rgba(239, 68, 68, 0.3)' }}>
+              style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>
               <span className="flex-1 truncate">{syncBanner}</span>
-              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">✕</button>
+              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">âœ•</button>
             </div>
           )}
           <ErrorBoundary name="Canvas">
@@ -409,6 +446,7 @@ function FlowEditor() {
           <ErrorBoundary name="DataPreview">
             {(() => {
               const activeNodeId = selectedNode?.id ?? lastSelectedId
+              const activePreviewData = previewForActiveNode(previewData, activeNodeId)
               const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
               if (modelPreview) {
                 return (
@@ -434,20 +472,20 @@ function FlowEditor() {
               if (
                 activeNode &&
                 nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
-                previewData &&
-                previewData.status === "ok" &&
-                previewData.preview.length > 0
+                activePreviewData &&
+                activePreviewData.status === "ok" &&
+                activePreviewData.preview.length > 0
               ) {
                 return (
                   <OptimiserDataPreview
-                    data={previewData}
+                    data={activePreviewData}
                     config={nodeData(activeNode).config ?? {}}
                   />
                 )
               }
               return (
                 <DataPreview
-                  data={previewData}
+                  data={activePreviewData}
                   onCellClick={handleCellClick}
                   tracedCell={tracedCell}
                 />
@@ -469,7 +507,7 @@ function FlowEditor() {
                     const updated = current ? `${current}\n${importLine}` : importLine
                     setPreamble(updated)
                     preambleRef.current = updated
-                    setDirty(true)
+                    // Dirty is derived from the new preamble at next render.
                   }
                 }}
               />
@@ -479,39 +517,38 @@ function FlowEditor() {
                 onPreambleChange={(value) => {
                   setPreamble(value)
                   preambleRef.current = value
-                  setDirty(true)
+                  // Dirty is derived from the new preamble at next render.
                 }}
                 onClose={() => setImportsOpen(false)}
               />
             ) : traceResult ? (
               <TracePanel trace={traceResult} onClose={clearTrace} />
             ) : (
-              <NodePanel
-                node={(() => {
-                  const id = selectedNode?.id ?? lastSelectedId
-                  if (!id) return null
-                  return (nodes.find((n) => n.id === id) ?? null) as unknown as SimpleNode | null
-                })()}
-                edges={edges as unknown as SimpleEdge[]}
-                allNodes={nodes as unknown as SimpleNode[]}
+              <GraphProvider
+                allNodes={panelNodes}
+                edges={panelEdges}
                 submodels={submodelsSnapshot}
                 preamble={preamble}
-                onClose={closePanel}
-                onUpdateNode={onUpdateNode}
-                onDeleteEdge={handleDeleteEdge}
-                onRefreshPreview={() => { if (selectedNode) refreshPreview(selectedNode) }}
-                dimmed={!selectedNode && !!lastSelectedId}
-                errorLine={
-                  previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
-                    ? previewData?.error_line ?? null
-                    : null
-                }
-                previewRows={
-                  previewData?.status === "ok" && previewData?.nodeId === (selectedNode?.id ?? lastSelectedId)
-                    ? previewData.preview
-                    : undefined
-                }
-              />
+              >
+                <NodePanel
+                  node={panelNode}
+                  onClose={closePanel}
+                  onUpdateNode={onUpdateNode}
+                  onDeleteEdge={handleDeleteEdge}
+                  onRefreshPreview={() => { if (selectedNode) refreshPreview(selectedNode) }}
+                  dimmed={!selectedNode && !!lastSelectedId}
+                  errorLine={
+                    previewData?.nodeId === activePanelNodeId
+                      ? previewData?.error_line ?? null
+                      : null
+                  }
+                  previewRows={
+                    previewData?.status === "ok" && previewData?.nodeId === activePanelNodeId
+                      ? previewData.preview
+                      : undefined
+                  }
+                />
+              </GraphProvider>
             )}
           </ErrorBoundary>
         </aside>

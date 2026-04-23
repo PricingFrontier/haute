@@ -7,7 +7,6 @@ import pytest
 from haute.modelling._export import generate_training_script
 from haute.modelling._split import DEFAULT_SPLIT_DICT
 
-
 MINIMAL_CONFIG = {
     "name": "freq",
     "target": "ClaimCount",
@@ -77,9 +76,12 @@ class TestParameterRepr:
         assert "exclude=['IDpol', 'PolicyID']" in script
 
     def test_int_params_are_repr_formatted(self):
-        config = {**MINIMAL_CONFIG, "cv_folds": 5}
+        # Use offset (a simple string config) as the integer-adjacent
+        # smoke-test for repr formatting — ``cv_folds`` was removed in
+        # Phase 2 Package 2C-5.
+        config = {**MINIMAL_CONFIG, "split": {"strategy": "random", "seed": 12345}}
         script = generate_training_script(config, "d.parquet")
-        assert "cv_folds=5" in script
+        assert "'seed': 12345" in script
 
     def test_float_params_are_repr_formatted(self):
         config = {**MINIMAL_CONFIG, "loss_function": "Tweedie", "variance_power": 1.7}
@@ -192,10 +194,13 @@ class TestMetricsList:
 
 class TestSplitConfiguration:
     def test_random_split(self):
-        config = {**MINIMAL_CONFIG, "split": {"strategy": "random", "test_size": 0.3, "seed": 99}}
+        config = {
+            **MINIMAL_CONFIG,
+            "split": {"strategy": "random", "validation_size": 0.3, "seed": 99},
+        }
         script = generate_training_script(config, "d.parquet")
         assert "'strategy': 'random'" in script
-        assert "'test_size': 0.3" in script
+        assert "'validation_size': 0.3" in script
         assert "'seed': 99" in script
         compile(script, "<test>", "exec")
 
@@ -220,7 +225,7 @@ class TestSplitConfiguration:
             "split": {
                 "strategy": "group",
                 "group_column": "policy_id",
-                "test_size": 0.2,
+                "validation_size": 0.2,
                 "seed": 42,
             },
         }
@@ -235,10 +240,17 @@ class TestSplitConfiguration:
 
 
 class TestCVFolds:
-    def test_cv_folds_included_when_set(self):
+    """``cv_folds`` was removed in Phase 2 Package 2C-5 — the generated
+    script must never contain it, even if an obsolete config dict still
+    carries the key.
+    """
+
+    def test_cv_folds_never_rendered(self):
+        # Legacy config might still have the key; the generator must
+        # strip it rather than emit an unknown-kwarg call.
         config = {**MINIMAL_CONFIG, "cv_folds": 5}
         script = generate_training_script(config, "d.parquet")
-        assert "cv_folds=5" in script
+        assert "cv_folds" not in script
 
     def test_cv_folds_excluded_when_absent(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
@@ -354,7 +366,6 @@ class TestEmptyOptionalParamsExcluded:
             "offset",
             "monotone_constraints",
             "feature_weights",
-            "cv_folds",
             "mlflow_experiment",
             "model_name",
         ]:
@@ -391,14 +402,13 @@ class TestFullConfig:
             "algorithm": "lightgbm",
             "task": "regression",
             "params": {"num_leaves": 31, "learning_rate": 0.05},
-            "split": {"strategy": "random", "test_size": 0.25, "seed": 123},
+            "split": {"strategy": "random", "validation_size": 0.25, "seed": 123},
             "metrics": ["gini", "rmse", "mae"],
             "loss_function": "Tweedie",
             "variance_power": 1.5,
             "offset": "log_exposure",
             "monotone_constraints": {"age": 1, "risk": -1},
             "feature_weights": {"age": 2.0},
-            "cv_folds": 3,
             "mlflow_experiment": "/Shared/severity",
             "model_name": "severity_prod",
             "output_dir": "artifacts",
@@ -416,7 +426,6 @@ class TestFullConfig:
         assert "loss_function='Tweedie'" in script
         assert "variance_power=1.5" in script
         assert "offset='log_exposure'" in script
-        assert "cv_folds=3" in script
         assert "mlflow_experiment='/Shared/severity'" in script
         assert "model_name='severity_prod'" in script
         assert "output_dir='artifacts'" in script

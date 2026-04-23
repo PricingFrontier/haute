@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from haute.executor import _extract_column_refs
 
 
@@ -139,7 +137,7 @@ class TestOutputColumnExclusion:
         assert "input_col" in refs
         assert "prediction" not in refs
 
-    def test_outputColumn_camelCase_excluded(self) -> None:
+    def test_outputColumn_camelCase_excluded(self) -> None:  # noqa: N802 - references camelCase config key `outputColumn`
         config = {
             "factors": [{"column": "age", "outputColumn": "age_band"}],
             "outputColumn": "combined_rate",

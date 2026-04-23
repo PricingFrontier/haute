@@ -13,22 +13,16 @@ pass as the parser is built out.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Any
 
 import pytest
 
 # ---------------------------------------------------------------------------
 # The dataclasses under test (will live in haute._expression_parser)
 # ---------------------------------------------------------------------------
-
 from haute._expression_parser import (
-    EvaluatedExpression,
-    ParsedExpression,
-    parse_expression,
     evaluate_expression,
+    parse_expression,
 )
-
 
 # ###########################################################################
 # A. Simple Arithmetic
@@ -147,13 +141,19 @@ class TestUnaryNegation:
 class TestChainedOperations:
     def test_three_factor_multiplication(self):
         """a * b * c -- common in rating: base * factor1 * factor2."""
-        code = 'df = df.with_columns((pl.col("base") * pl.col("age_factor") * pl.col("region_factor")).alias("rate"))'
+        code = (
+            "df = df.with_columns("
+            '(pl.col("base") * pl.col("age_factor") * pl.col("region_factor")).alias("rate"))'
+        )
         expr = parse_expression(code, "rate")
         assert expr.expression_text == "base * age_factor * region_factor"
         assert set(expr.referenced_columns) == {"base", "age_factor", "region_factor"}
 
     def test_four_factor_multiplication(self):
-        code = 'df = df.with_columns((pl.col("base") * pl.col("f1") * pl.col("f2") * pl.col("f3")).alias("rate"))'
+        code = (
+            "df = df.with_columns("
+            '(pl.col("base") * pl.col("f1") * pl.col("f2") * pl.col("f3")).alias("rate"))'
+        )
         expr = parse_expression(code, "rate")
         assert set(expr.referenced_columns) == {"base", "f1", "f2", "f3"}
 
@@ -167,7 +167,10 @@ class TestChainedOperations:
         assert expr.expression_text == expected
 
     def test_chained_same_operator_addition(self):
-        code = 'df = df.with_columns((pl.col("a") + pl.col("b") + pl.col("c") + pl.col("d")).alias("total"))'
+        code = (
+            "df = df.with_columns("
+            '(pl.col("a") + pl.col("b") + pl.col("c") + pl.col("d")).alias("total"))'
+        )
         expr = parse_expression(code, "total")
         assert expr.expression_text == "a + b + c + d"
 
@@ -187,12 +190,19 @@ class TestMixedOperatorsAndPrecedence:
 
     def test_complex_mixed_expression(self):
         """(a - b) / c + d * e."""
-        code = 'df = df.with_columns(((pl.col("a") - pl.col("b")) / pl.col("c") + pl.col("d") * pl.col("e")).alias("result"))'
+        code = (
+            "df = df.with_columns("
+            '((pl.col("a") - pl.col("b")) / pl.col("c") + pl.col("d") * pl.col("e"))'
+            '.alias("result"))'
+        )
         expr = parse_expression(code, "result")
         assert expr.expression_text == "(a - b) / c + d * e"
 
     def test_nested_parentheses(self):
-        code = 'df = df.with_columns(((pl.col("a") + pl.col("b")) * (pl.col("c") - pl.col("d"))).alias("result"))'
+        code = (
+            "df = df.with_columns("
+            '((pl.col("a") + pl.col("b")) * (pl.col("c") - pl.col("d"))).alias("result"))'
+        )
         expr = parse_expression(code, "result")
         assert expr.expression_text == "(a + b) * (c - d)"
 
@@ -242,28 +252,44 @@ class TestWhenThenOtherwise:
         assert "age > 25" in expr.expression_text
 
     def test_simple_condition_lt(self):
-        code = 'df = df.with_columns(pl.when(pl.col("x") < 0).then(0).otherwise(pl.col("x")).alias("clipped"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("x") < 0).then(0).otherwise(pl.col("x")).alias("clipped"))'
+        )
         expr = parse_expression(code, "clipped")
         assert expr.expression_type == "conditional"
         assert "x < 0" in expr.expression_text
 
     def test_condition_gte(self):
-        code = 'df = df.with_columns(pl.when(pl.col("score") >= 80).then("pass").otherwise("fail").alias("grade"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("score") >= 80).then("pass").otherwise("fail").alias("grade"))'
+        )
         expr = parse_expression(code, "grade")
         assert "score >= 80" in expr.expression_text
 
     def test_condition_lte(self):
-        code = 'df = df.with_columns(pl.when(pl.col("temp") <= 0).then("freeze").otherwise("normal").alias("state"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("temp") <= 0).then("freeze").otherwise("normal").alias("state"))'
+        )
         expr = parse_expression(code, "state")
         assert "temp <= 0" in expr.expression_text
 
     def test_condition_eq(self):
-        code = 'df = df.with_columns(pl.when(pl.col("status") == "active").then(1).otherwise(0).alias("is_active"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("status") == "active").then(1).otherwise(0).alias("is_active"))'
+        )
         expr = parse_expression(code, "is_active")
         assert "status == " in expr.expression_text
 
     def test_condition_ne(self):
-        code = 'df = df.with_columns(pl.when(pl.col("type") != "excluded").then(pl.col("amount")).otherwise(0).alias("included_amount"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("type") != "excluded")'
+            '.then(pl.col("amount")).otherwise(0).alias("included_amount"))'
+        )
         expr = parse_expression(code, "included_amount")
         assert "type != " in expr.expression_text
 
@@ -447,7 +473,10 @@ class TestHorizontalFunctions:
         assert expr.expression_text == "max_horizontal(a, b)"
 
     def test_sum_horizontal(self):
-        code = 'df = df.with_columns(pl.sum_horizontal(pl.col("x"), pl.col("y"), pl.col("z")).alias("total"))'
+        code = (
+            "df = df.with_columns("
+            'pl.sum_horizontal(pl.col("x"), pl.col("y"), pl.col("z")).alias("total"))'
+        )
         expr = parse_expression(code, "total")
         assert expr.expression_type == "horizontal_func"
         assert expr.expression_text == "sum_horizontal(x, y, z)"
@@ -461,14 +490,20 @@ class TestHorizontalFunctions:
 
     def test_horizontal_with_expression_arg(self):
         """pl.max_horizontal(pl.col("a") * 1.1, pl.col("b"))."""
-        code = 'df = df.with_columns(pl.max_horizontal(pl.col("a") * 1.1, pl.col("b")).alias("capped"))'
+        code = (
+            "df = df.with_columns("
+            'pl.max_horizontal(pl.col("a") * 1.1, pl.col("b")).alias("capped"))'
+        )
         expr = parse_expression(code, "capped")
         assert expr.expression_type == "horizontal_func"
         assert set(expr.referenced_columns) == {"a", "b"}
         assert "a * 1.1" in expr.expression_text
 
     def test_concat_str(self):
-        code = 'df = df.with_columns(pl.concat_str(pl.col("first"), pl.col("last"), separator=" ").alias("full_name"))'
+        code = (
+            "df = df.with_columns("
+            'pl.concat_str(pl.col("first"), pl.col("last"), separator=" ").alias("full_name"))'
+        )
         expr = parse_expression(code, "full_name")
         assert expr.expression_type == "horizontal_func"
         assert set(expr.referenced_columns) == {"first", "last"}
@@ -513,7 +548,10 @@ class TestFillNullMethod:
         assert 0 in expr.constants
 
     def test_fill_null_with_column(self):
-        code = 'df = df.with_columns(pl.col("primary").fill_null(pl.col("fallback")).alias("resolved"))'
+        code = (
+            "df = df.with_columns("
+            'pl.col("primary").fill_null(pl.col("fallback")).alias("resolved"))'
+        )
         expr = parse_expression(code, "resolved")
         assert set(expr.referenced_columns) == {"primary", "fallback"}
 
@@ -554,7 +592,10 @@ class TestNumericMethods:
         assert "clip" in expr.expression_text
 
     def test_clip_both_bounds(self):
-        code = 'df = df.with_columns(pl.col("val").clip(lower_bound=0, upper_bound=100).alias("clipped"))'
+        code = (
+            "df = df.with_columns("
+            'pl.col("val").clip(lower_bound=0, upper_bound=100).alias("clipped"))'
+        )
         expr = parse_expression(code, "clipped")
         assert expr.referenced_columns == ["val"]
 
@@ -622,7 +663,10 @@ class TestDatetimeMethods:
         assert expr.referenced_columns == ["inception_date"]
 
     def test_dt_total_days(self):
-        code = 'df = df.with_columns((pl.col("end") - pl.col("start")).dt.total_days().alias("duration_days"))'
+        code = (
+            "df = df.with_columns("
+            '(pl.col("end") - pl.col("start")).dt.total_days().alias("duration_days"))'
+        )
         expr = parse_expression(code, "duration_days")
         assert set(expr.referenced_columns) == {"end", "start"}
 
@@ -661,12 +705,19 @@ class TestWindowFunctions:
         assert "region" in expr.expression_text
 
     def test_over_multiple_partitions(self):
-        code = 'df = df.with_columns(pl.col("premium").mean().over("region", "year").alias("avg_prem"))'
+        code = (
+            "df = df.with_columns("
+            'pl.col("premium").mean().over("region", "year").alias("avg_prem"))'
+        )
         expr = parse_expression(code, "avg_prem")
         assert "premium" in expr.referenced_columns
 
     def test_over_with_expression(self):
-        code = 'df = df.with_columns((pl.col("premium") / pl.col("premium").sum().over("region")).alias("prem_share"))'
+        code = (
+            "df = df.with_columns("
+            '(pl.col("premium") / pl.col("premium").sum().over("region"))'
+            '.alias("prem_share"))'
+        )
         expr = parse_expression(code, "prem_share")
         assert "premium" in expr.referenced_columns
 
@@ -700,7 +751,10 @@ class TestMethodChaining:
         assert "round" in expr.expression_text
 
     def test_fill_null_then_clip(self):
-        code = 'df = df.with_columns(pl.col("val").fill_null(0).clip(lower_bound=0, upper_bound=1000).alias("cleaned"))'
+        code = (
+            "df = df.with_columns("
+            'pl.col("val").fill_null(0).clip(lower_bound=0, upper_bound=1000).alias("cleaned"))'
+        )
         expr = parse_expression(code, "cleaned")
         assert expr.referenced_columns == ["val"]
 
@@ -855,7 +909,10 @@ class TestMultiExpressionCodeBlocks:
 
 class TestOpaquePatterns:
     def test_map_elements_with_lambda(self):
-        code = 'df = df.with_columns(pl.col("x").map_elements(lambda v: v ** 2, return_dtype=pl.Float64).alias("x_sq"))'
+        code = (
+            "df = df.with_columns("
+            'pl.col("x").map_elements(lambda v: v ** 2, return_dtype=pl.Float64).alias("x_sq"))'
+        )
         expr = parse_expression(code, "x_sq")
         assert expr.expression_type == "opaque"
         assert expr.referenced_columns == ["x"]
@@ -921,7 +978,8 @@ class TestOpaquePatterns:
     def test_apply_with_numpy(self):
         code = (
             "import numpy as np\n"
-            'df = df.with_columns(pl.col("x").map_batches(lambda s: np.log1p(s.to_numpy())).alias("log1p_x"))'
+            "df = df.with_columns("
+            'pl.col("x").map_batches(lambda s: np.log1p(s.to_numpy())).alias("log1p_x"))'
         )
         expr = parse_expression(code, "log1p_x")
         assert expr.expression_type == "opaque"

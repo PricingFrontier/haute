@@ -6,6 +6,7 @@
  */
 import { useState, useMemo } from "react"
 import { Search } from "lucide-react"
+import { MODEL_COLORS } from "../../theme/colors"
 
 export type FeatureItem = {
   feature: string
@@ -61,13 +62,7 @@ export function FeatureBrowser({ features, selected, onSelect, width = 180 }: Fe
             <button
               key={f.feature}
               onClick={() => onSelect(f.feature)}
-              className="w-full text-left px-2 py-1 flex items-center gap-1.5 transition-colors"
-              style={{
-                background: isSelected ? "var(--accent-soft)" : "transparent",
-                borderLeft: isSelected ? "2px solid var(--accent)" : "2px solid transparent",
-              }}
-              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "var(--chrome-hover)" }}
-              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent" }}
+              className={`w-full text-left px-2 py-1 flex items-center gap-1.5 transition-colors feature-browser-row${isSelected ? " feature-browser-row--selected" : ""}`}
             >
               <div className="flex-1 min-w-0">
                 <div
@@ -79,7 +74,7 @@ export function FeatureBrowser({ features, selected, onSelect, width = 180 }: Fe
                 <div className="w-full h-1 rounded-full overflow-hidden mt-0.5" style={{ background: "var(--chrome-hover)" }}>
                   <div
                     className="h-full rounded-full"
-                    style={{ width: `${barWidth}%`, background: isSelected ? "var(--accent)" : "#a855f7", opacity: 0.6 }}
+                    style={{ width: `${barWidth}%`, background: isSelected ? "var(--accent)" : MODEL_COLORS.accent, opacity: 0.6 }}
                   />
                 </div>
               </div>

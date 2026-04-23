@@ -1,7 +1,8 @@
 import { useMemo } from "react"
 import { Play, Loader2, AlertTriangle, RefreshCw, CheckCircle2, Database } from "lucide-react"
 import type { TrainResult, TrainProgress } from "../../stores/useNodeResultsStore"
-import type { TrainEstimate } from "../../api/client"
+import type { TrainEstimate } from "../../api/types"
+import { MODEL_COLORS } from "../../theme/colors"
 import { TrainingProgress as TrainingProgressPanel } from "./TrainingProgress"
 
 // The backend's bytes_per_row already includes full phase-model overhead
@@ -90,14 +91,14 @@ export function TrainingActionsAndResults({
     <>
       {/* Staleness indicator */}
       {isStale && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.08)", border: "1px solid rgba(245,158,11,.2)" }}>
-          <RefreshCw size={12} style={{ color: "#f59e0b" }} className="shrink-0" />
-          <span style={{ color: "#fbbf24" }}>Config changed since last training</span>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)" }}>
+          <RefreshCw size={12} style={{ color: "var(--warning-strong)" }} className="shrink-0" />
+        <span style={{ color: "var(--warning)" }}>Config changed since last training</span>
           <button
             onClick={onTrain}
             disabled={training || submitting || !target}
             className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium"
-            style={{ background: "rgba(168,85,247,.15)", color: "#a855f7" }}
+            style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
           >
             Re-train
           </button>
@@ -106,25 +107,25 @@ export function TrainingActionsAndResults({
 
       {/* RAM Estimate */}
       {ramEstimateLoading && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(168,85,247,.06)", border: "1px solid rgba(168,85,247,.15)" }}>
-          <Loader2 size={12} className="animate-spin" style={{ color: "#a855f7" }} />
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}>
+          <Loader2 size={12} className="animate-spin" style={{ color: MODEL_COLORS.accent }} />
           <span style={{ color: "var(--text-muted)" }}>Estimating dataset size...</span>
         </div>
       )}
       {ramEstimateError && !ramEstimateLoading && !ramEstimate && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.06)", border: "1px solid rgba(245,158,11,.2)" }}>
-          <AlertTriangle size={12} className="shrink-0" style={{ color: "#f59e0b" }} />
-          <span style={{ color: "#fbbf24" }}>RAM estimate unavailable — training will still work</span>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
+          <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
+          <span style={{ color: "var(--warning)" }}>RAM estimate unavailable — training will still work</span>
         </div>
       )}
       {ramEstimate && !ramEstimateLoading && adjusted && (
         <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{
-          background: adjusted.wasDownsampled ? "rgba(245,158,11,.06)" : "rgba(34,197,94,.06)",
-          border: `1px solid ${adjusted.wasDownsampled ? "rgba(245,158,11,.2)" : "rgba(34,197,94,.15)"}`,
+          background: adjusted.wasDownsampled ? "var(--warning-soft-subtle)" : "var(--success-soft-subtle)",
+          border: `1px solid ${adjusted.wasDownsampled ? "var(--warning-border)" : "var(--success-soft-strong)"}`,
         }}>
           <div className="flex items-center gap-2">
-            {adjusted.wasDownsampled && <AlertTriangle size={12} className="shrink-0" style={{ color: "#f59e0b" }} />}
-            <span className="font-medium" style={{ color: adjusted.wasDownsampled ? "#fbbf24" : "#22c55e" }}>
+            {adjusted.wasDownsampled && <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />}
+            <span className="font-medium" style={{ color: adjusted.wasDownsampled ? "var(--warning)" : "var(--success)" }}>
               {adjusted.wasDownsampled ? "Will downsample" : "Dataset fits in memory"}
             </span>
           </div>
@@ -134,7 +135,7 @@ export function TrainingActionsAndResults({
             {adjusted.isLimited && (
               <>
                 <span>Training rows</span>
-                <span style={{ color: adjusted.wasDownsampled ? "#f59e0b" : "var(--text-primary)" }}>{adjusted.rows.toLocaleString()}</span>
+                <span style={{ color: adjusted.wasDownsampled ? "var(--warning-strong)" : "var(--text-primary)" }}>{adjusted.rows.toLocaleString()}</span>
               </>
             )}
             <span>Est. training RAM</span>
@@ -144,7 +145,7 @@ export function TrainingActionsAndResults({
             {adjusted.gpuVramMb != null && (
               <>
                 <span>Est. GPU VRAM</span>
-                <span style={{ color: ramEstimate.gpu_vram_available_mb != null && adjusted.gpuVramMb > ramEstimate.gpu_vram_available_mb ? "#f59e0b" : "var(--text-primary)" }}>
+                <span style={{ color: ramEstimate.gpu_vram_available_mb != null && adjusted.gpuVramMb > ramEstimate.gpu_vram_available_mb ? "var(--warning-strong)" : "var(--text-primary)" }}>
                   {formatMb(adjusted.gpuVramMb)}
                 </span>
                 {ramEstimate.gpu_vram_available_mb != null && (
@@ -159,7 +160,7 @@ export function TrainingActionsAndResults({
             )}
           </div>
           {adjusted.gpuVramMb != null && ramEstimate.gpu_vram_available_mb != null && adjusted.gpuVramMb > ramEstimate.gpu_vram_available_mb && (
-            <div className="flex items-center gap-2 mt-1" style={{ color: "#f59e0b" }}>
+            <div className="flex items-center gap-2 mt-1" style={{ color: "var(--warning-strong)" }}>
               <AlertTriangle size={12} className="shrink-0" />
               <span>
                 GPU training needs ~{formatMb(adjusted.gpuVramMb)} but GPU has {formatMb(ramEstimate.gpu_vram_available_mb)}. Training will fall back to CPU automatically.
@@ -176,8 +177,8 @@ export function TrainingActionsAndResults({
           disabled={busy || !target}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
           style={{
-            background: busy ? "var(--chrome-hover)" : "#a855f7",
-            color: busy ? "var(--text-muted)" : "#fff",
+            background: busy ? "var(--chrome-hover)" : MODEL_COLORS.accent,
+            color: busy ? "var(--text-muted)" : "var(--text-on-accent)",
             opacity: !target ? 0.5 : 1,
           }}
         >
@@ -191,9 +192,9 @@ export function TrainingActionsAndResults({
 
       {/* Completion badge — results are in the preview panel below */}
       {trainResult && trainResult.status !== "error" && !training && !submitting && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(34,197,94,.08)", border: "1px solid rgba(34,197,94,.2)" }}>
-          <CheckCircle2 size={12} style={{ color: "#22c55e" }} className="shrink-0" />
-          <span style={{ color: "#22c55e" }}>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--success-soft-faint)", border: "1px solid var(--success-border)" }}>
+          <CheckCircle2 size={12} style={{ color: "var(--success)" }} className="shrink-0" />
+          <span style={{ color: "var(--success)" }}>
             Model trained — results in preview panel below
           </span>
         </div>
@@ -201,12 +202,12 @@ export function TrainingActionsAndResults({
 
       {/* Error display — keep in config panel since there's no preview to show */}
       {trainResult && trainResult.status === "error" && (
-        <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)" }}>
+        <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
           <div className="flex items-start gap-2">
-            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "#ef4444" }} />
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} />
             <div className="space-y-1 min-w-0">
-              <div className="font-semibold" style={{ color: "#ef4444" }}>Training failed</div>
-              <div style={{ color: "#fca5a5", lineHeight: "1.5" }}>{trainResult.error}</div>
+              <div className="font-semibold" style={{ color: "var(--danger)" }}>Training failed</div>
+              <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{trainResult.error}</div>
             </div>
           </div>
         </div>

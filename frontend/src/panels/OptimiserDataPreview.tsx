@@ -16,20 +16,12 @@ import {
   Search,
 } from "lucide-react"
 import { useDragResize } from "../hooks/useDragResize"
+import { CHART_COLORS } from "../theme/colors"
 import { formatAxisLabel, yTicks } from "../utils/chartHelpers"
 import type { PreviewData } from "./DataPreview"
 
 // ─── Colours for series lines (CVD-safe Okabe-Ito subset) ─────────
-const SERIES_COLORS = [
-  "#f59e0b", // amber  – objective (first)
-  "#3b82f6", // blue
-  "#22c55e", // green
-  "#ef4444", // red
-  "#a855f7", // purple
-  "#06b6d4", // cyan
-  "#f97316", // orange
-  "#ec4899", // pink
-]
+const SERIES_COLORS = CHART_COLORS.optimiserSeries
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -42,6 +34,25 @@ type QuoteRow = {
   scenarioIndex: number
   scenarioValue: number
   values: Record<string, number> // objective + constraint column values
+}
+
+type PreviewRow = PreviewData["preview"][number]
+
+function toQuoteRow(
+  row: PreviewRow,
+  scenarioIndexCol: string,
+  scenarioValueCol: string,
+  allSeries: string[],
+): QuoteRow {
+  const vals: Record<string, number> = {}
+  for (const col of allSeries) {
+    vals[col] = Number(row[col] ?? 0)
+  }
+  return {
+    scenarioIndex: Number(row[scenarioIndexCol] ?? 0),
+    scenarioValue: Number(row[scenarioValueCol] ?? 0),
+    values: vals,
+  }
 }
 
 // ─── Shared chart primitives ─────────────────────────────────────
@@ -233,20 +244,31 @@ type ScenarioStats = {
 }
 
 function computeScenarioStats(
-  allQuoteRows: Map<string, QuoteRow[]>,
+  rows: PreviewRow[],
   scenarioIndices: number[],
   column: string,
+  scenarioIndexCol: string,
+  scenarioValueCol: string,
 ): ScenarioStats[] {
-  return scenarioIndices.map((si) => {
-    const vals: number[] = []
-    let scenarioValue = 0
-    for (const rows of allQuoteRows.values()) {
-      const row = rows.find((r) => r.scenarioIndex === si)
-      if (row) {
-        vals.push(row.values[column] ?? 0)
-        scenarioValue = row.scenarioValue
-      }
+  const valuesByScenario = new Map<number, { scenarioValue: number; values: number[] }>()
+  for (const row of rows) {
+    const scenarioIndex = Number(row[scenarioIndexCol] ?? 0)
+    const bucket = valuesByScenario.get(scenarioIndex)
+    if (bucket) {
+      bucket.values.push(Number(row[column] ?? 0))
+      bucket.scenarioValue = Number(row[scenarioValueCol] ?? bucket.scenarioValue)
+    } else {
+      valuesByScenario.set(scenarioIndex, {
+        scenarioValue: Number(row[scenarioValueCol] ?? 0),
+        values: [Number(row[column] ?? 0)],
+      })
     }
+  }
+
+  return scenarioIndices.map((si) => {
+    const bucket = valuesByScenario.get(si)
+    const vals = bucket?.values ?? []
+    const scenarioValue = bucket?.scenarioValue ?? 0
     vals.sort((a, b) => a - b)
     const n = vals.length
     if (n === 0) {
@@ -406,7 +428,7 @@ export default function OptimiserDataPreview({
   }, [objectiveCol, constraintCols])
 
   // Stable key for detecting when the actual series list changes
-  const allSeriesKey = allSeries.join("\0")
+  const allSeriesKey = JSON.stringify(allSeries)
 
   // ── Checkbox state: which series are visible ──
   const [checkedSeries, setCheckedSeries] = useState<Set<string>>(
@@ -428,26 +450,21 @@ export default function OptimiserDataPreview({
   }, [])
 
   // ── Group preview rows by quote_id ──
-  const { quoteIds, quoteData } = useMemo(() => {
-    const map = new Map<string, QuoteRow[]>()
+  const { quoteIds, quoteRowsByQuote } = useMemo(() => {
+    const map = new Map<string, PreviewRow[]>()
+    const ids: string[] = []
     for (const row of data.preview) {
       const qid = String(row[quoteIdCol] ?? "")
-      const si = Number(row[scenarioIndexCol] ?? 0)
-      const sv = Number(row[scenarioValueCol] ?? 0)
-      const vals: Record<string, number> = {}
-      for (const col of allSeries) {
-        vals[col] = Number(row[col] ?? 0)
+      const rows = map.get(qid)
+      if (rows) {
+        rows.push(row)
+      } else {
+        map.set(qid, [row])
+        ids.push(qid)
       }
-      if (!map.has(qid)) map.set(qid, [])
-      map.get(qid)!.push({ scenarioIndex: si, scenarioValue: sv, values: vals })
     }
-    // Sort each quote's rows by scenario_index
-    for (const rows of map.values()) {
-      rows.sort((a, b) => a.scenarioIndex - b.scenarioIndex)
-    }
-    const ids = [...map.keys()]
-    return { quoteIds: ids, quoteData: map }
-  }, [data.preview, quoteIdCol, scenarioIndexCol, scenarioValueCol, allSeries])
+    return { quoteIds: ids, quoteRowsByQuote: map }
+  }, [data.preview, quoteIdCol])
 
   // ── Quote navigation ──
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -461,7 +478,12 @@ export default function OptimiserDataPreview({
 
   const clampedIndex = Math.min(currentIndex, Math.max(0, quoteIds.length - 1))
   const currentQuoteId = quoteIds[clampedIndex] ?? ""
-  const currentRows = quoteData.get(currentQuoteId) ?? []
+  const currentRows = useMemo(() => {
+    const rows = quoteRowsByQuote.get(currentQuoteId) ?? []
+    return rows
+      .map((row) => toQuoteRow(row, scenarioIndexCol, scenarioValueCol, allSeries))
+      .sort((a, b) => a.scenarioIndex - b.scenarioIndex)
+  }, [quoteRowsByQuote, currentQuoteId, scenarioIndexCol, scenarioValueCol, allSeries])
 
   const goPrev = useCallback(
     () => setCurrentIndex((i) => Math.max(0, i - 1)),
@@ -490,20 +512,20 @@ export default function OptimiserDataPreview({
   const scenarioIndices = useMemo(() => {
     if (tab !== "statistics") return []
     const idxSet = new Set<number>()
-    for (const rows of quoteData.values()) {
-      for (const r of rows) idxSet.add(r.scenarioIndex)
+    for (const row of data.preview) {
+      idxSet.add(Number(row[scenarioIndexCol] ?? 0))
     }
     return [...idxSet].sort((a, b) => a - b)
-  }, [quoteData, tab])
+  }, [data.preview, scenarioIndexCol, tab])
 
   const scenarioStatsBySeries = useMemo(() => {
     if (tab !== "statistics") return new Map<string, ScenarioStats[]>()
     const map = new Map<string, ScenarioStats[]>()
     for (const col of allSeries) {
-      map.set(col, computeScenarioStats(quoteData, scenarioIndices, col))
+      map.set(col, computeScenarioStats(data.preview, scenarioIndices, col, scenarioIndexCol, scenarioValueCol))
     }
     return map
-  }, [allSeries, quoteData, scenarioIndices, tab])
+  }, [allSeries, data.preview, scenarioIndices, scenarioIndexCol, scenarioValueCol, tab])
 
   // ── No config / no data guards ──
   if (!objectiveCol) {
@@ -519,7 +541,7 @@ export default function OptimiserDataPreview({
   if (quoteIds.length === 0 || currentRows.length === 0) {
     return (
       <StatusBar>
-        <Target size={14} style={{ color: "#f59e0b" }} className="mr-2" />
+        <Target size={14} style={{ color: "var(--warning-strong)" }} className="mr-2" />
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>
           No scenario data in preview. Ensure upstream nodes produce{" "}
           <span className="font-mono">{quoteIdCol}</span> and{" "}
@@ -563,14 +585,7 @@ export default function OptimiserDataPreview({
       {/* Drag handle */}
       <div
         onMouseDown={onDragStart}
-        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10 transition-colors"
-        style={{ background: "var(--chrome-border)" }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "var(--accent)"
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = "var(--chrome-border)"
-        }}
+        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
       />
 
       {/* Header */}
@@ -581,7 +596,7 @@ export default function OptimiserDataPreview({
           background: "var(--bg-elevated)",
         }}
       >
-        <Target size={14} style={{ color: "#f59e0b" }} />
+        <Target size={14} style={{ color: "var(--warning-strong)" }} />
         <span
           className="text-xs font-bold"
           style={{ color: "var(--text-primary)" }}
@@ -683,14 +698,8 @@ export default function OptimiserDataPreview({
         <div className="ml-auto flex items-center gap-1">
           <button
             onClick={() => setCollapsed(true)}
-            className="p-1 rounded transition-colors"
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
             style={{ color: "var(--text-muted)" }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "var(--bg-hover)"
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "transparent"
-            }}
           >
             <ChevronDown size={14} />
           </button>

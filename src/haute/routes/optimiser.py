@@ -13,7 +13,7 @@ from haute._logging import get_logger
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import get_job_store
 from haute.routes._optimiser_service import (
     _DEFAULT_CHUNK_SIZE,
     _DEFAULT_TIMEOUT,
@@ -23,6 +23,8 @@ from haute.routes._optimiser_service import (
 from haute.schemas import (
     OptimiserApplyRequest,
     OptimiserApplyResponse,
+    OptimiserEstimateRequest,
+    OptimiserEstimateResponse,
     OptimiserFrontierRequest,
     OptimiserFrontierResponse,
     OptimiserFrontierSelectRequest,
@@ -40,8 +42,10 @@ logger = get_logger(component="server.optimiser")
 
 router = APIRouter(prefix="/api/optimiser", tags=["optimiser"])
 
-# In-memory job store — same pattern as modelling.
-_store = JobStore()
+# In-memory job store — same pattern as modelling, acquired through
+# the central factory so the "optimiser" prefix is a single source of
+# truth for every importer.
+_store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
 
 _APPLY_PREVIEW_ROWS = 100  # max rows returned in the apply preview payload
@@ -55,6 +59,31 @@ def solve(body: OptimiserSolveRequest) -> OptimiserSolveResponse:
     scored DataFrame, then runs the solver in a background thread.
     """
     return _solve_service.start(body)
+
+
+@router.post("/estimate", response_model=OptimiserEstimateResponse)
+def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
+    """Preview the data volume the solver will see for a given optimiser node.
+
+    Reads parquet metadata from ancestor source nodes to report row/column
+    counts without running the pipeline. Mirrors the modelling RAM estimate
+    but is simpler — there's no training pool construction to size, and no
+    GPU path to check. Returns an empty response if metadata isn't
+    available (e.g. live data without parquet backing).
+    """
+    from haute._ram_estimate import _ancestor_source_metadata
+
+    try:
+        total_rows, _max_cols = _ancestor_source_metadata(
+            body.graph,
+            body.node_id,
+            body.source,
+        )
+    except Exception as exc:
+        logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
+        return OptimiserEstimateResponse()
+
+    return OptimiserEstimateResponse(total_rows=total_rows)
 
 
 @router.get("/solve/status/{job_id}", response_model=OptimiserStatusResponse)

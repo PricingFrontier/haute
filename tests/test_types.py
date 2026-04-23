@@ -9,7 +9,6 @@ Covers:
   - _sanitize_func_name (additional edge cases beyond test_graph_utils.py)
   - build_instance_mapping (additional combos beyond test_graph_utils.py)
   - resolve_orig_source_names (additional edge cases)
-  - HauteError base exception
 """
 
 from __future__ import annotations
@@ -19,17 +18,18 @@ import math
 import pytest
 from pydantic import ValidationError
 
-from haute._types import (
-    GraphEdge,
-    GraphNode,
-    HauteError,
-    NodeData,
-    NodeType,
-    PipelineGraph,
+from haute._graph_utils import (
     _resolve_sink_path,
     _sanitize_func_name,
     build_instance_mapping,
     resolve_orig_source_names,
+)
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
 )
 
 # ===========================================================================
@@ -96,17 +96,6 @@ class TestNodeType:
     def test_empty_string_invalid(self):
         with pytest.raises(ValueError):
             NodeType("")
-
-
-# ===========================================================================
-# HauteError
-# ===========================================================================
-
-
-class TestHauteError:
-    def test_can_be_raised_and_caught(self):
-        with pytest.raises(HauteError, match="test message"):
-            raise HauteError("test message")
 
 
 # ===========================================================================

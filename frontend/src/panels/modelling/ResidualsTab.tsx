@@ -7,6 +7,7 @@
  */
 import { useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { CHART_COLORS } from "../../theme/colors"
 
 interface ResidualsTabProps {
   result: TrainResult
@@ -17,9 +18,9 @@ interface ResidualsTabProps {
 const GRID_COLOR = "rgba(255,255,255,.06)"
 const AXIS_TEXT_COLOR = "var(--text-muted)"
 const AXIS_FONT_SIZE = 10
-const BAR_COLOR = "#a855f7"
-const ZERO_LINE_COLOR = "#ef4444"
-const SCATTER_COLOR = "#a855f7"
+const BAR_COLOR = CHART_COLORS.predicted
+const ZERO_LINE_COLOR = CHART_COLORS.residualZero
+const SCATTER_COLOR = CHART_COLORS.predicted
 const REF_LINE_COLOR = "rgba(255,255,255,.25)"
 
 export function ResidualsTab({ result, width = 340, height = 240 }: ResidualsTabProps) {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, waitFor, act } from "@testing-library/react"
 import { useDataInputColumns } from "../useDataInputColumns"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
@@ -32,7 +33,16 @@ describe("useDataInputColumns", () => {
   beforeEach(() => {
     useNodeResultsStore.setState({
       columnCache: {},
-      graphVersion: 0,
+    })
+    useGraphStore.setState({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      lastSavedSnapshot: null,
+      undoStack: [],
+      redoStack: [],
+      structuralVersion: 0,
+      structuralFingerprint: "nodes:||edges:||preamble:\"\"",
     })
     useSettingsStore.setState({
       activeSource: "live",
@@ -53,6 +63,20 @@ describe("useDataInputColumns", () => {
     expect(result.current).toEqual([])
   })
 
+  it("returns fallback columns without fetching when disabled", () => {
+    const fallbackColumns = [{ name: "expected_margin", dtype: "f64" }]
+
+    const { result } = renderHook(() =>
+      useDataInputColumns("ds1", nodes, edges, undefined, undefined, {
+        enabled: false,
+        fallbackColumns,
+      }),
+    )
+
+    expect(result.current).toEqual(fallbackColumns)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
   it("fetches columns from API when no cache exists", async () => {
     mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
@@ -65,9 +89,8 @@ describe("useDataInputColumns", () => {
     // Cache key is now "nodeId:source"
     useNodeResultsStore.setState({
       columnCache: {
-        "ds1:live": { columns: sampleColumns, graphVersion: 0 },
+        "ds1:live": { columns: sampleColumns, structuralVersion: 0 },
       },
-      graphVersion: 0,
     })
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
     // Cached columns should be available synchronously
@@ -75,24 +98,37 @@ describe("useDataInputColumns", () => {
     expect(result.current[0].name).toBe("age")
   })
 
-  it("skips API call when cache is fresh (same graphVersion)", () => {
+  it("skips API call when cache is fresh for the same structuralVersion", () => {
     useNodeResultsStore.setState({
       columnCache: {
-        "ds1:live": { columns: sampleColumns, graphVersion: 5 },
+        "ds1:live": { columns: sampleColumns, structuralVersion: 5 },
       },
-      graphVersion: 5,
     })
+    useGraphStore.setState({ structuralVersion: 5 })
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     // Should NOT call previewNode since cache is fresh
     expect(mockPreview).not.toHaveBeenCalled()
   })
 
-  it("refetches when cache is stale (different graphVersion)", async () => {
+  it("uses graph structuralVersion for cache freshness", () => {
     useNodeResultsStore.setState({
       columnCache: {
-        "ds1:live": { columns: [{ name: "old", dtype: "f64" }], graphVersion: 1 },
+        "ds1:live": { columns: sampleColumns, structuralVersion: 7 },
       },
-      graphVersion: 5,
+    })
+    useGraphStore.setState({
+      structuralVersion: 7,
+    })
+
+    renderHook(() => useDataInputColumns("ds1", nodes, edges))
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it("refetches when cache is stale for a different structuralVersion", async () => {
+    useNodeResultsStore.setState({
+      columnCache: {
+        "ds1:live": { columns: [{ name: "old", dtype: "f64" }], structuralVersion: 1 },
+      },
     })
     const freshCols = [{ name: "new_col", dtype: "str" }]
     mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: freshCols })
@@ -100,6 +136,21 @@ describe("useDataInputColumns", () => {
     // Shows stale cache first
     expect(result.current[0].name).toBe("old")
     // Then updates with fresh data
+    await waitFor(() => expect(result.current[0].name).toBe("new_col"))
+  })
+
+  it("refetches when structuralVersion changes", async () => {
+    useNodeResultsStore.setState({
+      columnCache: {
+        "ds1:live": { columns: [{ name: "old", dtype: "f64" }], structuralVersion: 3 },
+      },
+    })
+    useGraphStore.setState({ structuralVersion: 4 })
+    const freshCols = [{ name: "new_col", dtype: "str" }]
+    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: freshCols })
+
+    const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
+    expect(result.current[0].name).toBe("old")
     await waitFor(() => expect(result.current[0].name).toBe("new_col"))
   })
 
@@ -156,10 +207,10 @@ describe("useDataInputColumns", () => {
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
     expect(mockPreview.mock.calls[0][3]).toBe("live")
 
-    // Change source AND bump graphVersion (simulating a graph change)
+    // Change source and structuralVersion (simulating a graph change)
     act(() => {
       useSettingsStore.setState({ activeSource: "nb_batch" })
-      useNodeResultsStore.setState({ graphVersion: 10 })
+      useGraphStore.setState({ structuralVersion: 10 })
     })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2))
@@ -172,9 +223,8 @@ describe("useDataInputColumns", () => {
     const cachedCols = [{ name: "cached_col", dtype: "f64" }]
     useNodeResultsStore.setState({
       columnCache: {
-        "ds1:live": { columns: cachedCols, graphVersion: 1 },
+        "ds1:live": { columns: cachedCols, structuralVersion: 1 },
       },
-      graphVersion: 5, // stale cache triggers refetch
     })
     mockPreview.mockRejectedValue(new Error("Server error"))
 
@@ -317,10 +367,9 @@ describe("useDataInputColumns", () => {
   it("uses separate cache entries per source", () => {
     useNodeResultsStore.setState({
       columnCache: {
-        "ds1:live": { columns: [{ name: "live_col", dtype: "f64" }], graphVersion: 0 },
-        "ds1:nb_batch": { columns: [{ name: "batch_col", dtype: "i64" }], graphVersion: 0 },
+        "ds1:live": { columns: [{ name: "live_col", dtype: "f64" }], structuralVersion: 0 },
+        "ds1:nb_batch": { columns: [{ name: "batch_col", dtype: "i64" }], structuralVersion: 0 },
       },
-      graphVersion: 0,
     })
 
     // Live source → live columns
@@ -336,33 +385,28 @@ describe("useDataInputColumns", () => {
     expect(batchResult.current[0].name).toBe("batch_col")
   })
 
-  it("refetches when source changes even if graphVersion is same", async () => {
+  it("refetches when source changes even if structuralVersion is same", async () => {
     // Cache exists for "live" but not for "nb_batch"
     useNodeResultsStore.setState({
       columnCache: {
-        "ds1:live": { columns: sampleColumns, graphVersion: 0 },
+        "ds1:live": { columns: sampleColumns, structuralVersion: 0 },
       },
-      graphVersion: 0,
     })
     useSettingsStore.setState({ activeSource: "live" })
 
     const batchCols = [{ name: "batch_only", dtype: "str" }]
     mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: batchCols })
 
-    const { result, rerender } = renderHook(
-      ({ source }: { source: string }) => {
-        useSettingsStore.setState({ activeSource: source })
-        return useDataInputColumns("ds1", nodes, edges)
-      },
-      { initialProps: { source: "live" } },
-    )
+    const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
 
     // Live cache hit — no API call
     expect(mockPreview).not.toHaveBeenCalled()
     expect(result.current[0].name).toBe("age")
 
     // Switch to nb_batch — no cache entry, should fetch
-    rerender({ source: "nb_batch" })
+    act(() => {
+      useSettingsStore.setState({ activeSource: "nb_batch" })
+    })
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
     expect(result.current[0].name).toBe("batch_only")
   })

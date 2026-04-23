@@ -1,18 +1,21 @@
 import { useState, useCallback, useEffect, useMemo } from "react"
 import { Loader2, ChevronDown, ChevronRight, AlertTriangle, Plus, X, Target, Layers, RefreshCw } from "lucide-react"
 import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
-import { solveOptimiser } from "../api/client"
+import { solveOptimiser, estimateOptimiserSolve } from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
+import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import type { SolveResult } from "./OptimiserPreview"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
+import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useGraphStore from "../stores/useGraphStore"
 import { formatElapsed } from "../utils/formatValue"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import { withAlpha } from "../utils/color"
 import { extractBandingLevelsForNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
+import { useGraph } from "./useGraph"
 
 // ─── Banding factor extraction ───
 
@@ -48,9 +51,6 @@ type OptimiserConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
-  allNodes: SimpleNode[]
-  edges: SimpleEdge[]
-  submodels?: Record<string, unknown>
   accentColor: string
 }
 
@@ -61,12 +61,20 @@ const CONSTRAINT_TYPES = [
   { value: "max_abs", label: "Max (absolute)" },
 ]
 
-export default function OptimiserConfig({ config, onUpdate, allNodes, edges, submodels, accentColor }: OptimiserConfigProps) {
+export default function OptimiserConfig({
+  config,
+  onUpdate,
+  upstreamColumns = [],
+  accentColor,
+}: OptimiserConfigProps) {
+  const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
   const nodeId = config._nodeId as string
   const solveJob = useNodeResultsStore((s) => s.solveJobs[nodeId])
   const cachedResult = useNodeResultsStore((s) => s.solveResults[nodeId])
   const startSolveJob = useNodeResultsStore((s) => s.startSolveJob)
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
   // ── Local UI state (cheap, ok to recreate) ──
   const [submitting, setSubmitting] = useState(false)
@@ -75,9 +83,6 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
   const solveProgress = solveJob?.progress ?? null
   const solveError = solveJob?.error ?? null
   const solveResult: SolveResult | null = cachedResult?.result ?? null
-  // Staleness detection: has config changed since last solve?
-  const currentConfigHash = useMemo(() => hashConfig(config), [config])
-  const isStale = !!cachedResult && cachedResult.configHash !== currentConfigHash
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
   const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
@@ -110,11 +115,49 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
   const dataInput = configField(config, "data_input", "")
 
   // Columns from the selected data input node — cached in store
-  const dataInputColumns = useDataInputColumns(dataInput, allNodes, edges, submodels)
+  // Prefer columns already collected for the optimiser panel so opening it
+  // does not fire a second row-limit-1 preview request just to populate menus.
+  const hasUpstreamColumns = upstreamColumns.length > 0
+  const fetchedDataInputColumns = useDataInputColumns(dataInput, allNodes, edges, submodels, undefined, {
+    enabled: !hasUpstreamColumns,
+    fallbackColumns: upstreamColumns,
+  })
+  const dataInputColumns = hasUpstreamColumns ? upstreamColumns : fetchedDataInputColumns
 
   const buildGraphCb = useCallback(
     () => buildGraph(allNodes, edges, submodels),
     [allNodes, edges, submodels],
+  )
+
+  // ── Solve-cost estimate, via the shared config-estimate hook ──
+  // Previews source row/column counts read from parquet metadata so the
+  // user knows what volume of scored data the solver will process.
+  // The hook owns the abort / toast / loading lifecycle.
+  const solveEstimateEndpoint = useCallback(
+    (_payload: void, { signal }: { signal: AbortSignal }) =>
+      estimateOptimiserSolve(
+        {
+          graph: buildGraphCb(),
+          node_id: nodeId,
+          source: activeSource,
+        },
+        { signal },
+      ),
+    [buildGraphCb, nodeId, activeSource],
+  )
+  const {
+    configHash: currentConfigHash,
+    isStale,
+    estimate: solveEstimate,
+  } = useStaleConfigEstimate(
+    nodeId,
+    config,
+    cachedResult,
+    solveEstimateEndpoint,
+    {
+      toastLabel: "Solve estimate failed",
+      estimateKey: `${activeSource}:${structuralVersion}`,
+    },
   )
 
   // --- Constraints helpers ---
@@ -568,9 +611,9 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
 
       {/* Staleness indicator */}
       {isStale && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.08)", border: "1px solid rgba(245,158,11,.2)" }}>
-          <RefreshCw size={12} style={{ color: "#f59e0b" }} className="shrink-0" />
-          <span style={{ color: "#fbbf24" }}>Config changed since last solve</span>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)" }}>
+          <RefreshCw size={12} style={{ color: "var(--warning-strong)" }} className="shrink-0" />
+          <span style={{ color: "var(--warning)" }}>Config changed since last solve</span>
           <button
             onClick={handleSolve}
             disabled={solving || !canSolve}
@@ -579,6 +622,16 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
           >
             Re-run
           </button>
+        </div>
+      )}
+
+      {/* Source size preview (hidden when unreadable — metadata isn't available for live data) */}
+      {solveEstimate && solveEstimate.total_rows != null && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-[11px]" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
+          <span style={{ color: "var(--text-muted)" }}>Source rows</span>
+          <span className="font-mono ml-auto" style={{ color: "var(--text-primary)" }}>
+            {solveEstimate.total_rows.toLocaleString()}
+          </span>
         </div>
       )}
 
@@ -616,7 +669,7 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
             className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
             style={{
               background: accentColor,
-              color: "#fff",
+              color: "var(--text-on-accent)",
               opacity: !canSolve ? 0.5 : 1,
             }}
           >
@@ -628,12 +681,12 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
 
       {/* Error */}
       {solveError && (
-        <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)" }}>
+        <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
           <div className="flex items-start gap-2">
-            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "#ef4444" }} />
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} />
             <div className="space-y-1 min-w-0">
-              <div className="font-semibold" style={{ color: "#ef4444" }}>Optimisation failed</div>
-              <div style={{ color: "#fca5a5", lineHeight: "1.5" }}>{solveError}</div>
+              <div className="font-semibold" style={{ color: "var(--danger)" }}>Optimisation failed</div>
+              <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{solveError}</div>
             </div>
           </div>
         </div>
@@ -644,11 +697,11 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
         <div className="space-y-2">
           {/* Non-convergence warning banner */}
           {!solveResult.converged && (
-            <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(245,158,11,.1)", border: "1px solid rgba(245,158,11,.25)" }}>
-              <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "#f59e0b" }} />
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-strong)", border: "1px solid var(--warning-border-strong)" }}>
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--warning-strong)" }} />
               <div>
-                <div className="font-semibold" style={{ color: "#f59e0b" }}>Solver did not converge</div>
-                <div style={{ color: "#fbbf24", lineHeight: "1.5" }}>
+                <div className="font-semibold" style={{ color: "var(--warning-strong)" }}>Solver did not converge</div>
+                <div style={{ color: "var(--warning)", lineHeight: "1.5" }}>
                   {solveResult.warning || "Try increasing max iterations or relaxing the tolerance."}
                 </div>
               </div>
@@ -656,8 +709,8 @@ export default function OptimiserConfig({ config, onUpdate, allNodes, edges, sub
           )}
 
           {/* Convergence status */}
-          <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "rgba(34,197,94,.1)" : "rgba(245,158,11,.06)", border: `1px solid ${solveResult.converged ? "rgba(34,197,94,.2)" : "rgba(245,158,11,.15)"}` }}>
-            <div style={{ color: solveResult.converged ? "#22c55e" : "#f59e0b" }}>
+          <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "var(--success-soft)" : "var(--warning-soft-subtle)", border: `1px solid ${solveResult.converged ? "var(--success-border)" : "var(--warning-soft-selected)"}` }}>
+            <div style={{ color: solveResult.converged ? "var(--success)" : "var(--warning-strong)" }}>
               {solveResult.converged ? "Converged" : "Did not converge"}
               {solveResult.mode === "ratebook"
                 ? ` in ${solveResult.cd_iterations ?? "?"} CD iterations`

@@ -133,9 +133,13 @@ class TestCreateUtilityFile:
             },
         )
         assert res.status_code == 400
+        # Item #76: detail is a flat string, not a nested dict. The line
+        # number must still be embedded so the frontend can extract it
+        # with a /line (\d+)/ regex.
         detail = res.json()["detail"]
-        assert detail["error_line"] is not None
-        assert detail["error"] is not None
+        assert isinstance(detail, str)
+        assert "line" in detail.lower()
+        assert "1" in detail  # SyntaxError reports line 1 for "def foo(\n"
 
     def test_rejects_duplicate(self, client: TestClient, tmp_path: Path) -> None:
         d = tmp_path / "utility"
@@ -147,12 +151,17 @@ class TestCreateUtilityFile:
         assert res.status_code == 409
 
     def test_rejects_invalid_name(self, client: TestClient) -> None:
+        # Item #76: ``_validate_module_name`` raises 400 with a flat string
+        # detail.  Previously Pydantic's Field(pattern=) produced a 422 with
+        # a structured list body, which violated the #76 contract.
         res = client.post("/api/utility", json={"name": "123bad"})
-        assert res.status_code == 422
+        assert res.status_code == 400
+        assert isinstance(res.json()["detail"], str)
 
     def test_rejects_path_traversal(self, client: TestClient) -> None:
         res = client.post("/api/utility", json={"name": "../../etc/passwd"})
-        assert res.status_code == 422
+        assert res.status_code == 400
+        assert isinstance(res.json()["detail"], str)
 
     def test_creates_utility_directory(self, client: TestClient, tmp_path: Path) -> None:
         """utility/ dir is created on first file create."""
@@ -186,9 +195,10 @@ class TestUpdateUtilityFile:
 
         res = client.put("/api/utility/helpers", json={"content": "def foo(\n"})
         assert res.status_code == 400
+        # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
-        assert detail["error_line"] is not None
-        assert detail["error"] is not None
+        assert isinstance(detail, str)
+        assert "line" in detail.lower()
         # Original file should be unchanged
         assert (d / "helpers.py").read_text() == "x = 1\n"
 
@@ -263,19 +273,22 @@ class TestAutoImportIntegration:
 
 class TestPathTraversalSecurity:
     @pytest.mark.parametrize(
-        "name,expected_status",
+        "name",
         [
-            ("__init__", 400),
-            ("__main__", 400),
-            ("123starts_with_digit", 422),
-            ("has-dashes", 422),
-            ("has spaces", 422),
-            ("has.dots", 422),
+            "__init__",
+            "__main__",
+            "123starts_with_digit",
+            "has-dashes",
+            "has spaces",
+            "has.dots",
         ],
     )
-    def test_create_blocked(self, client: TestClient, name: str, expected_status: int) -> None:
+    def test_create_blocked(self, client: TestClient, name: str) -> None:
+        # Item #76: all name-validation failures produce a 400 with a
+        # flat string detail (handler-level validation, not Pydantic).
         res = client.post("/api/utility", json={"name": name})
-        assert res.status_code == expected_status
+        assert res.status_code == 400
+        assert isinstance(res.json()["detail"], str)
 
     @pytest.mark.parametrize(
         "module",
@@ -307,10 +320,11 @@ class TestSyntaxErrorReturns400:
             },
         )
         assert res.status_code == 400
+        # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
-        assert "error" in detail
-        assert "error_line" in detail
-        assert detail["error_line"] is not None
+        assert isinstance(detail, str)
+        assert "syntax" in detail.lower()
+        assert "line" in detail.lower()
         # File must NOT have been written
         assert not (tmp_path / "utility" / "broken.py").exists()
 
@@ -321,9 +335,11 @@ class TestSyntaxErrorReturns400:
 
         res = client.put("/api/utility/mymod", json={"content": "if True\n"})
         assert res.status_code == 400
+        # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
-        assert detail["error"] is not None
-        assert detail["error_line"] is not None
+        assert isinstance(detail, str)
+        assert "syntax" in detail.lower()
+        assert "line" in detail.lower()
         # Original file must be unchanged
         assert (d / "mymod.py").read_text() == "x = 1\n"
 

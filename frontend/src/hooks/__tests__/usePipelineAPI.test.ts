@@ -4,7 +4,7 @@ import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
@@ -56,7 +56,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
-    lastSavedRef: { current: "" },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -67,8 +66,15 @@ describe("usePipelineAPI", () => {
     vi.useRealTimers()
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
-    useUIStore.setState({ dirty: false })
-    useNodeResultsStore.setState({ previews: {}, graphVersion: 0, columnCache: {} })
+    useGraphStore.setState({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      lastSavedSnapshot: null,
+      undoStack: [],
+      redoStack: [],
+    })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
 
@@ -97,6 +103,30 @@ describe("usePipelineAPI", () => {
     expect(params.setPreamble).toHaveBeenCalledWith("import polars as pl")
   })
 
+  it("loads successful backend responses with nullable metadata", async () => {
+    mockLoad.mockResolvedValue({
+      nodes: [],
+      edges: [],
+      pipeline_name: null,
+      pipeline_description: null,
+      preamble: null,
+      source_file: null,
+      submodels: null,
+      warning: null,
+    })
+
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    const toasts = useToastStore.getState().toasts
+    expect(toasts.some((t) => t.type === "error" && t.text.includes("Failed to load pipeline"))).toBe(false)
+    expect(params.setNodesRaw).toHaveBeenCalledWith([])
+    expect(params.setEdgesRaw).toHaveBeenCalledWith([])
+    expect(params.setPreamble).not.toHaveBeenCalled()
+  })
+
   it("shows toast on load failure", async () => {
     mockLoad.mockRejectedValue(new Error("Server down"))
     const params = makeParams()
@@ -112,6 +142,10 @@ describe("usePipelineAPI", () => {
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    // handleSave reads graphRef for the save payload, but markSaved()
+    // captures from useGraphStore — keep the two in sync so isDirty()
+    // reports false after save.
+    useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     await act(async () => {
@@ -121,7 +155,9 @@ describe("usePipelineAPI", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.some((t) => t.type === "success" && t.text.includes("pricing.py"))).toBe(true)
     })
-    expect(useUIStore.getState().dirty).toBe(false)
+    // After save, useGraphStore.lastSavedSnapshot captures the current
+    // state so isDirty() returns false — the new derived-dirty contract.
+    expect(useGraphStore.getState().isDirty()).toBe(false)
   })
 
   it("handleSave shows error toast on failure", async () => {

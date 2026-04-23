@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
-from haute.graph_utils import GraphNode, NodeData, PipelineGraph
-from haute.codegen import graph_to_code
 from haute._parser_helpers import _build_node_config
+from haute.codegen import graph_to_code
 from tests.conftest import make_edge, make_graph
-
 
 # ---------------------------------------------------------------------------
 # Code generation
@@ -198,7 +194,9 @@ class TestModelScoreCodegen:
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
                                 "output_column": "prediction",
-                                "code": 'result = result.with_columns(doubled=pl.col("prediction") * 2)',
+                                "code": (
+                                    'result = result.with_columns(doubled=pl.col("prediction") * 2)'
+                                ),
                             },
                         },
                     },
@@ -317,8 +315,9 @@ class TestParserRoundTrip:
         # Auto-generated scaffolding must NOT leak into config["code"]
         assert scorer.data.config.get("code", "") == ""
 
-    def test_roundtrip_preserves_user_code(self):
+    def test_roundtrip_preserves_user_code(self, tmp_path):
         """User post-processing code survives codegen → parse round-trip."""
+        from haute._config_io import collect_node_configs
         from haute.parser import parse_pipeline_source
 
         graph = make_graph(
@@ -353,7 +352,13 @@ class TestParserRoundTrip:
         )
         code = graph_to_code(graph)
 
-        parsed = parse_pipeline_source(code)
+        # Post Item #18: parser requires sidecar config files to exist.
+        for rel_path, content in collect_node_configs(graph).items():
+            cfg_file = tmp_path / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content)
+
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         node_map = {n.data.label: n for n in parsed.nodes}
         scorer = node_map["scorer"]
         assert "doubled" in scorer.data.config.get("code", "")

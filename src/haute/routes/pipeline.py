@@ -4,19 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tomllib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from haute._logging import get_logger
-from haute.graph_utils import PipelineGraph
+from haute._topo import ancestors
+from haute.errors import ContractMismatchError
+from haute.executor import _preview_cache, execute_graph, execute_sink
+from haute.graph_utils import (
+    PipelineGraph,
+    _prune_live_switch_edges,
+    flatten_graph,
+)
+from haute.parser import parse_pipeline_file
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
     lookup_pipeline_by_name,
     parse_pipeline_to_graph,
+    pipeline_dir,
     raise_pipeline_not_found,
 )
+from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._timeouts import run_blocking_with_response_timeout
 from haute.schemas import (
     NodeMemoryInfo,
     NodeTimingInfo,
@@ -30,6 +42,7 @@ from haute.schemas import (
     TraceRequest,
     TraceResponse,
 )
+from haute.trace import execute_trace, trace_result_to_dict
 
 logger = get_logger(component="server.pipeline")
 
@@ -52,8 +65,6 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
     if not toml_path.exists():
         return
     try:
-        import tomllib
-
         with open(toml_path, "rb") as f:
             configured = tomllib.load(f).get("project", {}).get("pipeline")
         if configured:
@@ -65,8 +76,6 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
 @router.get("/pipelines", response_model=list[PipelineSummary])
 async def list_pipelines() -> list[PipelineSummary]:
     """List all discovered pipelines."""
-    from haute.parser import parse_pipeline_file
-
     files = discover_pipelines()
     cwd = Path.cwd()
 
@@ -152,9 +161,6 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     When the graph contains submodels, multiple files are written via
     ``graph_to_code_multi``.
     """
-    from haute.routes._helpers import pipeline_dir
-    from haute.routes._save_pipeline import SavePipelineService
-
     svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
     return svc.save(body)
 
@@ -162,27 +168,30 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> TraceResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
-    from haute.graph_utils import flatten_graph
-    from haute.trace import execute_trace, trace_result_to_dict
-
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
 
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_trace,
-                graph,
-                row_index=body.row_index,
-                target_node_id=body.target_node_id,
-                column=body.column,
-                row_limit=body.row_limit,
-                source=body.source,
-                row_values=body.row_values,
-            ),
+        result = await run_blocking_with_response_timeout(
+            execute_trace,
+            graph,
+            row_index=body.row_index,
+            target_node_id=body.target_node_id,
+            column=body.column,
+            row_limit=body.row_limit,
+            source=body.source,
+            row_values=body.row_values,
+            # Inject the executor's preview cache explicitly so the
+            # trace module is not coupled to a private singleton on
+            # another module.  ``FingerprintCache``
+            # already satisfies the :class:`~haute.trace.PreviewReader`
+            # protocol — its ``try_get`` returns the slot dict on hit
+            # or ``None`` on miss.
+            preview=_preview_cache,
             timeout=_TRACE_TIMEOUT,
+            operation="pipeline_trace",
         )
         return TraceResponse(
             status="ok",
@@ -195,6 +204,27 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
         )
     except HTTPException:
         raise
+    except ContractMismatchError as e:
+        # Contract mismatches carry the node id and the symmetric column
+        # diff in ``str(e)``.  Surface that directly (422 Unprocessable
+        # Entity) instead of collapsing it into the generic 500
+        # "check the logs" reply — the point of the contract error is
+        # that the user can fix the bad contract in one edit.
+        logger.warning("trace_contract_mismatch", error=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
+    except ValueError as e:
+        detail = str(e)
+        if detail.startswith("Trace data does not match"):
+            logger.warning("trace_row_mismatch", error=detail)
+            raise HTTPException(status_code=409, detail=detail)
+        if detail.startswith("row_index ") and "out of range" in detail:
+            logger.warning("trace_row_out_of_range", error=detail)
+            raise HTTPException(status_code=400, detail=detail)
+        if detail.startswith("Target node ") and "not found in graph" in detail:
+            logger.warning("trace_target_not_found", error=detail)
+            raise HTTPException(status_code=404, detail=detail)
+        logger.error("trace_failed", error=detail)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     except Exception as e:
         logger.error("trace_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
@@ -207,28 +237,21 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     Accepts an optional ``row_limit`` (default 100) that is pushed into
     the Polars lazy query plan so only that many rows are scanned.
     """
-    from haute._topo import ancestors
-    from haute.executor import execute_graph
-    from haute.graph_utils import (
-        _prune_live_switch_edges,
-        flatten_graph,
-    )
-
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
 
     try:
-        results = await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_graph,
-                graph,
-                target_node_id=body.node_id,
-                row_limit=body.row_limit,
-                source=body.source,
-            ),
+        results = await run_blocking_with_response_timeout(
+            execute_graph,
+            graph,
+            target_node_id=body.node_id,
+            row_limit=body.row_limit,
+            source=body.source,
+            target_preview_only=True,
             timeout=_PREVIEW_TIMEOUT,
+            operation="pipeline_preview",
         )
         node_result = results.get(body.node_id)
         if not node_result:
@@ -302,6 +325,19 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         )
     except HTTPException:
         raise
+    except ContractMismatchError as e:
+        # ``_execute_eager_core`` re-raises ``ContractMismatchError`` even
+        # with ``swallow_errors=True`` (API-level violation, not a per-node
+        # transient failure), so the preview path can receive one here.
+        # Surface the node + column diagnostic from ``str(e)`` via the
+        # target node's ``NodeResult.error`` — the frontend renders that
+        # field in-situ, which is a better UX than a generic 500 banner.
+        logger.warning("preview_contract_mismatch", error=str(e))
+        return PreviewNodeResponse(
+            node_id=body.node_id,
+            status="error",
+            error=str(e),
+        )
     except Exception as e:
         logger.error("preview_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
@@ -313,23 +349,19 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
 
     Only called on explicit user action (Write button), not during normal run/preview.
     """
-    from haute.executor import execute_sink
-    from haute.graph_utils import flatten_graph
-
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
 
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_sink,
-                graph,
-                sink_node_id=body.node_id,
-                source=body.source,
-            ),
+        result = await run_blocking_with_response_timeout(
+            execute_sink,
+            graph,
+            sink_node_id=body.node_id,
+            source=body.source,
             timeout=_SINK_TIMEOUT,
+            operation="pipeline_sink",
         )
         return result
     except TimeoutError:

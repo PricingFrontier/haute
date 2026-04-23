@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { HardDriveDownload } from "lucide-react"
-import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./_shared"
+import type { OnUpdateConfig } from "./_shared"
 import { executeSink } from "../../api/client"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
@@ -8,26 +8,20 @@ import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { EditorLabel } from "../../components/form"
+import { useGraph } from "../useGraph"
 
 export default function SinkEditor({
   config,
   onUpdate,
   nodeId,
-  allNodes,
-  edges,
-  submodels,
-  preamble,
   accentColor,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   nodeId: string
-  allNodes: SimpleNode[]
-  edges: SimpleEdge[]
-  submodels?: Record<string, unknown>
-  preamble?: string
   accentColor: string
 }) {
+  const { allNodes, edges, submodels, preamble } = useGraph()
   const format = configField(config, "format", "parquet")
   const [writing, setWriting] = useState(false)
   const [writeResult, setWriteResult] = useState<{ status: string; message: string } | null>(null)
@@ -79,20 +73,22 @@ export default function SinkEditor({
           placeholder=""
           value={localPath}
           onChange={(e) => { setLocalPath(e.target.value); onUpdate("path", e.target.value) }}
-          className="w-full px-2.5 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = withAlpha(accentColor, 0.3); e.currentTarget.style.boxShadow = `0 0 0 2px ${withAlpha(accentColor, 0.1)}` }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
+          className="focus-ring w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
+          style={{
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-primary)',
+            ['--focus-ring-border' as string]: withAlpha(accentColor, 0.3),
+            ['--focus-ring-shadow' as string]: withAlpha(accentColor, 0.1),
+          }}
         />
       </div>
 
       <button
         onClick={handleWrite}
         disabled={!hasPath || writing}
-        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold rounded-lg transition-colors disabled:opacity-40"
-        style={{ background: accentColor, color: '#000' }}
-        onMouseEnter={(e) => { if (hasPath && !writing) e.currentTarget.style.opacity = '0.85' }}
-        onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
+        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold rounded-lg transition-opacity disabled:opacity-40 enabled:hover:opacity-85"
+        style={{ background: accentColor, color: 'var(--text-on-light-accent)' }}
       >
         <HardDriveDownload size={14} />
         {writing ? "Writing..." : "Write"}
@@ -102,9 +98,9 @@ export default function SinkEditor({
         <div
           className="px-2.5 py-2 rounded-lg text-xs"
           style={{
-            background: writeResult.status === "ok" ? 'rgba(34,197,94,.1)' : 'rgba(239,68,68,.1)',
-            border: writeResult.status === "ok" ? '1px solid rgba(34,197,94,.2)' : '1px solid rgba(239,68,68,.2)',
-            color: writeResult.status === "ok" ? '#4ade80' : '#f87171',
+            background: writeResult.status === "ok" ? 'var(--success-soft)' : 'var(--danger-soft)',
+            border: writeResult.status === "ok" ? '1px solid var(--success-border)' : '1px solid var(--danger-border)',
+            color: writeResult.status === "ok" ? 'var(--success-hover)' : 'var(--danger-text)',
           }}
         >
           {writeResult.message}

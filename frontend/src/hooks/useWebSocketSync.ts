@@ -4,6 +4,7 @@ import { getLayoutedElements } from "../utils/layout"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
+import useGraphStore from "../stores/useGraphStore"
 
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
 
@@ -20,10 +21,14 @@ interface WebSocketSyncParams {
 const MAX_RETRIES = 50
 
 // After replacing nodes, React Flow fires onSelectionChange before the new
-// nodes are committed.  This guard window lets that spurious event pass.
+// nodes are committed. This guard window lets that spurious event pass.
 const SELECTION_CHANGE_GUARD_MS = 150
 const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
+
+function formatSyncError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
 
 export default function useWebSocketSync({
   setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
@@ -52,51 +57,105 @@ export default function useWebSocketSync({
       }
 
       ws.onmessage = async (event) => {
+        let msg: Record<string, unknown>
         try {
-          const msg = JSON.parse(event.data)
+          msg = JSON.parse(event.data)
+        } catch (err) {
+          addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
+          return
+        }
 
-          if (msg.type === "graph_update" && msg.graph) {
+        if (msg.type === "graph_update" && msg.graph) {
+          const g = msg.graph as {
+            nodes?: Node[]
+            edges?: Edge[]
+            preamble?: string
+            warning?: string
+          }
 
-            const g = msg.graph
+          try {
             const newNodes = g.nodes || []
             const newEdges = normalizeEdges(g.edges || [])
-
             const hasPositions = newNodes.some(
-              (n: Node) => n.position && (n.position.x !== 0 || n.position.y !== 0)
+              (n: Node) => n.position && (n.position.x !== 0 || n.position.y !== 0),
             )
+            const nodesToApply = hasPositions
+              ? newNodes
+              : await getLayoutedElements(newNodes, newEdges)
+
+            const previousGraph = useGraphStore.getState() as Partial<{
+              nodes: Node[]
+              edges: Edge[]
+              preamble: string
+            }>
+            const canRollback =
+              Array.isArray(previousGraph.nodes) && Array.isArray(previousGraph.edges)
+            const previousPreamble =
+              typeof previousGraph.preamble === "string"
+                ? previousGraph.preamble
+                : preambleRef.current
 
             // Guard: prevent React Flow's onSelectionChange from clearing
             // the open panel while we replace nodes.
             graphRefreshingRef.current += 1
             try {
-              if (hasPositions) {
-                setNodesRaw(newNodes)
-              } else {
-                const layouted = await getLayoutedElements(newNodes, newEdges)
-                setNodesRaw(layouted)
-              }
+              setNodesRaw(nodesToApply)
               setEdgesRaw(newEdges)
+              const nextPreamble = g.preamble !== undefined
+                ? (g.preamble || "")
+                : preambleRef.current
               if (g.preamble !== undefined) {
-                setPreamble(g.preamble || "")
-                preambleRef.current = g.preamble || ""
+                setPreamble(nextPreamble)
+                preambleRef.current = nextPreamble
               }
               nodeIdCounter.current = computeNextNodeId(newNodes)
               setSyncBanner(null)
-              // The GUI is now in sync with the file on disk — not dirty.
-              useUIStore.getState().setDirty(false)
-              addToast("info", "Pipeline updated from file")
-              if (g.warning) addToast("warning", g.warning)
-              setTimeout(() => fitView({ padding: 0.8 }), 100)
+              useGraphStore.getState().markSaved()
+            } catch (err) {
+              if (canRollback) {
+                try {
+                  setNodesRaw(previousGraph.nodes!)
+                  setEdgesRaw(previousGraph.edges!)
+                  if (g.preamble !== undefined) {
+                    setPreamble(previousPreamble)
+                    preambleRef.current = previousPreamble
+                  }
+                } catch {
+                  // Keep the original sync error; the toast below still
+                  // tells the user the refresh did not apply cleanly.
+                }
+              }
+              throw err
             } finally {
-              setTimeout(() => { graphRefreshingRef.current -= 1 }, SELECTION_CHANGE_GUARD_MS)
+              setTimeout(() => {
+                graphRefreshingRef.current = Math.max(0, graphRefreshingRef.current - 1)
+              }, SELECTION_CHANGE_GUARD_MS)
             }
-          }
 
-          if (msg.type === "parse_error") {
-            setSyncBanner(msg.error || "Parse error in pipeline file")
+            // Clear UI that references nodes removed by this graph update.
+            const newNodeIds = new Set<string>(newNodes.map((n) => n.id))
+            const ui = useUIStore.getState()
+            if (ui.renameDialog && !newNodeIds.has(ui.renameDialog.nodeId)) {
+              ui.setRenameDialog(null)
+            }
+            if (
+              ui.submodelDialog &&
+              ui.submodelDialog.nodeIds.some((id) => !newNodeIds.has(id))
+            ) {
+              ui.setSubmodelDialog(null)
+            }
+
+            addToast("info", "Pipeline updated from file")
+            if (g.warning) addToast("warning", g.warning)
+            setTimeout(() => fitView({ padding: 0.8 }), 100)
+          } catch (err) {
+            addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
           }
-        } catch (err) {
-          addToast("error", `WebSocket sync error: ${err instanceof Error ? err.message : String(err)}`)
+          return
+        }
+
+        if (msg.type === "parse_error") {
+          setSyncBanner(String(msg.error || "Parse error in pipeline file"))
         }
       }
 

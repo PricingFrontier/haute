@@ -5,15 +5,14 @@ import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
 import { formatValueCompact } from "../utils/formatValue"
 import useSettingsStore from "../stores/useSettingsStore"
-import type { HauteNodeData } from "../types/node"
+import { STATUS_COLORS } from "../theme/colors"
+import type { PipelineFlowNode } from "../types/node"
 
 const statusColors: Record<string, string> = {
-  ok: "#22c55e",
-  error: "#ef4444",
-  running: "#6366f1",
+  ok: "var(--success)",
+  error: "var(--danger)",
+  running: STATUS_COLORS.running,
 }
-
-export type PipelineNodeData = HauteNodeData
 
 /** Isolated component so only LiveSwitch nodes subscribe to the settings store. */
 function LiveSwitchBadge({ accent }: { accent: string }) {
@@ -37,8 +36,7 @@ const zoomSelector = (s: { transform: [number, number, number] }) => {
   return "compact"
 }
 
-function PipelineNode({ data, selected }: NodeProps) {
-  const nodeData = data as unknown as PipelineNodeData
+function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
   const nodeType = nodeData.nodeType || NODE_TYPES.POLARS
   const Icon = nodeTypeIcons[nodeType] || PolarsIcon
   const accent = nodeTypeColors[nodeType] || nodeTypeColors[NODE_TYPES.POLARS]
@@ -194,7 +192,7 @@ function PipelineNode({ data, selected }: NodeProps) {
         {hasWarnings && nodeData._status !== "error" && (
           <span
             className={`${!nodeData._status && !isDeployInput ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0`}
-            style={{ backgroundColor: "#f59e0b" }}
+            style={{ backgroundColor: "var(--warning-strong)" }}
             role="status"
             aria-label="Node has schema warnings"
           />

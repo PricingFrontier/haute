@@ -17,14 +17,14 @@ repos:
 
       - id: frontend-typecheck
         name: Frontend type check
-        entry: bash -c 'cd frontend && npx tsc -b --noEmit'
+        entry: npm --prefix frontend run typecheck
         language: system
         files: '^frontend/src/.*\.(ts|tsx)$'
         pass_filenames: false
 
       - id: frontend-lint
         name: Frontend lint
-        entry: bash -c 'cd frontend && npm run lint'
+        entry: npm --prefix frontend run lint
         language: system
         files: '^frontend/src/.*\.(ts|tsx)$'
         pass_filenames: false

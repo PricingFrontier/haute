@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -11,7 +12,10 @@ from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.graph_utils import flatten_graph
 from haute.parser import parse_pipeline_file
 from tests.conftest import make_graph as _g
+from tests.conftest import write_data_source_config
 
+if TYPE_CHECKING:
+    from haute.graph_utils import PipelineGraph
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -238,6 +242,7 @@ class TestCodegenMultiFile:
 class TestParserSubmodel:
     def test_parse_main_with_submodel(self, tmp_path):
         """Parser should detect pipeline.submodel() calls."""
+        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
         _write(
             tmp_path,
             "modules/scoring.py",
@@ -262,7 +267,7 @@ class TestParserSubmodel:
 
             pipeline = haute.Pipeline("test")
 
-            @pipeline.data_source(path="data/in.parquet")
+            @pipeline.data_source(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
@@ -281,16 +286,17 @@ class TestParserSubmodel:
 
     def test_parse_flat_pipeline(self, tmp_path):
         """A pipeline without submodels should parse normally."""
+        source_config = write_data_source_config(tmp_path, "Source", "data/in.parquet")
         _write(
             tmp_path,
             "main.py",
-            """\
+            f"""\
             import polars as pl
             import haute
 
             pipeline = haute.Pipeline("basic")
 
-            @pipeline.data_source(path="data/in.parquet")
+            @pipeline.data_source(config="{source_config}")
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 

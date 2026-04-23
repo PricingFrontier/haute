@@ -145,9 +145,9 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
         disabled={!resourceKey || (building && !cancelFetchFn)}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
         style={{
-          background: building && cancelFetchFn ? 'rgba(239,68,68,.1)' : cache?.cached ? 'rgba(34,197,94,.1)' : 'var(--accent-soft)',
-          border: building && cancelFetchFn ? '1px solid rgba(239,68,68,.3)' : cache?.cached ? '1px solid rgba(34,197,94,.3)' : '1px solid var(--accent)',
-          color: building && cancelFetchFn ? '#ef4444' : cache?.cached ? '#22c55e' : 'var(--accent)',
+          background: building && cancelFetchFn ? 'var(--danger-soft)' : cache?.cached ? 'var(--success-soft)' : 'var(--accent-soft)',
+          border: building && cancelFetchFn ? '1px solid var(--danger-border-strong)' : cache?.cached ? '1px solid var(--success-border-strong)' : '1px solid var(--accent)',
+          color: building && cancelFetchFn ? 'var(--danger)' : cache?.cached ? 'var(--success)' : 'var(--accent)',
         }}
       >
         {building ? (
@@ -177,7 +177,7 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
           <button
             onClick={doDelete}
             className="inline-flex items-center gap-0.5 hover:opacity-70 transition-opacity"
-            style={{ color: '#ef4444' }}
+            style={{ color: 'var(--danger)' }}
             title="Delete cached data"
           >
             <Trash2 size={10} /> clear
@@ -186,13 +186,13 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
       )}
 
       {!cache?.cached && resourceKey && !building && (
-        <div className="mt-1.5 text-[10px] px-1" style={{ color: '#f59e0b' }}>
+        <div className="mt-1.5 text-[10px] px-1" style={{ color: 'var(--warning-strong)' }}>
           {labels.notCachedHint}
         </div>
       )}
 
       {error && (
-        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'rgba(239,68,68,.1)', color: '#ef4444' }}>
+        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
           {error}
         </div>
       )}

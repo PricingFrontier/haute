@@ -123,7 +123,7 @@ export function BreakpointGrid({
                       <button
                         aria-label="Delete breakpoint"
                         onClick={() => removeBreakpoint(i)}
-                        className="p-0.5 rounded transition-colors hover:text-[#ef4444] focus-visible:text-[#ef4444]"
+                        className="p-0.5 rounded transition-colors hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
                         style={{ color: "var(--text-muted)" }}
                       >
                         <Trash size={11} />

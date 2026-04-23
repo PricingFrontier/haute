@@ -153,7 +153,7 @@ export function GenerateBandsDialog({
       </div>
 
       {error && (
-        <div className="text-[11px] font-medium" style={{ color: "#ef4444" }}>
+        <div className="text-[11px] font-medium" style={{ color: "var(--danger)" }}>
           {error}
         </div>
       )}

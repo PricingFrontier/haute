@@ -138,7 +138,7 @@ describe("PALETTE_TYPES", () => {
   })
 })
 
-describe("derived lookups (backward compat)", () => {
+describe("derived lookups", () => {
   it("nodeTypeIcons has an icon for every node type", () => {
     for (const value of Object.values(NODE_TYPES)) {
       expect(nodeTypeIcons[value]).toBeDefined()

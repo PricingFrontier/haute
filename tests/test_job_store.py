@@ -1133,7 +1133,9 @@ class TestEvictionDuringIteration:
             """Mimic _check_no_concurrent_jobs — iterate .jobs.items()."""
             for _ in range(100):
                 try:
-                    running = [jid for jid, j in store.jobs.items() if j.get("status") == "running"]
+                    # Exercise iteration — the result itself is not under test,
+                    # we're confirming iteration doesn't raise during concurrent mutation.
+                    [jid for jid, j in store.jobs.items() if j.get("status") == "running"]
                 except Exception as exc:
                     errors.append(exc)
 

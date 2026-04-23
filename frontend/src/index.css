@@ -21,10 +21,82 @@
   --text-secondary: #828899;
   --text-muted: #4e5463;
   --text-accent: #60a5fa;
+  --text-accent-rgb: 96, 165, 250;
+  --text-accent-muted: rgba(96,165,250,.5);
+  --text-accent-soft: rgba(96,165,250,.08);
+  --text-accent-border: rgba(96,165,250,.12);
+  --text-accent-line: rgba(96,165,250,.15);
+  --text-accent-dot: rgba(96,165,250,.25);
+  --text-accent-glow: rgba(96,165,250,.35);
+  --text-accent-strong: rgba(96,165,250,.4);
+  --text-accent-heavy: rgba(96,165,250,.6);
+  --text-on-accent: #fff;
+  --text-on-light-accent: #000;
 
   /* Accent - clean blue */
   --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-soft-whisper: rgba(59,130,246,.01);
+  --accent-soft-faint: rgba(59,130,246,.04);
+  --accent-soft-subtle: rgba(59,130,246,.08);
   --accent-soft: rgba(59,130,246,.12);
+  --accent-soft-strong: rgba(59,130,246,.15);
+  --accent-soft-hover: rgba(59,130,246,.20);
+  --accent-selection: rgba(59,130,246,.25);
+  --accent-ring: rgba(59,130,246,.30);
+  --accent-outline: rgba(59,130,246,.40);
+
+  /* Status states */
+  --success: #22c55e;
+  --success-hover: #4ade80;
+  --success-soft-subtle: rgba(34,197,94,.06);
+  --success-soft-faint: rgba(34,197,94,.08);
+  --success-soft: rgba(34,197,94,.10);
+  --success-soft-mid: rgba(34,197,94,.12);
+  --success-soft-strong: rgba(34,197,94,.15);
+  --success-border: rgba(34,197,94,.20);
+  --success-border-strong: rgba(34,197,94,.30);
+  --warning: #fbbf24;
+  --warning-strong: #f59e0b;
+  --warning-soft-subtle: rgba(245,158,11,.06);
+  --warning-soft: rgba(245,158,11,.08);
+  --warning-soft-strong: rgba(245,158,11,.10);
+  --warning-soft-emphasis: rgba(245,158,11,.12);
+  --warning-soft-selected: rgba(245,158,11,.15);
+  --warning-bright-soft: rgba(251,191,36,.12);
+  --warning-bright-soft-strong: rgba(251,191,36,.15);
+  --warning-border: rgba(245,158,11,.20);
+  --warning-border-strong: rgba(245,158,11,.25);
+  --warning-border-emphasis: rgba(245,158,11,.30);
+  --warning-search: rgba(234,179,8,.30);
+  --warning-search-selected: rgba(234,179,8,.50);
+  --warning-search-outline: rgba(234,179,8,.50);
+
+  /* Danger (destructive / remove / error states).  Used by menu-item--danger,
+     icon-danger-btn, node-close-btn.  Soft variant is the low-opacity
+     background for hover/focus; hover is the darker shade used when the
+     solid background should deepen on interaction. */
+  --danger: #ef4444;
+  --danger-rgb: 239, 68, 68;
+  --danger-text: #f87171;
+  --danger-text-soft: #fca5a5;
+  --danger-hover: #b91c1c;
+  --danger-solid: #dc2626;
+  --danger-soft-faint: rgba(239,68,68,.06);
+  --danger-soft-subtle: rgba(239,68,68,.08);
+  --danger-soft: rgba(239,68,68,.10);
+  --danger-soft-strong: rgba(239,68,68,.15);
+  --danger-border: rgba(239,68,68,.20);
+  --danger-border-strong: rgba(239,68,68,.30);
+
+  /* Elevated-chip rest background (TracePanel "N hidden" chip, etc.).
+     Slightly brighter than transparent so the chip reads as distinct
+     from its container without dominating. */
+  --chip-rest: rgba(255,255,255,.03);
+
+  /* Filled-button hover-pressed state: used by .add-row-btn.  Slightly
+     brighter than --chrome-hover so the "pressed" feedback is visible. */
+  --chrome-active: #1d2230;
 
   /* GLM significance & chart colors */
   --signif-high: #22c55e;
@@ -33,6 +105,50 @@
   --signif-marginal: #fbbf24;
   --chart-above: #a855f7;
   --chart-below: #3b82f6;
+  --chart-below-rgb: 59, 130, 246;
+  --chart-train: var(--model-accent);
+  --chart-eval: var(--success);
+  --chart-best: var(--warning-strong);
+  --chart-actual: var(--success);
+  --chart-predicted: var(--model-accent);
+  --chart-objective: var(--warning-strong);
+  --chart-lambda-change: var(--accent);
+  --chart-residual-zero: var(--danger);
+  --chart-cyan: #06b6d4;
+  --chart-banding-accent: #22d3ee;
+  --chart-positive: #4caf50;
+  --chart-negative: #f44336;
+  --chart-neutral: #9e9e9e;
+  --chart-series-1: var(--warning-strong);
+  --chart-series-2: var(--accent);
+  --chart-series-3: var(--success);
+  --chart-series-4: var(--danger);
+  --chart-series-5: var(--model-accent);
+  --chart-series-6: var(--chart-cyan);
+  --chart-series-7: #f97316;
+  --chart-series-8: #ec4899;
+  --model-accent: #a855f7;
+  --model-accent-soft: rgba(168,85,247,.15);
+  --model-accent-border: rgba(168,85,247,.30);
+  --model-log-action: var(--accent);
+  --structure-action: #64748b;
+  --structure-action-hover: #94a3b8;
+  --structure-port: var(--structure-action-hover);
+  --status-running: #6366f1;
+  --status-info: var(--status-running);
+
+  /* Code editor syntax */
+  --syntax-accent: #60a5fa;
+  --syntax-warning: #fbbf24;
+  --syntax-keyword: #c084fc;
+  --syntax-self: #f472b6;
+  --syntax-literal: #fb923c;
+  --syntax-string: #86efac;
+  --syntax-function: #93c5fd;
+  --syntax-property: #67e8f9;
+  --syntax-operator: var(--structure-action-hover);
+  --syntax-bracket: #cbd5e1;
+  --syntax-meta: #a78bfa;
 
   /* Node shadows - subtle, single layer */
   --node-shadow: 0 1px 4px rgba(0,0,0,.4);
@@ -40,6 +156,37 @@
   /* Borders */
   --border: rgba(255,255,255,.07);
   --border-bright: rgba(255,255,255,.10);
+
+  /* Scrollbars — low-alpha white overlays on the dark surface.
+     Track is barely visible; thumb is legible; hover brightens it
+     to confirm the grab target is interactive. */
+  --scroll-track: rgba(255,255,255,.04);
+  --scroll-thumb: rgba(255,255,255,.18);
+  --scroll-thumb-hover: rgba(255,255,255,.32);
+
+  /* React-flow node hover affordance — a subtle border + drop-shadow
+     lift + inset ring that together read as "interactive". */
+  --node-hover-border: rgba(255,255,255,.25);
+  --node-hover-shadow: rgba(0,0,0,.5);
+  --node-hover-ring: rgba(255,255,255,.08);
+
+  /* React-flow edge hover + selected-state colours.
+     `--edge-hover-stroke` is shared between the edge path and its
+     marker arrowhead (line 140 + line 156) so they stay in sync.
+     `--edge-selected-glow` is the alpha-shifted accent used in the
+     selected-edge drop-shadow filter. */
+  --edge-hover-stroke: rgba(255,255,255,.50);
+  --edge-selected-glow: rgba(59,130,246,.4);
+
+  /* Marquee selection rectangle — uses the text-accent (#60a5fa)
+     desaturated form with low alpha for the fill + half alpha for
+     the border so it reads as a translucent marquee on the canvas. */
+  --selection-fill: rgba(96,165,250,.08);
+  --selection-border: rgba(96,165,250,.5);
+
+  /* React-flow controls drop-shadow — deeper than node shadows so
+     the floating control cluster pops off the canvas. */
+  --controls-shadow: rgba(0,0,0,.3);
 }
 
 /* Native dropdown styling — forces dark background on option popups */
@@ -66,17 +213,17 @@ html, body, #root {
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: rgba(255,255,255,.04); border-radius: 5px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 5px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.32); }
+::-webkit-scrollbar-track { background: var(--scroll-track); border-radius: 5px; }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
 /* React Flow overrides */
 .react-flow__node {
   transition: filter 0.2s ease, box-shadow 0.15s ease !important;
 }
 .react-flow__node:hover:not(.selected) > div {
-  border-color: rgba(255,255,255,.25) !important;
-  box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.08) !important;
+  border-color: var(--node-hover-border) !important;
+  box-shadow: 0 2px 10px var(--node-hover-shadow), 0 0 0 1px var(--node-hover-ring) !important;
 }
 .react-flow__node-output {
   background: transparent !important;
@@ -118,7 +265,7 @@ html, body, #root {
 }
 /* Edge hover */
 .react-flow__edge:hover .react-flow__edge-path {
-  stroke: rgba(255,255,255,.50) !important;
+  stroke: var(--edge-hover-stroke) !important;
   stroke-width: 2px !important;
 }
 .react-flow__edge:hover {
@@ -128,13 +275,13 @@ html, body, #root {
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--accent) !important;
   stroke-width: 2.5 !important;
-  filter: drop-shadow(0 0 3px rgba(59,130,246,.4));
+  filter: drop-shadow(0 0 3px var(--edge-selected-glow));
 }
 .react-flow__edge.selected marker path {
   fill: var(--accent) !important;
 }
 .react-flow__edge:hover marker path {
-  fill: rgba(255,255,255,.50) !important;
+  fill: var(--edge-hover-stroke) !important;
 }
 /* Connection line (drag-to-connect) */
 .react-flow__connection-path {
@@ -144,8 +291,8 @@ html, body, #root {
 }
 /* Selection rectangle styling */
 .react-flow__selection {
-  background: rgba(96,165,250,.08) !important;
-  border: 1.5px solid rgba(96,165,250,.5) !important;
+  background: var(--selection-fill) !important;
+  border: 1.5px solid var(--selection-border) !important;
   border-radius: 4px !important;
 }
 .react-flow__nodesselection-rect {
@@ -159,7 +306,7 @@ html, body, #root {
   background: var(--bg-elevated) !important;
   border: 1px solid var(--border) !important;
   border-radius: 8px !important;
-  box-shadow: 0 4px 12px rgba(0,0,0,.3) !important;
+  box-shadow: 0 4px 12px var(--controls-shadow) !important;
 }
 .react-flow__controls button {
   background: transparent !important;
@@ -197,7 +344,291 @@ html, body, #root {
   color: var(--text-secondary);
   transition: background 150ms, color 150ms;
 }
-.hover-chrome:hover {
+.hover-chrome:hover,
+.hover-chrome:focus-visible {
   background: var(--chrome-hover);
   color: var(--text-primary);
+}
+
+/* Chrome toggle (e.g. collapsed-palette reveal button): rests on
+   var(--chrome) rather than transparent, but still hovers to
+   var(--chrome-hover).  Does NOT alter foreground color, since the
+   icon inside has its own explicit color. */
+.hover-chrome-solid {
+  background: var(--chrome);
+  transition: background 150ms;
+}
+.hover-chrome-solid:hover,
+.hover-chrome-solid:focus-visible {
+  background: var(--chrome-hover);
+}
+
+/* Generic bg hover for elevated surfaces (toast dismiss, interactive
+   table rows).  Rest is transparent; hover uses var(--bg-hover). */
+.hover-bg {
+  transition: background 150ms;
+}
+.hover-bg:hover,
+.hover-bg:focus-visible {
+  background: var(--bg-hover);
+}
+
+/* Shared hover: bottom-panel drag handles (DataPreview / OptimiserPreview /
+   OptimiserDataPreview / ModellingPreview).  Tints the 1px handle from the
+   subtle chrome border to the accent colour on hover, giving users feedback
+   that the handle is grabbable for vertical resize.  Pairs with the
+   `cursor-ns-resize` class already applied at the call site. */
+.drag-handle-hover {
+  background: var(--chrome-border);
+  transition: background 150ms;
+}
+.drag-handle-hover:hover {
+  background: var(--accent);
+}
+
+/* Breadcrumb crumb: non-last items hover to chrome-hover bg +
+   text-primary.  The `:not(:disabled)` guard preserves the existing
+   shape where the last (current) crumb is rendered with `disabled`
+   and must not react to hover.  Resting colors live here — NOT as
+   inline `style={{ color }}` on the <button> — because equal-specificity
+   inline styles would beat the `:hover` rule and prevent the color
+   change from firing. */
+.hover-crumb {
+  color: var(--text-muted);
+  transition: background 150ms, color 150ms;
+}
+.hover-crumb:disabled {
+  color: var(--text-primary);
+}
+.hover-crumb:not(:disabled):hover,
+.hover-crumb:not(:disabled):focus-visible {
+  background: var(--chrome-hover);
+  color: var(--text-primary);
+}
+
+/* Breakdown dropdown trigger: hovers to text-secondary color only
+   when the dropdown is closed AND there is data to show
+   (data-hover-enabled="true").  Matches the pre-migration guard
+   `if (!open && hasData)`.  Resting colors + background live here —
+   NOT as inline `style={{ color, background }}` — because equal-
+   specificity inline styles would beat the `:hover` rule. */
+.hover-breakdown[data-open="false"] {
+  color: var(--text-muted);
+  background: transparent;
+}
+.hover-breakdown[data-open="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.hover-breakdown[data-hover-enabled="true"]:hover,
+.hover-breakdown[data-hover-enabled="true"]:focus-visible {
+  color: var(--text-secondary);
+}
+
+/* Context-menu danger variant.  The base ``.hover-chrome`` class on
+   the button provides the non-danger rest + hover (text-secondary →
+   text-primary + chrome-hover bg).  This modifier overrides the color
+   to red at rest and swaps the hover background to a translucent red
+   while keeping the red foreground.  Equal-specificity rules; later-
+   in-source wins, which is why this block sits after .hover-chrome. */
+.menu-item--danger {
+  color: var(--danger);
+}
+.menu-item--danger:hover,
+.menu-item--danger:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Inspector-panel hover / focus classes
+   Replaces inline `e.currentTarget.style.*` mutations in
+   NodePanel / TracePanel / PanelShell with CSS-driven state.
+   ──────────────────────────────────────────────────────────────── */
+
+/* PanelShell drag handle — the element keeps an inline
+   `style={{ background: 'var(--chrome-border)' }}` for its rest
+   colour (pinned by PanelShell tests).  `!important` is required
+   here so the hover rule wins over the inline declaration.  The
+   `.dragging` modifier keeps the accent colour visible while the
+   user is actively resizing, even when the pointer wanders off the
+   handle. */
+.panel-drag-handle:hover {
+  background: var(--accent) !important;
+}
+.panel-drag-handle.dragging {
+  background: var(--accent) !important;
+}
+
+/* NodePanel label input — :focus-visible ring replaces the
+   onFocus/onBlur inline borderColor + boxShadow writes. */
+.node-label-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* NodePanel close button — solid danger background with darker
+   hover state (no inline style mutation on hover). */
+.node-close-btn {
+  background: var(--danger-solid);
+}
+.node-close-btn:hover,
+.node-close-btn:focus-visible {
+  background: var(--danger-hover);
+}
+
+/* TracePanel "N pass-through nodes hidden" chip — rest background
+   is the subtle dashed-chip colour (not transparent), hover flips
+   to the shared bg-hover token. */
+.trace-hidden-toggle {
+  background: var(--chip-rest);
+}
+.trace-hidden-toggle:hover,
+.trace-hidden-toggle:focus-visible {
+  background: var(--bg-hover);
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Editor-panel focus / hover classes
+   Replaces inline `e.currentTarget.style.*` mutations inside
+   panels/editors/* with CSS-driven state.
+   ──────────────────────────────────────────────────────────────── */
+
+/* Shared focus ring for text inputs / textareas in editors.
+   Drops the native outline and draws a themed border + soft glow via
+   ``:focus-visible`` only — modern browsers fire this for click-to-
+   focus on text inputs (per spec heuristics) so mouse users still
+   see the ring, while mouse-down on buttons doesn't.  The bare
+   ``:focus`` selector that previously paired with this was dropped
+   because it painted the ring on every button click.  Callers can
+   override the colour via ``--focus-ring-border`` / ``--focus-ring-
+   shadow`` inline custom properties when a per-node accent is needed;
+   default is the app's blue accent. */
+.focus-ring:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring-border, var(--accent-ring));
+  box-shadow: 0 0 0 2px var(--focus-ring-shadow, var(--accent-soft));
+}
+
+/* FileBrowser row in _shared.tsx — rests transparent, hovers to
+   var(--bg-hover).  The [data-selected="true"] variant disables
+   the hover (the accent-soft background is pinned for the selected
+   row and must not flicker when the mouse moves over it). */
+.file-browser-row {
+  background: transparent;
+  transition: background 150ms;
+}
+.file-browser-row:hover,
+.file-browser-row:focus-visible {
+  background: var(--bg-hover);
+}
+.file-browser-row[data-selected="true"],
+.file-browser-row[data-selected="true"]:hover,
+.file-browser-row[data-selected="true"]:focus-visible {
+  background: var(--accent-soft);
+}
+
+/* GroupedColumnsTab group-header — rests on var(--bg-elevated)
+   (the elevated row inside the scroll container), hovers to
+   var(--bg-hover). */
+.grouped-col-group-header {
+  background: var(--bg-elevated);
+  transition: background 150ms;
+}
+.grouped-col-group-header:hover,
+.grouped-col-group-header:focus-visible {
+  background: var(--bg-hover);
+}
+
+/* GroupedColumnsTab pattern-row — rests transparent, hovers to
+   var(--bg-hover).  Parent `.file-browser-row` hover shares the same
+   pattern but a different selected-row policy, so a dedicated class
+   keeps the two independent. */
+.grouped-col-pattern-row {
+  background: transparent;
+  transition: background 150ms;
+}
+.grouped-col-pattern-row:hover,
+.grouped-col-pattern-row:focus-visible {
+  background: var(--bg-hover);
+}
+
+/* RatingStepEditor / Sink / generic "themed" chrome button: a
+   dashed or solid bordered button whose border + text colour flip to
+   the current accent on hover.  The accent colour is piped in via
+   the `--node-accent` custom property on inline `style={{ ... }}`,
+   so the same class can serve every node type.  `!important` is
+   required because call sites keep an inline `border:` shorthand
+   (used by other hover tests to locate the button) and inline
+   styles beat class selectors without it. */
+.accent-hover-btn {
+  transition: border-color 150ms, color 150ms;
+}
+.accent-hover-btn:hover,
+.accent-hover-btn:focus-visible {
+  border-color: var(--node-accent, var(--accent)) !important;
+  color: var(--node-accent, var(--accent)) !important;
+}
+
+/* Delete / remove icon button — rests at var(--text-muted), hovers
+   to danger red.  Parameterising via class makes the intent explicit
+   at every call site and survives SSR → hydration (CSS-driven, no JS
+   mutation).  Re-used in _shared.InputSourcesBar delete-X, the
+   RatingStepEditor factor remove-X, and ConstantEditor row remove-X. */
+.icon-danger-btn {
+  color: var(--text-muted);
+  transition: color 150ms;
+}
+.icon-danger-btn:hover,
+.icon-danger-btn:focus-visible {
+  color: var(--danger);
+}
+
+/* "Add value" style fill-hover button — rests on chrome-hover,
+   hovers to chrome-active.  Matches ConstantEditor's Add button
+   (and can be reused by any similar add-new-row affordance). */
+.add-row-btn {
+  background: var(--chrome-hover);
+  transition: background 150ms;
+}
+.add-row-btn:hover,
+.add-row-btn:focus-visible {
+  background: var(--chrome-active);
+}
+
+/* FeatureBrowser row (panels/modelling/FeatureBrowser.tsx) — the sidebar
+   list row for AvE / PDP tabs.  Rests transparent with a transparent
+   left-border gutter.  Unselected rows hover to var(--chrome-hover);
+   selected rows pin to var(--accent-soft) with a blue left-border and
+   must NOT react to hover.  Resting state lives here rather than inline
+   so the hover rule is not beaten by an equal-specificity inline
+   `style={{ background }}` declaration. */
+.feature-browser-row {
+  background: transparent;
+  border-left: 2px solid transparent;
+}
+.feature-browser-row:not(.feature-browser-row--selected):hover,
+.feature-browser-row:not(.feature-browser-row--selected):focus-visible {
+  background: var(--chrome-hover);
+}
+.feature-browser-row--selected {
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+}
+
+/* Algorithm gateway button (panels/ModellingConfig.tsx) — the large
+   card-style button picking between GLM / XGBoost / CatBoost / etc.
+   Rests on chrome-hover with a muted border; hover flips to accent-soft
+   with the accent border.  Resting state lives here rather than inline
+   so the hover rule is not beaten by an equal-specificity inline
+   `style={{ background, border }}` declaration. */
+.algorithm-gateway-btn {
+  background: var(--chrome-hover);
+  border: 1px solid var(--border);
+}
+.algorithm-gateway-btn:hover,
+.algorithm-gateway-btn:focus-visible {
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }

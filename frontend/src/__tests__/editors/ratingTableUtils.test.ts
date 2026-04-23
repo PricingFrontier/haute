@@ -62,19 +62,19 @@ describe("relativityColor", () => {
 
   it("returns colored for values just beyond the ±0.005 boundary", () => {
     const above = relativityColor(1.006)
-    expect(above).toContain("rgba(239, 68, 68")
+    expect(above).toContain("rgba(var(--danger-rgb)")
     const below = relativityColor(0.994)
-    expect(below).toContain("rgba(59, 130, 246")
+    expect(below).toContain("rgba(var(--chart-below-rgb)")
   })
 
   it("returns red-tinted color for values above 1.005", () => {
     const color = relativityColor(1.1)
-    expect(color).toContain("rgba(239, 68, 68")
+    expect(color).toContain("rgba(var(--danger-rgb)")
   })
 
   it("returns blue-tinted color for values below 0.995", () => {
     const color = relativityColor(0.8)
-    expect(color).toContain("rgba(59, 130, 246")
+    expect(color).toContain("rgba(var(--chart-below-rgb)")
   })
 
   it("increases alpha with larger deviation", () => {
@@ -102,20 +102,20 @@ describe("relativityTextColor", () => {
   })
 
   it("returns red for values above 1.005", () => {
-    expect(relativityTextColor(1.1)).toBe("#dc2626")
+    expect(relativityTextColor(1.1)).toBe("var(--danger-solid)")
   })
 
   it("returns blue for values below 0.995", () => {
-    expect(relativityTextColor(0.8)).toBe("#2563eb")
+    expect(relativityTextColor(0.8)).toBe("var(--chart-below)")
   })
 
   it("returns green for values at 1.0", () => {
-    expect(relativityTextColor(1.0)).toBe("#10b981")
+    expect(relativityTextColor(1.0)).toBe("var(--success)")
   })
 
   it("returns green for values within ±0.005 of 1.0", () => {
-    expect(relativityTextColor(1.003)).toBe("#10b981")
-    expect(relativityTextColor(0.997)).toBe("#10b981")
+    expect(relativityTextColor(1.003)).toBe("var(--success)")
+    expect(relativityTextColor(0.997)).toBe("var(--success)")
   })
 })
 

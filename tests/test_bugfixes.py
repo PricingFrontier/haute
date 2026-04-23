@@ -581,6 +581,51 @@ class TestPreviewRouteSourceFile:
         )
         assert ns["FACTOR"] == 2
 
+    def test_preview_uses_project_root_relative_data_path(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """GUI-selected data paths resolve from the project root.
+
+        The file browser and schema endpoints expose paths relative to cwd
+        (the Haute project root).  A pipeline can live below that root, but
+        preview must still read ``data/...`` from the project root when that
+        file exists there.
+        """
+        from haute.executor import execute_graph
+
+        monkeypatch.chdir(tmp_path)
+        pipeline_dir = tmp_path / "rating"
+        pipeline_dir.mkdir()
+        (pipeline_dir / "main.py").write_text("", encoding="utf-8")
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        pl.DataFrame({"quote_id": ["q-1"], "premium": [100.0]}).write_parquet(
+            data_dir / "quotes.parquet"
+        )
+
+        graph = PipelineGraph(
+            source_file="rating/main.py",
+            nodes=[
+                GraphNode(
+                    id="quotes",
+                    data=NodeData(
+                        label="quotes",
+                        nodeType=NodeType.DATA_SOURCE,
+                        config={"path": "data/quotes.parquet"},
+                    ),
+                ),
+            ],
+        )
+
+        results = execute_graph(graph, target_node_id="quotes")
+
+        assert results["quotes"].status == "ok"
+        assert results["quotes"].row_count == 1
+        assert results["quotes"].preview[0]["quote_id"] == "q-1"
+
 
 # ---------------------------------------------------------------------------
 # Polars Config safety — general guard against invalid chunk sizes
@@ -629,8 +674,9 @@ class TestPolarsConfigSafety:
 class TestParserConfigLoadWarning:
     """Verify the parser surfaces config load errors via graph.warning."""
 
-    def test_warning_set_when_config_missing(self, tmp_path, monkeypatch):
-        """Parsing a pipeline with a missing config file should set graph.warning."""
+    def test_raises_when_config_missing(self, tmp_path, monkeypatch):
+        """Parsing a pipeline with a missing config file raises ``ConfigError``
+        (post Item #18 fail-loudly contract)."""
         monkeypatch.chdir(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
@@ -641,13 +687,12 @@ class TestParserConfigLoadWarning:
             "def missing() -> pl.LazyFrame:\n"
             '    return pl.scan_parquet("")\n'
         )
-        # No config file created — it's missing
 
+        from haute.errors import ConfigError
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "main.py")
-        assert graph.warning is not None
-        assert "missing" in graph.warning
+        with pytest.raises(ConfigError):
+            parse_pipeline_file(pipeline_dir / "main.py")
 
     def test_no_warning_when_config_exists(self, tmp_path, monkeypatch):
         """Parsing a pipeline with a valid config file should not set graph.warning."""

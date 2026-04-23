@@ -134,7 +134,7 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
           onToggle: toggleColumn,
         }}
         interactiveRows
-        nameColor={(name) => !allColumnNames.has(name) ? "#f59e0b" : isSelected(name) ? "var(--text-primary)" : "var(--text-muted)"}
+        nameColor={(name) => !allColumnNames.has(name) ? "var(--warning-strong)" : isSelected(name) ? "var(--text-primary)" : "var(--text-muted)"}
         nameSuffix={(name) => !allColumnNames.has(name) ? "(not found)" : null}
       />
 

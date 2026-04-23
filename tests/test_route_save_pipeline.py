@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
-
 from tests.conftest import make_edge as _make_edge
 
 # ---------------------------------------------------------------------------
@@ -168,15 +167,18 @@ class TestValidateUniqueSanitizedNames:
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
-    def test_unicode_stripping_collision_raises_400(self) -> None:
-        """Non-ASCII chars are stripped, so 'café' and 'caf_e' may collide."""
+    def test_unicode_distinct_labels_do_not_collide(self) -> None:
+        """Post Wave 9D #123: non-ASCII chars are reversibly encoded, so
+        ``café`` and ``caf`` no longer collide.  The sanitiser maps them
+        to distinct identifiers (``caf_xe9_`` vs ``caf``) so the
+        save-pipeline validator accepts them both.
+        """
         graph = _make_graph(
             _make_node("a", "café", "polars"),
             _make_node("b", "caf", "polars"),
         )
-        with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
-        assert exc_info.value.status_code == 400
+        # Must not raise — the labels are now distinct after sanitisation.
+        SavePipelineService._validate_unique_sanitized_names(graph)
 
     def test_empty_labels_collide(self) -> None:
         """Multiple nodes with empty labels all sanitize to 'unnamed_node'."""
@@ -357,8 +359,15 @@ class TestWriteCodeMultiFile:
         assert "import haute" in code
         assert "pipe" in code  # pipeline name
 
-    def test_submodel_path_traversal_skipped(self, tmp_path: Path) -> None:
-        """Files with paths that escape project root are silently skipped."""
+    def test_submodel_path_traversal_rejected(self, tmp_path: Path) -> None:
+        """Phase 1C #12: codegen outputs with traversal are rejected loudly.
+
+        Previously the loop silently ``continue``d on paths that escaped
+        the project root, which masked codegen bugs and relied on a
+        post-``resolve()`` check that symlinks could bypass.  The fixed
+        ``_write_code`` raises HTTP 400 before any filesystem write,
+        and the surrounding save transaction rolls back.
+        """
         svc = SavePipelineService(tmp_path)
         graph = _make_graph()
         graph.submodels = {"evil": {"nodes": [], "edges": []}}
@@ -377,11 +386,10 @@ class TestWriteCodeMultiFile:
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
-            svc._write_code(body, graph, tmp_path / "main.py")
-
-        # The main file is written
-        assert (tmp_path / "main.py").exists()
-        # The traversal path should NOT have been written
+            with pytest.raises(HTTPException) as exc_info:
+                svc._write_code(body, graph, tmp_path / "main.py")
+        assert exc_info.value.status_code == 400
+        # The traversal path must not have been written anywhere.
         assert not Path("/etc/evil.py").exists()
 
 

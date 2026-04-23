@@ -26,7 +26,6 @@ function resetStores() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    graphVersion: 0,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }

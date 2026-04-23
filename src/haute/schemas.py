@@ -42,6 +42,10 @@ class SavePipelineResponse(BaseModel):
     status: str = "saved"
     file: str
     pipeline_name: str
+    # Non-fatal warnings surfaced to the UI (e.g. sanitized-name
+    # collisions that dropped a node position).  An empty list means
+    # "no issues" and callers can rely on truthiness for UX branches.
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +158,7 @@ class TraceResultResponse(BaseModel):
     total_nodes_in_pipeline: int = 0
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
-    waterfall: list[dict[str, Any]] | None = None
+    waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
 
 
 class TraceResponse(BaseModel):
@@ -375,7 +379,11 @@ class UtilityWriteRequest(BaseModel):
 
 
 class UtilityCreateRequest(BaseModel):
-    name: str = Field(..., pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")  # filename without .py extension
+    # Pattern validation lives in ``_validate_module_name`` so bad names
+    # surface as a 400 with a flat string ``detail`` rather than the
+    # structured-list body that Pydantic ``Field(pattern=)`` would produce
+    # via FastAPI's 422 handler.
+    name: str  # filename without .py extension
     content: str = ""
 
 
@@ -386,6 +394,11 @@ class UtilityWriteResponse(BaseModel):
     import_line: str = ""  # e.g. "from utility.features import *"
     error: str | None = None
     error_line: int | None = None
+
+
+class UtilityDeleteResponse(BaseModel):
+    status: str = "ok"
+    module: str
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +461,7 @@ class TrainResponse(BaseModel):
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
     model_path: str = ""
     train_rows: int = 0
-    test_rows: int = 0  # validation rows (kept as test_rows for backward compat)
+    test_rows: int = 0  # validation rows
     holdout_rows: int = 0
     holdout_metrics: dict[str, float] = Field(default_factory=dict)
     diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"
@@ -460,7 +473,6 @@ class TrainResponse(BaseModel):
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
-    cv_results: dict[str, Any] | None = None
     ave_per_feature: list[dict[str, Any]] = Field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = Field(default_factory=list)
     residuals_stats: dict[str, float] = Field(default_factory=dict)
@@ -549,6 +561,11 @@ class MlflowCheckResponse(BaseModel):
     databricks_host: str = ""
 
 
+class ModelCacheClearResponse(BaseModel):
+    removed: int
+    run_id: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # /api/mlflow/* (discovery for Model Score node)
 # ---------------------------------------------------------------------------
@@ -602,6 +619,27 @@ class OptimiserSolveResponse(BaseModel):
     status: Literal["started", "error"]
     job_id: str | None = None
     error: str | None = None
+
+
+class OptimiserEstimateRequest(BaseModel):
+    """Body for the lightweight optimiser-cost estimate.
+
+    Used by the frontend to preview source size / RAM availability before
+    kicking off a solve.  Symmetric with :class:`TrainEstimateRequest`
+    except that the pre-flight for the optimiser only needs row and column
+    counts from ancestor data sources — there's no fitting phase to size.
+    """
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+
+
+class OptimiserEstimateResponse(BaseModel):
+    """Result shape for ``POST /api/optimiser/estimate``."""
+
+    total_rows: int | None = None
+    """Max row count across ancestor data sources, if readable."""
 
 
 class OptimiserFrontierRequest(BaseModel):
@@ -718,6 +756,11 @@ class GitSwitchBranchRequest(BaseModel):
     branch: str
 
 
+class GitSwitchBranchResponse(BaseModel):
+    status: str = "ok"
+    branch: str
+
+
 class GitSaveResponse(BaseModel):
     commit_sha: str
     message: str
@@ -766,4 +809,9 @@ class GitArchiveResponse(BaseModel):
 
 
 class GitDeleteBranchRequest(BaseModel):
+    branch: str
+
+
+class GitDeleteBranchResponse(BaseModel):
+    status: str = "ok"
     branch: str

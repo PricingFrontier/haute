@@ -38,18 +38,12 @@ vi.mock("../../stores/useToastStore.ts", () => {
 })
 
 vi.mock("../../stores/useUIStore.ts", () => {
-  let dirty = false
   let syncBanner: string | null = null
   const store: Record<string, unknown> = {
-    dirty,
     syncBanner,
     setSyncBanner: vi.fn((banner: string | null) => {
       syncBanner = banner
       store.syncBanner = banner
-    }),
-    setDirty: vi.fn((d: boolean) => {
-      dirty = d
-      store.dirty = d
     }),
     // Other fields the hook destructures
     setPaletteOpen: vi.fn(),
@@ -63,9 +57,21 @@ vi.mock("../../stores/useUIStore.ts", () => {
   return { default: useUIStore }
 })
 
+// Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
+vi.mock("../../stores/useGraphStore.ts", () => {
+  const store = { markSaved: vi.fn() }
+  const useGraphStore = Object.assign(() => store, {
+    getState: () => store,
+    setState: vi.fn(),
+    subscribe: vi.fn(),
+  })
+  return { default: useGraphStore }
+})
+
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 
 // ── WebSocket mock infrastructure ────────────────────────────────
 
@@ -131,8 +137,7 @@ describe("useWebSocketSync", () => {
     // Reset mock state
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
-    vi.mocked(useUIStore.getState().setDirty).mockClear()
-    useUIStore.getState().dirty = false
+    vi.mocked(useGraphStore.getState().markSaved).mockClear()
   })
 
   afterEach(() => {
@@ -248,8 +253,9 @@ describe("useWebSocketSync", () => {
       )
       // Sync banner cleared
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(null)
-      // Ensures subsequent file-watcher updates are not blocked
-      expect(useUIStore.getState().setDirty).toHaveBeenCalledWith(false)
+      // Ensures subsequent file-watcher updates mark the new graph as
+      // the saved state (item #99: dirty is derived from this snapshot).
+      expect(useGraphStore.getState().markSaved).toHaveBeenCalled()
     })
 
     it("uses layout when nodes have no positions", async () => {
@@ -280,7 +286,7 @@ describe("useWebSocketSync", () => {
       expect(getLayoutedElements).toHaveBeenCalled()
     })
 
-    it("accepts graph update even when dirty flag is true", async () => {
+    it("accepts graph update even when the graph was previously dirty", async () => {
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
 
@@ -288,9 +294,10 @@ describe("useWebSocketSync", () => {
         latestWS().onopen?.(new Event("open"))
       })
 
-      // Set dirty flag
-      useUIStore.getState().dirty = true
-
+      // File-watcher updates are accepted regardless of any prior dirty
+      // state — the file on disk wins.  No dirty-state precondition is
+      // needed in this test; the assertion below is simply that the
+      // setter ran when the WS message arrived.
       const graphMsg = {
         type: "graph_update",
         graph: {

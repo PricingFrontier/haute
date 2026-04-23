@@ -6,6 +6,7 @@ import { useState, useCallback } from "react"
 import { Loader2, FlaskConical } from "lucide-react"
 import { logToMlflow } from "../../api/client"
 import { configField } from "../../utils/configField"
+import { MODEL_COLORS } from "../../theme/colors"
 
 type MlflowResult = {
   status: string
@@ -57,19 +58,19 @@ export function MlflowExportSection({ trainJobId, mlflowBackend, config, onMlflo
         disabled={loggingToMlflow}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
         style={{
-          background: loggingToMlflow ? "var(--chrome-hover)" : "rgba(59,130,246,.15)",
-          color: loggingToMlflow ? "var(--text-muted)" : "#3b82f6",
-          border: "1px solid rgba(59,130,246,.3)",
+          background: loggingToMlflow ? "var(--chrome-hover)" : "var(--accent-soft-strong)",
+          color: loggingToMlflow ? "var(--text-muted)" : MODEL_COLORS.logAction,
+          border: "1px solid var(--accent-ring)",
         }}
       >
         {loggingToMlflow ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
         {loggingToMlflow ? "Logging..." : `Log to MLflow (${mlflowBackend.backend})`}
       </button>
       {mlflowResult && mlflowResult.status === "ok" && (
-        <div className="px-3 py-2 rounded-lg text-xs space-y-0.5" style={{ background: "rgba(59,130,246,.08)", border: "1px solid rgba(59,130,246,.2)" }}>
-          <div style={{ color: "#3b82f6" }}>Logged to {mlflowResult.experiment_name}</div>
+        <div className="px-3 py-2 rounded-lg text-xs space-y-0.5" style={{ background: "var(--accent-soft-subtle)", border: "1px solid var(--accent-soft-hover)" }}>
+          <div style={{ color: MODEL_COLORS.logAction }}>Logged to {mlflowResult.experiment_name}</div>
           {mlflowResult.run_url && (
-            <a href={mlflowResult.run_url} target="_blank" rel="noreferrer" className="underline" style={{ color: "#60a5fa" }}>
+            <a href={mlflowResult.run_url} target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--text-accent)" }}>
               Open in Databricks
             </a>
           )}
@@ -79,7 +80,7 @@ export function MlflowExportSection({ trainJobId, mlflowBackend, config, onMlflo
         </div>
       )}
       {mlflowResult && mlflowResult.status === "error" && (
-        <div className="px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(239,68,68,.08)", border: "1px solid rgba(239,68,68,.2)", color: "#fca5a5" }}>
+        <div className="px-3 py-2 rounded-lg text-xs" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)", color: "var(--danger-text-soft)" }}>
           {mlflowResult.error}
         </div>
       )}

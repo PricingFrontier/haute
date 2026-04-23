@@ -20,6 +20,7 @@ import { AveTab } from "./modelling/AveTab"
 import { PdpTab } from "./modelling/PdpTab"
 import { GLMCoefficientsTab } from "./modelling/GLMCoefficientsTab"
 import { GLMRelativitiesTab } from "./modelling/GLMRelativitiesTab"
+import { MODEL_COLORS } from "../theme/colors"
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -113,25 +114,22 @@ export function ModellingPreview({
       {/* Drag handle */}
       <div
         onMouseDown={onDragStart}
-        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10 transition-colors"
-        style={{ background: "var(--chrome-border)" }}
-        onMouseEnter={e => { e.currentTarget.style.background = "var(--accent)" }}
-        onMouseLeave={e => { e.currentTarget.style.background = "var(--chrome-border)" }}
+        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
       />
 
       {/* Training progress bar */}
       {trainProgress && (
-        <div className="h-1 w-full shrink-0" style={{ background: "rgba(168,85,247,.15)" }}>
+        <div className="h-1 w-full shrink-0" style={{ background: MODEL_COLORS.accentSoft }}>
           <div
             className="h-full transition-all duration-300"
-            style={{ width: `${Math.max(trainProgress.progress * 100, 2)}%`, background: "#a855f7" }}
+            style={{ width: `${Math.max(trainProgress.progress * 100, 2)}%`, background: MODEL_COLORS.accent }}
           />
         </div>
       )}
 
       {/* Header */}
       <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
-        <BrainCircuit size={14} style={{ color: "#a855f7" }} />
+        <BrainCircuit size={14} style={{ color: MODEL_COLORS.accent }} />
         <span className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{data.nodeLabel}</span>
         {/* Tab bar */}
         <div className="flex gap-1 ml-3">
@@ -152,10 +150,7 @@ export function ModellingPreview({
 
         {/* Collapse + Close */}
         <div className="ml-auto flex items-center gap-1">
-          <button onClick={() => setCollapsed(true)} className="p-1 rounded transition-colors" style={{ color: "var(--text-muted)" }}
-            onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-hover)" }}
-            onMouseLeave={e => { e.currentTarget.style.background = "transparent" }}
-          >
+          <button onClick={() => setCollapsed(true)} className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]" style={{ color: "var(--text-muted)" }}>
             <ChevronDown size={14} />
           </button>
         </div>

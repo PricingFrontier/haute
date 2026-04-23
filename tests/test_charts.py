@@ -390,7 +390,7 @@ class TestLorenzCurveSvg:
         root = _parse_svg(svg)
         lines = root.findall(".//{http://www.w3.org/2000/svg}line")
         # Grid lines + diagonal
-        dashed = [l for l in lines if l.get("stroke-dasharray")]
+        dashed = [line for line in lines if line.get("stroke-dasharray")]
         assert len(dashed) >= 1
 
     def test_correct_colors(self):
@@ -447,7 +447,7 @@ class TestScatterSvg:
         svg = render_scatter_svg(_sample_scatter_points())
         root = _parse_svg(svg)
         lines = root.findall(".//{http://www.w3.org/2000/svg}line")
-        dashed = [l for l in lines if l.get("stroke-dasharray")]
+        dashed = [line for line in lines if line.get("stroke-dasharray")]
         assert len(dashed) >= 1
 
     def test_axis_labels(self):

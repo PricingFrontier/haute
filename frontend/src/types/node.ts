@@ -1,5 +1,6 @@
 /** Shared node data shape used across hooks and components. */
 
+import type { Node } from "@xyflow/react"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
 export interface ColumnInfo {
@@ -14,7 +15,7 @@ export interface ColumnInfo {
  * typed access to the fields the app actually uses, avoiding scattered
  * `as Record<string, unknown>` casts.
  */
-export interface HauteNodeData {
+export interface HauteNodeData extends Record<string, unknown> {
   label: string
   nodeType: NodeTypeValue | string
   description?: string
@@ -35,7 +36,36 @@ export interface HauteNodeData {
   _traceValue?: unknown
 }
 
-/** Type-narrow a ReactFlow node's data to HauteNodeData. */
+export type PipelineNodeData = HauteNodeData
+export type PipelineFlowNode = Node<PipelineNodeData>
+
+export interface SubmodelNodeData extends HauteNodeData {
+  config?: {
+    file?: string
+    childNodeIds?: string[]
+    inputPorts?: string[]
+    outputPorts?: string[]
+  }
+}
+export type SubmodelFlowNode = Node<SubmodelNodeData>
+
+export interface SubmodelPortData extends Record<string, unknown> {
+  label: string
+  portDirection: "input" | "output"
+  portName: string
+  _traceActive?: boolean
+  _traceDimmed?: boolean
+}
+export type SubmodelPortFlowNode = Node<SubmodelPortData>
+
+export type HauteNode = PipelineFlowNode | SubmodelFlowNode | SubmodelPortFlowNode
+
+/**
+ * Central boundary for parsed/API graph nodes whose data arrives through
+ * React Flow's broad Record<string, unknown> type.
+ */
+export function nodeData<T extends HauteNodeData>(node: { data: T }): T
+export function nodeData(node: { data: Record<string, unknown> }): HauteNodeData
 export function nodeData(node: { data: Record<string, unknown> }): HauteNodeData {
-  return node.data as unknown as HauteNodeData
+  return node.data as HauteNodeData
 }

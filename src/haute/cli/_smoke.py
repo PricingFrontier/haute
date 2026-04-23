@@ -1,32 +1,51 @@
-"""``haute smoke`` command."""
+"""``haute smoke`` command.
+
+Split into:
+
+* :class:`SmokeConfig` — the typed bag of CLI inputs.
+* :func:`handle_smoke` — the pure function that does the work.
+* :func:`smoke` — the thin ``@click.command`` entry point.
+"""
+
+from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
 
-from haute.cli._helpers import _load_deploy_config, resolve_transport
+from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
 
 
-@click.command()
-@click.option(
-    "--endpoint-suffix",
-    default=None,
-    help='Suffix appended to endpoint name (e.g. "-staging").',
-)
-def smoke(endpoint_suffix: str | None) -> None:
-    """Score test quotes against a live serving endpoint.
+@dataclass
+class SmokeConfig:
+    """Parsed inputs for the ``haute smoke`` command."""
 
-    Sends each test quote JSON file as an HTTP request to the deployed
-    endpoint and validates the response. Used after staging deploys to
-    verify the endpoint is functional.
+    endpoint_suffix: str | None
+
+
+def handle_smoke(config: SmokeConfig) -> None:
+    """Run the smoke-test suite against a live serving endpoint.
+
+    Requires an existing ``haute.toml`` — smoke tests are always run
+    inside a configured project.  Exits with ``SystemExit(1)`` on any
+    failure (missing config, missing test quotes, endpoint error).
     """
-    config = _load_deploy_config(require_toml=True)
-    if endpoint_suffix:
-        config = config.override(endpoint_suffix=endpoint_suffix)
+    from haute.deploy._config import DeployConfig
 
-    endpoint_name = config.effective_endpoint_name
-    tq_dir = config.test_quotes_dir
+    toml_path = Path.cwd() / "haute.toml"
+    if not toml_path.exists():
+        click.echo("Error: No haute.toml found.", err=True)
+        raise SystemExit(1)
+
+    deploy_config = DeployConfig.from_toml(toml_path)
+    click.echo("  \u2713 Loaded config from haute.toml")
+    if config.endpoint_suffix:
+        deploy_config = deploy_config.override(endpoint_suffix=config.endpoint_suffix)
+
+    endpoint_name = deploy_config.effective_endpoint_name
+    tq_dir = deploy_config.test_quotes_dir
 
     if tq_dir is None or not tq_dir.is_dir():
         click.echo(f"Error: No test quotes directory found (resolved: {tq_dir}).", err=True)
@@ -38,23 +57,26 @@ def smoke(endpoint_suffix: str | None) -> None:
         raise SystemExit(1)
 
     click.echo(f"Smoke testing endpoint: {endpoint_name}")
-    click.echo(f"  Target: {config.target}")
+    click.echo(f"  Target: {deploy_config.target}")
 
-    transport = resolve_transport(config)
+    transport = resolve_transport(deploy_config)
 
     all_ok = True
 
     if transport.kind == "databricks":
         if not endpoint_name:
-            raise click.UsageError(
-                "No endpoint name configured. Set endpoint_name or endpoint_suffix in haute.toml."
+            click.echo(
+                "Error: No endpoint name configured. "
+                "Set endpoint_name or endpoint_suffix in haute.toml.",
+                err=True,
             )
+            raise SystemExit(1)
         all_ok = _smoke_databricks(endpoint_name, json_files)
     elif transport.kind == "http":
         all_ok = _smoke_http(transport.staging_url, json_files)
     else:
         click.echo(
-            f"  \u26a0 Smoke test not yet implemented for target '{config.target}'.",
+            f"  \u26a0 Smoke test not yet implemented for target '{deploy_config.target}'.",
             err=True,
         )
         return
@@ -64,6 +86,23 @@ def smoke(endpoint_suffix: str | None) -> None:
         raise SystemExit(1)
 
     click.echo("\n  \u2713 All smoke tests passed.")
+
+
+@click.command()
+@click.option(
+    "--endpoint-suffix",
+    default=None,
+    help=ENDPOINT_SUFFIX_HELP,
+)
+def smoke(endpoint_suffix: str | None) -> None:
+    """Score test quotes against a live serving endpoint.
+
+    Sends each test quote JSON file as an HTTP request to the deployed
+    endpoint and validates the response. Used after staging deploys to
+    verify the endpoint is functional.
+    """
+    config = SmokeConfig(endpoint_suffix=endpoint_suffix)
+    handle_smoke(config)
 
 
 def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:

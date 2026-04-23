@@ -11,7 +11,6 @@ function reset() {
     submodelDialog: null,
     renameDialog: null,
     syncBanner: null,
-    dirty: false,
     nodePanelWidth: 0,
     hoveredNodeId: null,
     nodeSearchOpen: false,
@@ -69,23 +68,29 @@ describe("useUIStore", () => {
   })
 
   // -----------------------------------------------------------------------
-  // Dirty flag
+  // Last-saved snapshot moved to useGraphStore (Wave 7E consolidation).
+  //
+  // Shape assertions here pin that useUIStore no longer carries dirty
+  // state so a future refactor doesn't silently reintroduce the two-
+  // source-of-truth bug (see item #99).  Full behavioural coverage for
+  // markSaved / isDirty lives in useGraphStore.consolidation.test.ts.
   // -----------------------------------------------------------------------
 
-  describe("setDirty", () => {
-    it("defaults to false", () => {
-      expect(useUIStore.getState().dirty).toBe(false)
+  describe("no dirty-tracking state on useUIStore (Wave 7E)", () => {
+    it("does not expose lastSavedSnapshot", () => {
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
+      expect(state).not.toHaveProperty("lastSavedSnapshot")
     })
 
-    it("sets dirty flag", () => {
-      useUIStore.getState().setDirty(true)
-      expect(useUIStore.getState().dirty).toBe(true)
+    it("does not expose markSaved", () => {
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
+      expect(state).not.toHaveProperty("markSaved")
     })
 
-    it("clears dirty flag", () => {
-      useUIStore.getState().setDirty(true)
-      useUIStore.getState().setDirty(false)
-      expect(useUIStore.getState().dirty).toBe(false)
+    it("does not expose the legacy dirty boolean / setDirty", () => {
+      const state = useUIStore.getState() as unknown as Record<string, unknown>
+      expect(state).not.toHaveProperty("dirty")
+      expect(state).not.toHaveProperty("setDirty")
     })
   })
 

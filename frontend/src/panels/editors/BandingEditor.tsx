@@ -300,7 +300,7 @@ export default function BandingEditor({
                 {/* Completeness dot */}
                 <span
                   className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ background: isFactorComplete(f) ? '#22c55e' : '#f59e0b' }}
+                  style={{ background: isFactorComplete(f) ? 'var(--success)' : 'var(--warning-strong)' }}
                 />
                 <span className="font-mono truncate max-w-[100px]">{tabLabel(f, i)}</span>
                 {/* Duplicate button (only if factor has rules) */}
@@ -320,7 +320,7 @@ export default function BandingEditor({
                     type="button"
                     aria-label="Remove column"
                     onClick={(e) => { e.stopPropagation(); removeFactor(i) }}
-                    className="ml-0.5 p-0.5 rounded transition-colors cursor-pointer hover:text-[#ef4444] focus-visible:text-[#ef4444]"
+                    className="ml-0.5 p-0.5 rounded transition-colors cursor-pointer hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
                     style={{ color: 'var(--text-muted)' }}
                   >
                     <X size={9} />
@@ -532,7 +532,7 @@ export default function BandingEditor({
         <div className="space-y-1">
           {warnings.map((w, i) => (
             <div key={i} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[11px]"
-              style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', color: '#f59e0b' }}>
+              style={{ background: 'var(--warning-soft-strong)', border: '1px solid var(--warning-border-emphasis)', color: 'var(--warning-strong)' }}>
               <AlertTriangle size={12} />
               <span>{w}</span>
             </div>
@@ -549,7 +549,7 @@ export default function BandingEditor({
           {matchCounts && totalRows > 0 && (
             <span
               className="text-[10px] font-medium"
-              style={{ color: unmatchedCount === 0 ? '#22c55e' : '#f59e0b' }}
+              style={{ color: unmatchedCount === 0 ? 'var(--success)' : 'var(--warning-strong)' }}
             >
               {unmatchedCount} of {totalRows} rows
             </span>
@@ -577,7 +577,7 @@ export default function BandingEditor({
                 onClick={() => setActiveIdx(i)}
               >
                 {!complete && (
-                  <AlertTriangle size={10} className="inline-block mr-1 align-text-bottom" style={{ color: '#f59e0b' }} />
+                  <AlertTriangle size={10} className="inline-block mr-1 align-text-bottom" style={{ color: 'var(--warning-strong)' }} />
                 )}
                 <span className="font-mono font-medium" style={{ color: complete ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
                   {f.column || `(no column)`}

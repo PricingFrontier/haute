@@ -17,32 +17,32 @@ Categories:
 
 from __future__ import annotations
 
-import math
 from datetime import date
-from typing import Any
 
 import polars as pl
 import pytest
 
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.executor import execute_graph
 from haute.trace import (
     SchemaDiff,
     TraceResult,
     TraceStep,
-    _compute_schema_diff,
-    _jsonify_row,
     execute_trace,
     trace_result_to_dict,
 )
-from haute.executor import execute_graph
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
     make_graph as _g,
-    make_node as _n,
+)
+from tests.conftest import (
     make_source_node as _source_node,
+)
+from tests.conftest import (
     make_transform_node as _transform_node,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -992,7 +992,8 @@ class TestExpressionParserIntegration:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.when(pl.col('x') > 5).then(pl.lit(1)).otherwise(pl.lit(0)))",
+                        "df = df.with_columns("
+                        "y=pl.when(pl.col('x') > 5).then(pl.lit(1)).otherwise(pl.lit(0)))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1004,6 +1005,7 @@ class TestExpressionParserIntegration:
         assert step.expression is not None
         assert step.expression["expression_type"] == "conditional"
 
+    @pytest.mark.filterwarnings("ignore::polars.exceptions.PolarsInefficientMapWarning")
     def test_opaque_pattern_map_elements(self, tmp_path):
         """map_elements: verify expression_type='opaque'."""
         p = tmp_path / "data.parquet"
@@ -1015,7 +1017,8 @@ class TestExpressionParserIntegration:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
+                        "df = df.with_columns("
+                        "y=pl.col('x').map_elements(lambda v: v * 2, return_dtype=pl.Int64))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1278,7 +1281,8 @@ class TestCalculationAccuracy:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(y=pl.when(pl.col('x') > 5).then(pl.lit(100)).otherwise(pl.lit(0)))",
+                        "df = df.with_columns("
+                        "y=pl.when(pl.col('x') > 5).then(pl.lit(100)).otherwise(pl.lit(0)))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],

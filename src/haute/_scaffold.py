@@ -60,7 +60,7 @@ DOCKER_PASSWORD=
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 """
         ),
     },
@@ -87,7 +87,7 @@ AZURE_CLIENT_SECRET=
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.azure-container-apps]
 resource_group = ""
@@ -117,7 +117,7 @@ AWS_DEFAULT_REGION=eu-west-1
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.aws-ecs]
 region = "eu-west-1"
@@ -145,7 +145,7 @@ GCP_SERVICE_ACCOUNT_KEY=
 [deploy.container]
 registry = ""
 port = 8080
-base_image = "python:3.11-slim"
+base_image = "python:3.11.9-slim"
 
 [deploy.gcp-run]
 project = ""
@@ -921,24 +921,84 @@ git add $FILES
 
 
 def starter_pipeline(name: str) -> str:
-    """Generate the starter ``main.py`` pipeline."""
+    """Generate the starter ``main.py`` pipeline.
+
+    The scaffold is deliberately runnable end-to-end out of the box — a
+    user can run ``haute init`` → drop a parquet into ``data/`` → run
+    ``haute run``/``pytest`` and see real rows flow.  Three node types
+    cover the typical shape of a Haute pipeline (source → transform →
+    output) and match the invariants pinned by
+    ``tests/test_starter_pipeline_e2e.py``:
+
+    * a ``dataSource`` node so data enters the graph;
+    * a ``polars`` transform with real ``pl.col`` expressions so the
+      user has a working example of the transform surface;
+    * an ``output`` node so the terminal preview actually materialises.
+
+    Edges are left implicit — the parser matches parameter names to
+    upstream node names, so the explicit ``pipeline.connect`` calls
+    aren't needed for a linear graph like this.  The user can add
+    them as the pipeline branches.
+    """
     return f'''\
-"""Pipeline: {name}"""
+"""Pipeline: {name}
+
+Starter pipeline scaffolded by ``haute init``.  Edit freely — it is
+runnable end-to-end as delivered so ``haute run`` and the generated
+``pytest`` suite succeed on a fresh scaffold.
+
+Recipe:
+1. Drop a ``.parquet`` (or ``.csv``) into ``data/`` and point the
+   source node's JSON sidecar at it.
+2. Replace the transform body with your pricing logic.
+3. Extend with ``@pipeline.banding``, ``@pipeline.rating_step``, etc.
+"""
+
+from pathlib import Path
 
 import polars as pl
+
 import haute
 
-from utility.features import (
-    clean_columns,
-    to_date,
-    years_between,
-    months_between,
-    days_between,
-    postcode_area,
-    cols_matching,
+pipeline = haute.Pipeline(
+    "{name}",
+    description="Starter pipeline — replace with your real rating logic.",
 )
 
-pipeline = haute.Pipeline("{name}", description="")
+
+@pipeline.data_source(config="config/data_source/raw_rows.json")
+def raw_rows() -> pl.LazyFrame:
+    """Load raw policy rows from parquet.
+
+    Point this at your own ``data/<whatever>.parquet`` file.  Haute
+    dispatches on the extension, so CSV and NDJSON files work too —
+    just update the source sidecar and this function body.
+    """
+    df = pl.scan_parquet(Path(__file__).parent / "../data/sample.parquet")
+    return df
+
+
+@pipeline.polars
+def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+    """Example transform — doubles the ``value`` column.
+
+    Replace with your pricing logic.  The parameter name ``raw_rows``
+    matches the upstream source-node name, so Haute wires the edge
+    automatically; no ``pipeline.connect`` call is required for a
+    straight linear chain.
+    """
+    df = raw_rows.with_columns(value_doubled=pl.col("value") * 2)
+    return df
+
+
+@pipeline.output(config="config/quote_response/priced.json")
+def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
+    """Terminal node — the DataFrame produced here is the pipeline output.
+
+    ``haute run`` prints this node's preview, and the generated
+    ``pytest`` suite asserts that it has rows > 0 and cols > 0.
+    """
+    return enriched
 '''
 
 
@@ -1053,19 +1113,117 @@ def cols_matching(all_cols: list[str], pattern_fn: Callable[[str], bool]) -> lis
 
 
 def starter_test(name: str) -> str:
-    """Generate a starter ``tests/test_pipeline.py`` so pytest passes out of the box."""
+    """Generate a starter ``tests/test_pipeline.py`` that actually runs the pipeline.
+
+    The starter test runs the pipeline through the real Haute parser
+    and executor so a broken pipeline fails the test, which is the
+    whole point of having a test.
+
+    Two test functions are emitted:
+
+    * ``test_pipeline_parses_and_has_nodes`` — cheap structural check
+      (parse → non-empty graph).  Fast, file-only, no data needed.
+    * ``test_pipeline_executes`` — runs the full graph via
+      ``execute_graph`` and checks the terminal node produces rows.
+      Auto-synthesises any missing data file referenced by a source
+      node's ``config['path']`` so the test is hermetic — users who
+      haven't yet populated ``data/`` still see green.
+    """
     return f'''\
-"""Starter tests for {name}."""
+"""Starter tests for {name}.
+
+These tests exercise the real Haute parse → execute path: breaking the
+pipeline in ``rating/main.py`` will turn this file red.  Replace or
+extend as your pipeline grows.
+"""
+
+from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
+import pytest
 
-def test_pipeline_parses():
-    """Pipeline file is valid Python and contains a haute Pipeline."""
-    pipeline_path = Path(__file__).resolve().parent.parent / "rating" / "main.py"
-    source = pipeline_path.read_text()
-    compile(source, str(pipeline_path), "exec")
-    assert "haute.Pipeline" in source
+from haute.executor import execute_graph
+from haute.parser import parse_pipeline_file
+
+
+PIPELINE_FILE = Path(__file__).resolve().parent.parent / "rating" / "main.py"
+PROJECT_ROOT = PIPELINE_FILE.parent.parent
+
+
+def _materialise_missing_source_files() -> None:
+    """Create any data file referenced by a source node that doesn't exist.
+
+    Keeps the starter test hermetic — on a fresh scaffold the user may
+    not have populated ``data/`` yet, but the starter pipeline already
+    references ``data/sample.parquet``.  We synthesise a tiny schema so
+    the executor can actually open the file; the user's first action
+    should be to replace this with real data.
+    """
+    graph = parse_pipeline_file(PIPELINE_FILE)
+    for node in graph.nodes:
+        path_str = (node.data.config or {{}}).get("path")
+        if not isinstance(path_str, str) or not path_str:
+            continue
+        target = Path(path_str)
+        if not target.is_absolute():
+            target = PIPELINE_FILE.parent / target
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        sample = pl.DataFrame({{"id": [1, 2, 3], "value": [10.0, 20.0, 30.0]}})
+        suffix = target.suffix.lower()
+        if suffix == ".parquet":
+            sample.write_parquet(target)
+        elif suffix == ".csv":
+            sample.write_csv(target)
+        else:
+            # Unknown / unsupported format — leave a zero-byte
+            # placeholder so at least the existence check succeeds.
+            target.write_bytes(b"")
+
+
+@pytest.fixture(autouse=True)
+def _ensure_sample_data() -> None:
+    """Synthesise missing source-data files before every pipeline test."""
+    _materialise_missing_source_files()
+
+
+def test_pipeline_parses_and_has_nodes() -> None:
+    """The pipeline file parses and declares at least one node.
+
+    Catches the "empty Pipeline() with no decorators" regression —
+    running ``haute lint`` / ``haute run`` on an empty scaffold is a
+    broken onboarding experience.
+    """
+    graph = parse_pipeline_file(PIPELINE_FILE)
+    assert graph.nodes, (
+        "Starter pipeline has no decorated nodes. Re-run haute init or "
+        "add at least one @pipeline.<type> decorator to rating/main.py."
+    )
+
+
+def test_pipeline_executes() -> None:
+    """Every node executes cleanly and the terminal node produces rows."""
+    graph = parse_pipeline_file(PIPELINE_FILE)
+    results = execute_graph(graph)
+
+    assert results, "execute_graph produced no results — pipeline is a no-op."
+    failures = {{nid: res.error for nid, res in results.items() if res.status != "ok"}}
+    assert not failures, f"Pipeline nodes failed: {{failures}}"
+
+    # The last node in execution order is the terminal output.
+    terminal_id = list(results)[-1]
+    terminal = results[terminal_id]
+    assert terminal.row_count > 0, (
+        f"Terminal node {{terminal_id!r}} produced no rows — check that your "
+        "data source actually contains data."
+    )
+    assert terminal.column_count > 0, (
+        f"Terminal node {{terminal_id!r}} produced no columns — check that your "
+        "output schema is non-empty."
+    )
 '''
 
 

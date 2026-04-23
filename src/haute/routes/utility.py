@@ -18,6 +18,7 @@ from haute._logging import get_logger
 from haute.routes._helpers import pipeline_dir, validate_safe_path
 from haute.schemas import (
     UtilityCreateRequest,
+    UtilityDeleteResponse,
     UtilityFileItem,
     UtilityListResponse,
     UtilityReadResponse,
@@ -53,6 +54,26 @@ def _validate_syntax(content: str) -> tuple[bool, str | None, int | None]:
         return True, None, None
     except SyntaxError as e:
         return False, str(e), e.lineno
+
+
+def _format_syntax_error(err_msg: str | None, err_line: int | None) -> str:
+    """Build a user-facing flat string describing a syntax error.
+
+    The line number is embedded in the string itself so the frontend can
+    extract it with a ``/line (\\d+)/`` regex — structured ``{error,
+    error_line}`` dict details are no longer part of the HTTP contract.
+    ``str(SyntaxError)`` already contains ``" (<unknown>, line N)"`` so
+    the result is de-duplicated on the first ``" (<unknown>, "`` marker.
+    """
+    msg = err_msg or "Invalid Python syntax"
+    # ast.parse wraps the message with " (<unknown>, line N)" — strip
+    # that tail so our own "line N" prefix isn't duplicated.
+    marker = " (<unknown>,"
+    if marker in msg:
+        msg = msg.split(marker, 1)[0].rstrip()
+    if err_line is None:
+        return f"Syntax error: {msg}"
+    return f"Syntax error on line {err_line}: {msg}"
 
 
 def _ensure_init(utility_dir: Path) -> None:
@@ -112,12 +133,15 @@ async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteRespons
 
     ok, err_msg, err_line = _validate_syntax(content)
     if not ok:
+        logger.warning(
+            "utility_syntax_error",
+            module=body.name,
+            error=err_msg,
+            error_line=err_line,
+        )
         raise HTTPException(
             status_code=400,
-            detail={
-                "error": err_msg,
-                "error_line": err_line,
-            },
+            detail=_format_syntax_error(err_msg, err_line),
         )
 
     target.write_text(content, encoding="utf-8")
@@ -143,12 +167,15 @@ async def update_utility_file(module: str, body: UtilityWriteRequest) -> Utility
 
     ok, err_msg, err_line = _validate_syntax(body.content)
     if not ok:
+        logger.warning(
+            "utility_syntax_error",
+            module=module,
+            error=err_msg,
+            error_line=err_line,
+        )
         raise HTTPException(
             status_code=400,
-            detail={
-                "error": err_msg,
-                "error_line": err_line,
-            },
+            detail=_format_syntax_error(err_msg, err_line),
         )
 
     target.write_text(body.content, encoding="utf-8")
@@ -162,8 +189,8 @@ async def update_utility_file(module: str, body: UtilityWriteRequest) -> Utility
     )
 
 
-@router.delete("/{module}")
-async def delete_utility_file(module: str) -> dict[str, str]:
+@router.delete("/{module}", response_model=UtilityDeleteResponse)
+async def delete_utility_file(module: str) -> UtilityDeleteResponse:
     """Delete a utility file."""
     _validate_module_name(module)
     base = _utility_dir()
@@ -173,4 +200,4 @@ async def delete_utility_file(module: str) -> dict[str, str]:
 
     target.unlink()
     logger.info("utility_file_deleted", module=module)
-    return {"status": "ok", "module": module}
+    return UtilityDeleteResponse(module=module)

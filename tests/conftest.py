@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from haute._config_io import config_path_for_node
 from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
 
 
@@ -26,6 +27,44 @@ def _clear_trace_caches():
     yield
     _trace_cache.invalidate()
     _preview_cache.invalidate()
+
+
+@pytest.fixture(scope="session")
+def _default_bus_baseline() -> dict:
+    """Capture default_bus' import-time subscribers once per session.
+
+    The file-watcher's WS translators in :mod:`haute.server` register
+    themselves at module import.  We must import ``haute.server`` here
+    so those subscribers exist before the snapshot — otherwise the
+    per-test restore in :func:`_default_bus_test_isolation` resets
+    ``default_bus`` to an empty registry, breaking every subsequent
+    test that expects a broadcast.
+    """
+    import haute.server  # noqa: F401 — side effect: register subscribers
+    from haute._event_bus import default_bus
+
+    return default_bus._snapshot_handlers_for_testing()
+
+
+@pytest.fixture(autouse=True)
+def _default_bus_test_isolation(_default_bus_baseline: dict):
+    """Restore ``default_bus`` to its session baseline after every test.
+
+    Without this, a test that calls ``default_bus.subscribe(...)`` and
+    forgets to unsubscribe leaks its handler into every subsequent
+    test in the session — the bus is a module-level singleton.  The
+    baseline is the set of handlers registered at module-import time
+    (server.py's WS subscribers), so production wiring persists while
+    any test-added handlers are evicted.
+
+    Prefer instantiating a fresh ``EventBus()`` inside a test for full
+    isolation; this fixture is a safety net for tests that reach for
+    ``default_bus`` by accident.
+    """
+    from haute._event_bus import default_bus
+
+    yield
+    default_bus._restore_handlers_for_testing(_default_bus_baseline)
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +107,38 @@ def make_source_node(nid: str, path: str = "data.parquet") -> GraphNode:
     return GraphNode(
         id=nid,
         data=NodeData(label=nid, nodeType="dataSource", config={"path": path}),
+    )
+
+
+def write_node_config(
+    base_dir: Path,
+    node_type: NodeType,
+    func_name: str,
+    config: dict,
+) -> str:
+    """Write a canonical node JSON sidecar and return its relative path."""
+    rel_path = config_path_for_node(node_type, func_name)
+    abs_path = base_dir / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    import json
+
+    abs_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    return rel_path.as_posix()
+
+
+def write_data_source_config(
+    base_dir: Path,
+    func_name: str,
+    path: str,
+    *,
+    source_type: str = "flat_file",
+) -> str:
+    """Write the canonical sidecar for a ``dataSource`` node."""
+    return write_node_config(
+        base_dir,
+        NodeType.DATA_SOURCE,
+        func_name,
+        {"path": path, "sourceType": source_type},
     )
 
 

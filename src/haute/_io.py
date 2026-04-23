@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import polars as pl
 
+from haute._hashing import content_hash
 from haute._logging import get_logger
-from haute._lru_cache import LRUCache
 
 logger = get_logger(component="io")
 
@@ -15,7 +16,7 @@ logger = get_logger(component="io")
 def read_user_text(path: str | Path) -> str:
     """Read a user-supplied text file, tolerating non-UTF-8 bytes.
 
-    User files may contain Windows-1252 or other legacy-encoded bytes
+    User files may contain Windows-1252 or other non-UTF-8 bytes
     (e.g. en-dash ``0x96`` pasted from Excel).  ``errors="replace"``
     substitutes invalid bytes with U+FFFD rather than raising
     ``UnicodeDecodeError``.
@@ -32,12 +33,31 @@ def read_source(path: str) -> pl.LazyFrame:
     Centralises the csv/json/parquet dispatch that was previously duplicated
     across the executor, scorer, schema inference, and server modules.
 
-    All formats except ``.json`` use Polars lazy scans, so a downstream
-    ``.head(row_limit)`` pushes the limit into the I/O layer and avoids
-    reading the full file.  Plain ``.json`` has no ``scan_json`` equivalent
-    in Polars, so the entire file is read eagerly then wrapped as lazy.
-    This is acceptable because API-input JSON files use the separate
-    ``read_json_flat`` path which caches to parquet.
+    Dispatch table and laziness guarantees
+    --------------------------------------
+    * ``.csv``      → ``pl.scan_csv``      (lazy; ``.head(n)`` push-down)
+    * ``.jsonl``    → ``pl.scan_ndjson``   (lazy; ``.head(n)`` push-down)
+    * ``.parquet``  → ``pl.scan_parquet``  (lazy; ``.head(n)`` push-down)
+    * ``.json``     → ``pl.read_json``     (**eager** — see below)
+
+    Eager-read limitation for plain ``.json``
+    -----------------------------------------
+    Polars exposes no ``scan_json`` for plain (object-per-file) JSON, so
+    ``.json`` files are read **eagerly** via ``pl.read_json(path).lazy()``:
+    the entire file is parsed into memory before the wrapped ``LazyFrame``
+    is returned.  A downstream ``.head(n)`` **cannot** reduce I/O cost on
+    this path — the full file has already been materialised.  For large
+    JSON blobs this is an O(file-size) memory spike.
+
+    Escape hatch for large JSON: :func:`haute._json_flatten.read_json_flat`.
+    That function flattens the JSON once, caches the result as parquet, and
+    returns ``pl.scan_parquet(cache_path)`` — a truly lazy ``LazyFrame``
+    with row-limit push-down.  Prefer ``read_json_flat`` over ``read_source``
+    whenever the JSON file is too large to comfortably fit in memory, or
+    whenever ``.head(n)`` / filter push-down matters.
+
+    NDJSON (``.jsonl``) is the "safe" JSON format for this module:
+    ``scan_ndjson`` is lazy, so ``.head(n)`` actually reduces read cost.
 
     Raises:
         ValueError: If the file extension is not supported.
@@ -67,9 +87,27 @@ def read_source(path: str) -> pl.LazyFrame:
     raise ValueError(f"Unsupported file type: .{suffix}")
 
 
-_object_cache: LRUCache[tuple[str, float, str, str], object] = LRUCache(
-    max_size=_OBJECT_CACHE_MAX_SIZE,
-)
+@functools.lru_cache(maxsize=_OBJECT_CACHE_MAX_SIZE)
+def _load_cached(
+    path: str,
+    digest: str,  # noqa: ARG001 — part of cache key, not used in body.
+    file_type: str,
+    model_class: str,
+) -> object:
+    """Memoised loader keyed on ``(path, digest, file_type, model_class)``.
+
+    The ``digest`` argument (the xxh64 content hash) is NEVER used inside
+    the body — it is present solely to participate in the
+    ``functools.lru_cache`` key so a same-second overwrite of the
+    underlying file (mtime unchanged, bytes changed) produces a fresh
+    miss rather than a stale hit.
+
+    The caller (``load_external_object``) computes the hash outside this
+    cached helper so the cache machinery stays pure-functional: the
+    decorated function never touches the filesystem for cache-key
+    purposes.
+    """
+    return _load_external_object_uncached(path, file_type, model_class)
 
 
 def load_external_object(path: str, file_type: str, model_class: str = "classifier") -> object:
@@ -77,34 +115,23 @@ def load_external_object(path: str, file_type: str, model_class: str = "classifi
 
     Shared by the development executor and the deploy scoring engine.
 
-    Results are cached by ``(path, mtime, file_type, model_class)`` so
-    repeated calls (preview clicks, API scoring requests) skip disk I/O.
-    The cache auto-invalidates when the file is modified on disk.
+    Results are cached by ``(path, content_hash, file_type, model_class)``
+    so repeated calls (preview clicks, API scoring requests) skip disk
+    parse/deserialisation cost.  Keying on the xxh64 content hash closes
+    the TOCTOU hole where a same-second overwrite keeps ``mtime``
+    unchanged and the cache would otherwise serve stale content.
     Bounded to ``_OBJECT_CACHE_MAX_SIZE`` entries (LRU eviction).
 
     All paths are validated to be within the project root before loading.
     Pickle files are deserialized with a restricted unpickler that only
     allows known-safe classes.
     """
-    import os
-
     from haute._sandbox import validate_project_path
 
     validate_project_path(path)
 
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        mtime = 0.0
-    key = (path, mtime, file_type, model_class)
-
-    cached = _object_cache.get(key)
-    if cached is not None:
-        return cached
-
-    obj = _load_external_object_uncached(path, file_type, model_class)
-    _object_cache.put(key, obj)
-    return obj
+    digest = content_hash(Path(path))
+    return _load_cached(path, digest, file_type, model_class)
 
 
 def _load_external_object_uncached(

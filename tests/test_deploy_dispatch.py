@@ -20,13 +20,25 @@ PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
 def _make_config(target: str = "databricks") -> MagicMock:
-    """Build a minimal DeployConfig with the given target."""
-    from haute.deploy._config import DeployConfig
+    """Build a minimal DeployConfig with the given target.
 
+    For container-based targets (``container``, ``azure-container-apps``,
+    ``aws-ecs``, ``gcp-run``), a patch-pinned base image is supplied so
+    :meth:`DeployConfig.__post_init__` accepts the config.  Non-container
+    targets ignore the field.
+    """
+    from haute.deploy._config import ContainerConfig, DeployConfig
+
+    container_based = {"container", "azure-container-apps", "aws-ecs", "gcp-run"}
     return DeployConfig(
         pipeline_file=PIPELINE_FILE,
         model_name="test-model",
         target=target,
+        container=(
+            ContainerConfig(base_image="python:3.11.9-slim")
+            if target in container_based
+            else ContainerConfig()
+        ),
     )
 
 

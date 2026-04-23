@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from haute.deploy._config import DeployConfig, ResolvedDeploy
+from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.graph_utils import PipelineGraph
-
 
 FIXTURE_DIR = Path("tests/fixtures")
 DEFAULT_PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
+
+# Patch-pinned image used by tests that target container builds but do not
+# care about the specific image.  Keeping this in one place lets us bump the
+# patch version across the suite without touching every call site.
+TEST_PATCH_PINNED_BASE_IMAGE = "python:3.11.9-slim"
 
 _SENTINEL = object()
 
@@ -33,6 +37,12 @@ def make_resolved_deploy(
     arguments (``pipeline_file``, ``model_name``, ``target``, ``output_fields``,
     ``container``) and they'll be extracted from ``overrides`` before building
     the config.  All other kwargs become ResolvedDeploy field overrides.
+
+    If ``target == "container"`` and no explicit ``container`` override is
+    provided, a :class:`ContainerConfig` with a valid patch-pinned base image
+    is injected.  ``DeployConfig.__post_init__`` rejects unpinned images for
+    container targets, so tests that do not exercise image validation itself
+    need a valid default.
     """
     if config is None:
         config_kwargs: dict[str, object] = {
@@ -47,6 +57,12 @@ def make_resolved_deploy(
         container = overrides.pop("container", _SENTINEL)
         if container is not _SENTINEL:
             config_kwargs["container"] = container
+        elif config_kwargs["target"] == "container":
+            # Supply a pinned image so base-image validation passes for tests
+            # that only care about the target dispatch, not the image itself.
+            config_kwargs["container"] = ContainerConfig(
+                base_image=TEST_PATCH_PINNED_BASE_IMAGE,
+            )
         config = DeployConfig(**config_kwargs)
 
     defaults: dict[str, object] = {

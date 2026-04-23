@@ -12,7 +12,6 @@ and column fetches failed silently.
 from __future__ import annotations
 
 import polars as pl
-import pytest
 
 from haute._builders import resolve_instance_node
 from haute._execute_lazy import (
@@ -29,7 +28,6 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

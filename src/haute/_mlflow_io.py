@@ -7,6 +7,8 @@ Supports CatBoost (native ``.cbm``) and any MLflow pyfunc model.
 from __future__ import annotations
 
 import os
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +27,178 @@ logger = get_logger(component="mlflow_io")
 
 _MODEL_CACHE_MAX_SIZE = 16
 _DISK_CACHE_MAX_DIRS = 50
-_model_cache: LRUCache[tuple[str, str, str, str], ScoringModel] = LRUCache(
+
+
+class _ArtifactNotFoundError(FileNotFoundError):
+    """Internal sentinel: a probe completed and no artifact matched.
+
+    Subclasses :class:`FileNotFoundError` so callers can catch the broad
+    file-missing category while internal probe callers catch the narrower
+    sentinel.  A bare ``FileNotFoundError`` bubbling out of
+    ``list_artifacts`` (future MLflow behaviour, local-fs shim, etc.)
+    is **not** swallowed by ``except _ArtifactNotFoundError`` — it surfaces
+    as an infrastructure error the operator must see.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Cache observability counters (issue #98)
+# ---------------------------------------------------------------------------
+# Module-level hit/miss counters scraped by ``get_model_cache_stats()`` for
+# ops dashboards.  Incremented under a dedicated stats lock rather than
+# piggy-backing on ``_model_cache._lock``: the LRU lock is a private
+# implementation detail and we do not want counter updates racing with
+# cache reads/writes inside that critical section — counters are
+# observability, not cache correctness.
+_model_cache_hits: int = 0
+_model_cache_misses: int = 0
+_model_cache_stats_lock = threading.Lock()
+
+
+def _flavor_from_artifact(artifact_path: str) -> str:
+    """Derive the model flavor from an artifact filename extension.
+
+    Kept in sync with the dispatch in :func:`load_mlflow_model`.  Used by
+    the fast-path cache hit site where the artifact string is known up
+    front but the full ``resolve_mlflow_source`` round-trip has been
+    skipped.
+    """
+    if artifact_path.endswith(".cbm"):
+        return "catboost"
+    if artifact_path.endswith(".rsglm"):
+        return "rustystats"
+    return "pyfunc"
+
+
+def get_model_cache_stats() -> dict[str, int]:
+    """Return a snapshot of cache hit/miss counters.
+
+    Returns a dict of the form ``{"hits": N, "misses": M}`` for scraping
+    via ops / debug endpoints.  The snapshot is consistent: both counters
+    are read under the stats lock in one atomic step so a caller never
+    sees a mid-increment tear.
+    """
+    with _model_cache_stats_lock:
+        return {"hits": _model_cache_hits, "misses": _model_cache_misses}
+
+
+def _record_cache_hit(*, run_id: str, artifact_path: str, flavor: str) -> None:
+    """Log a structured ``model_cache_hit`` event and bump the hit counter.
+
+    Structured fields (``run_id``, ``artifact_path``, ``flavor``) mirror
+    the ``model_cache_miss`` event vocabulary so log aggregators can
+    compute hit rate per-run, per-artifact, or per-flavor without
+    re-parsing a stringified tuple.
+    """
+    global _model_cache_hits
+    with _model_cache_stats_lock:
+        _model_cache_hits += 1
+    logger.info(
+        "model_cache_hit",
+        run_id=run_id,
+        artifact_path=artifact_path,
+        flavor=flavor,
+    )
+
+
+def _record_cache_miss(*, run_id: str, artifact_path: str, flavor: str) -> None:
+    """Log a structured ``model_cache_miss`` event and bump the miss counter.
+
+    Emitted before the (potentially expensive) model download so the miss
+    is visible even when the subsequent load fails — production on-call
+    should still see the miss that triggered the failure.
+    """
+    global _model_cache_misses
+    with _model_cache_stats_lock:
+        _model_cache_misses += 1
+    logger.info(
+        "model_cache_miss",
+        run_id=run_id,
+        artifact_path=artifact_path,
+        flavor=flavor,
+    )
+
+
+def _reset_model_cache_stats() -> None:
+    """Reset the hit/miss counters to zero.
+
+    Called from :func:`clear_model_cache` to pair cache clearing with
+    stats reset — the caller's mental model of "clear everything
+    cache-related" wins over "clear data but keep stats".
+    """
+    global _model_cache_hits, _model_cache_misses
+    with _model_cache_stats_lock:
+        _model_cache_hits = 0
+        _model_cache_misses = 0
+
+
+class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]):
+    """LRU cache for ``ScoringModel`` instances with a validation-cache cascade.
+
+    Wraps :meth:`LRUCache.put` and :meth:`LRUCache.clear` so every eviction
+    triggers the targeted ``_invalidate_feature_validation_cache_for`` hook
+    in :mod:`haute._model_scorer`, and a full ``clear()`` cascades into a
+    blanket ``_clear_feature_validation_cache()``.
+
+    This is a *shim* on top of the base LRU contract — no new public API
+    on :class:`LRUCache` itself.  The cascade is invoked via a lazy import
+    inside the override to keep the module-import ordering clean:
+    ``_mlflow_io`` and ``_model_scorer`` otherwise have a cyclic dep.
+    """
+
+    __slots__ = ()
+
+    def put(self, key: tuple[str, str, str, str], value: ScoringModel) -> None:
+        with self._lock:
+            # Snapshot live entries *before* the put so we can diff after
+            # super().put() completes.  The diff is exact because puts
+            # are serialised on self._lock and eviction happens inline.
+            before = dict(self._data)
+            super().put(key, value)
+            # Any key that was live before but is gone now was evicted.
+            after_keys = set(self._data)
+            evicted_models = [v for k, v in before.items() if k not in after_keys]
+            if evicted_models:
+                from haute import _model_scorer as _ms
+
+                for sm in evicted_models:
+                    _ms._invalidate_feature_validation_cache_for(sm)
+
+    def clear(self) -> None:
+        with self._lock:
+            super().clear()
+            from haute import _model_scorer as _ms
+
+            _ms._clear_feature_validation_cache()
+
+    def evict_matching(
+        self,
+        predicate: Callable[[tuple[str, str, str, str]], bool],
+    ) -> int:
+        """Evict every entry whose key satisfies *predicate*, cascading.
+
+        Returns the number of entries evicted.  Used by
+        :func:`clear_model_cache` to implement targeted ``run_id=...``
+        clears without wiping the whole cache.
+
+        Delegates eviction to :meth:`LRUCache.evict_where` so no call
+        site reaches into the internal data structures directly.  The
+        cascade runs **outside** the base cache's lock — ``evict_where``
+        returns evicted values, and we invalidate dependent caches here
+        without any of our own locking held, avoiding a potential
+        deadlock if the callback reaches back into another cache.
+        """
+        evicted = self.evict_where(predicate)
+        if not evicted:
+            return 0
+        from haute import _model_scorer as _ms
+
+        for sm in evicted:
+            _ms._invalidate_feature_validation_cache_for(sm)
+        return len(evicted)
+
+
+_model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
     max_size=_MODEL_CACHE_MAX_SIZE,
 )
 
@@ -36,15 +209,14 @@ _model_cache: LRUCache[tuple[str, str, str, str], ScoringModel] = LRUCache(
 
 
 class ScoringModel:
-    """Uniform scoring interface wrapping any MLflow-loaded model.
+    """Carrier for a loaded model plus the metadata scoring needs.
 
-    Provides a consistent API regardless of model flavor (CatBoost,
-    pyfunc, etc.), abstracting away flavor-specific details like
-    categorical feature handling and prediction output format.
-
-    Attribute access is proxied to the underlying model for backward
-    compatibility with code that accesses CatBoost-specific attributes
-    (e.g. ``model.feature_names_``, ``model.get_cat_feature_indices()``).
+    Holds the raw flavor-specific model object (CatBoost / pyfunc /
+    RustyStats GLM) together with the declared ``feature_names``,
+    ``cat_feature_names``, and ``flavor`` string.  All scoring internals
+    dispatch explicitly on ``flavor``; there is no ``__getattr__``
+    proxying — callers must go through the declared ``predict`` /
+    ``predict_proba`` / ``raw_model`` surface.
     """
 
     __slots__ = ("_model", "feature_names", "cat_feature_names", "flavor")
@@ -77,10 +249,6 @@ class ScoringModel:
         if fn is None:
             return None
         return np.asarray(fn(x_data))
-
-    def __getattr__(self, name: str) -> Any:
-        """Proxy attribute access to the underlying model for backward compat."""
-        return getattr(self._model, name)
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +385,12 @@ def _find_artifact_by_extension(
         label: Human-readable label for error messages (e.g. ``"CatBoost"``).
 
     Raises:
-        FileNotFoundError: If no artifact with *ext* is found.
+        _ArtifactNotFoundError: If no artifact with *ext* is found.  Subclass
+            of :class:`FileNotFoundError` so the public contract
+            (callers expect ``FileNotFoundError``) is preserved while
+            the internal triage at :func:`_find_model_artifact` can
+            distinguish "probe missed" from a credential / network error
+            that would be a bare ``FileNotFoundError`` from MLflow.
     """
     artifacts = client.list_artifacts(run_id)
     for art in artifacts:
@@ -230,7 +403,7 @@ def _find_artifact_by_extension(
             for sub in sub_artifacts:
                 if sub.path.endswith(ext):
                     return str(sub.path)
-    raise FileNotFoundError(
+    raise _ArtifactNotFoundError(
         f"No {ext} artifact found in run '{run_id}'. "
         f"Ensure the {label} model was logged with mlflow.log_artifact()."
     )
@@ -251,18 +424,29 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
 
     Checks for CatBoost (``.cbm``) first, then RustyStats (``.rsglm``),
     then falls back to a pyfunc model directory.
+
+    Only catches :class:`_ArtifactNotFoundError` — a dedicated subclass of
+    :class:`FileNotFoundError` raised by our own helpers when a probe
+    genuinely sees no matching artifact.  A bare ``FileNotFoundError``
+    or an :class:`mlflow.exceptions.MlflowException` (credential /
+    network failure from ``list_artifacts``) propagates so the operator
+    sees the real infrastructure problem instead of a misleading "no
+    model artifact" message.
     """
     try:
         return _find_cbm_artifact(client, run_id), "catboost"
-    except FileNotFoundError:
+    except _ArtifactNotFoundError:
         pass
 
     try:
         return _find_rsglm_artifact(client, run_id), "rustystats"
-    except FileNotFoundError:
+    except _ArtifactNotFoundError:
         pass
 
-    # Look for a pyfunc model directory (contains MLmodel file)
+    # Look for a pyfunc model directory (contains MLmodel file).
+    # ``list_artifacts`` failures (MlflowException etc.) propagate so
+    # that an auth / network error is never masqueraded as "no model
+    # artifact found".
     artifacts = client.list_artifacts(run_id)
     for art in artifacts:
         if art.path == "model" and art.is_dir:
@@ -275,7 +459,7 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
                 if s.path.endswith("/MLmodel") or s.path == "MLmodel":
                     return art.path, "pyfunc"
 
-    raise FileNotFoundError(
+    raise _ArtifactNotFoundError(
         f"No model artifact found in run '{run_id}'. "
         "Expected .cbm (CatBoost), .rsglm (RustyStats), or model directory (pyfunc)."
     )
@@ -383,38 +567,144 @@ def _resolve_artifact_local(
 def clear_model_cache(run_id: str | None = None) -> int:
     """Delete cached model artifacts, returning the number of files removed.
 
-    If *run_id* is given, only that run's cache is cleared.
-    Otherwise all cached models are removed.
+    If *run_id* is given, only that run's cache is cleared — in-memory
+    entries whose cache key's ``run_id`` slot matches are evicted, the
+    on-disk directory for that run is removed, and observability
+    counters are left untouched (a targeted clear is not a
+    measurement-window boundary).
+
+    If *run_id* is ``None``, everything goes: all in-memory entries, the
+    entire ``.cache/models`` tree, AND the observability counters
+    (``hits`` / ``misses``).  The counter reset on blanket clear is
+    intentional so the next measurement window is not contaminated with
+    pre-clear counts.
     """
     import shutil
     from pathlib import Path
 
+    # Validate run_id up front — do this before any other work so a bad
+    # input fails loudly regardless of whether the disk cache exists.
+    if run_id and (os.sep in run_id or "/" in run_id or ".." in run_id):
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+
     cache_root = Path.cwd() / ".cache" / "models"
-    if not cache_root.exists():
-        return 0
-
     removed = 0
-    if run_id:
-        if os.sep in run_id or "/" in run_id or ".." in run_id:
-            raise ValueError(f"Invalid run_id: {run_id!r}")
-        target = cache_root / run_id
-        if target.exists():
-            removed = sum(1 for _ in target.glob("*") if _.is_file())
-            shutil.rmtree(target, ignore_errors=True)
-    else:
-        for d in cache_root.iterdir():
-            if d.is_dir():
-                removed += sum(1 for _ in d.glob("*") if _.is_file())
-        shutil.rmtree(cache_root, ignore_errors=True)
+    if cache_root.exists():
+        if run_id:
+            target = cache_root / run_id
+            if target.exists():
+                removed = sum(1 for _ in target.glob("*") if _.is_file())
+                shutil.rmtree(target, ignore_errors=True)
+        else:
+            for d in cache_root.iterdir():
+                if d.is_dir():
+                    removed += sum(1 for _ in d.glob("*") if _.is_file())
+            shutil.rmtree(cache_root, ignore_errors=True)
 
-    # Also evict from the in-memory LRU cache
-    _model_cache.clear()
+    # In-memory + counter cleanup is scoped to the caller's intent:
+    # blanket ``clear_model_cache()`` zeroes everything; targeted
+    # ``clear_model_cache(run_id="x")`` only evicts entries whose cache
+    # key matches the run_id and leaves counters alone.
+    if run_id is None:
+        _model_cache.clear()
+        _reset_model_cache_stats()
+    else:
+        # Cache keys are ``(source_type, resolved_run_id, version_or_artifact, task)``.
+        # Evict every entry whose run_id slot matches (may be multiple,
+        # different task / version per run) and let the cascade handle
+        # feature-validation-cache invalidation.  Counters are left
+        # alone — targeted clear is not a measurement-window boundary.
+        _model_cache.evict_matching(lambda k: len(k) >= 2 and k[1] == run_id)
     return removed
 
 
 # ---------------------------------------------------------------------------
 # Main loader
 # ---------------------------------------------------------------------------
+
+
+# Maximum total attempts for loading an MLflow-backed model.  One fresh
+# attempt plus one retry after deleting a suspected-corrupt cache.  Higher
+# ceilings turn persistent corruption into an invisible loop; lower is
+# friendly to truly transient read errors without masking real problems.
+_LOAD_MAX_ATTEMPTS = 2
+# Initial backoff before the retry (seconds).  Exponential growth applied
+# if _LOAD_MAX_ATTEMPTS is ever raised.
+_LOAD_BACKOFF_BASE_S = 0.1
+_LOAD_BACKOFF_JITTER_S = 0.1
+
+
+def _load_with_bounded_retry(
+    *,
+    mlflow_mod: Any,
+    run_id: str,
+    artifact: str,
+    flavor: str,
+    task: str,
+) -> ScoringModel:
+    """Resolve artifact and load the model with a bounded retry window.
+
+    On failure deletes the suspect cached file, sleeps for a brief
+    exponential-backoff interval with jitter, re-downloads, and retries.
+    After :data:`_LOAD_MAX_ATTEMPTS` total attempts, propagates the final
+    failure with a diagnostic message noting that the retry was exhausted —
+    an operator can then act on truly corrupt artifacts instead of watching
+    a silent loop re-download the same bad bytes.
+    """
+    import random
+    import time
+
+    last_err: BaseException | None = None
+    for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
+        local_path = _resolve_artifact_local(
+            mlflow_mod,
+            run_id,
+            artifact,
+        )
+        try:
+            if flavor == "catboost":
+                raw = _load_catboost_model(local_path, task)
+                return _wrap_catboost(raw)
+            return _load_rustystats_model(local_path)
+        except (AttributeError, TypeError, KeyError):
+            # Programmer error — a missing attribute, wrong type, or
+            # unknown dict key is a bug in our dispatch code (or a
+            # breaking change in catboost / rustystats), not a corrupt
+            # artifact.  Wrapping these as "persistently corrupt" would
+            # send on-call down the wrong path.  Re-raise so the real
+            # stack trace surfaces.
+            raise
+        except Exception as err:
+            last_err = err
+            logger.warning(
+                "model_load_failed",
+                attempt=attempt,
+                max_attempts=_LOAD_MAX_ATTEMPTS,
+                path=local_path,
+                error=str(err),
+            )
+            # Delete suspected-corrupt cache so the next attempt
+            # re-downloads from scratch.
+            cached_file = Path(local_path)
+            if cached_file.is_file():
+                cached_file.unlink()
+            if attempt >= _LOAD_MAX_ATTEMPTS:
+                break
+            # Exponential backoff with jitter between attempts.
+            delay = _LOAD_BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(
+                0, _LOAD_BACKOFF_JITTER_S
+            )
+            time.sleep(delay)
+
+    # Exhausted the retry budget — surface a diagnostic that names the
+    # artifact so on-call engineers don't need to spelunk debug logs.
+    assert last_err is not None  # loop always sets last_err on failure
+    raise RuntimeError(
+        f"Persistently corrupt or unloadable model artifact "
+        f"(run_id={run_id!r}, artifact={artifact!r}, flavor={flavor}): "
+        f"retry exhausted after {_LOAD_MAX_ATTEMPTS} attempt(s). "
+        f"Last error: {last_err}"
+    ) from last_err
 
 
 def load_mlflow_model(
@@ -464,7 +754,11 @@ def load_mlflow_model(
         fast_key = (source_type, run_id, artifact_path, task)
         cached = _model_cache.get(fast_key)
         if cached is not None:
-            logger.info("mlflow_model_cache_hit", key=str(fast_key))
+            _record_cache_hit(
+                run_id=run_id,
+                artifact_path=artifact_path,
+                flavor=_flavor_from_artifact(artifact_path),
+            )
             return cached
 
     resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
@@ -482,55 +776,42 @@ def load_mlflow_model(
     # else: detect from the artifact path extension
 
     # Detect flavor from artifact path
-    if resolved_artifact.endswith(".cbm"):
-        flavor = "catboost"
-    elif resolved_artifact.endswith(".rsglm"):
-        flavor = "rustystats"
-    else:
-        flavor = "pyfunc"
+    flavor = _flavor_from_artifact(resolved_artifact)
 
     cache_key = (source_type, resolved_run_id, resolved_version or resolved_artifact, task)
 
     cached = _model_cache.get(cache_key)
     if cached is not None:
-        logger.info("mlflow_model_cache_hit", key=str(cache_key))
+        _record_cache_hit(
+            run_id=resolved_run_id,
+            artifact_path=resolved_artifact,
+            flavor=flavor,
+        )
         return cached
+
+    # Real-path miss — record the miss (counter + structured event) before
+    # the potentially-expensive download so the miss is observable even if
+    # the subsequent load raises.
+    _record_cache_miss(
+        run_id=resolved_run_id,
+        artifact_path=resolved_artifact,
+        flavor=flavor,
+    )
 
     # Load model based on detected flavor.
     # If loading fails (corrupt/truncated cache), delete the cached file
-    # and re-download once before giving up.
+    # and re-download exactly once before giving up.  The retry uses a
+    # small exponential backoff with jitter so transient upstream hiccups
+    # (tracking-server flaps) get a moment to recover — but the total
+    # retry budget is bounded so persistent corruption surfaces loudly.
     if flavor in ("catboost", "rustystats"):
-        local_path = _resolve_artifact_local(
-            mlflow_mod,
-            resolved_run_id,
-            resolved_artifact,
+        scoring_model = _load_with_bounded_retry(
+            mlflow_mod=mlflow_mod,
+            run_id=resolved_run_id,
+            artifact=resolved_artifact,
+            flavor=flavor,
+            task=task,
         )
-        try:
-            if flavor == "catboost":
-                raw_model = _load_catboost_model(local_path, task)
-                scoring_model = _wrap_catboost(raw_model)
-            else:
-                scoring_model = _load_rustystats_model(local_path)
-        except Exception as first_err:
-            # Corrupt cache — delete and retry with a fresh download
-            logger.warning(
-                "model_load_failed_retrying",
-                path=local_path,
-                error=str(first_err),
-            )
-            cached_file = Path(local_path)
-            if cached_file.is_file():
-                cached_file.unlink()
-            local_path = _resolve_artifact_local(
-                mlflow_mod,
-                resolved_run_id,
-                resolved_artifact,
-            )
-            if flavor == "catboost":
-                raw_model = _load_catboost_model(local_path, task)
-                scoring_model = _wrap_catboost(raw_model)
-            else:
-                scoring_model = _load_rustystats_model(local_path)
     else:
         raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
         scoring_model = _wrap_pyfunc(raw_model)
@@ -567,9 +848,12 @@ def _prepare_predict_frame(
     Returns numpy array, pandas DataFrame, or Polars DataFrame depending
     on model needs:
     - RustyStats: Polars DataFrame (native Polars input)
-    - CatBoost with no categoricals: numpy array (fastest)
-    - CatBoost with categoricals: pandas DataFrame (CatBoost requirement)
-    - Pyfunc: always pandas DataFrame
+    - No categoricals (pyfunc or catboost): numpy array (fastest; avoids the
+      Arrow-to-pandas round-trip that keeps the buffer alive twice)
+    - With categoricals (pyfunc or catboost): pandas DataFrame (the
+      ``pd.Categorical`` dtype is the only reliable carrier for
+      CatBoost's cat-feature signal and for pyfunc models that inspect
+      column dtypes)
     """
     # RustyStats handles its own preprocessing — pass Polars directly
     if flavor == "rustystats":
@@ -584,8 +868,10 @@ def _prepare_predict_frame(
         selected = selected.with_columns(
             [pl.col(c).fill_null("_MISSING_").cast(pl.Categorical) for c in cat_cols]
         )
-    # Pyfunc always needs pandas; CatBoost can use numpy when no cats
-    if flavor == "pyfunc" or cat_cols:
+    # Categorical dtype only round-trips through pandas; numeric-only
+    # paths skip the pandas wrapper entirely because pyfunc and sklearn
+    # accept numpy directly.
+    if cat_cols:
         return selected.to_pandas()
     return selected.to_numpy()
 
@@ -621,24 +907,21 @@ def _score_eager(
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
-    Shared between the dev executor and the deploy scorer.
+    Thin delegate onto :func:`haute._model_scorer.score_frame` with
+    ``batch=False`` — the unified scoring entry point owns the flavor
+    dispatch and the batch/eager fork.  This symbol stays exported so
+    existing call sites (dev executor, deploy scorer) and direct-patch
+    tests keep working.
     """
-    df_eager = lf.collect(engine="streaming")
-    x_data = _prepare_predict_frame(
-        df_eager,
-        features,
+    from haute._model_scorer import score_frame
+
+    return score_frame(
+        model=scoring_model.raw_model,
+        lf=lf,
+        features=features,
         cat_feature_names=scoring_model.cat_feature_names,
         flavor=scoring_model.flavor,
+        task=task,
+        output_col=output_col,
+        batch=False,
     )
-    preds = scoring_model.predict(x_data)
-    df_eager = df_eager.with_columns(
-        pl.Series(output_col, preds),
-    )
-    if task == "classification":
-        df_eager = _append_classification_proba(
-            df_eager,
-            scoring_model,
-            x_data,
-            output_col,
-        )
-    return df_eager.lazy()

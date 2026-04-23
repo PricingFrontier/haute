@@ -12,42 +12,51 @@ from utility.features import (
 pipeline = haute.Pipeline("my_pipeline", description='')
 
 
-@pipeline.data_source(config="config/data_source/batch_quotes.json")
+@pipeline.data_source(config="config/data_source/batch_quotes.json", contract="opaque")
 def batch_quotes() -> pl.LazyFrame:
     """batch_quotes node"""
-    df = pl.scan_parquet("data/quotes/nb_batch.parquet")
+    from pathlib import Path
+    df = pl.scan_parquet(Path(__file__).parent / "data/quotes/nb_batch.parquet")
     df = df.limit(100000)
     return df
 
 
-@pipeline.data_source(config="config/data_source/competitor_insights.json")
+@pipeline.data_source(config="config/data_source/competitor_insights.json", contract="opaque")
 def competitor_insights() -> pl.LazyFrame:
     """competitor_insights node"""
-    return pl.scan_parquet("data/competitor_premiums/competitor_insight.parquet")
+    from pathlib import Path
+    df = pl.scan_parquet(Path(__file__).parent / "data/competitor_premiums/competitor_insight.parquet")
+    return df
 
 
-@pipeline.data_source(config="config/data_source/policy_data.json")
+@pipeline.data_source(config="config/data_source/policy_data.json", contract="opaque")
 def policy_data() -> pl.LazyFrame:
     """policy_data node"""
-    return pl.scan_parquet("data/claims/britsure_policies.parquet")
+    from pathlib import Path
+    df = pl.scan_parquet(Path(__file__).parent / "data/claims/britsure_policies.parquet")
+    return df
 
 
-@pipeline.data_source(config="config/data_source/quoted_premiums.json")
+@pipeline.data_source(config="config/data_source/quoted_premiums.json", contract="opaque")
 def quoted_premiums() -> pl.LazyFrame:
     """quoted_premiums node"""
-    return pl.scan_parquet("data/competitor_premiums/britsure_premiums.parquet")
+    from pathlib import Path
+    df = pl.scan_parquet(Path(__file__).parent / "data/competitor_premiums/britsure_premiums.parquet")
+    return df
 
 
-@pipeline.api_input(config="config/quote_input/quotes.json")
+@pipeline.api_input(config="config/quote_input/quotes.json", contract="opaque")
 def quotes() -> pl.LazyFrame:
     """quotes node"""
+    from pathlib import Path
     from haute._json_flatten import read_json_flat
-    return read_json_flat("data/quotes/sample_quote.json", config_path="config/quote_input/quotes.json")
+    return read_json_flat(Path(__file__).parent / "data/quotes/sample_quote.json", config_path="config/quote_input/quotes.json")
 
 
-@pipeline.polars
+@pipeline.polars(contract="opaque")
 def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
     """processing node"""
+    df = quotes
     df = clean_columns(quotes)
     cover_start = to_date("cover_start_date")
     
@@ -80,32 +89,21 @@ def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.live_switch(config="config/source_switch/policies.json")
+@pipeline.live_switch(config="config/source_switch/policies.json", contract={"inputs": [], "outputs": []})
 def policies(batch_quotes: pl.LazyFrame, processing: pl.LazyFrame) -> pl.LazyFrame:
     """policies node"""
     return processing
 
 
-@pipeline.banding(config="config/banding/Banding_7.json")
-def Banding_7(policies: pl.LazyFrame) -> pl.LazyFrame:
-    """Banding 7 node"""
-    return policies
-
-
-@pipeline.polars
+@pipeline.polars(contract="opaque")
 def competitor_join(policies: pl.LazyFrame, competitor_insights: pl.LazyFrame) -> pl.LazyFrame:
     """competitor_join node"""
+    df = policies
     df = policies.join(competitor_insights, on="quote_id", how="inner")
     return df
 
 
-@pipeline.modelling(config="config/model_training/avg_top_5.json")
-def avg_top_5(competitor_join: pl.LazyFrame) -> pl.LazyFrame:
-    """avg_top_5 node"""
-    return competitor_join
-
-
-@pipeline.model_score(config="config/model_scoring/competitor_scoring.json")
+@pipeline.model_score(config="config/model_scoring/competitor_scoring.json", contract={"inputs": ['annual_mileage', 'city', 'compulsory_excess', 'cover_type', 'estimated_value', 'insurance_group', 'ncd_years', 'proposer_age', 'proposer_licence_held_years', 'voluntary_excess'], "outputs": ['competitor_premium']})
 def competitor_scoring(policies: pl.LazyFrame) -> pl.LazyFrame:
     """competitor_scoring node"""
     from pathlib import Path
@@ -114,23 +112,38 @@ def competitor_scoring(policies: pl.LazyFrame) -> pl.LazyFrame:
     return score_from_config(policies, config="config/model_scoring/competitor_scoring.json", base_dir=base)
 
 
-@pipeline.polars
+@pipeline.banding(config="config/banding/Banding_7.json", contract={"inputs": ['proposer_age'], "outputs": ['proposer_age_band']})
+def Banding_7(policies: pl.LazyFrame) -> pl.LazyFrame:
+    """Banding 7 node"""
+    return policies
+
+
+@pipeline.modelling(config="config/model_training/avg_top_5.json", contract={"inputs": [], "outputs": []})
+def avg_top_5(competitor_join: pl.LazyFrame) -> pl.LazyFrame:
+    """avg_top_5 node"""
+    return competitor_join
+
+
+@pipeline.polars(contract="opaque")
 def join_scoring(policies: pl.LazyFrame, competitor_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """Join competitor scoring onto policies"""
+    df = policies
     df = policies.join(competitor_scoring, on="quote_id", how="left")
     return df
 
 
-@pipeline.polars
+@pipeline.polars(contract="opaque")
 def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> pl.LazyFrame:
     """Join policy data"""
+    df = join_scoring
     df = join_scoring.join(policy_data, on="quote_id", how="left")
     return df
 
 
-@pipeline.polars
+@pipeline.polars(contract="opaque")
 def join_premiums(join_policy_data: pl.LazyFrame, quoted_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """Join quoted premiums and derive sale_flag"""
+    df = join_policy_data
     df = join_policy_data.join(quoted_premiums, on="quote_id", how="left").with_columns(
         sale_flag=pl.when(pl.col("policy_id").is_null()).then(pl.lit(0)).otherwise(pl.lit(1)),
         burn_cost=pl.col("premium") * 0.7,
@@ -138,30 +151,17 @@ def join_premiums(join_policy_data: pl.LazyFrame, quoted_premiums: pl.LazyFrame)
     return df
 
 
-@pipeline.polars(selected_columns=['quote_id', 'sale_flag', 'competitor_premium', 'premium', 'difference_to_market', 'proposer_age', 'cover_type', 'margin', 'burn_cost'])
+@pipeline.polars(selected_columns=['quote_id', 'sale_flag', 'competitor_premium', 'premium', 'difference_to_market', 'proposer_age', 'cover_type', 'margin', 'burn_cost'], contract="opaque")
 def competitor_features(join_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """competitor_features node"""
+    df = join_premiums
     df = join_premiums.with_columns(
         difference_to_market=pl.col("premium") / pl.col("competitor_premium")
     )
     return df
 
 
-@pipeline.modelling(config="config/model_training/conversion.json")
-def conversion(competitor_features: pl.LazyFrame) -> pl.LazyFrame:
-    """conversion node"""
-    return competitor_features
-
-
-@pipeline.data_sink(config="config/data_sink/conversion_sink.json")
-def conversion_sink(competitor_features: pl.LazyFrame) -> pl.LazyFrame:
-    """Data Sink 9 node"""
-    from haute._polars_utils import safe_sink
-    safe_sink(competitor_features, "output/conversion_data.parquet")
-    return competitor_features
-
-
-@pipeline.scenario_expander(config="config/expander/premium.json")
+@pipeline.scenario_expander(config="config/expander/premium.json", contract="opaque")
 def premium(join_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """premium node"""
     df = join_premiums
@@ -169,7 +169,22 @@ def premium(join_premiums: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.model_score(config="config/model_scoring/conversion_scoring.json")
+@pipeline.data_sink(config="config/data_sink/conversion_sink.json", contract={"inputs": [], "outputs": []})
+def conversion_sink(competitor_features: pl.LazyFrame) -> pl.LazyFrame:
+    """Data Sink 9 node"""
+    from pathlib import Path
+    from haute._polars_utils import safe_sink
+    safe_sink(competitor_features, Path(__file__).parent / "output/conversion_data.parquet")
+    return competitor_features
+
+
+@pipeline.modelling(config="config/model_training/conversion.json", contract={"inputs": [], "outputs": []})
+def conversion(competitor_features: pl.LazyFrame) -> pl.LazyFrame:
+    """conversion node"""
+    return competitor_features
+
+
+@pipeline.model_score(config="config/model_scoring/conversion_scoring.json", contract={"inputs": ['difference_to_market'], "outputs": ['conversion_prediction']})
 def conversion_scoring(competitor_features_scenarios: pl.LazyFrame) -> pl.LazyFrame:
     """conversion_scoring node"""
     from pathlib import Path
@@ -178,9 +193,10 @@ def conversion_scoring(competitor_features_scenarios: pl.LazyFrame) -> pl.LazyFr
     return score_from_config(competitor_features_scenarios, config="config/model_scoring/conversion_scoring.json", base_dir=base)
 
 
-@pipeline.polars
+@pipeline.polars(contract="opaque")
 def optimiser_input(conversion_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """Polars 8 node"""
+    df = conversion_scoring
     df = conversion_scoring.with_columns(
         margin=pl.col("premium") - pl.col("burn_cost"),
     ).with_columns(
@@ -189,15 +205,15 @@ def optimiser_input(conversion_scoring: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.optimiser_apply(config="config/apply_optimisation/apply_optimisation.json")
-def apply_optimisation(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
-    """apply_optimisation node"""
+@pipeline.optimiser(config="config/optimisation/online_optimiser.json", contract={"inputs": [], "outputs": []})
+def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
+    """online_optimiser node"""
     return optimiser_input
 
 
-@pipeline.optimiser(config="config/optimisation/online_optimiser.json")
-def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
-    """online_optimiser node"""
+@pipeline.optimiser_apply(config="config/apply_optimisation/apply_optimisation.json", contract="opaque")
+def apply_optimisation(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
+    """apply_optimisation node"""
     return optimiser_input
 
 

@@ -81,20 +81,6 @@ describe("SplitAndMetricsConfig", () => {
     expect(onSplitUpdate).toHaveBeenCalledWith("validation_size", 0.3)
   })
 
-  it("cross-validation toggle calls onUpdate", () => {
-    const onUpdate = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ onUpdate })} />)
-    const cvBtn = screen.getByText("Off")
-    fireEvent.click(cvBtn)
-    expect(onUpdate).toHaveBeenCalledWith("cv_folds", 5)
-  })
-
-  it("shows folds input when cv is enabled", () => {
-    render(<SplitAndMetricsConfig {...makeProps({ config: { cv_folds: 5 } })} />)
-    expect(screen.getByText("Folds:")).toBeInTheDocument()
-    expect(screen.getByText("On")).toBeInTheDocument()
-  })
-
   it("MLflow section toggles on click", () => {
     const toggleSection = vi.fn()
     render(<SplitAndMetricsConfig {...makeProps({ toggleSection })} />)

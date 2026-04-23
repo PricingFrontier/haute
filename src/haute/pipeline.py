@@ -276,7 +276,7 @@ class Pipeline(NodeRegistry):
         If any source node is marked ``api_input=True``, only those
         sources are seeded with *df*.  Other sources still execute their
         own loading logic (e.g. static rating tables).  When no node is
-        marked, **all** sources are seeded (backward-compatible default).
+        marked, **all** sources are seeded.
         """
         from haute._model_scorer import _scenario_ctx
 

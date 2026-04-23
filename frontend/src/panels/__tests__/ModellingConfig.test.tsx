@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import ModellingConfig from "../ModellingConfig"
+import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import type { SimpleNode, SimpleEdge } from "../editors"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -34,20 +36,33 @@ const defaultColumns = [
   { name: "exposure", dtype: "Float64" },
 ]
 
-function defaultProps(overrides: Partial<Parameters<typeof ModellingConfig>[0]> = {}) {
+type ConfigOverrides = Partial<Parameters<typeof ModellingConfig>[0]> & {
+  allNodes?: SimpleNode[]
+  edges?: SimpleEdge[]
+  submodels?: Record<string, unknown>
+  preamble?: string
+}
+
+function defaultProps(overrides: ConfigOverrides = {}) {
+  // Strip graph-context keys — they flow via `<GraphProvider>` in tests, not props.
+  const { allNodes, edges, submodels, preamble, ...rest } = overrides
+  void allNodes; void edges; void submodels; void preamble
   return {
     config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost" },
     onUpdate: vi.fn(),
     upstreamColumns: defaultColumns,
-    allNodes: [],
-    edges: [],
-    ...overrides,
+    ...rest,
   }
 }
 
-function renderConfig(overrides: Partial<Parameters<typeof ModellingConfig>[0]> = {}) {
+function renderConfig(overrides: ConfigOverrides = {}) {
+  const { allNodes = [], edges = [], submodels, preamble } = overrides
   const props = defaultProps(overrides)
-  const result = render(<ModellingConfig {...props} />)
+  const result = render(
+    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble}>
+      <ModellingConfig {...props} />
+    </GraphProvider>,
+  )
   return { ...result, props }
 }
 
@@ -210,17 +225,23 @@ describe("ModellingConfig", () => {
 
     it("Tweedie variance power slider only visible when loss_function=Tweedie", () => {
       // Without Tweedie: no slider
-      const { unmount } = render(<ModellingConfig {...defaultProps()} />)
+      const { unmount } = render(
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig {...defaultProps()} />
+        </GraphProvider>,
+      )
       expect(screen.queryByText(/Variance power/)).toBeNull()
       unmount()
 
       // With Tweedie: slider visible
       render(
-        <ModellingConfig
-          {...defaultProps({
-            config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "Tweedie" },
-          })}
-        />,
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig
+            {...defaultProps({
+              config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "Tweedie" },
+            })}
+          />
+        </GraphProvider>,
       )
       expect(screen.getByText(/Variance power/)).toBeTruthy()
     })
@@ -270,8 +291,8 @@ describe("ModellingConfig", () => {
       const textarea = document.querySelector("textarea")!
       fireEvent.change(textarea, { target: { value: "{bad json" } })
       fireEvent.blur(textarea)
-      // Error message text varies by JS engine — just check the border turned red
-      expect(textarea.style.border).toContain("rgb(239, 68, 68)")
+      // Error message text varies by JS engine — just check the border uses the danger token.
+      expect(textarea.style.border).toContain("var(--danger)")
       // onUpdate should not have been called with params
       expect(props.onUpdate).not.toHaveBeenCalledWith("params", expect.anything())
     })
@@ -321,7 +342,7 @@ describe("ModellingConfig", () => {
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "temporal", test_size: 0.2, seed: 42 },
+          split: { strategy: "temporal", validation_size: 0.2, seed: 42 },
         },
       })
       expect(screen.getByText("Date column")).toBeTruthy()
@@ -335,7 +356,7 @@ describe("ModellingConfig", () => {
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "group", test_size: 0.2, seed: 42 },
+          split: { strategy: "group", validation_size: 0.2, seed: 42 },
         },
       })
       expect(screen.getByText("Group column")).toBeTruthy()
@@ -758,53 +779,6 @@ describe("ModellingConfig", () => {
   })
 
   // ═════════════════════════════════════════════════════════════════
-  // Cross-validation
-  // ═════════════════════════════════════════════════════════════════
-
-  describe("Cross-validation", () => {
-    it("CV toggle defaults to Off", () => {
-      renderConfig()
-      const cvBtn = screen.getByRole("button", { name: "Off" })
-      expect(cvBtn).toBeTruthy()
-    })
-
-    it("clicking CV toggle calls onUpdate to enable cv_folds", () => {
-      const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "Off" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("cv_folds", 5)
-    })
-
-    it("clicking CV toggle when on calls onUpdate to disable cv_folds", () => {
-      const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
-      })
-      fireEvent.click(screen.getByRole("button", { name: "On" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("cv_folds", null)
-    })
-
-    it("CV results are not shown inline (moved to preview panel)", () => {
-      useNodeResultsStore.setState({
-        trainResults: {
-          node_1: {
-            result: makeTrainResult({
-              cv_results: {
-                mean_metrics: { gini: 0.44 },
-                std_metrics: { gini: 0.02 },
-                n_folds: 5,
-              },
-            }),
-            jobId: "job_1",
-            configHash: "irrelevant",
-          },
-        },
-      })
-      renderConfig()
-      // CV results should NOT appear in config panel — they're in ModellingPreview
-      expect(screen.queryByText(/Cross-Validation \(5-fold\)/)).toBeNull()
-    })
-  })
-
-  // ═════════════════════════════════════════════════════════════════
   // Edge cases
   // ═════════════════════════════════════════════════════════════════
 
@@ -914,29 +888,6 @@ describe("ModellingConfig", () => {
   })
 
   // ═════════════════════════════════════════════════════════════════
-  // CV folds input
-  // ═════════════════════════════════════════════════════════════════
-
-  describe("CV folds input", () => {
-    it("shows folds input when cv_folds is enabled", () => {
-      renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
-      })
-      expect(screen.getByText("On")).toBeTruthy()
-      expect(screen.getByDisplayValue("5")).toBeTruthy()
-    })
-
-    it("changing folds input value calls onUpdate with new folds count", () => {
-      const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", cv_folds: 5 },
-      })
-      const foldsInput = screen.getByDisplayValue("5")
-      fireEvent.change(foldsInput, { target: { value: "10" } })
-      expect(props.onUpdate).toHaveBeenCalledWith("cv_folds", 10)
-    })
-  })
-
-  // ═════════════════════════════════════════════════════════════════
   // Row limit input
   // ═════════════════════════════════════════════════════════════════
 
@@ -1014,7 +965,7 @@ describe("ModellingConfig", () => {
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "temporal", test_size: 0.2, seed: 42 },
+          split: { strategy: "temporal", validation_size: 0.2, seed: 42 },
         },
       })
       fireEvent.click(screen.getByRole("button", { name: "random" }))

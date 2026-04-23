@@ -440,10 +440,21 @@ class TestPreparePredictFrame:
         assert result[0, 0] == pytest.approx(1.0, abs=0.01)
         assert result[0, 1] == pytest.approx(10.0, abs=0.01)
 
-    def test_pyfunc_always_returns_pandas(self):
-        """Pyfunc flavor always returns pandas DataFrame, even with no cats."""
+    def test_pyfunc_no_cats_returns_numpy(self):
+        """Pyfunc flavor with no categoricals returns a numpy array.
+
+        Post item #91 refactor: the pandas allocation is only paid when a
+        ``pd.Categorical`` dtype is actually required (cat features present).
+        Pure numeric pyfunc scoring flows through the numpy fast-path.
+        """
         df = pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
         result = _prepare_predict_frame(df, ["a", "b"], frozenset(), "pyfunc")
+        assert isinstance(result, np.ndarray)
+
+    def test_pyfunc_with_cats_returns_pandas(self):
+        """Pyfunc flavor with categoricals still returns pandas (dtype roundtrip)."""
+        df = pl.DataFrame({"a": [1.0, 2.0], "b": ["x", "y"]})
+        result = _prepare_predict_frame(df, ["a", "b"], frozenset({"b"}), "pyfunc")
         import pandas as pd
 
         assert isinstance(result, pd.DataFrame)
@@ -842,6 +853,50 @@ class TestFindModelArtifact:
         assert path == "custom_model"
         assert flavor == "pyfunc"
 
+    def test_mlflow_exception_from_list_artifacts_propagates(self):
+        """A credential / network failure from ``list_artifacts`` must NOT be
+        swallowed as "no artifact in this probe" — it surfaces so on-call
+        sees the real infrastructure issue.
+        """
+        from mlflow.exceptions import MlflowException
+
+        client = MagicMock()
+        client.list_artifacts.side_effect = MlflowException(
+            "PERMISSION_DENIED: Invalid credentials"
+        )
+        with pytest.raises(MlflowException, match="PERMISSION_DENIED"):
+            _find_model_artifact(client, "run1")
+
+    def test_bare_file_not_found_error_propagates(self):
+        """A bare :class:`FileNotFoundError` from ``list_artifacts`` is not a
+        "probe missed" signal — we only swallow our own internal
+        :class:`_ArtifactNotFoundError` sentinel.  If MLflow's local-fs shim
+        (or a custom artifact repo) raises a plain ``FileNotFoundError``
+        it propagates so the operator sees the real problem.
+        """
+        client = MagicMock()
+        client.list_artifacts.side_effect = FileNotFoundError(
+            "Artifact root /mnt/nonexistent/runs/abc does not exist"
+        )
+        with pytest.raises(FileNotFoundError, match="Artifact root"):
+            _find_model_artifact(client, "run1")
+
+    def test_no_artifact_raises_artifact_not_found_subclass(self):
+        """The internal "no match" sentinel is still a ``FileNotFoundError``
+        so callers coded against the public contract keep working.
+        """
+        from haute._mlflow_io import _ArtifactNotFoundError
+
+        client = MagicMock()
+        txt_art = MagicMock(path="readme.txt", is_dir=False)
+        client.list_artifacts.return_value = [txt_art]
+        with pytest.raises(_ArtifactNotFoundError, match="No model artifact"):
+            _find_model_artifact(client, "run1")
+        # Sanity: the sentinel is still a FileNotFoundError subclass.
+        client.list_artifacts.return_value = [txt_art]
+        with pytest.raises(FileNotFoundError):
+            _find_model_artifact(client, "run1")
+
 
 # ---------------------------------------------------------------------------
 # ScoringModel direct usage
@@ -873,13 +928,6 @@ class TestScoringModelDirect:
         raw = MagicMock(spec=[])  # no predict_proba
         sm = ScoringModel(raw, ["a"], frozenset(), "pyfunc")
         assert sm.predict_proba(np.array([[1]])) is None
-
-    def test_getattr_proxies_to_raw_model(self):
-        """Attribute access is proxied to the underlying model."""
-        raw = MagicMock()
-        raw.some_custom_attr = "hello"
-        sm = ScoringModel(raw, ["a"], frozenset(), "catboost")
-        assert sm.some_custom_attr == "hello"
 
 
 # ---------------------------------------------------------------------------
@@ -1025,7 +1073,6 @@ class TestResolveArtifactLocal:
 
     def test_failure_after_cache_write_cleans_partial(self, tmp_path):
         """If an error occurs after the file is moved into cache, the partial file is deleted."""
-        from pathlib import Path
 
         from haute._mlflow_io import _resolve_artifact_local
 

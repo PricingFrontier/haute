@@ -17,10 +17,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi import HTTPException
-
-from haute.server import app
 
 
 def _mock_tracking(mlflow=None, client=None):

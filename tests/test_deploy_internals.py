@@ -17,16 +17,19 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
 import pytest
 
-from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests._deploy_helpers import FIXTURE_DIR
+from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
+
+if TYPE_CHECKING:
+    from haute.deploy._model_code import HauteModel
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -203,7 +206,7 @@ class TestHauteModelPredict:
         assert result["x"].tolist() == [1.0]
 
     @staticmethod
-    def _build_fixture_model(output_fields: list[str] | None = None) -> "HauteModel":
+    def _build_fixture_model(output_fields: list[str] | None = None) -> HauteModel:
         """Build a HauteModel wired to the fixture pipeline graph."""
         from haute.deploy._model_code import HauteModel
         from haute.deploy._pruner import prune_for_deploy
@@ -360,13 +363,15 @@ class TestInferInputSchema:
             infer_input_schema(graph, "src")
 
     def test_node_not_found_raises(self):
-        """Non-existent node must raise ValueError."""
+        """Non-existent node must raise ConfigError naming the missing node."""
         from haute.deploy._schema import infer_input_schema
+        from haute.errors import ConfigError
 
         graph = _g({"nodes": []})
 
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ConfigError, match="not found") as exc_info:
             infer_input_schema(graph, "nonexistent")
+        assert exc_info.value.context["node_id"] == "nonexistent"
 
     def test_valid_parquet_schema(self, tmp_path):
         """Valid parquet file returns correct schema dict."""
@@ -906,7 +911,10 @@ class TestScoreGraphBadInput:
                             "label": "calc",
                             "nodeType": "polars",
                             "config": {
-                                "code": 'df = df.with_columns(result=pl.col("VehPower").cast(pl.Float64) * 2)'
+                                "code": (
+                                    "df = df.with_columns("
+                                    'result=pl.col("VehPower").cast(pl.Float64) * 2)'
+                                ),
                             },
                         },
                     },
@@ -1170,6 +1178,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
+                                "sourceType": "file",
                                 "artifact_path": "artifacts/opt_artifact.json",
                                 "version_column": "__opt_v__",
                             },
@@ -1624,9 +1633,10 @@ class TestBuildSignature:
         return {col.name: col.type for col in sig.inputs.inputs}
 
     def test_basic_types(self):
-        from haute.deploy._mlflow import _build_signature
         from mlflow.models import ModelSignature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
             input_schema={"age": "Int32", "name": "String", "premium": "Float64"},
@@ -1645,8 +1655,9 @@ class TestBuildSignature:
 
     def test_parameterized_datetime_type(self):
         """Datetime('us', 'UTC') should map to datetime DataType."""
-        from haute.deploy._mlflow import _build_signature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
             input_schema={"ts": "Datetime('us', 'UTC')"},
@@ -1659,8 +1670,9 @@ class TestBuildSignature:
 
     def test_unknown_dtype_falls_back_to_string(self):
         """Unknown polars dtype should map to DataType.string."""
-        from haute.deploy._mlflow import _build_signature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         resolved = _make_resolved(
             input_schema={"exotic": "CategoricalComplex"},
@@ -1673,8 +1685,9 @@ class TestBuildSignature:
 
     def test_all_numeric_types(self):
         """All supported numeric types should produce correct MLflow type mappings."""
-        from haute.deploy._mlflow import _build_signature
         from mlflow.types import DataType
+
+        from haute.deploy._mlflow import _build_signature
 
         all_types = {
             "a_i8": "Int8",
@@ -2431,8 +2444,14 @@ class TestValidateDeployEdgeCases:
             input_node_ids=["src"],
         )
 
-        errors = validate_deploy(resolved)
-        assert any("missing_output" in e and "not in pruned graph" in e for e in errors)
+        from haute.errors import DeployError
+
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "missing_output" in e and "not in pruned graph" in e
+            for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_empty_input_schema_reported(self):
         """Validation must report an error when input_schema is empty."""
@@ -2454,8 +2473,13 @@ class TestValidateDeployEdgeCases:
             output_node_id="output",
         )
 
-        errors = validate_deploy(resolved)
-        assert any("Input schema is empty" in e for e in errors)
+        from haute.errors import DeployError
+
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "Input schema is empty" in e for e in exc_info.value.context["structural_errors"]
+        )
 
     def test_empty_output_schema_reported(self):
         """Validation must report an error when output_schema is empty."""
@@ -2477,8 +2501,13 @@ class TestValidateDeployEdgeCases:
             output_node_id="output",
         )
 
-        errors = validate_deploy(resolved)
-        assert any("Output schema is empty" in e for e in errors)
+        from haute.errors import DeployError
+
+        with pytest.raises(DeployError) as exc_info:
+            validate_deploy(resolved)
+        assert any(
+            "Output schema is empty" in e for e in exc_info.value.context["structural_errors"]
+        )
 
 
 class TestScoreTestQuotesEdgeCases:
@@ -2554,7 +2583,6 @@ class TestBugB10LexicographicVersionComparison:
     """B10: MLflow version max() must use numeric, not string comparison."""
 
     def test_version_10_greater_than_9(self) -> None:
-        from haute.deploy._mlflow import deploy_to_mlflow
 
         # We just need to test the max() logic. Let's test directly.
         versions = ["1", "2", "9", "10", "11"]

@@ -3,18 +3,67 @@
 from __future__ import annotations
 
 import json as _json
+import threading
 import time
+import tomllib
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn
 
 from fastapi import HTTPException, WebSocket
+from pydantic import BaseModel, Field, model_validator
 
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
 logger = get_logger(component="server")
+
+
+# ---------------------------------------------------------------------------
+# Sidecar schema (.haute.json on-disk format)
+# ---------------------------------------------------------------------------
+
+
+class SidecarModel(BaseModel):
+    """On-disk schema for the ``.haute.json`` sidecar file.
+
+    The sidecar carries editor-state that doesn't belong in the pipeline
+    ``.py`` source-of-truth:
+
+    * ``positions`` — canvas (x, y) co-ordinates per sanitised node id,
+      so the layout survives label renames.
+    * ``sources`` — ordered list of available data sources for this
+      pipeline (``"live"`` is always first).
+    * ``active_source`` — which source is currently selected in the UI.
+
+    Every optional field has a sensible default so sparse sidecars still
+    parse.  That current-shape defaulting contract is pinned by
+    ``tests/test_routes_hygiene.py::TestSidecarDefaults``.
+
+    Write path: ``save_sidecar`` constructs a ``SidecarModel`` and
+    serialises via :meth:`model_dump_json`, excluding defaults so a
+    freshly-saved pipeline with ``sources=["live"]`` does not bloat the
+    file with redundant state (see
+    ``tests/test_route_helpers.py::test_default_source_not_saved``).
+    Read path: ``load_sidecar``/``parse_pipeline_to_graph`` still parses
+    as plain JSON today, but consumers may upgrade to
+    :meth:`model_validate_json` for typed access.
+    """
+
+    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
+    sources: list[str] = Field(default_factory=lambda: ["live"])
+    active_source: str = "live"
+
+    @model_validator(mode="after")
+    def _active_source_must_be_in_sources(self) -> SidecarModel:
+        if self.active_source not in self.sources:
+            raise ValueError(
+                f"active_source={self.active_source!r} is not in sources={self.sources!r}"
+            )
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Path safety
@@ -53,6 +102,16 @@ def pipeline_dir() -> Path:
 
     The result is cached for the lifetime of the process (the pipeline location
     won't change during a session).
+
+    A missing ``[project].pipeline`` key is a soft configuration omission:
+    we warn and fall back to cwd so a fresh project still works.  A
+    malformed ``haute.toml`` (decode error) or an I/O error, however, is
+    propagated as a ``ConfigError`` — silently returning cwd would
+    route every subsequent save / load at the wrong directory and
+    surface as confusing "file not found" errors far from the real
+    cause.  Programming bugs inside the ``dict.get(...)`` chain
+    (``AttributeError``, ``KeyError``) are deliberately NOT caught so
+    they surface as normal tracebacks during development.
     """
     toml_path = Path.cwd() / "haute.toml"
     if not toml_path.exists():
@@ -60,21 +119,33 @@ def pipeline_dir() -> Path:
             "haute_toml_missing", cwd=str(Path.cwd()), hint="Run 'haute init' to create a project"
         )
         return Path.cwd().resolve()
-    try:
-        import tomllib
 
+    try:
         with open(toml_path, "rb") as f:
             data = tomllib.load(f)
-        configured: str | None = data.get("project", {}).get("pipeline")
-        if configured:
-            return (Path.cwd() / configured).resolve().parent
-        logger.warning(
-            "haute_toml_missing_pipeline",
+    except tomllib.TOMLDecodeError as exc:
+        logger.error("haute_toml_decode_failed", path=str(toml_path), error=str(exc))
+        raise ConfigError(
+            "haute.toml is malformed and could not be parsed",
             path=str(toml_path),
-            hint="Add [project].pipeline to haute.toml",
-        )
-    except Exception:
-        logger.error("haute_toml_read_failed", path=str(toml_path), exc_info=True)
+            error=str(exc),
+        ) from exc
+    except OSError as exc:
+        logger.error("haute_toml_read_failed", path=str(toml_path), error=str(exc))
+        raise ConfigError(
+            "haute.toml could not be read",
+            path=str(toml_path),
+            error=str(exc),
+        ) from exc
+
+    configured: str | None = data.get("project", {}).get("pipeline")
+    if configured:
+        return (Path.cwd() / configured).resolve().parent
+    logger.warning(
+        "haute_toml_missing_pipeline",
+        path=str(toml_path),
+        hint="Add [project].pipeline to haute.toml",
+    )
     return Path.cwd().resolve()
 
 
@@ -152,43 +223,114 @@ def find_typed_node(
 # ---------------------------------------------------------------------------
 _last_self_write: float = 0.0
 _SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debounce)
+_SELF_WRITE_RETENTION = 60.0
+_self_write_paths: dict[str, float] = {}
+_self_write_lock = threading.Lock()
 
 
-def mark_self_write() -> None:
-    """Record that we just wrote a pipeline file ourselves."""
+def _self_write_key(path: str | Path) -> str:
+    return str(Path(path).resolve())
+
+
+def _prune_self_write_paths(now: float) -> None:
+    stale = [
+        key
+        for key, marked_at in _self_write_paths.items()
+        if now - marked_at > _SELF_WRITE_RETENTION
+    ]
+    for key in stale:
+        _self_write_paths.pop(key, None)
+
+
+def mark_self_write(path: str | Path | None = None) -> None:
+    """Record that the server is about to write a pipeline-related file."""
     global _last_self_write
-    _last_self_write = time.monotonic()
+    now = time.monotonic()
+    with _self_write_lock:
+        _last_self_write = now
+        if path is not None:
+            _prune_self_write_paths(now)
+            _self_write_paths[_self_write_key(path)] = now
 
 
-def is_self_write() -> bool:
-    """Return True if a self-write happened within the cooldown window."""
-    return (time.monotonic() - _last_self_write) < _SELF_WRITE_COOLDOWN
+def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> bool:
+    """Return True when a watcher event belongs to a server-originated write."""
+    now = time.monotonic()
+    with _self_write_lock:
+        if path is None:
+            return (now - _last_self_write) < _SELF_WRITE_COOLDOWN
+
+        _prune_self_write_paths(now)
+        key = _self_write_key(path)
+        matched = key in _self_write_paths
+        if matched and consume:
+            _self_write_paths.pop(key, None)
+        return matched
 
 
 # ---------------------------------------------------------------------------
 # WebSocket connections for live sync
 # ---------------------------------------------------------------------------
+# ``ws_clients`` is mutated from FastAPI's async handlers (ws_sync) AND from
+# the synchronous file-watcher callback path (broadcast is awaited but its
+# cleanup loop mutates the set).  On multi-worker deployments and on
+# free-threaded CPython (3.13 --disable-gil) ``set.add`` / ``set.discard``
+# are no longer GIL-atomic, so every add/discard must go through the
+# explicit lock below.
 ws_clients: set[WebSocket] = set()
+ws_clients_lock = threading.Lock()
+
+
+def ws_clients_add(ws: WebSocket) -> None:
+    """Thread-safe ``ws_clients.add(ws)``."""
+    with ws_clients_lock:
+        ws_clients.add(ws)
+
+
+def ws_clients_discard(ws: WebSocket) -> None:
+    """Thread-safe ``ws_clients.discard(ws)``."""
+    with ws_clients_lock:
+        ws_clients.discard(ws)
+
+
+def ws_clients_snapshot() -> list[WebSocket]:
+    """Return a consistent snapshot of the current clients under the lock."""
+    with ws_clients_lock:
+        return list(ws_clients)
 
 
 async def broadcast(data: dict[str, Any]) -> None:
-    """Push a message to all connected WebSocket clients."""
+    """Push a message to all connected WebSocket clients.
+
+    Iterates a lock-protected snapshot of ``ws_clients`` so concurrent
+    connects/disconnects cannot corrupt the set.  Dead clients discovered
+    during the iteration are removed under the same lock.
+    """
     try:
         payload = _json.dumps(data)
     except (TypeError, ValueError) as exc:
         logger.error("broadcast_serialization_failed", error=str(exc))
         return
 
+    snapshot = ws_clients_snapshot()
+
     dead: list[WebSocket] = []
-    for ws in list(ws_clients):
+    for ws in snapshot:
         try:
             await ws.send_text(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # Any ``send_text`` failure (connection closed, transport
+            # error, ASGI shutdown, or a custom test double raising a
+            # plain ``Exception``) marks the client dead so the next
+            # broadcast doesn't waste a round-trip on it.  Narrowing
+            # this except causes flaky behaviour with ASGI clients
+            # that raise generic Exception subclasses.
             dead.append(ws)
     if dead:
         logger.debug("broadcast_cleaned_dead_clients", count=len(dead))
-        for ws in dead:
-            ws_clients.discard(ws)
+        with ws_clients_lock:
+            for ws in dead:
+                ws_clients.discard(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -196,36 +338,90 @@ async def broadcast(data: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 # Lightweight index: pipeline_name → file_path.
-# Built lazily on first lookup, invalidated by ``invalidate_pipeline_index()``.
+#
+# Lifecycle:
+#   1. Populated at server startup by ``haute.server._lifespan``.
+#   2. Rebuilt on file-watcher events by ``haute.server._file_watcher``, which
+#      is the *only* production caller of ``invalidate_pipeline_index``.
+# No other production code path is allowed to clear or rebuild the index —
+# doing so reintroduces the "two sources of truth" race the review flagged.
+#
+# The lock below serialises the rebuild path so two concurrent readers that
+# both observe a cold cache cannot scan the filesystem twice.  The swap at
+# the end of ``_ensure_pipeline_index`` assigns a fully-built local dict to
+# the module global in a single bytecode op; readers therefore either see
+# the previous dict or the new dict, never a half-populated one.
 _pipeline_index: dict[str, Path] | None = None
+_pipeline_index_lock = threading.Lock()
 
 
 def invalidate_pipeline_index() -> None:
-    """Clear the cached pipeline name→path index (called by file watcher)."""
+    """Clear the cached pipeline name→path index.
+
+    Intended to be called **only** from the file-watcher in
+    ``haute.server._file_watcher``.  All other production code paths must
+    treat the cache as read-only — startup + watcher are the two — and only
+    two — legitimate writers.  Test suites are free to poke this directly
+    to set up fresh state between tests.
+    """
     global _pipeline_index, _module_deps
-    _pipeline_index = None
-    _module_deps = None
+    with _pipeline_index_lock:
+        _pipeline_index = None
+        _module_deps = None
 
 
 def _ensure_pipeline_index() -> dict[str, Path]:
-    """Build or return the cached pipeline name→path index."""
+    """Build or return the cached pipeline name→path index.
+
+    If the cache is already populated, returns it without taking the lock
+    (reads of a single reference are atomic on CPython).  If the cache is
+    ``None``, acquires the lock, re-checks (double-checked locking), and
+    builds the index into a *local* dict.  Only the final assignment to
+    ``_pipeline_index`` publishes the new dict — concurrent readers never
+    observe a partially-constructed mapping.
+    """
     global _pipeline_index
-    if _pipeline_index is not None:
-        return _pipeline_index
+
+    cached = _pipeline_index
+    if cached is not None:
+        return cached
 
     from haute.discovery import discover_pipelines as _discover
     from haute.parser import parse_pipeline_file
 
-    index: dict[str, Path] = {}
-    for f in _discover():
-        try:
-            graph = parse_pipeline_file(f)
-            name = graph.pipeline_name or f.stem
-            index[name] = f
-        except Exception:
-            index[f.stem] = f
-    _pipeline_index = index
-    return _pipeline_index
+    with _pipeline_index_lock:
+        # Re-check under the lock: another thread may have built the index
+        # while we were waiting.  Returning the existing dict here avoids a
+        # redundant filesystem scan and guarantees all concurrent callers
+        # agree on the same object.
+        cached = _pipeline_index
+        if cached is not None:
+            return cached
+
+        new_index: dict[str, Path] = {}
+        for f in _discover():
+            try:
+                graph = parse_pipeline_file(f)
+                name = graph.pipeline_name or f.stem
+                new_index[name] = f
+            except Exception as exc:
+                # Parse failure — index by stem as a fallback so the file is
+                # still listable, but log at ``warning`` so the user can
+                # surface the actual problem in their pipeline.  Using
+                # ``debug`` or silent-skip would mask a broken pipeline as
+                # "the file just uses its stem as its name".
+                logger.warning(
+                    "pipeline_index_parse_failed",
+                    path=str(f),
+                    stem=f.stem,
+                    error=repr(exc),
+                )
+                new_index[f.stem] = f
+
+        # Atomic publish: a single assignment is one bytecode op in CPython,
+        # so readers never see ``None`` as a transient state during rebuild.
+        _pipeline_index = new_index
+        return new_index
 
 
 def discover_pipelines() -> list[Path]:
@@ -259,7 +455,7 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
             source = read_user_text(f)
             tree = ast.parse(source)
         except Exception as exc:
-            logger.debug("module_deps_parse_failed", file=f.name, error=str(exc))
+            logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
             continue
 
         from haute._parser_submodels import extract_submodel_calls
@@ -300,26 +496,74 @@ def load_sidecar(py_path: Path) -> dict[str, Any]:
 
 
 def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
-    """Return only the positions dict — backward-compatible alias for submodel.py."""
+    """Return only the positions dict for submodel sidecar loading."""
     result = load_sidecar(py_path).get("positions", {})
     return dict(result) if isinstance(result, dict) else {}
 
 
-def save_sidecar(py_path: Path, graph: PipelineGraph) -> None:
+def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     """Write node positions + source state to the sidecar .haute.json file.
 
     Keys are the sanitised function names (which the parser uses as node IDs
     on re-parse), so positions survive label renames.
+
+    When two distinct labels sanitize to the same function name only one
+    position can survive — which one is arbitrary.  We detect this here
+    rather than silently overwrite, emit a structured ``warning`` log
+    event, and return a human-readable warnings list so callers can
+    surface the collision to the UI.  The save itself still proceeds so
+    users can recover once they rename the offender; the dropped
+    position is simply flagged.
     """
+    # Detect sanitized-name collisions BEFORE collapsing them into the
+    # positions dict.  A collision would let the second node's position
+    # silently overwrite the first.
+    sanitized_to_labels: dict[str, list[str]] = {}
+    for node in graph.nodes:
+        key = _sanitize_func_name(node.data.label)
+        sanitized_to_labels.setdefault(key, []).append(node.data.label)
+
+    warnings: list[str] = []
+    for sanitized, labels in sanitized_to_labels.items():
+        if len(labels) <= 1:
+            continue
+        logger.warning(
+            "sidecar_position_collision",
+            sanitized=sanitized,
+            labels=labels,
+            file=py_path.name,
+        )
+        warnings.append(
+            f"Position for node {labels[-1]!r} replaces node {labels[0]!r} "
+            f"because both sanitize to {sanitized!r}"
+        )
+
     positions = {_sanitize_func_name(node.data.label): node.position for node in graph.nodes}
-    sidecar_data: dict[str, Any] = {"positions": positions}
-    # Persist source state
+
+    # Build the on-disk payload via ``SidecarModel`` so the schema is
+    # typed and validated.  We still omit default source state so a
+    # freshly-saved pipeline with ``sources=["live"]`` does not bloat the
+    # file — callers that never touched the source selector should not
+    # see spurious sidecar keys appear.  This is pinned by
+    # ``test_route_helpers.py::test_default_source_not_saved``.
+    model_kwargs: dict[str, Any] = {"positions": positions}
     if graph.sources and graph.sources != ["live"]:
-        sidecar_data["sources"] = graph.sources
+        model_kwargs["sources"] = graph.sources
     if graph.active_source and graph.active_source != "live":
-        sidecar_data["active_source"] = graph.active_source
+        model_kwargs["active_source"] = graph.active_source
+
+    sidecar_model = SidecarModel(**model_kwargs)
+    # ``exclude_defaults`` drops any field whose value equals the
+    # declared default, so unset ``sources``/``active_source`` do not
+    # serialise.  ``indent`` matches the prior manual ``json.dumps``
+    # output so diffs on existing sidecars stay minimal.
+    serialised = sidecar_model.model_dump_json(
+        indent=2,
+        exclude_defaults=True,
+    )
     sidecar = py_path.with_suffix(".haute.json")
-    sidecar.write_text(_json.dumps(sidecar_data, indent=2) + "\n")
+    sidecar.write_text(serialised + "\n")
+    return warnings
 
 
 def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:

@@ -11,13 +11,11 @@ Covers:
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from haute._types import HauteError
-
+from haute.errors import HauteError
 
 # ── A9: Exception hierarchy ────────────────────────────────────────
 
@@ -82,14 +80,17 @@ class TestDispatchTableParity:
     """
 
     # Types that are legitimately present in only one table.
+    # Post-unification (Package 4B) every NodeType has both an exec and a
+    # codegen builder — submodel/submodelPort register a loud-error codegen
+    # placeholder so dispatch cannot silently fall through.  The exemption
+    # set is kept for parity with the pre-unification specification.
     _EXECUTOR_ONLY: frozenset[str] = frozenset({"submodel", "submodelPort"})
 
     def test_codegen_covers_all_executor_types(self) -> None:
-        from haute.codegen import _CODEGEN_BUILDERS
-        from haute.executor import _NODE_BUILDERS
+        from haute._registry import NODE_REGISTRY
 
-        executor_types = set(_NODE_BUILDERS.keys())
-        codegen_types = set(_CODEGEN_BUILDERS.keys())
+        executor_types = {nt for nt, e in NODE_REGISTRY.items() if e.exec is not None}
+        codegen_types = {nt for nt, e in NODE_REGISTRY.items() if e.codegen is not None}
 
         missing_from_codegen = executor_types - codegen_types - self._EXECUTOR_ONLY
         assert missing_from_codegen == set(), (
@@ -98,11 +99,10 @@ class TestDispatchTableParity:
         )
 
     def test_executor_covers_all_codegen_types(self) -> None:
-        from haute.codegen import _CODEGEN_BUILDERS
-        from haute.executor import _NODE_BUILDERS
+        from haute._registry import NODE_REGISTRY
 
-        executor_types = set(_NODE_BUILDERS.keys())
-        codegen_types = set(_CODEGEN_BUILDERS.keys())
+        executor_types = {nt for nt, e in NODE_REGISTRY.items() if e.exec is not None}
+        codegen_types = {nt for nt, e in NODE_REGISTRY.items() if e.codegen is not None}
 
         missing_from_executor = codegen_types - executor_types
         assert missing_from_executor == set(), (
@@ -112,13 +112,14 @@ class TestDispatchTableParity:
 
     def test_executor_only_types_are_documented(self) -> None:
         """Verify the executor-only types are the ones we expect."""
-        from haute.executor import _NODE_BUILDERS
+        from haute._registry import NODE_REGISTRY
         from haute.graph_utils import NodeType
 
         for t in self._EXECUTOR_ONLY:
             nt = NodeType(t)
-            assert nt in _NODE_BUILDERS, (
-                f"Claimed executor-only type {t!r} is not actually in _NODE_BUILDERS"
+            entry = NODE_REGISTRY.get(nt)
+            assert entry is not None and entry.exec is not None, (
+                f"Claimed executor-only type {t!r} has no exec entry in NODE_REGISTRY"
             )
 
 
@@ -306,7 +307,6 @@ class TestFindTypedNode:
 
     def test_optimiser_service_uses_find_typed_node(self) -> None:
         """_find_optimiser_node should delegate to find_typed_node."""
-        from haute.graph_utils import NodeType
         from haute.routes._optimiser_service import _find_optimiser_node
 
         graph = self._make_graph_with_node("optimiser")
@@ -315,7 +315,6 @@ class TestFindTypedNode:
 
     def test_train_service_uses_find_typed_node(self) -> None:
         """_find_modelling_node should delegate to find_typed_node."""
-        from haute.graph_utils import NodeType
         from haute.routes._train_service import _find_modelling_node
 
         graph = self._make_graph_with_node("modelling")

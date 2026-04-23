@@ -7,12 +7,13 @@
  */
 import { useState, useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { MODEL_COLORS } from "../../theme/colors"
 
 interface FeaturesTabProps {
   result: TrainResult
 }
 
-const BAR_COLOR = "#a855f7"
+const BAR_COLOR = MODEL_COLORS.accent
 
 export function FeaturesTab({ result }: FeaturesTabProps) {
   const [importanceType, setImportanceType] = useState<"prediction" | "loss" | "shap">("prediction")

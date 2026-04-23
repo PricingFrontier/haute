@@ -7,18 +7,15 @@ Organised by the source section each test targets.
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+from datetime import date
 
 import pytest
 
 from haute._expression_parser import (
-    EvaluatedExpression,
-    ParsedExpression,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
 )
-
 
 # ###########################################################################
 # 1. _ExprConverter.convert — node dispatch: Dict, IfExp, JoinedStr,
@@ -175,13 +172,19 @@ class TestNameResolution:
 
     def test_none_name(self):
         """Name 'None' recognised as constant (line 284–285)."""
-        code = 'df = df.with_columns(pl.when(pl.col("x") > 0).then(pl.col("x")).otherwise(None).alias("r"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("x") > 0).then(pl.col("x")).otherwise(None).alias("r"))'
+        )
         expr = parse_expression(code, "r")
         assert "None" in expr.expression_text
 
     def test_true_false_name(self):
         """Name 'True'/'False' recognised (lines 286–289)."""
-        code = 'df = df.with_columns(pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("flag"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("x") > 0).then(True).otherwise(False).alias("flag"))'
+        )
         expr = parse_expression(code, "flag")
         assert "True" in expr.expression_text
         assert "False" in expr.expression_text
@@ -589,7 +592,10 @@ class TestHorizontalFuncEdges:
 
     def test_horizontal_with_keyword(self):
         """Keyword arg like separator= (lines 548–549)."""
-        code = 'df = df.with_columns(pl.concat_str(pl.col("a"), pl.col("b"), separator="-").alias("joined"))'
+        code = (
+            "df = df.with_columns("
+            'pl.concat_str(pl.col("a"), pl.col("b"), separator="-").alias("joined"))'
+        )
         expr = parse_expression(code, "joined")
         assert "separator" in expr.expression_text
 
@@ -2003,20 +2009,16 @@ class TestHasControlFlowFunction:
     """Cover _has_control_flow (lines 833–840) — Match and TryStar."""
 
     def test_match_statement_control_flow(self):
-        """Match statement detection (lines 836–837).
-        Only available in Python 3.10+."""
-        import sys
-
-        if sys.version_info >= (3, 10):
-            code = (
-                "match x:\n"
-                "    case 1:\n"
-                '        df = df.with_columns((pl.col("a") + 1).alias("target"))\n'
-                "    case _:\n"
-                "        pass\n"
-            )
-            expr = parse_expression(code, "target")
-            assert expr.expression_type == "opaque"
+        """Match statement detection (lines 836–837)."""
+        code = (
+            "match x:\n"
+            "    case 1:\n"
+            '        df = df.with_columns((pl.col("a") + 1).alias("target"))\n'
+            "    case _:\n"
+            "        pass\n"
+        )
+        expr = parse_expression(code, "target")
+        assert expr.expression_type == "opaque"
 
 
 class TestControlFlowKeyword:
@@ -2057,7 +2059,10 @@ class TestEvaluatorNameLiterals:
 
     def test_eval_name_none(self):
         """Name 'None' (line 1690–1691)."""
-        code = 'df = df.with_columns(pl.when(pl.col("x") > 0).then(pl.col("x")).otherwise(None).alias("r"))'
+        code = (
+            "df = df.with_columns("
+            'pl.when(pl.col("x") > 0).then(pl.col("x")).otherwise(None).alias("r"))'
+        )
         result = evaluate_expression(code, "r", {"x": -1})
         assert result.result_value is None
 
@@ -2248,13 +2253,14 @@ class TestSubstituteNamesCompare:
         """Cover keyword substitution (lines 1233–1238)."""
         code = (
             'sep_char = "-"\n'
-            'df = df.with_columns(pl.concat_str(pl.col("a"), pl.col("b"), separator=sep_char).alias("r"))'
+            "df = df.with_columns("
+            'pl.concat_str(pl.col("a"), pl.col("b"), separator=sep_char).alias("r"))'
         )
         expr = parse_expression(code, "r")
         assert expr is not None
 
 
-class TestResolveListVariable:
+class TestResolveListVariableInternals:
     """Cover _resolve_list_variable (lines 899–906)."""
 
     def test_resolve_non_list(self):
@@ -2558,7 +2564,10 @@ class TestEvaluatorUnknownHorizontal:
 
     def test_concat_str_eval(self):
         """concat_str is in _HORIZONTAL_FUNCS but not in eval switch."""
-        code = 'df = df.with_columns(pl.concat_str(pl.col("a"), pl.col("b"), separator="-").alias("r"))'
+        code = (
+            "df = df.with_columns("
+            'pl.concat_str(pl.col("a"), pl.col("b"), separator="-").alias("r"))'
+        )
         result = evaluate_expression(code, "r", {"a": "hello", "b": "world"})
         # concat_str not in eval horizontal switch → returns None
         assert result is not None

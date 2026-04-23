@@ -4,8 +4,8 @@
  * Accepts 3- or 6-digit hex (with or without `#`).
  *
  * @example
- *   withAlpha("#f97316", 0.1)  // "rgba(249,115,22,0.1)"
- *   withAlpha("#14b8a6", 0.3)  // "rgba(20,184,166,0.3)"
+ *   withAlpha("f97316", 0.1)  // "rgba(249,115,22,0.1)"
+ *   withAlpha("14b8a6", 0.3)  // "rgba(20,184,166,0.3)"
  */
 export function withAlpha(hex: string, alpha: number): string {
   const h = hex.replace("#", "")

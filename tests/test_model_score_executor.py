@@ -224,16 +224,30 @@ class TestModelScorePassthrough:
 
 class TestModelScoreMissingFeatures:
     def test_partial_features(self, sample_data):
-        """Missing model features produce a clear error with the missing feature names."""
+        """Missing model features surface as a ``ContractMismatchError``.
+
+        Column-contract enforcement (Phase 2 Wave 4 item #57) catches
+        this before the node runs: the model's feature list is known
+        from the loaded scoring model, so the referenced-column
+        contract names ``x_missing`` — and the upstream frame doesn't
+        have it, so the boundary check raises with the exact name.
+        Previously this surfaced as a scorer-side runtime error
+        captured in ``results["score"].error``; the new path is
+        strictly louder and names the column in the exception itself.
+        """
+        import pytest
+
+        from haute.errors import ContractMismatchError
+
         sm = _make_mock_model("regression", feature_names=["x1", "x2", "x_missing"])
         sm._model.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
 
         graph = _make_model_score_graph(data_path=sample_data)
         with patch("haute._mlflow_io.load_mlflow_model", return_value=sm):
-            results = execute_graph(graph, target_node_id="score", row_limit=100)
+            with pytest.raises(ContractMismatchError) as excinfo:
+                execute_graph(graph, target_node_id="score", row_limit=100)
 
-        assert results["score"].status == "error"
-        assert "x_missing" in results["score"].error
+        assert "x_missing" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -259,12 +273,18 @@ class TestModelScorePostProcessing:
         assert "doubled" in cols
 
     def test_model_accessible_in_postprocessing_scope(self, sample_data):
-        """User post-processing code can access the loaded model object."""
+        """User post-processing code can access the loaded model object.
+
+        The model is exposed to user code as a ``ScoringModel`` carrier with
+        declared attributes (``feature_names``, ``cat_feature_names``,
+        ``flavor``, ``raw_model``).  Flavor-native attribute names (e.g.
+        CatBoost's ``feature_names_``) are reachable via ``model.raw_model``.
+        """
         mock_model = _make_mock_model("regression")
 
         graph = _make_model_score_graph(
             data_path=sample_data,
-            code="df = df.with_columns(n_features=pl.lit(len(model.feature_names_)))",
+            code="df = df.with_columns(n_features=pl.lit(len(model.feature_names)))",
         )
         with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
             results = execute_graph(graph, target_node_id="score", row_limit=100)

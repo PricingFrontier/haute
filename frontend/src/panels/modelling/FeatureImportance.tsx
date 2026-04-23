@@ -4,6 +4,7 @@
  */
 import { useState } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { MODEL_COLORS } from "../../theme/colors"
 
 type FeatureImportanceProps = {
   trainResult: TrainResult
@@ -57,7 +58,7 @@ export function FeatureImportance({ trainResult }: FeatureImportanceProps) {
                 className="h-full rounded-full"
                 style={{
                   width: `${(Math.abs(fi.importance) / Math.abs(maxVal)) * 100}%`,
-                  background: "#a855f7",
+                  background: MODEL_COLORS.accent,
                 }}
               />
             </div>

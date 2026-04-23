@@ -19,7 +19,6 @@ class ModelDiagnostics:
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     loss_history: list[dict[str, float]] = field(default_factory=list)
-    cv_results: dict[str, Any] | None = None
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
     residuals_stats: dict[str, float] = field(default_factory=dict)
@@ -38,7 +37,14 @@ class ModelDiagnostics:
 
 @dataclass
 class ModelCardMetadata:
-    """Training context metadata for model cards and MLflow logging."""
+    """Training context metadata for model cards and MLflow logging.
+
+    Feature-contract fields (``feature_types``, ``categorical_features``,
+    ``target_name``, ``target_type``) are populated by ``TrainingJob`` and
+    are what ``log_experiment`` uses to attach an ``mlflow.models.ModelSignature``
+    to the logged model — any drift between training and scoring is then
+    detectable from the MLflow artifact alone.
+    """
 
     algorithm: str = ""
     task: str = ""
@@ -48,3 +54,9 @@ class ModelCardMetadata:
     features: list[str] = field(default_factory=list)
     split_config: dict[str, Any] = field(default_factory=dict)
     best_iteration: int | None = None
+    # Feature contract inputs for ``build_signature``.  Absent values keep
+    # MLflow logging working when a training path has not populated them.
+    feature_types: dict[str, str] = field(default_factory=dict)
+    categorical_features: list[str] = field(default_factory=list)
+    target_name: str = ""
+    target_type: str = ""

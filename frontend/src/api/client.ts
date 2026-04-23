@@ -23,6 +23,7 @@ import type {
   TrainEstimate,
   MlflowLogResponse,
   SolveOptimiserResponse,
+  OptimiserEstimate,
   ApplyOptimiserResponse,
   SaveOptimiserResponse,
   FrontierResponse,
@@ -47,11 +48,6 @@ import type {
   GitHistoryEntry,
 } from "./types"
 
-// Re-export types so existing consumers importing from client.ts still work
-export type { TrainEstimate, UtilityFile, UtilityWriteResult, GitStatus, GitHistoryEntry } from "./types"
-/** @deprecated Import GitBranchInfo from api/types instead. */
-export type GitBranch = GitBranchInfo
-
 export class ApiError extends Error {
   status: number
   detail?: string
@@ -64,21 +60,116 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(
-  url: string,
-  options: RequestInit & { timeout?: number } = {},
-): Promise<T> {
-  const { timeout = 30_000, signal: externalSignal, ...fetchOptions } = options
+// ---------------------------------------------------------------------------
+// Retry policy
+// ---------------------------------------------------------------------------
+//
+// Idempotent verbs (GET, HEAD, PUT, DELETE, OPTIONS) retry transient failures
+// - network errors (TypeError from fetch) and 5xx responses - with exponential
+// backoff + equal jitter, capped at `MAX_RETRIES` retries (so up to
+// MAX_RETRIES + 1 attempts total).
+//
+// POST is NOT retried by default: retrying a non-idempotent request without
+// server-side deduplication risks duplicate side-effects. 4xx responses are
+// NOT retried because they indicate client bugs, not transient server issues.
+//
+// Backoff uses equal jitter: delay in [base*2^n / 2, base*2^n], giving growth
+// without the pathological case of every client retrying in lockstep. With
+// BASE_DELAY_MS=100 and MAX_RETRIES=3, the worst-case total backoff budget is
+// 100 + 200 + 400 = 700ms - well under a 1s user-perceived latency ceiling.
+//
+// A caller-supplied AbortSignal cancels the retry loop immediately, including
+// while sleeping between attempts. AbortError from fetch (user intent) is
+// surfaced as-is and never retried.
 
+const MAX_RETRIES = 3
+const BASE_DELAY_MS = 100
+
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
+
+function isIdempotent(method: string | undefined): boolean {
+  return IDEMPOTENT_METHODS.has((method ?? "GET").toUpperCase())
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError"
+}
+
+function shouldRetry(method: string | undefined, err: unknown): boolean {
+  if (!isIdempotent(method)) return false
+  // User-initiated cancel: propagate immediately.
+  if (isAbortError(err)) return false
+  // Network-layer failure (fetch throws TypeError on connection issues).
+  if (err instanceof TypeError) return true
+  // Server-side transient failure (5xx).
+  if (err instanceof ApiError && err.status >= 500 && err.status < 600) return true
+  return false
+}
+
+/**
+ * Equal-jitter exponential backoff.
+ *
+ *   attempt 0 -> [BASE/2, BASE]            ~ [50,  100] ms
+ *   attempt 1 -> [BASE,   BASE*2]          ~ [100, 200] ms
+ *   attempt 2 -> [BASE*2, BASE*4]          ~ [200, 400] ms
+ *
+ * Worst-case sum for MAX_RETRIES=3, BASE_DELAY_MS=100 is 700ms.
+ */
+function backoffDelayMs(attempt: number): number {
+  const exp = BASE_DELAY_MS * Math.pow(2, attempt)
+  return exp / 2 + Math.random() * (exp / 2)
+}
+
+/**
+ * Sleep for `ms` milliseconds, rejecting early with AbortError if `signal`
+ * fires. Used between retry attempts so a caller's abort cancels the retry
+ * loop without waiting out the backoff.
+ */
+function backoffSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"))
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new DOMException("Aborted", "AbortError"))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+/**
+ * Issue a single HTTP attempt. Owns its own AbortController so the timeout
+ * guard and external-signal bridge remain scoped to one fetch; each retry gets
+ * a fresh controller.
+ */
+async function attemptFetch<T>(
+  url: string,
+  fetchOptions: RequestInit,
+  timeout: number,
+  externalSignal: AbortSignal | undefined,
+): Promise<T> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)
 
-  // If an external signal is provided, abort our controller when it fires
+  // If an external signal is provided, abort our controller when it fires.
+  // We track the listener so we can remove it in the finally block below —
+  // otherwise up to MAX_RETRIES one-shot listeners accumulate on the
+  // caller's signal across retries before any of them fire.  The signal
+  // itself typically lives at least as long as a user interaction, so
+  // ambient listener pressure during a retry burst is worth avoiding.
+  let externalAbortHandler: (() => void) | undefined
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort()
     } else {
-      externalSignal.addEventListener("abort", () => controller.abort(), { once: true })
+      externalAbortHandler = () => controller.abort()
+      externalSignal.addEventListener("abort", externalAbortHandler, { once: true })
     }
   }
 
@@ -98,7 +189,44 @@ async function request<T>(
     return await res.json() as T
   } finally {
     clearTimeout(timeoutId)
+    if (externalAbortHandler) {
+      externalSignal?.removeEventListener("abort", externalAbortHandler)
+    }
   }
+}
+
+async function request<T>(
+  url: string,
+  options: RequestInit & { timeout?: number } = {},
+): Promise<T> {
+  const { timeout = 30_000, signal: rawSignal, ...fetchOptions } = options
+  // Normalise RequestInit's `AbortSignal | null` to `AbortSignal | undefined`
+  // so internal helpers can use a single optional shape.
+  const externalSignal: AbortSignal | undefined = rawSignal ?? undefined
+  const method = fetchOptions.method
+
+  let lastError: unknown
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Honor external abort before issuing the next attempt.
+    if (externalSignal?.aborted) {
+      throw new DOMException("Aborted", "AbortError")
+    }
+
+    try {
+      return await attemptFetch<T>(url, fetchOptions, timeout, externalSignal)
+    } catch (err) {
+      lastError = err
+      // Non-retryable errors (AbortError, 4xx, non-idempotent method) short-circuit.
+      if (!shouldRetry(method, err)) throw err
+      // Out of budget - surface the last failure.
+      if (attempt >= MAX_RETRIES) throw err
+      // Sleep before retrying; a caller-supplied signal cancels the sleep.
+      await backoffSleep(backoffDelayMs(attempt), externalSignal)
+    }
+  }
+  // Unreachable: the loop either returns, throws inside the catch, or completes
+  // the final iteration and throws via the `attempt >= MAX_RETRIES` guard.
+  throw lastError
 }
 
 function post<T>(url: string, body: unknown, options: { signal?: AbortSignal; timeout?: number } = {}): Promise<T> {
@@ -290,6 +418,17 @@ export function solveOptimiser(
   options?: { signal?: AbortSignal },
 ): Promise<SolveOptimiserResponse> {
   return post("/api/optimiser/solve", payload, { timeout: 300_000, ...options })
+}
+
+export function estimateOptimiserSolve(
+  payload: { graph: GraphPayload; node_id: string; source?: string },
+  options?: { signal?: AbortSignal },
+): Promise<OptimiserEstimate> {
+  return post(
+    "/api/optimiser/estimate",
+    { ...payload, source: payload.source ?? "live" },
+    { timeout: 30_000, ...options },
+  )
 }
 
 export function getOptimiserStatus<T = unknown>(

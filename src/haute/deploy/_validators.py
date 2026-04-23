@@ -31,12 +31,16 @@ def load_test_quote_file(path: Path) -> list[dict]:
     return [{k: v for k, v in row.items() if not k.startswith("_")} for row in raw]
 
 
-def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
+def validate_deploy(resolved: ResolvedDeploy) -> None:
     """Run all pre-deploy validations.
 
-    Returns a list of error strings. An empty list means the deployment
-    is safe to proceed.
+    Structural errors and test-quote failures are collected first, then
+    aggregated into a single :class:`DeployError` so the operator sees the
+    full picture in one report rather than a trickle of "fix this, rerun,
+    fix that, rerun" cycles.
     """
+    from haute.errors import DeployError
+
     errors: list[str] = []
 
     # 1. Output node exists in pruned graph
@@ -79,11 +83,60 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[str]:
     if not resolved.output_schema:
         errors.append("Output schema is empty - dry-run produced no output columns.")
 
+    # 8. Test-quote scoring — any failure here is a fatal deploy error.
+    #    We collect them alongside structural errors so the aggregated
+    #    report surfaces everything at once.  Two failure modes:
+    #      * The quote is missing required input columns → shape-level
+    #        fail before any scoring happens.
+    #      * The scorer raised an exception → surfaced via the result dict.
+    test_quote_errors: list[str] = []
+    tq_dir = resolved.config.test_quotes_dir
+    if tq_dir is not None and tq_dir.is_dir():
+        # Pre-check each quote against the declared input schema; a
+        # silently missing column won't be caught by a passthrough graph
+        # and would deploy an API that accepts garbage quotes.
+        required_cols = set(resolved.input_schema or {})
+        for jf in sorted(tq_dir.glob("*.json")):
+            try:
+                cleaned = load_test_quote_file(jf)
+            except Exception as exc:
+                test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
+                continue
+            for row in cleaned:
+                missing = sorted(required_cols - set(row))
+                if missing:
+                    test_quote_errors.append(
+                        f"test quote {jf.name!r} failed: missing required input "
+                        f"column(s) {missing}; provided columns {sorted(row)}."
+                    )
+                    break
+
+        # Actual scoring pass — surfaces runtime errors.
+        quote_results = score_test_quotes(resolved, tq_dir)
+        for q in quote_results:
+            if q.get("status") == "error":
+                test_quote_errors.append(
+                    f"test quote {q.get('file', '<unknown>')!r} failed: {q.get('error', '')}"
+                )
+
+    if errors or test_quote_errors:
+        logger.warning(
+            "validation_failed",
+            structural_errors=len(errors),
+            test_quote_errors=len(test_quote_errors),
+        )
+        combined = errors + test_quote_errors
+        raise DeployError(
+            "Deploy validation failed:\n  - " + "\n  - ".join(combined),
+            structural_errors=errors,
+            test_quote_errors=test_quote_errors,
+        )
+
     if errors:
         logger.warning("validation_failed", error_count=len(errors))
     else:
         logger.info("validation_passed")
-    return errors
+    return None
 
 
 def score_test_quotes(

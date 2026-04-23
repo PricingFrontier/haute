@@ -7,6 +7,7 @@
  */
 import { useState } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { CHART_COLORS } from "../../theme/colors"
 
 interface LiftTabProps {
   result: TrainResult
@@ -17,8 +18,8 @@ interface LiftTabProps {
 const GRID_COLOR = "rgba(255,255,255,.06)"
 const AXIS_TEXT_COLOR = "var(--text-muted)"
 const AXIS_FONT_SIZE = 10
-const ACTUAL_COLOR = "#22c55e"
-const PREDICTED_COLOR = "#a855f7"
+const ACTUAL_COLOR = CHART_COLORS.actual
+const PREDICTED_COLOR = CHART_COLORS.predicted
 
 export function LiftTab({ result, width = 700, height = 260 }: LiftTabProps) {
   const [view, setView] = useState<"lift" | "lorenz">("lift")

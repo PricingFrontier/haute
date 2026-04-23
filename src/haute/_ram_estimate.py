@@ -22,9 +22,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
+from haute._graph_utils import build_parents_of
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
-from haute._types import build_parents_of
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="ram_estimate")
@@ -149,7 +149,6 @@ def estimate_gpu_vram_bytes(
     *,
     border_count: int = 128,
     depth: int = 6,
-    **_kwargs: object,  # accept and ignore split params for backward compat
 ) -> int:
     """Estimate CatBoost GPU VRAM needed for *n_rows* × *n_features*."""
     feature_bytes = n_rows * n_features * 5  # float32 + binarised
@@ -336,8 +335,8 @@ def estimate_source_rows(graph: PipelineGraph) -> int | None:
 #   3. Diagnostics — SHAP, PDP, feature importance.
 #   4. Cross-validation (if enabled).
 #
-# Phase 0 (pipeline execution) is typically the peak because it holds
-# join intermediates in memory.  Empirically validated: the peak is
+# Pipeline execution is typically the peak because it holds join
+# intermediates in memory.  Empirically validated: the peak is
 # approximately 3× the raw dataset size at the training node.
 #
 # We use: N_rows × N_cols × 8 bytes (Float64) × 3.0
@@ -435,8 +434,6 @@ def estimate_safe_training_rows(
     target_node_id: str,
     build_node_fn: object | None = None,
     *,
-    probe_rows: int = 0,  # kept for backward compat, unused
-    overhead_multiplier: float = 1.0,  # kept for backward compat
     safety_factor: float = _RAM_SAFETY_FACTOR,
     preamble_ns: dict | None = None,
     source: str = "live",

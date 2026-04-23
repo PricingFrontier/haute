@@ -13,18 +13,15 @@ Targets:
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import time as _time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
 
-from tests.conftest import make_graph as _g, make_node
-
+from haute._hashing import content_hash_bytes
+from tests.conftest import make_graph as _g
+from tests.conftest import make_node
 
 # ===========================================================================
 # _config_validation.py — remaining edge cases
@@ -139,7 +136,10 @@ class TestGraphBaseFingerprint:
         fp1 = _graph_base_fingerprint(g)
         fp2 = _graph_base_fingerprint(g)
         assert fp1 == fp2
-        assert len(fp1) == 64  # sha256 hex digest
+        # Non-empty lowercase hex digest; the exact algorithm (xxh64) is
+        # an implementation detail of ``_cache.py``.
+        assert fp1
+        assert all(c in "0123456789abcdef" for c in fp1)
 
     def test_node_order_does_not_matter(self):
         """Nodes are sorted by ID, so insertion order is irrelevant."""
@@ -184,7 +184,8 @@ class TestGraphBaseFingerprint:
         # Should not raise — repr() is used as JSON default
         fp = _graph_base_fingerprint(g)
         assert isinstance(fp, str)
-        assert len(fp) == 64
+        assert fp
+        assert all(c in "0123456789abcdef" for c in fp)
 
     def test_different_config_different_fingerprint(self):
         """Changing a config value produces a different fingerprint."""
@@ -204,14 +205,17 @@ class TestGraphBaseFingerprint:
         assert _graph_base_fingerprint(g1) != _graph_base_fingerprint(g2)
 
     def test_empty_graph_fingerprint(self):
-        """Empty graph produces a valid sha256 hash."""
+        """Empty graph produces a valid content hash of the empty payload."""
         from haute._cache import _graph_base_fingerprint
         from haute._types import PipelineGraph
 
         g = PipelineGraph()
         fp = _graph_base_fingerprint(g)
-        # Hash of empty string
-        assert fp == hashlib.sha256(b"").hexdigest()
+        # Hash of empty string under the same content-hash helper the
+        # production code uses; pins algorithmic agreement with
+        # ``haute._hashing.content_hash_bytes`` without hard-coding a
+        # specific digest algorithm here.
+        assert fp == content_hash_bytes(b"")
 
 
 class TestGraphFingerprintWithExtraKeys:
@@ -299,9 +303,9 @@ class TestOptimiserArtifactDeepCopy:
 
     def test_mutation_does_not_affect_cache(self, tmp_path):
         """Mutating the returned dict should not change cached data."""
-        from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         f = tmp_path / "artifact.json"
         data = {"mode": "online", "lambdas": {"x": 1.5}}
@@ -315,13 +319,13 @@ class TestOptimiserArtifactDeepCopy:
         assert result2["mode"] == "online"
         assert result2["lambdas"]["x"] == 1.5
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
     def test_two_results_are_independent(self, tmp_path):
         """Two calls return independent dict objects."""
-        from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         f = tmp_path / "artifact.json"
         f.write_text(json.dumps({"items": [1, 2, 3]}))
@@ -334,7 +338,7 @@ class TestOptimiserArtifactDeepCopy:
         r1["items"].append(4)
         assert r2["items"] == [1, 2, 3]
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
 
 class TestOptimiserArtifactMtimeZero:
@@ -342,15 +346,15 @@ class TestOptimiserArtifactMtimeZero:
 
     def test_mtime_defaults_to_zero_on_oserror(self, tmp_path):
         """When os.path.getmtime raises, mtime defaults to 0.0 but open() still fails."""
-        from haute._optimiser_io import _artifact_cache, load_optimiser_artifact
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
         nonexistent = str(tmp_path / "does_not_exist.json")
         with pytest.raises(FileNotFoundError):
             load_optimiser_artifact(nonexistent)
 
-        _artifact_cache.clear()
+        _load_artifact_cached.cache_clear()
 
 
 class TestLoadMlflowOptimiserArtifactDeepCopy:
@@ -358,9 +362,9 @@ class TestLoadMlflowOptimiserArtifactDeepCopy:
 
     def test_mutation_does_not_affect_mlflow_cache(self, tmp_path):
         """Mutating result from MLflow path should not affect cache."""
-        from haute._optimiser_io import _mlflow_cache, load_mlflow_optimiser_artifact
+        from haute._optimiser_io import _load_mlflow_cached, load_mlflow_optimiser_artifact
 
-        _mlflow_cache.clear()
+        _load_mlflow_cached.cache_clear()
 
         artifact_data = {"mode": "ratebook", "constraints": [1, 2]}
         artifact_path = tmp_path / "optimiser_result.json"
@@ -378,7 +382,7 @@ class TestLoadMlflowOptimiserArtifactDeepCopy:
             r2 = load_mlflow_optimiser_artifact(source_type="run", run_id="run_id_1")
             assert r2["mode"] == "ratebook"
 
-        _mlflow_cache.clear()
+        _load_mlflow_cached.cache_clear()
 
 
 # ===========================================================================
@@ -516,9 +520,8 @@ class TestBuildManifestEdgeCases:
 
     def test_manifest_includes_created_by(self):
         """build_manifest always includes created_by field."""
-        from tests._deploy_helpers import make_resolved_deploy
-
         from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
 
         resolved = make_resolved_deploy()
         manifest = build_manifest(resolved)
@@ -528,9 +531,8 @@ class TestBuildManifestEdgeCases:
 
     def test_manifest_includes_haute_version(self):
         """build_manifest always includes haute_version field."""
-        from tests._deploy_helpers import make_resolved_deploy
-
         from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
 
         resolved = make_resolved_deploy()
         manifest = build_manifest(resolved)
@@ -540,10 +542,8 @@ class TestBuildManifestEdgeCases:
     def test_manifest_nodes_deployed_matches_graph(self):
         """nodes_deployed count matches the actual number of nodes in pruned_graph."""
         from haute._types import GraphNode, NodeData, PipelineGraph
-
-        from tests._deploy_helpers import make_resolved_deploy
-
         from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
 
         nodes = [
             GraphNode(
@@ -594,20 +594,23 @@ class TestFindNode:
         assert node.data.config.get("path") == "/data"
 
     def test_raises_for_missing_node(self):
-        """_find_node raises ValueError for non-existent node ID."""
+        """_find_node raises ConfigError for non-existent node ID."""
         from haute.deploy._schema import _find_node
+        from haute.errors import ConfigError
 
         graph = _g({"nodes": []})
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ConfigError, match="not found"):
             _find_node(graph, "nonexistent")
 
     def test_raises_message_includes_node_id(self):
-        """ValueError message includes the missing node ID."""
+        """ConfigError carries the missing node ID in context."""
         from haute.deploy._schema import _find_node
+        from haute.errors import ConfigError
 
         graph = _g({"nodes": []})
-        with pytest.raises(ValueError, match="my_missing_node"):
+        with pytest.raises(ConfigError) as exc_info:
             _find_node(graph, "my_missing_node")
+        assert exc_info.value.context["node_id"] == "my_missing_node"
 
 
 class TestInferOutputSchemaEdgeCases:

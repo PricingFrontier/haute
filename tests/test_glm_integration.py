@@ -15,7 +15,6 @@ import numpy as np
 import polars as pl
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Gap 1: Config key merge
 # ---------------------------------------------------------------------------
@@ -109,7 +108,6 @@ class TestGLMConfigKeyMerge:
             "intercept",
             "var_power",
             "offset",
-            "cv_folds",
         }
         assert set(_GLM_CONFIG_KEYS) == expected
 
