@@ -11,9 +11,10 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from haute._path_resolution import resolve_runtime_file_path
 from haute.codegen import graph_to_code
 from haute.executor import _apply_banding
 from haute.graph_utils import (
@@ -141,6 +142,69 @@ class TestTopoSortProperties:
         r1 = topo_sort_ids(ids, edges)
         r2 = topo_sort_ids(ids, edges)
         assert r1 == r2
+
+
+# ---------------------------------------------------------------------------
+# Runtime path resolution metamorphic properties
+# ---------------------------------------------------------------------------
+
+path_part_strategy = st.text(
+    alphabet=string.ascii_letters + string.digits + "_-",
+    min_size=1,
+    max_size=12,
+)
+
+
+class TestRuntimePathResolutionProperties:
+    @given(parts=st.lists(path_part_strategy, min_size=1, max_size=4))
+    @settings(
+        max_examples=100,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_equivalent_project_relative_paths_resolve_identically(
+        self,
+        parts: list[str],
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        """Adding harmless ``.`` path components must not change the resolved file."""
+        root = tmp_path_factory.mktemp("runtime_path_root")
+        raw = "/".join(parts)
+        with_dot = f"./{raw}"
+
+        resolved = resolve_runtime_file_path(
+            raw,
+            project_root=root,
+            enforce_project_root=True,
+        )
+        resolved_with_dot = resolve_runtime_file_path(
+            with_dot,
+            project_root=root,
+            enforce_project_root=True,
+        )
+
+        assert resolved == resolved_with_dot
+        assert resolved.is_relative_to(root.resolve())
+
+    @given(parts=st.lists(path_part_strategy, min_size=1, max_size=4))
+    @settings(
+        max_examples=100,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_parent_traversal_is_rejected(
+        self,
+        parts: list[str],
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        """Any path that climbs above the project root is invalid."""
+        root = tmp_path_factory.mktemp("runtime_path_root")
+        raw = "../" + "/".join(parts)
+
+        with pytest.raises(ValueError, match="outside the project root"):
+            resolve_runtime_file_path(
+                raw,
+                project_root=root,
+                enforce_project_root=True,
+            )
 
 
 # ---------------------------------------------------------------------------

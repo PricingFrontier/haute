@@ -71,6 +71,226 @@ const dummyGraph = {
   edges: [],
 }
 
+function makePreviewResponse() {
+  return {
+    status: "ok",
+    node_id: "node1",
+    row_count: 1,
+    column_count: 1,
+    columns: [{ name: "x", dtype: "Int64" }],
+    available_columns: [{ name: "x", dtype: "Int64" }],
+    preview: [{ x: 1 }],
+    error: null,
+    error_line: null,
+    timing_ms: 0,
+    memory_bytes: 0,
+    timings: [],
+    memory: [],
+    schema_warnings: [],
+    node_statuses: {},
+  }
+}
+
+function makeSavePipelineResponse() {
+  return {
+    status: "saved",
+    file: "pipe.py",
+    pipeline_name: "test",
+    warnings: [],
+  }
+}
+
+function makeTraceResponse() {
+  return {
+    status: "ok",
+    trace: {
+      target_node_id: "n1",
+      row_index: 0,
+      column: null,
+      output_value: 1,
+      steps: [],
+      row_id_column: null,
+      row_id_value: null,
+      total_nodes_in_pipeline: 1,
+      nodes_in_trace: 1,
+      execution_ms: 0,
+      waterfall: null,
+    },
+  }
+}
+
+function makeSchemaResponse() {
+  return {
+    path: "data/example.parquet",
+    columns: [],
+    row_count: 1,
+    row_count_estimated: false,
+    column_count: 0,
+    preview: [],
+  }
+}
+
+function makeTrainResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "started",
+    job_id: "job-1",
+    metrics: {},
+    feature_importance: [],
+    model_path: "",
+    train_rows: 0,
+    test_rows: 0,
+    holdout_rows: 0,
+    holdout_metrics: {},
+    diagnostics_set: "validation",
+    features: [],
+    cat_features: [],
+    error: null,
+    best_iteration: null,
+    loss_history: [],
+    double_lift: [],
+    shap_summary: [],
+    feature_importance_loss: [],
+    ave_per_feature: [],
+    residuals_histogram: [],
+    residuals_stats: {},
+    actual_vs_predicted: [],
+    lorenz_curve: [],
+    lorenz_curve_perfect: [],
+    pdp_data: [],
+    warning: null,
+    total_source_rows: null,
+    glm_coefficients: [],
+    glm_relativities: [],
+    glm_fit_statistics: {},
+    glm_regularization_path: null,
+    diagnostics_errors: [],
+    ...overrides,
+  }
+}
+
+function makeTrainStatusResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "running",
+    progress: 0.1,
+    message: "working",
+    iteration: 1,
+    total_iterations: 10,
+    train_loss: {},
+    elapsed_seconds: 1,
+    result: null,
+    warning: null,
+    ...overrides,
+  }
+}
+
+function makeSubmodelCreateResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "ok",
+    submodel_file: "pricing.py",
+    parent_file: "main.py",
+    graph: {
+      nodes: [dummyGraph.nodes[0]],
+      edges: [],
+      submodels: { pricing: { path: "pricing.py" } },
+    },
+    ...overrides,
+  }
+}
+
+function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "ok",
+    submodel_name: "pricing",
+    graph: {
+      nodes: [dummyGraph.nodes[0]],
+      edges: [],
+    },
+    ...overrides,
+  }
+}
+
+function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "ok",
+    graph: {
+      nodes: dummyGraph.nodes,
+      edges: dummyGraph.edges,
+    },
+    ...overrides,
+  }
+}
+
+function makeTrainEstimateResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    total_rows: 1000,
+    safe_row_limit: 5000,
+    estimated_mb: 12.5,
+    training_mb: 25,
+    available_mb: 512,
+    bytes_per_row: 256,
+    was_downsampled: false,
+    warning: null,
+    gpu_vram_estimated_mb: null,
+    gpu_vram_available_mb: null,
+    gpu_warning: null,
+    ...overrides,
+  }
+}
+
+function makeSolveOptimiserResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "started",
+    job_id: "opt-job-1",
+    error: null,
+    ...overrides,
+  }
+}
+
+function makeGitStatusResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    branch: "main",
+    is_main: true,
+    is_read_only: false,
+    changed_files: [],
+    main_ahead: false,
+    main_ahead_by: 0,
+    main_last_updated: null,
+    ...overrides,
+  }
+}
+
+function makeGitBranchListResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    current: "main",
+    branches: [],
+    ...overrides,
+  }
+}
+
+function makeJsonCacheBuildResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    path: "/data/input.json",
+    data_path: "/data/input.parquet",
+    row_count: 10,
+    column_count: 2,
+    columns: { x: "Int64" },
+    size_bytes: 128,
+    cached_at: 123,
+    cache_seconds: 0.5,
+    ...overrides,
+  }
+}
+
+function makeJsonCacheProgressResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    active: true,
+    rows: 10,
+    elapsed: 0.5,
+    phase: "scan",
+    ...overrides,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Setup / Teardown
 // ---------------------------------------------------------------------------
@@ -162,7 +382,22 @@ describe("request() core via loadPipeline", () => {
 
 describe("endpoint contracts", () => {
   beforeEach(() => {
-    mockFetch.mockReturnValue(jsonResponse({}))
+    mockFetch.mockImplementation((url: string) => {
+      if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
+      if (url === "/api/pipeline/save") return jsonResponse(makeSavePipelineResponse())
+      if (url === "/api/pipeline/trace") return jsonResponse(makeTraceResponse())
+      if (url.startsWith("/api/schema")) return jsonResponse(makeSchemaResponse())
+      if (url === "/api/modelling/train") return jsonResponse(makeTrainResponse())
+      if (url === "/api/modelling/train/status/job-123") return jsonResponse(makeTrainStatusResponse())
+      if (url === "/api/modelling/estimate") return jsonResponse(makeTrainEstimateResponse())
+      if (url === "/api/optimiser/solve") return jsonResponse(makeSolveOptimiserResponse())
+      if (url === "/api/submodel/create") return jsonResponse(makeSubmodelCreateResponse())
+      if (url === "/api/submodel/dissolve") return jsonResponse(makeDissolveSubmodelResponse())
+      if (url === "/api/submodel/pricing") return jsonResponse(makeSubmodelGraphResponse())
+      if (url === "/api/databricks/warehouses") return jsonResponse({ warehouses: [] })
+      if (url === "/api/databricks/catalogs") return jsonResponse({ catalogs: [] })
+      return jsonResponse({})
+    })
   })
 
   it("previewNode posts to /api/pipeline/preview with correct body", async () => {
@@ -303,7 +538,7 @@ describe("git endpoints", () => {
   })
 
   it("getGitStatus GETs /api/git/status", async () => {
-    const data = { branch: "main", dirty: false }
+    const data = makeGitStatusResponse()
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getGitStatus()
     const [url, opts] = mockFetch.mock.calls[0]
@@ -313,7 +548,18 @@ describe("git endpoints", () => {
   })
 
   it("listGitBranches GETs /api/git/branches", async () => {
-    const data = { current: "main", branches: [{ name: "main" }] }
+    const data = makeGitBranchListResponse({
+      branches: [
+        {
+          name: "main",
+          is_yours: true,
+          is_current: true,
+          is_archived: false,
+          last_commit_time: "",
+          commit_count: 1,
+        },
+      ],
+    })
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await listGitBranches()
     const [url] = mockFetch.mock.calls[0]
@@ -457,7 +703,14 @@ describe("utility endpoints", () => {
   })
 
   it("createUtilityFile POSTs to /api/utility with name and content", async () => {
-    const data = { name: "utils", module: "utils", content: "code" }
+    const data = {
+      status: "ok",
+      name: "utils",
+      module: "utils",
+      import_line: "from utility.utils import *",
+      error: null,
+      error_line: null,
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await createUtilityFile({ name: "utils", content: "code" })
     const [url, opts] = mockFetch.mock.calls[0]
@@ -468,14 +721,28 @@ describe("utility endpoints", () => {
   })
 
   it("createUtilityFile POSTs with name only when content is omitted", async () => {
-    mockFetch.mockReturnValue(jsonResponse({}))
+    mockFetch.mockReturnValue(jsonResponse({
+      status: "ok",
+      name: "empty",
+      module: "empty",
+      import_line: "from utility.empty import *",
+      error: null,
+      error_line: null,
+    }))
     await createUtilityFile({ name: "empty" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).toEqual({ name: "empty" })
   })
 
   it("updateUtilityFile PUTs to /api/utility/{module} with content body", async () => {
-    const data = { name: "helpers", module: "helpers", content: "updated" }
+    const data = {
+      status: "ok",
+      name: "helpers",
+      module: "helpers",
+      import_line: "from utility.helpers import *",
+      error: null,
+      error_line: null,
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await updateUtilityFile("helpers", "updated")
     const [url, opts] = mockFetch.mock.calls[0]
@@ -507,7 +774,7 @@ describe("json cache endpoints", () => {
   })
 
   it("buildJsonCache POSTs to /api/json-cache/build with 1800s timeout", async () => {
-    const data = { status: "building" }
+    const data = makeJsonCacheBuildResponse()
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await buildJsonCache({ path: "/data/input.json" })
     const [url, opts] = mockFetch.mock.calls[0]
@@ -518,7 +785,7 @@ describe("json cache endpoints", () => {
   })
 
   it("buildJsonCache allows timeout override", async () => {
-    mockFetch.mockReturnValue(jsonResponse({}))
+    mockFetch.mockReturnValue(jsonResponse(makeJsonCacheBuildResponse()))
     await buildJsonCache({ path: "x.json" }, { timeout: 5000 })
     expect(mockFetch).toHaveBeenCalledTimes(1)
   })
@@ -535,7 +802,7 @@ describe("json cache endpoints", () => {
   })
 
   it("getJsonCacheProgress GETs /api/json-cache/progress with encoded path", async () => {
-    const data = { progress: 0.5 }
+    const data = makeJsonCacheProgressResponse()
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getJsonCacheProgress("my file.json")
     const [url] = mockFetch.mock.calls[0]
@@ -549,7 +816,8 @@ describe("json cache endpoints", () => {
     const result = await getJsonCacheStatus("data/file.json")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/json-cache/status?path=data%2Ffile.json")
-    expect(result).toEqual(data)
+    expect(result.cached).toBe(true)
+    expect(result.data_path).toBe("")
   })
 
   it("deleteJsonCache DELETEs /api/json-cache with encoded path", async () => {
@@ -569,7 +837,7 @@ describe("json cache endpoints", () => {
 
 describe("request() edge cases", () => {
   it("creates an AbortController and passes its signal to fetch", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ branch: "main" }))
+    mockFetch.mockReturnValue(jsonResponse(makeGitStatusResponse()))
     await getGitStatus()
     const [, opts] = mockFetch.mock.calls[0]
     expect(opts.signal).toBeInstanceOf(AbortSignal)

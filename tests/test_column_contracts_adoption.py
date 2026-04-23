@@ -17,6 +17,7 @@ The matching target API is described in :mod:`tests.fixtures.expected_contracts`
 
 from __future__ import annotations
 
+import statistics
 import time
 from pathlib import Path
 from typing import Any
@@ -987,6 +988,11 @@ class TestContractOverheadBenchmark:
         samples, instead of biasing one mode's run.  This yields a
         far more stable overhead ratio than timing all N no-enforce
         passes contiguously followed by all N with-enforce passes.
+
+        The default-suite smoke test runs under xdist, so it also
+        alternates the measurement order and uses the median per mode
+        rather than trusting a tiny mean sample that one noisy worker
+        slice could skew.
         """
         import polars as pl_
 
@@ -1001,30 +1007,30 @@ class TestContractOverheadBenchmark:
         # Warm-up run (imports, JIT) — also fails fast if the
         # enforcement toggle isn't wired up yet.
         self._execute(graph, enforce=False)
+        self._execute(graph, enforce=True)
 
         # Interleaved measurement.  Each iteration clears the preview
         # cache so every timed pass is a cold execution — without this
         # clear, the second+ iteration in a mode is a cache hit and
         # the delta collapses to measurement noise.
-        iterations = 2
-        t_without_total = 0.0
-        t_with_total = 0.0
-        for _ in range(iterations):
-            _preview_cache.invalidate()
-            t0 = time.perf_counter()
-            self._execute(graph, enforce=False)
-            t_without_total += time.perf_counter() - t0
+        iterations = 5
+        without_samples: list[float] = []
+        with_samples: list[float] = []
+        for iteration in range(iterations):
+            order = (False, True) if iteration % 2 == 0 else (True, False)
+            for enforce in order:
+                _preview_cache.invalidate()
+                t0 = time.perf_counter()
+                self._execute(graph, enforce=enforce)
+                elapsed = time.perf_counter() - t0
+                if enforce:
+                    with_samples.append(elapsed)
+                else:
+                    without_samples.append(elapsed)
 
-            _preview_cache.invalidate()
-            t0 = time.perf_counter()
-            self._execute(graph, enforce=True)
-            t_with_total += time.perf_counter() - t0
-
-        t_without = t_without_total / iterations
-        t_with = t_with_total / iterations
-        overhead = (
-            (t_with_total - t_without_total) / t_without_total if t_without_total > 0 else 0.0
-        )
+        t_without = statistics.median(without_samples)
+        t_with = statistics.median(with_samples)
+        overhead = ((t_with - t_without) / t_without) if t_without > 0 else 0.0
         assert overhead < 0.30, (
             f"Contract enforcement overhead is {overhead:.1%} "
             f"({t_without * 1000:.1f}ms → {t_with * 1000:.1f}ms), exceeds "

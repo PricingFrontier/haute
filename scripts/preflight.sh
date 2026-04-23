@@ -6,6 +6,7 @@
 #   ./scripts/preflight.sh --quick          # lint + types only
 #   ./scripts/preflight.sh --backend-only   # backend gates only
 #   ./scripts/preflight.sh --frontend-only  # frontend gates only
+#   ./scripts/preflight.sh --perf           # also run opt-in Python perf tests
 #
 # Exit code 0 = safe to push. Non-zero = fix before pushing.
 set -euo pipefail
@@ -61,6 +62,7 @@ NC='\033[0m'
 QUICK=false
 RUN_BACKEND=true
 RUN_FRONTEND=true
+RUN_PERF=false
 PYTEST_WORKERS="${PYTEST_WORKERS:-4}"
 
 for arg in "$@"; do
@@ -73,6 +75,9 @@ for arg in "$@"; do
       ;;
     --frontend-only)
       RUN_BACKEND=false
+      ;;
+    --perf)
+      RUN_PERF=true
       ;;
     *)
       echo "Unknown argument: $arg" >&2
@@ -125,10 +130,19 @@ if [[ "$RUN_BACKEND" == true ]]; then
 
   if [[ "$QUICK" == false ]]; then
     step "Python tests with coverage"
-    if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85; then
-      pass "Python tests (coverage >=85%)"
+    if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=90; then
+      pass "Python tests (coverage >=90%)"
     else
       fail "Python tests"
+    fi
+
+    if [[ "$RUN_PERF" == true ]]; then
+      step "Python perf tests"
+      if uv run pytest tests/ -q -m perf; then
+        pass "Python perf tests"
+      else
+        fail "Python perf tests"
+      fi
     fi
 
     step "Python package build"
@@ -172,9 +186,9 @@ if [[ "$RUN_FRONTEND" == true ]]; then
       fail "Frontend bundle budget"
     fi
 
-    step "Frontend tests"
-    if (cd frontend && npm test); then
-      pass "Frontend tests"
+    step "Frontend tests with coverage"
+    if (cd frontend && npm run test:coverage); then
+      pass "Frontend tests (coverage thresholds)"
     else
       fail "Frontend tests"
     fi

@@ -1,0 +1,17 @@
+{
+  "positions": {
+    "Alpha_Node": {
+      "x": 10.0,
+      "y": 20.0
+    },
+    "beta": {
+      "x": -5.5,
+      "y": 12.25
+    }
+  },
+  "sources": [
+    "live",
+    "batch_a"
+  ],
+  "active_source": "batch_a"
+}

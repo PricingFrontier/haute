@@ -445,7 +445,7 @@ describe("OptimiserConfig", () => {
     })
 
     it("solve button calls solveOptimiser with graph payload", async () => {
-      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42" })
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
       const props = makeProps({
         config: {
           _nodeId: "opt_1",
@@ -735,7 +735,7 @@ describe("OptimiserConfig", () => {
     })
 
     it("Re-run button calls solveOptimiser", async () => {
-      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_99" })
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_99", error: null })
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {

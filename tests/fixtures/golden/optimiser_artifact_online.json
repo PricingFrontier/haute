@@ -1,0 +1,34 @@
+{
+  "version": "opt_v1",
+  "created_at": "2024-01-02T03:04:05+00:00",
+  "mode": "online",
+  "lambdas": {
+    "loss": 0.3
+  },
+  "total_objective": 125.0,
+  "baseline_objective": 119.5,
+  "total_constraints": {
+    "loss": 0.92
+  },
+  "baseline_constraints": {
+    "loss": 0.88
+  },
+  "constraints": {
+    "loss": {
+      "min": 0.9
+    }
+  },
+  "objective": "income",
+  "quote_id": "quote_id",
+  "scenario_index": "scenario_index",
+  "scenario_value": "scenario_value",
+  "chunk_size": 4096,
+  "converged": true,
+  "iterations": 7,
+  "cd_iterations": null,
+  "frontier_selection": {
+    "selected_from_frontier": true,
+    "point_index": 1,
+    "n_frontier_points": 4
+  }
+}

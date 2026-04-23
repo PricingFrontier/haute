@@ -219,6 +219,9 @@ catboost_info/
 # Databricks local parquet cache
 .haute_cache/
 
+# Browser E2E fixture project
+.tmp-e2e-project/
+
 # Built frontend (included in wheel via pyproject.toml artifacts)
 src/haute/static/
 

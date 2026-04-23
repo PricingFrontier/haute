@@ -18,6 +18,23 @@ import numpy as np
 import polars as pl
 import pytest
 
+
+def _stub_optional_catboost_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep training-path coverage tests focused on their asserted contract."""
+    from haute.modelling._algorithms import CatBoostAlgorithm
+
+    monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *a, **kw: [])
+    monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *a, **kw: [])
+    monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
+
+
+def _fast_training_params(**overrides: object) -> dict[str, object]:
+    """Cheap-but-real CatBoost settings for TrainingJob coverage paths."""
+    params: dict[str, object] = {"iterations": 3, "depth": 2}
+    params.update(overrides)
+    return params
+
+
 # ---------------------------------------------------------------------------
 # _get_rss_mb — platform-specific branches
 # ---------------------------------------------------------------------------
@@ -1023,6 +1040,10 @@ class TestLogToMlflowCoverage:
 
 
 class TestSplitDataCoverage:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_split_data_temporal(self, tmp_path):
         """Temporal split reads date column for mask."""
         from haute.modelling._training_job import TrainingJob
@@ -1043,7 +1064,7 @@ class TestSplitDataCoverage:
                 "date_column": "date",
                 "cutoff_date": "2024-07-01",
             },
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1067,7 +1088,7 @@ class TestSplitDataCoverage:
             data=df,
             target="y",
             split={"validation_size": 0.2, "holdout_size": 0.1, "seed": 42},
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1087,7 +1108,7 @@ class TestSplitDataCoverage:
             data=df,
             target="y",
             split={"validation_size": 0, "holdout_size": 0, "seed": 42},
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1101,6 +1122,10 @@ class TestSplitDataCoverage:
 
 
 class TestComputeMetricsCoverage:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_diagnostics_set_is_holdout_when_holdout_present(self, tmp_path):
         """When holdout is present, diagnostics_set should be 'holdout'."""
         from haute.modelling._training_job import TrainingJob
@@ -1113,7 +1138,7 @@ class TestComputeMetricsCoverage:
             data=df,
             target="y",
             split={"validation_size": 0.2, "holdout_size": 0.1, "seed": 42},
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1132,7 +1157,7 @@ class TestComputeMetricsCoverage:
             data=df,
             target="y",
             split={"validation_size": 0, "holdout_size": 0, "seed": 42},
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1145,6 +1170,10 @@ class TestComputeMetricsCoverage:
 
 
 class TestParquetInputPath:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_parquet_input_skips_collect(self, tmp_path):
         """When data is a .parquet path string, no collect happens."""
         rng = np.random.RandomState(42)
@@ -1159,7 +1188,7 @@ class TestParquetInputPath:
             name="parquet_test",
             data=str(parquet_path),
             target="y",
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1875,6 +1904,10 @@ class TestComputeMetricsGLMExceptions:
 
 
 class TestSplitConfigFromSplitConfig:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_split_config_passed_as_splitconfig_object(self, tmp_path):
         """When split is a SplitConfig object, it's used directly."""
         from haute.modelling._split import SplitConfig
@@ -1889,7 +1922,7 @@ class TestSplitConfigFromSplitConfig:
             data=df,
             target="y",
             split=sc,
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         assert job.split_config is sc
@@ -1903,6 +1936,10 @@ class TestSplitConfigFromSplitConfig:
 
 
 class TestMlflowExperimentTrigger:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_mlflow_experiment_triggers_log(self, tmp_path):
         """When mlflow_experiment is set, _log_to_mlflow is called during run()."""
         from haute.modelling._training_job import TrainingJob
@@ -1914,7 +1951,7 @@ class TestMlflowExperimentTrigger:
             name="mlflow_trigger",
             data=df,
             target="y",
-            params={"iterations": 5},
+            params=_fast_training_params(),
             mlflow_experiment="/test/exp",
             output_dir=str(tmp_path),
         )
@@ -1931,6 +1968,10 @@ class TestMlflowExperimentTrigger:
 
 
 class TestSHAPExceptionPath:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_shap_exception_is_logged_and_empty_list_returned(self, tmp_path):
         """When shap_summary raises, empty list is used."""
         from haute.modelling._algorithms import CatBoostAlgorithm
@@ -1943,7 +1984,7 @@ class TestSHAPExceptionPath:
             name="shap_fail",
             data=df,
             target="y",
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
 
@@ -1966,6 +2007,10 @@ class TestSHAPExceptionPath:
 
 
 class TestFeatureImportanceLossExceptionPath:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_feature_importance_loss_exception_is_logged(self, tmp_path):
         """When feature_importance_typed raises, empty list is used."""
         from haute.modelling._algorithms import CatBoostAlgorithm
@@ -1978,7 +2023,7 @@ class TestFeatureImportanceLossExceptionPath:
             name="fi_loss_fail",
             data=df,
             target="y",
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
 

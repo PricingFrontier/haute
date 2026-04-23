@@ -7,6 +7,7 @@ of subprocess.  This ensures guardrails work against real git state.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -145,22 +146,20 @@ class TestBuildCompareUrl:
         url = _build_compare_url("pricing/user/feat", "main", repo)
         assert url == "https://github.com/org/repo/compare/main...pricing/user/feat"
 
-    def test_github_https(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "remote", "add", "origin", "https://github.com/org/repo.git")
-        url = _build_compare_url("pricing/user/feat", "main", repo)
+    def test_github_https(self) -> None:
+        with patch("haute._git._get_remote_url", return_value="https://github.com/org/repo.git"):
+            url = _build_compare_url("pricing/user/feat", "main")
         assert url == "https://github.com/org/repo/compare/main...pricing/user/feat"
 
-    def test_gitlab(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "remote", "add", "origin", "https://gitlab.com/org/repo.git")
-        url = _build_compare_url("pricing/user/feat", "main", repo)
+    def test_gitlab(self) -> None:
+        with patch("haute._git._get_remote_url", return_value="https://gitlab.com/org/repo.git"):
+            url = _build_compare_url("pricing/user/feat", "main")
         assert url is not None
         assert "merge_requests/new" in url
 
-    def test_no_remote(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        url = _build_compare_url("feat", "main", repo)
+    def test_no_remote(self) -> None:
+        with patch("haute._git._get_remote_url", return_value=None):
+            url = _build_compare_url("feat", "main")
         assert url is None
 
 
@@ -354,13 +353,13 @@ class TestGetHistory:
     def test_limit(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
         _git(repo, "checkout", "-b", "pricing/test-user/feat")
-        for i in range(5):
+        for i in range(3):
             (repo / f"file{i}.py").write_text(f"x = {i}\n")
             _git(repo, "add", ".")
             _git(repo, "commit", "-m", f"Commit {i}")
 
-        entries = get_history(limit=3, cwd=repo)
-        assert len(entries) == 3
+        entries = get_history(limit=2, cwd=repo)
+        assert len(entries) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -694,7 +693,7 @@ class TestGetHistoryEdgeCases:
     def test_limit_one_returns_single(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
         _git(repo, "checkout", "-b", "pricing/test-user/feat")
-        for i in range(3):
+        for i in range(2):
             (repo / f"f{i}.py").write_text(f"x = {i}\n")
             _git(repo, "add", ".")
             _git(repo, "commit", "-m", f"Commit {i}")
@@ -725,30 +724,33 @@ class TestGetHistoryEdgeCases:
 
 
 class TestBuildCompareUrlEdgeCases:
-    def test_github_ssh_converts_to_https(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "remote", "add", "origin", "git@github.com:acme/pricing.git")
-        url = _build_compare_url("pricing/user/feat", "main", repo)
+    def test_github_ssh_converts_to_https(self) -> None:
+        with patch(
+            "haute._git._get_remote_url",
+            return_value="git@github.com:acme/pricing.git",
+        ):
+            url = _build_compare_url("pricing/user/feat", "main")
         assert url is not None
         assert url.startswith("https://github.com/acme/pricing/")
         assert "git@" not in url
 
-    def test_github_https_works(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "remote", "add", "origin", "https://github.com/acme/pricing.git")
-        url = _build_compare_url("my-branch", "main", repo)
+    def test_github_https_works(self) -> None:
+        with patch(
+            "haute._git._get_remote_url",
+            return_value="https://github.com/acme/pricing.git",
+        ):
+            url = _build_compare_url("my-branch", "main")
         assert url == "https://github.com/acme/pricing/compare/main...my-branch"
 
-    def test_gitlab_produces_merge_requests_path(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "remote", "add", "origin", "https://gitlab.com/org/repo.git")
-        url = _build_compare_url("pricing/user/feat", "main", repo)
+    def test_gitlab_produces_merge_requests_path(self) -> None:
+        with patch("haute._git._get_remote_url", return_value="https://gitlab.com/org/repo.git"):
+            url = _build_compare_url("pricing/user/feat", "main")
         assert url is not None
         assert "/-/merge_requests/new" in url
 
-    def test_no_remote_returns_none(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        url = _build_compare_url("feat", "main", repo)
+    def test_no_remote_returns_none(self) -> None:
+        with patch("haute._git._get_remote_url", return_value=None):
+            url = _build_compare_url("feat", "main")
         assert url is None
 
 
@@ -805,14 +807,14 @@ class TestListBranchesOptimised:
     def test_commit_count_on_branch(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
         _git(repo, "checkout", "-b", "pricing/test-user/feat")
-        for i in range(3):
+        for i in range(2):
             (repo / f"file{i}.py").write_text(f"x = {i}\n")
             _git(repo, "add", ".")
             _git(repo, "commit", "-m", f"Commit {i}")
 
         result = list_branches(repo)
         feat_branch = next(b for b in result.branches if b.name == "pricing/test-user/feat")
-        assert feat_branch.commit_count == 3
+        assert feat_branch.commit_count == 2
 
     def test_main_has_zero_commits_ahead(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
@@ -822,17 +824,17 @@ class TestListBranchesOptimised:
 
     def test_multiple_branches_have_correct_counts(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
-        # Branch A: 2 commits
+        # Branch A: 1 commit
         _git(repo, "checkout", "-b", "pricing/test-user/branch-a")
-        for i in range(2):
+        for i in range(1):
             (repo / f"a{i}.py").write_text(f"x = {i}\n")
             _git(repo, "add", ".")
             _git(repo, "commit", "-m", f"A{i}")
         _git(repo, "checkout", "main")
 
-        # Branch B: 4 commits
+        # Branch B: 2 commits
         _git(repo, "checkout", "-b", "pricing/test-user/branch-b")
-        for i in range(4):
+        for i in range(2):
             (repo / f"b{i}.py").write_text(f"x = {i}\n")
             _git(repo, "add", ".")
             _git(repo, "commit", "-m", f"B{i}")
@@ -840,8 +842,8 @@ class TestListBranchesOptimised:
 
         result = list_branches(repo)
         counts = {b.name: b.commit_count for b in result.branches}
-        assert counts["pricing/test-user/branch-a"] == 2
-        assert counts["pricing/test-user/branch-b"] == 4
+        assert counts["pricing/test-user/branch-a"] == 1
+        assert counts["pricing/test-user/branch-b"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -912,25 +914,32 @@ class TestFetchThrottle:
         """Two rapid get_status calls should only trigger one git fetch."""
         import haute._git as git_mod
 
-        repo, _ = _init_repo_with_remote(tmp_path)
-        _git(repo, "checkout", "-b", "pricing/test-user/feat")
-        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+        repo = tmp_path
 
         # Reset the throttle so the first call will fetch
         git_mod._last_fetch_time = 0.0
 
         fetch_count = 0
-        original_run_git_ok = git_mod._run_git_ok
-
+        
         def counting_run_git_ok(*args, **kwargs):
             nonlocal fetch_count
-            if args and len(args) >= 2 and args[0] == "fetch":
+            if args and args[0] == "fetch":
                 fetch_count += 1
-            return original_run_git_ok(*args, **kwargs)
+                return True, ""
+            if args and args[0] == "rev-list":
+                return True, "0"
+            if args and args[0] == "status":
+                return True, ""
+            return True, ""
 
-        # Monkey-patch to count fetch calls
-        git_mod._run_git_ok = counting_run_git_ok
-        try:
+        with (
+            patch.object(git_mod, "_assert_git_repo"),
+            patch.object(git_mod, "_get_current_branch", return_value="pricing/test-user/feat"),
+            patch.object(git_mod, "_get_default_branch", return_value="main"),
+            patch.object(git_mod, "_get_user_slug", return_value="test-user"),
+            patch.object(git_mod, "_has_remote", return_value=True),
+            patch.object(git_mod, "_run_git_ok", side_effect=counting_run_git_ok),
+        ):
             get_status(repo)
             first_count = fetch_count
             get_status(repo)
@@ -938,68 +947,75 @@ class TestFetchThrottle:
             # First call should have fetched; second should not
             assert first_count == 1
             assert second_count == 1  # No additional fetch
-        finally:
-            git_mod._run_git_ok = original_run_git_ok
-            git_mod._last_fetch_time = 0.0
+        git_mod._last_fetch_time = 0.0
 
     def test_fetch_happens_after_cooldown_expires(self, tmp_path: Path) -> None:
         """After the cooldown expires, a new fetch should happen."""
         import haute._git as git_mod
 
-        repo, _ = _init_repo_with_remote(tmp_path)
-        _git(repo, "checkout", "-b", "pricing/test-user/feat")
-        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
-
-        # Simulate that the last fetch was long ago
+        repo = tmp_path
         git_mod._last_fetch_time = 0.0
 
         fetch_count = 0
-        original_run_git_ok = git_mod._run_git_ok
 
         def counting_run_git_ok(*args, **kwargs):
             nonlocal fetch_count
-            if args and len(args) >= 2 and args[0] == "fetch":
+            if args and args[0] == "fetch":
                 fetch_count += 1
-            return original_run_git_ok(*args, **kwargs)
+                return True, ""
+            if args and args[0] == "rev-list":
+                return True, "0"
+            if args and args[0] == "status":
+                return True, ""
+            return True, ""
 
-        git_mod._run_git_ok = counting_run_git_ok
-        try:
+        with (
+            patch.object(git_mod, "_assert_git_repo"),
+            patch.object(git_mod, "_get_current_branch", return_value="pricing/test-user/feat"),
+            patch.object(git_mod, "_get_default_branch", return_value="main"),
+            patch.object(git_mod, "_get_user_slug", return_value="test-user"),
+            patch.object(git_mod, "_has_remote", return_value=True),
+            patch.object(git_mod, "_run_git_ok", side_effect=counting_run_git_ok),
+        ):
             get_status(repo)
             assert fetch_count == 1
 
             # Force cooldown to have expired by setting last_fetch_time
             # far in the past
             git_mod._last_fetch_time = 0.0
-
             get_status(repo)
             assert fetch_count == 2  # Should have fetched again
-        finally:
-            git_mod._run_git_ok = original_run_git_ok
-            git_mod._last_fetch_time = 0.0
+        git_mod._last_fetch_time = 0.0
 
     def test_no_fetch_on_main(self, tmp_path: Path) -> None:
         """get_status on a protected branch should not fetch."""
         import haute._git as git_mod
 
-        repo, _ = _init_repo_with_remote(tmp_path)
+        repo = tmp_path
         git_mod._last_fetch_time = 0.0
 
         fetch_count = 0
-        original_run_git_ok = git_mod._run_git_ok
 
         def counting_run_git_ok(*args, **kwargs):
             nonlocal fetch_count
-            if args and len(args) >= 2 and args[0] == "fetch":
+            if args and args[0] == "fetch":
                 fetch_count += 1
-            return original_run_git_ok(*args, **kwargs)
+                return True, ""
+            if args and args[0] == "status":
+                return True, ""
+            return True, ""
 
-        git_mod._run_git_ok = counting_run_git_ok
-        try:
+        with (
+            patch.object(git_mod, "_assert_git_repo"),
+            patch.object(git_mod, "_get_current_branch", return_value="main"),
+            patch.object(git_mod, "_get_default_branch", return_value="main"),
+            patch.object(git_mod, "_get_user_slug", return_value="test-user"),
+            patch.object(git_mod, "_has_remote", return_value=True),
+            patch.object(git_mod, "_run_git_ok", side_effect=counting_run_git_ok),
+        ):
             get_status(repo)  # on main
             assert fetch_count == 0
-        finally:
-            git_mod._run_git_ok = original_run_git_ok
-            git_mod._last_fetch_time = 0.0
+        git_mod._last_fetch_time = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -1247,10 +1263,8 @@ class TestPullLatestMergeConflict:
     return a helpful message — not leave the repo in a broken state.
     """
 
-    def test_conflicting_changes_detected(self, tmp_path: Path) -> None:
-        """pull_latest returns conflict=True and aborts the merge when
-        the same file was edited on both branches.
-        """
+    def test_conflicting_changes_detected_and_aborted_cleanly(self, tmp_path: Path) -> None:
+        """pull_latest reports conflicts and leaves no half-merged state behind."""
         repo, remote = _init_repo_with_remote(tmp_path)
 
         # User creates a branch and edits a file
@@ -1280,30 +1294,6 @@ class TestPullLatestMergeConflict:
             or "conflict" in result.conflict_message.lower()
         )
         assert result.commits_pulled == 0
-
-    def test_repo_clean_after_conflict_abort(self, tmp_path: Path) -> None:
-        """After a conflict, the merge is aborted and the working tree
-        is clean — not left in a half-merged state.
-        """
-        repo, remote = _init_repo_with_remote(tmp_path)
-
-        _git(repo, "checkout", "-b", "pricing/test-user/feat")
-        (repo / "shared.py").write_text("user_version = True\n")
-        _git(repo, "add", ".")
-        _git(repo, "commit", "-m", "User edit")
-        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
-
-        clone = tmp_path / "clone"
-        _git(tmp_path, "clone", str(remote), str(clone))
-        _git(clone, "config", "user.name", "Other User")
-        _git(clone, "config", "user.email", "other@example.com")
-        (clone / "shared.py").write_text("other_version = True\n")
-        _git(clone, "add", ".")
-        _git(clone, "commit", "-m", "Conflicting edit")
-        _git(clone, "push", "origin", "main")
-
-        pull_latest(repo)
-
         # Repo should be clean — no merge markers, no staged conflicts
         status = _git(repo, "status", "--porcelain")
         assert status == "", f"Repo not clean after conflict abort: {status}"
@@ -1453,52 +1443,40 @@ class TestSaveProgressStagesSensitiveFiles:
     potentially pushed to a remote.
     """
 
-    def test_env_file_gets_staged_and_committed(self, tmp_path: Path) -> None:
-        """SECURITY: .env files are committed by save_progress when no
-        .gitignore is present.  This test proves the risk exists.
-        """
+    def test_sensitive_files_get_staged_and_committed(self, tmp_path: Path) -> None:
+        """Without a .gitignore, sensitive untracked files are all committed."""
         repo = _init_repo(tmp_path)
         _git(repo, "checkout", "-b", "pricing/test-user/feat")
 
-        # Create a sensitive .env file
         (repo / ".env").write_text("SECRET_KEY=super-secret-value\nDB_PASSWORD=hunter2\n")
+        (repo / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nfake\n")
+        (repo / "credentials.json").write_text('{"api_key": "sk-12345"}\n')
 
         result = save_progress(repo)
         assert result.commit_sha
-
-        # Verify .env was committed — this is the security risk
         committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
-        assert ".env" in committed_files, (
-            ".env was NOT committed — if this fails, git add -A behaviour changed"
-        )
-
-    def test_private_key_gets_staged(self, tmp_path: Path) -> None:
-        """SECURITY: Private keys are also staged by 'git add -A'."""
-        repo = _init_repo(tmp_path)
-        _git(repo, "checkout", "-b", "pricing/test-user/feat")
-
-        (repo / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nfake\n")
-
-        save_progress(repo)
-        committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
+        assert ".env" in committed_files
         assert "id_rsa" in committed_files
+        assert "credentials.json" in committed_files
 
-    def test_gitignore_prevents_env_staging(self, tmp_path: Path) -> None:
-        """With a proper .gitignore, .env is excluded from 'git add -A'.
-        This shows the mitigation that SHOULD be in place.
-        """
+    def test_gitignore_prevents_sensitive_file_staging(self, tmp_path: Path) -> None:
+        """A proper .gitignore keeps sensitive files out of the commit."""
         repo = _init_repo(tmp_path)
         _git(repo, "checkout", "-b", "pricing/test-user/feat")
 
-        # Add .gitignore first
-        (repo / ".gitignore").write_text(".env\nid_rsa\n*.pem\n")
+        (repo / ".gitignore").write_text(".env\nid_rsa\ncredentials.json\n*.pem\n")
         (repo / ".env").write_text("SECRET_KEY=super-secret-value\n")
+        (repo / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nfake\n")
+        (repo / "credentials.json").write_text('{"api_key": "sk-12345"}\n')
         (repo / "real_change.py").write_text("x = 1\n")
 
         save_progress(repo)
         committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
         assert ".env" not in committed_files
+        assert "id_rsa" not in committed_files
+        assert "credentials.json" not in committed_files
         assert ".gitignore" in committed_files
+        assert "real_change.py" in committed_files
 
 
 # ---------------------------------------------------------------------------
@@ -1537,46 +1515,6 @@ class TestProtectedBranchCaseSensitivity:
 
 
 # ---------------------------------------------------------------------------
-# EDGE CASE 2: Sensitive file staging — credentials.json
-# ---------------------------------------------------------------------------
-
-
-class TestSensitiveFileStagingCredentials:
-    """save_progress uses 'git add -A', which stages all untracked files.
-    This documents that credentials.json is staged when no .gitignore
-    is present, and excluded when .gitignore covers it.
-    """
-
-    def test_credentials_json_gets_staged_without_gitignore(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "checkout", "-b", "pricing/test-user/feat")
-
-        (repo / ".env").write_text("SECRET=abc\n")
-        (repo / "credentials.json").write_text('{"api_key": "sk-12345"}\n')
-
-        result = save_progress(repo)
-        assert result.commit_sha
-        committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
-        assert ".env" in committed_files
-        assert "credentials.json" in committed_files
-
-    def test_gitignore_excludes_credentials_json(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _git(repo, "checkout", "-b", "pricing/test-user/feat")
-
-        (repo / ".gitignore").write_text(".env\ncredentials.json\n")
-        (repo / ".env").write_text("SECRET=abc\n")
-        (repo / "credentials.json").write_text('{"api_key": "sk-12345"}\n')
-        (repo / "app.py").write_text("print('hello')\n")
-
-        save_progress(repo)
-        committed_files = _git(repo, "show", "--name-only", "--format=", "HEAD")
-        assert ".env" not in committed_files
-        assert "credentials.json" not in committed_files
-        assert "app.py" in committed_files
-
-
-# ---------------------------------------------------------------------------
 # EDGE CASE 3: Pull with merge conflict — divergent commits
 # ---------------------------------------------------------------------------
 
@@ -1586,7 +1524,9 @@ class TestPullLatestMergeConflictDivergent:
     different content on the same lines) and verify conflict handling.
     """
 
-    def test_divergent_same_file_conflict_detected(self, tmp_path: Path) -> None:
+    def test_divergent_same_file_conflict_detected_and_aborted_cleanly(
+        self, tmp_path: Path
+    ) -> None:
         repo, remote = _init_repo_with_remote(tmp_path)
 
         _git(repo, "checkout", "-b", "pricing/test-user/feat")
@@ -1609,31 +1549,10 @@ class TestPullLatestMergeConflictDivergent:
         assert result.conflict is True
         assert result.conflict_message is not None
         assert result.commits_pulled == 0
-
-    def test_repo_clean_after_divergent_conflict(self, tmp_path: Path) -> None:
-        repo, remote = _init_repo_with_remote(tmp_path)
-
-        _git(repo, "checkout", "-b", "pricing/test-user/feat")
-        (repo / "data.py").write_text("VALUE = 1\n")
-        _git(repo, "add", ".")
-        _git(repo, "commit", "-m", "Local data")
-        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
-
-        clone = tmp_path / "clone"
-        _git(tmp_path, "clone", str(remote), str(clone))
-        _git(clone, "config", "user.name", "Other User")
-        _git(clone, "config", "user.email", "other@example.com")
-        (clone / "data.py").write_text("VALUE = 999\n")
-        _git(clone, "add", ".")
-        _git(clone, "commit", "-m", "Remote data")
-        _git(clone, "push", "origin", "main")
-
-        pull_latest(repo)
-
         status = _git(repo, "status", "--porcelain")
         assert status == "", f"Repo not clean after conflict abort: {status}"
         assert _get_current_branch(repo) == "pricing/test-user/feat"
-        assert (repo / "data.py").read_text() == "VALUE = 1\n"
+        assert (repo / "config.py").read_text() == "RATE = 0.05\nTAX = 0.2\n"
 
 
 # ---------------------------------------------------------------------------

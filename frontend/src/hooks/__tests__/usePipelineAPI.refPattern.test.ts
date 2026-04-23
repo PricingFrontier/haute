@@ -85,6 +85,14 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   }
 }
 
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    vi.advanceTimersByTime(ms)
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
 describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)", () => {
   beforeEach(() => {
     vi.useRealTimers()
@@ -158,10 +166,12 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
 
     useSettingsStore.setState({ activeSource: "live" })
 
+    vi.useFakeTimers()
+
     act(() => { result.current.fetchPreview(root) })
 
     // Let debounce fire (200ms)
-    await new Promise((r) => setTimeout(r, 250))
+    await advanceTimers(200)
 
     // While root preview is mid-flight, the user flips the active source.
     act(() => {
@@ -169,10 +179,8 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     })
 
     // Wait for root preview + cascade to complete
-    await waitFor(() => {
-      // Three previews: root + two downstream
-      expect(seenSources.length).toBeGreaterThanOrEqual(3)
-    }, { timeout: 3000 })
+    await advanceTimers(60)
+    expect(seenSources.length).toBeGreaterThanOrEqual(3)
 
     // CORRECT behaviour: all three previews used the same source
     // captured when fetchPreview was invoked ("live").  Under the
@@ -237,13 +245,17 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
 
     useSettingsStore.setState({ rowLimit: 100 })
 
+    vi.useFakeTimers()
+
     act(() => { result.current.fetchPreview(makeNode("n1")) })
 
     // Flip rowLimit while debounce is pending
-    await new Promise((r) => setTimeout(r, 100))
+    await advanceTimers(100)
     useSettingsStore.setState({ rowLimit: 999 })
 
-    await waitFor(() => expect(seenRowLimits.length).toBeGreaterThanOrEqual(1))
+    await advanceTimers(100)
+    await advanceTimers(50)
+    expect(seenRowLimits.length).toBeGreaterThanOrEqual(1)
 
     // The first preview fired with rowLimit read at debounce-fire time.
     // Note: both "capture at fetchPreview" and "capture at debounce fire"

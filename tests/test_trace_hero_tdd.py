@@ -210,7 +210,10 @@ class TestWaterfallDataGeneration:
 
     @pytest.fixture(autouse=True)
     def _import_waterfall(self):
-        self.waterfall = pytest.importorskip("haute._trace_waterfall")
+        self.waterfall = pytest.importorskip(
+            "haute._trace_waterfall",
+            reason="trace waterfall module not available in this build",
+        )
 
     def test_waterfall_from_multiplicative_chain(self, tmp_path):
         """Three multiplicative steps -> waterfall with base, deltas, cumulative."""
@@ -738,7 +741,10 @@ class TestCopyExportDataStructure:
 
     @pytest.fixture(autouse=True)
     def _import_export(self):
-        self.export = pytest.importorskip("haute._trace_export")
+        self.export = pytest.importorskip(
+            "haute._trace_export",
+            reason="trace export module not available in this build",
+        )
 
     def test_export_trace_to_dict(self, tmp_path):
         """Produces dict with header, formula, sources, data_flow."""

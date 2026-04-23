@@ -1,0 +1,5 @@
+{
+  "name": "helpers",
+  "module": "helpers",
+  "content": "def helper():\n    return 1\n"
+}

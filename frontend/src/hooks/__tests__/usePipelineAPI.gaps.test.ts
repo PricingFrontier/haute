@@ -55,6 +55,14 @@ const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
 
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    vi.advanceTimersByTime(ms)
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
     selectedNode: null as Node | null,
@@ -147,12 +155,15 @@ describe("usePipelineAPI — gap tests", () => {
 
       const node = makeNode("n1")
 
+      vi.useFakeTimers()
+
       act(() => {
         result.current.fetchPreview(node)
       })
 
       // Wait for debounce + rejection to settle
-      await new Promise((r) => setTimeout(r, 500))
+      await advanceTimers(200)
+      expect(mockPreview).toHaveBeenCalledTimes(1)
 
       // AbortError should be ignored — previewData should still be "loading", NOT "error"
       expect(result.current.previewData?.status).not.toBe("error")
@@ -272,6 +283,8 @@ describe("usePipelineAPI — gap tests", () => {
 
       const node = makeNode("n1")
 
+      vi.useFakeTimers()
+
       act(() => {
         result.current.fetchPreview(node)
       })
@@ -280,8 +293,7 @@ describe("usePipelineAPI — gap tests", () => {
       expect(result.current.previewData?.nodeId).toBe("n1")
       expect(result.current.previewData?.row_count).toBe(10)
 
-      // Wait for debounce to fire and verify API was NOT called
-      await new Promise((r) => setTimeout(r, 500))
+      await advanceTimers(200)
 
       // API should NOT have been called (cache was fresh for the same structuralVersion)
       expect(mockPreview).not.toHaveBeenCalled()
@@ -461,7 +473,7 @@ describe("usePipelineAPI — gap tests", () => {
       await waitFor(() => expect(result.current.loading).toBe(false))
 
       act(() => {
-        result.current.fetchPreview(makeNode("n1"))
+        result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
       })
 
       await waitFor(() => {
@@ -506,7 +518,7 @@ describe("usePipelineAPI — gap tests", () => {
       await waitFor(() => expect(result.current.loading).toBe(false))
 
       act(() => {
-        result.current.fetchPreview(makeNode("n1"))
+        result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
       })
 
       await waitFor(() => {
@@ -604,19 +616,20 @@ describe("usePipelineAPI — gap tests", () => {
 
       // First preview — triggers debounce
       act(() => {
-        result.current.fetchPreview(makeNode("n1"))
+        result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
       })
 
       // Wait for debounce to fire the first fetchPreviewImmediate
-      await new Promise((r) => setTimeout(r, 300))
+      await waitFor(() => expect(abortSignals.length).toBe(1))
 
       // Second preview — should abort the first
       act(() => {
-        result.current.fetchPreview(makeNode("n2"))
+        result.current.fetchPreview(makeNode("n2"), { debounceMs: 0 })
       })
 
       // Wait for second debounce to fire
-      await new Promise((r) => setTimeout(r, 300))
+      expect(abortSignals[0].aborted).toBe(true)
+      await waitFor(() => expect(abortSignals.length).toBeGreaterThanOrEqual(2))
 
       // The first signal should have been aborted
       expect(abortSignals.length).toBeGreaterThanOrEqual(1)

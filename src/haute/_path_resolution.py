@@ -15,7 +15,10 @@ def _normalise_path_text(path: str | Path) -> str:
     accepted on Windows, Linux, and macOS, so normalising early keeps cache
     keys and existence checks consistent across operating systems.
     """
-    return str(path).replace("\\", "/")
+    text = str(path)
+    if "\x00" in text:
+        raise ValueError("Path contains an embedded null byte")
+    return text.replace("\\", "/")
 
 
 def _resolve_source_file_parent(source_file: str | Path | None, project_root: Path) -> Path | None:

@@ -123,7 +123,8 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-m 'not perf'"
+addopts = "-m 'not perf' --strict-markers --strict-config"
+xfail_strict = true
 markers = [
     "slow: marks tests as slow but still part of the default suite",
     "perf: marks benchmark-style tests excluded from default pytest runs",
@@ -139,7 +140,7 @@ source = ["src/haute"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 85
+fail_under = 90
 show_missing = true
 exclude_lines = [
     "pragma: no cover",

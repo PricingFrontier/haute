@@ -18,9 +18,8 @@ from haute._config_builder import _build_node_config
 from haute._config_io import find_config_by_func_name, has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes
 from haute._logging import get_logger
-from haute._types import DECORATOR_TO_NODE_TYPE
+from haute._types import DECORATOR_TO_NODE_TYPE, NodeType, PipelineGraph
 from haute.errors import ConfigError
-from haute.graph_utils import NodeType, PipelineGraph
 
 logger = get_logger(component="parser.regex")
 
@@ -70,10 +69,6 @@ def _find_function_blocks(source: str) -> list[dict]:
         if decorator_method not in DECORATOR_TO_NODE_TYPE:
             continue
 
-        # Find the line number of the def
-        def_pos = m.start()
-        start_line = source[:def_pos].count("\n")
-
         # Extract parameter names (strip type annotations)
         param_names = []
         for p in params_text.split(","):
@@ -87,6 +82,7 @@ def _find_function_blocks(source: str) -> list[dict]:
         # Find the body: everything indented after the def line
         # The def line is somewhere after the decorator
         def_line_idx = source[: m.end()].count("\n")
+        start_line = def_line_idx
         body_lines = []
         for i in range(def_line_idx + 1, len(lines)):
             line = lines[i]

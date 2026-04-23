@@ -84,9 +84,7 @@ class TestEmptyStrings:
             "graph": _minimal_graph_dict(),
         }
         resp = client.post("/api/pipeline/save", json=body)
-        # Should either succeed (empty name defaults) or return a clear error.
-        # Must NOT produce a 500 server error.
-        assert resp.status_code != 500
+        assert resp.status_code == 400
 
     def test_empty_node_id_in_preview(self, client):
         """Empty node_id would cause KeyError in results dict lookup."""
@@ -95,7 +93,7 @@ class TestEmptyStrings:
             "node_id": "",
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        assert resp.status_code in (400, 404, 422, 500)
+        assert resp.status_code == 404
 
     def test_empty_node_id_in_sink(self, client):
         """Empty sink node_id could skip the sink write entirely."""
@@ -104,7 +102,16 @@ class TestEmptyStrings:
             "node_id": "",
         }
         resp = client.post("/api/pipeline/sink", json=body)
-        assert resp.status_code in (400, 404, 422, 500)
+        assert resp.status_code == 404
+
+    def test_non_sink_node_id_in_sink(self, client):
+        """Sink execution must reject ids that point at non-sink nodes."""
+        body = {
+            "graph": _minimal_graph_dict(),
+            "node_id": "src",
+        }
+        resp = client.post("/api/pipeline/sink", json=body)
+        assert resp.status_code == 400
 
     def test_empty_graph_in_preview(self, client):
         """Empty graph (no nodes) should return 400, not crash during topo-sort."""
@@ -177,8 +184,7 @@ class TestEmptyStrings:
             "node_id": "src",
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        # Must not crash — any well-formed response is acceptable
-        assert resp.status_code in (200, 400, 404, 500)
+        assert resp.status_code == 200
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -316,7 +322,7 @@ class TestLargePayloads:
         }
         resp = client.post("/api/pipeline/preview", json=body)
         # Should not hang or OOM; 422 if validation rejects the large limit
-        assert resp.status_code in (200, 400, 404, 422, 500)
+        assert resp.status_code == 422
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -469,8 +475,7 @@ class TestDeeplyNestedJSON:
             "node_id": "d",
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        # Should not return 500 from RecursionError
-        assert resp.status_code != 500 or "recursion" not in resp.text.lower()
+        assert resp.status_code == 200
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -508,7 +513,7 @@ class TestIntegerOverflow:
         }
         resp = client.post("/api/pipeline/preview", json=body)
         # Must not be a 500 from integer overflow in Polars
-        assert resp.status_code in (200, 400, 404, 422, 500)
+        assert resp.status_code == 422
 
     def test_row_index_max_in_trace(self):
         """row_index=2^32 should be accepted by Pydantic.
@@ -567,7 +572,7 @@ class TestNegativeValues:
         }
         resp = client.post("/api/pipeline/preview", json=body)
         # Should not return the full dataset
-        assert resp.status_code in (200, 400, 422, 500)
+        assert resp.status_code == 422
 
     def test_negative_row_limit_trace(self, client):
         """Negative row_limit in trace should not cause unexpected behavior."""
@@ -577,7 +582,7 @@ class TestNegativeValues:
             "row_limit": -100,
         }
         resp = client.post("/api/pipeline/trace", json=body)
-        assert resp.status_code in (200, 400, 422, 500)
+        assert resp.status_code == 422
 
     def test_negative_row_index_trace(self, client):
         """Negative row_index could be interpreted as counting from end."""
@@ -586,7 +591,7 @@ class TestNegativeValues:
             "row_index": -1,
         }
         resp = client.post("/api/pipeline/trace", json=body)
-        assert resp.status_code in (200, 400, 422, 500)
+        assert resp.status_code == 422
 
     def test_negative_point_index_frontier(self, client):
         """Negative point_index should be rejected, not used as Python negative index."""
@@ -595,13 +600,12 @@ class TestNegativeValues:
             "point_index": -1,
         }
         resp = client.post("/api/optimiser/frontier/select", json=body)
-        # Either 400 (validation) or 404 (job not found) — not a crash
-        assert resp.status_code in (400, 404, 422, 500)
+        assert resp.status_code == 422
 
     def test_negative_git_history_limit(self, client):
         """Negative limit for git history should not cause issues."""
         resp = client.get("/api/git/history?limit=-5")
-        assert resp.status_code in (200, 400, 422, 500)
+        assert resp.status_code == 422
 
     def test_zero_row_limit(self, client):
         """row_limit=0 should return empty preview, not error."""
@@ -611,7 +615,7 @@ class TestNegativeValues:
             "row_limit": 0,
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        assert resp.status_code in (200, 400, 422, 500)
+        assert resp.status_code == 422
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -637,8 +641,7 @@ class TestTypeConfusion:
             "row_limit": "100",
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        # Pydantic v2 coerces str->int; should work or 422
-        assert resp.status_code in (200, 400, 422, 500)
+        assert resp.status_code == 200
 
     def test_boolean_where_string_expected(self, client):
         """Boolean true for node_id — should be rejected or coerced.
@@ -651,8 +654,7 @@ class TestTypeConfusion:
             "node_id": True,
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        # Pydantic v2 may coerce bool to str "True"
-        assert resp.status_code in (200, 400, 404, 422, 500)
+        assert resp.status_code == 422
 
     def test_array_where_object_expected(self, client):
         """Array for graph field should fail validation.
@@ -754,8 +756,7 @@ class TestDuplicateKeys:
             content=raw,
             headers={"Content-Type": "application/json"},
         )
-        # Python json.loads takes "second" — should not crash
-        assert resp.status_code != 500 or "duplicate" not in resp.text.lower()
+        assert resp.status_code == 400
 
     def test_duplicate_node_ids_in_graph(self):
         """Duplicate node IDs should be accepted by Pydantic but last-wins in node_map.
@@ -816,7 +817,7 @@ class TestBinaryDataInStrings:
             "graph": _minimal_graph_dict(),
         }
         resp = client.post("/api/pipeline/save", json=body)
-        assert resp.status_code != 500
+        assert resp.status_code == 400
 
     def test_control_chars_in_code(self):
         """Control characters in node code should survive Pydantic parsing.
@@ -857,7 +858,7 @@ class TestBinaryDataInStrings:
             "node_id": "src\u0080",
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        assert resp.status_code in (200, 400, 404, 422, 500)
+        assert resp.status_code == 400
 
     def test_tab_and_newline_in_node_id(self):
         """Tab/newline in node ID should survive as string but sanitize for codegen.
@@ -914,7 +915,7 @@ class TestPathTraversalInPayloads:
             "source_file": "../../etc/passwd",
         }
         resp = client.post("/api/pipeline/save", json=body)
-        assert resp.status_code in (400, 403, 500)
+        assert resp.status_code == 403
 
     def test_path_traversal_in_data_source_path(self, client):
         """Traversal in dataSource config path should not read arbitrary files."""
@@ -935,8 +936,7 @@ class TestPathTraversalInPayloads:
             "node_id": "src",
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        # Should either 403 (path blocked) or error — not return file contents
-        assert resp.status_code in (200, 400, 403, 404, 500)
+        assert resp.status_code == 403
 
     def test_path_traversal_in_submodel_name_via_post(self, client):
         """Submodel dissolve with traversal name should not escape modules/ dir.
@@ -972,7 +972,7 @@ class TestPathTraversalInPayloads:
             "source_file": "/etc/passwd",
         }
         resp = client.post("/api/pipeline/save", json=body)
-        assert resp.status_code in (400, 403, 500)
+        assert resp.status_code == 403
 
 
 # ═══════════════════════════════════════════════════════════════════════

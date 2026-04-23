@@ -480,6 +480,11 @@ class TrainResponse(BaseModel):
     lorenz_curve: list[dict[str, float]] = Field(default_factory=list)
     lorenz_curve_perfect: list[dict[str, float]] = Field(default_factory=list)
     pdp_data: list[dict[str, Any]] = Field(default_factory=list)
+    glm_coefficients: list[dict[str, Any]] = Field(default_factory=list)
+    glm_relativities: list[dict[str, Any]] = Field(default_factory=list)
+    glm_fit_statistics: dict[str, float] = Field(default_factory=dict)
+    glm_regularization_path: dict[str, Any] | None = None
+    diagnostics_errors: list[dict[str, str]] = Field(default_factory=list)
     warning: str | None = None
     total_source_rows: int | None = None
 
@@ -655,12 +660,61 @@ class OptimiserFrontierResponse(BaseModel):
     constraint_names: list[str] = Field(default_factory=list)
 
 
+class OptimiserHistoryEntry(BaseModel):
+    iteration: int
+    total_objective: float
+    max_lambda_change: float
+    all_constraints_satisfied: bool | None = None
+    lambdas: dict[str, float] = Field(default_factory=dict)
+    total_constraints: dict[str, float] = Field(default_factory=dict)
+
+
+class OptimiserScenarioValueStats(BaseModel):
+    mean: float
+    std: float
+    min: float
+    max: float
+    p5: float
+    p25: float
+    p50: float
+    p75: float
+    p95: float
+    pct_increase: float
+    pct_decrease: float
+
+
+class OptimiserScenarioValueHistogram(BaseModel):
+    counts: list[int] = Field(default_factory=list)
+    edges: list[float] = Field(default_factory=list)
+
+
+class OptimiserSolveResult(BaseModel):
+    mode: str | None = None
+    total_objective: float
+    baseline_objective: float
+    constraints: dict[str, float] = Field(default_factory=dict)
+    baseline_constraints: dict[str, float] = Field(default_factory=dict)
+    lambdas: dict[str, float] = Field(default_factory=dict)
+    converged: bool
+    iterations: int | None = None
+    n_quotes: int | None = None
+    n_steps: int | None = None
+    cd_iterations: int | None = None
+    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    history: list[OptimiserHistoryEntry] | None = None
+    warning: str | None = None
+    scenario_value_stats: OptimiserScenarioValueStats | None = None
+    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    clamp_rate: float | None = None
+    frontier: OptimiserFrontierResponse | None = None
+
+
 class OptimiserStatusResponse(BaseModel):
     status: Literal["running", "completed", "error"]
     progress: float = 0.0
     message: str = ""
     elapsed_seconds: float = 0.0
-    result: dict[str, Any] | None = None
+    result: OptimiserSolveResult | None = None
     frontier: OptimiserFrontierResponse | None = None
 
 

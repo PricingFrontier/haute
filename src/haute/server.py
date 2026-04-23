@@ -15,7 +15,7 @@ import time
 import traceback
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -391,6 +391,10 @@ async def _file_watcher() -> None:
         if debounce_task and not debounce_task.done():
             debounce_task.cancel()
         debounce_task = asyncio.create_task(_flush())
+
+    if debounce_task is not None:
+        with suppress(asyncio.CancelledError):
+            await debounce_task
 
 
 # ---------------------------------------------------------------------------

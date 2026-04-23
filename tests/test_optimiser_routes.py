@@ -126,6 +126,7 @@ def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
 
 def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> dict:
     """Poll /solve/status/{job_id} until completed or error."""
+    poll_interval = 0.02
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         resp = client.get(f"/api/optimiser/solve/status/{job_id}")
@@ -133,7 +134,7 @@ def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> di
         data = resp.json()
         if data["status"] in ("completed", "error"):
             return data
-        time.sleep(0.1)
+        time.sleep(poll_interval)
     raise TimeoutError(f"Job {job_id} did not finish within {timeout}s")
 
 
@@ -866,19 +867,19 @@ class TestComputeScenarioValueStats:
     """Unit tests for _compute_scenario_value_stats."""
 
     def test_no_dataframe_attribute(self):
-        """Object without .dataframe returns empty dicts."""
+        """Object without .dataframe omits stats payloads entirely."""
         result = SimpleNamespace()  # no .dataframe
         stats, hist = _compute_scenario_value_stats(result)
-        assert stats == {}
-        assert hist == {}
+        assert stats is None
+        assert hist is None
 
     def test_missing_column(self):
-        """DataFrame without optimal_scenario_value returns empty dicts."""
+        """DataFrame without optimal_scenario_value omits stats payloads entirely."""
         df = pl.DataFrame({"other_col": [1.0, 2.0, 3.0]})
         result = SimpleNamespace(dataframe=df)
         stats, hist = _compute_scenario_value_stats(result)
-        assert stats == {}
-        assert hist == {}
+        assert stats is None
+        assert hist is None
 
     def test_valid_scenario_values(self):
         """Normal case with optimal_scenario_value column."""
@@ -1872,12 +1873,12 @@ class TestValidateConfig:
 
 
 class TestComputeScenarioValueStatsExtended:
-    def test_empty_dataframe_returns_n_zero(self):
+    def test_empty_dataframe_omits_distribution_payloads(self):
         df = pl.DataFrame({"optimal_scenario_value": pl.Series([], dtype=pl.Float64)})
         result = SimpleNamespace(dataframe=df)
         stats, hist = _compute_scenario_value_stats(result)
-        assert stats == {"n": 0}
-        assert hist == {}
+        assert stats is None
+        assert hist is None
 
     def test_normal_distribution_returns_full_stats(self):
         rng = np.random.RandomState(0)
@@ -2097,7 +2098,11 @@ class TestSolveStatusEdgeCases:
             "message": "Completed",
             "elapsed_seconds": 5.0,
             "result": {
+                "mode": "online",
                 "total_objective": 200.0,
+                "baseline_objective": 180.0,
+                "constraints": {"volume": 0.92},
+                "baseline_constraints": {"volume": 0.88},
                 "lambdas": {"volume": 0.4},
                 "converged": True,
             },
@@ -2846,7 +2851,15 @@ class TestSolveStatusTimeout:
             "progress": 1.0,
             "message": "Completed",
             "elapsed_seconds": 2.0,
-            "result": {"total_objective": 100.0},
+            "result": {
+                "mode": "online",
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.91},
+                "baseline_constraints": {"volume": 0.88},
+                "lambdas": {"volume": 0.5},
+                "converged": True,
+            },
             "created_at": time.time(),
         }
         resp = client.get("/api/optimiser/solve/status/no_front")

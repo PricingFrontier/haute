@@ -1,0 +1,38 @@
+{
+  "version": "rb_v1",
+  "created_at": "2024-01-02T03:04:05+00:00",
+  "mode": "ratebook",
+  "lambdas": {
+    "volume": 0.4
+  },
+  "total_objective": 88.0,
+  "baseline_objective": 82.5,
+  "total_constraints": {
+    "volume": 0.97
+  },
+  "baseline_constraints": {
+    "volume": 0.92
+  },
+  "constraints": {
+    "volume": {
+      "min": 0.95
+    }
+  },
+  "objective": "margin",
+  "quote_id": "policy_id",
+  "scenario_index": "scenario_idx",
+  "scenario_value": "scenario_value",
+  "chunk_size": 100000,
+  "converged": false,
+  "iterations": 11,
+  "cd_iterations": 4,
+  "factor_tables": {
+    "region": [
+      {
+        "__factor_group__": "North",
+        "optimal_scenario_value": 1.1
+      }
+    ]
+  },
+  "clamp_rate": 0.05
+}

@@ -612,6 +612,7 @@ describe("useNodeResultsStore", () => {
         baseline_constraints: { premium: 45 },
         lambdas: { premium: 0.2 },
         converged: true,
+        error: null,
       })
 
       // The result should now reflect the frontier point
@@ -650,6 +651,7 @@ describe("useNodeResultsStore", () => {
         baseline_constraints: { premium: 48 },
         lambdas: { premium: 0.3 },
         converged: false,
+        error: null,
       })
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
@@ -682,6 +684,7 @@ describe("useNodeResultsStore", () => {
         baseline_constraints: { premium: 44 },
         lambdas: { premium: 0.9 },
         converged: true,
+        error: null,
       })
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]

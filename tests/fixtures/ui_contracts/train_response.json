@@ -1,0 +1,143 @@
+{
+  "status": "completed",
+  "job_id": "job-1",
+  "metrics": {
+    "rmse": 0.1
+  },
+  "feature_importance": [
+    {
+      "feature": "x",
+      "importance": 1.0
+    }
+  ],
+  "model_path": "outputs/model.cbm",
+  "train_rows": 100,
+  "test_rows": 25,
+  "holdout_rows": 10,
+  "holdout_metrics": {
+    "rmse": 0.2
+  },
+  "diagnostics_set": "validation",
+  "features": [
+    "x"
+  ],
+  "cat_features": [],
+  "error": null,
+  "best_iteration": 7,
+  "loss_history": [
+    {
+      "iteration": 1,
+      "learn": 0.5
+    }
+  ],
+  "double_lift": [
+    {
+      "decile": 1,
+      "actual": 0.3,
+      "predicted": 0.2,
+      "count": 10
+    }
+  ],
+  "shap_summary": [
+    {
+      "feature": "x",
+      "mean_abs_shap": 0.4
+    }
+  ],
+  "feature_importance_loss": [
+    {
+      "feature": "x",
+      "importance": 0.9
+    }
+  ],
+  "ave_per_feature": [
+    {
+      "feature": "x",
+      "type": "numeric",
+      "bins": [
+        {
+          "label": "all",
+          "exposure": 1.0,
+          "avg_actual": 2.0,
+          "avg_predicted": 2.1
+        }
+      ]
+    }
+  ],
+  "residuals_histogram": [
+    {
+      "bin_center": 0.0,
+      "count": 2,
+      "weighted_count": 2.0
+    }
+  ],
+  "residuals_stats": {
+    "mean": 0.0,
+    "std": 1.0
+  },
+  "actual_vs_predicted": [
+    {
+      "actual": 1.0,
+      "predicted": 1.1,
+      "weight": 1.0
+    }
+  ],
+  "lorenz_curve": [
+    {
+      "cum_weight_frac": 0.5,
+      "cum_actual_frac": 0.4
+    }
+  ],
+  "lorenz_curve_perfect": [
+    {
+      "cum_weight_frac": 0.5,
+      "cum_actual_frac": 0.5
+    }
+  ],
+  "pdp_data": [
+    {
+      "feature": "x",
+      "type": "numeric",
+      "grid": [
+        {
+          "value": 1,
+          "avg_prediction": 1.2
+        }
+      ]
+    }
+  ],
+  "warning": null,
+  "total_source_rows": 135,
+  "glm_coefficients": [
+    {
+      "feature": "x",
+      "coefficient": 0.1,
+      "std_error": 0.01,
+      "z_value": 10.0,
+      "p_value": 0.001,
+      "significance": "***"
+    }
+  ],
+  "glm_relativities": [
+    {
+      "feature": "x",
+      "relativity": 1.1,
+      "ci_lower": 1.0,
+      "ci_upper": 1.2
+    }
+  ],
+  "glm_fit_statistics": {
+    "aic": 1.2
+  },
+  "glm_regularization_path": {
+    "selected_alpha": 0.01,
+    "n_nonzero": 4
+  },
+  "diagnostics_errors": [
+    {
+      "diagnostic": "shap",
+      "error": "too small",
+      "error_type": "ValueError"
+    }
+  ]
+}

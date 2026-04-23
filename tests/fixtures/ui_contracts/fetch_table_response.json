@@ -1,0 +1,14 @@
+{
+  "path": "cache/warehouse/users.parquet",
+  "table": "main.analytics.users",
+  "row_count": 512,
+  "column_count": 3,
+  "columns": {
+    "user_id": "Utf8",
+    "country": "Utf8",
+    "score": "Float64"
+  },
+  "size_bytes": 8192,
+  "fetched_at": 1713861000.0,
+  "fetch_seconds": 2.4
+}

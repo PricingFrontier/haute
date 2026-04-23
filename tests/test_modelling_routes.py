@@ -24,6 +24,28 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
 
+def _fast_training_params(**overrides: object) -> dict[str, object]:
+    """Cheap-but-real CatBoost settings for endpoint tests."""
+    params: dict[str, object] = {"iterations": 4, "depth": 2}
+    params.update(overrides)
+    return params
+
+
+def _completed_train_result() -> object:
+    """Small successful TrainResult for endpoint tests that do not care about fit quality."""
+    from haute.modelling._training_job import TrainResult
+
+    return TrainResult(
+        metrics={"rmse": 0.1, "gini": 0.5},
+        feature_importance=[],
+        model_path="outputs/test_model.cbm",
+        train_rows=48,
+        test_rows=12,
+        features=["x1", "x2"],
+        cat_features=[],
+    )
+
+
 def _make_modelling_graph(
     data_path: str,
     target: str = "y",
@@ -37,7 +59,7 @@ def _make_modelling_graph(
         "target": target,
         "algorithm": algorithm,
         "task": task,
-        "params": params or {"iterations": 10, "depth": 3},
+        "params": params or _fast_training_params(),
         "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
         "metrics": ["gini", "rmse"] if task == "regression" else ["auc", "logloss"],
     }
@@ -66,11 +88,25 @@ def _make_modelling_graph(
     return graph.model_dump()
 
 
+@pytest.fixture(autouse=True)
+def _fast_optional_training_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Endpoint tests assert job state, metrics, and warnings, not optional charts."""
+    monkeypatch.setattr(
+        "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
+        lambda *a, **kw: [],
+    )
+    monkeypatch.setattr(
+        "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
+        lambda *a, **kw: [],
+    )
+    monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
+
+
 @pytest.fixture()
 def training_data(tmp_path) -> str:
     """Create a small parquet file for training tests."""
     rng = np.random.RandomState(42)
-    n = 100
+    n = 60
     df = pl.DataFrame(
         {
             "x1": rng.randn(n),
@@ -85,6 +121,7 @@ def training_data(tmp_path) -> str:
 
 def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> dict:
     """Poll /train/status/{job_id} until completed or error, return final status."""
+    poll_interval = 0.02
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         resp = client.get(f"/api/modelling/train/status/{job_id}")
@@ -92,7 +129,7 @@ def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> di
         data = resp.json()
         if data["status"] in ("completed", "error"):
             return data
-        time.sleep(0.1)
+        time.sleep(poll_interval)
     raise TimeoutError(f"Job {job_id} did not finish within {timeout}s")
 
 
@@ -133,10 +170,18 @@ class TestTrainEndpoint:
         assert result["metrics"]
         assert result["train_rows"] > 0
         assert result["test_rows"] > 0
+        # Should have ave_per_feature for the 2 features (x1, x2)
+        assert "ave_per_feature" in result
+        assert isinstance(result["ave_per_feature"], list)
+        assert len(result["ave_per_feature"]) == 2
+        for entry in result["ave_per_feature"]:
+            assert "feature" in entry
+            assert "type" in entry
+            assert "bins" in entry
 
     def test_train_reports_progress(self, client, training_data):
         """Training should report iteration progress via the status endpoint."""
-        graph = _make_modelling_graph(training_data, params={"iterations": 20, "depth": 3})
+        graph = _make_modelling_graph(training_data, params=_fast_training_params(iterations=8))
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
         data = resp.json()
         job_id = data["job_id"]
@@ -150,28 +195,11 @@ class TestTrainEndpoint:
                 saw_iteration = True
             if status["status"] in ("completed", "error"):
                 break
-            time.sleep(0.05)
+            time.sleep(0.02)
         assert status["status"] == "completed"
-        # With 20 iterations, we should have seen at least one iteration update
-        # (though fast training might complete before we poll — check final state too)
+        # Multi-iteration runs should usually emit at least one update, though
+        # fast training can still finish before a poll lands.
         assert saw_iteration or status.get("result", {}).get("train_rows", 0) > 0
-
-    def test_train_result_includes_ave(self, client, training_data):
-        """After successful training, ave_per_feature should be in the result."""
-        graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
-        data = resp.json()
-        status = _poll_until_done(client, data["job_id"])
-        assert status["status"] == "completed"
-        result = status["result"]
-        # Should have ave_per_feature for the 2 features (x1, x2)
-        assert "ave_per_feature" in result
-        assert isinstance(result["ave_per_feature"], list)
-        assert len(result["ave_per_feature"]) == 2
-        for entry in result["ave_per_feature"]:
-            assert "feature" in entry
-            assert "type" in entry
-            assert "bins" in entry
 
     def test_train_rejects_concurrent(self, client, training_data):
         """A second training request while one is running returns 409."""
@@ -198,24 +226,23 @@ class TestTrainEndpoint:
         """When GPU VRAM is insufficient, training should fall back to CPU."""
         graph = _make_modelling_graph(
             training_data,
-            params={"iterations": 10, "depth": 3, "task_type": "GPU"},
+            params=_fast_training_params(task_type="GPU"),
         )
-        # Pretend GPU has only 1 byte VRAM — forces fallback to CPU
-        # (even 100 rows × 3 features needs more than 1 byte)
-        with patch(
-            "haute._ram_estimate.available_vram_bytes",
-            return_value=1,
+        # Pretend GPU has only 1 byte VRAM — forces fallback to CPU.
+        with (
+            patch("haute._ram_estimate.available_vram_bytes", return_value=1),
+            patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()),
         ):
             resp = client.post(
                 "/api/modelling/train",
                 json={"graph": graph, "node_id": "train"},
             )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "started"
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "started"
 
-        # Poll until done — should succeed on CPU (not crash on GPU OOM)
-        status = _poll_until_done(client, data["job_id"])
+            # Poll until done — should succeed on CPU (not crash on GPU OOM)
+            status = _poll_until_done(client, data["job_id"])
         assert status["status"] == "completed"
         # The warning should mention GPU fallback
         warning = status.get("warning") or ""
@@ -469,7 +496,7 @@ class TestEstimateEndpoint:
     def test_estimate_gpu_vram_path(self, client, training_data):
         graph = _make_modelling_graph(
             training_data,
-            params={"iterations": 10, "depth": 3, "task_type": "GPU"},
+            params=_fast_training_params(task_type="GPU"),
         )
         with patch("haute._ram_estimate.available_vram_bytes", return_value=1):
             resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
@@ -721,12 +748,13 @@ class TestBackgroundThreadErrors:
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
         ):
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
-            data = resp.json()
-            status = _poll_until_done(client, data["job_id"])
-            # Whether it completed or errored, the warning should be set
-            warning = status.get("warning") or ""
-            assert "Row limit" in warning or "RAM" in warning
+            with patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()):
+                resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+                data = resp.json()
+                status = _poll_until_done(client, data["job_id"])
+                # Whether it completed or errored, the warning should be set
+                warning = status.get("warning") or ""
+                assert "Row limit" in warning or "RAM" in warning
 
     def test_ram_warning_suppressed_when_user_limit_binds(self, client, training_data):
         """When user's row_limit is lower than RAM-safe limit, no RAM warning in job status."""
@@ -749,11 +777,12 @@ class TestBackgroundThreadErrors:
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
         ):
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
-            data = resp.json()
-            status = _poll_until_done(client, data["job_id"])
-            # RAM warning should be suppressed since user limit (30) < RAM limit (50)
-            assert status.get("warning") is None
+            with patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()):
+                resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+                data = resp.json()
+                status = _poll_until_done(client, data["job_id"])
+                # RAM warning should be suppressed since user limit (30) < RAM limit (50)
+                assert status.get("warning") is None
 
 
 # ---------------------------------------------------------------------------

@@ -494,7 +494,9 @@ class TestNullByteInjection:
         ],
     )
     def test_null_byte_rejected(self, tmp_path: Path, func_name: str, call_args_factory):
-        """Null bytes in paths must raise ValueError or OSError, never succeed."""
+        """Null bytes in paths must raise a validation error, never succeed."""
+        from fastapi import HTTPException
+
         call_spec = call_args_factory(tmp_path)
         if call_spec["setup"]:
             call_spec["setup"](tmp_path)
@@ -525,7 +527,7 @@ class TestNullByteInjection:
         }
         func = func_map[func_name]()
 
-        with pytest.raises((ValueError, OSError)):
+        with pytest.raises((ValueError, OSError, HTTPException)):
             func(*call_spec["args"], **call_spec["kwargs"])
 
 

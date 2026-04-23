@@ -26,6 +26,7 @@ from haute.trace import execute_trace
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
+EXPECTED_FIXTURE_PREMIUM = 2.75
 
 
 @pytest.fixture(autouse=True)
@@ -77,12 +78,16 @@ class TestEndToEnd:
         assert len(graph.edges) == 6
 
     def test_execute_all_nodes(self):
-        """All nodes execute successfully with status='ok'."""
+        """All nodes execute and the fixture premium matches the oracle."""
         graph = parse_pipeline_file(PIPELINE_FILE)
         results = execute_graph(graph)
         for nid, result in results.items():
             assert result.status == "ok", f"Node {nid!r} failed: {result.error}"
             assert result.row_count > 0
+
+        output_row = results["output"].preview[0]
+        assert output_row["area_factor"] == pytest.approx(1.1)
+        assert output_row["premium"] == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
 
     def test_execute_target_node(self):
         """Executing with a target returns results for the target and its ancestors."""
@@ -95,12 +100,13 @@ class TestEndToEnd:
         assert "area_lookup" in results
 
     def test_trace_produces_steps(self):
-        """Trace returns steps for every node in the execution chain."""
+        """Trace returns steps and the final traced price is exact."""
         graph = parse_pipeline_file(PIPELINE_FILE)
-        trace = execute_trace(graph, row_index=0, target_node_id="output")
+        trace = execute_trace(graph, row_index=0, target_node_id="output", column="premium")
         assert len(trace.steps) > 0
         step_names = [s.node_id for s in trace.steps]
         assert "output" in step_names
+        assert trace.output_value == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
 
     def test_trace_row_has_data(self):
         """Each trace step includes output values and schema diff."""
@@ -173,6 +179,7 @@ class TestEndToEnd:
         output_result = results["output"]
         assert output_result.status == "ok"
         orig_row_count = output_result.row_count
+        assert output_result.preview[0]["premium"] == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
 
         # Step 3: Trace
         trace = execute_trace(graph, row_index=0, target_node_id="output")
@@ -195,6 +202,7 @@ class TestEndToEnd:
         output_result2 = results2["output"]
         assert output_result2.status == "ok"
         assert output_result2.row_count == orig_row_count
+        assert output_result2.preview[0]["premium"] == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
         # Core input columns must survive the round-trip
         reparsed_columns = {c.name for c in output_result2.columns}
         assert "VehPower" in reparsed_columns

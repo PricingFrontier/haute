@@ -18,7 +18,7 @@ from haute._ast_helpers import (
     _get_docstring,
 )
 from haute._config_builder import _resolve_node_config
-from haute.graph_utils import GraphEdge, GraphNode, NodeData
+from haute._types import GraphEdge, GraphNode, NodeData
 
 __all__ = [
     "_extract_decorated_nodes",

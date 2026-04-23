@@ -1,0 +1,20 @@
+{
+  "status": "ok",
+  "graph": {
+    "nodes": [
+      {
+        "id": "n1",
+        "type": "custom",
+        "position": { "x": 0, "y": 0 },
+        "data": { "label": "Left" }
+      },
+      {
+        "id": "n2",
+        "type": "custom",
+        "position": { "x": 100, "y": 0 },
+        "data": { "label": "Right" }
+      }
+    ],
+    "edges": []
+  }
+}

@@ -27,6 +27,17 @@ from tests.conftest import make_transform_node as _transform_node
 _ROW_LIMIT = 100
 
 
+@pytest.fixture(autouse=True)
+def _trace_api_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run trace-route API tests from their temp project root.
+
+    The HTTP layer intentionally rejects runtime file paths outside
+    ``Path.cwd()``. These tests build per-test parquet files, so the
+    temp directory must be the request's project root.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 def _simple_graph(parquet_path: str | Path, code: str = "") -> dict:
     """Build a minimal source -> transform graph dict for the API."""
     graph = _g(

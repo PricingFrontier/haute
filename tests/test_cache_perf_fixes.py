@@ -616,6 +616,7 @@ class TestCacheKeyAlgorithmContract:
         assert len(calls) == 2
 
 
+@pytest.mark.perf
 class TestPreambleCacheBenchmark:
     """Benchmark for item #88 — ``functools.lru_cache`` vs hand-rolled
     ``OrderedDict`` LRU on repeated cache hits.

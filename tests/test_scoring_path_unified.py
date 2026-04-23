@@ -206,7 +206,7 @@ class TestExplicitFlavorDispatch:
         catboost_scoring_df: pl.DataFrame,
     ) -> None:
         """CatBoost dispatch produces a prediction column of length 10."""
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         score = _get_unified_scorer()
         model, _, features = tiny_catboost_model
 
@@ -360,7 +360,7 @@ class TestScoringRegressionGuards:
         10 rows — the prediction values must be identical to calling
         ``model.predict`` directly on the same input.
         """
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import load_local_model
 
         raw_model, model_path, features = tiny_catboost_model
@@ -632,7 +632,7 @@ class TestRefactorStructuralInvariants:
         CatBoost's categorical indices are positional; silent reorder =
         invisible prediction drift.
         """
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import load_local_model
 
         _, model_path, features = tiny_catboost_model
@@ -766,7 +766,7 @@ class TestBatchEagerEquivalence:
         catboost_scoring_df: pl.DataFrame,
     ) -> None:
         """Full catboost roundtrip: eager path == batched path for 10 rows."""
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import load_local_model
 
         _, model_path, features = tiny_catboost_model

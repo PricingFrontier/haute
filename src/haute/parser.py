@@ -32,6 +32,8 @@ from haute._parser_regex import fallback_parse as _fallback_parse
 from haute._parser_submodels import extract_submodel_calls as _extract_submodel_calls
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
+from haute._project import get_project_root
+from haute.errors import ConfigError
 from haute.graph_utils import PipelineGraph
 
 logger = get_logger(component="parser")
@@ -45,6 +47,14 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _infer_parse_base_dir(filepath: Path) -> Path:
+    """Resolve config/submodel references from the Haute project root when available."""
+    try:
+        return get_project_root(filepath.parent)
+    except ConfigError:
+        return filepath.parent
 
 
 def _format_load_error_warning(labels: list[str]) -> str | None:
@@ -77,11 +87,13 @@ def parse_pipeline_file(filepath: str | Path, *, flatten: bool = False) -> Pipel
     """
     filepath = Path(filepath)
     source = read_user_text(filepath)
+    submodel_base_dir = _infer_parse_base_dir(filepath)
     return parse_pipeline_source(
         source,
         source_file=str(filepath),
         flatten=flatten,
         _base_dir=filepath.parent,
+        _submodel_base_dir=submodel_base_dir,
     )
 
 
@@ -102,7 +114,7 @@ def parse_submodel_file(
     return _parse_submodel_source(
         source,
         source_file=str(filepath),
-        _base_dir=_base_dir or filepath.parent,
+        _base_dir=_base_dir or _infer_parse_base_dir(filepath),
     )
 
 
@@ -112,12 +124,15 @@ def parse_pipeline_source(
     *,
     flatten: bool = False,
     _base_dir: Path | None = None,
+    _submodel_base_dir: Path | None = None,
 ) -> PipelineGraph:
     """Parse pipeline source code and return a PipelineGraph.
 
     Args:
         flatten: If True, dissolve submodels into flat graph.
-        _base_dir: Directory to resolve relative submodel paths against.
+        _base_dir: Directory to resolve relative config paths against.
+        _submodel_base_dir: Directory to resolve relative submodel paths
+            against. Defaults to ``_base_dir`` when omitted.
     """
     if not source_file and _base_dir is not None:
         source_file = str((_base_dir / "__source__.py").resolve())
@@ -141,16 +156,8 @@ def parse_pipeline_source(
         _base_dir,
     )
 
-    if not raw_nodes:
-        return PipelineGraph(
-            pipeline_name=pipeline_name,
-            pipeline_description=pipeline_desc,
-            source_file=source_file,
-        )
-
-    # Build edges + nodes using shared helpers
     explicit_connects = _extract_connect_calls(tree)
-    edges = _build_edges(raw_nodes, explicit_connects)
+    edges = _build_edges(raw_nodes, explicit_connects) if raw_nodes else []
     rf_nodes = _build_rf_nodes(raw_nodes)
     preamble = _extract_preamble(source)
     preserved_blocks = _extract_preserved_blocks(source)
@@ -171,17 +178,19 @@ def parse_pipeline_source(
 
     # --- Submodel handling ---------------------------------------------------
     submodel_paths = _extract_submodel_calls(tree)
-    if submodel_paths and _base_dir is not None:
+    submodel_base_dir = _submodel_base_dir or _base_dir
+    if submodel_paths and submodel_base_dir is not None:
         submodel_graphs: dict[str, PipelineGraph] = {}
         submodel_files: dict[str, str] = {}
+        resolved_submodel_root = submodel_base_dir.resolve()
 
         for rel_path in submodel_paths:
-            sm_filepath = (_base_dir / rel_path).resolve()
-            if not sm_filepath.is_relative_to(_base_dir.resolve()):
+            sm_filepath = (submodel_base_dir / rel_path).resolve()
+            if not sm_filepath.is_relative_to(resolved_submodel_root):
                 raise ValueError(f"Submodel path {rel_path!r} escapes project directory")
             if not sm_filepath.is_file():
                 continue
-            sm_graph = parse_submodel_file(sm_filepath, _base_dir=_base_dir)
+            sm_graph = parse_submodel_file(sm_filepath, _base_dir=submodel_base_dir)
             sm_name = sm_graph.pipeline_name or sm_filepath.stem
             if sm_name in submodel_graphs:
                 logger.warning("submodel_name_collision", name=sm_name)

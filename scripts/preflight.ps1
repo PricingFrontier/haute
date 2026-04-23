@@ -6,6 +6,7 @@ Set-Location $RepoRoot
 $Quick = $false
 $RunBackend = $true
 $RunFrontend = $true
+$RunPerf = $false
 $PytestWorkers = if ([string]::IsNullOrWhiteSpace($env:PYTEST_WORKERS)) { "4" } else { $env:PYTEST_WORKERS }
 
 foreach ($Arg in $args) {
@@ -16,6 +17,8 @@ foreach ($Arg in $args) {
         "-BackendOnly" { $RunFrontend = $false; continue }
         "--frontend-only" { $RunBackend = $false; continue }
         "-FrontendOnly" { $RunBackend = $false; continue }
+        "--perf" { $RunPerf = $true; continue }
+        "-Perf" { $RunPerf = $true; continue }
         default {
             Write-Host "Unknown argument: $Arg" -ForegroundColor Red
             exit 2
@@ -114,8 +117,14 @@ if ($RunBackend) {
 
     if (-not $Quick) {
         Invoke-Check "Python tests with coverage" {
-            & uv run pytest tests/ -q -n $PytestWorkers --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85
+            & uv run pytest tests/ -q -n $PytestWorkers --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=90
         } "Python tests"
+
+        if ($RunPerf) {
+            Invoke-Check "Python perf tests" {
+                & uv run pytest tests/ -q -m perf
+            } "Python perf tests"
+        }
 
         Invoke-Check "Python package build" {
             $previous = $env:HAUTE_BUILD_FRONTEND
@@ -180,10 +189,10 @@ if ($RunFrontend) {
             }
         } "Frontend bundle budget"
 
-        Invoke-Check "Frontend tests" {
+        Invoke-Check "Frontend tests with coverage" {
             Push-Location frontend
             try {
-                & npm test
+                & npm run test:coverage
             }
             finally {
                 Pop-Location

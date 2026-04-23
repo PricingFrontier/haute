@@ -65,6 +65,14 @@ def client(pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
+async def _run_file_watcher_and_drain() -> None:
+    """Run the file watcher once and yield to scheduled broadcast tasks."""
+    from haute.server import _file_watcher
+
+    await _file_watcher()
+    await asyncio.sleep(0)
+
+
 # ---------------------------------------------------------------------------
 # GET /api/pipelines
 # ---------------------------------------------------------------------------
@@ -762,12 +770,11 @@ class TestFileWatcher:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)  # allow debounce task to complete
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -802,12 +809,11 @@ class TestFileWatcher:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -840,12 +846,11 @@ class TestFileWatcher:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=True),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1258,12 +1263,11 @@ class TestFileWatcherJsonConfig:
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
             patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1307,12 +1311,11 @@ class TestFileWatcherJsonConfig:
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
             patch("haute.server.pipeline_dir", return_value=tmp_path),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1361,12 +1364,11 @@ class TestFileWatcherModuleChange:
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
             patch("haute.server.pipelines_importing_module", return_value=[test_py]),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1412,12 +1414,11 @@ class TestFileWatcherParseError:
                 "haute.server.parse_pipeline_to_graph",
                 side_effect=SyntaxError("bad syntax"),
             ),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1450,7 +1451,7 @@ class TestFileWatcherFingerprintDedup:
         async def _fake_awatch(*dirs, **kw):
             yield [(Change.modified, py_file)]
             # Allow first flush to complete before yielding second
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0)
             yield [(Change.modified, py_file)]
 
         broadcast_calls: list[dict] = []
@@ -1467,12 +1468,11 @@ class TestFileWatcherFingerprintDedup:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(1.0)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:

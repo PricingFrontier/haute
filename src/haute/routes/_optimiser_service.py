@@ -54,18 +54,21 @@ def _find_optimiser_node(graph: PipelineGraph, node_id: str) -> GraphNode:
 
 def _compute_scenario_value_stats(
     solve_result: SolveResultLike,
-) -> tuple[dict[str, float], dict[str, list[int] | list[float]]]:
+) -> tuple[
+    dict[str, float] | None,
+    dict[str, list[int] | list[float]] | None,
+]:
     """Compute scenario value distribution statistics and histogram from solve result."""
     if not hasattr(solve_result, "dataframe"):
-        return {}, {}
+        return None, None
     df = solve_result.dataframe
     if "optimal_scenario_value" not in df.columns:
-        return {}, {}
+        return None, None
 
     col = df["optimal_scenario_value"]
     n = len(col)
     if n == 0:
-        return {"n": 0}, {}
+        return None, None
     stats = {
         "mean": float(col.mean()),
         "std": float(col.std()),

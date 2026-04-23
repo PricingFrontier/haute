@@ -644,6 +644,10 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 700,
         was_downsampled: false,
+        warning: null,
+        gpu_vram_estimated_mb: null,
+        gpu_vram_available_mb: null,
+        gpu_warning: null,
       })
       renderConfig()
       await waitFor(() => {
@@ -662,6 +666,10 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 500,
         was_downsampled: true,
+        warning: null,
+        gpu_vram_estimated_mb: null,
+        gpu_vram_available_mb: null,
+        gpu_warning: null,
       })
       renderConfig()
       await waitFor(() => {
@@ -681,6 +689,8 @@ describe("ModellingConfig", () => {
         was_downsampled: false,
         gpu_vram_estimated_mb: 512,
         gpu_vram_available_mb: 8192,
+        warning: null,
+        gpu_warning: null,
       })
       renderConfig()
       await waitFor(() => {
@@ -700,6 +710,8 @@ describe("ModellingConfig", () => {
         was_downsampled: false,
         gpu_vram_estimated_mb: 12000,
         gpu_vram_available_mb: 8192,
+        warning: null,
+        gpu_warning: "GPU training needs 12000 MB but GPU has 8192 MB",
       })
       renderConfig()
       await waitFor(() => {
@@ -734,6 +746,10 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 700,
         was_downsampled: false,
+        warning: null,
+        gpu_vram_estimated_mb: null,
+        gpu_vram_available_mb: null,
+        gpu_warning: null,
       })
       renderConfig()
       await waitFor(() => {

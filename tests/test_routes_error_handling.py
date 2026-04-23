@@ -442,7 +442,34 @@ class TestSchemaBroadExceptionStructuralFix:
         ``exc_info=True`` so the full stack trace is captured.
     """
 
-    def test_schema_handler_logs_full_stack_trace(self) -> None:
+    def test_schema_handler_logs_exc_info_on_unexpected_failure(
+        self,
+        project_client: TestClient,
+        parquet_file: Path,
+    ) -> None:
+        """The error log must carry ``exc_info`` for server-side diagnosis."""
+        import structlog.testing
+
+        def boom(*a, **kw):
+            raise RuntimeError("native parquet decoder exploded")
+
+        with (
+            patch("haute.graph_utils.read_source", side_effect=boom),
+            structlog.testing.capture_logs() as captured,
+        ):
+            resp = project_client.get(
+                "/api/schema",
+                params={"path": "data/sample.parquet"},
+            )
+
+        assert resp.status_code == 500
+        assert resp.json()["detail"] == _SAFE_DETAIL
+        error_events = [e for e in captured if e.get("event") == "schema_read_failed"]
+        assert error_events, "#24: unexpected schema failure produced no structured error log"
+        assert error_events[-1].get("exc_info") is True
+        assert error_events[-1].get("error_class") == "RuntimeError"
+
+    def _deprecated_schema_handler_logs_full_stack_trace_source_check(self) -> None:
         import inspect
 
         from haute.routes import files

@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
+from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.schemas import (
@@ -101,7 +102,7 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
         row_count=row_count,
         row_count_estimated=row_count_estimated,
         column_count=len(columns),
-        preview=preview_df.to_dicts(),
+        preview=rows_to_json_safe(preview_df.to_dicts()),
     )
 
 
@@ -186,7 +187,7 @@ def _read_databricks_schema_blocking(table: str, p: Path) -> SchemaResponse:
         columns=columns,
         row_count=row_count,
         column_count=len(columns),
-        preview=preview_df.to_dicts(),
+        preview=rows_to_json_safe(preview_df.to_dicts()),
     )
 
 

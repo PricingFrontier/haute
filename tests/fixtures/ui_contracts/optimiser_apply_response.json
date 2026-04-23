@@ -1,0 +1,15 @@
+{
+  "status": "ok",
+  "total_objective": 125.0,
+  "constraints": {
+    "loss": 0.95
+  },
+  "preview": [
+    {
+      "scenario": "A",
+      "factor": 1.1
+    }
+  ],
+  "row_count": 1,
+  "error": null
+}

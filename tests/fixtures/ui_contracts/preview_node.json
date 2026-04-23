@@ -1,0 +1,69 @@
+{
+  "status": "ok",
+  "node_id": "score",
+  "row_count": 2,
+  "column_count": 2,
+  "columns": [
+    {
+      "name": "premium",
+      "dtype": "Float64"
+    },
+    {
+      "name": "segment",
+      "dtype": "String"
+    }
+  ],
+  "available_columns": [
+    {
+      "name": "premium",
+      "dtype": "Float64"
+    },
+    {
+      "name": "segment",
+      "dtype": "String"
+    }
+  ],
+  "preview": [
+    {
+      "premium": 12.5,
+      "segment": "A"
+    },
+    {
+      "premium": 9.0,
+      "segment": "B"
+    }
+  ],
+  "error": null,
+  "error_line": null,
+  "timing_ms": 3.5,
+  "memory_bytes": 2048,
+  "schema_warnings": [
+    {
+      "column": "premium",
+      "status": "computed"
+    }
+  ],
+  "timings": [
+    {
+      "node_id": "source",
+      "label": "Source",
+      "timing_ms": 1.2
+    },
+    {
+      "node_id": "score",
+      "label": "Score",
+      "timing_ms": 2.3
+    }
+  ],
+  "memory": [
+    {
+      "node_id": "score",
+      "label": "Score",
+      "memory_bytes": 2048
+    }
+  ],
+  "node_statuses": {
+    "source": "ok",
+    "score": "ok"
+  }
+}

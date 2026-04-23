@@ -1,0 +1,50 @@
+{
+  "status": "ok",
+  "trace": {
+    "target_node_id": "score",
+    "row_index": 0,
+    "column": "premium",
+    "output_value": 12.5,
+    "steps": [
+      {
+        "node_id": "source",
+        "node_name": "Source",
+        "node_type": "data_source",
+        "schema_diff": {
+          "columns_added": [
+            "base_rate"
+          ],
+          "columns_removed": [],
+          "columns_modified": [],
+          "columns_passed": [
+            "base_rate"
+          ]
+        },
+        "input_values": {},
+        "output_values": {
+          "base_rate": 10.0
+        },
+        "column_relevant": true,
+        "execution_ms": 1.2,
+        "expression": null,
+        "calculation": null,
+        "node_detail": null,
+        "row_lineage_type": "direct"
+      }
+    ],
+    "row_id_column": "quote_id",
+    "row_id_value": "q_001",
+    "total_nodes_in_pipeline": 2,
+    "nodes_in_trace": 1,
+    "execution_ms": 1.2,
+    "waterfall": [
+      {
+        "label": "base rate",
+        "operation": "set",
+        "value": 10.0,
+        "delta": 10.0,
+        "cumulative": 10.0
+      }
+    ]
+  }
+}

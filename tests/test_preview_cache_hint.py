@@ -337,6 +337,7 @@ def _build_branching_graph(src_path: str, n_branches: int) -> PipelineGraph:
     return PipelineGraph(nodes=nodes, edges=edges)
 
 
+@pytest.mark.perf
 class TestMemoryNeutralOnRealisticGraph:
     """Peak memory for a 50-ish-node branching graph must not regress.
 

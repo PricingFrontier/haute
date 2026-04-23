@@ -67,6 +67,7 @@ class NodeRegistryEntry:
 
 #: The canonical registry: one entry per :class:`NodeType`.
 NODE_REGISTRY: dict[NodeType, NodeRegistryEntry] = {}
+_REGISTRY_READY = False
 
 
 def _entry(node_type: NodeType) -> NodeRegistryEntry:
@@ -194,6 +195,9 @@ def ensure_registry_ready() -> None:
     populated registry (such as ``haute.codegen`` at orchestration time)
     should invoke this before dispatching.
     """
+    global _REGISTRY_READY
+    if _REGISTRY_READY:
+        return
     # Import ordering: exec side first (it declares ``NodeBuildContext``
     # that some codegen-side utilities reference via string annotations),
     # then codegen side.  Both modules perform their registrations as
@@ -202,3 +206,4 @@ def ensure_registry_ready() -> None:
     import haute._codegen_builders  # noqa: F401
 
     validate_registry_complete()
+    _REGISTRY_READY = True

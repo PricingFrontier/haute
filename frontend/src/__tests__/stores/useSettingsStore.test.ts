@@ -59,8 +59,8 @@ describe("useSettingsStore", () => {
   describe("MLflow fetch dedup", () => {
     it("calling fetchMlflow twice rapidly only makes one API request", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      let resolvePromise: (value: { mlflow_installed: boolean }) => void
-      const promise = new Promise<{ mlflow_installed: boolean }>((resolve) => {
+      let resolvePromise: (value: { mlflow_installed: boolean; backend: string; databricks_host: string }) => void
+      const promise = new Promise<{ mlflow_installed: boolean; backend: string; databricks_host: string }>((resolve) => {
         resolvePromise = resolve
       })
       mockCheckMlflow.mockReturnValue(promise)
@@ -72,7 +72,7 @@ describe("useSettingsStore", () => {
       expect(mockCheckMlflow).toHaveBeenCalledTimes(1)
 
       // Resolve the promise to clean up
-      resolvePromise!({ mlflow_installed: true })
+      resolvePromise!({ mlflow_installed: true, backend: "local", databricks_host: "" })
       // Wait for microtask to flush the .then()
       await vi.waitFor(() => {
         expect(useSettingsStore.getState()._mlflowFetching).toBe(false)
@@ -111,7 +111,7 @@ describe("useSettingsStore", () => {
 
     it("does not re-fetch after successful connection", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local" })
+      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local", databricks_host: "" })
 
       useSettingsStore.getState().fetchMlflow()
       await vi.waitFor(() => {
@@ -126,7 +126,7 @@ describe("useSettingsStore", () => {
 
     it("mlflow_installed: false sets error status", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      mockCheckMlflow.mockResolvedValue({ mlflow_installed: false })
+      mockCheckMlflow.mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
 
       useSettingsStore.getState().fetchMlflow()
 
@@ -391,7 +391,7 @@ describe("useSettingsStore", () => {
 
     it("succeeds before the timeout if checkMlflow resolves quickly", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local" })
+      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local", databricks_host: "" })
 
       useSettingsStore.getState().fetchMlflow()
 

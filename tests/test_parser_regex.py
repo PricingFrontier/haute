@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from haute._parser_regex import (
     _RE_CONNECT,
     _RE_DECORATOR,
@@ -10,6 +12,7 @@ from haute._parser_regex import (
     _parse_decorator_kwargs_regex,
     fallback_parse,
 )
+from haute.errors import ConfigError
 
 # ---------------------------------------------------------------------------
 # _find_function_blocks
@@ -63,6 +66,23 @@ class TestFindFunctionBlocks:
         assert "x = 1" in blocks[0]["body_text"]
         assert "y = 2" in blocks[0]["body_text"]
         assert "return df" in blocks[0]["body_text"]
+
+    def test_records_def_start_line_and_stops_body_at_next_top_level_stmt(self) -> None:
+        source = (
+            "import haute\n"
+            "\n"
+            "# A comment before the decorator\n"
+            "@pipeline.polars()\n"
+            "def calc(df):\n"
+            "    x = 1\n"
+            "    return df\n"
+            "\n"
+            "next_value = 42\n"
+        )
+        blocks = _find_function_blocks(source)
+
+        assert blocks[0]["start_line"] == 4
+        assert blocks[0]["body_text"] == "    x = 1\n    return df"
 
     def test_empty_source(self) -> None:
         assert _find_function_blocks("") == []
@@ -257,6 +277,19 @@ pipeline.connect("a", "b")
         graph = fallback_parse(source, "f.py", err)
         edge_pairs = [(e.source, e.target) for e in graph.edges]
         assert ("a", "b") in edge_pairs
+
+    def test_config_backed_node_without_sidecar_fails_loudly(self, tmp_path) -> None:
+        source = (
+            'pipeline = haute.Pipeline("broken")\n'
+            '@pipeline.data_source(config="config/data_source/load.json")\n'
+            "def load():\n"
+            '    return pl.scan_csv("input.csv")\n'
+        )
+        err = SyntaxError("broken")
+        err.lineno = 2
+
+        with pytest.raises(ConfigError, match="Node config must be stored in a JSON sidecar"):
+            fallback_parse(source, str(tmp_path / "broken.py"), err)
 
     def test_source_file_stored(self) -> None:
         err = SyntaxError("x")

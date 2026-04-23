@@ -5,6 +5,7 @@ export default defineConfig({
     environment: "jsdom",
     include: ["src/**/__tests__/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/setupTests.ts"],
+    testTimeout: 30000,
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],
@@ -16,10 +17,10 @@ export default defineConfig({
       ],
       reporter: ["text", "text-summary"],
       thresholds: {
-        statements: 60,
-        branches: 60,
-        functions: 60,
-        lines: 60,
+        statements: 75,
+        branches: 75,
+        functions: 75,
+        lines: 75,
       },
     },
   },

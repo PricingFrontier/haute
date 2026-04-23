@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "backend": "mlflow",
+  "experiment_name": "pricing",
+  "run_id": "run-123",
+  "run_url": "https://mlflow.example.com/runs/run-123",
+  "tracking_uri": "http://mlflow:5000",
+  "error": null
+}

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import glob
-import os
-import tempfile
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -351,21 +348,21 @@ class TestModelScoreScenarioRouting:
 
         graph = _make_model_score_graph(data_path=sample_data)
 
-        # Snapshot existing temp parquets so we can detect new ones
-        tmp_dir = tempfile.gettempdir()
-        before = set(glob.glob(os.path.join(tmp_dir, "*.parquet")))
-
-        with patch("haute._mlflow_io.load_mlflow_model", return_value=sm):
+        with (
+            patch("haute._mlflow_io.load_mlflow_model", return_value=sm),
+            patch(
+                "haute._model_scorer._sink_to_temp",
+                side_effect=AssertionError("Live scenario should stay on the eager path"),
+            ),
+            patch(
+                "haute._model_scorer._batch_score_to_parquet",
+                side_effect=AssertionError("Live scenario should not batch-score via parquet"),
+            ),
+        ):
             results = execute_graph(graph, target_node_id="score", source="live")
 
         assert results["score"].status == "ok"
         assert results["score"].row_count == 5
-
-        after = set(glob.glob(os.path.join(tmp_dir, "*.parquet")))
-        new_parquets = after - before
-        assert not new_parquets, (
-            f"Live scenario should not create temp parquets, found: {new_parquets}"
-        )
 
         # Eager path calls predict once with the full dataset
         sm._model.predict.assert_called_once()
@@ -394,10 +391,19 @@ class TestModelScoreScenarioRouting:
 
         graph = _make_model_score_graph(data_path=sample_data)
 
-        tmp_dir = tempfile.gettempdir()
-        before = set(glob.glob(os.path.join(tmp_dir, "*.parquet")))
-
-        with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
+        with (
+            patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model),
+            patch(
+                "haute._model_scorer._sink_to_temp",
+                side_effect=AssertionError("Row-limited preview should stay on the eager path"),
+            ),
+            patch(
+                "haute._model_scorer._batch_score_to_parquet",
+                side_effect=AssertionError(
+                    "Row-limited preview should not batch-score via parquet"
+                ),
+            ),
+        ):
             results = execute_graph(
                 graph,
                 target_node_id="score",
@@ -406,10 +412,6 @@ class TestModelScoreScenarioRouting:
             )
 
         assert results["score"].status == "ok"
-
-        after = set(glob.glob(os.path.join(tmp_dir, "*.parquet")))
-        new_parquets = after - before
-        assert not new_parquets, f"Row-limited preview should use eager path, found: {new_parquets}"
 
 
 # ---------------------------------------------------------------------------

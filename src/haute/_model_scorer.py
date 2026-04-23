@@ -65,12 +65,8 @@ _feature_validation_cache: LRUCache[tuple[int, str], tuple[list[str], list[str]]
 def _compute_schema_hash(schema: pl.Schema) -> str:
     """Stable 16-char xxh64 hex digest of the schema's ``(name, dtype)`` pairs.
 
-    Sorted by column name so the digest is insensitive to insertion order —
-    two schemas that differ only in iteration order collapse to the same
-    digest, keeping cache hits from degrading on trivial ``select()``
-    reorders.
-
     Sensitive to:
+    * column order — CatBoost categorical indices are positional
     * column rename — the pair tuple changes → new digest
     * dtype change — the dtype repr changes → new digest
 
@@ -82,13 +78,13 @@ def _compute_schema_hash(schema: pl.Schema) -> str:
     each call), so a side table keyed on ``id(schema)`` was permanent
     cold cache with zero hit rate while adding weakref bookkeeping and a
     threading lock.  The downstream feature-validation LRU still keys on
-    the digest itself, so every pair of equal schemas collapses to the
-    same cache slot regardless of object identity.
+    the digest itself, so every pair of equal ordered schemas collapses
+    to the same cache slot regardless of object identity.
     """
     # Polars dtypes have stable ``str(...)`` reprs (e.g. "Float64", "Int64",
     # "Utf8") that differ per dtype — good enough as a lightweight equality
     # proxy for cache keys.
-    pairs = sorted((name, str(dtype)) for name, dtype in schema.items())
+    pairs = [(name, str(dtype)) for name, dtype in schema.items()]
     payload = "\n".join(f"{name}\0{dtype}" for name, dtype in pairs).encode("utf-8")
     return content_hash_bytes(payload)
 
@@ -333,7 +329,8 @@ def _predict_positive_proba(raw_model: Any, x_data: Any) -> np.ndarray | None:
         return None
     probas = np.asarray(fn(x_data))
     if probas.ndim == 2:
-        probas = probas[:, 1]
+        col_idx = 1 if probas.shape[1] > 1 else 0
+        probas = probas[:, col_idx]
     return np.asarray(probas).flatten()
 
 

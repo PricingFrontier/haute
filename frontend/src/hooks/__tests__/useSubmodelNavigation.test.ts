@@ -62,6 +62,9 @@ describe("useSubmodelNavigation", () => {
   it("handleCreateSubmodel calls API and updates nodes", async () => {
     vi.useFakeTimers()
     mockCreate.mockResolvedValue({
+      status: "ok",
+      submodel_file: "pricing.py",
+      parent_file: "test.py",
       graph: {
         nodes: [makeNode("submodel__pricing")],
         edges: [],
@@ -95,6 +98,8 @@ describe("useSubmodelNavigation", () => {
   it("handleDrillIntoSubmodel loads submodel and pushes view stack", async () => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
       graph: {
         nodes: [makeNode("child1")],
         edges: [],
@@ -126,6 +131,8 @@ describe("useSubmodelNavigation", () => {
   it("handleBreadcrumbNavigate restores saved nodes at target depth", async () => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
       graph: { nodes: [makeNode("child1")], edges: [] },
     })
     const params = makeParams()
@@ -161,6 +168,7 @@ describe("useSubmodelNavigation", () => {
   it("handleDissolveSubmodel calls API and updates nodes", async () => {
     vi.useFakeTimers()
     mockDissolve.mockResolvedValue({
+      status: "ok",
       graph: {
         nodes: [makeNode("n1"), makeNode("n2")],
         edges: [],

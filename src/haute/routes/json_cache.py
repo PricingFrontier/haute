@@ -39,7 +39,8 @@ def _resolve_data_path(path: str) -> str:
             )
         )
     except ValueError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from None
+        status_code = 400 if "embedded null byte" in str(exc) else 403
+        raise HTTPException(status_code=status_code, detail=str(exc)) from None
 
 
 def _resolve_config_path(path: str | None) -> str | None:
@@ -85,6 +86,8 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> JsonCacheBuildRespons
         raise HTTPException(status_code=499, detail="Cache build cancelled")
     except HTTPException:
         raise
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Data file not found") from None
     except Exception as e:
         logger.error("json_cache_build_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

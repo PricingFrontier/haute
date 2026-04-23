@@ -326,7 +326,7 @@ beforeEach(() => {
   vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "" })
   vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
-  vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false })
+  vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   vi.mocked(api.getGitStatus).mockReset().mockResolvedValue({ branch: "main", is_main: true, is_read_only: false, changed_files: [], main_ahead: false, main_ahead_by: 0, main_last_updated: null })
   vi.mocked(api.listGitBranches).mockReset().mockResolvedValue({ current: "main", branches: [] })

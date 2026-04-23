@@ -1,0 +1,16 @@
+{
+  "status": "ok",
+  "submodel_name": "pricing",
+  "graph": {
+    "nodes": [
+      {
+        "id": "child1",
+        "type": "custom",
+        "position": { "x": 10, "y": 20 },
+        "data": { "label": "Child" }
+      }
+    ],
+    "edges": [],
+    "pipeline_name": "pricing"
+  }
+}

@@ -142,6 +142,8 @@ describe("UtilityPanel", () => {
     mockCreateFile.mockResolvedValue({
       status: "ok", name: "helpers.py", module: "helpers",
       import_line: "from utility.helpers import *",
+      error: null,
+      error_line: null,
     })
 
     render(<UtilityPanel {...defaultProps} />)
@@ -186,7 +188,7 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("auto-saves after debounce when code changes", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "" })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
@@ -203,7 +205,7 @@ describe("UtilityPanel auto-save", () => {
   })
 
   it("debounces rapid edits (only saves last value)", async () => {
-    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "" })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
 
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())

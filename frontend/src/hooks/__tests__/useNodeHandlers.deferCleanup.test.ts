@@ -54,6 +54,7 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     cleanup()
     vi.restoreAllMocks()
   })
@@ -147,6 +148,8 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
+    vi.useFakeTimers()
+
     act(() => {
       result.current.handleDeleteNode("n1")
     })
@@ -160,7 +163,10 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
     expect(cachedAfterDelete).not.toBeNull()
 
     // After the microtask queue drains, cleanup should have run.
-    await new Promise((r) => setTimeout(r, 10))
+    await act(async () => {
+      vi.runOnlyPendingTimers()
+      await Promise.resolve()
+    })
     const cachedAfterTick = useNodeResultsStore.getState().getPreview("n1")
     expect(cachedAfterTick).toBeNull()
   })
@@ -187,6 +193,8 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
+    vi.useFakeTimers()
+
     act(() => {
       result.current.handleDeleteNode("n1")
       result.current.handleDeleteNode("n2")
@@ -199,7 +207,10 @@ describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
     expect(useNodeResultsStore.getState().getPreview("n3")).not.toBeNull()
 
     // Drain microtasks — all should be cleaned up.
-    await new Promise((r) => setTimeout(r, 10))
+    await act(async () => {
+      vi.runOnlyPendingTimers()
+      await Promise.resolve()
+    })
 
     expect(useNodeResultsStore.getState().getPreview("n1")).toBeNull()
     expect(useNodeResultsStore.getState().getPreview("n2")).toBeNull()

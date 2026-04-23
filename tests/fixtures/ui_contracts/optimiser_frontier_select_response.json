@@ -1,0 +1,16 @@
+{
+  "status": "ok",
+  "total_objective": 120.0,
+  "constraints": {
+    "loss": 0.9
+  },
+  "baseline_objective": 130.0,
+  "baseline_constraints": {
+    "loss": 1.0
+  },
+  "lambdas": {
+    "loss": 0.3
+  },
+  "converged": true,
+  "error": null
+}
