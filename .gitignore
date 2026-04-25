@@ -217,6 +217,7 @@ mlruns/
 # CatBoost training logs and model binaries
 catboost_info/
 *.cbm
+!tests/fixtures/**/*.cbm
 
 # Databricks local parquet cache
 .haute_cache/
@@ -254,3 +255,4 @@ CLAUDE.md
 .claude/
 
 *.parquet
+!tests/fixtures/**/*.parquet
