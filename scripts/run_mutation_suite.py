@@ -80,6 +80,15 @@ def _resolve_repo_path(raw_path: str, *, base: Path = REPO_ROOT) -> Path:
     return path.resolve()
 
 
+def _active_python_executable() -> str:
+    if not sys.executable:
+        raise SystemExit("Cannot materialize mutation config because sys.executable is empty.")
+    path = Path(sys.executable)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.absolute().as_posix()
+
+
 def _safe_target_name(config_path: Path) -> str:
     return config_path.stem.replace(".", "-")
 
@@ -105,7 +114,7 @@ def _materialize_config(template_path: Path, target_dir: Path) -> Path:
         raise SystemExit(f"Config file is missing test-command: {template_path}")
     if PYTHON_PLACEHOLDER not in command_match.group("command"):
         raise SystemExit(f"Config file is missing {PYTHON_PLACEHOLDER}: {template_path}")
-    python_executable = f'"{Path(sys.executable).resolve().as_posix()}"'
+    python_executable = f'"{_active_python_executable()}"'
     command = command_match.group("command").replace(PYTHON_PLACEHOLDER, python_executable)
     escaped_command = json.dumps(command)[1:-1]
     text = re.sub(

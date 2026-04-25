@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -139,6 +141,56 @@ def test_fail_over_override_cannot_loosen_checked_in_threshold() -> None:
             target_config=run_mutation_suite.REPO_ROOT / "mutation" / "targets.json",
             fail_over_override=99.0,
         )
+
+
+def test_active_python_executable_preserves_configured_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured_python = tmp_path / ".venv" / "bin" / "python"
+    monkeypatch.setattr(run_mutation_suite.sys, "executable", str(configured_python))
+
+    assert run_mutation_suite._active_python_executable() == configured_python.absolute().as_posix()
+
+
+def test_materialize_config_preserves_symlinked_python_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_python = tmp_path / "real-python"
+    real_python.write_text("", encoding="utf-8")
+    symlinked_python = tmp_path / "venv-python"
+    try:
+        os.symlink(real_python, symlinked_python)
+    except OSError:
+        symlinked_python.write_text("", encoding="utf-8")
+        original_resolve = Path.resolve
+
+        def resolve_test_symlink(path: Path, *args: object, **kwargs: object) -> Path:
+            if path == symlinked_python:
+                return real_python.absolute()
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve_test_symlink)
+
+    template = tmp_path / "cosmic-ray.toml"
+    template.write_text(
+        "\n".join(
+            [
+                "[cosmic-ray]",
+                'module-path = "src/haute/_path_resolution.py"',
+                f'test-command = "{run_mutation_suite.PYTHON_PLACEHOLDER} -m pytest tests"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_mutation_suite.sys, "executable", str(symlinked_python))
+
+    materialized = run_mutation_suite._materialize_config(template, tmp_path)
+
+    payload = tomllib.loads(materialized.read_text(encoding="utf-8"))
+    test_command = payload["cosmic-ray"]["test-command"]
+    assert f'"{symlinked_python.absolute().as_posix()}"' in test_command
+    assert real_python.resolve().as_posix() not in test_command
 
 
 def test_main_dry_run_writes_manifest_without_running_cosmic_ray(tmp_path: Path, capsys) -> None:
