@@ -38,9 +38,9 @@ jobs:
       - name: Run bounded mutation suite
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            uv run python scripts/run_mutation_suite.py --output-dir .mutation-artifacts --changed-files-from .mutation-changed-files.txt
+            uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --changed-files-from .mutation-changed-files.txt
           else
-            uv run python scripts/run_mutation_suite.py --output-dir .mutation-artifacts
+            uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts
           fi
 
       - name: Upload mutation artifacts
@@ -48,4 +48,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mutation-artifacts-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .mutation-artifacts
+          path: mutation-artifacts

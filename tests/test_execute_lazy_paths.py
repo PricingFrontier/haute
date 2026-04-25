@@ -41,9 +41,13 @@ def test_resolve_graph_paths_rewrites_file_backed_nodes_only() -> None:
         "data/source.parquet",
         "outputs/result.parquet",
     ]
-    assert resolved.node_map["api"].data.config["path"] == "resolved\\data_api.json"
-    assert resolved.node_map["source"].data.config["path"] == "resolved\\data_source.parquet"
-    assert resolved.node_map["sink"].data.config["path"] == "resolved\\outputs_result.parquet"
+    assert resolved.node_map["api"].data.config["path"] == str(Path("resolved") / "data_api.json")
+    assert resolved.node_map["source"].data.config["path"] == str(
+        Path("resolved") / "data_source.parquet"
+    )
+    assert resolved.node_map["sink"].data.config["path"] == str(
+        Path("resolved") / "outputs_result.parquet"
+    )
     assert resolved.node_map["transform"].data.config["code"] == "df"
 
 
@@ -66,8 +70,8 @@ def test_resolve_graph_paths_rewrites_optimiser_apply_artifact_path_for_file_sou
         resolved = _resolve_graph_paths(graph)
 
     mock_resolve.assert_called_once()
-    assert (
-        resolved.node_map["apply"].data.config["artifact_path"] == "resolved\\artifacts_solve.json"
+    assert resolved.node_map["apply"].data.config["artifact_path"] == str(
+        Path("resolved") / "artifacts_solve.json"
     )
 
 

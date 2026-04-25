@@ -228,6 +228,7 @@ catboost_info/
 # Mutation testing artifacts
 .mutation/
 .mutation-artifacts/
+mutation-artifacts/
 .mutation-plan/
 
 # Performance and package-smoke artifacts

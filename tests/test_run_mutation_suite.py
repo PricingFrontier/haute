@@ -202,3 +202,85 @@ def test_main_non_dry_run_skips_irrelevant_changed_files(
         }
     ]
     assert "skipping mutation run" in output
+
+
+def test_main_non_dry_run_prints_target_failure_summary(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_target(
+        target: run_mutation_suite.MutationTarget, _output_dir: Path
+    ) -> dict[str, object]:
+        return {
+            "name": target.name,
+            "config": "mutation/cosmic-ray.path-resolution.toml",
+            "status": "failed",
+            "fail_over": 5.0,
+            "survival_rate": None,
+            "failures": ["baseline exited with code 1"],
+            "stages": [
+                {
+                    "stage": "baseline",
+                    "returncode": 1,
+                    "stdout": "baseline.stdout.txt",
+                    "stderr": "baseline.stderr.txt",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(run_mutation_suite, "_run_target", fake_run_target)
+
+    exit_code = run_mutation_suite.main(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--run-id",
+            "failed-run",
+            "--changed-file",
+            "src/haute/_path_resolution.py",
+        ]
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "[mutation] path-resolution failed" in output
+    assert "survival=n/a threshold=5.00%" in output
+    assert "baseline exited with code 1" in output
+    assert "stage baseline exited with 1" in output
+    assert "stderr=baseline.stderr.txt" in output
+
+
+def test_print_result_summary_includes_failure_stage_artifacts(capsys) -> None:
+    run_mutation_suite._print_result_summary(
+        [
+            {
+                "name": "json-flatten-schema",
+                "status": "failed",
+                "fail_over": 10.0,
+                "survival_rate": 12.5,
+                "failures": ["survival rate 12.50% exceeds threshold 10.00%"],
+                "stages": [
+                    {
+                        "stage": "rate",
+                        "returncode": 1,
+                        "stdout": "rate.txt",
+                        "stderr": "rate.stderr.txt",
+                    },
+                    {
+                        "stage": "baseline",
+                        "returncode": 0,
+                        "stdout": "baseline.stdout.txt",
+                        "stderr": "baseline.stderr.txt",
+                    },
+                ],
+            }
+        ]
+    )
+
+    output = capsys.readouterr().out
+
+    assert "[mutation] json-flatten-schema failed survival=12.50% threshold=10.00%" in output
+    assert "survival rate 12.50% exceeds threshold 10.00%" in output
+    assert "stage rate exited with 1" in output
+    assert "stdout=rate.txt stderr=rate.stderr.txt" in output
+    assert "stage baseline" not in output

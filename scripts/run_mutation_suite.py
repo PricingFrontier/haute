@@ -464,6 +464,39 @@ def _write_run_summary(output_dir: Path, run_id: str, results: list[dict[str, ob
     _write_summary_markdown(summary, output_dir / "mutation-summary.md")
 
 
+def _format_optional_rate(value: object) -> str:
+    if isinstance(value, int | float):
+        return f"{float(value):.2f}%"
+    return "n/a"
+
+
+def _print_result_summary(results: list[dict[str, object]]) -> None:
+    for result in results:
+        name = result["name"]
+        status = result["status"]
+        survival = _format_optional_rate(result.get("survival_rate"))
+        threshold = _format_optional_rate(result.get("fail_over"))
+        print(f"[mutation] {name} {status} survival={survival} threshold={threshold}")
+
+        failures = result.get("failures")
+        if isinstance(failures, list):
+            for failure in failures:
+                print(f"[mutation]   failure: {failure}")
+
+        stages = result.get("stages")
+        if isinstance(stages, list):
+            for stage in stages:
+                if not isinstance(stage, dict):
+                    continue
+                returncode = stage.get("returncode")
+                if returncode == 0:
+                    continue
+                print(
+                    f"[mutation]   stage {stage.get('stage')} exited with {returncode} "
+                    f"stdout={stage.get('stdout')} stderr={stage.get('stderr')}"
+                )
+
+
 def _run_target(target: MutationTarget, output_dir: Path) -> dict[str, object]:
     target_dir = output_dir / _safe_target_name(target.config_path)
     if target_dir.exists():
@@ -702,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
 
     results = [_run_target(target, output_dir) for target in selected_targets]
     _write_run_summary(output_dir, run_id, results)
+    _print_result_summary(results)
     print(f"[mutation] artifacts written to {output_dir}")
     return 1 if any(result["status"] == "failed" for result in results) else 0
 
