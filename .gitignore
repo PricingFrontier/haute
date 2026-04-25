@@ -233,6 +233,8 @@ catboost_info/
 # Performance and package-smoke artifacts
 .perf-artifacts/
 dist-smoke/
+.opt-core/
+.opt-core-wheel/
 .pkg-wheel/
 .pkg-sdist/
 .pkg-wheel-smoke/
@@ -243,6 +245,9 @@ src/haute/static/
 
 # Haute container build directory
 .haute_build/
+# Surface accidental test-fixture writes; production/local build dirs remain ignored.
+!tests/fixtures/.haute_build/
+!tests/fixtures/.haute_build/**
 
 # data
 /data
