@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
@@ -216,6 +216,14 @@ class SchemaResponse(BaseModel):
     preview: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ReadJsonRequest(BaseModel):
+    path: str
+
+
+class ReadJsonResponse(RootModel[dict[str, Any]]):
+    """Raw JSON object payload read from disk."""
+
+
 # ---------------------------------------------------------------------------
 # /api/pipelines (list)
 # ---------------------------------------------------------------------------
@@ -318,6 +326,7 @@ class CacheStatusResponse(BaseModel):
 class JsonCacheBuildRequest(BaseModel):
     path: str
     config_path: str | None = None
+    flatten_schema: dict[str, Any] | None = None
 
 
 class JsonCacheBuildResponse(BaseModel):
@@ -562,8 +571,11 @@ class LogExperimentResponse(MlflowLogResponse):
 
 class MlflowCheckResponse(BaseModel):
     mlflow_installed: bool
+    mlflow_importable: bool = False
+    tracking_configured: bool = False
     backend: str = ""
     databricks_host: str = ""
+    detail: str = ""
 
 
 class ModelCacheClearResponse(BaseModel):

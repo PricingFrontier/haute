@@ -1,0 +1,8 @@
+[cosmic-ray]
+module-path = "src/haute/_json_flatten_schema.py"
+timeout = 60.0
+excluded-modules = []
+test-command = "__HAUTE_PYTHON__ -m pytest tests/test_json_flatten_schema_contracts.py -q -x"
+
+[cosmic-ray.distributor]
+name = "local"

@@ -48,5 +48,13 @@
       ],
       "default": null
     }
-  ]
+  ],
+  "contract": {
+    "inputs": [
+      "proposer_age"
+    ],
+    "outputs": [
+      "proposer_age_band"
+    ]
+  }
 }

@@ -66,8 +66,7 @@ def test_validate_runtime_input_paths_maps_embedded_null_byte_to_400() -> None:
     assert "null byte" in exc_info.value.detail
 
 
-def test_validate_runtime_input_paths_validates_optimiser_apply_artifact_path_only_in_file_mode(
-) -> None:
+def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() -> None:
     file_graph = PipelineGraph(
         nodes=[
             GraphNode(

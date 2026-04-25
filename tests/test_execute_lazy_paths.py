@@ -67,8 +67,7 @@ def test_resolve_graph_paths_rewrites_optimiser_apply_artifact_path_for_file_sou
 
     mock_resolve.assert_called_once()
     assert (
-        resolved.node_map["apply"].data.config["artifact_path"]
-        == "resolved\\artifacts_solve.json"
+        resolved.node_map["apply"].data.config["artifact_path"] == "resolved\\artifacts_solve.json"
     )
 
 

@@ -208,13 +208,13 @@ def _finalize_solve_result(
             "result": result_dict,
             "frontier_data": frontier_data,
         },
+        expected_status="running",
     )
 
-    # Release heavy objects now that the result summary has been stored.
-    # The job retains lightweight metadata (total_objective, lambdas,
-    # constraints, frontier, etc.) but drops the solver engine and raw
-    # data grid to avoid holding ~100s of MB for the 24h TTL window.
-    store.clear_result_data(job_id, keys=("solver", "quote_grid"))
+    # Retain the in-memory solver and QuoteGrid for the completed-job window.
+    # Post-solve routes such as /frontier, /frontier/select, and /mlflow/log
+    # are first-class workflows and depend on this runtime state being
+    # available after the initial solve completes.
 
 
 def _solve_online(
@@ -363,6 +363,7 @@ class OptimiserSolveService:
 
     def __init__(self, store: JobStore) -> None:
         self._store = store
+        self._start_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -379,15 +380,17 @@ class OptimiserSolveService:
 
         mode = self._validate_config(config)
 
-        job_id = self._store.create_job(
-            {
-                "status": "running",
-                "progress": 0.0,
-                "message": "Starting",
-                "config": dict(config),
-                "node_label": node.data.label,
-            }
-        )
+        with self._start_lock:
+            self._check_no_concurrent_jobs()
+            job_id = self._store.create_job(
+                {
+                    "status": "running",
+                    "progress": 0.0,
+                    "message": "Starting",
+                    "config": dict(config),
+                    "node_label": node.data.label,
+                }
+            )
         logger.info("solve_started", node_id=body.node_id, mode=mode, job_id=job_id)
 
         checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_opt_"))
@@ -447,6 +450,14 @@ class OptimiserSolveService:
                 )
 
         return str(mode)
+
+    def _check_no_concurrent_jobs(self) -> None:
+        """Reject if an optimisation job is already running."""
+        if self._store.has_job_with_status("running"):
+            raise HTTPException(
+                status_code=409,
+                detail="An optimisation job is already running. Please wait for it to finish.",
+            )
 
     def _execute_pipeline(
         self,
@@ -681,6 +692,7 @@ class OptimiserSolveService:
                         "progress": 0.1,
                         "elapsed_seconds": time.monotonic() - start_time,
                     },
+                    expected_status="running",
                 )
                 if mode == "ratebook":
                     _solve_ratebook(
@@ -717,7 +729,23 @@ class OptimiserSolveService:
                         "message": error_msg,
                         "elapsed_seconds": time.monotonic() - start_time,
                     },
+                    expected_status="running",
                 )
 
         thread = threading.Thread(target=_solve_background, daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except Exception as exc:
+            logger.error("solve_worker_start_failed", error=str(exc), node_id=node_id)
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Failed to start optimiser worker: {exc}",
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Optimiser worker failed to start. Check the server logs for details.",
+            ) from exc

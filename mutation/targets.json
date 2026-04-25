@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "name": "json-flatten-schema",
+      "config": "mutation/cosmic-ray.json-flatten.toml",
+      "max_survival_rate": 10.0,
+      "rationale": "Schema inference protects nested JSON correctness and is high-risk for silent data shape regressions."
+    },
+    {
+      "name": "job-store",
+      "config": "mutation/cosmic-ray.job-store.toml",
+      "max_survival_rate": 6.0,
+      "rationale": "Job state transitions back long-running route behavior and must not silently regress."
+    },
+    {
+      "name": "path-resolution",
+      "config": "mutation/cosmic-ray.path-resolution.toml",
+      "max_survival_rate": 5.0,
+      "rationale": "Path validation is a security boundary; mutation survivors are treated as high-priority signal."
+    },
+    {
+      "name": "registry",
+      "config": "mutation/cosmic-ray.registry.toml",
+      "max_survival_rate": 0.0,
+      "rationale": "Registry contracts define node/API surface area and should be resistant to subtle branch mutations."
+    }
+  ]
+}

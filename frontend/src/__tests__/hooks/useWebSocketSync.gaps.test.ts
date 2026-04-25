@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import { type Mock } from "vitest"
+import type { Node } from "@xyflow/react"
 
 // ── Mock dependencies BEFORE importing the hook ──────────────────
 
@@ -70,6 +71,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
+import { getLayoutedElements } from "../../utils/layout.ts"
 
 // ── WebSocket mock infrastructure ────────────────────────────────
 
@@ -126,6 +128,7 @@ describe("useWebSocketSync — gap tests", () => {
     originalWebSocket = globalThis.WebSocket
     globalThis.WebSocket = createMockWebSocket() as unknown as typeof WebSocket
 
+    vi.mocked(getLayoutedElements).mockImplementation(async (nodes: Node[]) => nodes)
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
   })
@@ -355,9 +358,9 @@ describe("useWebSocketSync — gap tests", () => {
       expect(lastCallNodes[0].data.label).toBe("second")
     })
 
-    it("schedules separate fitView timers for each rapid graph_update", async () => {
-      // Catches: multiple pending fitView timers could cause excessive
-      // viewport jumps. We verify they each fire independently.
+    it("only runs delayed fitView for the latest rapid graph_update", async () => {
+      // Catches: multiple pending fitView timers should not cause
+      // excessive viewport jumps after rapid file-watcher updates.
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
 
@@ -384,8 +387,74 @@ describe("useWebSocketSync — gap tests", () => {
         vi.advanceTimersByTime(100)
       })
 
-      // Both setTimeout callbacks fire → fitView called twice
-      expect(params.fitView).toHaveBeenCalledTimes(2)
+      expect(params.fitView).toHaveBeenCalledTimes(1)
+    })
+
+    it("ignores a stale graph_update whose async layout finishes after a newer update", async () => {
+      // Catches: layout is async. If edit A starts layout, edit B arrives
+      // and applies, then edit A finishes later, the UI must not roll back
+      // to stale graph data.
+      let resolveFirstLayout!: (nodes: Node[]) => void
+      const firstLayout = new Promise<Node[]>((resolve) => {
+        resolveFirstLayout = resolve
+      })
+      vi.mocked(getLayoutedElements)
+        .mockImplementationOnce(async () => firstLayout)
+        .mockImplementationOnce(async (nodes: Node[]) => nodes)
+
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      let firstMessage!: Promise<void>
+      await act(async () => {
+        firstMessage = latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [{ id: "node_99", position: { x: 0, y: 0 }, data: { label: "old" } }],
+              edges: [],
+            },
+          }),
+        })) as unknown as Promise<void>
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await (latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [{ id: "node_2", position: { x: 0, y: 0 }, data: { label: "new" } }],
+              edges: [],
+            },
+          }),
+        })) as unknown as Promise<void>)
+      })
+
+      expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+      expect(params.setNodesRaw).toHaveBeenLastCalledWith([
+        expect.objectContaining({ id: "node_2" }),
+      ])
+
+      await act(async () => {
+        resolveFirstLayout([{ id: "node_99", position: { x: 10, y: 10 }, data: { label: "old" } }])
+        await firstMessage
+      })
+
+      expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+      expect(params.setNodesRaw).toHaveBeenLastCalledWith([
+        expect.objectContaining({ id: "node_2" }),
+      ])
+      expect(params.nodeIdCounter.current).toBe(3)
+      expect(useToastStore.getState().addToast).toHaveBeenCalledTimes(1)
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "info",
+        "Pipeline updated from file",
+      )
     })
   })
 
@@ -398,21 +467,96 @@ describe("useWebSocketSync — gap tests", () => {
       // Catches: in restrictive environments (CSP, corporate proxies),
       // `new WebSocket(url)` may throw synchronously. Without a try/catch
       // in the hook, the entire React tree would unmount.
-      //
-      // NOTE: The current hook does NOT wrap the constructor in try/catch.
-      // This test documents the current behaviour: the error propagates.
-      // If it should be caught, this test should be updated.
       globalThis.WebSocket = function () {
         throw new Error("CSP blocked WebSocket")
       } as unknown as typeof WebSocket
 
       const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
 
-      // Currently the hook lets the error propagate; verify it does throw
-      // so a future fix can handle it gracefully.
-      expect(() => {
-        renderHook(() => useWebSocketSync(params))
-      }).toThrow("CSP blocked WebSocket")
+      expect(result.current).toBe("disconnected")
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "error",
+        "WebSocket sync error: CSP blocked WebSocket",
+      )
+    })
+  })
+
+  describe("unmount cleanup", () => {
+    it("does not apply a graph_update whose async layout resolves after unmount", async () => {
+      // Catches: a queued WebSocket message should not mutate React state
+      // or stores after the hook has unmounted.
+      let resolveLayout!: (nodes: Node[]) => void
+      const layout = new Promise<Node[]>((resolve) => {
+        resolveLayout = resolve
+      })
+      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => layout)
+
+      const params = makeHookParams()
+      const { unmount } = renderHook(() => useWebSocketSync(params))
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      let message!: Promise<void>
+      await act(async () => {
+        message = latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [{ id: "after-unmount", position: { x: 0, y: 0 }, data: {} }],
+              edges: [],
+            },
+          }),
+        })) as unknown as Promise<void>
+        await Promise.resolve()
+      })
+
+      unmount()
+
+      await act(async () => {
+        resolveLayout([{ id: "after-unmount", position: { x: 1, y: 1 }, data: {} }])
+        await message
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(params.fitView).not.toHaveBeenCalled()
+      expect(useToastStore.getState().addToast).not.toHaveBeenCalled()
+    })
+
+    it("clears delayed fitView and selection-guard timers on unmount", async () => {
+      // Catches: delayed callbacks from a successful sync should not fire
+      // after unmount, and the selection guard must not remain stuck on.
+      const params = makeHookParams()
+      const { unmount } = renderHook(() => useWebSocketSync(params))
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            graph: {
+              nodes: [{ id: "n1", position: { x: 10, y: 10 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.graphRefreshingRef.current).toBe(1)
+
+      unmount()
+      expect(params.graphRefreshingRef.current).toBe(0)
+
+      act(() => {
+        vi.advanceTimersByTime(1_000)
+      })
+
+      expect(params.fitView).not.toHaveBeenCalled()
+      expect(params.graphRefreshingRef.current).toBe(0)
     })
   })
 })

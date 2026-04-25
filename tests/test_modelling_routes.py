@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -249,6 +250,155 @@ class TestTrainEndpoint:
         assert "GPU" in warning or "VRAM" in warning or "CPU" in warning
 
 
+class TestTrainBackgroundLaunchFailures:
+    def test_launch_background_start_failure_marks_job_error(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A worker-start failure should not leave the job stuck in running."""
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        service = TrainService(store)
+        job_id = store.create_job({"status": "running"})
+        tmp_parquet = tmp_path / "train_data.parquet"
+        tmp_parquet.write_bytes(b"train")
+
+        with (
+            patch("haute.modelling.TrainingJob", return_value=MagicMock()),
+            patch(
+                "haute.routes._train_service.threading.Thread.start",
+                side_effect=RuntimeError("thread boom"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._launch_background(
+                job_id,
+                "train",
+                {"target": "y"},
+                {},
+                str(tmp_parquet),
+                None,
+                None,
+            )
+
+        assert exc_info.value.status_code == 500
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert "Failed to start training worker" in job["message"]
+        assert not tmp_parquet.exists()
+
+    def test_late_completion_does_not_overwrite_timeout(self, tmp_path: Path) -> None:
+        """Late progress and completion callbacks must not overwrite a timeout error."""
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        service = TrainService(store)
+        job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+        tmp_parquet = tmp_path / "train_data.parquet"
+        tmp_parquet.write_bytes(b"train")
+
+        deferred_threads: list[object] = []
+
+        class DeferredThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+                deferred_threads.append(self)
+
+            def start(self) -> None:
+                return None
+
+        class FakeTrainingJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run(self, progress, on_iteration):
+                progress("Still training", 0.5)
+                on_iteration(1, 2, {"rmse": 1.0})
+                return _completed_train_result()
+
+        with (
+            patch("haute.modelling.TrainingJob", FakeTrainingJob),
+            patch("haute.routes._train_service.threading.Thread", DeferredThread),
+        ):
+            service._launch_background(
+                job_id,
+                "train",
+                {"target": "y", "timeout": 10},
+                {},
+                str(tmp_parquet),
+                None,
+                None,
+            )
+
+        assert len(deferred_threads) == 1
+
+        store.atomic_update(
+            job_id,
+            {
+                "status": "error",
+                "message": "Training timed out after 10s",
+                "elapsed_seconds": 10.0,
+            },
+            expected_status="running",
+        )
+
+        deferred_threads[0].target()
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert job["message"] == "Training timed out after 10s"
+        assert job["elapsed_seconds"] == 10.0
+        assert job["progress"] == 0.0
+        assert job.get("iteration", 0) == 0
+        assert job.get("result") is None
+        assert not tmp_parquet.exists()
+
+
+class TestTrainStatusTimeout:
+    def test_timeout_sets_error_with_elapsed(self, client):
+        from haute.routes.modelling import _store
+
+        _store.jobs["train_tout"] = {
+            "status": "running",
+            "progress": 0.3,
+            "message": "Training",
+            "start_time": time.monotonic() - 500,
+            "timeout": 10,
+            "created_at": time.time(),
+        }
+        try:
+            resp = client.get("/api/modelling/train/status/train_tout")
+            data = resp.json()
+            assert data["status"] == "error"
+            assert "timed out" in data["message"].lower()
+            assert data["elapsed_seconds"] > 0
+        finally:
+            _store.jobs.pop("train_tout", None)
+
+    def test_completed_job_not_overwritten_by_timeout(self, client):
+        from haute.routes.modelling import _store
+
+        _store.jobs["train_done_past_timeout"] = {
+            "status": "completed",
+            "progress": 1.0,
+            "message": "Done",
+            "start_time": time.monotonic() - 500,
+            "timeout": 10,
+            "elapsed_seconds": 12.0,
+            "created_at": time.time(),
+        }
+        try:
+            resp = client.get("/api/modelling/train/status/train_done_past_timeout")
+            data = resp.json()
+            assert data["status"] == "completed"
+            assert data["message"] == "Done"
+            assert "timed out" not in data["message"].lower()
+        finally:
+            _store.jobs.pop("train_done_past_timeout", None)
+
+
 class TestExportEndpoint:
     def test_export_generates_script(self, client, training_data):
         graph = _make_modelling_graph(training_data)
@@ -291,10 +441,11 @@ class TestMlflowCheckEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert "mlflow_installed" in data
+        assert "mlflow_importable" in data
+        assert "tracking_configured" in data
         assert "backend" in data
         assert "databricks_host" in data
-        # mlflow is installed in test env
-        assert data["mlflow_installed"] is True
+        assert "detail" in data
 
 
 class TestMlflowLogEndpoint:
@@ -749,7 +900,10 @@ class TestBackgroundThreadErrors:
             return_value=mock_est,
         ):
             with patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()):
-                resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+                resp = client.post(
+                    "/api/modelling/train",
+                    json={"graph": graph, "node_id": "train"},
+                )
                 data = resp.json()
                 status = _poll_until_done(client, data["job_id"])
                 # Whether it completed or errored, the warning should be set
@@ -778,7 +932,10 @@ class TestBackgroundThreadErrors:
             return_value=mock_est,
         ):
             with patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()):
-                resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+                resp = client.post(
+                    "/api/modelling/train",
+                    json={"graph": graph, "node_id": "train"},
+                )
                 data = resp.json()
                 status = _poll_until_done(client, data["job_id"])
                 # RAM warning should be suppressed since user limit (30) < RAM limit (50)
@@ -795,8 +952,6 @@ class TestExecuteAndSinkCheckpointCleanup:
 
     def test_checkpoint_dir_cleaned_on_error(self, tmp_path):
         """If _execute_lazy raises, checkpoint_dir must still be cleaned up."""
-        from pathlib import Path
-
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
@@ -974,20 +1129,38 @@ class TestValidateGlmFamilyLink:
 
 class TestMlflowCheckBackend:
     def test_mlflow_installed_detected(self, client):
-        resp = client.get("/api/modelling/mlflow/check")
+        with (
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("file:///mlruns", "local"),
+            ),
+            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
+            patch("importlib.import_module", return_value=SimpleNamespace()),
+        ):
+            resp = client.get("/api/modelling/mlflow/check")
         assert resp.status_code == 200
         assert resp.json()["mlflow_installed"] is True
+        assert resp.json()["mlflow_importable"] is True
+        assert resp.json()["tracking_configured"] is True
 
     def test_local_backend(self, client):
-        with patch(
-            "haute.modelling._mlflow_log.resolve_tracking_backend",
-            return_value=("file:///mlruns", "local"),
+        with (
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("file:///mlruns", "local"),
+            ),
+            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
+            patch("importlib.import_module", return_value=SimpleNamespace()),
         ):
             resp = client.get("/api/modelling/mlflow/check")
         assert resp.status_code == 200
         data = resp.json()
+        assert data["mlflow_installed"] is True
+        assert data["mlflow_importable"] is True
+        assert data["tracking_configured"] is True
         assert data["backend"] == "local"
         assert data["databricks_host"] == ""
+        assert data["detail"] == ""
 
     def test_databricks_backend(self, client):
         with (
@@ -995,13 +1168,39 @@ class TestMlflowCheckBackend:
                 "haute.modelling._mlflow_log.resolve_tracking_backend",
                 return_value=("databricks", "databricks"),
             ),
+            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
             patch.dict("os.environ", {"DATABRICKS_HOST": "https://my.cloud.databricks.com"}),
+            patch("importlib.import_module", return_value=SimpleNamespace()),
         ):
             resp = client.get("/api/modelling/mlflow/check")
         assert resp.status_code == 200
         data = resp.json()
+        assert data["mlflow_installed"] is True
+        assert data["mlflow_importable"] is True
+        assert data["tracking_configured"] is True
         assert data["backend"] == "databricks"
         assert data["databricks_host"] == "https://my.cloud.databricks.com"
+
+    def test_backend_resolution_failure_keeps_package_available(self, client):
+        with (
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                side_effect=RuntimeError("tracking backend misconfigured"),
+            ),
+            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
+            patch("importlib.import_module", return_value=SimpleNamespace()),
+        ):
+            resp = client.get("/api/modelling/mlflow/check")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "mlflow_installed": True,
+            "mlflow_importable": True,
+            "tracking_configured": False,
+            "backend": "",
+            "databricks_host": "",
+            "detail": "tracking backend misconfigured",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1271,19 +1470,50 @@ class TestMlflowCheckDirect:
     @pytest.mark.asyncio
     async def test_mlflow_not_installed(self):
         """When mlflow import fails, returns mlflow_installed=False."""
-        import builtins
-        import sys
-
         from haute.routes.modelling import mlflow_check
 
-        real_import = builtins.__import__
+        with patch("importlib.util.find_spec", return_value=None):
+            result = await mlflow_check()
 
-        def mock_import(name, *args, **kwargs):
-            if name == "mlflow":
-                raise ImportError("No module named 'mlflow'")
-            return real_import(name, *args, **kwargs)
+        assert result.mlflow_installed is False
+        assert result.mlflow_importable is False
+        assert result.tracking_configured is False
+        assert result.detail == "MLflow package is not installed"
 
-        with patch.dict(sys.modules, {"mlflow": None}):
-            with patch("builtins.__import__", side_effect=mock_import):
-                result = await mlflow_check()
-                assert result.mlflow_installed is False
+    @pytest.mark.asyncio
+    async def test_mlflow_import_failure_keeps_package_available(self):
+        from haute.routes.modelling import mlflow_check
+
+        with (
+            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
+            patch("importlib.import_module", side_effect=ImportError("broken dependency")),
+        ):
+            result = await mlflow_check()
+
+        assert result.mlflow_installed is True
+        assert result.mlflow_importable is False
+        assert result.tracking_configured is False
+        assert result.backend == ""
+        assert result.databricks_host == ""
+        assert result.detail == "MLflow package import failed: broken dependency"
+
+    @pytest.mark.asyncio
+    async def test_backend_resolution_failure_returns_tracking_unavailable(self):
+        from haute.routes.modelling import mlflow_check
+
+        with (
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                side_effect=RuntimeError("tracking backend misconfigured"),
+            ),
+            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
+            patch("importlib.import_module", return_value=SimpleNamespace()),
+        ):
+            result = await mlflow_check()
+
+        assert result.mlflow_installed is True
+        assert result.mlflow_importable is True
+        assert result.tracking_configured is False
+        assert result.backend == ""
+        assert result.databricks_host == ""
+        assert result.detail == "tracking backend misconfigured"

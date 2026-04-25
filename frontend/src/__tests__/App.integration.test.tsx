@@ -90,6 +90,7 @@ vi.mock("../api/client", async () => {
     cancelJsonCache: vi.fn(() => Promise.resolve({ cancelled: false, data_path: "" })),
     getJsonCacheProgress: vi.fn(() => Promise.resolve({})),
     getJsonCacheStatus: vi.fn(() => Promise.resolve({})),
+    getJsonCacheStatusForSchema: vi.fn(() => Promise.resolve({})),
     deleteJsonCache: vi.fn(() => Promise.resolve({ cached: false, data_path: "" })),
     // MLflow browse
     getExperiments: vi.fn(() => Promise.resolve([])),
@@ -192,7 +193,15 @@ function resetAllStores(): void {
   useNodeResultsStore.setState({ previews: {}, columnCache: {} })
   useSettingsStore.setState({
     rowLimit: 100,
-    mlflow: { status: "pending", backend: "", host: "" },
+    mlflow: {
+      status: "pending",
+      backend: "",
+      host: "",
+      installed: null,
+      importable: null,
+      trackingConfigured: null,
+      detail: "",
+    },
     _mlflowFetching: false,
     _mlflowLastAttempt: 0,
     sources: ["live"],

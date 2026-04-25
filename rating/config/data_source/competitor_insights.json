@@ -1,3 +1,4 @@
 {
-  "path": "data/competitor_premiums/competitor_insight.parquet"
+  "path": "data/competitor_premiums/competitor_insight.parquet",
+  "contract": "opaque"
 }

@@ -61,6 +61,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 logger = get_logger(component="server")
 
 _watcher_task: asyncio.Task | None = None
+_WATCHER_RESTART_DELAY_SECONDS = 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +95,23 @@ def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> N
         )
         return
     frame: dict[str, Any] = {"type": wire_type, **payload}
-    loop.create_task(broadcast(frame))
+    task = loop.create_task(broadcast(frame))
+    task.add_done_callback(_log_broadcast_task_result)
+
+
+def _log_broadcast_task_result(task: asyncio.Task[None]) -> None:
+    """Log unexpected failures from fire-and-forget broadcast tasks."""
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is None:
+        return
+    logger.error(
+        "event_bus_broadcast_failed",
+        error=str(exc),
+        traceback="".join(traceback.format_exception(exc)),
+    )
 
 
 # Keep strong refs to the handlers so the bus cannot collect them, and
@@ -139,10 +156,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _ensure_pipeline_index()
 
     global _watcher_task
-    _watcher_task = asyncio.create_task(_file_watcher())
+    _watcher_task = asyncio.create_task(_watcher_forever())
     yield
     if _watcher_task:
         _watcher_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _watcher_task
+        _watcher_task = None
 
 
 app = FastAPI(title="Haute", version="0.1.0", lifespan=_lifespan)
@@ -255,6 +275,24 @@ _DEBOUNCE_SECONDS = 0.3
 _last_broadcast_fp: dict[str, str] = {}
 
 
+async def _watcher_forever() -> None:
+    """Keep the live-sync watcher alive across unexpected watcher crashes."""
+    while True:
+        try:
+            await _file_watcher()
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "file_watcher_crashed",
+                error=str(exc),
+                traceback=traceback.format_exc(),
+                restart_delay_s=_WATCHER_RESTART_DELAY_SECONDS,
+            )
+            await asyncio.sleep(_WATCHER_RESTART_DELAY_SECONDS)
+
+
 async def _file_watcher() -> None:
     """Watch pipeline directories for .py changes and broadcast to GUI.
 
@@ -283,116 +321,144 @@ async def _file_watcher() -> None:
 
     pending_changes: set[tuple[Change, str]] = set()
     debounce_task: asyncio.Task[None] | None = None
+    completed_normally = False
 
     async def _flush() -> None:
         """Parse and broadcast after debounce window expires."""
+        nonlocal debounce_task
         await asyncio.sleep(_DEBOUNCE_SECONDS)
 
-        # Snapshot and clear BEFORE processing to avoid losing changes
-        # that arrive during the async broadcast awaits below.
-        to_process = set(pending_changes)
-        pending_changes.clear()
+        to_process: set[tuple[Change, str]] = set()
+        try:
+            # Snapshot and clear before processing so new events can queue
+            # independently. If a higher-level flush failure happens below,
+            # we requeue this batch and schedule a retry.
+            to_process = set(pending_changes)
+            pending_changes.clear()
 
-        # Collect changed files from pending set
-        changed_files: list[Path] = []
-        module_stems: list[str] = []
-        config_changed = False
-        self_write_keys: set[str] = set()
-        for change_type, changed_path in to_process:
-            p = Path(changed_path)
-            key = str(p.resolve())
-            if key in self_write_keys or is_self_write(p, consume=True):
-                self_write_keys.add(key)
-                logger.debug("file_watcher_skipped_self_write", file=str(p))
-                continue
-            if change_type not in (Change.modified, Change.added):
-                continue
-            # JSON config files in config/ directory
-            if p.suffix == ".json" and config_dir.is_dir() and p.is_relative_to(config_dir):
-                config_changed = True
-                continue
-            if p.suffix != ".py" or p.name.startswith("__"):
-                continue
-            # Skip utility/ directory — utility scripts don't affect graph structure
-            utility_dir = pipe_dir / "utility"
-            if utility_dir.is_dir() and p.is_relative_to(utility_dir):
-                continue
-            if p.parent == modules_dir:
-                module_stems.append(p.stem)
-            else:
-                changed_files.append(p)
-
-        invalidate_pipeline_index()
-
-        # For changed modules, only re-parse pipelines that import them
-        for stem in module_stems:
-            changed_files.extend(pipelines_importing_module(stem))
-
-        # If config JSON changed, re-parse all discovered pipelines
-        if config_changed and not changed_files:
-            changed_files.extend(
-                p for p in discover_pipelines() if p.suffix == ".py" and not p.name.startswith("__")
-            )
-
-        # Deduplicate and parse
-        seen: set[str] = set()
-        for p in changed_files:
-            key = str(p.resolve())
-            if key in seen:
-                continue
-            seen.add(key)
-
-            logger.info("file_changed", file=p.name)
-            try:
-                # Hash raw bytes so ANY edit triggers a broadcast.  The parser
-                # normalises code (strips whitespace, docstrings, return
-                # statements) which hides real edits from a graph-only
-                # fingerprint.  Checking before parse skips the expensive
-                # AST walk when the file is byte-identical.
-                fp = hashlib.sha256(p.read_bytes()).hexdigest()
-                fp_key = str(p.resolve())
-                if _last_broadcast_fp.get(fp_key) == fp:
-                    logger.info("graph_unchanged", file=p.name)
+            # Collect changed files from pending set
+            changed_files: list[Path] = []
+            module_stems: list[str] = []
+            config_changed = False
+            self_write_keys: set[str] = set()
+            for change_type, changed_path in to_process:
+                p = Path(changed_path)
+                key = str(p.resolve())
+                if key in self_write_keys or is_self_write(p, consume=True):
+                    self_write_keys.add(key)
+                    logger.debug("file_watcher_skipped_self_write", file=str(p))
                     continue
-                graph = parse_pipeline_to_graph(p)
-                _last_broadcast_fp[fp_key] = fp
-                # Publish through the event bus instead of hand-building a
-                # ``{"type": "graph_update", ...}`` dict for ``broadcast``.
-                # ``_ws_graph_update_subscriber`` below turns the event
-                # back into a WebSocket frame; tests and other subscribers
-                # can hang off the same event without touching this
-                # watcher body.
-                default_bus.publish(
-                    "graph.update",
-                    {
-                        "graph": graph.model_dump(),
-                        "source_file": str(p),
-                    },
-                )
-                n_nodes = len(graph.nodes)
-                logger.info(
-                    "graph_broadcast",
-                    clients=len(ws_clients),
-                    nodes=n_nodes,
-                )
-            except Exception as e:
-                logger.error("parse_error", file=p.name, error=str(e))
-                default_bus.publish(
-                    "parse.error",
-                    {
-                        "error": str(e),
-                        "source_file": str(p),
-                    },
+                if change_type not in (Change.modified, Change.added):
+                    continue
+                # JSON config files in config/ directory
+                if p.suffix == ".json" and config_dir.is_dir() and p.is_relative_to(config_dir):
+                    config_changed = True
+                    continue
+                if p.suffix != ".py" or p.name.startswith("__"):
+                    continue
+                # Skip utility/ directory — utility scripts don't affect graph structure
+                utility_dir = pipe_dir / "utility"
+                if utility_dir.is_dir() and p.is_relative_to(utility_dir):
+                    continue
+                if modules_dir.is_dir() and p.is_relative_to(modules_dir):
+                    module_stems.append(p.stem)
+                else:
+                    changed_files.append(p)
+
+            invalidate_pipeline_index()
+
+            # For changed modules, only re-parse pipelines that import them
+            for stem in module_stems:
+                changed_files.extend(pipelines_importing_module(stem))
+
+            # If config JSON changed, re-parse all discovered pipelines
+            if config_changed:
+                changed_files.extend(
+                    p
+                    for p in discover_pipelines()
+                    if p.suffix == ".py" and not p.name.startswith("__")
                 )
 
-    async for changes in awatch(*watch_dirs, recursive=True):
-        # Accumulate changes and (re)start the debounce timer
-        pending_changes.update(changes)
-        if debounce_task and not debounce_task.done():
-            debounce_task.cancel()
-        debounce_task = asyncio.create_task(_flush())
+            # Deduplicate and parse
+            seen: set[str] = set()
+            for p in changed_files:
+                key = str(p.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
 
-    if debounce_task is not None:
+                logger.info("file_changed", file=p.name)
+                try:
+                    # Hash raw bytes so ANY edit triggers a broadcast.  The parser
+                    # normalises code (strips whitespace, docstrings, return
+                    # statements) which hides real edits from a graph-only
+                    # fingerprint.  Checking before parse skips the expensive
+                    # AST walk when the file is byte-identical.
+                    fp = hashlib.sha256(p.read_bytes()).hexdigest()
+                    fp_key = str(p.resolve())
+                    if _last_broadcast_fp.get(fp_key) == fp:
+                        logger.info("graph_unchanged", file=p.name)
+                        continue
+                    graph = parse_pipeline_to_graph(p)
+                    _last_broadcast_fp[fp_key] = fp
+                    # Publish through the event bus instead of hand-building a
+                    # ``{"type": "graph_update", ...}`` dict for ``broadcast``.
+                    # ``_ws_graph_update_subscriber`` below turns the event
+                    # back into a WebSocket frame; tests and other subscribers
+                    # can hang off the same event without touching this
+                    # watcher body.
+                    default_bus.publish(
+                        "graph.update",
+                        {
+                            "graph": graph.model_dump(),
+                            "source_file": str(p),
+                        },
+                    )
+                    n_nodes = len(graph.nodes)
+                    with ws_clients_lock:
+                        client_count = len(ws_clients)
+                    logger.info(
+                        "graph_broadcast",
+                        clients=client_count,
+                        nodes=n_nodes,
+                    )
+                except Exception as e:
+                    _last_broadcast_fp.pop(str(p.resolve()), None)
+                    logger.error("parse_error", file=p.name, error=str(e))
+                    default_bus.publish(
+                        "parse.error",
+                        {
+                            "error": str(e),
+                            "source_file": str(p),
+                        },
+                    )
+        except Exception as exc:  # noqa: BLE001
+            pending_changes.update(to_process)
+            logger.error(
+                "file_watcher_flush_failed",
+                error=str(exc),
+                traceback=traceback.format_exc(),
+                requeued_changes=len(to_process),
+            )
+            debounce_task = asyncio.create_task(_flush())
+
+    try:
+        async for changes in awatch(*watch_dirs, recursive=True):
+            # Accumulate changes and (re)start the debounce timer
+            pending_changes.update(changes)
+            if debounce_task and not debounce_task.done():
+                debounce_task.cancel()
+            debounce_task = asyncio.create_task(_flush())
+        completed_normally = True
+    finally:
+        if debounce_task is None:
+            return
+        if completed_normally:
+            with suppress(asyncio.CancelledError):
+                await debounce_task
+            return
+
+        debounce_task.cancel()
         with suppress(asyncio.CancelledError):
             await debounce_task
 

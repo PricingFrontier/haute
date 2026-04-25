@@ -102,6 +102,47 @@ function Invoke-Check {
     }
 }
 
+function Join-ProcessArguments {
+    param([string[]] $ArgumentList)
+
+    $Escaped = foreach ($Item in $ArgumentList) {
+        if ($Item -match '[\s"]') {
+            '"' + $Item.Replace('"', '\"') + '"'
+        }
+        else {
+            $Item
+        }
+    }
+    return ($Escaped -join " ")
+}
+
+function Invoke-NativeWithTimeout {
+    param(
+        [string] $FilePath,
+        [string[]] $ArgumentList,
+        [int] $TimeoutSeconds
+    )
+
+    $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $StartInfo.FileName = $FilePath
+    $StartInfo.Arguments = Join-ProcessArguments $ArgumentList
+    $StartInfo.WorkingDirectory = $RepoRoot
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+
+    $Process = [System.Diagnostics.Process]::Start($StartInfo)
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        try {
+            $Process.Kill()
+        }
+        catch {
+            # The process may have exited between WaitForExit and Kill.
+        }
+        throw "$FilePath timed out after ${TimeoutSeconds}s"
+    }
+    return $Process.ExitCode
+}
+
 if ($RunBackend) {
     Invoke-Check "Ruff lint (Python)" {
         & uv run ruff check .
@@ -116,13 +157,36 @@ if ($RunBackend) {
     } "Mypy type errors"
 
     if (-not $Quick) {
-        Invoke-Check "Python tests with coverage" {
-            & uv run pytest tests/ -q -n $PytestWorkers --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=90
-        } "Python tests"
+        Invoke-Check "Python test collection" {
+            $ExitCode = Invoke-NativeWithTimeout `
+                -FilePath "uv" `
+                -ArgumentList @("run", "pytest", "tests/", "--collect-only", "-q") `
+                -TimeoutSeconds 300
+            if ($ExitCode -ne 0) {
+                throw "Python test collection exited with code $ExitCode"
+            }
+        } "Python test collection"
+
+        Invoke-Check "Python tests with coverage gates" {
+            $CoverageJson = ".cache/coverage/backend.json"
+            $CoverageDir = Split-Path -Parent $CoverageJson
+            New-Item -ItemType Directory -Force -Path $CoverageDir | Out-Null
+            Remove-Item -LiteralPath $CoverageJson -ErrorAction SilentlyContinue
+
+            & uv run pytest tests/ -q -n $PytestWorkers --timeout=60 --timeout-method=thread --cov=src/haute --cov-branch --cov-report=term-missing --cov-report="json:$CoverageJson" --cov-fail-under=90
+            if ($global:LASTEXITCODE -ne 0) {
+                throw "Python tests exited with code $global:LASTEXITCODE"
+            }
+
+            & uv run python scripts/check_critical_coverage.py --coverage-json $CoverageJson
+            if ($global:LASTEXITCODE -ne 0) {
+                throw "Critical coverage checker exited with code $global:LASTEXITCODE"
+            }
+        } "Python tests or critical coverage"
 
         if ($RunPerf) {
             Invoke-Check "Python perf tests" {
-                & uv run pytest tests/ -q -m perf
+                & uv run python scripts/run_perf_suite.py --output-dir .cache/perf
             } "Python perf tests"
         }
 

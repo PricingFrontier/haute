@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
+from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._path_resolution import resolve_runtime_file_path
+from haute._sandbox import _get_project_root
 from haute._topo import ancestors
 from haute.errors import ContractMismatchError
 from haute.executor import _preview_cache, execute_graph, execute_sink
@@ -29,6 +34,7 @@ from haute.routes._helpers import (
     parse_pipeline_to_graph,
     pipeline_dir,
     raise_pipeline_not_found,
+    validate_safe_path,
 )
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._timeouts import run_blocking_with_response_timeout
@@ -38,6 +44,8 @@ from haute.schemas import (
     PipelineSummary,
     PreviewNodeRequest,
     PreviewNodeResponse,
+    ReadJsonRequest,
+    ReadJsonResponse,
     SavePipelineRequest,
     SavePipelineResponse,
     SinkRequest,
@@ -115,6 +123,13 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
             graph.source_file = configured
     except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
         logger.warning("source_file_fallback_failed", error=str(exc))
+
+
+def _read_json_object_blocking(target: Path) -> dict[str, Any]:
+    payload = json.loads(read_user_text(target))
+    if not isinstance(payload, dict):
+        raise ValueError("JSON file must contain an object")
+    return payload
 
 
 @router.get("/pipelines", response_model=list[PipelineSummary])
@@ -207,6 +222,28 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     """
     svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
     return svc.save(body)
+
+
+@router.post("/pipeline/read-json", response_model=ReadJsonResponse)
+async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
+    """Read a JSON artifact from the project root and return its object payload."""
+    target = validate_safe_path(_get_project_root(), body.path)
+    if target.suffix.lower() != ".json":
+        raise HTTPException(status_code=400, detail="Only .json files are supported")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {body.path}")
+
+    try:
+        return ReadJsonResponse(await run_in_threadpool(_read_json_object_blocking, target))
+    except json.JSONDecodeError as exc:
+        logger.warning("read_json_invalid_json", path=body.path, error=str(exc))
+        raise HTTPException(status_code=400, detail="Invalid JSON file") from None
+    except ValueError as exc:
+        logger.warning("read_json_invalid_payload", path=body.path, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:
+        logger.error("read_json_failed", path=body.path, error=str(exc))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
 
 @router.post("/pipeline/trace", response_model=TraceResponse)

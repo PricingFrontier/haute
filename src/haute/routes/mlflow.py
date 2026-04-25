@@ -45,14 +45,20 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
             detail="mlflow is not installed. Install it with: pip install mlflow",
         )
 
-    from mlflow.tracking import MlflowClient
+    try:
+        from mlflow.tracking import MlflowClient
 
-    from haute.modelling._mlflow_log import resolve_tracking_backend
+        from haute.modelling._mlflow_log import resolve_tracking_backend
 
-    tracking_uri, _backend = resolve_tracking_backend()
-    mlflow.set_tracking_uri(tracking_uri)
-    client = MlflowClient(tracking_uri=tracking_uri)
-    return mlflow, client
+        tracking_uri, _backend = resolve_tracking_backend()
+        mlflow.set_tracking_uri(tracking_uri)
+        client = MlflowClient(tracking_uri=tracking_uri)
+        return mlflow, client
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("mlflow_tracking_setup_failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
 
 
 @router.get("/experiments", response_model=list[MlflowExperimentSummary])

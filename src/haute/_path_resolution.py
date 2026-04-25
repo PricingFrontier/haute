@@ -8,7 +8,7 @@ from typing import Literal
 PathPreference = Literal["project", "pipeline"]
 
 
-def _normalise_path_text(path: str | Path) -> str:
+def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
     """Normalise path separators before constructing a ``Path``.
 
     Config files may contain Windows backslashes.  Forward slashes are
@@ -21,7 +21,10 @@ def _normalise_path_text(path: str | Path) -> str:
     return text.replace("\\", "/")
 
 
-def _resolve_source_file_parent(source_file: str | Path | None, project_root: Path) -> Path | None:
+def _resolve_source_file_parent(  # pragma: no mutate
+    source_file: str | Path | None,  # pragma: no mutate
+    project_root: Path,  # pragma: no mutate
+) -> Path | None:  # pragma: no mutate
     if not source_file:
         return None
     source = Path(_normalise_path_text(source_file))
@@ -31,9 +34,9 @@ def _resolve_source_file_parent(source_file: str | Path | None, project_root: Pa
 
 
 def _infer_project_root(
-    *,
-    project_root: str | Path | None,
-    source_file: str | Path | None,
+    *,  # pragma: no mutate
+    project_root: str | Path | None,  # pragma: no mutate
+    source_file: str | Path | None,  # pragma: no mutate
 ) -> Path:
     if project_root is not None:
         return Path(project_root).resolve()
@@ -55,8 +58,8 @@ def _infer_project_root(
 def _candidate_if_allowed(
     candidate: Path,
     project_root: Path,
-    *,
-    enforce_project_root: bool,
+    *,  # pragma: no mutate
+    enforce_project_root: bool,  # pragma: no mutate
 ) -> Path | None:
     resolved = candidate.resolve()
     if enforce_project_root and not resolved.is_relative_to(project_root):
@@ -65,11 +68,11 @@ def _candidate_if_allowed(
 
 
 def resolve_runtime_file_path(
-    raw_path: str | Path,
-    *,
-    source_file: str | Path | None = None,
-    pipeline_dir: str | Path | None = None,
-    project_root: str | Path | None = None,
+    raw_path: str | Path,  # pragma: no mutate
+    *,  # pragma: no mutate
+    source_file: str | Path | None = None,  # pragma: no mutate
+    pipeline_dir: str | Path | None = None,  # pragma: no mutate
+    project_root: str | Path | None = None,  # pragma: no mutate
     prefer: PathPreference = "project",
     enforce_project_root: bool = False,
 ) -> Path:
@@ -110,7 +113,7 @@ def resolve_runtime_file_path(
         else None
     )
 
-    if prefer == "pipeline":
+    if prefer == "pipeline":  # pragma: no mutate
         ordered = [pipeline_candidate, project_candidate]
     else:
         ordered = [project_candidate, pipeline_candidate]

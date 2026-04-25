@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
-import { CodeEditor, FileBrowser, SchemaPreview } from "../_shared"
+import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
+import type { EditorView } from "@codemirror/view"
+import { CodeEditor, FileBrowser, MlflowStatusBadge, SchemaPreview } from "../_shared"
 import type { SchemaInfo } from "../_shared"
 
 // ---------------------------------------------------------------------------
@@ -14,6 +15,24 @@ vi.mock("../../../api/client", () => ({
 // Provide a minimal settings store with file-list cache helpers
 const mockGetFileListCache = vi.fn<(key: string) => unknown[] | null>().mockReturnValue(null)
 const mockSetFileListCache = vi.fn()
+type MockMlflowStatus = {
+  mlflowStatus: "loading" | "connected" | "error"
+  mlflowBackend: string
+  mlflowInstalled: boolean | null
+  mlflowImportable: boolean | null
+  mlflowTrackingConfigured: boolean | null
+  mlflowDetail: string
+}
+const mockMlflowStatus = vi.hoisted(() => ({
+  current: {
+    mlflowStatus: "connected",
+    mlflowBackend: "local",
+    mlflowInstalled: true,
+    mlflowImportable: true,
+    mlflowTrackingConfigured: true,
+    mlflowDetail: "",
+  } as MockMlflowStatus,
+}))
 
 vi.mock("../../../stores/useSettingsStore", () => {
   const store = (selector: (s: Record<string, unknown>) => unknown) =>
@@ -30,7 +49,7 @@ vi.mock("../../../stores/useSettingsStore", () => {
   return {
     __esModule: true,
     default: store,
-    useMlflowStatus: () => ({ mlflowStatus: "connected", mlflowBackend: "local" }),
+    useMlflowStatus: () => mockMlflowStatus.current,
   }
 })
 
@@ -40,6 +59,90 @@ const mockListFiles = listFiles as ReturnType<typeof vi.fn>
 // ═══════════════════════════════════════════════════════════════════════════
 // CodeEditor (CodeMirror 6)
 // ═══════════════════════════════════════════════════════════════════════════
+
+describe("MlflowStatusBadge", () => {
+  afterEach(cleanup)
+
+  beforeEach(() => {
+    mockMlflowStatus.current = {
+      mlflowStatus: "connected",
+      mlflowBackend: "local",
+      mlflowInstalled: true,
+      mlflowImportable: true,
+      mlflowTrackingConfigured: true,
+      mlflowDetail: "",
+    }
+  })
+
+  it("shows configured tracking backend when MLflow tracking config is healthy", () => {
+    render(<MlflowStatusBadge />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("MLflow tracking configured (local)")
+  })
+
+  it("does not imply scoring is unavailable when only tracking is not configured", () => {
+    mockMlflowStatus.current = {
+      mlflowStatus: "error",
+      mlflowBackend: "",
+      mlflowInstalled: true,
+      mlflowImportable: true,
+      mlflowTrackingConfigured: false,
+      mlflowDetail: "tracking backend misconfigured",
+    }
+
+    render(<MlflowStatusBadge />)
+
+    const badge = screen.getByRole("status")
+    expect(badge).toHaveTextContent("MLflow tracking not configured")
+    expect(badge).toHaveAttribute("title", "tracking backend misconfigured")
+    expect(badge).not.toHaveTextContent("MLflow not available")
+  })
+
+  it("distinguishes an import failure from tracking configuration failures", () => {
+    mockMlflowStatus.current = {
+      mlflowStatus: "error",
+      mlflowBackend: "",
+      mlflowInstalled: true,
+      mlflowImportable: false,
+      mlflowTrackingConfigured: false,
+      mlflowDetail: "MLflow package import failed: broken dependency",
+    }
+
+    render(<MlflowStatusBadge />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("MLflow package failed to load")
+  })
+
+  it("distinguishes a missing MLflow package from tracking failures", () => {
+    mockMlflowStatus.current = {
+      mlflowStatus: "error",
+      mlflowBackend: "",
+      mlflowInstalled: false,
+      mlflowImportable: false,
+      mlflowTrackingConfigured: false,
+      mlflowDetail: "MLflow package is not installed",
+    }
+
+    render(<MlflowStatusBadge />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("MLflow package missing")
+  })
+
+  it("reports status check failures without claiming MLflow itself is absent", () => {
+    mockMlflowStatus.current = {
+      mlflowStatus: "error",
+      mlflowBackend: "",
+      mlflowInstalled: null,
+      mlflowImportable: null,
+      mlflowTrackingConfigured: null,
+      mlflowDetail: "MLflow check timed out after 5s",
+    }
+
+    render(<MlflowStatusBadge />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("MLflow status unavailable")
+  })
+})
 
 describe("CodeEditor", () => {
   afterEach(cleanup)
@@ -117,6 +220,67 @@ describe("CodeEditor", () => {
     // input support). Integration coverage for the debounced callback requires
     // a browser-based test (e.g. Playwright).
     expect(getEditorContent(container)).toBeTruthy()
+  })
+
+  it("applies external updates while focused when the buffer matches the last prop", async () => {
+    let view: EditorView | null = null
+    const onChange = vi.fn()
+    const { container, rerender } = render(
+      <CodeEditor
+        defaultValue="import math"
+        onChange={onChange}
+        onEditorView={(editorView) => { view = editorView }}
+      />,
+    )
+
+    act(() => {
+      view?.focus()
+    })
+
+    rerender(
+      <CodeEditor
+        defaultValue="import math\nimport statistics as websocket_sync_probe"
+        onChange={onChange}
+        onEditorView={(editorView) => { view = editorView }}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(getEditorText(container)).toContain("websocket_sync_probe")
+    })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it("does not overwrite focused local edits with an external refresh", async () => {
+    let view: EditorView | null = null
+    const onChange = vi.fn()
+    const { container, rerender } = render(
+      <CodeEditor
+        defaultValue="import math"
+        onChange={onChange}
+        onEditorView={(editorView) => { view = editorView }}
+      />,
+    )
+
+    act(() => {
+      view?.focus()
+      view?.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: "import local_edit" },
+      })
+    })
+
+    rerender(
+      <CodeEditor
+        defaultValue="import statistics as websocket_sync_probe"
+        onChange={onChange}
+        onEditorView={(editorView) => { view = editorView }}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(getEditorText(container)).toContain("import local_edit")
+    })
+    expect(getEditorText(container)).not.toContain("websocket_sync_probe")
   })
 
   it("mounts the CodeMirror editor DOM structure", () => {

@@ -11,7 +11,7 @@
     "scenario_index",
     "premium",
     "competitor_premium",
-    "margin",
     "burn_cost"
-  ]
+  ],
+  "contract": "opaque"
 }

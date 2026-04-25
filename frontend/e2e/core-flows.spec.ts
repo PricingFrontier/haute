@@ -1,19 +1,22 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 
 import { expect, test, type Page } from "@playwright/test"
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-const repoRoot = resolve(__dirname, "..", "..")
-const e2eProjectRoot = resolve(repoRoot, ".tmp-e2e-project")
+import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
+
 const ratingDir = resolve(e2eProjectRoot, "rating")
 const sidecarPath = resolve(ratingDir, "main.haute.json")
 const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "modules", "browser_group.py")
+const optimiserArtifactPath = resolve(
+  e2eProjectRoot,
+  "rating",
+  "output",
+  "optimiser_browser_optimiser.json",
+)
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
 
 async function dispatchAppShortcut(page: Page, key: string): Promise<void> {
@@ -42,6 +45,10 @@ async function dispatchNodeDoubleClick(page: Page, label: string): Promise<void>
 test.describe.configure({ mode: "serial" })
 
 test.describe("core browser flows", () => {
+  test.beforeEach(() => {
+    resetE2eProject()
+  })
+
   test("loads the starter pipeline and supports preview plus trace", async ({ page }) => {
     await page.goto("/")
 
@@ -64,6 +71,89 @@ test.describe("core browser flows", () => {
 
     await expect(page.getByText(/Trace: value_doubled/i)).toBeVisible()
     await expect(page.getByText(/raw_rows/i)).toBeVisible()
+  })
+
+  test("runs a real modelling training job and keeps results when switching panels", async ({ page }) => {
+    test.slow()
+
+    await page.goto("/")
+
+    const modelNode = page.getByRole("button", { name: /browser_model/i })
+    await expect(modelNode).toBeVisible()
+    await modelNode.click()
+
+    const trainButton = page.getByRole("button", { name: /Train Model/i })
+    await expect(trainButton).toBeVisible()
+    await trainButton.click()
+
+    await expect(
+      page.getByText(/Model trained — results in preview panel below/i),
+    ).toBeVisible({ timeout: 120_000 })
+    await expect(page.getByText("Model Info")).toBeVisible()
+    await expect(page.getByText(/Train rows/i)).toBeVisible()
+    await expect(page.getByRole("button", { name: "Summary" })).toBeVisible()
+
+    await page.getByRole("button", { name: /enriched/i }).click()
+    await modelNode.click()
+
+    await expect(
+      page.getByText(/Model trained — results in preview panel below/i),
+    ).toBeVisible()
+    await expect(page.getByText("Model Info")).toBeVisible()
+  })
+
+  test("runs a real optimiser flow, selects a frontier point, and opens an apply node wired to the saved artifact", async ({ page }) => {
+    test.slow()
+
+    await page.goto("/")
+
+    const optimiserNode = page.getByLabel("Optimisation node: browser_optimiser")
+    await expect(optimiserNode).toBeVisible()
+    await optimiserNode.click()
+
+    const optimiseButton = page.getByRole("button", { name: "Optimise", exact: true })
+    await expect(optimiseButton).toBeVisible()
+    await optimiseButton.click()
+
+    await expect(page.getByRole("button", { name: "Frontier", exact: true })).toBeVisible({
+      timeout: 120_000,
+    })
+    await expect(page.getByRole("button", { name: "Summary", exact: true })).toBeVisible()
+
+    const frontierPoint = page.getByRole("button", { name: /Select frontier point 2/i })
+    await expect(frontierPoint).toBeVisible()
+    await frontierPoint.click()
+
+    await expect(page.getByText(/Point 2 of/i)).toBeVisible()
+    await expect(
+      page.getByRole("alert").filter({ hasText: /Failed to select frontier point/i }),
+    ).toHaveCount(0)
+
+    await page.getByRole("button", { name: "Export", exact: true }).click()
+    await page.getByRole("button", { name: "Save result", exact: true }).click()
+
+    await expect(page.getByText(/optimiser_browser_optimiser\.json/i)).toBeVisible({
+      timeout: 120_000,
+    })
+    await expect.poll(() => existsSync(optimiserArtifactPath)).toBe(true)
+
+    const applyNode = page.getByLabel("Apply Optimisation node: browser_apply")
+    await expect(applyNode).toBeVisible()
+    await applyNode.click()
+    await expect(page.locator("input.node-label-input")).toHaveValue("browser_apply")
+    await expect(
+      page.getByPlaceholder("artifacts/optimiser_v1.json"),
+    ).toHaveValue("rating/output/optimiser_browser_optimiser.json")
+    await expect(page.getByPlaceholder("__optimiser_version__")).toHaveValue(
+      "__optimiser_version__",
+    )
+    await expect(page.getByText("Loaded Artifact")).toBeVisible()
+    await expect(page.getByText("online", { exact: true })).toBeVisible()
+    const previewTable = page.getByRole("table").first()
+    await expect(previewTable.getByText("optimal_scenario_value", { exact: true })).toBeVisible({
+      timeout: 120_000,
+    })
+    await expect(previewTable.getByText("__optimiser_version__", { exact: true })).toBeVisible()
   })
 
   test("persists node edits through save and reload", async ({ page }) => {
@@ -177,14 +267,20 @@ test.describe("core browser flows", () => {
 
     const original = readFileSync(gitMainPath, "utf8")
     const syncProbeImport = "import statistics as websocket_sync_probe"
-    const updated = original.replace("import polars as pl", `import polars as pl\n${syncProbeImport}`)
-    writeFileSync(gitMainPath, updated, "utf8")
-
     const editor = page.getByTestId("code-editor-wrapper").locator(".cm-content")
-    await expect(editor).toContainText("websocket_sync_probe")
-    await expect(page.getByText(/Pipeline updated from file/i)).toBeVisible()
+    const updated = original.includes("import math")
+      ? original.replace("import math", `import math\n${syncProbeImport}`)
+      : original.replace("import haute", `import haute\n\n${syncProbeImport}`)
 
-    writeFileSync(gitMainPath, original, "utf8")
+    try {
+      writeFileSync(gitMainPath, updated, "utf8")
+
+      await expect(editor).toContainText("websocket_sync_probe")
+      await expect(page.getByText(/Pipeline updated from file/i)).toBeVisible()
+    } finally {
+      writeFileSync(gitMainPath, original, "utf8")
+    }
+
     await expect(editor).not.toContainText("websocket_sync_probe")
   })
 

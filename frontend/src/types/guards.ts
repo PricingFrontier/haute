@@ -810,10 +810,18 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
 
 export function parseMlflowCheckResponse(value: unknown): MlflowCheckResponse {
   const obj = expectPlainObject("parseMlflowCheckResponse", value)
+  const mlflowInstalled = expectBoolean("parseMlflowCheckResponse", obj.mlflow_installed, "field `mlflow_installed`")
+  const mlflowImportable = optionalBoolean("parseMlflowCheckResponse", obj, "mlflow_importable", mlflowInstalled)
+  const trackingConfiguredValue = obj.tracking_configured ?? obj.tracking_available
   return {
-    mlflow_installed: expectBoolean("parseMlflowCheckResponse", obj.mlflow_installed, "field `mlflow_installed`"),
+    mlflow_installed: mlflowInstalled,
+    mlflow_importable: mlflowImportable,
+    tracking_configured: trackingConfiguredValue === undefined
+      ? mlflowInstalled && mlflowImportable
+      : expectBoolean("parseMlflowCheckResponse", trackingConfiguredValue, "field `tracking_configured`"),
     backend: optionalString("parseMlflowCheckResponse", obj, "backend"),
     databricks_host: optionalString("parseMlflowCheckResponse", obj, "databricks_host"),
+    detail: optionalString("parseMlflowCheckResponse", obj, "detail"),
   }
 }
 

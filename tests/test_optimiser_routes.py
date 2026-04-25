@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import polars as pl
 import pytest
+from fastapi import HTTPException
 
 from haute._parser_helpers import _build_node_config
 from haute._sandbox import set_project_root
@@ -280,6 +281,28 @@ class TestSolveRoute:
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         assert resp.status_code == 200
         assert resp.json()["status"] == "started"
+
+    def test_solve_rejects_concurrent(self, client, scored_data, clean_job_store):
+        """A second solve request while one is running returns 409."""
+        from haute.routes.optimiser import _solve_service
+
+        clean_job_store.jobs["fake_running"] = {
+            "status": "running",
+            "progress": 0.5,
+            "message": "Solving...",
+            "created_at": time.time(),
+        }
+        graph = _make_optimiser_graph(scored_data)
+
+        with patch.object(
+            _solve_service,
+            "_execute_pipeline",
+            side_effect=AssertionError("concurrency guard should short-circuit before execution"),
+        ):
+            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 409
+        assert "already running" in resp.json()["detail"]
 
 
 class TestStatusRoute:
@@ -812,9 +835,6 @@ class TestFrontierRoute:
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
 
-        # After solve completes, solver and quote_grid are released to
-        # free memory.  The /frontier endpoint returns 400 when these
-        # heavy objects are no longer available.
         resp = client.post(
             "/api/optimiser/frontier",
             json={
@@ -823,8 +843,11 @@ class TestFrontierRoute:
                 "n_points_per_dim": 3,
             },
         )
-        assert resp.status_code == 400
-        assert "released" in resp.json()["detail"]
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["n_points"] > 0
+        assert data["constraint_names"] == ["volume"]
 
     def test_frontier_missing_job(self, client):
         resp = client.post(
@@ -1092,6 +1115,50 @@ class TestOptimiserMlflowLog:
             )
         assert resp.status_code == 400
         assert "mlflow" in resp.json()["detail"].lower()
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_mlflow_log_after_real_solve(self, client, scored_data):
+        """A completed solve keeps the solver available for later MLflow logging."""
+        graph = _make_optimiser_graph(scored_data)
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "node_id": "opt"},
+        )
+        job_id = resp.json()["job_id"]
+        status = _poll_until_done(client, job_id)
+        assert status["status"] == "completed"
+
+        mock_mlflow = MagicMock()
+        mock_run = MagicMock()
+        mock_run.info.run_id = "real-solve-run"
+        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
+            patch(
+                "haute.modelling._mlflow_log.configure_mlflow_tracking",
+                return_value=("http://localhost:5000", "local"),
+            ),
+            patch(
+                "haute.modelling._mlflow_log.resolve_experiment_name",
+                return_value="/optimiser",
+            ),
+            patch(
+                "haute.modelling._mlflow_log.build_run_url",
+                return_value="http://localhost:5000/real-solve-run",
+            ),
+        ):
+            resp = client.post(
+                "/api/optimiser/mlflow/log",
+                json={"job_id": job_id, "experiment_name": "/optimiser"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["run_id"] == "real-solve-run"
+        mock_mlflow.log_metrics.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1633,7 +1700,7 @@ class TestFrontierSelect:
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_select_frontier_point(self, client, scored_data):
-        """After solve completes, solver/quote_grid are released — select returns 400."""
+        """A completed solve keeps runtime state so a frontier point can be selected."""
         graph = _make_optimiser_graph(scored_data)
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         job_id = resp.json()["job_id"]
@@ -1645,8 +1712,6 @@ class TestFrontierSelect:
         n_points = frontier["n_points"]
         assert n_points > 0
 
-        # solver and quote_grid are released after finalization,
-        # so frontier/select returns 400
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={
@@ -1654,12 +1719,15 @@ class TestFrontierSelect:
                 "point_index": 0,
             },
         )
-        assert resp.status_code == 400
-        assert "released" in resp.json()["detail"]
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["lambdas"]
+        assert isinstance(data["converged"], bool)
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_select_last_frontier_point(self, client, scored_data):
-        """After solve, solver/quote_grid released — select returns 400."""
+        """Selecting the final frontier point after solve succeeds."""
         graph = _make_optimiser_graph(scored_data)
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         job_id = resp.json()["job_id"]
@@ -1674,8 +1742,10 @@ class TestFrontierSelect:
                 "point_index": n_points - 1,
             },
         )
-        assert resp.status_code == 400
-        assert "released" in resp.json()["detail"]
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["lambdas"]
 
     def test_select_out_of_range(self, client, clean_job_store):
         """Point index >= n_points returns 400."""
@@ -1745,14 +1815,13 @@ class TestFrontierSelect:
         assert resp.status_code == 404
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_select_after_solve_returns_released(self, client, scored_data):
-        """After solve, solver/quote_grid are released — select returns 400."""
+    def test_select_after_solve_persists_selected_point(self, client, scored_data):
+        """Selecting after solve updates the completed job's active result."""
         graph = _make_optimiser_graph(scored_data)
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
 
-        # solver and quote_grid are released after finalization
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={
@@ -1760,8 +1829,13 @@ class TestFrontierSelect:
                 "point_index": 0,
             },
         )
-        assert resp.status_code == 400
-        assert "released" in resp.json()["detail"]
+        assert resp.status_code == 200
+
+        from haute.routes.optimiser import _store
+
+        job = _store.require_job(job_id)
+        assert job["selected_frontier_point"] == 0
+        assert job["result"]["selected_frontier_point"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2844,6 +2918,34 @@ class TestSolveStatusTimeout:
         data = resp.json()
         assert data["status"] == "running"
 
+    def test_completed_job_not_overwritten_by_timeout(self, client, clean_job_store):
+        """Timeout checks should not regress a completed job back to error."""
+        clean_job_store.jobs["done_past_timeout"] = {
+            "status": "completed",
+            "progress": 1.0,
+            "message": "Completed",
+            "start_time": time.monotonic() - 500,
+            "timeout": 10,
+            "elapsed_seconds": 12.0,
+            "result": {
+                "mode": "online",
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.91},
+                "baseline_constraints": {"volume": 0.88},
+                "lambdas": {"volume": 0.5},
+                "converged": True,
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.get("/api/optimiser/solve/status/done_past_timeout")
+        data = resp.json()
+
+        assert data["status"] == "completed"
+        assert data["message"] == "Completed"
+        assert "timed out" not in data["message"].lower()
+
     def test_status_completed_without_frontier(self, client, clean_job_store):
         """Completed job without frontier_data returns frontier=None."""
         clean_job_store.jobs["no_front"] = {
@@ -3503,6 +3605,106 @@ class TestLaunchBackground:
         job = clean_job_store.require_job(job_id)
         assert job["timeout"] == 42
         assert "start_time" in job
+
+    def test_background_start_failure_marks_job_error(self, clean_job_store):
+        """A worker-start failure should not leave the job stuck in running."""
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        service = OptimiserSolveService(clean_job_store)
+        job_id = clean_job_store.create_job({"status": "running"})
+
+        with (
+            patch(
+                "haute.routes._optimiser_service.threading.Thread.start",
+                side_effect=RuntimeError("thread boom"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._launch_background(
+                job_id,
+                "opt",
+                {"timeout": 42},
+                "online",
+                MagicMock(),
+                None,
+            )
+
+        assert exc_info.value.status_code == 500
+        job = clean_job_store.require_job(job_id)
+        assert job["status"] == "error"
+        assert "Failed to start optimiser worker" in job["message"]
+
+    def test_late_completion_does_not_overwrite_timeout(self, clean_job_store):
+        """Late solver progress/completion must not overwrite a timeout error."""
+        from haute.routes._optimiser_service import OptimiserSolveService, _finalize_solve_result
+
+        service = OptimiserSolveService(clean_job_store)
+        job_id = clean_job_store.create_job(
+            {"status": "running", "progress": 0.0, "message": "Starting", "config": {}}
+        )
+
+        deferred_threads: list[object] = []
+
+        class DeferredThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+                deferred_threads.append(self)
+
+            def start(self) -> None:
+                return None
+
+        def _late_solve(*args, **kwargs) -> None:
+            solve_result = SimpleNamespace(
+                total_objective=100.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 0.91},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.5},
+                converged=True,
+            )
+            _finalize_solve_result(
+                solve_result,
+                mode="online",
+                solver=MagicMock(),
+                quote_grid=MagicMock(),
+                store=clean_job_store,
+                job_id=job_id,
+                elapsed=12.0,
+                extra_fields={
+                    "iterations": 1,
+                    "n_quotes": 1,
+                    "n_steps": 1,
+                    "history": None,
+                },
+            )
+
+        with (
+            patch("haute.routes._optimiser_service.threading.Thread", DeferredThread),
+            patch("haute.routes._optimiser_service._solve_online", side_effect=_late_solve),
+        ):
+            service._launch_background(job_id, "opt", {"timeout": 10}, "online", MagicMock(), None)
+
+        assert len(deferred_threads) == 1
+
+        clean_job_store.atomic_update(
+            job_id,
+            {
+                "status": "error",
+                "message": "Solve timed out after 10s",
+                "elapsed_seconds": 10.0,
+            },
+            expected_status="running",
+        )
+
+        deferred_threads[0].target()
+
+        job = clean_job_store.require_job(job_id)
+        assert job["status"] == "error"
+        assert job["message"] == "Solve timed out after 10s"
+        assert job["elapsed_seconds"] == 10.0
+        assert job["progress"] == 0.0
+        assert job.get("result") is None
 
 
 class TestApplyException:

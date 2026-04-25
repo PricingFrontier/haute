@@ -123,6 +123,9 @@ describe("API response guards", () => {
     const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
 
     expect(mlflow.mlflow_installed).toBe(true)
+    expect(mlflow.mlflow_importable).toBe(true)
+    expect(mlflow.tracking_configured).toBe(true)
+    expect(mlflow.detail).toBe("")
     expect(estimate.estimated_mb).toBe(12.5)
     expect(log.run_id).toBe("run-123")
   })
@@ -237,6 +240,25 @@ describe("API response guards", () => {
         mlflow_installed: "yes",
       }),
     ).toThrow(/mlflow_installed/i)
+
+    expect(() =>
+      parseMlflowCheckResponse({
+        ...fixture,
+        tracking_configured: "yes",
+      }),
+    ).toThrow(/tracking_configured/i)
+  })
+
+  it("normalises legacy mlflow tracking_available payloads", () => {
+    const parsed = parseMlflowCheckResponse({
+      mlflow_installed: true,
+      tracking_available: false,
+      backend: "",
+      databricks_host: "",
+    })
+
+    expect(parsed.mlflow_importable).toBe(true)
+    expect(parsed.tracking_configured).toBe(false)
   })
 
   it("rejects malformed utility write payloads", () => {

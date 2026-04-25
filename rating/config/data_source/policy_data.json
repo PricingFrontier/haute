@@ -4,5 +4,6 @@
     "policy_id",
     "quote_id"
   ],
-  "sourceType": "flat_file"
+  "sourceType": "flat_file",
+  "contract": "opaque"
 }

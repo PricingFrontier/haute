@@ -123,9 +123,7 @@ def test_optimiser_status_result_is_typed_model_not_raw_blob() -> None:
 def test_optimiser_status_schema_refs_typed_result_model() -> None:
     result_schema = OptimiserStatusResponse.model_json_schema()["properties"]["result"]
     refs = {
-        item["$ref"].rsplit("/", 1)[-1]
-        for item in result_schema.get("anyOf", [])
-        if "$ref" in item
+        item["$ref"].rsplit("/", 1)[-1] for item in result_schema.get("anyOf", []) if "$ref" in item
     }
 
     assert "OptimiserSolveResult" in refs

@@ -184,7 +184,7 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
             if path.endswith((".json", ".jsonl")):
                 from haute._json_flatten import json_cache_info
 
-                info = json_cache_info(path)
+                info = json_cache_info(path, schema=config.get("flattenSchema"))
                 if info is not None:
                     return info["row_count"]
                 if path.endswith(".jsonl") and Path(path).exists():
@@ -228,7 +228,7 @@ def _source_metadata_for_node(node: GraphNode) -> tuple[int, int] | None:
             if path.endswith((".json", ".jsonl")):
                 from haute._json_flatten import json_cache_info
 
-                info = json_cache_info(path)
+                info = json_cache_info(path, schema=config.get("flattenSchema"))
                 if info is not None:
                     return info["row_count"], info["column_count"]
                 return None

@@ -22,10 +22,22 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import orjson
 
+from haute._json_flatten_schema import (
+    JsonFlattenSchemaError,
+    _infer_schema_node,
+    _infer_type,
+    _merge_schema_nodes,
+    _schema_leaf_types,
+    _validate_flatten_schema,
+    _wider_type,
+    flatten,
+    infer_schema,
+    schema_columns,
+)
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim
 from haute.errors import HauteError
@@ -35,6 +47,18 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 logger = get_logger(component="json_flatten")
+
+__all__ = [
+    "JsonCacheCancelledError",
+    "JsonFlattenDataError",
+    "JsonFlattenSchemaError",
+    "_infer_type",
+    "_wider_type",
+    "_schema_leaf_types",
+    "flatten",
+    "infer_schema",
+    "schema_columns",
+]
 
 # ---------------------------------------------------------------------------
 # Large-file threshold, streaming constants & progress tracking
@@ -61,6 +85,10 @@ _cancel_events: dict[str, threading.Event] = {}
 
 class JsonCacheCancelledError(HauteError):
     """Raised when a JSON cache build is cancelled by the user."""
+
+
+class JsonFlattenDataError(HauteError):
+    """Raised when JSON input data cannot be flattened safely."""
 
 
 def cancel_json_cache(data_path: str) -> bool:
@@ -136,179 +164,14 @@ def _adaptive_chunk_size(flatten_schema: dict[str, Any]) -> int:
 # Type inference helpers
 # ---------------------------------------------------------------------------
 
-_TYPE_PRIORITY: dict[str, int] = {"bool": 0, "int": 1, "float": 2, "str": 3}
-
-
-def _infer_type(value: Any) -> str:
-    """Return the schema type name for a scalar value."""
-    # bool must be checked before int — bool is a subclass of int
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int"
-    if isinstance(value, float):
-        return "float"
-    return "str"
-
-
-def _wider_type(a: str, b: str) -> str:
-    """Return the wider of two scalar types (int < float < str)."""
-    return a if _TYPE_PRIORITY.get(a, 3) >= _TYPE_PRIORITY.get(b, 3) else b
-
-
 # ---------------------------------------------------------------------------
 # Schema inference
 # ---------------------------------------------------------------------------
 
 
-def _infer_schema_node(value: Any) -> dict[str, Any] | str:
-    """Build a schema node from a single JSON value."""
-    if value is None:
-        return "str"
-    if isinstance(value, dict):
-        return {k: _infer_schema_node(v) for k, v in value.items()}
-    if isinstance(value, list):
-        items: dict[str, Any] | str = {}
-        for item in value:
-            items = _merge_schema_nodes(items, _infer_schema_node(item))
-        return {"$max": len(value), "$items": items if items != {} else {}}
-    return _infer_type(value)
-
-
-def _merge_schema_nodes(
-    a: dict[str, Any] | str,
-    b: dict[str, Any] | str,
-) -> dict[str, Any] | str:
-    """Merge two schema nodes, widening types and unioning fields."""
-    # Identity: empty dict means "no schema yet"
-    if a == {}:
-        return b
-    if b == {}:
-        return a
-
-    # Both scalars — widen
-    if isinstance(a, str) and isinstance(b, str):
-        return _wider_type(a, b)
-
-    # Both dicts
-    if isinstance(a, dict) and isinstance(b, dict):
-        a_is_array = "$max" in a
-        b_is_array = "$max" in b
-
-        if a_is_array and b_is_array:
-            return {
-                "$max": max(a["$max"], b["$max"]),
-                "$items": _merge_schema_nodes(
-                    a.get("$items", {}),
-                    b.get("$items", {}),
-                ),
-            }
-        if not a_is_array and not b_is_array:
-            merged = dict(a)
-            for k, v in b.items():
-                merged[k] = _merge_schema_nodes(merged[k], v) if k in merged else v
-            return merged
-
-    # Type conflict (scalar vs dict) — prefer the richer structure
-    return a if isinstance(a, dict) else b
-
-
-def infer_schema(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """Infer a flatten schema from one or more sample JSON dicts.
-
-    Each sample should be a single JSON object (e.g. one quote).
-    The returned schema merges all fields (union) and uses the maximum
-    observed array length for ``$max``.
-    """
-    if not samples:
-        return {}
-    schema: dict[str, Any] | str = {}
-    for sample in samples:
-        schema = _merge_schema_nodes(schema, _infer_schema_node(sample))
-    return schema if isinstance(schema, dict) else {}
-
-
 # ---------------------------------------------------------------------------
 # Schema-aware flattening
 # ---------------------------------------------------------------------------
-
-
-def flatten(
-    data: dict[str, Any] | None,
-    schema: dict[str, Any],
-    *,
-    _prefix: str = "",
-) -> dict[str, Any]:
-    """Flatten a nested JSON dict using a schema.
-
-    Walks the *schema* tree (not the data) to produce a consistent column
-    set.  Missing data becomes ``None``.
-
-    Keys use ``"."`` as separator; array indices are **1-based**.
-    """
-    if data is None:
-        data = {}
-    result: dict[str, Any] = {}
-
-    for key, spec in schema.items():
-        full_key = f"{_prefix}.{key}" if _prefix else key
-        value = data.get(key) if isinstance(data, dict) else None
-
-        if isinstance(spec, str):
-            # Leaf — emit value or None
-            result[full_key] = value
-
-        elif "$max" in spec:
-            # Array
-            max_items: int = spec["$max"]
-            items_schema = spec.get("$items", {})
-            if max_items == 0 or not items_schema:
-                continue
-            raw_list = value if isinstance(value, list) else []
-            for i in range(max_items):
-                idx_key = f"{full_key}.{i + 1}"
-                element = raw_list[i] if i < len(raw_list) else None
-                if isinstance(items_schema, str):
-                    # Array of scalars
-                    result[idx_key] = element
-                else:
-                    # Array of objects — recurse
-                    child = element if isinstance(element, dict) else None
-                    result.update(flatten(child, items_schema, _prefix=idx_key))
-
-        else:
-            # Nested object — recurse
-            child = value if isinstance(value, dict) else None
-            result.update(flatten(child, spec, _prefix=full_key))
-
-    return result
-
-
-def schema_columns(
-    schema: dict[str, Any],
-    *,
-    _prefix: str = "",
-) -> list[str]:
-    """Return the flat column names a schema produces, in traversal order."""
-    cols: list[str] = []
-    for key, spec in schema.items():
-        full_key = f"{_prefix}.{key}" if _prefix else key
-        if isinstance(spec, str):
-            cols.append(full_key)
-        elif "$max" in spec:
-            max_items: int = spec["$max"]
-            items_schema = spec.get("$items", {})
-            if max_items == 0 or not items_schema:
-                continue
-            for i in range(max_items):
-                idx_key = f"{full_key}.{i + 1}"
-                if isinstance(items_schema, str):
-                    cols.append(idx_key)
-                else:
-                    cols.extend(schema_columns(items_schema, _prefix=idx_key))
-        else:
-            cols.extend(schema_columns(spec, _prefix=full_key))
-    return cols
 
 
 # ---------------------------------------------------------------------------
@@ -343,13 +206,23 @@ def _iter_json_records(path: Path) -> Iterator[dict[str, Any]]:
         if skipped:
             logger.warning("jsonl_lines_skipped", count=skipped, total=total)
     else:
-        data = orjson.loads(path.read_bytes())
+        try:
+            data = orjson.loads(path.read_bytes())
+        except orjson.JSONDecodeError as exc:
+            raise JsonFlattenDataError("Invalid JSON file", path=str(path)) from exc
         if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict):
-                    yield item
+            for index, item in enumerate(data):
+                if not isinstance(item, dict):
+                    raise JsonFlattenDataError(
+                        "JSON array items must be objects",
+                        path=str(path),
+                        index=index,
+                    )
+                yield item
         elif isinstance(data, dict):
             yield data
+        else:
+            raise JsonFlattenDataError("JSON root must be an object or array", path=str(path))
 
 
 def _infer_schema_streaming(
@@ -376,35 +249,6 @@ def _infer_schema_streaming(
 # ---------------------------------------------------------------------------
 # Arrow schema helpers
 # ---------------------------------------------------------------------------
-
-
-def _schema_leaf_types(
-    schema: dict[str, Any],
-    *,
-    _prefix: str = "",
-) -> list[tuple[str, str]]:
-    """Return ``[(column_name, type_str), ...]`` from a flatten schema."""
-    result: list[tuple[str, str]] = []
-    for key, spec in schema.items():
-        full_key = f"{_prefix}.{key}" if _prefix else key
-        if isinstance(spec, str):
-            result.append((full_key, spec))
-        elif "$max" in spec:
-            max_items: int = spec["$max"]
-            items_schema = spec.get("$items", {})
-            if max_items == 0 or not items_schema:
-                continue
-            for i in range(max_items):
-                idx_key = f"{full_key}.{i + 1}"
-                if isinstance(items_schema, str):
-                    result.append((idx_key, items_schema))
-                else:
-                    result.extend(
-                        _schema_leaf_types(items_schema, _prefix=idx_key),
-                    )
-        else:
-            result.extend(_schema_leaf_types(spec, _prefix=full_key))
-    return result
 
 
 def _arrow_schema_from_flatten(flatten_schema: dict[str, Any]) -> pa.Schema:
@@ -572,6 +416,7 @@ def _flatten_and_write_streaming(
         _update_progress(progress_key, t0, total_rows)
 
     try:
+        _check_cancelled(cancel_event, progress_key or str(cache_path))
         for record in records_iter:
             flat = flatten(record, flatten_schema)
             for i, name in enumerate(col_names):
@@ -630,33 +475,37 @@ def _build_flatten_exprs(
     """
     import polars as pl
 
-    exprs: list[pl.Expr] = []
-    for key, spec in schema.items():
-        full_key = f"{_prefix}.{key}" if _prefix else key
-        expr = _base.struct.field(key) if _base is not None else pl.col(key)
+    if _base is None and not _prefix:
+        _validate_flatten_schema(schema)
 
+    exprs: list[pl.Expr] = []
+
+    def _build_node(spec: dict[str, Any] | str, expr: pl.Expr, full_key: str) -> None:
         if isinstance(spec, str):
             exprs.append(expr.alias(full_key))
-        elif "$max" in spec:
+            return
+
+        if "$max" in spec:
             max_items: int = spec["$max"]
             items_schema = spec.get("$items", {})
             if max_items == 0 or not items_schema:
-                continue
+                return
             for i in range(max_items):
                 idx_key = f"{full_key}.{i + 1}"
                 elem = expr.list.get(i, null_on_oob=True)
-                if isinstance(items_schema, str):
-                    exprs.append(elem.alias(idx_key))
-                else:
-                    exprs.extend(
-                        _build_flatten_exprs(
-                            items_schema,
-                            _base=elem,
-                            _prefix=idx_key,
-                        )
-                    )
-        else:
-            exprs.extend(_build_flatten_exprs(spec, _base=expr, _prefix=full_key))
+                _build_node(items_schema, elem, idx_key)
+            return
+
+        for key, child_spec in spec.items():
+            child_key = f"{full_key}.{key}" if full_key else key
+            _build_node(child_spec, expr.struct.field(key), child_key)
+
+    if _base is not None:
+        _build_node(schema, _base, _prefix)
+    else:
+        for key, spec in schema.items():
+            full_key = f"{_prefix}.{key}" if _prefix else key
+            _build_node(spec, pl.col(key), full_key)
     return exprs
 
 
@@ -732,6 +581,101 @@ def _iter_byte_chunks(path: Path, buffer_size: int) -> Iterator[bytes]:
             remainder = block[last_nl + 1 :]
 
 
+def _jsonl_has_nonblank_bytes(path: Path) -> bool:
+    """Return True once a JSONL file contains any non-whitespace byte."""
+    with open(path, "rb") as fh:
+        while block := fh.read(1024 * 1024):
+            if block.strip():
+                return True
+    return False
+
+
+def _iter_json_records_strict(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield JSONL records and fail loudly on malformed or non-object rows."""
+    if path.suffix != ".jsonl":
+        yield from _iter_json_records(path)
+        return
+
+    with open(path, "rb") as fh:
+        for line_number, line in enumerate(fh, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                obj = orjson.loads(stripped)
+            except orjson.JSONDecodeError as exc:
+                raise JsonFlattenDataError(
+                    "Invalid JSONL file",
+                    path=str(path),
+                    line=line_number,
+                ) from exc
+            if not isinstance(obj, dict):
+                raise JsonFlattenDataError(
+                    "JSONL records must be objects",
+                    path=str(path),
+                    line=line_number,
+                )
+            yield obj
+
+
+def _validate_jsonl_records(path: Path) -> None:
+    for _ in _iter_json_records_strict(path):
+        pass
+
+
+def _arrow_type_can_represent_flatten_node(
+    arrow_type: Any | None,
+    spec: dict[str, Any] | str,
+) -> bool:
+    import pyarrow as pa
+
+    if isinstance(spec, str):
+        return arrow_type is not None and not (
+            pa.types.is_struct(arrow_type)
+            or pa.types.is_list(arrow_type)
+            or pa.types.is_large_list(arrow_type)
+            or pa.types.is_fixed_size_list(arrow_type)
+        )
+
+    if "$max" in spec:
+        max_items: int = spec["$max"]
+        items_schema = spec.get("$items", {})
+        if max_items == 0 or not items_schema:
+            return True
+        if arrow_type is None or not (
+            pa.types.is_list(arrow_type)
+            or pa.types.is_large_list(arrow_type)
+            or pa.types.is_fixed_size_list(arrow_type)
+        ):
+            return False
+        return _arrow_type_can_represent_flatten_node(arrow_type.value_type, items_schema)
+
+    if arrow_type is None or not pa.types.is_struct(arrow_type):
+        return False
+
+    child_types = {field.name: field.type for field in arrow_type}
+    return all(
+        _arrow_type_can_represent_flatten_node(child_types.get(key), child_spec)
+        for key, child_spec in spec.items()
+    )
+
+
+def _raw_parquet_can_represent_flatten_schema(
+    raw_path: Path,
+    flatten_schema: dict[str, Any],
+) -> bool:
+    import pyarrow.parquet as pq
+
+    pf = pq.ParquetFile(str(raw_path))
+    if pf.metadata.num_rows == 0:
+        return True
+    raw_types = {field.name: field.type for field in pf.schema_arrow}
+    return all(
+        _arrow_type_can_represent_flatten_node(raw_types.get(key), spec)
+        for key, spec in flatten_schema.items()
+    )
+
+
 def _jsonl_to_raw_parquet(
     path: Path,
     dest: Path,
@@ -755,21 +699,31 @@ def _jsonl_to_raw_parquet(
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(str(dest) + ".tmp")
 
-    # Infer a consistent schema from a large sample so all chunks
-    # parse with identical types (avoids ParquetWriter schema mismatches).
-    # Empty or blank-line-only files cause Polars to raise — write an empty
-    # parquet and return immediately.
-    try:
-        ndjson_schema = pl.scan_ndjson(
-            path,
-            infer_schema_length=_SCHEMA_SAMPLE_SIZE,
-        ).collect_schema()
-    except pl.exceptions.ComputeError:
+    _check_cancelled(cancel_event, progress_key or str(dest))
+
+    if not _jsonl_has_nonblank_bytes(path):
         import pyarrow as pa
 
         pq.write_table(pa.table({}), str(tmp), compression="zstd")
         tmp.replace(dest)
         return 0
+
+    # Infer a consistent schema from a large sample so all chunks
+    # parse with identical types (avoids ParquetWriter schema mismatches).
+    # Malformed JSONL must fail loudly; otherwise an invalid upload can look
+    # like a successful empty cache in the UI.
+    try:
+        ndjson_schema = pl.scan_ndjson(
+            path,
+            infer_schema_length=_SCHEMA_SAMPLE_SIZE,
+        ).collect_schema()
+    except pl.exceptions.ComputeError as exc:
+        tmp.unlink(missing_ok=True)
+        try:
+            _validate_jsonl_records(path)
+        except JsonFlattenDataError as data_exc:
+            raise data_exc from exc
+        raise
 
     writer: pq.ParquetWriter | None = None
     total_rows = 0
@@ -802,6 +756,15 @@ def _jsonl_to_raw_parquet(
         tmp.replace(dest)
         return total_rows
 
+    except pl.exceptions.ComputeError as exc:
+        if writer is not None:
+            writer.close()
+        tmp.unlink(missing_ok=True)
+        try:
+            _validate_jsonl_records(path)
+        except JsonFlattenDataError as data_exc:
+            raise data_exc from exc
+        raise
     except BaseException:
         if writer is not None:
             writer.close()
@@ -831,6 +794,8 @@ def _flatten_raw_parquet(
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(str(dest) + ".tmp")
+
+    _check_cancelled(cancel_event, progress_key or str(dest))
 
     exprs = _build_flatten_exprs(flatten_schema)
     pf = pq.ParquetFile(str(raw_path))
@@ -910,6 +875,79 @@ def _flatten_raw_parquet(
             writer.close()
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _polars_jsonl_limit_errors() -> tuple[type[BaseException], ...]:
+    import polars as pl
+
+    names = (
+        "SchemaError",
+        "ComputeError",
+        "ColumnNotFoundError",
+        "StructFieldNotFoundError",
+        "InvalidOperationError",
+    )
+    return tuple(getattr(pl.exceptions, name) for name in names if hasattr(pl.exceptions, name))
+
+
+def _flatten_jsonl_to_cache(
+    path: Path,
+    flatten_schema: dict[str, Any],
+    cache_path: Path,
+    *,
+    progress_key: str | None = None,
+    t0: float | None = None,
+    cancel_event: threading.Event | None = None,
+) -> int:
+    """Flatten JSONL to cache, using Polars only when it preserves semantics."""
+    raw_path = cache_path.with_suffix(".raw.parquet")
+    try:
+        try:
+            _jsonl_to_raw_parquet(
+                path,
+                raw_path,
+                progress_key=progress_key,
+                t0=t0,
+                cancel_event=cancel_event,
+            )
+            if not _raw_parquet_can_represent_flatten_schema(raw_path, flatten_schema):
+                logger.info("jsonl_polars_raw_schema_unsafe", path=str(path))
+                return _flatten_and_write_streaming(
+                    _iter_json_records_strict(path),
+                    flatten_schema,
+                    cache_path,
+                    progress_key=progress_key,
+                    t0=t0,
+                    cancel_event=cancel_event,
+                )
+            return _flatten_raw_parquet(
+                raw_path,
+                flatten_schema,
+                cache_path,
+                progress_key=progress_key,
+                t0=t0,
+                cancel_event=cancel_event,
+            )
+        except JsonFlattenDataError:
+            raise
+        except JsonCacheCancelledError:
+            raise
+        except _polars_jsonl_limit_errors() as exc:
+            logger.info(
+                "jsonl_polars_limit_fallback",
+                path=str(path),
+                error=type(exc).__name__,
+            )
+            return _flatten_and_write_streaming(
+                _iter_json_records_strict(path),
+                flatten_schema,
+                cache_path,
+                progress_key=progress_key,
+                t0=t0,
+                cancel_event=cancel_event,
+            )
+    finally:
+        raw_path.unlink(missing_ok=True)
 
 
 def _polars_flatten_to_parquet(
@@ -1095,13 +1133,135 @@ _CACHE_DIR = ".haute_cache"
 def _json_cache_path(data_path: str | Path) -> Path:
     """Compute the parquet cache path for a JSON data file.
 
-    Uses a SHA-256 hash of the stringified path to keep filenames short
-    and avoid exceeding Windows MAX_PATH (260 chars).
+    Uses a SHA-256 hash of the canonical absolute path to keep filenames
+    short, avoid exceeding Windows MAX_PATH (260 chars), and ensure
+    semantically identical relative/absolute paths share the same cache.
     """
     import hashlib
+    import os
 
-    path_hash = hashlib.sha256(str(data_path).encode()).hexdigest()[:32]
+    canonical_path = os.path.normcase(str(Path(data_path).expanduser().resolve()))
+    path_hash = hashlib.sha256(canonical_path.encode()).hexdigest()[:32]
     return Path.cwd() / _CACHE_DIR / f"json_{path_hash}.parquet"
+
+
+def _json_cache_meta_path(cache_path: Path) -> Path:
+    return Path(str(cache_path) + ".meta.json")
+
+
+def _schema_fingerprint(flatten_schema: dict[str, Any]) -> str:
+    import hashlib
+
+    payload = orjson.dumps(flatten_schema, option=orjson.OPT_SORT_KEYS)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _schema_cache_mode(
+    schema: dict[str, Any] | None,
+    config_path: str | Path | None,
+) -> str:
+    if schema is not None:
+        return "explicit"
+    if config_path is not None:
+        cp = Path(config_path)
+        if cp.exists():
+            cfg = orjson.loads(cp.read_bytes())
+            if cfg.get("flattenSchema") is not None:
+                return "config"
+    return "inferred"
+
+
+def _read_json_cache_meta(cache_path: Path) -> dict[str, object] | None:
+    meta_path = _json_cache_meta_path(cache_path)
+    if not meta_path.exists():
+        return None
+    payload = orjson.loads(meta_path.read_bytes())
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON cache metadata must be an object: {meta_path}")
+    return cast(dict[str, object], payload)
+
+
+def _write_json_cache_meta(
+    cache_path: Path,
+    *,
+    schema_mode: str,
+    flatten_schema: dict[str, Any],
+) -> None:
+    meta_path = _json_cache_meta_path(cache_path)
+    payload = {
+        "schema_mode": schema_mode,
+        "schema_fingerprint": _schema_fingerprint(flatten_schema),
+    }
+    tmp_path = Path(str(meta_path) + ".tmp")
+    try:
+        tmp_path.write_bytes(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS))
+        tmp_path.replace(meta_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _is_cache_schema_compatible(
+    cache_path: Path,
+    *,
+    schema_mode: str,
+    flatten_schema: dict[str, Any] | None = None,
+) -> bool:
+    meta = _read_json_cache_meta(cache_path)
+    if meta is None:
+        return schema_mode == "inferred"
+    if meta.get("schema_mode") != schema_mode:
+        return False
+    if flatten_schema is None:
+        return True
+    return meta.get("schema_fingerprint") == _schema_fingerprint(flatten_schema)
+
+
+def json_cache_path_if_valid(
+    data_path: str | Path,
+    *,
+    schema: dict[str, Any] | None = None,
+    config_path: str | Path | None = None,
+) -> Path | None:
+    """Return the parquet cache path only when it is safe to scan directly."""
+    if schema is not None:
+        _validate_flatten_schema(schema)
+
+    cache_path = _json_cache_path(data_path)
+    source_paths = [Path(data_path)]
+    if config_path is not None:
+        source_paths.append(Path(config_path))
+    if not _is_cache_valid(cache_path, *source_paths):
+        return None
+
+    meta = _read_json_cache_meta(cache_path)
+    if config_path is not None:
+        schema_mode = _schema_cache_mode(schema, config_path)
+        if schema_mode == "inferred":
+            if _is_cache_schema_compatible(cache_path, schema_mode=schema_mode):
+                return cache_path
+            return None
+
+        resolved = _resolve_flatten_schema(Path(data_path), schema, config_path)
+        _validate_flatten_schema(resolved)
+        if _is_cache_schema_compatible(
+            cache_path,
+            schema_mode=schema_mode,
+            flatten_schema=resolved,
+        ):
+            return cache_path
+        return None
+
+    if schema is None:
+        if meta is None or meta.get("schema_mode") == "inferred":
+            return cache_path
+        return None
+
+    if meta is None:
+        return None
+    if meta.get("schema_fingerprint") != _schema_fingerprint(schema):
+        return None
+    return cache_path
 
 
 def _is_cache_valid(cache_path: Path, *source_paths: Path) -> bool:
@@ -1110,7 +1270,9 @@ def _is_cache_valid(cache_path: Path, *source_paths: Path) -> bool:
         return False
     cache_mtime = cache_path.stat().st_mtime
     for src in source_paths:
-        if src.exists() and src.stat().st_mtime > cache_mtime:
+        if not src.exists():
+            return False
+        if src.stat().st_mtime > cache_mtime:
             return False
     return True
 
@@ -1199,22 +1361,41 @@ def read_json_flat(
     if config_path is not None:
         source_paths.append(Path(config_path))
 
-    if _is_cache_valid(cache_path, *source_paths):
-        logger.info("json_cache_hit", path=str(data_path), cache=str(cache_path))
-        return pl.scan_parquet(cache_path)
+    schema_mode = _schema_cache_mode(schema, config_path)
+    resolved: dict[str, Any] | None = None
 
-    resolved = _resolve_flatten_schema(p, schema, config_path)
+    if _is_cache_valid(cache_path, *source_paths):
+        if schema_mode == "inferred":
+            cache_compatible = _is_cache_schema_compatible(
+                cache_path,
+                schema_mode=schema_mode,
+            )
+        else:
+            resolved = _resolve_flatten_schema(p, schema, config_path)
+            cache_compatible = _is_cache_schema_compatible(
+                cache_path,
+                schema_mode=schema_mode,
+                flatten_schema=resolved,
+            )
+
+        if cache_compatible:
+            logger.info("json_cache_hit", path=str(data_path), cache=str(cache_path))
+            return pl.scan_parquet(cache_path)
+
+    if resolved is None:
+        resolved = _resolve_flatten_schema(p, schema, config_path)
+    _validate_flatten_schema(resolved)
 
     if p.suffix == ".jsonl":
-        raw_path = cache_path.with_suffix(".raw.parquet")
-        try:
-            _jsonl_to_raw_parquet(p, raw_path)
-            _flatten_raw_parquet(raw_path, resolved, cache_path)
-        finally:
-            raw_path.unlink(missing_ok=True)
+        _flatten_jsonl_to_cache(p, resolved, cache_path)
     else:
         _flatten_and_write_streaming(_iter_json_records(p), resolved, cache_path)
 
+    _write_json_cache_meta(
+        cache_path,
+        schema_mode=schema_mode,
+        flatten_schema=resolved,
+    )
     return pl.scan_parquet(cache_path)
 
 
@@ -1245,12 +1426,16 @@ class JsonCacheInfoDict(TypedDict):
     cached_at: float
 
 
-def json_cache_info(data_path: str | Path) -> JsonCacheInfoDict | None:
+def json_cache_info(
+    data_path: str | Path,
+    *,
+    schema: dict[str, Any] | None = None,
+) -> JsonCacheInfoDict | None:
     """Return metadata about a cached JSON file, or ``None`` if not cached."""
     from haute._polars_utils import read_parquet_metadata
 
-    cache_path = _json_cache_path(data_path)
-    if not cache_path.exists():
+    cache_path = json_cache_path_if_valid(data_path, schema=schema)
+    if cache_path is None:
         return None
     meta = read_parquet_metadata(cache_path)
     return {
@@ -1265,12 +1450,26 @@ def json_cache_info(data_path: str | Path) -> JsonCacheInfoDict | None:
 
 
 def clear_json_cache(data_path: str | Path) -> bool:
-    """Delete the cached parquet file for a JSON data file. Returns True if deleted."""
+    """Delete cached parquet artifacts for a JSON data file.
+
+    Returns True if any cache artifact was deleted.
+    """
     cache_path = _json_cache_path(data_path)
-    if cache_path.exists():
-        cache_path.unlink()
-        return True
-    return False
+    raw_path = cache_path.with_suffix(".raw.parquet")
+    artifacts = [
+        cache_path,
+        _json_cache_meta_path(cache_path),
+        Path(str(cache_path) + ".tmp"),
+        raw_path,
+        Path(str(raw_path) + ".tmp"),
+    ]
+
+    deleted = False
+    for artifact in artifacts:
+        if artifact.exists():
+            artifact.unlink()
+            deleted = True
+    return deleted
 
 
 class JsonBuildResultDict(JsonCacheInfoDict):
@@ -1298,6 +1497,7 @@ def build_json_cache(
     p = Path(data_path)
     data_path_str = str(data_path)
     cache_path = _json_cache_path(data_path)
+    schema_mode = _schema_cache_mode(schema, config_path)
 
     event = threading.Event()
     t0 = time.monotonic()
@@ -1307,27 +1507,17 @@ def build_json_cache(
 
     try:
         resolved = _resolve_flatten_schema(p, schema, config_path)
+        _validate_flatten_schema(resolved)
 
         if p.suffix == ".jsonl":
-            raw_path = cache_path.with_suffix(".raw.parquet")
-            try:
-                _jsonl_to_raw_parquet(
-                    p,
-                    raw_path,
-                    progress_key=data_path_str,
-                    t0=t0,
-                    cancel_event=event,
-                )
-                _flatten_raw_parquet(
-                    raw_path,
-                    resolved,
-                    cache_path,
-                    progress_key=data_path_str,
-                    t0=t0,
-                    cancel_event=event,
-                )
-            finally:
-                raw_path.unlink(missing_ok=True)
+            _flatten_jsonl_to_cache(
+                p,
+                resolved,
+                cache_path,
+                progress_key=data_path_str,
+                t0=t0,
+                cancel_event=event,
+            )
         else:
             # .json: must be fully loaded (JSON format constraint)
             _flatten_and_write_streaming(
@@ -1347,6 +1537,11 @@ def build_json_cache(
 
     from haute._polars_utils import read_parquet_metadata
 
+    _write_json_cache_meta(
+        cache_path,
+        schema_mode=schema_mode,
+        flatten_schema=resolved,
+    )
     meta = read_parquet_metadata(cache_path)
     return {
         "path": str(cache_path),

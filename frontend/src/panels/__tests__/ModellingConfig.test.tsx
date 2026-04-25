@@ -89,7 +89,15 @@ beforeEach(() => {
     trainResults: {},
   })
   useSettingsStore.setState({
-    mlflow: { status: "pending", backend: "", host: "" },
+    mlflow: {
+      status: "pending",
+      backend: "",
+      host: "",
+      installed: null,
+      importable: null,
+      trackingConfigured: null,
+      detail: "",
+    },
     openSections: {},
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })

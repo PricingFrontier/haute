@@ -1,0 +1,51 @@
+name: Mutation Testing
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/haute/**/*.py"
+      - "tests/**/*.py"
+      - "mutation/**"
+      - "scripts/run_mutation_suite.py"
+      - ".github/workflows/mutation.yml"
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Determine changed files
+        if: github.event_name == 'pull_request'
+        run: git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" > .mutation-changed-files.txt
+
+      - name: Run bounded mutation suite
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            uv run python scripts/run_mutation_suite.py --output-dir .mutation-artifacts --changed-files-from .mutation-changed-files.txt
+          else
+            uv run python scripts/run_mutation_suite.py --output-dir .mutation-artifacts
+          fi
+
+      - name: Upload mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-artifacts-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .mutation-artifacts

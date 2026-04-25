@@ -920,7 +920,7 @@ class TestFetchThrottle:
         git_mod._last_fetch_time = 0.0
 
         fetch_count = 0
-        
+
         def counting_run_git_ok(*args, **kwargs):
             nonlocal fetch_count
             if args and args[0] == "fetch":

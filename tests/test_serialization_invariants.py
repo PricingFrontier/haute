@@ -45,9 +45,9 @@ def test_schema_preview_serializes_non_finite_values_as_null(
     project_root: Path,
 ) -> None:
     data_path = project_root / "data.parquet"
-    pl.DataFrame(
-        {"value": [1.0, float("nan"), float("inf"), float("-inf")]}
-    ).write_parquet(data_path)
+    pl.DataFrame({"value": [1.0, float("nan"), float("inf"), float("-inf")]}).write_parquet(
+        data_path
+    )
 
     resp = client.get("/api/schema", params={"path": "data.parquet"})
 

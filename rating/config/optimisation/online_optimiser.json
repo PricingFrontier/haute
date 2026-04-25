@@ -7,5 +7,9 @@
   "scenario_value": "premium_multiplier",
   "max_iter": 50,
   "tolerance": 1e-06,
-  "data_input": "optimiser_input"
+  "data_input": "optimiser_input",
+  "contract": {
+    "inputs": [],
+    "outputs": []
+  }
 }

@@ -85,9 +85,7 @@ def test_effective_contract_declared_opaque_preserves_builder_contract() -> None
         "haute._execute_lazy.get_column_contract",
         return_value=({"premium"}, {"base_rate"}),
     ):
-        contract = _effective_contract(
-            _node(NodeType.POLARS, {"contract": "opaque"})
-        )
+        contract = _effective_contract(_node(NodeType.POLARS, {"contract": "opaque"}))
 
     assert contract == Contract(
         inputs=frozenset({"base_rate"}),

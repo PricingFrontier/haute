@@ -63,6 +63,7 @@ dev = [
     "pytest>=9.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0",
+    "pytest-timeout>=2.3.1",
     "pytest-xdist>=3.6.0",
     "httpx>=0.27.0",
     "ruff>=0.8.0",
@@ -147,6 +148,117 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "if __name__ == .__main__.",
 ]
+
+[tool.haute.critical_coverage]
+coverage_json = ".cache/coverage/backend.json"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_flatten.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "JSON flattening normalises user-uploaded datasets and schema inference."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_flatten_schema.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 95.0
+rationale = "JSON flatten schemas define deterministic columns for nested user datasets."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_model_scorer.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 95.0
+rationale = "Model scoring is a shared pricing-path primitive."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_parser_regex.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 85.0
+rationale = "Regex parsing accepts pipeline source code before AST conversion."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_parser_submodels.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 88.0
+rationale = "Submodel parsing controls nested pricing graph behaviour."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_path_resolution.py"
+min_statement_coverage = 100.0
+min_branch_coverage = 100.0
+rationale = "Path resolution is a security and portability boundary."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_ram_estimate.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 94.0
+rationale = "RAM estimates protect users from oversized runtime jobs."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_registry.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 90.0
+rationale = "Registry contracts decide how persisted pipeline objects are discovered and loaded."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/executor.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 90.0
+rationale = "Execution runs generated user pricing logic."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/parser.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 93.0
+rationale = "Parser output defines the backend contract for user pipelines."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/schemas.py"
+min_statement_coverage = 100.0
+min_branch_coverage = 100.0
+rationale = "API schemas are the backend/frontend contract for every workflow."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/server.py"
+min_statement_coverage = 91.0
+min_branch_coverage = 75.0
+rationale = "Server wiring controls route registration, static assets, and app startup behaviour."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_helpers.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 90.0
+rationale = "Route helpers validate user files, pipeline payloads, and shared API failure paths."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_job_store.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 90.0
+rationale = "Job storage drives async training and optimiser state."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/json_cache.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 90.0
+rationale = "JSON cache routes handle uploaded dataset previews and cache identity."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/modelling.py"
+min_statement_coverage = 96.0
+min_branch_coverage = 75.0
+rationale = "Modelling routes expose training and scoring workflows."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/optimiser.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 95.0
+rationale = "Optimiser routes execute high-impact pricing optimisation requests."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/pipeline.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 90.0
+rationale = "Pipeline routes persist, validate, preview, and execute user pricing workflows."
 
 [tool.mypy]
 python_version = "3.11"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
@@ -9,6 +11,7 @@ from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_store import get_job_store
 from haute.routes._train_service import (
+    _DEFAULT_TIMEOUT,
     TrainService,
     _check_gpu_vram,
     _clamp_row_limit,
@@ -54,6 +57,22 @@ def train_model(body: TrainRequest) -> TrainResponse:
 async def train_status(job_id: str) -> TrainStatusResponse:
     """Poll training job progress."""
     job = _store.require_job(job_id)
+
+    if job.get("status") == "running":
+        start = job.get("start_time")
+        timeout = job.get("timeout", _DEFAULT_TIMEOUT)
+        if start and (time.monotonic() - start) > timeout:
+            _store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Training timed out after {timeout}s. "
+                    "Increase timeout or simplify the model.",
+                    "elapsed_seconds": time.monotonic() - start,
+                },
+                expected_status="running",
+            )
+            job = _store.require_job(job_id)
 
     return TrainStatusResponse(
         status=job.get("status", "unknown"),
@@ -146,22 +165,47 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
 @router.get("/mlflow/check", response_model=MlflowCheckResponse)
 async def mlflow_check() -> MlflowCheckResponse:
     """Check whether MLflow is installed and detect the tracking backend."""
-    try:
-        import mlflow as _mlflow  # noqa: F401
+    import importlib
+    import importlib.util
 
-        mlflow_installed = True
-    except ImportError:
-        return MlflowCheckResponse(mlflow_installed=False)
+    if importlib.util.find_spec("mlflow") is None:
+        return MlflowCheckResponse(
+            mlflow_installed=False,
+            detail="MLflow package is not installed",
+        )
+
+    try:
+        importlib.import_module("mlflow")
+    except ImportError as exc:
+        logger.warning("mlflow_check_package_import_failed", error=str(exc))
+        return MlflowCheckResponse(
+            mlflow_installed=True,
+            mlflow_importable=False,
+            tracking_configured=False,
+            detail=f"MLflow package import failed: {exc}",
+        )
 
     import os
 
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
-    _uri, backend = resolve_tracking_backend()
+    try:
+        _uri, backend = resolve_tracking_backend()
+    except Exception as exc:
+        logger.warning("mlflow_check_backend_resolution_failed", error=str(exc))
+        return MlflowCheckResponse(
+            mlflow_installed=True,
+            mlflow_importable=True,
+            tracking_configured=False,
+            detail=str(exc),
+        )
+
     databricks_host = os.getenv("DATABRICKS_HOST", "") if backend == "databricks" else ""
 
     return MlflowCheckResponse(
-        mlflow_installed=mlflow_installed,
+        mlflow_installed=True,
+        mlflow_importable=True,
+        tracking_configured=True,
         backend=backend,
         databricks_host=databricks_host,
     )

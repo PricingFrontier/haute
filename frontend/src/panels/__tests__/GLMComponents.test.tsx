@@ -87,7 +87,15 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
 beforeEach(() => {
   useNodeResultsStore.setState({ trainJobs: {}, trainResults: {} })
   useSettingsStore.setState({
-    mlflow: { status: "pending", backend: "", host: "" },
+    mlflow: {
+      status: "pending",
+      backend: "",
+      host: "",
+      installed: null,
+      importable: null,
+      trackingConfigured: null,
+      detail: "",
+    },
     openSections: {},
   })
 })

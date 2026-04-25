@@ -358,5 +358,6 @@
     "vehicle.registered_keeper": "registered_keeper",
     "vehicle.purchase_date": "purchase_date",
     "vehicle.current_mileage": "current_mileage"
-  }
+  },
+  "contract": "opaque"
 }

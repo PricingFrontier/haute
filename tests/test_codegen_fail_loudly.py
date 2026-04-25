@@ -112,9 +112,10 @@ def test_submodel_placeholder_codegen_is_unreachable() -> None:
 
 def test_portable_path_expr_normalizes_windows_paths() -> None:
     assert _portable_path_expr(r"C:\models\score.cbm") == '"C:/models/score.cbm"'
-    assert _portable_path_expr(
-        r"nested\data.parquet"
-    ) == 'Path(__file__).parent / "nested/data.parquet"'
+    assert (
+        _portable_path_expr(r"nested\data.parquet")
+        == 'Path(__file__).parent / "nested/data.parquet"'
+    )
 
 
 def test_error_on_name_collisions_reports_all_buckets() -> None:

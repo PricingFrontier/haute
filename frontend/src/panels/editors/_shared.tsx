@@ -5,7 +5,7 @@ import { listFiles } from "../../api/client"
 import ColumnTable from "../../components/ColumnTable"
 import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
 import { EditorView, placeholder as cmPlaceholder, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection } from "@codemirror/view"
-import { EditorState, Compartment } from "@codemirror/state"
+import { EditorState, Compartment, Annotation } from "@codemirror/state"
 import { python } from "@codemirror/lang-python"
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit, syntaxTree } from "@codemirror/language"
 import { defaultKeymap, indentWithTab, history, historyKeymap } from "@codemirror/commands"
@@ -71,18 +71,86 @@ export type SimpleEdge = {
 // ─── MlflowStatusBadge ───────────────────────────────────────────
 
 export function MlflowStatusBadge() {
-  const { mlflowStatus, mlflowBackend } = useMlflowStatus()
+  const {
+    mlflowStatus,
+    mlflowBackend,
+    mlflowInstalled,
+    mlflowImportable,
+    mlflowTrackingConfigured,
+    mlflowDetail,
+  } = useMlflowStatus()
+
+  const isConnected = mlflowStatus === "connected"
+  const isLoading = mlflowStatus === "loading"
+  const isPackageMissing = mlflowStatus === "error" && mlflowInstalled === false
+  const isPackageLoadFailed =
+    mlflowStatus === "error" && mlflowInstalled === true && mlflowImportable === false
+  const isTrackingNotConfigured =
+    mlflowStatus === "error" &&
+    mlflowInstalled === true &&
+    mlflowImportable !== false &&
+    mlflowTrackingConfigured === false
+  const tone = isConnected
+    ? "success"
+    : isPackageMissing || isPackageLoadFailed
+      ? "danger"
+      : isTrackingNotConfigured || mlflowStatus === "error"
+        ? "warning"
+        : "neutral"
+  const background = tone === "success"
+    ? "var(--success-soft-subtle)"
+    : tone === "danger"
+      ? "var(--danger-soft-faint)"
+      : tone === "warning"
+        ? "var(--warning-soft-subtle)"
+        : "var(--bg-surface)"
+  const border = tone === "success"
+    ? "var(--success-border)"
+    : tone === "danger"
+      ? "var(--danger-border)"
+      : tone === "warning"
+        ? "var(--warning-border)"
+        : "var(--border)"
+  const iconColor = tone === "success"
+    ? "var(--success)"
+    : tone === "danger"
+      ? "var(--danger)"
+      : tone === "warning"
+        ? "var(--warning-strong)"
+        : "var(--text-muted)"
+  const labelColor = tone === "danger"
+    ? "var(--danger)"
+    : tone === "warning"
+      ? "var(--warning-strong)"
+      : "var(--text-secondary)"
+  const label = isLoading
+    ? "Checking MLflow..."
+    : isConnected
+      ? `MLflow tracking configured (${mlflowBackend || "local"})`
+      : isPackageMissing
+        ? "MLflow package missing"
+        : isPackageLoadFailed
+          ? "MLflow package failed to load"
+          : isTrackingNotConfigured
+            ? "MLflow tracking not configured"
+          : "MLflow status unavailable"
+
   return (
-    <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px]" style={{
-      background: mlflowStatus === "connected" ? "var(--success-soft-subtle)" : mlflowStatus === "error" ? "var(--danger-soft-faint)" : "var(--bg-surface)",
-      border: `1px solid ${mlflowStatus === "connected" ? "var(--success-border)" : mlflowStatus === "error" ? "var(--danger-border)" : "var(--border)"}`,
-    }}>
-      {mlflowStatus === "loading" ? (
-        <><Loader2 size={11} className="animate-spin" style={{ color: "var(--text-muted)" }} /><span style={{ color: "var(--text-muted)" }}>Connecting to MLflow...</span></>
-      ) : mlflowStatus === "connected" ? (
-        <><Check size={11} style={{ color: "var(--success)" }} /><span style={{ color: "var(--text-secondary)" }}>MLflow ({mlflowBackend})</span></>
+    <div
+      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px]"
+      role="status"
+      title={mlflowDetail || label}
+      style={{
+        background,
+        border: `1px solid ${border}`,
+      }}
+    >
+      {isLoading ? (
+        <><Loader2 size={11} className="animate-spin" style={{ color: iconColor }} /><span style={{ color: "var(--text-muted)" }}>{label}</span></>
+      ) : isConnected ? (
+        <><Check size={11} style={{ color: iconColor }} /><span style={{ color: labelColor }}>{label}</span></>
       ) : (
-        <><AlertTriangle size={11} style={{ color: "var(--danger)" }} /><span style={{ color: "var(--danger)" }}>MLflow not available</span></>
+        <><AlertTriangle size={11} style={{ color: iconColor }} /><span style={{ color: labelColor }}>{label}</span></>
       )}
     </div>
   )
@@ -516,28 +584,54 @@ export function CodeEditor({
   /** Callback to expose the EditorView for external operations (e.g. text insertion) */
   onEditorView?: (view: EditorView | null) => void
 }) {
+  const externalSyncAnnotation = useRef(Annotation.define<boolean>())
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const placeholderCompartment = useRef(new Compartment())
   const columnCompartment = useRef(new Compartment())
-  const isFocusedRef = useRef(false)
+  const lastPropValueRef = useRef(defaultValue)
+  const pendingExternalValueRef = useRef<string | null>(null)
 
   // Keep onChange ref fresh without recreating the editor
   useEffect(() => { onChangeRef.current = onChange }, [onChange])
 
-  // Sync external value changes to the editor when not focused
-  // (avoids overwriting user typing)
+  const applyExternalValue = (view: EditorView, value: string) => {
+    const currentDoc = view.state.doc.toString()
+    if (value === currentDoc) {
+      lastPropValueRef.current = value
+      pendingExternalValueRef.current = null
+      return
+    }
+    view.dispatch({
+      changes: { from: 0, to: currentDoc.length, insert: value },
+      annotations: externalSyncAnnotation.current.of(true),
+    })
+    lastPropValueRef.current = value
+    pendingExternalValueRef.current = null
+  }
+
+  // Sync external value changes into the editor. Focused editors still accept
+  // updates when their buffer matches the last committed prop value, which
+  // keeps websocket-driven refreshes visible without clobbering active edits.
   useEffect(() => {
     const view = viewRef.current
-    if (!view || isFocusedRef.current) return
-    const currentDoc = view.state.doc.toString()
-    if (defaultValue !== currentDoc) {
-      view.dispatch({
-        changes: { from: 0, to: currentDoc.length, insert: defaultValue },
-      })
+    if (!view) {
+      lastPropValueRef.current = defaultValue
+      return
     }
+    const currentDoc = view.state.doc.toString()
+    if (defaultValue === currentDoc) {
+      lastPropValueRef.current = defaultValue
+      pendingExternalValueRef.current = null
+      return
+    }
+    if (!view.hasFocus || currentDoc === lastPropValueRef.current) {
+      applyExternalValue(view, defaultValue)
+      return
+    }
+    pendingExternalValueRef.current = defaultValue
   }, [defaultValue])
 
   // Create the editor once on mount
@@ -546,6 +640,10 @@ export function CodeEditor({
 
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
+        const isExternalSync = update.transactions.some((transaction) =>
+          transaction.annotation(externalSyncAnnotation.current) === true,
+        )
+        if (isExternalSync) return
         const value = update.state.doc.toString()
         if (debounceRef.current) clearTimeout(debounceRef.current)
         debounceRef.current = setTimeout(() => onChangeRef.current(value), 150)
@@ -608,8 +706,12 @@ export function CodeEditor({
 
         // Focus tracking for external sync
         EditorView.domEventHandlers({
-          focus: () => { isFocusedRef.current = true },
-          blur: () => { isFocusedRef.current = false },
+          blur: (_event, view) => {
+            const pendingValue = pendingExternalValueRef.current
+            if (pendingValue && view.state.doc.toString() === lastPropValueRef.current) {
+              applyExternalValue(view, pendingValue)
+            }
+          },
         }),
 
         // Change listener

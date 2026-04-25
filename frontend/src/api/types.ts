@@ -124,8 +124,11 @@ export type GraphPayload = { nodes: Node[]; edges: Edge[]; submodels?: Record<st
 
 export interface MlflowCheckResponse {
   mlflow_installed: boolean
+  mlflow_importable?: boolean
+  tracking_configured?: boolean
   backend: string
   databricks_host: string
+  detail?: string
 }
 
 export interface TrainEstimate {

@@ -74,5 +74,9 @@
     "vehicle_age",
     "postcode_area",
     "youngest_driver_age"
-  ]
+  ],
+  "contract": {
+    "inputs": [],
+    "outputs": []
+  }
 }

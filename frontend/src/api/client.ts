@@ -615,7 +615,7 @@ export function deleteCache(
 // ---------------------------------------------------------------------------
 
 export function buildJsonCache(
-  payload: { path: string; config_path?: string },
+  payload: { path: string; config_path?: string; flatten_schema?: Record<string, unknown> },
   options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<JsonCacheBuildResponse> {
   return post<unknown>("/api/json-cache/build", payload, { timeout: 1_800_000, ...options }).then(parseJsonCacheBuildResponse)
@@ -640,6 +640,13 @@ export function getJsonCacheStatus(
   options?: { signal?: AbortSignal },
 ): Promise<JsonCacheStatusResponse> {
   return request<unknown>(`/api/json-cache/status?path=${encodeURIComponent(path)}`, options).then(parseJsonCacheStatusResponse)
+}
+
+export function getJsonCacheStatusForSchema(
+  payload: { path: string; config_path?: string; flatten_schema?: Record<string, unknown> },
+  options?: { signal?: AbortSignal },
+): Promise<JsonCacheStatusResponse> {
+  return post<unknown>("/api/json-cache/status", payload, options).then(parseJsonCacheStatusResponse)
 }
 
 export function deleteJsonCache(

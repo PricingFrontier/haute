@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import math
 import threading
 import time
 import tomllib
+import weakref
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn
@@ -284,13 +287,23 @@ def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> b
 # WebSocket connections for live sync
 # ---------------------------------------------------------------------------
 # ``ws_clients`` is mutated from FastAPI's async handlers (ws_sync) AND from
-# the synchronous file-watcher callback path (broadcast is awaited but its
-# cleanup loop mutates the set).  On multi-worker deployments and on
+# the event-bus broadcast tasks scheduled by the file-watcher path. On
+# multi-worker deployments and on
 # free-threaded CPython (3.13 --disable-gil) ``set.add`` / ``set.discard``
 # are no longer GIL-atomic, so every add/discard must go through the
 # explicit lock below.
 ws_clients: set[WebSocket] = set()
 ws_clients_lock = threading.Lock()
+_WS_SEND_TIMEOUT_SECONDS = 1.0
+_ws_send_state_lock = threading.Lock()
+_ws_send_inflight: weakref.WeakSet[WebSocket] = weakref.WeakSet()
+_ws_send_pending: weakref.WeakKeyDictionary[WebSocket, deque[str]] = weakref.WeakKeyDictionary()
+
+
+def _clear_ws_send_state(ws: WebSocket) -> None:
+    with _ws_send_state_lock:
+        _ws_send_inflight.discard(ws)
+        _ws_send_pending.pop(ws, None)
 
 
 def ws_clients_add(ws: WebSocket) -> None:
@@ -303,6 +316,7 @@ def ws_clients_discard(ws: WebSocket) -> None:
     """Thread-safe ``ws_clients.discard(ws)``."""
     with ws_clients_lock:
         ws_clients.discard(ws)
+    _clear_ws_send_state(ws)
 
 
 def ws_clients_snapshot() -> list[WebSocket]:
@@ -316,7 +330,7 @@ async def broadcast(data: dict[str, Any]) -> None:
 
     Iterates a lock-protected snapshot of ``ws_clients`` so concurrent
     connects/disconnects cannot corrupt the set.  Dead clients discovered
-    during the iteration are removed under the same lock.
+    during the send fan-out are removed under the same lock.
     """
     try:
         payload = _json.dumps(data)
@@ -325,24 +339,59 @@ async def broadcast(data: dict[str, Any]) -> None:
         return
 
     snapshot = ws_clients_snapshot()
+    if not snapshot:
+        return
 
-    dead: list[WebSocket] = []
-    for ws in snapshot:
-        try:
-            await ws.send_text(payload)
-        except Exception:  # noqa: BLE001
-            # Any ``send_text`` failure (connection closed, transport
-            # error, ASGI shutdown, or a custom test double raising a
-            # plain ``Exception``) marks the client dead so the next
-            # broadcast doesn't waste a round-trip on it.  Narrowing
-            # this except causes flaky behaviour with ASGI clients
-            # that raise generic Exception subclasses.
-            dead.append(ws)
+    async def _send_serialized(ws: WebSocket, initial_payload: str) -> None:
+        current_payload = initial_payload
+        while True:
+            try:
+                await asyncio.wait_for(
+                    ws.send_text(current_payload),
+                    timeout=_WS_SEND_TIMEOUT_SECONDS,
+                )
+            except BaseException:
+                _clear_ws_send_state(ws)
+                raise
+
+            with _ws_send_state_lock:
+                pending = _ws_send_pending.get(ws)
+                if not pending:
+                    _ws_send_pending.pop(ws, None)
+                    _ws_send_inflight.discard(ws)
+                    return
+                current_payload = pending.popleft()
+                if not pending:
+                    _ws_send_pending.pop(ws, None)
+
+    async def _send_with_timeout(ws: WebSocket) -> str:
+        with _ws_send_state_lock:
+            if ws in _ws_send_inflight:
+                pending = _ws_send_pending.get(ws)
+                if pending is None:
+                    pending = deque()
+                    _ws_send_pending[ws] = pending
+                pending.append(payload)
+                return "queued"
+            _ws_send_inflight.add(ws)
+        await _send_serialized(ws, payload)
+        return "sent"
+
+    tasks = [asyncio.create_task(_send_with_timeout(ws)) for ws in snapshot]
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        raise
+
+    dead = [
+        ws for ws, result in zip(snapshot, results, strict=False) if isinstance(result, Exception)
+    ]
     if dead:
         logger.debug("broadcast_cleaned_dead_clients", count=len(dead))
-        with ws_clients_lock:
-            for ws in dead:
-                ws_clients.discard(ws)
+        for ws in dead:
+            ws_clients_discard(ws)
 
 
 # ---------------------------------------------------------------------------

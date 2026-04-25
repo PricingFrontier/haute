@@ -193,7 +193,15 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
       redoStack: [],
     })
     useSettingsStore.setState({
-      mlflow: { status: "pending", backend: "", host: "" },
+      mlflow: {
+        status: "pending",
+        backend: "",
+        host: "",
+        installed: null,
+        importable: null,
+        trackingConfigured: null,
+        detail: "",
+      },
       _mlflowFetching: false,
       _mlflowLastAttempt: 0,
     })

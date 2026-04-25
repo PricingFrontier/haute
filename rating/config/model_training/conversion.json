@@ -17,5 +17,9 @@
     "validation_size": 0,
     "holdout_size": 0,
     "seed": 42
+  },
+  "contract": {
+    "inputs": [],
+    "outputs": []
   }
 }

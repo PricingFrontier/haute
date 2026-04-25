@@ -106,6 +106,28 @@ fail() {
   FAIL=1
 }
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${seconds}s" "$@"
+    return
+  fi
+
+  uv run python -c '
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=timeout).returncode)
+except subprocess.TimeoutExpired:
+    print("Command timed out after %gs: %s" % (timeout, " ".join(cmd)), file=sys.stderr)
+    raise SystemExit(124)
+' "$seconds" "$@"
+}
+
 if [[ "$RUN_BACKEND" == true ]]; then
   step "Ruff lint (Python)"
   if uv run ruff check .; then
@@ -129,16 +151,27 @@ if [[ "$RUN_BACKEND" == true ]]; then
   fi
 
   if [[ "$QUICK" == false ]]; then
-    step "Python tests with coverage"
-    if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=90; then
-      pass "Python tests (coverage >=90%)"
+    step "Python test collection"
+    if run_with_timeout 300 uv run pytest tests/ --collect-only -q; then
+      pass "Python test collection"
     else
-      fail "Python tests"
+      fail "Python test collection"
+    fi
+
+    step "Python tests with coverage gates"
+    PYTHON_COVERAGE_JSON=".cache/coverage/backend.json"
+    mkdir -p "$(dirname "$PYTHON_COVERAGE_JSON")"
+    rm -f "$PYTHON_COVERAGE_JSON"
+    if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --timeout=60 --timeout-method=signal --cov=src/haute --cov-branch --cov-report=term-missing --cov-report="json:${PYTHON_COVERAGE_JSON}" --cov-fail-under=90 &&
+      uv run python scripts/check_critical_coverage.py --coverage-json "$PYTHON_COVERAGE_JSON"; then
+      pass "Python tests (global + critical coverage gates)"
+    else
+      fail "Python tests or critical coverage"
     fi
 
     if [[ "$RUN_PERF" == true ]]; then
       step "Python perf tests"
-      if uv run pytest tests/ -q -m perf; then
+      if uv run python scripts/run_perf_suite.py --output-dir .cache/perf; then
         pass "Python perf tests"
       else
         fail "Python perf tests"

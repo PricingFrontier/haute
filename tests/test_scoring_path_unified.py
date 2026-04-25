@@ -98,7 +98,7 @@ def _get_unified_scorer() -> Any:
             return fn
     pytest.skip(
         "Unified scorer entry point not yet implemented. "
-        "Expected one of: " + ", ".join(f"{m}.{a}" for m, a in candidates)
+        "Expected one of the known scorer API candidates."
     )
 
 

@@ -11,5 +11,9 @@
     "difference_to_market",
     "premium",
     "competitor_premium"
-  ]
+  ],
+  "contract": {
+    "inputs": [],
+    "outputs": []
+  }
 }

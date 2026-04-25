@@ -25,7 +25,15 @@ interface SettingsState {
   isSectionOpen: (key: string, defaultOpen?: boolean) => boolean
 
   // MLflow status cache (fetched once, shared by all panels)
-  mlflow: { status: "pending" | "connected" | "error"; backend: string; host: string }
+  mlflow: {
+    status: "pending" | "connected" | "error"
+    backend: string
+    host: string
+    installed: boolean | null
+    importable: boolean | null
+    trackingConfigured: boolean | null
+    detail: string
+  }
   _mlflowFetching: boolean
   _mlflowLastAttempt: number
   fetchMlflow: () => void
@@ -61,7 +69,15 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   // MLflow status cache — fetched once on first call, shared by all panels
-  mlflow: { status: "pending", backend: "", host: "" },
+  mlflow: {
+    status: "pending",
+    backend: "",
+    host: "",
+    installed: null,
+    importable: null,
+    trackingConfigured: null,
+    detail: "",
+  },
   _mlflowFetching: false,
   _mlflowLastAttempt: 0,
   fetchMlflow: () => {
@@ -80,15 +96,47 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     })
     Promise.race([checkMlflow(), timeout])
       .then((data) => {
-        if (data.mlflow_installed) {
-          set({ mlflow: { status: "connected", backend: data.backend || "local", host: data.databricks_host || "" } })
+        const mlflowImportable = data.mlflow_importable ?? data.mlflow_installed
+        const trackingConfigured = data.tracking_configured ?? (data.mlflow_installed && mlflowImportable)
+        if (data.mlflow_installed && mlflowImportable && trackingConfigured) {
+          set({
+            mlflow: {
+              status: "connected",
+              backend: data.backend || "local",
+              host: data.databricks_host || "",
+              installed: true,
+              importable: true,
+              trackingConfigured: true,
+              detail: data.detail || "",
+            },
+          })
         } else {
-          set({ mlflow: { status: "error", backend: "", host: "" } })
+          set({
+            mlflow: {
+              status: "error",
+              backend: data.backend || "",
+              host: data.databricks_host || "",
+              installed: data.mlflow_installed,
+              importable: mlflowImportable,
+              trackingConfigured,
+              detail: data.detail || "",
+            },
+          })
         }
       })
       .catch((e) => {
         console.warn("MLflow check failed:", e)
-        set({ mlflow: { status: "error", backend: "", host: "" } })
+        set({
+          mlflow: {
+            status: "error",
+            backend: "",
+            host: "",
+            installed: null,
+            importable: null,
+            trackingConfigured: null,
+            detail: e instanceof Error ? e.message : "MLflow status check failed",
+          },
+        })
       })
       .finally(() => {
         clearTimeout(timeoutId)
@@ -144,5 +192,9 @@ export function useMlflowStatus() {
   return {
     mlflowStatus: mlflow.status === "pending" ? "loading" as const : mlflow.status,
     mlflowBackend: mlflow.backend,
+    mlflowInstalled: mlflow.installed,
+    mlflowImportable: mlflow.importable,
+    mlflowTrackingConfigured: mlflow.trackingConfigured,
+    mlflowDetail: mlflow.detail,
   }
 }

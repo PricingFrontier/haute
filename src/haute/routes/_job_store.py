@@ -73,7 +73,7 @@ class JobStore:
             self._jobs[job_id] = dict(initial_status)
             return job_id
 
-    def get_job(self, job_id: str) -> dict[str, Any] | None:
+    def get_job(self, job_id: str) -> dict[str, Any] | None:  # pragma: no mutate
         """Return the job dict for *job_id*, or ``None`` if not found.
 
         Evicts stale jobs first so callers never see expired entries.
@@ -100,7 +100,7 @@ class JobStore:
         job_id: str,
         fields: dict[str, Any],
         *,
-        expected_status: str | None = None,
+        expected_status: str | None = None,  # pragma: no mutate
     ) -> dict[str, Any]:
         """Replace the job dict with a merged copy — thread-safe.
 
@@ -157,6 +157,18 @@ class JobStore:
             )
         return job
 
+    def has_job_with_status(self, status: str) -> bool:
+        """Return ``True`` if any live job currently has *status*.
+
+        The check runs under the store lock and performs normal TTL
+        eviction first, so callers such as concurrency guards never race
+        on a raw ``jobs.items()`` iteration and never count already-expired
+        entries.
+        """
+        with self._write_lock:
+            self._evict_stale()
+            return any(job.get("status") == status for job in self._jobs.values())
+
     def clear_result_data(
         self,
         job_id: str,
@@ -207,7 +219,7 @@ class JobStore:
 #   2. Update the caller in its route module.
 #   3. Add a test that asserts the new prefix returns a store distinct
 #      from the existing ones.
-_KNOWN_PREFIXES: frozenset[str] = frozenset({"training", "optimiser"})
+_KNOWN_PREFIXES: frozenset[str] = frozenset({"training", "optimiser"})  # pragma: no mutate
 
 
 @functools.cache

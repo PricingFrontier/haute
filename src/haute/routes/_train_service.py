@@ -31,6 +31,7 @@ logger = get_logger(component="server.modelling.train")
 # ── Default constants ─────────────────────────────────────────────
 _DEFAULT_BORDER_COUNT = 128  # CatBoost border count for VRAM estimation
 _DEFAULT_DEPTH = 6  # CatBoost tree depth for VRAM estimation
+_DEFAULT_TIMEOUT = int(os.environ.get("HAUTE_TRAIN_TIMEOUT", "3600"))
 
 # GLM config keys live at the top level of ModellingConfig (not inside
 # config.params).  Must be merged into train_params for GLMAlgorithm.
@@ -330,9 +331,7 @@ class TrainService:
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""
-        self._store._evict_stale()
-        running = [jid for jid, j in self._store.jobs.items() if j.get("status") == "running"]
-        if running:
+        if self._store.has_job_with_status("running"):
             raise HTTPException(
                 status_code=409,
                 detail="A training job is already running. Please wait for it to finish.",
@@ -557,7 +556,13 @@ class TrainService:
         split_raw = config.get("split", DEFAULT_SPLIT_DICT)
 
         start_time = time.monotonic()
-        self._store.atomic_update(job_id, {"start_time": start_time})
+        self._store.atomic_update(
+            job_id,
+            {
+                "start_time": start_time,
+                "timeout": config.get("timeout", _DEFAULT_TIMEOUT),
+            },
+        )
 
         def _progress(msg: str, frac: float) -> None:
             self._store.atomic_update(
@@ -567,6 +572,7 @@ class TrainService:
                     "message": msg,
                     "elapsed_seconds": time.monotonic() - start_time,
                 },
+                expected_status="running",
             )
 
         def _on_iteration(iteration: int, total: int, metrics: dict[str, float]) -> None:
@@ -578,6 +584,7 @@ class TrainService:
                     "train_loss": metrics,
                     "elapsed_seconds": time.monotonic() - start_time,
                 },
+                expected_status="running",
             )
 
         job = TrainingJob(
@@ -648,15 +655,24 @@ class TrainService:
                         "result": response,
                         "elapsed_seconds": time.monotonic() - start_time,
                     },
+                    expected_status="running",
                 )
             except ValueError as exc:
                 error_msg = str(exc)
                 logger.warning("training_validation_error", error=error_msg, node_id=node_id)
-                self._store.atomic_update(job_id, {"status": "error", "message": error_msg})
+                self._store.atomic_update(
+                    job_id,
+                    {"status": "error", "message": error_msg},
+                    expected_status="running",
+                )
             except Exception as exc:
                 error_msg = _friendly_error(exc)
                 logger.error("training_failed", error=str(exc), node_id=node_id)
-                self._store.atomic_update(job_id, {"status": "error", "message": error_msg})
+                self._store.atomic_update(
+                    job_id,
+                    {"status": "error", "message": error_msg},
+                    expected_status="running",
+                )
             finally:
                 if os.path.exists(tmp_parquet):
                     os.unlink(tmp_parquet)
@@ -664,7 +680,19 @@ class TrainService:
         try:
             thread = threading.Thread(target=_train_background, daemon=True)
             thread.start()
-        except Exception:
+        except Exception as exc:
             if os.path.exists(tmp_parquet):
                 os.unlink(tmp_parquet)
-            raise
+            logger.error("training_worker_start_failed", error=str(exc), node_id=node_id)
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Failed to start training worker: {exc}",
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Training worker failed to start. Check the server logs for details.",
+            ) from exc

@@ -15,11 +15,7 @@ def _normalise_schema(schema: dict[str, Any] | None) -> Any:
             "type": "array",
             "items": _normalise_schema(schema.get("items")),
         }
-    return {
-        key: schema[key]
-        for key in ("type", "title")
-        if key in schema
-    }
+    return {key: schema[key] for key in ("type", "title") if key in schema}
 
 
 def _api_contract_fingerprint() -> dict[str, dict[str, dict[str, Any]]]:
@@ -40,9 +36,7 @@ def _api_contract_fingerprint() -> dict[str, dict[str, dict[str, Any]]]:
                 if response is None:
                     continue
                 success_schema = (
-                    response.get("content", {})
-                    .get("application/json", {})
-                    .get("schema")
+                    response.get("content", {}).get("application/json", {}).get("schema")
                 )
                 break
 
@@ -204,6 +198,10 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
         },
+        "POST": {
+            "request_ref": "#/components/schemas/JsonCacheBuildRequest",
+            "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
+        },
     },
     "/api/mlflow/experiments": {
         "GET": {
@@ -335,6 +333,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/PipelineGraph-Output"},
+        },
+    },
+    "/api/pipeline/read-json": {
+        "POST": {
+            "request_ref": "#/components/schemas/ReadJsonRequest",
+            "success_schema": {"$ref": "#/components/schemas/ReadJsonResponse"},
         },
     },
     "/api/pipeline/preview": {

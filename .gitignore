@@ -45,6 +45,8 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+coverage-backend.json
+coverage.json
 *.cover
 *.py.cover
 .hypothesis/
@@ -221,6 +223,19 @@ catboost_info/
 
 # Browser E2E fixture project
 .tmp-e2e-project/
+
+# Mutation testing artifacts
+.mutation/
+.mutation-artifacts/
+.mutation-plan/
+
+# Performance and package-smoke artifacts
+.perf-artifacts/
+dist-smoke/
+.pkg-wheel/
+.pkg-sdist/
+.pkg-wheel-smoke/
+.pkg-sdist-smoke/
 
 # Built frontend (included in wheel via pyproject.toml artifacts)
 src/haute/static/

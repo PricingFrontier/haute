@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -401,6 +402,104 @@ class TestBroadcast:
         ws_clients.add(ws)
         await broadcast({"bad": object()})
         ws.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_slow_client_times_out_without_blocking_fast_client(self):
+        """One slow socket should not hold every other client hostage."""
+        fast_ws = AsyncMock()
+        slow_ws = AsyncMock()
+        fast_sent = asyncio.Event()
+
+        async def _slow_send(_payload: str) -> None:
+            await asyncio.sleep(0.05)
+
+        async def _fast_send(_payload: str) -> None:
+            fast_sent.set()
+
+        fast_ws.send_text.side_effect = _fast_send
+        slow_ws.send_text.side_effect = _slow_send
+
+        ws_clients.add(slow_ws)
+        ws_clients.add(fast_ws)
+
+        with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
+            broadcast_task = asyncio.create_task(broadcast({"type": "ping"}))
+            await asyncio.wait_for(fast_sent.wait(), timeout=0.02)
+            await broadcast_task
+
+        fast_ws.send_text.assert_called_once()
+        assert slow_ws not in ws_clients
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_overlapping_broadcasts_serialize_per_client(self):
+        """A slow client should see serialized sends in original broadcast order."""
+
+        class _SerializingWs:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+                self.payloads: list[str] = []
+                self.active = 0
+                self.max_active = 0
+
+            async def send_text(self, payload: str) -> None:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                self.payloads.append(json.loads(payload)["type"])
+                if len(self.payloads) == 1:
+                    self.started.set()
+                    await self.release.wait()
+                self.active -= 1
+
+        ws = _SerializingWs()
+        ws_clients.add(ws)
+
+        first = asyncio.create_task(broadcast({"type": "first"}))
+        await ws.started.wait()
+        await broadcast({"type": "second"})
+        await broadcast({"type": "third"})
+        assert ws.max_active == 1
+        assert ws.payloads == ["first"]
+
+        ws.release.set()
+        await first
+        await asyncio.sleep(0)
+
+        assert ws.max_active == 1
+        assert ws.payloads == ["first", "second", "third"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_cancelled_broadcast_clears_inflight_state(self):
+        """Cancelling one broadcast must not wedge future sends for that client."""
+
+        class _CancellableWs:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.payloads: list[str] = []
+                self._first = True
+
+            async def send_text(self, payload: str) -> None:
+                self.payloads.append(json.loads(payload)["type"])
+                if self._first:
+                    self._first = False
+                    self.started.set()
+                    await asyncio.Future()
+
+        ws = _CancellableWs()
+        ws_clients.add(ws)
+
+        first = asyncio.create_task(broadcast({"type": "first"}))
+        await ws.started.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        await broadcast({"type": "second"})
+
+        assert ws.payloads == ["first", "second"]
 
 
 # ===========================================================================

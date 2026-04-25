@@ -1,8 +1,7 @@
 """Haute - Open-source pricing engine for insurance teams on Databricks."""
 
-from typing import TYPE_CHECKING, Any
-
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, Any
 
 try:
     __version__ = version("haute")

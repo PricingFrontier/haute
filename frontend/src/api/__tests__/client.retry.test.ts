@@ -199,7 +199,14 @@ describe("retry: idempotent GET on 5xx", () => {
 
       const result = await checkMlflow()
 
-      expect(result).toEqual({ mlflow_installed: true, backend: "", databricks_host: "" })
+      expect(result).toEqual({
+        mlflow_installed: true,
+        mlflow_importable: true,
+        tracking_configured: true,
+        backend: "",
+        databricks_host: "",
+        detail: "",
+      })
       expect(mockFetch).toHaveBeenCalledTimes(2)
     } finally {
       stub.restore()
@@ -215,7 +222,14 @@ describe("retry: idempotent GET on 5xx", () => {
 
       const result = await checkMlflow()
 
-      expect(result).toEqual({ mlflow_installed: false, backend: "", databricks_host: "" })
+      expect(result).toEqual({
+        mlflow_installed: false,
+        mlflow_importable: false,
+        tracking_configured: false,
+        backend: "",
+        databricks_host: "",
+        detail: "",
+      })
       expect(mockFetch).toHaveBeenCalledTimes(2)
     } finally {
       stub.restore()

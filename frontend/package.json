@@ -11,9 +11,132 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage && node scripts/check-critical-coverage.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test --grep @smoke --retries=0",
     "test:e2e:headed": "playwright test --headed"
+  },
+  "criticalCoverage": {
+    "artifact": "coverage/coverage-summary.json",
+    "entries": [
+      {
+        "pattern": "src/api/client.ts",
+        "thresholds": {
+          "statements": 85,
+          "branches": 90,
+          "functions": 84,
+          "lines": 86
+        }
+      },
+      {
+        "pattern": "src/hooks/usePipelineAPI.ts",
+        "thresholds": {
+          "statements": 82,
+          "branches": 63,
+          "functions": 68,
+          "lines": 85
+        }
+      },
+      {
+        "pattern": "src/hooks/useWebSocketSync.ts",
+        "thresholds": {
+          "statements": 96,
+          "branches": 86,
+          "functions": 100,
+          "lines": 99
+        }
+      },
+      {
+        "pattern": "src/stores/use*Store.ts",
+        "thresholds": {
+          "statements": 94,
+          "branches": 87,
+          "functions": 91,
+          "lines": 95
+        }
+      },
+      {
+        "pattern": "src/types/guards.ts",
+        "thresholds": {
+          "statements": 86,
+          "branches": 70,
+          "functions": 85,
+          "lines": 87
+        }
+      },
+      {
+        "pattern": "src/hooks/useNodeHandlers.ts",
+        "thresholds": {
+          "statements": 91,
+          "branches": 80,
+          "functions": 76,
+          "lines": 100
+        }
+      },
+      {
+        "pattern": "src/hooks/useEdgeHandlers.ts",
+        "thresholds": {
+          "statements": 98,
+          "branches": 95,
+          "functions": 94,
+          "lines": 98
+        }
+      },
+      {
+        "pattern": "src/hooks/useGraphCanvasState.ts",
+        "thresholds": {
+          "statements": 96,
+          "branches": 89,
+          "functions": 94,
+          "lines": 97
+        }
+      },
+      {
+        "pattern": "src/utils/validateConfigRefs.ts",
+        "thresholds": {
+          "statements": 100,
+          "branches": 92,
+          "functions": 100,
+          "lines": 100
+        }
+      },
+      {
+        "pattern": "src/utils/buildGraph.ts",
+        "thresholds": {
+          "statements": 100,
+          "branches": 100,
+          "functions": 100,
+          "lines": 100
+        }
+      },
+      {
+        "pattern": "src/panels/NodePanel.tsx",
+        "thresholds": {
+          "statements": 92,
+          "branches": 81,
+          "functions": 93,
+          "lines": 96
+        }
+      },
+      {
+        "pattern": "src/panels/editors/banding/bandingUtils.ts",
+        "thresholds": {
+          "statements": 94,
+          "branches": 88,
+          "functions": 100,
+          "lines": 95
+        }
+      },
+      {
+        "pattern": "src/panels/editors/rating/ratingTableUtils.ts",
+        "thresholds": {
+          "statements": 100,
+          "branches": 92,
+          "functions": 100,
+          "lines": 100
+        }
+      }
+    ]
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

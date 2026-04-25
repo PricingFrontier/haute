@@ -11,6 +11,7 @@ import {
   cancelJsonCache,
   getJsonCacheProgress,
   getJsonCacheStatus,
+  getJsonCacheStatusForSchema,
   deleteJsonCache,
 } from "../../api/client"
 
@@ -26,13 +27,24 @@ type JsonCacheStatus = {
   cached_at: number
 }
 
-function JsonCacheButton({ dataPath }: { dataPath: string }) {
+function JsonCacheButton({
+  dataPath,
+  flattenSchema,
+}: {
+  dataPath: string
+  flattenSchema?: Record<string, unknown>
+}) {
+  const payload = { path: dataPath, flatten_schema: flattenSchema }
   return (
     <CacheFetchButton<JsonCacheStatus>
       resourceKey={dataPath}
-      getStatus={(key) => getJsonCacheStatus(key)}
+      getStatus={(key) =>
+        flattenSchema
+          ? getJsonCacheStatusForSchema({ ...payload, path: key })
+          : getJsonCacheStatus(key)
+      }
       startFetch={(key) =>
-        buildJsonCache({ path: key }).then(
+        buildJsonCache({ ...payload, path: key }).then(
           (data) => ({ cached: true, ...data }) as JsonCacheStatus,
         )
       }
@@ -62,6 +74,7 @@ export default function ApiInputEditor({
   accentColor: string
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
+  const flattenSchema = configField<Record<string, unknown> | undefined>(config, "flattenSchema", undefined)
   const { schema, loading: loadingSchema, fetchForPath } = useSchemaFetch(currentPath)
   const showCacheButton = currentPath && (currentPath.endsWith(".json") || currentPath.endsWith(".jsonl"))
   const [fileExpanded, setFileExpanded] = useState(false)
@@ -111,7 +124,7 @@ export default function ApiInputEditor({
         </div>
 
         {showCacheButton && (
-          <JsonCacheButton dataPath={currentPath} />
+          <JsonCacheButton dataPath={currentPath} flattenSchema={flattenSchema} />
         )}
 
       </div>

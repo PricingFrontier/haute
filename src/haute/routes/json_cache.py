@@ -66,12 +66,19 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> JsonCacheBuildRespons
     data_path = _resolve_data_path(body.path)
     config_path = _resolve_config_path(body.config_path)
     try:
-        from haute._json_flatten import JsonCacheCancelledError
-        from haute._json_flatten import build_json_cache as _build
+        from haute._json_flatten import (
+            JsonCacheCancelledError,
+            JsonFlattenDataError,
+            JsonFlattenSchemaError,
+        )
+        from haute._json_flatten import (
+            build_json_cache as _build,
+        )
 
         result = await run_blocking_with_response_timeout(
             _build,
             data_path=data_path,
+            schema=body.flatten_schema,
             config_path=config_path,
             timeout=_BUILD_TIMEOUT,
             operation="json_cache_build",
@@ -84,6 +91,14 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> JsonCacheBuildRespons
         )
     except JsonCacheCancelledError:
         raise HTTPException(status_code=499, detail="Cache build cancelled")
+    except JsonFlattenDataError as e:
+        line = e.context.get("line")
+        detail = e.message
+        if isinstance(line, int):
+            detail = f"{detail} at line {line}"
+        raise HTTPException(status_code=400, detail=detail) from None
+    except JsonFlattenSchemaError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid flatten schema: {e}") from None
     except HTTPException:
         raise
     except FileNotFoundError:
@@ -113,6 +128,43 @@ async def get_json_cache_progress(path: str) -> JsonCacheProgressResponse:
     if progress is None:
         return JsonCacheProgressResponse(active=False)
     return JsonCacheProgressResponse.model_validate({"active": True, **progress})
+
+
+@router.post("/status", response_model=JsonCacheStatusResponse)
+async def post_json_cache_status(body: JsonCacheBuildRequest) -> JsonCacheStatusResponse:
+    """Check whether a JSON file has been cached as parquet."""
+    data_path = _resolve_data_path(body.path)
+    config_path = _resolve_config_path(body.config_path)
+    from haute._json_flatten import (
+        JsonFlattenSchemaError,
+        json_cache_path_if_valid,
+    )
+    from haute._polars_utils import read_parquet_metadata
+
+    try:
+        cache_path = json_cache_path_if_valid(
+            data_path,
+            schema=body.flatten_schema,
+            config_path=config_path,
+        )
+    except JsonFlattenSchemaError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid flatten schema: {e}") from None
+    if cache_path is None:
+        return JsonCacheStatusResponse(cached=False, data_path=body.path)
+
+    meta = read_parquet_metadata(cache_path)
+    return JsonCacheStatusResponse.model_validate(
+        {
+            "cached": True,
+            "path": str(cache_path),
+            "data_path": data_path,
+            "row_count": meta["row_count"],
+            "column_count": meta["column_count"],
+            "columns": meta["columns"],
+            "size_bytes": meta["size_bytes"],
+            "cached_at": meta["mtime"],
+        }
+    )
 
 
 @router.get("/status", response_model=JsonCacheStatusResponse)

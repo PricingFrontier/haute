@@ -44,7 +44,6 @@ from haute.executor import execute_graph
 from haute.graph_utils import NodeType, PipelineGraph
 from haute.parser import parse_pipeline_file
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -164,7 +163,9 @@ class TestStarterPipelineParses:
     """
 
     @pytest.fixture(scope="class")
-    def parsed_starter(self, tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, PipelineGraph]:
+    def parsed_starter(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> tuple[Path, PipelineGraph]:
         project_root = tmp_path_factory.mktemp("starter-parses")
         runner = CliRunner()
         with _pushd(project_root):
@@ -256,9 +257,7 @@ class TestStarterPipelineExecutes:
     """
 
     @pytest.fixture(scope="class")
-    def executed_starter(
-        self, tmp_path_factory: pytest.TempPathFactory
-    ) -> _ExecutedStarterProject:
+    def executed_starter(self, tmp_path_factory: pytest.TempPathFactory) -> _ExecutedStarterProject:
         project_root = tmp_path_factory.mktemp("starter-exec")
         runner = CliRunner()
         with _pushd(project_root):

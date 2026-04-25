@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 import numpy as np
 import polars as pl
 import pytest
-from unittest.mock import patch
 
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
@@ -789,7 +791,9 @@ class TestTrainingJob:
         )
 
     @pytest.fixture(scope="class")
-    def basic_weighted_result(self, tmp_path_factory: pytest.TempPathFactory) -> tuple[TrainResult, Path]:
+    def basic_weighted_result(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> tuple[TrainResult, Path]:
         rng = np.random.RandomState(42)
         n = 60
         x1 = rng.randn(n)
