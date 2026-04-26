@@ -651,6 +651,12 @@ class TestEstimateSourceRowsEdgeCases:
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) == 42
 
+    def test_ignores_non_source_nodes(self) -> None:
+        node = _make_transform_node(node_id="transform")
+        graph = PipelineGraph(nodes=[node], edges=[])
+
+        assert estimate_source_rows(graph) is None
+
 
 # ---------------------------------------------------------------------------
 # estimate_safe_training_rows edge cases
@@ -778,6 +784,46 @@ class TestAvailableRamPlatformPaths:
                 result = available_ram_bytes()
         assert result == 2000 * 4096
 
+    def test_non_positive_sysconf_values_fall_through_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Invalid POSIX memory values are ignored instead of producing zero RAM."""
+        monkeypatch.setattr("sys.platform", "linux")
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=[0, 4096], create=True),
+        ):
+            result = available_ram_bytes()
+
+        assert result == 4 * 1024**3
+
+    def test_windows_global_memory_status_false_falls_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed Windows memory probe falls through to the conservative default."""
+        from types import SimpleNamespace
+
+        status_probe = MagicMock(return_value=False)
+        fake_ctypes = SimpleNamespace(
+            Structure=object,
+            c_ulong=int,
+            c_ulonglong=int,
+            sizeof=lambda _value: 1,
+            byref=lambda value: value,
+            windll=SimpleNamespace(kernel32=SimpleNamespace(GlobalMemoryStatusEx=status_probe)),
+        )
+
+        monkeypatch.setattr("sys.platform", "win32")
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=AttributeError, create=True),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            result = available_ram_bytes()
+
+        assert result == 4 * 1024**3
+        status_probe.assert_called_once()
+
     @pytest.mark.skipif(sys.platform != "win32", reason="ctypes.windll only exists on Windows")
     def test_windows_ctypes_failure_falls_to_4gib(self, monkeypatch) -> None:
         """When GlobalMemoryStatusEx raises OSError, falls to 4 GiB."""
@@ -867,6 +913,28 @@ class TestCountSourceRowsForNode:
                 result = _count_source_rows_for_node(node)
         assert result == 500
 
+    def test_api_input_jsonl_schema_incompatible_cache_uses_line_count(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """Incompatible JSONL caches should not drive RAM row estimates."""
+        from haute._json_flatten import build_json_cache
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / "data.jsonl"
+        path.write_text('{"x":1,"y":2}\n{"x":3,"y":4}\n', encoding="utf-8")
+        build_json_cache(str(path), schema={"x": "int"})
+        node = _make_source_node(
+            node_type="apiInput",
+            config={
+                "path": str(path),
+                "flattenSchema": {"x": "int", "y": "int"},
+            },
+        )
+
+        assert _count_source_rows_for_node(node) == 2
+
     def test_api_input_jsonl_uncached_file_exists(self, tmp_path) -> None:
         """API_INPUT .jsonl with no cache but file exists uses line count."""
         path = tmp_path / "data.jsonl"
@@ -929,6 +997,17 @@ class TestCountSourceRowsForNode:
         result = _count_source_rows_for_node(node)
         assert result == 77
 
+    def test_datasource_existing_unsupported_file_returns_none(self, tmp_path) -> None:
+        """Existing flat files only provide row estimates for known tabular formats."""
+        path = tmp_path / "notes.txt"
+        path.write_text("not,a,supported,table\n", encoding="utf-8")
+        node = _make_source_node(
+            node_type="dataSource",
+            config={"path": str(path), "sourceType": "flat_file"},
+        )
+
+        assert _count_source_rows_for_node(node) is None
+
     def test_exception_returns_none(self) -> None:
         """If _parquet_metadata raises, returns None and logs warning."""
         node = _make_source_node(
@@ -969,6 +1048,28 @@ class TestSourceMetadataForNode:
         ):
             result = _source_metadata_for_node(node)
         assert result == (100, 5)
+
+    def test_api_input_json_schema_incompatible_cache_returns_none(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """Incompatible JSON caches should not drive RAM column estimates."""
+        from haute._json_flatten import build_json_cache
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / "data.json"
+        path.write_text('[{"x":1,"y":2}]', encoding="utf-8")
+        build_json_cache(str(path), schema={"x": "int"})
+        node = _make_source_node(
+            node_type="apiInput",
+            config={
+                "path": str(path),
+                "flattenSchema": {"x": "int", "y": "int"},
+            },
+        )
+
+        assert _source_metadata_for_node(node) is None
 
     def test_api_input_json_uncached_returns_none(self) -> None:
         """API_INPUT .json with no cache returns None."""
@@ -1094,6 +1195,37 @@ class TestAncestorSourceMetadata:
         assert rows == 500
         assert cols == 3
 
+    def test_later_smaller_source_keeps_max_rows_but_updates_max_cols(self, tmp_path) -> None:
+        """Ancestor metadata keeps independent maxima for rows and column width."""
+        p1 = tmp_path / "big_rows.parquet"
+        pl.DataFrame({"a": range(500)}).write_parquet(str(p1))
+        p2 = tmp_path / "wide.parquet"
+        pl.DataFrame({"x": range(100), "y": range(100), "z": range(100)}).write_parquet(str(p2))
+
+        s1 = _make_source_node(
+            node_id="s1",
+            node_type="dataSource",
+            config={"path": str(p1), "sourceType": "flat_file"},
+        )
+        s2 = _make_source_node(
+            node_id="s2",
+            node_type="dataSource",
+            config={"path": str(p2), "sourceType": "flat_file"},
+        )
+        target = _make_modelling_node(node_id="m1")
+        graph = PipelineGraph(
+            nodes=[s1, s2, target],
+            edges=[
+                GraphEdge(id="e1", source="s1", target="m1"),
+                GraphEdge(id="e2", source="s2", target="m1"),
+            ],
+        )
+
+        rows, cols = _ancestor_source_metadata(graph, "m1")
+
+        assert rows == 500
+        assert cols == 3
+
     def test_no_source_nodes(self) -> None:
         """Graph with only transform + model returns (None, 0)."""
         t1 = _make_transform_node(node_id="t1")
@@ -1198,6 +1330,23 @@ class TestResolveTargetColumns:
         m1 = _make_modelling_node(node_id="m1")
         graph = PipelineGraph(nodes=[m1], edges=[])
         result = _resolve_target_columns(graph, "m1", "live")
+        assert result is None
+
+    def test_source_without_metadata_does_not_stop_parent_search(self) -> None:
+        """A source node with no metadata is treated like an unknown column source."""
+        src = _make_source_node(
+            node_id="s1",
+            node_type="dataSource",
+            config={"path": "/missing/source.parquet", "sourceType": "flat_file"},
+        )
+        m1 = _make_modelling_node(node_id="m1")
+        graph = PipelineGraph(
+            nodes=[src, m1],
+            edges=[GraphEdge(id="e1", source="s1", target="m1")],
+        )
+
+        result = _resolve_target_columns(graph, "m1", "live")
+
         assert result is None
 
     def test_skips_node_not_in_map(self) -> None:

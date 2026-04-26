@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from watchfiles import Change
 
 from tests.conftest import write_data_source_config
 
@@ -63,6 +66,14 @@ def client(pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from haute.server import app
 
     return TestClient(app)
+
+
+async def _run_file_watcher_and_drain() -> None:
+    """Run the file watcher once and yield to scheduled broadcast tasks."""
+    from haute.server import _file_watcher
+
+    await _file_watcher()
+    await asyncio.sleep(0)
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +709,112 @@ class TestBroadcast:
             ws_clients.discard(live_ws)
 
 
+class TestEventBusBroadcastBridge:
+    def test_skips_cleanly_without_running_loop(self) -> None:
+        from haute.server import _broadcast_event_as_ws_message
+
+        with patch("haute.server.logger.debug") as mock_debug:
+            _broadcast_event_as_ws_message("graph_update", {"graph": {}, "source_file": "x.py"})
+
+        mock_debug.assert_called_once()
+        assert mock_debug.call_args.args[0] == "event_bus_broadcast_skipped"
+
+    def test_schedules_broadcast_on_running_loop(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from haute.server import _broadcast_event_as_ws_message
+
+        async def _run() -> None:
+            fake_broadcast = AsyncMock()
+            with patch("haute.server.broadcast", fake_broadcast):
+                _broadcast_event_as_ws_message(
+                    "graph_update",
+                    {"graph": {"nodes": []}, "source_file": "x.py"},
+                )
+                await asyncio.sleep(0)
+
+            fake_broadcast.assert_awaited_once_with(
+                {"type": "graph_update", "graph": {"nodes": []}, "source_file": "x.py"}
+            )
+
+        asyncio.run(_run())
+
+    def test_logs_failed_broadcast_task(self) -> None:
+        from haute.server import _broadcast_event_as_ws_message
+
+        async def _boom(frame: dict[str, object]) -> None:
+            raise RuntimeError("ws boom")
+
+        async def _run() -> None:
+            with (
+                patch("haute.server.broadcast", _boom),
+                patch("haute.server.logger.error") as mock_error,
+            ):
+                _broadcast_event_as_ws_message(
+                    "parse_error",
+                    {"error": "bad syntax", "source_file": "x.py"},
+                )
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+
+            mock_error.assert_called()
+            assert any(
+                call.args
+                and call.args[0] == "event_bus_broadcast_failed"
+                and call.kwargs.get("error") == "ws boom"
+                for call in mock_error.call_args_list
+            )
+
+        asyncio.run(_run())
+
+    def test_default_bus_graph_and_parse_events_reach_registered_ws_client(self) -> None:
+        """Exercise the real event-bus subscribers through the broadcast layer."""
+        from haute._event_bus import default_bus
+        from haute.routes._helpers import ws_clients_add, ws_clients_discard
+
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.frames: list[dict[str, object]] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.frames.append(json.loads(payload))
+
+        async def _run() -> list[dict[str, object]]:
+            ws = _FakeWebSocket()
+            ws_clients_add(ws)  # type: ignore[arg-type]
+            try:
+                default_bus.publish(
+                    "graph.update",
+                    {"graph": {"nodes": [], "edges": []}, "source_file": "x.py"},
+                )
+                default_bus.publish(
+                    "parse.error",
+                    {"error": "bad syntax", "source_file": "x.py"},
+                )
+                for _ in range(20):
+                    if len(ws.frames) >= 2:
+                        break
+                    await asyncio.sleep(0)
+                return ws.frames
+            finally:
+                ws_clients_discard(ws)  # type: ignore[arg-type]
+
+        frames = asyncio.run(_run())
+
+        assert frames == [
+            {
+                "type": "graph_update",
+                "graph": {"nodes": [], "edges": []},
+                "source_file": "x.py",
+            },
+            {
+                "type": "parse_error",
+                "error": "bad syntax",
+                "source_file": "x.py",
+            },
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Self-write tracking
 # ---------------------------------------------------------------------------
@@ -762,12 +879,11 @@ class TestFileWatcher:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)  # allow debounce task to complete
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -802,12 +918,11 @@ class TestFileWatcher:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -840,12 +955,11 @@ class TestFileWatcher:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=True),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -854,6 +968,56 @@ class TestFileWatcher:
                 loop.close()
 
         assert len(broadcast_calls) == 0
+
+    def test_path_specific_self_write_does_not_skip_unrelated_user_edit(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A server write for one path must not suppress another file in the same batch."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        self_written = pipeline_dir / "server_saved.py"
+        user_edited = pipeline_dir / "test_pipeline.py"
+        self_written.write_text("import haute\n\npipeline = haute.Pipeline('server_saved')\n")
+        mark_self_write(self_written)
+
+        fake_changes = [
+            (Change.modified, str(self_written)),
+            (Change.modified, str(user_edited)),
+        ]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert [call["source_file"] for call in broadcast_calls] == [str(user_edited)]
 
 
 # ---------------------------------------------------------------------------
@@ -1258,12 +1422,11 @@ class TestFileWatcherJsonConfig:
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
             patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1307,12 +1470,11 @@ class TestFileWatcherJsonConfig:
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
             patch("haute.server.pipeline_dir", return_value=tmp_path),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1321,6 +1483,72 @@ class TestFileWatcherJsonConfig:
                 loop.close()
 
         assert len(broadcast_calls) == 0
+
+    def test_json_config_change_batched_with_py_change_still_reparses_all_pipelines(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Config changes affect any pipeline, even when batched with a .py edit."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+
+        other_pipeline = pipeline_dir / "other_pipeline.py"
+        other_pipeline.write_text(
+            'import haute\n\npipeline = haute.Pipeline("other_pipeline", description="")\n'
+        )
+
+        config_dir = pipeline_dir / "config"
+        config_dir.mkdir(exist_ok=True)
+        config_file = config_dir / "rates.json"
+        config_file.write_text('{"factor": 1.2}')
+
+        fake_changes = [
+            (Change.modified, str(config_file)),
+            (Change.modified, str(pipeline_dir / "test_pipeline.py")),
+        ]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+            patch(
+                "haute.server.discover_pipelines",
+                return_value=[
+                    pipeline_dir / "test_pipeline.py",
+                    other_pipeline,
+                ],
+            ),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        source_files = {call["source_file"] for call in broadcast_calls}
+        assert source_files == {
+            str(pipeline_dir / "test_pipeline.py"),
+            str(other_pipeline),
+        }
 
 
 class TestFileWatcherModuleChange:
@@ -1361,12 +1589,11 @@ class TestFileWatcherModuleChange:
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
             patch("haute.server.pipelines_importing_module", return_value=[test_py]),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1376,6 +1603,62 @@ class TestFileWatcherModuleChange:
 
         assert len(broadcast_calls) >= 1
         assert broadcast_calls[0]["type"] == "graph_update"
+
+    def test_nested_module_change_triggers_importing_pipeline_not_module_parse(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A nested module file is dependency code, not a standalone pipeline."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+
+        nested_module = pipeline_dir / "modules" / "pricing" / "helper.py"
+        nested_module.parent.mkdir(parents=True)
+        nested_module.write_text("def helper(): pass")
+        test_py = pipeline_dir / "test_pipeline.py"
+
+        fake_changes = [(Change.modified, str(nested_module))]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        parsed_paths: list[Path] = []
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        def _tracking_parse(path: Path):
+            parsed_paths.append(path)
+            return _real_parse(path)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server.pipelines_importing_module", return_value=[test_py]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_tracking_parse),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert parsed_paths == [test_py]
+        assert [call["source_file"] for call in broadcast_calls] == [str(test_py)]
 
 
 class TestFileWatcherParseError:
@@ -1412,12 +1695,11 @@ class TestFileWatcherParseError:
                 "haute.server.parse_pipeline_to_graph",
                 side_effect=SyntaxError("bad syntax"),
             ),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(0.5)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1428,6 +1710,120 @@ class TestFileWatcherParseError:
         assert len(broadcast_calls) >= 1
         assert broadcast_calls[0]["type"] == "parse_error"
         assert "bad syntax" in broadcast_calls[0]["error"]
+
+    def test_parse_error_then_success_recovers_without_restart(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A fixed file should recover inside the same watcher lifetime."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+
+        py_file = str(pipeline_dir / "test_pipeline.py")
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        async def _fake_awatch(*dirs, **kw):
+            yield [(Change.modified, py_file)]
+            await asyncio.sleep(0.02)
+            yield [(Change.modified, py_file)]
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        failed = {"value": False}
+
+        def _flaky_parse(path: Path):
+            if not failed["value"]:
+                failed["value"] = True
+                raise SyntaxError("bad syntax")
+            return _real_parse(path)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_flaky_parse),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        event_types = [call["type"] for call in broadcast_calls]
+        assert "parse_error" in event_types
+        assert "graph_update" in event_types
+        assert event_types.index("parse_error") < event_types.index("graph_update")
+
+    def test_reverting_to_last_good_file_after_parse_error_rebroadcasts_graph(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A parse-error banner must clear when the user reverts to the last good bytes."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.server import _last_broadcast_fp
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        monkeypatch.chdir(pipeline_dir)
+
+        py_path = pipeline_dir / "test_pipeline.py"
+        good_bytes = py_path.read_bytes()
+        fp_key = str(py_path.resolve())
+        _last_broadcast_fp[fp_key] = hashlib.sha256(good_bytes).hexdigest()
+
+        async def _fake_awatch(*dirs, **kw):
+            py_path.write_text("this is not valid python syntax !!!")
+            yield [(Change.modified, str(py_path))]
+            await asyncio.sleep(0.02)
+            py_path.write_bytes(good_bytes)
+            yield [(Change.modified, str(py_path))]
+
+        def _parse_or_raise(path: Path):
+            if path.read_bytes() != good_bytes:
+                raise SyntaxError("bad syntax")
+            return _real_parse(path)
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_parse_or_raise),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        event_types = [call["type"] for call in broadcast_calls]
+        assert event_types == ["parse_error", "graph_update"]
 
 
 class TestFileWatcherFingerprintDedup:
@@ -1450,7 +1846,7 @@ class TestFileWatcherFingerprintDedup:
         async def _fake_awatch(*dirs, **kw):
             yield [(Change.modified, py_file)]
             # Allow first flush to complete before yielding second
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0)
             yield [(Change.modified, py_file)]
 
         broadcast_calls: list[dict] = []
@@ -1467,12 +1863,11 @@ class TestFileWatcherFingerprintDedup:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
-            from haute.server import _file_watcher
 
             async def _run() -> None:
-                await _file_watcher()
-                await asyncio.sleep(1.0)
+                await _run_file_watcher_and_drain()
 
             loop = asyncio.new_event_loop()
             try:
@@ -1483,6 +1878,165 @@ class TestFileWatcherFingerprintDedup:
         # First change broadcasts, second with same fingerprint is skipped
         graph_updates = [c for c in broadcast_calls if c["type"] == "graph_update"]
         assert len(graph_updates) == 1
+
+
+class TestFileWatcherRecovery:
+    def test_crashed_watcher_cancels_pending_debounce_flush(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A crashed watcher must not leave a stale debounce flush running."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(pipeline_dir)
+        py_file = str(pipeline_dir / "test_pipeline.py")
+        published: list[tuple[str, dict[str, object]]] = []
+
+        class _FakeGraph:
+            nodes: list[object] = []
+
+            def model_dump(self) -> dict[str, object]:
+                return {"nodes": [], "edges": []}
+
+        async def _crashy_awatch(*dirs, **kw):
+            yield [(Change.modified, py_file)]
+            raise RuntimeError("awatch boom")
+
+        class _BusStub:
+            def publish(self, event: str, payload: dict[str, object]) -> None:
+                published.append((event, payload))
+
+        async def _run() -> None:
+            with (
+                patch("watchfiles.awatch", _crashy_awatch),
+                patch("haute.server.parse_pipeline_to_graph", return_value=_FakeGraph()),
+                patch("haute.server.default_bus", _BusStub()),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server._DEBOUNCE_SECONDS", 0.05),
+            ):
+                with pytest.raises(RuntimeError, match="awatch boom"):
+                    await _file_watcher()
+                await asyncio.sleep(0.1)
+
+        asyncio.run(_run())
+
+        assert published == []
+
+    def test_flush_error_requeues_same_batch_without_new_event(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed flush should retry the current batch even without a second edit."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(pipeline_dir)
+        py_file = str(pipeline_dir / "test_pipeline.py")
+        published: list[tuple[str, dict[str, object]]] = []
+
+        class _BusStub:
+            def publish(self, event: str, payload: dict[str, object]) -> None:
+                published.append((event, payload))
+
+        async def _single_change_awatch(*dirs, **kw):
+            yield [(Change.modified, py_file)]
+            await asyncio.sleep(0.02)
+
+        async def _run() -> None:
+            with (
+                patch("watchfiles.awatch", _single_change_awatch),
+                patch("haute.server.default_bus", _BusStub()),
+                patch("haute.server.is_self_write", return_value=False),
+                patch(
+                    "haute.server.invalidate_pipeline_index",
+                    side_effect=[RuntimeError("cache boom"), None],
+                ),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+                await _file_watcher()
+
+        asyncio.run(_run())
+
+        assert any(event == "graph.update" for event, _ in published)
+
+    def test_flush_error_recovery_allows_later_change(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """One unexpected flush failure should not kill later watcher work."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+
+        py_file = str(pipeline_dir / "test_pipeline.py")
+
+        async def _fake_awatch(*dirs, **kw):
+            yield [(Change.modified, py_file)]
+            await asyncio.sleep(0.02)
+            yield [(Change.modified, py_file)]
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch(
+                "haute.server.invalidate_pipeline_index",
+                side_effect=[RuntimeError("cache boom"), None],
+            ),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert any(call["type"] == "graph_update" for call in broadcast_calls)
+
+    def test_watcher_forever_restarts_after_crash(self):
+        """The outer watcher loop should restart after an unexpected crash."""
+        from haute.server import _watcher_forever
+
+        async def _run() -> None:
+            restarted = asyncio.Event()
+            calls: list[str] = []
+
+            async def _flaky_file_watcher() -> None:
+                calls.append("call")
+                if len(calls) == 1:
+                    raise RuntimeError("watcher boom")
+                restarted.set()
+                await asyncio.Future()
+
+            with (
+                patch("haute.server._file_watcher", _flaky_file_watcher),
+                patch("haute.server._WATCHER_RESTART_DELAY_SECONDS", 0),
+            ):
+                task = asyncio.create_task(_watcher_forever())
+                try:
+                    await asyncio.wait_for(restarted.wait(), timeout=1.0)
+                finally:
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+
+            assert len(calls) >= 2
+
+        asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------

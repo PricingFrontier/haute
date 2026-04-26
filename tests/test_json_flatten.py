@@ -14,6 +14,7 @@ from haute._json_flatten import (
     _LARGE_FILE_THRESHOLD,
     _MIN_CHUNK_ROWS,
     JsonCacheCancelledError,
+    JsonFlattenSchemaError,
     _adaptive_chunk_size,
     _arrow_schema_from_flatten,
     _build_flatten_exprs,
@@ -44,10 +45,12 @@ from haute._json_flatten import (
     infer_schema,
     is_large_json,
     json_cache_info,
+    json_cache_path_if_valid,
     load_samples,
     read_json_flat,
     schema_columns,
 )
+from haute.errors import HauteError
 
 # ---------------------------------------------------------------------------
 # Type inference helpers
@@ -135,6 +138,32 @@ class TestInferSchema:
         schema = infer_schema([{"claims": []}])
         assert schema == {"claims": {"$max": 0, "$items": {}}}
 
+    def test_empty_object_then_populated_object_merges_fields(self):
+        schema = infer_schema([{"vehicle": {}}, {"vehicle": {"make": "Ford"}}])
+        assert schema == {"vehicle": {"make": "str"}}
+
+    def test_empty_array_then_populated_array_merges_items_and_max(self):
+        schema = infer_schema([{"claims": []}, {"claims": [{"amount": 100}]}])
+        assert schema == {"claims": {"$max": 1, "$items": {"amount": "int"}}}
+
+    def test_array_of_empty_objects_then_populated_objects_merges_item_fields(self):
+        schema = infer_schema([{"drivers": [{}]}, {"drivers": [{"name": "Alice"}]}])
+        assert schema == {"drivers": {"$max": 1, "$items": {"name": "str"}}}
+
+    @pytest.mark.parametrize("bad_key", ["", "a.b", "$max", "$items", "1", "001"])
+    def test_ambiguous_object_keys_fail_loudly(self, bad_key: str):
+        with pytest.raises(JsonFlattenSchemaError, match="Unsupported JSON object key"):
+            infer_schema([{bad_key: "value"}])
+
+    def test_nested_reserved_schema_key_fails_loudly(self):
+        with pytest.raises(JsonFlattenSchemaError) as exc_info:
+            infer_schema([{"outer": {"$max": 1}}])
+
+        message = str(exc_info.value)
+        assert "Unsupported JSON object key" in message
+        assert "path=outer" in message
+        assert "key=$max" in message
+
     def test_null_value_defaults_to_str(self):
         schema = infer_schema([{"field": None}])
         assert schema == {"field": "str"}
@@ -217,6 +246,53 @@ class TestInferSchema:
             },
         }
         assert schema == expected
+
+    def test_object_and_array_conflict_is_order_invariant(self):
+        first = infer_schema([{"contact": {"email": "a@example.com"}}, {"contact": []}])
+        second = infer_schema([{"contact": []}, {"contact": {"email": "a@example.com"}}])
+        expected = {"contact": {"$max": 1, "$items": {"email": "str"}}}
+        assert first == expected
+        assert second == expected
+
+    def test_scalar_and_array_conflict_promotes_to_richer_array_schema(self):
+        legacy = {"contact": "unknown"}
+        structured = {
+            "contact": [
+                {"email": "a@example.com", "verified": True},
+                {"email": "b@example.com"},
+            ],
+        }
+
+        first = infer_schema([legacy, structured])
+        second = infer_schema([structured, legacy])
+
+        expected = {
+            "contact": {
+                "$max": 2,
+                "$items": {"email": "str", "verified": "bool"},
+            },
+        }
+        assert first == expected
+        assert second == expected
+
+    def test_mixed_array_item_shapes_keep_richer_item_schema(self):
+        schema = infer_schema(
+            [
+                {
+                    "events": [
+                        "legacy-note",
+                        {"type": "renewal", "premium": 125.50},
+                    ],
+                },
+            ]
+        )
+
+        assert schema == {
+            "events": {
+                "$max": 2,
+                "$items": {"type": "str", "premium": "float"},
+            },
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -308,10 +384,75 @@ class TestFlatten:
             "drivers.2.claims.1.amount": None,
         }
 
+    def test_nested_array_of_scalars(self):
+        schema = {"matrix": {"$max": 2, "$items": {"$max": 2, "$items": "int"}}}
+        result = flatten({"matrix": [[1, 2], [3]]}, schema)
+        assert result == {
+            "matrix.1.1": 1,
+            "matrix.1.2": 2,
+            "matrix.2.1": 3,
+            "matrix.2.2": None,
+        }
+
+    def test_non_list_value_under_array_schema_is_treated_as_singleton(self):
+        schema = {"contact": {"$max": 1, "$items": {"email": "str"}}}
+        result = flatten({"contact": {"email": "a@example.com"}}, schema)
+        assert result == {"contact.1.email": "a@example.com"}
+
+    def test_scalar_under_array_schema_is_treated_as_singleton(self):
+        schema = {"scores": {"$max": 3, "$items": "int"}}
+        result = flatten({"scores": 99}, schema)
+        assert result == {"scores.1": 99, "scores.2": None, "scores.3": None}
+
+    def test_non_mapping_under_object_schema_nulls_all_leaves(self):
+        schema = {
+            "driver": {
+                "name": "str",
+                "claims": {"$max": 1, "$items": {"amount": "int"}},
+            },
+        }
+        result = flatten({"driver": ["not", "an", "object"]}, schema)
+        assert result == {"driver.name": None, "driver.claims.1.amount": None}
+
+    def test_mixed_array_item_shapes_flatten_missing_richer_fields_to_none(self):
+        schema = {
+            "events": {
+                "$max": 2,
+                "$items": {"type": "str", "premium": "float"},
+            },
+        }
+        result = flatten(
+            {
+                "events": [
+                    "legacy-note",
+                    {"type": "renewal", "premium": 125.50},
+                ],
+            },
+            schema,
+        )
+        assert result == {
+            "events.1.type": None,
+            "events.1.premium": None,
+            "events.2.type": "renewal",
+            "events.2.premium": 125.50,
+        }
+
     def test_extra_data_ignored(self):
         schema = {"a": "str"}
         result = flatten({"a": "hello", "b": "ignored"}, schema)
         assert result == {"a": "hello"}
+
+    def test_manual_schema_with_dotted_key_fails_before_overwriting_values(self):
+        schema = {"a.b": "int", "a": {"b": "int"}}
+
+        with pytest.raises(JsonFlattenSchemaError, match="Unsupported JSON object key"):
+            flatten({"a.b": 1, "a": {"b": 2}}, schema)
+
+    def test_manual_schema_with_numeric_path_segment_fails_before_array_collision(self):
+        schema = {"items": {"$max": 1, "$items": {"1": "str"}}}
+
+        with pytest.raises(JsonFlattenSchemaError, match="Unsupported JSON object key"):
+            flatten({"items": [{"1": "literal"}]}, schema)
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +473,15 @@ class TestSchemaColumns:
         schema = {"items": {"$max": 2, "$items": {"x": "int"}}}
         assert schema_columns(schema) == ["items.1.x", "items.2.x"]
 
+    def test_nested_array_of_scalars(self):
+        schema = {"matrix": {"$max": 2, "$items": {"$max": 2, "$items": "int"}}}
+        assert schema_columns(schema) == [
+            "matrix.1.1",
+            "matrix.1.2",
+            "matrix.2.1",
+            "matrix.2.2",
+        ]
+
     def test_max_zero_skipped(self):
         schema = {"items": {"$max": 0, "$items": {}}}
         assert schema_columns(schema) == []
@@ -345,6 +495,21 @@ class TestSchemaColumns:
         cols = schema_columns(schema)
         flat = flatten(None, schema)
         assert cols == list(flat.keys())
+
+    def test_ambiguous_schema_key_fails_loudly(self):
+        with pytest.raises(JsonFlattenSchemaError, match="Unsupported JSON object key"):
+            schema_columns({"a.b": "int", "a": {"b": "int"}})
+
+
+class TestCollisionContracts:
+    def test_dotted_key_collision_fails_loudly(self):
+        schema = {"driver": {"name": "str"}, "driver.name": "str"}
+
+        with pytest.raises(HauteError, match="Unsupported JSON object key"):
+            flatten(
+                {"driver": {"name": "nested"}, "driver.name": "literal"},
+                schema,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +540,13 @@ class TestConsistency:
         assert flat["meta.source"] == "web"
         assert flat["tags.1"] == "a"
         assert flat["tags.2"] == "b"
+
+    def test_inferred_column_order_is_first_seen_order(self):
+        samples = [{"b": 1, "a": 1}, {"c": 1, "a": 2}]
+        reversed_samples = list(reversed(samples))
+
+        assert schema_columns(infer_schema(samples)) == ["b", "a", "c"]
+        assert schema_columns(infer_schema(reversed_samples)) == ["c", "a", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +989,9 @@ class TestBuildJsonCache:
         assert result["column_count"] == 1
         assert "name" in result["columns"]
         assert "extra" not in result["columns"]
+        assert json_cache_path_if_valid(str(data_file), schema={"name": "str"}) == Path(
+            result["path"]
+        )
 
     def test_cancel_stops_build(self, tmp_path, monkeypatch):
         """Cancelling a build raises JsonCacheCancelledError and cleans up."""
@@ -1009,6 +1184,41 @@ class TestSchemaLeafTypes:
         leaf_names = [name for name, _ in _schema_leaf_types(schema)]
         assert leaf_names == schema_columns(schema)
 
+    def test_deep_array_leaf_types_preserve_column_order_and_types(self):
+        schema = {
+            "policy": {
+                "id": "str",
+                "drivers": {
+                    "$max": 2,
+                    "$items": {
+                        "name": "str",
+                        "claims": {"$max": 2, "$items": {"amount": "float"}},
+                    },
+                },
+            },
+            "active": "bool",
+        }
+
+        assert _schema_leaf_types(schema) == [
+            ("policy.id", "str"),
+            ("policy.drivers.1.name", "str"),
+            ("policy.drivers.1.claims.1.amount", "float"),
+            ("policy.drivers.1.claims.2.amount", "float"),
+            ("policy.drivers.2.name", "str"),
+            ("policy.drivers.2.claims.1.amount", "float"),
+            ("policy.drivers.2.claims.2.amount", "float"),
+            ("active", "bool"),
+        ]
+
+    def test_nested_array_leaf_types_match_schema_columns(self):
+        schema = {"matrix": {"$max": 2, "$items": {"$max": 2, "$items": "int"}}}
+        assert _schema_leaf_types(schema) == [
+            ("matrix.1.1", "int"),
+            ("matrix.1.2", "int"),
+            ("matrix.2.1", "int"),
+            ("matrix.2.2", "int"),
+        ]
+
 
 class TestArrowSchemaFromFlatten:
     def test_maps_types_correctly(self):
@@ -1027,6 +1237,13 @@ class TestArrowSchemaFromFlatten:
         arrow = _arrow_schema_from_flatten(schema)
         for field in arrow:
             assert field.nullable
+
+    def test_nested_array_fields_are_included_once(self):
+        schema = {"matrix": {"$max": 2, "$items": {"$max": 2, "$items": "int"}}}
+
+        arrow = _arrow_schema_from_flatten(schema)
+
+        assert arrow.names == ["matrix.1.1", "matrix.1.2", "matrix.2.1", "matrix.2.2"]
 
 
 class TestChunked:
@@ -1289,6 +1506,42 @@ class TestBuildFlattenExprs:
         assert result["drivers.1.claims.1.amount"][0] == 500
         assert result["drivers.2.name"][0] is None
         assert result["drivers.2.claims.1.amount"][0] is None
+
+    def test_exprs_match_python_flatten_for_nested_rows_with_missing_data(self):
+        schema = {
+            "quote_id": "str",
+            "driver": {"name": "str", "age": "int"},
+            "coverages": {
+                "$max": 2,
+                "$items": {
+                    "code": "str",
+                    "limits": {"$max": 2, "$items": "int"},
+                },
+            },
+            "flags": {"$max": 2, "$items": "bool"},
+        }
+        rows = [
+            {
+                "quote_id": "Q1",
+                "driver": {"name": "Alice", "age": 30},
+                "coverages": [
+                    {"code": "bi", "limits": [100, 200]},
+                    {"code": "pd", "limits": [50]},
+                ],
+                "flags": [True],
+            },
+            {
+                "quote_id": "Q2",
+                "driver": None,
+                "coverages": [],
+                "flags": [],
+            },
+        ]
+
+        result = pl.from_dicts(rows).select(_build_flatten_exprs(schema))
+
+        assert result.columns == schema_columns(schema)
+        assert result.to_dicts() == [flatten(row, schema) for row in rows]
 
 
 class TestAdaptiveChunkSize:
@@ -1573,6 +1826,16 @@ class TestReadJsonFlatJSONL:
         df = lf.collect()
         assert df.columns == ["x"]
         assert df["x"].to_list() == [1, 2]
+
+    def test_jsonl_with_ambiguous_keys_fails_before_cache_write(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "ambiguous.jsonl"
+        data_file.write_text('{"a.b": 1, "a": {"b": 2}}\n')
+
+        with pytest.raises(JsonFlattenSchemaError, match="Unsupported JSON object key"):
+            read_json_flat(str(data_file))
+
+        assert not _json_cache_path(str(data_file)).exists()
 
     def test_jsonl_blank_lines_only(self, tmp_path, monkeypatch):
         """JSONL file with only blank lines produces an empty result."""

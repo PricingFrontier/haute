@@ -110,9 +110,10 @@ describe("OptimiserPreview", () => {
       baseline_constraints: { loss_ratio: 0.60 },
       lambdas: { loss_ratio: 0.006 },
       converged: true,
+      error: null,
     })
-    mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_my_optimiser.json" })
-    mockLogOptimiserToMlflow.mockResolvedValue({ status: "ok", run_id: "abc123" })
+    mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_my_optimiser.json", message: "" })
+    mockLogOptimiserToMlflow.mockResolvedValue({ status: "ok", backend: "mlflow", experiment_name: "", run_id: "abc123", run_url: null, tracking_uri: "", error: null })
   })
 
   describe("Summary tab (default when no frontier)", () => {

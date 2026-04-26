@@ -35,7 +35,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("clicking button calls logToMlflow", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "ok", experiment_name: "test_exp" })
+    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "mlflow", experiment_name: "test_exp", run_id: null, run_url: null, tracking_uri: "", error: null })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(screen.getByText(/Log to MLflow/))
     await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledOnce())
@@ -44,9 +44,12 @@ describe("MlflowExportSection", () => {
   it("shows success result after logging", async () => {
     mockLogToMlflow.mockResolvedValue({
       status: "ok",
+      backend: "mlflow",
       experiment_name: "pricing_model",
       run_id: "run_abc",
       run_url: "https://example.com/run/abc",
+      tracking_uri: "http://localhost:5000",
+      error: null,
     })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(screen.getByText(/Log to MLflow/))
@@ -57,7 +60,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("shows error result on failure", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "error", error: "Experiment not found" })
+    mockLogToMlflow.mockResolvedValue({ status: "error", backend: "mlflow", experiment_name: "", run_id: null, run_url: null, tracking_uri: "", error: "Experiment not found" })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(screen.getByText(/Log to MLflow/))
     await waitFor(() => {
@@ -76,7 +79,7 @@ describe("MlflowExportSection", () => {
 
   it("calls onMlflowResult callback with result", async () => {
     const onResult = vi.fn()
-    mockLogToMlflow.mockResolvedValue({ status: "ok", experiment_name: "test" })
+    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "mlflow", experiment_name: "test", run_id: null, run_url: null, tracking_uri: "", error: null })
     render(<MlflowExportSection {...makeProps({ onMlflowResult: onResult })} />)
     fireEvent.click(screen.getByText(/Log to MLflow/))
     await waitFor(() => {

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 import numpy as np
 import polars as pl
 import pytest
@@ -23,6 +26,21 @@ from haute.modelling._split import (
     split_mask,
 )
 from haute.modelling._training_job import TrainingJob, TrainResult
+
+
+def _stub_optional_catboost_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep training-path tests focused on their contract, not optional charts."""
+    monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *a, **kw: [])
+    monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *a, **kw: [])
+    monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
+
+
+def _fast_training_params(**overrides: object) -> dict[str, object]:
+    """Cheap-but-real CatBoost settings for plumbing-oriented tests."""
+    params: dict[str, object] = {"iterations": 4, "depth": 2}
+    params.update(overrides)
+    return params
+
 
 # ---------------------------------------------------------------------------
 # SplitConfig validation
@@ -621,7 +639,7 @@ class TestCatBoostAlgorithm:
             cat_features=["cat1"],
             target="target",
             weight="weight",
-            params={"iterations": 10, "depth": 3},
+            params=_fast_training_params(),
             task="regression",
         )
         assert isinstance(fit_result, FitResult)
@@ -637,7 +655,7 @@ class TestCatBoostAlgorithm:
             cat_features=["cat1"],
             target="target",
             weight=None,
-            params={"iterations": 10, "depth": 3},
+            params=_fast_training_params(),
             task="regression",
         )
         importance = algo.feature_importance(fit_result.model)
@@ -652,7 +670,7 @@ class TestCatBoostAlgorithm:
             cat_features=[],
             target="target",
             weight=None,
-            params={"iterations": 5},
+            params=_fast_training_params(iterations=3),
             task="regression",
         )
         model = fit_result.model
@@ -682,7 +700,7 @@ class TestCatBoostAlgorithm:
             cat_features=[],
             target="binary_target",
             weight=None,
-            params={"iterations": 10},
+            params=_fast_training_params(),
             task="classification",
         )
         preds = algo.predict(fit_result.model, df, ["x1", "x2"])
@@ -712,16 +730,17 @@ class TestCatBoostAlgorithm:
     def test_loss_history_collected(self, train_data):
         """Loss history is collected even without eval_df."""
         algo = CatBoostAlgorithm()
+        params = _fast_training_params()
         fit_result = algo.fit(
             train_data,
             features=["x1", "x2"],
             cat_features=[],
             target="target",
             weight=None,
-            params={"iterations": 10},
+            params=params,
             task="regression",
         )
-        assert len(fit_result.loss_history) == 10
+        assert len(fit_result.loss_history) == params["iterations"]
         assert "iteration" in fit_result.loss_history[0]
         assert any(k.startswith("train_") for k in fit_result.loss_history[0])
 
@@ -736,7 +755,7 @@ class TestCatBoostAlgorithm:
             cat_features=[],
             target="target",
             weight=None,
-            params={"iterations": 10, "depth": 3},
+            params=_fast_training_params(),
             task="regression",
             eval_df=eval_data,
         )
@@ -751,10 +770,14 @@ class TestCatBoostAlgorithm:
 
 
 class TestTrainingJob:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     @pytest.fixture()
     def synth_data(self) -> pl.DataFrame:
         rng = np.random.RandomState(42)
-        n = 100
+        n = 60
         x1 = rng.randn(n)
         x2 = rng.randn(n)
         return pl.DataFrame(
@@ -767,36 +790,53 @@ class TestTrainingJob:
             }
         )
 
-    def test_basic_training(self, synth_data, tmp_path):
-        job = TrainingJob(
-            name="test_model",
-            data=synth_data,
-            target="ClaimCount",
-            weight="Exposure",
-            exclude=["IDpol"],
-            params={"iterations": 10, "depth": 3},
-            output_dir=str(tmp_path),
+    @pytest.fixture(scope="class")
+    def basic_weighted_result(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> tuple[TrainResult, Path]:
+        rng = np.random.RandomState(42)
+        n = 60
+        x1 = rng.randn(n)
+        x2 = rng.randn(n)
+        synth_data = pl.DataFrame(
+            {
+                "IDpol": list(range(n)),
+                "x1": x1,
+                "x2": x2,
+                "Exposure": np.ones(n),
+                "ClaimCount": (x1 + x2 + rng.randn(n) * 0.5).clip(0),
+            }
         )
-        result = job.run()
+        output_dir = tmp_path_factory.mktemp("trainingjob-basic")
+        with (
+            patch.object(CatBoostAlgorithm, "shap_summary", return_value=[]),
+            patch.object(CatBoostAlgorithm, "feature_importance_typed", return_value=[]),
+            patch("haute.modelling._metrics.compute_pdp", return_value=[]),
+        ):
+            job = TrainingJob(
+                name="test_model",
+                data=synth_data,
+                target="ClaimCount",
+                weight="Exposure",
+                exclude=["IDpol"],
+                params=_fast_training_params(),
+                output_dir=str(output_dir),
+            )
+            result = job.run()
+        return result, output_dir
+
+    def test_basic_training(self, basic_weighted_result, synth_data):
+        result, output_dir = basic_weighted_result
         assert isinstance(result, TrainResult)
         assert "gini" in result.metrics
         assert "rmse" in result.metrics
         assert result.train_rows + result.test_rows == len(synth_data)
         assert len(result.features) == 2  # x1, x2
-        assert (tmp_path / "test_model.cbm").exists()
+        assert (output_dir / "test_model.cbm").exists()
 
-    def test_feature_derivation(self, synth_data, tmp_path):
+    def test_feature_derivation(self, basic_weighted_result):
         """Features = all columns - target - weight - exclude."""
-        job = TrainingJob(
-            name="feat_test",
-            data=synth_data,
-            target="ClaimCount",
-            weight="Exposure",
-            exclude=["IDpol"],
-            params={"iterations": 5},
-            output_dir=str(tmp_path),
-        )
-        result = job.run()
+        result, _ = basic_weighted_result
         assert set(result.features) == {"x1", "x2"}
 
     def test_missing_target_raises(self, synth_data, tmp_path):
@@ -825,24 +865,15 @@ class TestTrainingJob:
         with pytest.raises(ValueError, match="empty"):
             job.run()
 
-    def test_with_weight_column(self, synth_data, tmp_path):
-        job = TrainingJob(
-            name="weighted",
-            data=synth_data,
-            target="ClaimCount",
-            weight="Exposure",
-            exclude=["IDpol"],
-            params={"iterations": 5},
-            output_dir=str(tmp_path),
-        )
-        result = job.run()
+    def test_with_weight_column(self, basic_weighted_result):
+        result, _ = basic_weighted_result
         assert result.metrics, "metrics dict should not be empty"
         for k, v in result.metrics.items():
             assert np.isfinite(v), f"metric '{k}' is not finite: {v}"
 
     def test_classification_task(self, tmp_path):
         rng = np.random.RandomState(42)
-        n = 100
+        n = 60
         df = pl.DataFrame(
             {
                 "x1": rng.randn(n),
@@ -855,7 +886,7 @@ class TestTrainingJob:
             data=df,
             target="label",
             task="classification",
-            params={"iterations": 10},
+            params=_fast_training_params(),
             metrics=["auc", "logloss"],
             output_dir=str(tmp_path),
         )
@@ -874,7 +905,7 @@ class TestTrainingJob:
             data=synth_data,
             target="ClaimCount",
             exclude=["IDpol", "Exposure"],
-            params={"iterations": 5},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         job.run(progress=_progress)
@@ -891,12 +922,12 @@ class TestTrainingJob:
             data=synth_data,
             target="ClaimCount",
             exclude=["IDpol", "Exposure"],
-            params={"iterations": 5},
+            params=_fast_training_params(iterations=3),
             split={"strategy": "random", "validation_size": 0.3, "seed": 99},
             output_dir=str(tmp_path),
         )
         result = job.run()
-        assert result.test_rows == 30
+        assert result.test_rows == 18
 
     def test_unknown_algorithm_raises(self, synth_data, tmp_path):
         job = TrainingJob(
@@ -916,7 +947,7 @@ class TestTrainingJob:
             data=lf,
             target="ClaimCount",
             exclude=["IDpol", "Exposure"],
-            params={"iterations": 5},
+            params=_fast_training_params(iterations=3),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -928,7 +959,7 @@ class TestTrainingJob:
             data=synth_data,
             target="ClaimCount",
             exclude=["IDpol", "Exposure"],
-            params={"iterations": 10},
+            params=_fast_training_params(),
             loss_function="Poisson",
             output_dir=str(tmp_path),
         )
@@ -943,7 +974,7 @@ class TestTrainingJob:
             data=synth_data,
             target="ClaimCount",
             exclude=["IDpol", "Exposure"],
-            params={"iterations": 10},
+            params=_fast_training_params(),
             loss_function="Tweedie",
             variance_power=1.5,
             output_dir=str(tmp_path),
@@ -963,7 +994,7 @@ class TestTrainingJob:
             weight="Exposure",
             exclude=["IDpol"],
             offset="log_exposure",
-            params={"iterations": 10},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -979,7 +1010,7 @@ class TestTrainingJob:
             data=synth_data,
             target="ClaimCount",
             exclude=["IDpol", "Exposure"],
-            params={"iterations": 10},
+            params=_fast_training_params(),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1080,10 +1111,14 @@ class TestDevianceMetrics:
 
 
 class TestMonotonicConstraints:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_monotone_constraint_training(self):
         """Training with monotone_constraints should succeed."""
         rng = np.random.RandomState(42)
-        n = 200
+        n = 100
         x1 = rng.randn(n)
         df = pl.DataFrame(
             {
@@ -1096,7 +1131,7 @@ class TestMonotonicConstraints:
             name="mono",
             data=df,
             target="y",
-            params={"iterations": 20, "depth": 3},
+            params=_fast_training_params(iterations=8),
             monotone_constraints={"x1": 1},
             output_dir="/tmp/test_mono",
         )
@@ -1190,7 +1225,7 @@ class TestSHAP:
             cat_features=[],
             target="y",
             weight=None,
-            params={"iterations": 30, "depth": 4},
+            params={"iterations": 16, "depth": 3},
             task="regression",
         )
         return algo, fit_result.model, df
@@ -1248,7 +1283,7 @@ class TestSHAP:
             cat_features=["cover_type"],
             target="y",
             weight=None,
-            params={"iterations": 30, "depth": 4},
+            params={"iterations": 16, "depth": 3},
             task="regression",
         )
 
@@ -1275,7 +1310,7 @@ class TestSHAP:
             name="shap_cat_test",
             data=df,
             target="y",
-            params={"iterations": 10},
+            params={"iterations": 4, "depth": 2},
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1297,7 +1332,7 @@ class TestSHAP:
             name="shap_test",
             data=df,
             target="y",
-            params={"iterations": 10},
+            params={"iterations": 4, "depth": 2},
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1318,6 +1353,10 @@ class TestSHAP:
 
 
 class TestNoCvResultsField:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
     def test_training_job_no_cv_results_attr(self, tmp_path):
         """After the delete, ``TrainResult`` no longer exposes ``cv_results``.
 
@@ -1325,13 +1364,13 @@ class TestNoCvResultsField:
         it must raise ``TypeError`` because the argument has been removed.
         """
         rng = np.random.RandomState(42)
-        n = 100
+        n = 60
         df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
         job = TrainingJob(
             name="no_cv",
             data=df,
             target="y",
-            params={"iterations": 5},
+            params=_fast_training_params(iterations=3),
             output_dir=str(tmp_path),
         )
         result = job.run()
@@ -1342,7 +1381,7 @@ class TestNoCvResultsField:
                 name="no_cv",
                 data=df,
                 target="y",
-                params={"iterations": 5},
+                params=_fast_training_params(iterations=3),
                 cv_folds=3,  # type: ignore[call-arg]
                 output_dir=str(tmp_path),
             )

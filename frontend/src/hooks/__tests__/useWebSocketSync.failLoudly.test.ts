@@ -79,6 +79,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import { getLayoutedElements } from "../../utils/layout.ts"
 
@@ -268,6 +269,39 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
       2,
       [expect.objectContaining({ id: "old-edge" })],
     )
+    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("WebSocket sync error"),
+    )
+  })
+
+  it("setter failure rolls back preamble and does not mark the failed graph saved", async () => {
+    const params = makeHookParams()
+    params.preambleRef.current = "old preamble"
+    params.setPreamble.mockImplementationOnce(() => {
+      throw new Error("preamble setter failed")
+    })
+
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
+            preamble: "new preamble",
+          },
+        }),
+      }))
+    })
+
+    expect(params.setPreamble).toHaveBeenNthCalledWith(1, "new preamble")
+    expect(params.setPreamble).toHaveBeenNthCalledWith(2, "old preamble")
+    expect(params.preambleRef.current).toBe("old preamble")
+    expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("WebSocket sync error"),

@@ -2308,7 +2308,10 @@ class TestEnrichRatingStep:
     @pytest.fixture()
     def _import_enrichment(self):
         """Attempt to import the enrichment module; skip if not present."""
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_enrich_returns_matched_key(self):
@@ -2349,7 +2352,10 @@ class TestEnrichBanding:
 
     @pytest.fixture()
     def _import_enrichment(self):
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_enrich_returns_selected_band(self):
@@ -2396,7 +2402,10 @@ class TestEnrichModelScore:
 
     @pytest.fixture()
     def _import_enrichment(self):
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_enrich_returns_prediction(self):
@@ -2430,7 +2439,10 @@ class TestEnrichScenarioExpansion:
 
     @pytest.fixture()
     def _import_enrichment(self):
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_enrich_returns_expansion_factor(self):
@@ -2449,7 +2461,10 @@ class TestEnrichLiveSwitch:
 
     @pytest.fixture()
     def _import_enrichment(self):
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_enrich_returns_active_branch(self):
@@ -2480,7 +2495,10 @@ class TestEnrichRowLineageType:
 
     @pytest.fixture()
     def _import_enrichment(self):
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_detect_passthrough(self):
@@ -3476,7 +3494,10 @@ class TestEnrichBandingEmptyInputRow:
 
     @pytest.fixture()
     def _import_enrichment(self):
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_enrich_banding_empty_input_row(self):
@@ -3504,7 +3525,10 @@ class TestEnrichRatingStepNullJoinKey:
 
     @pytest.fixture()
     def _import_enrichment(self):
-        pytest.importorskip("haute._trace_enrichment")
+        pytest.importorskip(
+            "haute._trace_enrichment",
+            reason="trace enrichment module not available in this build",
+        )
 
     @pytest.mark.usefixtures("_import_enrichment")
     def test_enrich_rating_step_null_join_key(self):

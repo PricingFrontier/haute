@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from haute._builders import Contract, get_column_contract
 from haute._code_extraction import (
     _extract_external_user_code,
     _extract_model_score_user_code,
@@ -21,9 +20,9 @@ from haute._code_extraction import (
 )
 from haute._config_io import has_config_folder, load_node_config
 from haute._config_validation import warn_unrecognized_config_keys
+from haute._contracts import Contract, get_column_contract
 from haute._logging import get_logger
-from haute.errors import ConfigError, ContractMismatchError
-from haute.graph_utils import (
+from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
     MODELLING_CONFIG_KEYS,
     OPTIMISER_APPLY_CONFIG_KEYS,
@@ -31,6 +30,7 @@ from haute.graph_utils import (
     SCENARIO_EXPANDER_CONFIG_KEYS,
     NodeType,
 )
+from haute.errors import ConfigError, ContractMismatchError
 
 __all__ = [
     "_copy_config_keys",
@@ -208,7 +208,19 @@ def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException]
     return tuple(exc_types)
 
 
-_CONTRACT_RESOLVE_FALLBACK_EXCEPTIONS = _compute_contract_resolve_fallback_exceptions()
+def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
+    """Return whether *exc* should fall back to an opaque parse-time contract.
+
+    Matches ``_execute_lazy`` while avoiding an eager module import of
+    MLflow just to populate an ``except`` tuple at import time.
+    """
+    if isinstance(exc, (ConfigError, OSError, ImportError, RuntimeError)):
+        return True
+    try:
+        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+    except ImportError:
+        return False
+    return isinstance(exc, MlflowException)
 
 
 def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
@@ -252,7 +264,9 @@ def _validate_user_contract(
 
     try:
         derived = _derive_parse_time_contract(node_type, config)
-    except _CONTRACT_RESOLVE_FALLBACK_EXCEPTIONS:
+    except Exception as exc:
+        if not _is_contract_resolve_fallback_exception(exc):
+            raise
         # If the builder contract cannot be resolved right now (for
         # example a missing artifact file or temporarily unavailable
         # external dependency), treat the builder as fully opaque for

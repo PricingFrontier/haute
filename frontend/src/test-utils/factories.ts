@@ -212,6 +212,10 @@ export function makeTrainEstimate(
     available_mb: 16384,
     bytes_per_row: 2048,
     was_downsampled: false,
+    warning: null,
+    gpu_vram_estimated_mb: null,
+    gpu_vram_available_mb: null,
+    gpu_warning: null,
     ...overrides,
   }
 }

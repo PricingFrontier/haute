@@ -28,21 +28,21 @@ hermetic conditions.
 
 from __future__ import annotations
 
+import os
 import subprocess
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 import polars as pl
 import pytest
+from click.testing import CliRunner, Result
 
 from haute.cli import cli
 from haute.executor import execute_graph
 from haute.graph_utils import NodeType, PipelineGraph
 from haute.parser import parse_pipeline_file
-
-if TYPE_CHECKING:
-    from click.testing import CliRunner
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,6 +50,30 @@ if TYPE_CHECKING:
 
 
 STARTER_PIPELINE_REL = Path("rating") / "main.py"
+
+
+@dataclass(frozen=True)
+class _StarterProject:
+    project_root: Path
+    pipeline_file: Path
+
+
+@dataclass(frozen=True)
+class _ExecutedStarterProject:
+    project_root: Path
+    pipeline_file: Path
+    graph: PipelineGraph
+    results: dict[str, Any]
+
+
+@contextmanager
+def _pushd(path: Path):
+    old_cwd = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old_cwd)
 
 
 def _scaffold_project(runner: CliRunner, tmp_path: Path) -> Path:
@@ -138,15 +162,23 @@ class TestStarterPipelineParses:
     the structure is plausible.
     """
 
+    @pytest.fixture(scope="class")
+    def parsed_starter(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> tuple[Path, PipelineGraph]:
+        project_root = tmp_path_factory.mktemp("starter-parses")
+        runner = CliRunner()
+        with _pushd(project_root):
+            pipeline_file = _scaffold_project(runner, project_root)
+        graph = parse_pipeline_file(pipeline_file)
+        return pipeline_file, graph
+
     def test_init_scaffolds_pipeline_file(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        parsed_starter: tuple[Path, PipelineGraph],
     ) -> None:
         """``haute init`` writes ``rating/main.py`` as the starter."""
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
+        pipeline_file, _ = parsed_starter
         assert pipeline_file.is_file()
         # The file must be valid Python — a broken scaffold would
         # never make it past compile().
@@ -158,9 +190,7 @@ class TestStarterPipelineParses:
 
     def test_parsed_graph_has_nodes(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        parsed_starter: tuple[Path, PipelineGraph],
     ) -> None:
         """Parsed starter pipeline has at least one decorated node.
 
@@ -169,9 +199,7 @@ class TestStarterPipelineParses:
         the unit-test equivalent of a smoke test for the scaffold
         promise.
         """
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        graph: PipelineGraph = parse_pipeline_file(pipeline_file)
+        _, graph = parsed_starter
         assert graph.nodes, (
             "Starter pipeline must contain at least one node so "
             "`haute run` / `haute lint` work out of the box; got an "
@@ -180,9 +208,7 @@ class TestStarterPipelineParses:
 
     def test_parsed_graph_has_source_and_output(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        parsed_starter: tuple[Path, PipelineGraph],
     ) -> None:
         """Starter has at least one source node and one output-like node.
 
@@ -192,9 +218,7 @@ class TestStarterPipelineParses:
         starter while keeping the invariant that the pipeline can
         actually compute something.
         """
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        graph = parse_pipeline_file(pipeline_file)
+        _, graph = parsed_starter
 
         source_types = {
             NodeType.DATA_SOURCE,
@@ -232,19 +256,28 @@ class TestStarterPipelineExecutes:
     tests actually drive the graph through the executor.
     """
 
-    def test_all_nodes_execute_ok(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Every node in the scaffolded graph returns ``status == "ok"``."""
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        _materialise_referenced_data_files(pipeline_file, tmp_path)
-
+    @pytest.fixture(scope="class")
+    def executed_starter(self, tmp_path_factory: pytest.TempPathFactory) -> _ExecutedStarterProject:
+        project_root = tmp_path_factory.mktemp("starter-exec")
+        runner = CliRunner()
+        with _pushd(project_root):
+            pipeline_file = _scaffold_project(runner, project_root)
+        _materialise_referenced_data_files(pipeline_file, project_root)
         graph = parse_pipeline_file(pipeline_file)
         results = execute_graph(graph)
+        return _ExecutedStarterProject(
+            project_root=project_root,
+            pipeline_file=pipeline_file,
+            graph=graph,
+            results=results,
+        )
+
+    def test_all_nodes_execute_ok(
+        self,
+        executed_starter: _ExecutedStarterProject,
+    ) -> None:
+        """Every node in the scaffolded graph returns ``status == "ok"``."""
+        results = executed_starter.results
 
         assert results, (
             "execute_graph returned an empty dict — the graph has no "
@@ -257,21 +290,15 @@ class TestStarterPipelineExecutes:
 
     def test_terminal_node_has_nonempty_output(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        executed_starter: _ExecutedStarterProject,
     ) -> None:
         """The output/sink node produces at least one row with at least one column.
 
         The strongest readable invariant for "the starter does something":
         rows > 0 and columns > 0 on the terminal node.
         """
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        _materialise_referenced_data_files(pipeline_file, tmp_path)
-
-        graph = parse_pipeline_file(pipeline_file)
-        results = execute_graph(graph)
+        graph = executed_starter.graph
+        results = executed_starter.results
 
         terminals = [
             n for n in graph.nodes if n.data.nodeType in (NodeType.OUTPUT, NodeType.DATA_SINK)
@@ -296,9 +323,7 @@ class TestStarterPipelineExecutes:
 
     def test_terminal_node_preview_contains_rows(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        executed_starter: _ExecutedStarterProject,
     ) -> None:
         """The terminal node's preview payload has at least one row.
 
@@ -307,12 +332,8 @@ class TestStarterPipelineExecutes:
         tests) read. A zero-length preview would break all of those
         even if ``row_count > 0`` was advertised.
         """
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        _materialise_referenced_data_files(pipeline_file, tmp_path)
-
-        graph = parse_pipeline_file(pipeline_file)
-        results = execute_graph(graph)
+        graph = executed_starter.graph
+        results = executed_starter.results
 
         terminals = [
             n for n in graph.nodes if n.data.nodeType in (NodeType.OUTPUT, NodeType.DATA_SINK)
@@ -342,35 +363,32 @@ class TestHauteLintOnScaffold:
     advertising.
     """
 
+    @pytest.fixture(scope="class")
+    def lint_result(self, tmp_path_factory: pytest.TempPathFactory) -> Result:
+        project_root = tmp_path_factory.mktemp("starter-lint")
+        runner = CliRunner()
+        with _pushd(project_root):
+            pipeline_file = _scaffold_project(runner, project_root)
+            return runner.invoke(
+                cli,
+                ["lint", str(pipeline_file)],
+                catch_exceptions=False,
+            )
+
     def test_lint_zero_exit_on_fresh_scaffold(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        lint_result: Result,
     ) -> None:
         """``haute lint rating/main.py`` returns exit code 0."""
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-
-        # Lint doesn't execute the graph, so we do NOT need
-        # ``_materialise_referenced_data_files`` here — the gate is
-        # pure structural validation.
-        result = runner.invoke(
-            cli,
-            ["lint", str(pipeline_file)],
-            catch_exceptions=False,
-        )
-        assert result.exit_code == 0, (
+        assert lint_result.exit_code == 0, (
             "haute lint must pass on the fresh scaffold — the generated "
             "CI pipeline runs `haute lint` on every PR. Lint output:\n"
-            f"{result.output}"
+            f"{lint_result.output}"
         )
 
     def test_lint_reports_no_issues(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        lint_result: Result,
     ) -> None:
         """The lint output body must confirm "No structural issues found".
 
@@ -381,16 +399,8 @@ class TestHauteLintOnScaffold:
         ``_lint.py`` only since then; a payload assertion adds a
         second line of defence.
         """
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-
-        result = runner.invoke(
-            cli,
-            ["lint", str(pipeline_file)],
-            catch_exceptions=False,
-        )
-        assert "No structural issues found" in result.output, (
-            f"lint did not print the clean-run confirmation; got:\n{result.output}"
+        assert "No structural issues found" in lint_result.output, (
+            f"lint did not print the clean-run confirmation; got:\n{lint_result.output}"
         )
 
 
@@ -408,33 +418,34 @@ class TestHauteRunOnScaffold:
     impression is a broken tool.
     """
 
+    @pytest.fixture(scope="class")
+    def run_result(self, tmp_path_factory: pytest.TempPathFactory) -> Result:
+        project_root = tmp_path_factory.mktemp("starter-run")
+        runner = CliRunner()
+        with _pushd(project_root):
+            pipeline_file = _scaffold_project(runner, project_root)
+        _materialise_referenced_data_files(pipeline_file, project_root)
+        with _pushd(project_root):
+            return runner.invoke(
+                cli,
+                ["run", str(pipeline_file)],
+                catch_exceptions=False,
+            )
+
     def test_run_zero_exit_on_fresh_scaffold(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        run_result: Result,
     ) -> None:
         """``haute run rating/main.py`` exits 0 after ``haute init``."""
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        _materialise_referenced_data_files(pipeline_file, tmp_path)
-
-        result = runner.invoke(
-            cli,
-            ["run", str(pipeline_file)],
-            catch_exceptions=False,
-        )
-        assert result.exit_code == 0, (
+        assert run_result.exit_code == 0, (
             "haute run failed on fresh scaffold — the core user-facing "
             "promise (init → run) is broken. Output:\n"
-            f"{result.output}"
+            f"{run_result.output}"
         )
 
     def test_run_output_reports_per_node_rows(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        run_result: Result,
     ) -> None:
         """Run output shows per-node ``rows x cols`` — proves real execution.
 
@@ -445,22 +456,13 @@ class TestHauteRunOnScaffold:
         succeeded, so asserting on the ``rows`` / ``cols`` substrings
         proves the executor actually produced results.
         """
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        _materialise_referenced_data_files(pipeline_file, tmp_path)
-
-        result = runner.invoke(
-            cli,
-            ["run", str(pipeline_file)],
-            catch_exceptions=False,
-        )
         # ``_run.py`` prints "rows x cols" only on successful node
         # execution; the banner alone doesn't guarantee anything ran.
-        assert "rows" in result.output and "cols" in result.output, (
+        assert "rows" in run_result.output and "cols" in run_result.output, (
             "haute run did not print the per-node 'rows x cols' summary "
             "that `_run.py` emits on success — the command likely "
             "early-exited with an error. Full output:\n"
-            f"{result.output}"
+            f"{run_result.output}"
         )
 
 
@@ -488,11 +490,44 @@ class TestScaffoldedStarterTestIsMeaningful:
     a test at all.
     """
 
+    @pytest.fixture(scope="class")
+    def starter_project(self, tmp_path_factory: pytest.TempPathFactory) -> _StarterProject:
+        project_root = tmp_path_factory.mktemp("starter-test")
+        runner = CliRunner()
+        with _pushd(project_root):
+            pipeline_file = _scaffold_project(runner, project_root)
+        return _StarterProject(project_root=project_root, pipeline_file=pipeline_file)
+
+    @pytest.fixture(scope="class")
+    def starter_test_content(self, starter_project: _StarterProject) -> tuple[Path, str]:
+        starter_test = starter_project.project_root / "tests" / "test_pipeline.py"
+        assert starter_test.exists(), "scaffold must create tests/test_pipeline.py"
+        return starter_test, starter_test.read_text(encoding="utf-8")
+
+    @pytest.fixture(scope="class")
+    def starter_test_pytest_result(
+        self,
+        starter_project: _StarterProject,
+    ) -> subprocess.CompletedProcess[str]:
+        import sys
+
+        _materialise_referenced_data_files(
+            starter_project.pipeline_file,
+            starter_project.project_root,
+        )
+        starter_test = starter_project.project_root / "tests" / "test_pipeline.py"
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", str(starter_test), "-q"],
+            cwd=str(starter_project.project_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+
     def test_scaffolded_starter_test_imports_pipeline(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        starter_test_content: tuple[Path, str],
     ) -> None:
         """Starter test file imports the pipeline module (not just reads bytes).
 
@@ -500,11 +535,7 @@ class TestScaffoldedStarterTestIsMeaningful:
         module — vs ``read_text + compile``, which passes even for
         nonsense that happens to be syntactically valid Python.
         """
-        monkeypatch.chdir(tmp_path)
-        _scaffold_project(runner, tmp_path)
-        starter_test = tmp_path / "tests" / "test_pipeline.py"
-        assert starter_test.exists(), "scaffold must create tests/test_pipeline.py"
-        content = starter_test.read_text(encoding="utf-8")
+        starter_test, content = starter_test_content
         # Either it imports the pipeline module directly, or it runs
         # the pipeline through the haute machinery (parse or run).
         is_import_based = (
@@ -526,9 +557,7 @@ class TestScaffoldedStarterTestIsMeaningful:
 
     def test_scaffolded_starter_test_not_merely_string_match(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        starter_test_content: tuple[Path, str],
     ) -> None:
         """Starter test must NOT rely on substring matching ``"haute.Pipeline"``.
 
@@ -536,10 +565,7 @@ class TestScaffoldedStarterTestIsMeaningful:
         the presence of the literal characters in the file proves
         nothing about runtime behaviour.
         """
-        monkeypatch.chdir(tmp_path)
-        _scaffold_project(runner, tmp_path)
-        starter_test = tmp_path / "tests" / "test_pipeline.py"
-        content = starter_test.read_text(encoding="utf-8")
+        _, content = starter_test_content
         assert '"haute.Pipeline" in source' not in content, (
             "Scaffolded starter test still uses the pre-10A substring "
             "match — replace it with a real import or execute call."
@@ -547,9 +573,7 @@ class TestScaffoldedStarterTestIsMeaningful:
 
     def test_scaffolded_starter_test_runs_via_subprocess_pytest(
         self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        starter_test_pytest_result: subprocess.CompletedProcess[str],
     ) -> None:
         """``pytest`` can actually run the scaffolded starter test.
 
@@ -559,24 +583,9 @@ class TestScaffoldedStarterTestIsMeaningful:
         runs in a clean process with ``tmp_path`` as its rootdir,
         exactly matching what a real user's CI does.
         """
-        import sys
-
-        monkeypatch.chdir(tmp_path)
-        pipeline_file = _scaffold_project(runner, tmp_path)
-        _materialise_referenced_data_files(pipeline_file, tmp_path)
-
-        starter_test = tmp_path / "tests" / "test_pipeline.py"
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", str(starter_test), "-q"],
-            cwd=str(tmp_path),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        assert proc.returncode == 0, (
+        assert starter_test_pytest_result.returncode == 0, (
             "Scaffolded starter test failed under pytest — the "
             "init → pytest onboarding promise is broken.\n"
-            f"STDOUT:\n{proc.stdout}\n"
-            f"STDERR:\n{proc.stderr}"
+            f"STDOUT:\n{starter_test_pytest_result.stdout}\n"
+            f"STDERR:\n{starter_test_pytest_result.stderr}"
         )

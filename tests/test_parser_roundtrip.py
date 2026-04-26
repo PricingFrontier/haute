@@ -585,10 +585,24 @@ class TestRoundTrip:
         suppress_health_check=[HealthCheck.too_slow],
     )
     def test_roundtrip_structural_equivalence(self, graph: PipelineGraph) -> None:
-        """Graph -> codegen -> parse preserves structure."""
+        """Graph -> codegen -> parse preserves the core round-trip invariants."""
         with tempfile.TemporaryDirectory() as td:
             parsed = _parse_roundtrip(graph, Path(td))
         _assert_structural_equivalence(graph, parsed)
+        assert parsed.pipeline_name == "roundtrip_test"
+        orig_descs = {n.id: n.data.description for n in graph.nodes}
+        parsed_descs = {n.id: n.data.description for n in parsed.nodes}
+        for nid, orig_desc in orig_descs.items():
+            assert nid in parsed_descs, f"Node {nid} missing from parsed graph"
+            assert parsed_descs[nid] == orig_desc, (
+                f"Description mismatch for {nid}: {parsed_descs[nid]!r} != {orig_desc!r}"
+            )
+        assert len(parsed.edges) >= len(graph.edges), (
+            f"Edge count decreased: original={len(graph.edges)}, parsed={len(parsed.edges)}"
+        )
+        orig_types = sorted(n.data.nodeType.value for n in graph.nodes)
+        parsed_types = sorted(n.data.nodeType.value for n in parsed.nodes)
+        assert parsed_types == orig_types
 
     @given(graph=_pipeline_graph())
     @settings(
@@ -600,69 +614,6 @@ class TestRoundTrip:
         """Generated code is syntactically valid Python."""
         code = graph_to_code(graph, pipeline_name="roundtrip_test")
         compile(code, "<roundtrip>", "exec")
-
-    @given(graph=_pipeline_graph())
-    @settings(
-        max_examples=50,
-        deadline=10_000,
-        suppress_health_check=[HealthCheck.too_slow],
-    )
-    def test_roundtrip_pipeline_name_preserved(self, graph: PipelineGraph) -> None:
-        """Pipeline name survives the round-trip."""
-        with tempfile.TemporaryDirectory() as td:
-            parsed = _parse_roundtrip(graph, Path(td))
-        assert parsed.pipeline_name == "roundtrip_test"
-
-    @given(graph=_pipeline_graph())
-    @settings(
-        max_examples=50,
-        deadline=10_000,
-        suppress_health_check=[HealthCheck.too_slow],
-    )
-    def test_roundtrip_node_descriptions_preserved(self, graph: PipelineGraph) -> None:
-        """Node descriptions survive the round-trip."""
-        with tempfile.TemporaryDirectory() as td:
-            parsed = _parse_roundtrip(graph, Path(td))
-        orig_descs = {n.id: n.data.description for n in graph.nodes}
-        parsed_descs = {n.id: n.data.description for n in parsed.nodes}
-        for nid, orig_desc in orig_descs.items():
-            assert nid in parsed_descs, f"Node {nid} missing from parsed graph"
-            assert parsed_descs[nid] == orig_desc, (
-                f"Description mismatch for {nid}: {parsed_descs[nid]!r} != {orig_desc!r}"
-            )
-
-    @given(graph=_pipeline_graph())
-    @settings(
-        max_examples=50,
-        deadline=10_000,
-        suppress_health_check=[HealthCheck.too_slow],
-    )
-    def test_roundtrip_edge_count_non_decreasing(self, graph: PipelineGraph) -> None:
-        """Parsed graph has at least as many edges as the original.
-
-        The parser can infer additional edges from parameter-name matching
-        (when a function parameter matches another node's function name),
-        so the parsed edge count may be >= the original.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            parsed = _parse_roundtrip(graph, Path(td))
-        assert len(parsed.edges) >= len(graph.edges), (
-            f"Edge count decreased: original={len(graph.edges)}, parsed={len(parsed.edges)}"
-        )
-
-    @given(graph=_pipeline_graph())
-    @settings(
-        max_examples=50,
-        deadline=10_000,
-        suppress_health_check=[HealthCheck.too_slow],
-    )
-    def test_roundtrip_node_types_stable(self, graph: PipelineGraph) -> None:
-        """Node type distribution is identical after round-trip."""
-        with tempfile.TemporaryDirectory() as td:
-            parsed = _parse_roundtrip(graph, Path(td))
-        orig_types = sorted(n.data.nodeType.value for n in graph.nodes)
-        parsed_types = sorted(n.data.nodeType.value for n in parsed.nodes)
-        assert parsed_types == orig_types
 
 
 # ---------------------------------------------------------------------------
@@ -1593,24 +1544,12 @@ class TestSanitizeFuncName:
         )
     )
     @settings(max_examples=100, deadline=5_000)
-    def test_sanitize_is_valid_identifier(self, label: str) -> None:
-        """Sanitized name is always a valid Python identifier."""
+    def test_sanitize_properties(self, label: str) -> None:
+        """Sanitized names are identifiers and stable under re-sanitizing."""
         name = _sanitize_func_name(label)
         assert name.isidentifier(), f"{name!r} is not a valid identifier (from {label!r})"
-
-    @given(
-        label=st.text(
-            alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz _-0123456789"),
-            min_size=1,
-            max_size=20,
-        )
-    )
-    @settings(max_examples=100, deadline=5_000)
-    def test_sanitize_is_idempotent(self, label: str) -> None:
-        """Sanitizing twice gives the same result as once."""
-        once = _sanitize_func_name(label)
-        twice = _sanitize_func_name(once)
-        assert twice == once, f"Not idempotent: {label!r} -> {once!r} -> {twice!r}"
+        twice = _sanitize_func_name(name)
+        assert twice == name, f"Not idempotent: {label!r} -> {name!r} -> {twice!r}"
 
     def test_sanitize_digit_prefix(self) -> None:
         assert _sanitize_func_name("1abc") == "node_1abc"

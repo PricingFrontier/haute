@@ -30,7 +30,7 @@ import math
 from collections.abc import Callable
 
 from haute._config_io import config_path_for_node
-from haute._graph_utils import _sanitize_func_name
+from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
 from haute._registry import (
     CodegenFn,
 )
@@ -49,7 +49,6 @@ from haute._types import (
     NodeType,
 )
 from haute.errors import ConfigError
-from haute.graph_utils import _resolve_sink_path
 
 # ---------------------------------------------------------------------------
 # String-safety helpers — double-quoted Python literals with proper escaping.

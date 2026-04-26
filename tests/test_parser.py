@@ -848,6 +848,48 @@ pipeline.submodel("empty_sub.py")
         assert graph.nodes[0].id == "src"
 
 
+class TestSubmodelOnlyParentPipeline:
+    def test_parent_with_only_submodel_call_still_builds_hierarchical_graph(self, tmp_path):
+        child_source_config = write_data_source_config(tmp_path, "raw_rows", "data/in.parquet")
+        child_code = f"""\
+import polars as pl
+import haute
+
+submodel = haute.Submodel("scoring")
+
+
+@submodel.data_source(config="{child_source_config}")
+def raw_rows() -> pl.LazyFrame:
+    return pl.scan_parquet("data/in.parquet")
+
+
+@submodel.polars
+def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+    return raw_rows.with_columns(pl.lit(1).alias("x"))
+
+
+submodel.connect("raw_rows", "enriched")
+"""
+        main_code = """\
+import haute
+
+pipeline = haute.Pipeline("submodel_only")
+
+pipeline.submodel("modules/scoring.py")
+"""
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "scoring.py").write_text(child_code)
+        p = _write_pipeline(tmp_path, main_code)
+
+        graph = parse_pipeline_file(p)
+
+        assert graph.pipeline_name == "submodel_only"
+        assert {n.id for n in graph.nodes} == {"submodel__scoring"}
+        assert graph.submodels is not None
+        assert "scoring" in graph.submodels
+        assert graph.submodels["scoring"]["file"] == "modules/scoring.py"
+
+
 class TestSubmodelFileWithSyntaxError:
     def test_syntax_error_submodel_no_crash(self, tmp_path):
         broken_sub_code = """\

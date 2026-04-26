@@ -195,11 +195,18 @@ describe("retry: idempotent GET on 5xx", () => {
     try {
       mockFetch
         .mockReturnValueOnce(errorResponse(503, { detail: "Service unavailable" }))
-        .mockReturnValueOnce(jsonResponse({ mlflow_available: true }))
+        .mockReturnValueOnce(jsonResponse({ mlflow_installed: true, backend: "", databricks_host: "" }))
 
       const result = await checkMlflow()
 
-      expect(result).toEqual({ mlflow_available: true })
+      expect(result).toEqual({
+        mlflow_installed: true,
+        mlflow_importable: true,
+        tracking_configured: true,
+        backend: "",
+        databricks_host: "",
+        detail: "",
+      })
       expect(mockFetch).toHaveBeenCalledTimes(2)
     } finally {
       stub.restore()
@@ -211,11 +218,18 @@ describe("retry: idempotent GET on 5xx", () => {
     try {
       mockFetch
         .mockReturnValueOnce(errorResponse(500, { detail: "boom" }))
-        .mockReturnValueOnce(jsonResponse({ mlflow_available: false }))
+        .mockReturnValueOnce(jsonResponse({ mlflow_installed: false, backend: "", databricks_host: "" }))
 
       const result = await checkMlflow()
 
-      expect(result).toEqual({ mlflow_available: false })
+      expect(result).toEqual({
+        mlflow_installed: false,
+        mlflow_importable: false,
+        tracking_configured: false,
+        backend: "",
+        databricks_host: "",
+        detail: "",
+      })
       expect(mockFetch).toHaveBeenCalledTimes(2)
     } finally {
       stub.restore()
@@ -362,7 +376,7 @@ describe("retry: exponential backoff with jitter", () => {
       mockFetch
         .mockRejectedValueOnce(new TypeError("boom"))
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse({ mlflow_available: true }))
+        .mockReturnValueOnce(jsonResponse({ mlflow_installed: true, backend: "", databricks_host: "" }))
 
       await checkMlflow()
 
@@ -383,7 +397,7 @@ describe("retry: exponential backoff with jitter", () => {
       mockFetch = vi.fn()
         .mockRejectedValueOnce(new TypeError("boom"))
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse({ mlflow_available: true }))
+        .mockReturnValueOnce(jsonResponse({ mlflow_installed: true, backend: "", databricks_host: "" }))
       globalThis.fetch = mockFetch as unknown as typeof fetch
 
       const stub = stubBackoffTimers()
@@ -429,7 +443,7 @@ describe("retry: exponential backoff with jitter", () => {
     for (let i = 0; i < trials; i++) {
       mockFetch = vi.fn()
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse({ mlflow_available: true }))
+        .mockReturnValueOnce(jsonResponse({ mlflow_installed: true, backend: "", databricks_host: "" }))
       globalThis.fetch = mockFetch as unknown as typeof fetch
 
       const stub = stubBackoffTimers()

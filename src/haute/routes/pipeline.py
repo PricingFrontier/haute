@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
+from haute._io import read_user_text
+from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
+from haute._path_resolution import resolve_runtime_file_path
+from haute._sandbox import _get_project_root
 from haute._topo import ancestors
 from haute.errors import ContractMismatchError
 from haute.executor import _preview_cache, execute_graph, execute_sink
 from haute.graph_utils import (
+    NodeType,
     PipelineGraph,
     _prune_live_switch_edges,
     flatten_graph,
@@ -26,6 +34,7 @@ from haute.routes._helpers import (
     parse_pipeline_to_graph,
     pipeline_dir,
     raise_pipeline_not_found,
+    validate_safe_path,
 )
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._timeouts import run_blocking_with_response_timeout
@@ -35,6 +44,8 @@ from haute.schemas import (
     PipelineSummary,
     PreviewNodeRequest,
     PreviewNodeResponse,
+    ReadJsonRequest,
+    ReadJsonResponse,
     SavePipelineRequest,
     SavePipelineResponse,
     SinkRequest,
@@ -54,6 +65,47 @@ _PREVIEW_TIMEOUT = float(os.environ.get("HAUTE_PREVIEW_TIMEOUT", "120"))
 _SINK_TIMEOUT = float(os.environ.get("HAUTE_SINK_TIMEOUT", "300"))
 
 
+_RUNTIME_INPUT_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
+    NodeType.API_INPUT: "path",
+    NodeType.DATA_SOURCE: "path",
+    NodeType.EXTERNAL_FILE: "path",
+}
+
+
+def _ensure_printable_lookup_id(value: str | None, field_name: str) -> None:
+    if value is not None and not value.isprintable():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} contains control characters",
+        )
+
+
+def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
+    """Reject API-submitted input paths that resolve outside the project root."""
+    for node in graph.nodes:
+        config = node.data.config
+        key = _RUNTIME_INPUT_PATH_CONFIG_BY_NODE_TYPE.get(node.data.nodeType)
+        if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file":
+            key = "artifact_path"
+        if key is None:
+            continue
+
+        raw_path = config.get(key)
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+
+        try:
+            resolve_runtime_file_path(
+                raw_path,
+                source_file=graph.source_file,
+                prefer="project",
+                enforce_project_root=True,
+            )
+        except ValueError as exc:
+            status_code = 400 if "embedded null byte" in str(exc) else 403
+            raise HTTPException(status_code=status_code, detail=str(exc)) from None
+
+
 def _ensure_source_file(graph: PipelineGraph) -> None:
     """Fill in ``graph.source_file`` from ``haute.toml`` when the frontend
     doesn't provide it.  Without this, the executor can't determine the
@@ -71,6 +123,13 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
             graph.source_file = configured
     except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
         logger.warning("source_file_fallback_failed", error=str(exc))
+
+
+def _read_json_object_blocking(target: Path) -> dict[str, Any]:
+    payload = json.loads(read_user_text(target))
+    if not isinstance(payload, dict):
+        raise ValueError("JSON file must contain an object")
+    return payload
 
 
 @router.get("/pipelines", response_model=list[PipelineSummary])
@@ -165,6 +224,28 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     return svc.save(body)
 
 
+@router.post("/pipeline/read-json", response_model=ReadJsonResponse)
+async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
+    """Read a JSON artifact from the project root and return its object payload."""
+    target = validate_safe_path(_get_project_root(), body.path)
+    if target.suffix.lower() != ".json":
+        raise HTTPException(status_code=400, detail="Only .json files are supported")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {body.path}")
+
+    try:
+        return ReadJsonResponse(await run_in_threadpool(_read_json_object_blocking, target))
+    except json.JSONDecodeError as exc:
+        logger.warning("read_json_invalid_json", path=body.path, error=str(exc))
+        raise HTTPException(status_code=400, detail="Invalid JSON file") from None
+    except ValueError as exc:
+        logger.warning("read_json_invalid_payload", path=body.path, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:
+        logger.error("read_json_failed", path=body.path, error=str(exc))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+
+
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> TraceResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
@@ -172,6 +253,8 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
+    _ensure_printable_lookup_id(body.target_node_id, "target_node_id")
+    _validate_runtime_input_paths(graph)
 
     try:
         result = await run_blocking_with_response_timeout(
@@ -241,6 +324,8 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
+    _ensure_printable_lookup_id(body.node_id, "node_id")
+    _validate_runtime_input_paths(graph)
 
     try:
         results = await run_blocking_with_response_timeout(
@@ -308,7 +393,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             column_count=node_result.column_count,
             columns=node_result.columns,
             available_columns=node_result.available_columns,
-            preview=node_result.preview,
+            preview=rows_to_json_safe(node_result.preview),
             error=node_result.error,
             error_line=node_result.error_line,
             timing_ms=node_result.timing_ms,
@@ -353,6 +438,16 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
+    _ensure_printable_lookup_id(body.node_id, "node_id")
+    _validate_runtime_input_paths(graph)
+    sink_node = graph.node_map.get(body.node_id)
+    if sink_node is None:
+        raise HTTPException(status_code=404, detail=f"Sink node '{body.node_id}' not found")
+    if sink_node.data.nodeType != NodeType.DATA_SINK:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Node '{body.node_id}' is not a data sink",
+        )
 
     try:
         result = await run_blocking_with_response_timeout(

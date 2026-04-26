@@ -415,6 +415,7 @@ class TestFingerprintRecomputeSpy:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.perf
 class TestFingerprintBenchmark:
     """Comparative micro-benchmark.  Absolute thresholds are CI-flaky, so
     we pin a **relative** speedup: the cached path must spend at least

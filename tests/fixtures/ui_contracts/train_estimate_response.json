@@ -1,0 +1,13 @@
+{
+  "total_rows": 25000,
+  "safe_row_limit": 100000,
+  "estimated_mb": 12.5,
+  "training_mb": 25.0,
+  "available_mb": 1024.0,
+  "bytes_per_row": 512.0,
+  "was_downsampled": false,
+  "warning": null,
+  "gpu_vram_estimated_mb": null,
+  "gpu_vram_available_mb": null,
+  "gpu_warning": null
+}

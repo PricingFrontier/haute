@@ -1,0 +1,36 @@
+name: Performance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  python-perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Python performance lane
+        run: >
+          uv run python scripts/run_perf_suite.py
+          --output-dir .perf-artifacts
+          --max-total-seconds 360
+          --max-test-seconds 120
+
+      - name: Upload performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-performance-${{ github.run_id }}
+          path: .perf-artifacts

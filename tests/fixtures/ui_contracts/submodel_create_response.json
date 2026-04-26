@@ -1,0 +1,21 @@
+{
+  "status": "ok",
+  "submodel_file": "pricing.py",
+  "parent_file": "main.py",
+  "graph": {
+    "nodes": [
+      {
+        "id": "submodel__pricing",
+        "type": "custom",
+        "position": { "x": 0, "y": 0 },
+        "data": { "label": "Pricing" }
+      }
+    ],
+    "edges": [],
+    "submodels": {
+      "pricing": {
+        "path": "pricing.py"
+      }
+    }
+  }
+}

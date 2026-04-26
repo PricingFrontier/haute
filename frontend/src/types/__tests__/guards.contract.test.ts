@@ -1,0 +1,291 @@
+import { describe, expect, it } from "vitest"
+
+import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import {
+  parseApplyOptimiserResponse,
+  parseDissolveSubmodelResponse,
+  parseFrontierResponse,
+  parseFrontierSelectResponse,
+  parseGitArchiveResponse,
+  parseGitCreateBranchResponse,
+  parseGitDeleteBranchResponse,
+  parseGitHistoryResponse,
+  parseGitPullResponse,
+  parseGitStatusResponse,
+  parseGitRevertResponse,
+  parseGitSaveResponse,
+  parseGitSubmitResponse,
+  parseGitSwitchBranchResponse,
+  parseJsonCacheBuildResponse,
+  parseMlflowCheckResponse,
+  parseMlflowLogResponse,
+  parseOptimiserEstimateResponse,
+  parseOptimiserStatusResponse,
+  parsePreviewNodeResponse,
+  parseSavePipelineResponse,
+  parseSaveOptimiserResponse,
+  parseTraceResponse,
+  parseSubmodelCreateResponse,
+  parseSubmodelGraphResponse,
+  parseSolveOptimiserResponse,
+  parseTrainEstimateResponse,
+  parseTrainResponse,
+  parseTrainStatusResponse,
+  parseUtilityDeleteResponse,
+  parseUtilityListResponse,
+  parseUtilityReadResponse,
+  parseUtilityWriteResponse,
+} from "../guards"
+
+describe("API response guards", () => {
+  it("parses savePipeline responses with warnings", () => {
+    const parsed = parseSavePipelineResponse(loadUiContractFixture("save_pipeline"))
+
+    expect(parsed.warnings).toEqual(["renamed duplicate node"])
+    expect(parsed.status).toBe("saved")
+  })
+
+  it("fills preview defaults for sparse error payloads", () => {
+    const parsed = parsePreviewNodeResponse({
+      status: "error",
+      node_id: "bad_node",
+      error: "contract mismatch",
+    })
+
+    expect(parsed.timings).toEqual([])
+    expect(parsed.memory).toEqual([])
+    expect(parsed.node_statuses).toEqual({})
+    expect(parsed.error).toBe("contract mismatch")
+  })
+
+  it("rejects malformed preview node ids", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        status: "ok",
+        node_id: 42,
+      }),
+    ).toThrow(/node_id/i)
+  })
+
+  it("parses trace responses including waterfall entries", () => {
+    const parsed = parseTraceResponse(loadUiContractFixture("trace_response"))
+
+    expect(Array.isArray(parsed.trace?.waterfall)).toBe(true)
+  })
+
+  it("parses completed training responses with GLM diagnostics", () => {
+    const parsed = parseTrainResponse(loadUiContractFixture("train_response"))
+
+    expect(parsed.glm_coefficients?.[0].feature).toBe("x")
+    expect(parsed.diagnostics_errors?.[0].diagnostic).toBe("shap")
+  })
+
+  it("rejects malformed GLM coefficient rows", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    expect(() =>
+      parseTrainResponse(
+        {
+          ...fixture,
+          glm_coefficients: [{ feature: "x", coefficient: "bad" }],
+        },
+      ),
+    ).toThrow(/glm_coefficients/i)
+  })
+
+  it("parses train status responses with nested results", () => {
+    const parsed = parseTrainStatusResponse(loadUiContractFixture("train_status_response"))
+
+    expect(parsed.result?.status).toBe("completed")
+    expect(parsed.train_loss.learn).toBe(0.1)
+  })
+
+  it("parses optimiser status responses with completed solve payloads", () => {
+    const parsed = parseOptimiserStatusResponse(loadUiContractFixture("optimiser_status_response"))
+
+    expect(parsed.result?.lambdas.loss).toBe(0.3)
+    expect(parsed.frontier?.constraint_names).toEqual(["loss"])
+  })
+
+  it("parses submodel response payloads", () => {
+    const created = parseSubmodelCreateResponse(loadUiContractFixture("submodel_create_response"))
+    const loaded = parseSubmodelGraphResponse(loadUiContractFixture("submodel_graph_response"))
+    const dissolved = parseDissolveSubmodelResponse(loadUiContractFixture("dissolve_submodel_response"))
+
+    expect(created.submodel_file).toBe("pricing.py")
+    expect(loaded.submodel_name).toBe("pricing")
+    expect(dissolved.graph.nodes).toHaveLength(2)
+  })
+
+  it("parses modelling preflight payloads", () => {
+    const mlflow = parseMlflowCheckResponse(loadUiContractFixture("mlflow_check_response"))
+    const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
+    const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
+
+    expect(mlflow.mlflow_installed).toBe(true)
+    expect(mlflow.mlflow_importable).toBe(true)
+    expect(mlflow.tracking_configured).toBe(true)
+    expect(mlflow.detail).toBe("")
+    expect(estimate.estimated_mb).toBe(12.5)
+    expect(log.run_id).toBe("run-123")
+  })
+
+  it("parses optimiser action payloads", () => {
+    const solve = parseSolveOptimiserResponse(loadUiContractFixture("solve_optimiser_response"))
+    const estimate = parseOptimiserEstimateResponse(loadUiContractFixture("optimiser_estimate_response"))
+    const apply = parseApplyOptimiserResponse(loadUiContractFixture("optimiser_apply_response"))
+    const frontier = parseFrontierResponse(loadUiContractFixture("optimiser_frontier_response"))
+    const selected = parseFrontierSelectResponse(loadUiContractFixture("optimiser_frontier_select_response"))
+    const saved = parseSaveOptimiserResponse(loadUiContractFixture("optimiser_save_response"))
+
+    expect(solve.job_id).toBe("opt-job-1")
+    expect(estimate.total_rows).toBe(10000)
+    expect(apply.preview[0]?.scenario).toBe("A")
+    expect(frontier.constraint_names).toEqual(["loss"])
+    expect(selected.lambdas.loss).toBe(0.3)
+    expect(saved.path).toBe("optimiser_output.py")
+  })
+
+  it("parses utility response payloads", () => {
+    const listed = parseUtilityListResponse(loadUiContractFixture("utility_list_response"))
+    const read = parseUtilityReadResponse(loadUiContractFixture("utility_read_response"))
+    const written = parseUtilityWriteResponse(loadUiContractFixture("utility_write_response"))
+    const deleted = parseUtilityDeleteResponse(loadUiContractFixture("utility_delete_response"))
+
+    expect(listed.files[0]?.module).toBe("helpers")
+    expect(read.content).toContain("helper")
+    expect(written.import_line).toContain("utility.helpers")
+    expect(deleted.module).toBe("helpers")
+  })
+
+  it("parses git action payloads", () => {
+    const created = parseGitCreateBranchResponse(loadUiContractFixture("git_create_branch_response"))
+    const switched = parseGitSwitchBranchResponse(loadUiContractFixture("git_switch_branch_response"))
+    const saved = parseGitSaveResponse(loadUiContractFixture("git_save_response"))
+    const submitted = parseGitSubmitResponse(loadUiContractFixture("git_submit_response"))
+    const history = parseGitHistoryResponse(loadUiContractFixture("git_history_response"))
+    const reverted = parseGitRevertResponse(loadUiContractFixture("git_revert_response"))
+    const pulled = parseGitPullResponse(loadUiContractFixture("git_pull_response"))
+    const archived = parseGitArchiveResponse(loadUiContractFixture("git_archive_response"))
+    const deleted = parseGitDeleteBranchResponse(loadUiContractFixture("git_delete_branch_response"))
+
+    expect(created.branch).toContain("feat/")
+    expect(switched.status).toBe("ok")
+    expect(saved.commit_sha).toBe("abc123def456")
+    expect(submitted.compare_url).toContain("compare")
+    expect(history.entries[0]?.files_changed).toContain("pipeline.py")
+    expect(reverted.backup_tag).toContain("backup-")
+    expect(pulled.commits_pulled).toBe(2)
+    expect(archived.archived_as).toContain("archive/")
+    expect(deleted.branch).toContain("feat/")
+  })
+
+  it("rejects malformed optimiser lambda maps", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("optimiser_status_response")
+    const result = fixture.result as Record<string, unknown>
+
+    expect(() =>
+      parseOptimiserStatusResponse({
+        ...fixture,
+        result: {
+          ...result,
+          lambdas: { loss: "bad" },
+        },
+      }),
+    ).toThrow(/lambdas/i)
+  })
+
+  it("rejects git status payloads missing readonly fields", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("git_status_response")
+
+    expect(() =>
+      parseGitStatusResponse({
+        ...fixture,
+        is_read_only: undefined,
+      }),
+    ).toThrow(/is_read_only/i)
+  })
+
+  it("rejects incomplete json cache build payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("json_cache_build_response")
+
+    expect(() =>
+      parseJsonCacheBuildResponse({
+        ...fixture,
+        data_path: undefined,
+      }),
+    ).toThrow(/data_path/i)
+  })
+
+  it("rejects malformed submodel graph payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
+
+    expect(() =>
+      parseSubmodelGraphResponse({
+        ...fixture,
+        graph: {
+          ...(fixture.graph as Record<string, unknown>),
+          nodes: "bad",
+        },
+      }),
+    ).toThrow(/nodes/i)
+  })
+
+  it("rejects malformed mlflow check payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("mlflow_check_response")
+
+    expect(() =>
+      parseMlflowCheckResponse({
+        ...fixture,
+        mlflow_installed: "yes",
+      }),
+    ).toThrow(/mlflow_installed/i)
+
+    expect(() =>
+      parseMlflowCheckResponse({
+        ...fixture,
+        tracking_configured: "yes",
+      }),
+    ).toThrow(/tracking_configured/i)
+  })
+
+  it("normalises legacy mlflow tracking_available payloads", () => {
+    const parsed = parseMlflowCheckResponse({
+      mlflow_installed: true,
+      tracking_available: false,
+      backend: "",
+      databricks_host: "",
+    })
+
+    expect(parsed.mlflow_importable).toBe(true)
+    expect(parsed.tracking_configured).toBe(false)
+  })
+
+  it("rejects malformed utility write payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("utility_write_response")
+
+    expect(() =>
+      parseUtilityWriteResponse({
+        ...fixture,
+        import_line: 123,
+      }),
+    ).toThrow(/import_line/i)
+  })
+
+  it("rejects malformed git history payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("git_history_response")
+    const firstEntry = (fixture.entries as Array<Record<string, unknown>>)[0]
+
+    expect(() =>
+      parseGitHistoryResponse({
+        ...fixture,
+        entries: [
+          {
+            ...firstEntry,
+            files_changed: "bad",
+          },
+        ],
+      }),
+    ).toThrow(/files_changed/i)
+  })
+})

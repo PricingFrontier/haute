@@ -31,7 +31,7 @@ from haute._submodel_graph import (
     classify_ports,
     rewire_edges,
 )
-from haute.graph_utils import GraphEdge, GraphNode, PipelineGraph
+from haute._types import GraphEdge, GraphNode, PipelineGraph
 
 logger = get_logger(component="parser.submodels")
 

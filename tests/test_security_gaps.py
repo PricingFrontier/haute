@@ -332,26 +332,23 @@ class TestPathTraversalNullByteSafePath:
     """
 
     def test_null_byte_in_validate_safe_path(self, tmp_path: Path):
-        """Null byte in path: Python on Windows silently truncates at the null,
-        while Unix raises ValueError.  Either way, the resolved path must not
-        escape the base directory.
-        """
-        import sys
+        """Null bytes must be rejected before pathlib or filesystem calls."""
+        from fastapi import HTTPException
 
         from haute.routes._helpers import validate_safe_path
 
-        if sys.platform == "win32":
-            result = validate_safe_path(tmp_path, "file\x00../../etc/passwd")
-            assert result.is_relative_to(tmp_path.resolve())
-        else:
-            with pytest.raises((ValueError, Exception)):
-                validate_safe_path(tmp_path, "file\x00../../etc/passwd")
+        with pytest.raises(HTTPException) as exc_info:
+            validate_safe_path(tmp_path, "file\x00../../etc/passwd")
+        assert exc_info.value.status_code == 400
 
     def test_null_byte_mid_path(self, tmp_path: Path):
+        from fastapi import HTTPException
+
         from haute.routes._helpers import validate_safe_path
 
-        with pytest.raises((ValueError, Exception)):
+        with pytest.raises(HTTPException) as exc_info:
             validate_safe_path(tmp_path, "data/file.json\x00.txt")
+        assert exc_info.value.status_code == 400
 
 
 # =========================================================================
@@ -749,18 +746,18 @@ class TestNullByteHTTPParam:
 
     def test_null_byte_in_browse_dir(self, client):
         resp = client.get("/api/files", params={"dir": "sub\x00../../etc"})
-        assert resp.status_code in (400, 403, 404, 422, 500)
+        assert resp.status_code == 400
 
     def test_null_byte_in_json_cache_path(self, client):
         resp = client.post(
             "/api/json-cache/build",
             json={"path": "file\x00../../etc/passwd"},
         )
-        assert resp.status_code in (400, 403, 422, 500)
+        assert resp.status_code == 400
 
     def test_null_byte_in_schema_path(self, client):
         resp = client.get("/api/schema", params={"path": "data\x00.parquet"})
-        assert resp.status_code in (400, 403, 404, 422, 500)
+        assert resp.status_code == 400
 
 
 # =========================================================================
@@ -801,4 +798,4 @@ class TestDoubleEncodedHTTPTraversal:
             "/api/json-cache/build",
             json={"path": "%2e%2e/%2e%2e/etc/passwd"},
         )
-        assert resp.status_code in (403, 404, 500)
+        assert resp.status_code == 404

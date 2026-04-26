@@ -31,6 +31,7 @@ vi.mock("../../panels/editors/_shared", async () => {
 
 const mockBuildJsonCache = vi.fn()
 const mockGetJsonCacheStatus = vi.fn()
+const mockGetJsonCacheStatusForSchema = vi.fn()
 const mockGetJsonCacheProgress = vi.fn()
 const mockDeleteJsonCache = vi.fn()
 
@@ -39,6 +40,7 @@ vi.mock("../../api/client", () => ({
   buildJsonCache: (...args: unknown[]) => mockBuildJsonCache(...args),
   getJsonCacheProgress: (...args: unknown[]) => mockGetJsonCacheProgress(...args),
   getJsonCacheStatus: (...args: unknown[]) => mockGetJsonCacheStatus(...args),
+  getJsonCacheStatusForSchema: (...args: unknown[]) => mockGetJsonCacheStatusForSchema(...args),
   deleteJsonCache: (...args: unknown[]) => mockDeleteJsonCache(...args),
   ApiError: class ApiError extends Error {
     status: number
@@ -61,6 +63,7 @@ vi.mock("../../hooks/useSchemaFetch", () => ({
 beforeEach(() => {
   mockBuildJsonCache.mockReset()
   mockGetJsonCacheStatus.mockReset().mockResolvedValue({ cached: false })
+  mockGetJsonCacheStatusForSchema.mockReset().mockResolvedValue({ cached: false })
   mockGetJsonCacheProgress.mockReset().mockResolvedValue({ active: false })
   mockDeleteJsonCache.mockReset()
 })
@@ -141,6 +144,45 @@ describe("ApiInputEditor", () => {
     await waitFor(() => {
       expect(screen.getByText("100 rows")).toBeTruthy()
       expect(screen.getByText("5 cols")).toBeTruthy()
+    })
+  })
+
+  it("JsonCacheButton: sends flattenSchema in status and build requests", async () => {
+    const flattenSchema = { x: "int" }
+    mockGetJsonCacheStatusForSchema.mockResolvedValue({ cached: false })
+    mockBuildJsonCache.mockResolvedValue({
+      cached: true,
+      data_path: "data/input.json",
+      row_count: 1,
+      column_count: 1,
+      size_bytes: 1024,
+      cached_at: 0,
+    })
+
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{ path: "data/input.json", flattenSchema }}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledWith({
+        path: "data/input.json",
+        flatten_schema: flattenSchema,
+      })
+    })
+    expect(mockGetJsonCacheStatus).not.toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
+    })
+
+    await waitFor(() => {
+      expect(mockBuildJsonCache).toHaveBeenCalledWith({
+        path: "data/input.json",
+        flatten_schema: flattenSchema,
+      })
     })
   })
 

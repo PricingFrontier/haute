@@ -70,7 +70,7 @@ def _train_tiny_catboost(
     cat_features: list[str],
     target: str = "ClaimCount",
     weight: str = "Exposure",
-    iterations: int = 6,
+    iterations: int = 1,
 ) -> Any:
     """Train a tiny CatBoost model with an explicit feature order."""
     pytest.importorskip("catboost", reason="catboost not installed")
@@ -83,7 +83,7 @@ def _train_tiny_catboost(
         cat_features=cat_features,
         target=target,
         weight=weight,
-        params={"iterations": iterations, "depth": 3, "verbose": 0},
+        params={"iterations": iterations, "depth": 1, "verbose": 0},
         task="regression",
     )
     return fit_result.model
@@ -105,7 +105,7 @@ class TestFeatureOrderMismatchAtScore:
     def test_score_with_reordered_features_raises(
         self, mixed_train_df: pl.DataFrame, tmp_path: Path
     ) -> None:
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import ScoringModel, _wrap_catboost
         from haute._model_scorer import _run_score_pipeline
 
@@ -149,7 +149,7 @@ class TestFeatureOrderMismatchAtScore:
         position 0 to position 2 the indices no longer describe the same
         columns — silent reordering here produces wrong predictions.
         """
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute._mlflow_io import _wrap_catboost
         from haute._model_scorer import _run_score_pipeline
 
@@ -195,7 +195,7 @@ class TestMLflowSignatureLogged:
         / mlflow.catboost.log_model calls that a *signature* argument was
         passed, with inputs matching the training feature order.
         """
-        pytest.importorskip("mlflow")
+        pytest.importorskip("mlflow", reason="mlflow optional dependency not installed")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
 
@@ -256,10 +256,19 @@ class TestMLflowSignatureLogged:
         property being tested is the signature→feature-order contract,
         not the diagnostic stack.
         """
-        pytest.importorskip("catboost")
-        pytest.importorskip("mlflow")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+        pytest.importorskip("mlflow", reason="mlflow optional dependency not installed")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
+            lambda *a, **kw: [],
+        )
+        monkeypatch.setattr(
+            "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
+            lambda *a, **kw: [],
+        )
+        monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
 
         from haute.modelling._signature import build_signature
         from haute.modelling._training_job import TrainingJob
@@ -302,7 +311,7 @@ class TestMLflowSignatureLogged:
                 data=synth,
                 target="ClaimCount",
                 weight="Exposure",
-                params={"iterations": 4, "depth": 2, "verbose": 0},
+                params={"iterations": 1, "depth": 1, "verbose": 0},
                 mlflow_experiment="/Shared/haute/sig_model",
                 output_dir=str(tmp_path),
             )
@@ -422,7 +431,7 @@ class TestGLMCategoricalSurvival:
     """
 
     def test_glm_result_includes_categorical_term(self, tmp_path: Path) -> None:
-        pytest.importorskip("rustystats")
+        pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         from haute.modelling._training_job import TrainingJob
 
         rng = np.random.RandomState(17)
@@ -482,7 +491,7 @@ class TestGLMCategoricalSurvival:
         narrowing must not accidentally drop *all* categoricals because of a
         wrong set operation.
         """
-        pytest.importorskip("rustystats")
+        pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         from haute.modelling._training_job import TrainingJob
 
         rng = np.random.RandomState(5)
@@ -555,23 +564,30 @@ class TestDiagnosticsFailLoudlySplit:
         BUT ``result.diagnostics_errors`` must carry the entry so the UI
         can show a degraded-diagnostics badge.
         """
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute.modelling._training_job import TrainingJob
 
         def _exploding_shap(*args: Any, **kwargs: Any) -> Any:
             raise ArithmeticError("simulated SHAP explosion")
 
         # Patch the *method* used by _compute_metrics.
-        with patch(
-            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-            side_effect=_exploding_shap,
+        with (
+            patch(
+                "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
+                side_effect=_exploding_shap,
+            ),
+            patch(
+                "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
+                return_value=[],
+            ),
+            patch("haute.modelling._metrics.compute_pdp", return_value=[]),
         ):
             job = TrainingJob(
                 name="shap_fail_model",
                 data=synth,
                 target="ClaimCount",
                 weight="Exposure",
-                params={"iterations": 5, "depth": 2, "verbose": 0},
+                params={"iterations": 1, "depth": 1, "verbose": 0},
                 output_dir=str(tmp_path),
             )
             result = job.run()
@@ -592,21 +608,28 @@ class TestDiagnosticsFailLoudlySplit:
 
     def test_pdp_failure_surfaces_in_result(self, synth: pl.DataFrame, tmp_path: Path) -> None:
         """PDP is optional — its failure is recorded, not silently swallowed."""
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute.modelling._training_job import TrainingJob
 
         # Force compute_pdp to blow up.  It is imported inside
         # ``_compute_metrics`` so we patch the source module.
-        with patch(
-            "haute.modelling._metrics.compute_pdp",
-            side_effect=ArithmeticError("simulated PDP failure"),
+        with (
+            patch("haute.modelling._algorithms.CatBoostAlgorithm.shap_summary", return_value=[]),
+            patch(
+                "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
+                return_value=[],
+            ),
+            patch(
+                "haute.modelling._metrics.compute_pdp",
+                side_effect=ArithmeticError("simulated PDP failure"),
+            ),
         ):
             job = TrainingJob(
                 name="pdp_fail_model",
                 data=synth,
                 target="ClaimCount",
                 weight="Exposure",
-                params={"iterations": 4, "depth": 2, "verbose": 0},
+                params={"iterations": 1, "depth": 1, "verbose": 0},
                 output_dir=str(tmp_path),
             )
             result = job.run()
@@ -620,7 +643,7 @@ class TestDiagnosticsFailLoudlySplit:
         """Core metrics (``compute_metrics``) are mandatory — a failure must
         propagate as an ExecutionError / ValueError, not be swallowed.
         """
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute.modelling._training_job import TrainingJob
 
         with patch(
@@ -632,7 +655,7 @@ class TestDiagnosticsFailLoudlySplit:
                 data=synth,
                 target="ClaimCount",
                 weight="Exposure",
-                params={"iterations": 4, "depth": 2, "verbose": 0},
+                params={"iterations": 1, "depth": 1, "verbose": 0},
                 output_dir=str(tmp_path),
             )
             with pytest.raises((ArithmeticError, Exception)) as exc_info:
@@ -647,7 +670,7 @@ class TestDiagnosticsFailLoudlySplit:
         """CatBoost feature-importance is mandatory — zero-diagnostics runs
         are useless to actuaries.  Must propagate on failure.
         """
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute.modelling._training_job import TrainingJob
 
         with patch(
@@ -659,7 +682,7 @@ class TestDiagnosticsFailLoudlySplit:
                 data=synth,
                 target="ClaimCount",
                 weight="Exposure",
-                params={"iterations": 4, "depth": 2, "verbose": 0},
+                params={"iterations": 1, "depth": 1, "verbose": 0},
                 output_dir=str(tmp_path),
             )
             with pytest.raises(Exception):

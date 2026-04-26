@@ -45,10 +45,35 @@ export default function useWebSocketSync({
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
+    let graphUpdateSeq = 0
+    let activeSelectionGuardIncrements = 0
+    const delayedTimers = new Set<ReturnType<typeof setTimeout>>()
+
+    function scheduleDelayed(callback: () => void, delayMs: number) {
+      const timer = setTimeout(() => {
+        delayedTimers.delete(timer)
+        callback()
+      }, delayMs)
+      delayedTimers.add(timer)
+    }
+
+    function releaseSelectionGuard() {
+      if (activeSelectionGuardIncrements > 0) {
+        activeSelectionGuardIncrements -= 1
+      }
+      graphRefreshingRef.current = Math.max(0, graphRefreshingRef.current - 1)
+    }
 
     function connect() {
       if (!mounted) return
-      ws = new WebSocket(wsUrl)
+      try {
+        ws = new WebSocket(wsUrl)
+      } catch (err) {
+        if (!mounted) return
+        setStatus("disconnected")
+        addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
+        return
+      }
 
       ws.onopen = () => {
         if (!mounted) return
@@ -66,6 +91,7 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "graph_update" && msg.graph) {
+          const updateSeq = ++graphUpdateSeq
           const g = msg.graph as {
             nodes?: Node[]
             edges?: Edge[]
@@ -83,6 +109,10 @@ export default function useWebSocketSync({
               ? newNodes
               : await getLayoutedElements(newNodes, newEdges)
 
+            if (!mounted || updateSeq !== graphUpdateSeq) {
+              return
+            }
+
             const previousGraph = useGraphStore.getState() as Partial<{
               nodes: Node[]
               edges: Edge[]
@@ -98,6 +128,7 @@ export default function useWebSocketSync({
             // Guard: prevent React Flow's onSelectionChange from clearing
             // the open panel while we replace nodes.
             graphRefreshingRef.current += 1
+            activeSelectionGuardIncrements += 1
             try {
               setNodesRaw(nodesToApply)
               setEdgesRaw(newEdges)
@@ -127,9 +158,7 @@ export default function useWebSocketSync({
               }
               throw err
             } finally {
-              setTimeout(() => {
-                graphRefreshingRef.current = Math.max(0, graphRefreshingRef.current - 1)
-              }, SELECTION_CHANGE_GUARD_MS)
+              scheduleDelayed(releaseSelectionGuard, SELECTION_CHANGE_GUARD_MS)
             }
 
             // Clear UI that references nodes removed by this graph update.
@@ -147,8 +176,15 @@ export default function useWebSocketSync({
 
             addToast("info", "Pipeline updated from file")
             if (g.warning) addToast("warning", g.warning)
-            setTimeout(() => fitView({ padding: 0.8 }), 100)
+            scheduleDelayed(() => {
+              if (mounted && updateSeq === graphUpdateSeq) {
+                fitView({ padding: 0.8 })
+              }
+            }, 100)
           } catch (err) {
+            if (!mounted || updateSeq !== graphUpdateSeq) {
+              return
+            }
             addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
           }
           return
@@ -183,6 +219,17 @@ export default function useWebSocketSync({
     return () => {
       mounted = false
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      for (const timer of delayedTimers) {
+        clearTimeout(timer)
+      }
+      delayedTimers.clear()
+      if (activeSelectionGuardIncrements > 0) {
+        graphRefreshingRef.current = Math.max(
+          0,
+          graphRefreshingRef.current - activeSelectionGuardIncrements,
+        )
+        activeSelectionGuardIncrements = 0
+      }
       ws?.close()
     }
   }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])

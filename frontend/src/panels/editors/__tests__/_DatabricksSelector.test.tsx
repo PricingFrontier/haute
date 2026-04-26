@@ -270,6 +270,13 @@ describe("CatalogTablePicker", () => {
   function getTableSelect() {
     return screen.getAllByRole("combobox")[2] as HTMLSelectElement
   }
+  async function waitForCatalogOption(value: string) {
+    await waitFor(() => {
+      expect(
+        Array.from(getCatalogSelect().options).some(option => option.value === value),
+      ).toBe(true)
+    })
+  }
 
   it("renders three dropdowns with correct default placeholders", () => {
     render(<CatalogTablePicker table="" onSelect={vi.fn()} />)
@@ -323,6 +330,7 @@ describe("CatalogTablePicker", () => {
     // Focus to load catalogs
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
+    await waitForCatalogOption("main")
 
     // Select a catalog
     fireEvent.change(getCatalogSelect(), { target: { value: "main" } })

@@ -522,6 +522,12 @@ def execute_graph(
             merged_error_lines = {**cached["error_lines"], **error_lines}
             merged_avail = {**cached["available_columns"], **avail_cols}
             merged_order = list(dict.fromkeys(cached["order"] + order))
+            # A node that re-executed successfully in the extend path must
+            # clear any stale cached error from an earlier transient failure.
+            for nid in eager_outputs:
+                if nid not in errors:
+                    merged_errors.pop(nid, None)
+                    merged_error_lines.pop(nid, None)
             _preview_cache.store(
                 fp,
                 eager_outputs=merged,

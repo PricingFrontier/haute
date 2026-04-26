@@ -11,11 +11,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from haute._builders import (
-    OPAQUE_CONTRACT_SENTINEL,
-    Contract,
-    get_column_contract,
-)
 from haute._codegen_builders import (
     _build_params,
     _safe_path,
@@ -23,29 +18,24 @@ from haute._codegen_builders import (
     _sanitize_description,
 )
 from haute._config_io import config_path_for_node, has_config_folder
+from haute._contracts import (
+    OPAQUE_CONTRACT_SENTINEL,
+    Contract,
+    get_column_contract,
+)
+from haute._graph_utils import _sanitize_func_name, build_instance_mapping
 from haute._logging import get_logger
-from haute._registry import NODE_REGISTRY, ensure_registry_ready
+from haute._registry import NODE_REGISTRY
+from haute._topo import topo_sort_ids
 from haute._types import (
     NODE_TYPE_TO_DECORATOR,
-)
-from haute.errors import ConfigError, HauteError, ParseError
-from haute.graph_utils import (
     GraphEdge,
     GraphNode,
     PipelineGraph,
-    _sanitize_func_name,
-    build_instance_mapping,
-    topo_sort_ids,
 )
+from haute.errors import ConfigError, HauteError, ParseError
 
 logger = get_logger(component="codegen")
-
-# Populate the unified registry eagerly at module import time.  Every code
-# path into codegen goes through this module, so by the time any caller
-# dispatches, both exec and codegen builders are wired and the validation
-# pass has run.
-ensure_registry_ready()
-
 
 __all__ = [
     "graph_to_code",

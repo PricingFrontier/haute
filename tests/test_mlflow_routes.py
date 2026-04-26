@@ -15,8 +15,11 @@ Covers:
 
 from __future__ import annotations
 
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import HTTPException
 
 
@@ -573,6 +576,50 @@ class TestEnsureTracking:
             with patch("haute.routes.mlflow._ensure_tracking", side_effect=side_effect):
                 resp = client.get(path)
             assert resp.status_code == 503, f"Expected 503 for {path}"
+
+
+class TestEnsureTrackingDirect:
+    def _fake_mlflow_modules(self):
+        mlflow_mod = types.ModuleType("mlflow")
+        mlflow_mod.set_tracking_uri = MagicMock()
+        tracking_mod = types.ModuleType("mlflow.tracking")
+        tracking_mod.MlflowClient = MagicMock()
+        return mlflow_mod, tracking_mod
+
+    def test_backend_resolution_failure_becomes_502(self):
+        from haute.routes.mlflow import _ensure_tracking
+
+        mlflow_mod, tracking_mod = self._fake_mlflow_modules()
+        with (
+            patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                side_effect=RuntimeError("tracking backend misconfigured"),
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                _ensure_tracking()
+
+        assert exc_info.value.status_code == 502
+        assert "Check the server logs" in str(exc_info.value.detail)
+
+    def test_mlflow_client_initialization_failure_becomes_502(self):
+        from haute.routes.mlflow import _ensure_tracking
+
+        mlflow_mod, tracking_mod = self._fake_mlflow_modules()
+        tracking_mod.MlflowClient.side_effect = RuntimeError("client init failed")
+        with (
+            patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("sqlite:///mlruns", "local"),
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                _ensure_tracking()
+
+        assert exc_info.value.status_code == 502
+        assert "Check the server logs" in str(exc_info.value.detail)
 
 
 # ---------------------------------------------------------------------------

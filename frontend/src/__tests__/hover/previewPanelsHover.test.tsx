@@ -344,7 +344,15 @@ vi.mock("../../stores/useNodeResultsStore", () => {
 
 vi.mock("../../stores/useSettingsStore", () => {
   const state = {
-    mlflow: { status: "pending", backend: "", host: "" },
+      mlflow: {
+        status: "pending",
+        backend: "",
+        host: "",
+        installed: null,
+        importable: null,
+        trackingConfigured: null,
+        detail: "",
+      },
   }
   const hook = (selector?: (s: typeof state) => unknown) =>
     selector ? selector(state) : state

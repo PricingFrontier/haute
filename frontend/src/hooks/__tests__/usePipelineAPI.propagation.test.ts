@@ -119,6 +119,13 @@ function makeControllablePreview() {
   return { callOrder, deferreds }
 }
 
+async function flushAsyncWork() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
 describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   beforeEach(() => {
     vi.useRealTimers()
@@ -409,7 +416,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     })
 
     // Give the microtask chain time to (not) fire C
-    await new Promise((r) => setTimeout(r, 100))
+    await flushAsyncWork()
     expect(callOrder).toEqual(["A", "B"])
     expect(callOrder).not.toContain("C")
   })
@@ -495,7 +502,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     })
 
     // Wait for any cascade to settle (no second B invocation if in-flight guard is active).
-    await new Promise((r) => setTimeout(r, 200))
+    await flushAsyncWork()
     const bCountAfter = callOrder.filter((id) => id === B.id).length
 
     // B must not be invoked more than once while the first B is still pending.
@@ -608,7 +615,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     })
 
     // Wait a tick to allow any stray cascade to try to fire
-    await new Promise((r) => setTimeout(r, 100))
+    await flushAsyncWork()
 
     expect(callOrder).toEqual(["leaf"])
     // No propagation warning toast

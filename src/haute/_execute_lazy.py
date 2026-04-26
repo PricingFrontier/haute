@@ -12,7 +12,8 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
-from haute._builders import Contract, _passthrough_fn, get_column_contract
+from haute._builders import _passthrough_fn
+from haute._contracts import Contract, get_column_contract
 from haute._graph_utils import (
     _sanitize_func_name,
     build_parents_of,
@@ -120,7 +121,17 @@ def _compute_boundary_check_exceptions() -> tuple[type[BaseException], ...]:
     return tuple(exc_types)
 
 
-_BOUNDARY_CHECK_EXCEPTIONS = _compute_boundary_check_exceptions()
+def _is_boundary_check_exception(exc: BaseException) -> bool:
+    """Return whether *exc* should degrade contract checking to opaque."""
+    from haute.errors import ConfigError
+
+    if isinstance(exc, (ConfigError, OSError)):
+        return True
+    try:
+        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+    except ImportError:
+        return False
+    return isinstance(exc, MlflowException)
 
 
 def _effective_contract(node: GraphNode) -> Contract:
@@ -149,7 +160,9 @@ def _effective_contract(node: GraphNode) -> Contract:
 
     try:
         builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
-    except _BOUNDARY_CHECK_EXCEPTIONS as exc:
+    except Exception as exc:
+        if not _is_boundary_check_exception(exc):
+            raise
         # Contract resolution for MODEL_SCORE etc. may touch MLflow /
         # external stores.  A transient or deploy-mode lookup failure
         # (ConfigError, OSError, MLflow REST) must not prevent the
@@ -683,11 +696,14 @@ def _execute_lazy(
                 raise ValueError(f"No input data available for node '{nid}'")
 
             if check_here and contract is not None and contract.inputs is not None:
-                upstream_pid = input_ids[0]
-                upstream_cols = column_cache.get(upstream_pid)
-                if upstream_cols is None:
-                    upstream_cols = _columns_of(input_lfs[0])
-                    column_cache[upstream_pid] = upstream_cols
+                upstream_col_sets: list[frozenset[str]] = []
+                for upstream_pid, upstream_lf in zip(input_ids, input_lfs, strict=True):
+                    upstream_cols = column_cache.get(upstream_pid)
+                    if upstream_cols is None:
+                        upstream_cols = _columns_of(upstream_lf)
+                        column_cache[upstream_pid] = upstream_cols
+                    upstream_col_sets.append(upstream_cols)
+                upstream_cols = frozenset().union(*upstream_col_sets)
                 _assert_inputs_satisfy_contract(node, contract, upstream_cols)
 
             lf = fn(*input_lfs)

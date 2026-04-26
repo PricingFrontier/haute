@@ -45,6 +45,8 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+coverage-backend.json
+coverage.json
 *.cover
 *.py.cover
 .hypothesis/
@@ -215,15 +217,38 @@ mlruns/
 # CatBoost training logs and model binaries
 catboost_info/
 *.cbm
+!tests/fixtures/**/*.cbm
 
 # Databricks local parquet cache
 .haute_cache/
+
+# Browser E2E fixture project
+.tmp-e2e-project/
+
+# Mutation testing artifacts
+.mutation/
+.mutation-artifacts/
+mutation-artifacts/
+.mutation-plan/
+
+# Performance and package-smoke artifacts
+.perf-artifacts/
+dist-smoke/
+.opt-core/
+.opt-core-wheel/
+.pkg-wheel/
+.pkg-sdist/
+.pkg-wheel-smoke/
+.pkg-sdist-smoke/
 
 # Built frontend (included in wheel via pyproject.toml artifacts)
 src/haute/static/
 
 # Haute container build directory
 .haute_build/
+# Surface accidental test-fixture writes; production/local build dirs remain ignored.
+!tests/fixtures/.haute_build/
+!tests/fixtures/.haute_build/**
 
 # data
 /data
@@ -236,3 +261,4 @@ CLAUDE.md
 .claude/
 
 *.parquet
+!tests/fixtures/**/*.parquet

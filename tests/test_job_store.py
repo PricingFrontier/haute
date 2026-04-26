@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import _DEFAULT_TTL_SECONDS, JobStore
 
 # ---------------------------------------------------------------------------
 # Basic CRUD
@@ -25,7 +25,7 @@ class TestJobStoreCRUD:
         store = JobStore()
         job_id = store.create_job({"status": "pending"})
         assert isinstance(job_id, str)
-        assert len(job_id) >= 8
+        assert len(job_id) == 12
         assert job_id.isalnum()
 
     def test_get_job_returns_stored_data(self) -> None:
@@ -83,6 +83,11 @@ class TestJobStoreCRUD:
         store = JobStore()
         ids = {store.create_job({"status": "pending"}) for _ in range(100)}
         assert len(ids) == 100  # all unique
+
+    def test_default_ttl_is_24_hours(self) -> None:
+        store = JobStore()
+        assert _DEFAULT_TTL_SECONDS == 24 * 60 * 60
+        assert store._ttl_seconds == _DEFAULT_TTL_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -819,22 +824,12 @@ class TestLongRunningJobEviction:
 
 
 # ---------------------------------------------------------------------------
-# GAP 3: No concurrent optimiser guard
+# Optimiser concurrency guard
 # ---------------------------------------------------------------------------
 
 
-class TestOptimiserNoConcurrencyGuard:
-    """Demonstrate that OptimiserSolveService lacks a _start_lock.
-
-    Production failure: Two users (or a double-click) fire off two
-    optimiser solve jobs simultaneously.  Unlike TrainService which has
-    ``_start_lock`` + ``_check_no_concurrent_jobs()``, the optimiser
-    service has no such guard.  Multiple jobs run in parallel, competing
-    for CPU/memory.
-
-    We test at the JobStore level since we can't easily instantiate the
-    full service, but the test documents the architectural gap.
-    """
+class TestOptimiserConcurrencyGuard:
+    """Pin the shared single-running-job contract for background work."""
 
     def test_train_service_has_start_lock(self) -> None:
         """Verify TrainService has the _start_lock attribute."""
@@ -845,102 +840,65 @@ class TestOptimiserNoConcurrencyGuard:
         assert hasattr(svc, "_start_lock")
         assert isinstance(svc._start_lock, type(threading.Lock()))
 
-    def test_optimiser_service_lacks_start_lock(self) -> None:
-        """Verify OptimiserSolveService does NOT have a _start_lock.
-
-        This documents the gap: nothing prevents concurrent solves.
-        """
+    def test_optimiser_service_has_start_lock(self) -> None:
+        """OptimiserSolveService should guard solve starts just like training."""
         from haute.routes._optimiser_service import OptimiserSolveService
 
         store = JobStore()
         svc = OptimiserSolveService(store)
-        assert not hasattr(svc, "_start_lock"), (
-            "OptimiserSolveService now has _start_lock — update this test"
-        )
+        assert hasattr(svc, "_start_lock")
+        assert isinstance(svc._start_lock, type(threading.Lock()))
 
-    def test_multiple_running_jobs_allowed_in_store(self) -> None:
-        """Without a lock, multiple 'running' jobs coexist in the store.
-
-        TrainService explicitly checks for running jobs under a lock.
-        The optimiser service does not, so multiple running jobs are
-        possible.  This test demonstrates the difference.
-        """
+    def test_has_job_with_status_detects_running_jobs(self) -> None:
+        """JobStore should expose a locked status check for route guards."""
         store = JobStore()
+        assert store.has_job_with_status("running") is False
 
-        # Simulate two concurrent optimiser job starts (no lock, no check)
-        id1 = store.create_job({"status": "running", "type": "optimiser"})
-        id2 = store.create_job({"status": "running", "type": "optimiser"})
+        store.create_job({"status": "completed", "type": "optimiser"})
+        store.create_job({"status": "running", "type": "optimiser"})
 
-        running = [jid for jid, j in store.jobs.items() if j.get("status") == "running"]
-        # Both are running — no guard rejected the second one
-        assert len(running) == 2
-        assert id1 in running
-        assert id2 in running
+        assert store.has_job_with_status("running") is True
 
-    def test_concurrent_optimiser_starts_race(self) -> None:
-        """Simulate the double-click race: N threads all create 'running'
-        jobs simultaneously.  All succeed (no lock blocks them).
-        """
-        store = JobStore()
-        n_threads = 5
-        barrier = threading.Barrier(n_threads)
-        ids: list[str] = []
-        lock = threading.Lock()
+    def test_has_job_with_status_false_when_only_other_fresh_statuses_exist(self) -> None:
+        """Fresh non-matching jobs should not satisfy the status guard."""
+        store = JobStore(ttl_seconds=60)
+        store.create_job({"status": "completed"})
+        store.create_job({"status": "error"})
 
-        def start_optimiser(idx: int) -> None:
-            barrier.wait()
-            jid = store.create_job(
-                {
-                    "status": "running",
-                    "type": "optimiser",
-                    "idx": idx,
-                }
-            )
-            with lock:
-                ids.append(jid)
+        assert store.has_job_with_status("running") is False
 
-        threads = [threading.Thread(target=start_optimiser, args=(i,)) for i in range(n_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
+    def test_has_job_with_status_ignores_stale_non_running_jobs(self) -> None:
+        """Expired finished jobs should not trip the running-job guard."""
+        store = JobStore(ttl_seconds=1)
+        store.create_job({"status": "completed", "created_at": time.time() - 10})
 
-        assert len(ids) == n_threads
-        running = [jid for jid, j in store.jobs.items() if j.get("status") == "running"]
-        assert len(running) == n_threads, (
-            f"Expected {n_threads} concurrent running jobs, got {len(running)}"
-        )
+        assert store.has_job_with_status("running") is False
 
 
 # ---------------------------------------------------------------------------
-# GAP 4: clear_result_data is dead code (never called from routes)
+# Manual cleanup hook: clear_result_data can strip heavy runtime state
 # ---------------------------------------------------------------------------
 
 
-class TestClearResultDataDeadCode:
-    """Verify clear_result_data is defined but never invoked from routes.
+class TestClearResultDataManualCleanup:
+    """Verify clear_result_data still works for explicit job cleanup.
 
-    Production failure: Memory leak — after an optimiser solve completes
-    and results are consumed, the heavy solver/solve_result/quote_grid
-    objects stay in memory until TTL eviction (up to 24h).  The
-    ``clear_result_data`` method was designed to fix this, but nobody
-    calls it.
-
-    These tests exercise the method end-to-end on realistic job shapes
-    to ensure it works correctly if/when it is wired in.
+    Optimiser jobs intentionally retain runtime objects for post-solve
+    workflows such as frontier selection and MLflow logging. The helper
+    remains useful as an explicit cleanup primitive, so these tests pin
+    its behavior directly on realistic job shapes.
     """
 
-    def test_clear_result_data_is_used_in_optimiser_service(self) -> None:
-        """Structural test: verify clear_result_data is wired into the
-        optimiser service to free solver/quote_grid after solve completion."""
-        import inspect
+    def test_clear_result_data_is_available_for_explicit_cleanup(self) -> None:
+        """The helper remains callable even when routes retain runtime state."""
+        store = JobStore()
+        job_id = store.create_job({"status": "completed", "solver": object()})
 
-        from haute.routes import _optimiser_service
+        store.clear_result_data(job_id, keys=("solver",))
 
-        mod_src = inspect.getsource(_optimiser_service)
-        assert "clear_result_data" in mod_src, (
-            "clear_result_data should be called in _optimiser_service to free heavy objects"
-        )
+        job = store.get_job(job_id)
+        assert job is not None
+        assert "solver" not in job
 
     def test_end_to_end_optimiser_job_shape(self) -> None:
         """Exercise clear_result_data on a dict shaped like a real
@@ -1253,6 +1211,16 @@ class TestRequireCompletedJobErrorVsRunning:
         detail = exc_info.value.detail
         assert detail == f"Job '{job_id}' is not completed (status: error)"
 
+    def test_require_completed_job_accepts_equal_non_interned_completed_status(self) -> None:
+        store = JobStore()
+        completed_status = "".join(["com", "pleted"])
+        job_id = store.create_job({"status": completed_status, "result": {"ok": True}})
+
+        job = store.require_completed_job(job_id)
+
+        assert job["status"] == "completed"
+        assert job["result"] == {"ok": True}
+
 
 # ---------------------------------------------------------------------------
 # atomic_update with expected_status guard
@@ -1339,6 +1307,29 @@ class TestAtomicUpdateExpectedStatus:
         assert job["status"] == "completed"
         assert job["progress"] == 1.0
         assert "message" not in job
+
+    def test_expected_status_uses_value_equality_not_object_identity(self) -> None:
+        store = JobStore()
+        running_status = "".join(["run", "ning"])
+        expected_status = "".join(["run", "ning"])
+        job_id = store.create_job({"status": running_status, "progress": 0.5})
+
+        store.atomic_update(
+            job_id,
+            {"status": "completed", "progress": 1.0},
+            expected_status=expected_status,
+        )
+
+        job = store.get_job(job_id)
+        assert job["status"] == "completed"
+        assert job["progress"] == 1.0
+
+    def test_expected_status_is_keyword_only(self) -> None:
+        store = JobStore()
+        job_id = store.create_job({"status": "running"})
+
+        with pytest.raises(TypeError):
+            store.atomic_update(job_id, {"status": "completed"}, "running")
 
     def test_raises_key_error_for_missing_job(self) -> None:
         """expected_status guard should not mask KeyError for missing jobs."""

@@ -1,0 +1,14 @@
+{
+  "status": "ok",
+  "points": [
+    {
+      "index": 0,
+      "total_objective": 125.0,
+      "constraints": {
+        "loss": 0.95
+      }
+    }
+  ],
+  "n_points": 1,
+  "constraint_names": ["loss"]
+}

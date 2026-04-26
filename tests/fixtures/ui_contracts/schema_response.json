@@ -1,0 +1,22 @@
+{
+  "path": "data/pricing.parquet",
+  "columns": [
+    {
+      "name": "quote_id",
+      "dtype": "Utf8"
+    },
+    {
+      "name": "premium",
+      "dtype": "Float64"
+    }
+  ],
+  "row_count": 120,
+  "row_count_estimated": false,
+  "column_count": 2,
+  "preview": [
+    {
+      "quote_id": "q_001",
+      "premium": 12.5
+    }
+  ]
+}

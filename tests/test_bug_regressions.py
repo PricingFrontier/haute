@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -84,28 +84,59 @@ class TestBugB12ZeroRowBatchScoring:
 
 
 class TestBugB13StreamingChunkSizeRestore:
-    def test_chunk_size_restored_after_execute_sink(self) -> None:
-        """Polars streaming chunk size must be restored after execute_sink."""
-        # Save current state
-        original = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
+    def test_execute_sink_never_restores_auto_chunk_size_to_zero(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Auto chunk-size mode must not be restored via ``set_streaming_chunk_size(0)``."""
+        from haute.executor import execute_sink
+        from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 
-        # Simulate what execute_sink does
-        _prev = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-        pl.Config.set_streaming_chunk_size(50_000)
+        out_path = tmp_path / "out.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="src",
+                    data=NodeData(
+                        label="src",
+                        nodeType="dataSource",
+                        config={"path": "unused.parquet"},
+                    ),
+                ),
+                GraphNode(
+                    id="sink",
+                    data=NodeData(
+                        label="sink",
+                        nodeType="dataSink",
+                        config={"path": str(out_path), "format": "parquet"},
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e1", source="src", target="sink")],
+        )
+        lazy_outputs = {"sink": pl.DataFrame({"x": [1, 2, 3]}).lazy()}
 
-        # Simulate the finally block (current buggy version)
-        if _prev is not None:
-            pl.Config.set_streaming_chunk_size(int(_prev))
+        calls: list[int] = []
+        original_set_chunk_size = pl.Config.set_streaming_chunk_size
 
-        after = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
+        def record_chunk_size(value: int) -> None:
+            calls.append(int(value))
+            original_set_chunk_size(value)
 
-        # If original was None, the chunk size should be back to None (unset)
-        # But the bug leaves it at "50000"
-        if original is None:
-            # This is the bug: after should be None but it's "50000"
-            assert after is not None  # proves the bug - should be None but isn't
-            # The FIXED version should pass this:
-            # assert after is None
+        monkeypatch.setattr(pl.Config, "set_streaming_chunk_size", record_chunk_size)
+        with (
+            patch("haute.executor.pl.Config.state", return_value={}),
+            patch(
+                "haute.executor._execute_lazy",
+                return_value=(lazy_outputs, ["src", "sink"], {}, {}),
+            ),
+        ):
+            result = execute_sink(graph, "sink")
+
+        assert result.status == "ok"
+        assert result.row_count == 3
+        assert 0 not in calls
 
 
 # ---------------------------------------------------------------------------
@@ -114,21 +145,77 @@ class TestBugB13StreamingChunkSizeRestore:
 
 
 class TestBugB15EmptyDatabricksFetch:
-    def test_empty_fetch_writes_valid_parquet(self, tmp_path: Path) -> None:
+    def test_empty_fetch_writes_valid_parquet(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Fetching a table with zero rows should produce valid empty parquet."""
+        import databricks.sql as dbsql
+        import pyarrow as pa
 
-        tmp_file = tmp_path / "output.parquet.tmp"
+        from haute._databricks_io import fetch_and_cache, fetch_progress
 
-        # Simulate: writer is None (no rows fetched), tmp_path doesn't exist
-        # The bug is that tmp_path.replace(out_path) is called even when
-        # tmp_path doesn't exist. Just verify the pattern.
-        writer = None
-        if writer is not None:
-            pass
-        # In the buggy code, tmp_path.replace(out_path) follows outside this block
-        # In the fixed code, an empty parquet should be written when writer is None
-        assert not tmp_file.exists()  # tmp was never created
-        # The fix should create a valid empty parquet at out_path
+        class FakeCursor:
+            description = [("quote_id",), ("premium",)]
+
+            def __init__(self) -> None:
+                self.executed: list[str] = []
+
+            def __enter__(self) -> FakeCursor:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def execute(self, query: str) -> None:
+                self.executed.append(query)
+
+            def fetchmany_arrow(self, batch_size: int) -> pa.Table:
+                assert batch_size == 17
+                return pa.table({})
+
+        class FakeConnection:
+            def __init__(self, cursor: FakeCursor) -> None:
+                self._cursor = cursor
+
+            def __enter__(self) -> FakeConnection:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def cursor(self) -> FakeCursor:
+                return self._cursor
+
+        fake_cursor = FakeCursor()
+
+        def fake_connect(**kwargs: object) -> FakeConnection:
+            assert kwargs == {
+                "server_hostname": "example.cloud.databricks.com",
+                "http_path": "/sql/warehouse",
+                "access_token": "token",
+            }
+            return FakeConnection(fake_cursor)
+
+        monkeypatch.setenv("DATABRICKS_HOST", "https://example.cloud.databricks.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "token")
+        monkeypatch.setattr(dbsql, "connect", fake_connect)
+
+        table = "catalog.schema.empty_table"
+        result = fetch_and_cache(
+            table,
+            http_path="/sql/warehouse",
+            project_root=tmp_path,
+            batch_size=17,
+        )
+
+        out_path = Path(result["path"])
+        assert result["row_count"] == 0
+        assert out_path.is_file()
+        assert pl.read_parquet(out_path).columns == ["quote_id", "premium"]
+        assert fake_cursor.executed == ["SELECT * FROM catalog.schema.empty_table"]
+        assert fetch_progress(table) is None
 
 
 # ---------------------------------------------------------------------------
@@ -137,29 +224,37 @@ class TestBugB15EmptyDatabricksFetch:
 
 
 class TestBugB17WsClientsSetIteration:
-    def test_broadcast_uses_snapshot(self) -> None:
-        """broadcast() should iterate a snapshot of ws_clients, not the live set.
+    @pytest.mark.asyncio
+    async def test_broadcast_tolerates_client_set_mutation_during_send(self) -> None:
+        """A client connecting during broadcast must not mutate the active iteration."""
+        from haute.routes import _helpers
 
-        Post Package 1C the snapshot is taken by ``ws_clients_snapshot()``,
-        a lock-protected helper in routes/_helpers.py.  Accept any of the
-        known snapshot mechanisms.
-        """
-        import inspect
+        class FakeWebSocket:
+            def __init__(self, on_send=None) -> None:
+                self.messages: list[dict[str, object]] = []
+                self._on_send = on_send
 
-        from haute.routes._helpers import broadcast
+            async def send_text(self, payload: str) -> None:
+                self.messages.append(json.loads(payload))
+                if self._on_send is not None:
+                    self._on_send()
 
-        source = inspect.getsource(broadcast)
-        snapshot_patterns = (
-            "list(ws_clients)",
-            "set(ws_clients)",
-            "ws_clients.copy()",
-            "ws_clients_snapshot()",
-        )
-        assert any(pat in source for pat in snapshot_patterns), (
-            "broadcast() must iterate a snapshot of ws_clients (one of "
-            f"{snapshot_patterns}) to prevent RuntimeError during concurrent "
-            "mutation"
-        )
+        late_client = FakeWebSocket()
+        mutating_client = FakeWebSocket(lambda: _helpers.ws_clients_add(late_client))
+        stable_client = FakeWebSocket()
+
+        with _helpers.ws_clients_lock:
+            _helpers.ws_clients.clear()
+            _helpers.ws_clients.update({mutating_client, stable_client})
+        try:
+            await _helpers.broadcast({"type": "test", "data": 42})
+        finally:
+            with _helpers.ws_clients_lock:
+                _helpers.ws_clients.clear()
+
+        assert mutating_client.messages == [{"type": "test", "data": 42}]
+        assert stable_client.messages == [{"type": "test", "data": 42}]
+        assert late_client.messages == []
 
 
 # ---------------------------------------------------------------------------
@@ -168,17 +263,30 @@ class TestBugB17WsClientsSetIteration:
 
 
 class TestBugB18CacheTOCTOU:
-    def test_load_external_object_single_get(self) -> None:
-        """Cache lookup should use a single get() call, not __contains__ then get."""
-        import inspect
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_same_timestamp_overwrite_invalidates_external_object_cache(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Cache keys must include file content, not just a path/timestamp probe."""
+        from haute._io import _load_cached, load_external_object
 
-        from haute._io import load_external_object
+        path = tmp_path / "payload.json"
+        path.write_text('{"value": 1}', encoding="utf-8")
+        original_stat = path.stat()
 
-        source = inspect.getsource(load_external_object)
-        # After fix, should NOT have the pattern: if key in _object_cache
-        assert "if key in _object_cache" not in source, (
-            "Should use single cache.get() call instead of __contains__ + get TOCTOU pattern"
+        _load_cached.cache_clear()
+        first = load_external_object(str(path), "json")
+
+        path.write_text('{"value": 2}', encoding="utf-8")
+        os.utime(
+            path,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
         )
+        second = load_external_object(str(path), "json")
+
+        assert first == {"value": 1}
+        assert second == {"value": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -350,12 +458,95 @@ class TestBugB5PrunerLiveBranchSelection:
 class TestBugB7DissolveTargetOnly:
     def test_dissolve_preserves_other_submodels(self) -> None:
         """Dissolving one submodel should not flatten others."""
+        from haute.graph_utils import (
+            GraphEdge,
+            GraphNode,
+            NodeData,
+            NodeType,
+            PipelineGraph,
+            flatten_graph,
+        )
 
-        # This is a design-level test: flatten_graph currently flattens ALL.
-        # The fix should support targeted dissolve.
-        # For now, verify that flatten_graph with submodels=None flattens all.
-        # The real fix is in routes/submodel.py to not call flatten_graph globally.
-        pass  # Placeholder - complex to test without the route
+        def node(node_id: str, node_type: NodeType) -> GraphNode:
+            return GraphNode(
+                id=node_id,
+                data=NodeData(label=node_id, nodeType=node_type, config={}),
+            )
+
+        graph = PipelineGraph(
+            nodes=[
+                node("src", NodeType.DATA_SOURCE),
+                node("submodel__rating", NodeType.SUBMODEL),
+                node("submodel__pricing", NodeType.SUBMODEL),
+                node("out", NodeType.OUTPUT),
+            ],
+            edges=[
+                GraphEdge(
+                    id="e_src_rating",
+                    source="src",
+                    target="submodel__rating",
+                    targetHandle="in__rating_step_1",
+                ),
+                GraphEdge(
+                    id="e_rating_pricing",
+                    source="submodel__rating",
+                    target="submodel__pricing",
+                    sourceHandle="out__rating_step_2",
+                    targetHandle="in__pricing_step_1",
+                ),
+                GraphEdge(
+                    id="e_pricing_out",
+                    source="submodel__pricing",
+                    target="out",
+                    sourceHandle="out__pricing_step_2",
+                ),
+            ],
+            submodels={
+                "rating": {
+                    "graph": {
+                        "nodes": [
+                            node("rating_step_1", NodeType.POLARS).model_dump(),
+                            node("rating_step_2", NodeType.POLARS).model_dump(),
+                        ],
+                        "edges": [
+                            GraphEdge(
+                                id="e_rating_internal",
+                                source="rating_step_1",
+                                target="rating_step_2",
+                            ).model_dump()
+                        ],
+                    }
+                },
+                "pricing": {
+                    "graph": {
+                        "nodes": [
+                            node("pricing_step_1", NodeType.POLARS).model_dump(),
+                            node("pricing_step_2", NodeType.POLARS).model_dump(),
+                        ],
+                        "edges": [
+                            GraphEdge(
+                                id="e_pricing_internal",
+                                source="pricing_step_1",
+                                target="pricing_step_2",
+                            ).model_dump()
+                        ],
+                    }
+                },
+            },
+        )
+
+        flattened = flatten_graph(graph, target_name="rating")
+        node_ids = {n.id for n in flattened.nodes}
+        edge_pairs = {(e.source, e.target) for e in flattened.edges}
+
+        assert "submodel__rating" not in node_ids
+        assert {"rating_step_1", "rating_step_2"} <= node_ids
+        assert "submodel__pricing" in node_ids
+        assert "pricing_step_1" not in node_ids
+        assert "pricing_step_2" not in node_ids
+        assert set((flattened.submodels or {}).keys()) == {"pricing"}
+        assert ("src", "rating_step_1") in edge_pairs
+        assert ("rating_step_2", "submodel__pricing") in edge_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +588,46 @@ class TestBugB11InstanceSelectedColumns:
 
 
 class TestBugB13B14ChunkSizeRestore:
+    def test_explicit_prior_chunk_size_is_restored(self, tmp_path: Path) -> None:
+        """Explicit pre-existing chunk size must survive a sink execution."""
+        from haute.executor import execute_sink
+        from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+
+        out_path = tmp_path / "out.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="src",
+                    data=NodeData(
+                        label="src",
+                        nodeType="dataSource",
+                        config={"path": "unused.parquet"},
+                    ),
+                ),
+                GraphNode(
+                    id="sink",
+                    data=NodeData(
+                        label="sink",
+                        nodeType="dataSink",
+                        config={"path": str(out_path), "format": "parquet"},
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e1", source="src", target="sink")],
+        )
+        lazy_outputs = {"sink": pl.DataFrame({"x": [1, 2]}).lazy()}
+
+        pl.Config.set_streaming_chunk_size(75_000)
+        with patch(
+            "haute.executor._execute_lazy",
+            return_value=(lazy_outputs, ["src", "sink"], {}, {}),
+        ):
+            result = execute_sink(graph, "sink")
+
+        assert result.status == "ok"
+        assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "75000"
+
+    @pytest.mark.skip(reason="Superseded by behavioral chunk-size restoration tests.")
     def test_chunk_size_restore_does_not_pass_zero(self) -> None:
         """Polars streaming chunk size restore must not call set_streaming_chunk_size(0).
 
@@ -418,42 +649,45 @@ class TestBugB13B14ChunkSizeRestore:
 
 
 # ---------------------------------------------------------------------------
-# B15: Empty Databricks table fetch crashes
-# ---------------------------------------------------------------------------
-
-
-class TestBugB15EmptyDatabricksFetchV2:
-    def test_empty_fetch_does_not_crash(self) -> None:
-        """Fetching a zero-row table should not raise FileNotFoundError."""
-        # Verify the code handles the writer=None case by writing empty parquet
-        import inspect
-
-        from haute._databricks_io import fetch_and_cache
-
-        source = inspect.getsource(fetch_and_cache)
-        # After fix, when writer is None, an empty parquet should be written
-        # The fix should handle the case where no rows were returned
-        assert "writer is None" in source or "not writer" in source or "empty" in source.lower(), (
-            "fetch_and_cache should handle zero-row tables (writer is None)"
-        )
-
-
-# ---------------------------------------------------------------------------
 # B16: validate_deploy not called in programmatic path
 # ---------------------------------------------------------------------------
 
 
 class TestBugB16ValidateDeployCall:
-    def test_deploy_calls_validate(self) -> None:
+    def test_deploy_calls_validate_before_backend_deploy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """The programmatic deploy() function should call validate_deploy."""
-        import inspect
+        import haute.deploy as deploy_mod
 
-        from haute.deploy import deploy
+        resolved = object()
+        deployed = object()
+        calls: list[str] = []
 
-        source = inspect.getsource(deploy)
-        assert "validate_deploy" in source, (
-            "deploy() should call validate_deploy() before deploying"
-        )
+        config = MagicMock()
+        config.target = "databricks"
+
+        def fake_resolve_config(received_config: object) -> object:
+            assert received_config is config
+            calls.append("resolve")
+            return resolved
+
+        def fake_validate_deploy(received_resolved: object) -> None:
+            assert received_resolved is resolved
+            calls.append("validate")
+
+        def fake_deploy_to_mlflow(received_resolved: object) -> object:
+            assert received_resolved is resolved
+            calls.append("deploy")
+            return deployed
+
+        monkeypatch.setattr(deploy_mod, "resolve_config", fake_resolve_config)
+        monkeypatch.setattr(deploy_mod, "validate_deploy", fake_validate_deploy)
+        monkeypatch.setattr(deploy_mod, "deploy_to_mlflow", fake_deploy_to_mlflow)
+
+        assert deploy_mod.deploy(config) is deployed
+        assert calls == ["resolve", "validate", "deploy"]
 
 
 # TestBugB8GlmCvRegularization deleted in Phase 2 Package 2C-5: the

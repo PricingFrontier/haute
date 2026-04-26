@@ -53,23 +53,35 @@ export interface NodeMemory {
 }
 
 export interface SavePipelineResponse {
+  status?: string
   file: string
   pipeline_name: string
+  warnings?: string[]
+}
+
+export interface PreviewNodeResponse extends NodeResult {
+  node_id: string
+  timings?: NodeTiming[]
+  memory?: NodeMemory[]
+  node_statuses?: Record<string, string>
 }
 
 export interface SubmodelCreateResponse {
-  graph?: PipelineGraph
+  status: string
+  submodel_file: string
+  parent_file: string
+  graph: PipelineGraph
 }
 
 export interface SubmodelGraphResponse {
-  graph?: {
-    nodes: import("@xyflow/react").Node[]
-    edges: import("@xyflow/react").Edge[]
-  }
+  status: string
+  submodel_name: string
+  graph: PipelineGraph
 }
 
 export interface DissolveSubmodelResponse {
-  graph?: PipelineGraph
+  status: string
+  graph: PipelineGraph
 }
 
 /** HTTP response envelope for /api/pipeline/trace (wraps TraceResult). */
@@ -111,64 +123,201 @@ export type GraphPayload = { nodes: Node[]; edges: Edge[]; submodels?: Record<st
 // ---------------------------------------------------------------------------
 
 export interface MlflowCheckResponse {
-  mlflow_installed?: boolean
-  backend?: string
-  databricks_host?: string
+  mlflow_installed: boolean
+  mlflow_importable?: boolean
+  tracking_configured?: boolean
+  backend: string
+  databricks_host: string
+  detail?: string
 }
 
 export interface TrainEstimate {
-  total_rows?: number | null
-  safe_row_limit?: number | null
+  total_rows: number | null
+  safe_row_limit: number | null
   estimated_mb: number
   training_mb: number
   available_mb: number
   bytes_per_row: number
   was_downsampled: boolean
-  warning?: string | null
+  warning: string | null
   // GPU VRAM estimation (only populated when task_type is GPU)
-  gpu_vram_estimated_mb?: number | null
-  gpu_vram_available_mb?: number | null
-  gpu_warning?: string | null
+  gpu_vram_estimated_mb: number | null
+  gpu_vram_available_mb: number | null
+  gpu_warning: string | null
+}
+
+export interface TrainFeatureImportanceRow {
+  feature: string
+  importance: number
+}
+
+export interface TrainDoubleLiftRow {
+  decile: number
+  actual: number
+  predicted: number
+  count: number
+}
+
+export interface TrainShapSummaryRow {
+  feature: string
+  mean_abs_shap: number
+}
+
+export interface TrainAveBin {
+  label: string
+  exposure: number
+  avg_actual: number
+  avg_predicted: number
+}
+
+export interface TrainAvePerFeatureRow {
+  feature: string
+  type: string
+  bins: TrainAveBin[]
+}
+
+export interface TrainResidualHistogramRow {
+  bin_center: number
+  count: number
+  weighted_count: number
+}
+
+export interface ActualVsPredictedRow {
+  actual: number
+  predicted: number
+  weight: number
+}
+
+export interface LorenzCurvePoint {
+  cum_weight_frac: number
+  cum_actual_frac: number
+}
+
+export interface PdpGridPoint {
+  value: number | string
+  avg_prediction: number
+}
+
+export interface PdpFeatureRow {
+  feature: string
+  type: string
+  grid: PdpGridPoint[]
+}
+
+export interface GlmCoefficientRow {
+  feature: string
+  coefficient: number
+  std_error: number
+  z_value: number
+  p_value: number
+  significance: string
+}
+
+export interface GlmRelativityRow {
+  feature: string
+  relativity: number
+  ci_lower?: number
+  ci_upper?: number
+}
+
+export interface GlmRegularizationPath {
+  selected_alpha?: number
+  n_nonzero?: number
+}
+
+export interface TrainDiagnosticsError {
+  diagnostic: string
+  error: string
+  error_type: string
+}
+
+export interface TrainResponse {
+  status: string
+  job_id?: string | null
+  metrics?: Record<string, number>
+  feature_importance?: TrainFeatureImportanceRow[]
+  model_path?: string
+  train_rows?: number
+  test_rows?: number
+  holdout_rows?: number
+  holdout_metrics?: Record<string, number>
+  diagnostics_set?: string
+  features?: string[]
+  cat_features?: string[]
+  error?: string | null
+  best_iteration?: number | null
+  loss_history?: Array<{ iteration: number; [key: string]: number }>
+  double_lift?: TrainDoubleLiftRow[]
+  shap_summary?: TrainShapSummaryRow[]
+  feature_importance_loss?: TrainFeatureImportanceRow[]
+  ave_per_feature?: TrainAvePerFeatureRow[]
+  residuals_histogram?: TrainResidualHistogramRow[]
+  residuals_stats?: Record<string, number>
+  actual_vs_predicted?: ActualVsPredictedRow[]
+  lorenz_curve?: LorenzCurvePoint[]
+  lorenz_curve_perfect?: LorenzCurvePoint[]
+  pdp_data?: PdpFeatureRow[]
+  warning?: string | null
+  total_source_rows?: number | null
+  glm_coefficients?: GlmCoefficientRow[]
+  glm_relativities?: GlmRelativityRow[]
+  glm_fit_statistics?: Record<string, number>
+  glm_regularization_path?: GlmRegularizationPath | null
+  diagnostics_errors?: TrainDiagnosticsError[]
+}
+
+export interface TrainStatusResponse {
+  status: string
+  progress: number
+  message: string
+  iteration: number
+  total_iterations: number
+  train_loss: Record<string, number>
+  elapsed_seconds: number
+  result?: TrainResponse | null
+  warning?: string | null
 }
 
 export interface MlflowLogResponse {
   status: string
-  backend?: string
-  experiment_name?: string
-  run_id?: string
-  run_url?: string | null
-  tracking_uri?: string
-  error?: string
+  backend: string
+  experiment_name: string
+  run_id: string | null
+  run_url: string | null
+  tracking_uri: string
+  error: string | null
 }
 
 // ---------------------------------------------------------------------------
 // Optimiser types
 // ---------------------------------------------------------------------------
 
-export interface SolveOptimiserResponse {
+export interface OptimiserSolveResponse {
   status: string
-  job_id?: string
-  error?: string
+  job_id: string | null
+  error: string | null
 }
+
+export type SolveOptimiserResponse = OptimiserSolveResponse
 
 export interface OptimiserEstimate {
   /** Source row count from parquet metadata, or null when unreadable. */
-  total_rows?: number | null
+  total_rows: number | null
 }
 
 export interface ApplyOptimiserResponse {
   status: string
-  total_objective?: number
-  constraints?: Record<string, number>
-  preview?: Record<string, unknown>[]
-  row_count?: number
-  error?: string
+  total_objective: number
+  constraints: Record<string, number>
+  preview: Record<string, unknown>[]
+  row_count: number
+  error: string | null
 }
 
 export interface SaveOptimiserResponse {
   status: string
-  path?: string
-  message?: string
+  path: string | null
+  message: string
 }
 
 export interface FrontierResponse {
@@ -180,6 +329,64 @@ export interface FrontierResponse {
 
 export type FrontierData = Omit<FrontierResponse, 'status'>
 
+export interface OptimiserHistoryEntry {
+  iteration: number
+  total_objective: number
+  max_lambda_change: number
+  all_constraints_satisfied?: boolean
+  lambdas?: Record<string, number>
+  total_constraints?: Record<string, number>
+}
+
+export interface OptimiserScenarioValueStats {
+  mean: number
+  std: number
+  min: number
+  max: number
+  p5: number
+  p25: number
+  p50: number
+  p75: number
+  p95: number
+  pct_increase: number
+  pct_decrease: number
+}
+
+export interface OptimiserScenarioValueHistogram {
+  counts: number[]
+  edges: number[]
+}
+
+export interface OptimiserSolveResult {
+  mode?: string | null
+  total_objective: number
+  baseline_objective: number
+  constraints: Record<string, number>
+  baseline_constraints: Record<string, number>
+  lambdas: Record<string, number>
+  converged: boolean
+  iterations?: number | null
+  n_quotes?: number | null
+  n_steps?: number | null
+  cd_iterations?: number | null
+  factor_tables?: Record<string, Record<string, unknown>[]>
+  history?: OptimiserHistoryEntry[] | null
+  warning?: string | null
+  scenario_value_stats?: OptimiserScenarioValueStats
+  scenario_value_histogram?: OptimiserScenarioValueHistogram
+  clamp_rate?: number | null
+  frontier?: FrontierResponse | null
+}
+
+export interface OptimiserStatusResponse {
+  status: string
+  progress: number
+  message?: string
+  elapsed_seconds: number
+  result?: OptimiserSolveResult | null
+  frontier?: FrontierResponse | null
+}
+
 export interface FrontierSelectResponse {
   status: string
   total_objective: number
@@ -188,7 +395,7 @@ export interface FrontierSelectResponse {
   baseline_constraints: Record<string, number>
   lambdas: Record<string, number>
   converged: boolean
-  error?: string
+  error: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +427,33 @@ export interface DatabricksTable {
   comment: string
 }
 
+export interface DatabricksWarehousesResponse {
+  warehouses: DatabricksWarehouse[]
+}
+
+export interface DatabricksCatalogsResponse {
+  catalogs: DatabricksCatalog[]
+}
+
+export interface DatabricksSchemasResponse {
+  schemas: DatabricksSchema[]
+}
+
+export interface DatabricksTablesResponse {
+  tables: DatabricksTable[]
+}
+
+export interface FetchTableResponse {
+  path: string
+  table: string
+  row_count: number
+  column_count: number
+  columns: Record<string, string>
+  size_bytes: number
+  fetched_at: number
+  fetch_seconds: number
+}
+
 export interface CacheStatusResponse {
   cached: boolean
   path?: string
@@ -247,6 +481,17 @@ export interface JsonCacheProgressResponse {
   rows?: number
   elapsed?: number
   phase?: string
+}
+
+export interface JsonCacheBuildResponse {
+  path: string
+  data_path: string
+  row_count: number
+  column_count: number
+  columns: Record<string, string>
+  size_bytes: number
+  cached_at: number
+  cache_seconds: number
 }
 
 export interface JsonCacheStatusResponse {
@@ -312,13 +557,28 @@ export interface UtilityFile {
   module: string
 }
 
+export interface UtilityListResponse {
+  files: UtilityFile[]
+}
+
+export interface UtilityReadResponse {
+  name: string
+  module: string
+  content: string
+}
+
 export interface UtilityWriteResult {
   status: string
   name: string
   module: string
   import_line: string
-  error?: string | null
-  error_line?: number | null
+  error: string | null
+  error_line: number | null
+}
+
+export interface UtilityDeleteResponse {
+  status: string
+  module: string
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +592,7 @@ export interface GitStatus {
   changed_files: string[]
   main_ahead: boolean
   main_ahead_by: number
-  main_last_updated: string | null
+  main_last_updated?: string | null
 }
 
 export interface GitBranchInfo {
@@ -344,10 +604,60 @@ export interface GitBranchInfo {
   commit_count: number
 }
 
+export interface GitBranchListResponse {
+  current: string
+  branches: GitBranchInfo[]
+}
+
 export interface GitHistoryEntry {
   sha: string
   short_sha: string
   message: string
   timestamp: string
   files_changed: string[]
+}
+
+export interface GitCreateBranchResponse {
+  branch: string
+}
+
+export interface GitSwitchBranchResponse {
+  status: string
+  branch: string
+}
+
+export interface GitSaveResponse {
+  commit_sha: string
+  message: string
+  timestamp: string
+}
+
+export interface GitSubmitResponse {
+  compare_url: string | null
+  branch: string
+}
+
+export interface GitHistoryResponse {
+  entries: GitHistoryEntry[]
+}
+
+export interface GitRevertResponse {
+  backup_tag: string
+  reverted_to: string
+}
+
+export interface GitPullResponse {
+  success: boolean
+  conflict: boolean
+  conflict_message: string | null
+  commits_pulled: number
+}
+
+export interface GitArchiveResponse {
+  archived_as: string
+}
+
+export interface GitDeleteBranchResponse {
+  status: string
+  branch: string
 }

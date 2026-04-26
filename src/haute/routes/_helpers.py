@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
+import math
 import threading
 import time
 import tomllib
+import weakref
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn
@@ -73,11 +77,22 @@ class SidecarModel(BaseModel):
 def validate_safe_path(base: Path, user_provided: str | Path) -> Path:
     """Resolve *user_provided* relative to *base* and verify it stays within *base*.
 
-    Returns the resolved ``Path``.  Raises ``HTTPException(403)`` if the
-    resolved path escapes the project root.
+    Returns the resolved ``Path``.  Raises ``HTTPException(400)`` for invalid
+    path bytes and ``HTTPException(403)`` if the resolved path escapes the
+    project root.
     """
+    if "\x00" in str(user_provided):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
     base = base.resolve()
-    target = (base / user_provided).resolve()
+    raw_target = Path(user_provided)
+    if raw_target.is_absolute() and not raw_target.is_relative_to(base):
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot access paths outside the project root",
+        )
+
+    target = (base / raw_target).resolve()
     if not target.is_relative_to(base):
         raise HTTPException(
             status_code=403,
@@ -272,13 +287,23 @@ def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> b
 # WebSocket connections for live sync
 # ---------------------------------------------------------------------------
 # ``ws_clients`` is mutated from FastAPI's async handlers (ws_sync) AND from
-# the synchronous file-watcher callback path (broadcast is awaited but its
-# cleanup loop mutates the set).  On multi-worker deployments and on
+# the event-bus broadcast tasks scheduled by the file-watcher path. On
+# multi-worker deployments and on
 # free-threaded CPython (3.13 --disable-gil) ``set.add`` / ``set.discard``
 # are no longer GIL-atomic, so every add/discard must go through the
 # explicit lock below.
 ws_clients: set[WebSocket] = set()
 ws_clients_lock = threading.Lock()
+_WS_SEND_TIMEOUT_SECONDS = 1.0
+_ws_send_state_lock = threading.Lock()
+_ws_send_inflight: weakref.WeakSet[WebSocket] = weakref.WeakSet()
+_ws_send_pending: weakref.WeakKeyDictionary[WebSocket, deque[str]] = weakref.WeakKeyDictionary()
+
+
+def _clear_ws_send_state(ws: WebSocket) -> None:
+    with _ws_send_state_lock:
+        _ws_send_inflight.discard(ws)
+        _ws_send_pending.pop(ws, None)
 
 
 def ws_clients_add(ws: WebSocket) -> None:
@@ -291,6 +316,7 @@ def ws_clients_discard(ws: WebSocket) -> None:
     """Thread-safe ``ws_clients.discard(ws)``."""
     with ws_clients_lock:
         ws_clients.discard(ws)
+    _clear_ws_send_state(ws)
 
 
 def ws_clients_snapshot() -> list[WebSocket]:
@@ -304,7 +330,7 @@ async def broadcast(data: dict[str, Any]) -> None:
 
     Iterates a lock-protected snapshot of ``ws_clients`` so concurrent
     connects/disconnects cannot corrupt the set.  Dead clients discovered
-    during the iteration are removed under the same lock.
+    during the send fan-out are removed under the same lock.
     """
     try:
         payload = _json.dumps(data)
@@ -313,24 +339,59 @@ async def broadcast(data: dict[str, Any]) -> None:
         return
 
     snapshot = ws_clients_snapshot()
+    if not snapshot:
+        return
 
-    dead: list[WebSocket] = []
-    for ws in snapshot:
-        try:
-            await ws.send_text(payload)
-        except Exception:  # noqa: BLE001
-            # Any ``send_text`` failure (connection closed, transport
-            # error, ASGI shutdown, or a custom test double raising a
-            # plain ``Exception``) marks the client dead so the next
-            # broadcast doesn't waste a round-trip on it.  Narrowing
-            # this except causes flaky behaviour with ASGI clients
-            # that raise generic Exception subclasses.
-            dead.append(ws)
+    async def _send_serialized(ws: WebSocket, initial_payload: str) -> None:
+        current_payload = initial_payload
+        while True:
+            try:
+                await asyncio.wait_for(
+                    ws.send_text(current_payload),
+                    timeout=_WS_SEND_TIMEOUT_SECONDS,
+                )
+            except BaseException:
+                _clear_ws_send_state(ws)
+                raise
+
+            with _ws_send_state_lock:
+                pending = _ws_send_pending.get(ws)
+                if not pending:
+                    _ws_send_pending.pop(ws, None)
+                    _ws_send_inflight.discard(ws)
+                    return
+                current_payload = pending.popleft()
+                if not pending:
+                    _ws_send_pending.pop(ws, None)
+
+    async def _send_with_timeout(ws: WebSocket) -> str:
+        with _ws_send_state_lock:
+            if ws in _ws_send_inflight:
+                pending = _ws_send_pending.get(ws)
+                if pending is None:
+                    pending = deque()
+                    _ws_send_pending[ws] = pending
+                pending.append(payload)
+                return "queued"
+            _ws_send_inflight.add(ws)
+        await _send_serialized(ws, payload)
+        return "sent"
+
+    tasks = [asyncio.create_task(_send_with_timeout(ws)) for ws in snapshot]
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        raise
+
+    dead = [
+        ws for ws, result in zip(snapshot, results, strict=False) if isinstance(result, Exception)
+    ]
     if dead:
         logger.debug("broadcast_cleaned_dead_clients", count=len(dead))
-        with ws_clients_lock:
-            for ws in dead:
-                ws_clients.discard(ws)
+        for ws in dead:
+            ws_clients_discard(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -572,23 +633,20 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
 
     graph = parse_pipeline_file(py_path)
     sidecar = load_sidecar(py_path)
-    positions: dict[str, dict[str, float]] = sidecar.get("positions", {})
+    positions = _normalise_sidecar_positions(sidecar.get("positions"))
 
     for node in graph.nodes:
-        if node.id in positions:
-            node.position = positions[node.id]
+        position = positions.get(node.id)
+        if position is not None:
+            node.position = position
 
     # Populate source state from sidecar
-    raw_sources = sidecar.get("sources")
-    if isinstance(raw_sources, list) and raw_sources:
-        # Ensure "live" is always first
-        if "live" not in raw_sources:
-            raw_sources = ["live", *raw_sources]
-        elif raw_sources[0] != "live":
-            raw_sources = ["live", *(s for s in raw_sources if s != "live")]
+    raw_sources = _normalise_sidecar_sources(sidecar.get("sources"))
+    if raw_sources is not None:
         graph.sources = raw_sources
     active = sidecar.get("active_source", "live")
-    if isinstance(active, str):
+    if isinstance(active, str) and active.strip():
+        active = active.strip()
         # Ensure the active source is in the sources list
         if active not in graph.sources and active != "live":
             graph.sources = [*graph.sources, active]
@@ -596,3 +654,51 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
             graph.active_source = active
 
     return graph
+
+
+def _normalise_sidecar_sources(raw_sources: Any) -> list[str] | None:
+    if not isinstance(raw_sources, list):
+        return None
+
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    saw_live = False
+    for value in raw_sources:
+        if not isinstance(value, str):
+            continue
+        source = value.strip()
+        if not source:
+            continue
+        if source == "live":
+            saw_live = True
+            continue
+        if source in seen:
+            continue
+        seen.add(source)
+        cleaned.append(source)
+
+    if not cleaned and not saw_live:
+        return None
+    return ["live", *cleaned]
+
+
+def _normalise_sidecar_positions(raw_positions: Any) -> dict[str, dict[str, float]]:
+    if not isinstance(raw_positions, dict):
+        return {}
+
+    positions: dict[str, dict[str, float]] = {}
+    for node_id, position in raw_positions.items():
+        if not isinstance(node_id, str) or not isinstance(position, dict):
+            continue
+        x = position.get("x")
+        y = position.get("y")
+        if not isinstance(x, (int, float)) or isinstance(x, bool):
+            continue
+        if not isinstance(y, (int, float)) or isinstance(y, bool):
+            continue
+        xf = float(x)
+        yf = float(y)
+        if not math.isfinite(xf) or not math.isfinite(yf):
+            continue
+        positions[node_id] = {"x": xf, "y": yf}
+    return positions

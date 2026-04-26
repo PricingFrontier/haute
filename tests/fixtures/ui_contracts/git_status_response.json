@@ -1,0 +1,12 @@
+{
+  "branch": "feature/pricing",
+  "is_main": false,
+  "is_read_only": false,
+  "changed_files": [
+    "pricing.py",
+    "haute.toml"
+  ],
+  "main_ahead": true,
+  "main_ahead_by": 2,
+  "main_last_updated": "2026-04-23T10:15:00Z"
+}

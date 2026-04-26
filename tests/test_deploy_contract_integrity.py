@@ -409,13 +409,24 @@ class TestFeatureContractBundled:
     def test_training_writes_contract_next_to_model(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """After ``TrainingJob.run`` the ``output_dir`` contains both the
         .cbm and the feature_contract.json with a hash consistent with
         the training features.
         """
-        pytest.importorskip("catboost")
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         import numpy as np
+
+        monkeypatch.setattr(
+            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
+            lambda *a, **kw: [],
+        )
+        monkeypatch.setattr(
+            "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
+            lambda *a, **kw: [],
+        )
+        monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
 
         from haute.modelling._training_job import TrainingJob
 
@@ -434,7 +445,7 @@ class TestFeatureContractBundled:
             data=df,
             target="ClaimCount",
             weight="Exposure",
-            params={"iterations": 3, "depth": 2, "verbose": 0},
+            params={"iterations": 1, "depth": 1, "verbose": 0},
             output_dir=str(tmp_path),
         )
         result = job.run()

@@ -657,6 +657,45 @@ class TestCheckpointing:
         df = outputs["j"].collect()
         assert set(df.columns) >= {"key", "a", "b"}
 
+    def test_multi_parent_contract_inputs_use_union_of_parent_columns(self):
+        """Lazy input contract checks must match eager multi-parent semantics.
+
+        A transform can legitimately read a column supplied by its second
+        parent, for example after joining lookup data. The contract check
+        should validate against the union of direct parent schemas, not only
+        the first parent.
+        """
+
+        def build_fn(node: GraphNode, source_names=None, **kwargs):
+            if node.id == "s1":
+                return node.id, lambda: pl.DataFrame({"key": [1], "a": [10]}).lazy(), True
+            if node.id == "s2":
+                return node.id, lambda: pl.DataFrame({"key": [1], "b": [30]}).lazy(), True
+
+            def use_second_parent(_left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
+                return right.with_columns(b2=pl.col("b") * 2)
+
+            return node.id, use_second_parent, False
+
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s1"),
+                _source_node("s2"),
+                _transform_node(
+                    "t",
+                    contract={"inputs": ["b"], "outputs": ["b2"]},
+                ),
+            ],
+            edges=[_e("s1", "t"), _e("s2", "t")],
+        )
+
+        eager = _execute_eager_core(g, build_fn, enforce_contracts=True).outputs["t"]
+        lazy_outputs, *_ = _execute_lazy(g, build_fn, enforce_contracts=True)
+        lazy = lazy_outputs["t"].collect()
+
+        assert eager["b2"].to_list() == [60]
+        assert lazy["b2"].to_list() == [60]
+
     def test_source_nodes_not_checkpointed(self, tmp_path):
         """Source nodes are never checkpointed."""
         g = PipelineGraph(

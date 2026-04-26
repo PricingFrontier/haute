@@ -12,10 +12,10 @@ type MlflowResult = {
   status: string
   backend?: string
   experiment_name?: string
-  run_id?: string
+  run_id?: string | null
   run_url?: string | null
   tracking_uri?: string
-  error?: string
+  error?: string | null
 }
 
 type MlflowExportSectionProps = {

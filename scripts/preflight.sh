@@ -6,6 +6,7 @@
 #   ./scripts/preflight.sh --quick          # lint + types only
 #   ./scripts/preflight.sh --backend-only   # backend gates only
 #   ./scripts/preflight.sh --frontend-only  # frontend gates only
+#   ./scripts/preflight.sh --perf           # also run opt-in Python perf tests
 #
 # Exit code 0 = safe to push. Non-zero = fix before pushing.
 set -euo pipefail
@@ -61,6 +62,7 @@ NC='\033[0m'
 QUICK=false
 RUN_BACKEND=true
 RUN_FRONTEND=true
+RUN_PERF=false
 PYTEST_WORKERS="${PYTEST_WORKERS:-4}"
 
 for arg in "$@"; do
@@ -73,6 +75,9 @@ for arg in "$@"; do
       ;;
     --frontend-only)
       RUN_BACKEND=false
+      ;;
+    --perf)
+      RUN_PERF=true
       ;;
     *)
       echo "Unknown argument: $arg" >&2
@@ -101,6 +106,28 @@ fail() {
   FAIL=1
 }
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${seconds}s" "$@"
+    return
+  fi
+
+  uv run python -c '
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=timeout).returncode)
+except subprocess.TimeoutExpired:
+    print("Command timed out after %gs: %s" % (timeout, " ".join(cmd)), file=sys.stderr)
+    raise SystemExit(124)
+' "$seconds" "$@"
+}
+
 if [[ "$RUN_BACKEND" == true ]]; then
   step "Ruff lint (Python)"
   if uv run ruff check .; then
@@ -124,11 +151,31 @@ if [[ "$RUN_BACKEND" == true ]]; then
   fi
 
   if [[ "$QUICK" == false ]]; then
-    step "Python tests with coverage"
-    if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --cov=src/haute --cov-branch --cov-report=term-missing --cov-fail-under=85; then
-      pass "Python tests (coverage >=85%)"
+    step "Python test collection"
+    if run_with_timeout 300 uv run pytest tests/ --collect-only -q; then
+      pass "Python test collection"
     else
-      fail "Python tests"
+      fail "Python test collection"
+    fi
+
+    step "Python tests with coverage gates"
+    PYTHON_COVERAGE_JSON=".cache/coverage/backend.json"
+    mkdir -p "$(dirname "$PYTHON_COVERAGE_JSON")"
+    rm -f "$PYTHON_COVERAGE_JSON"
+    if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --timeout=60 --timeout-method=signal --cov=src/haute --cov-branch --cov-report=term-missing --cov-report="json:${PYTHON_COVERAGE_JSON}" --cov-fail-under=90 &&
+      uv run python scripts/check_critical_coverage.py --coverage-json "$PYTHON_COVERAGE_JSON"; then
+      pass "Python tests (global + critical coverage gates)"
+    else
+      fail "Python tests or critical coverage"
+    fi
+
+    if [[ "$RUN_PERF" == true ]]; then
+      step "Python perf tests"
+      if uv run python scripts/run_perf_suite.py --output-dir .cache/perf; then
+        pass "Python perf tests"
+      else
+        fail "Python perf tests"
+      fi
     fi
 
     step "Python package build"
@@ -172,9 +219,9 @@ if [[ "$RUN_FRONTEND" == true ]]; then
       fail "Frontend bundle budget"
     fi
 
-    step "Frontend tests"
-    if (cd frontend && npm test); then
-      pass "Frontend tests"
+    step "Frontend tests with coverage"
+    if (cd frontend && npm run test:coverage); then
+      pass "Frontend tests (coverage thresholds)"
     else
       fail "Frontend tests"
     fi

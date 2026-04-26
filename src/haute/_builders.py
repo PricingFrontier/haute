@@ -340,16 +340,17 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     flat_schema = config.get("flattenSchema")
 
     api_source_fn: Callable[..., _Frame]
-    if path.endswith((".json", ".jsonl")):
+    if path.lower().endswith((".json", ".jsonl")):
 
         def _api_source_json(_path: str = path, _schema: dict | None = flat_schema) -> _Frame:
-            from haute._json_flatten import _json_cache_path
+            from haute._json_flatten import json_cache_path_if_valid
 
-            cache_path = _json_cache_path(_path)
-            if cache_path.exists():
+            cache_path = json_cache_path_if_valid(_path, schema=_schema)
+            if cache_path is not None:
                 return pl.scan_parquet(cache_path)
             raise RuntimeError(
-                "JSON data has not been cached yet. "
+                "JSON data has not been cached yet, or the existing cache is stale "
+                "or schema-incompatible. "
                 "Click 'Cache as Parquet' on the API Input node to process it."
             )
 

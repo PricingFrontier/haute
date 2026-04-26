@@ -161,8 +161,8 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Solver and quote grid have been released to free memory. "
-                "Use the pre-computed frontier from the solve result, or re-run the solve."
+                "Solver and quote grid are not available for this job. "
+                "Re-run the solve to compute a new frontier."
             ),
         )
 
@@ -212,8 +212,8 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
         raise HTTPException(
             status_code=400,
             detail=(
-                "Solver and quote grid have been released to free memory. "
-                "Use the pre-computed frontier from the solve result, or re-run the solve."
+                "Solver and quote grid are not available for this job. "
+                "Re-run the solve to select a frontier point."
             ),
         )
     if not frontier_data or not frontier_data.get("points"):
@@ -401,9 +401,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Solver has been released to free memory. "
-                "MLflow logging must happen before the solver is garbage-collected. "
-                "Re-run the solve to log results."
+                "Solver is not available for this job. Re-run the solve to log results to MLflow."
             ),
         )
 

@@ -18,7 +18,15 @@ function resetStore() {
   useSettingsStore.setState({
     rowLimit: 100,  // store default is 100, not 1000
     openSections: {},
-    mlflow: { status: "pending", backend: "", host: "" },
+    mlflow: {
+      status: "pending",
+      backend: "",
+      host: "",
+      installed: null,
+      importable: null,
+      trackingConfigured: null,
+      detail: "",
+    },
     _mlflowFetching: false,
     _mlflowLastAttempt: 0,
     sources: ["live"],
@@ -59,8 +67,8 @@ describe("useSettingsStore", () => {
   describe("MLflow fetch dedup", () => {
     it("calling fetchMlflow twice rapidly only makes one API request", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      let resolvePromise: (value: { mlflow_installed: boolean }) => void
-      const promise = new Promise<{ mlflow_installed: boolean }>((resolve) => {
+      let resolvePromise: (value: { mlflow_installed: boolean; backend: string; databricks_host: string }) => void
+      const promise = new Promise<{ mlflow_installed: boolean; backend: string; databricks_host: string }>((resolve) => {
         resolvePromise = resolve
       })
       mockCheckMlflow.mockReturnValue(promise)
@@ -72,7 +80,7 @@ describe("useSettingsStore", () => {
       expect(mockCheckMlflow).toHaveBeenCalledTimes(1)
 
       // Resolve the promise to clean up
-      resolvePromise!({ mlflow_installed: true })
+      resolvePromise!({ mlflow_installed: true, backend: "local", databricks_host: "" })
       // Wait for microtask to flush the .then()
       await vi.waitFor(() => {
         expect(useSettingsStore.getState()._mlflowFetching).toBe(false)
@@ -96,6 +104,10 @@ describe("useSettingsStore", () => {
       const { mlflow } = useSettingsStore.getState()
       expect(mlflow.backend).toBe("databricks")
       expect(mlflow.host).toBe("https://db.example.com")
+      expect(mlflow.installed).toBe(true)
+      expect(mlflow.importable).toBe(true)
+      expect(mlflow.trackingConfigured).toBe(true)
+      expect(mlflow.detail).toBe("")
     })
 
     it("failed MLflow check sets error status", async () => {
@@ -107,11 +119,16 @@ describe("useSettingsStore", () => {
       await vi.waitFor(() => {
         expect(useSettingsStore.getState().mlflow.status).toBe("error")
       })
+      const { mlflow } = useSettingsStore.getState()
+      expect(mlflow.installed).toBeNull()
+      expect(mlflow.importable).toBeNull()
+      expect(mlflow.trackingConfigured).toBeNull()
+      expect(mlflow.detail).toBe("Network error")
     })
 
     it("does not re-fetch after successful connection", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local" })
+      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local", databricks_host: "" })
 
       useSettingsStore.getState().fetchMlflow()
       await vi.waitFor(() => {
@@ -126,13 +143,48 @@ describe("useSettingsStore", () => {
 
     it("mlflow_installed: false sets error status", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      mockCheckMlflow.mockResolvedValue({ mlflow_installed: false })
+      mockCheckMlflow.mockResolvedValue({
+        mlflow_installed: false,
+        mlflow_importable: false,
+        tracking_configured: false,
+        backend: "",
+        databricks_host: "",
+        detail: "MLflow package is not installed",
+      })
 
       useSettingsStore.getState().fetchMlflow()
 
       await vi.waitFor(() => {
         expect(useSettingsStore.getState().mlflow.status).toBe("error")
       })
+      const { mlflow } = useSettingsStore.getState()
+      expect(mlflow.installed).toBe(false)
+      expect(mlflow.importable).toBe(false)
+      expect(mlflow.trackingConfigured).toBe(false)
+      expect(mlflow.detail).toBe("MLflow package is not installed")
+    })
+
+    it("installed MLflow with unconfigured tracking keeps package availability distinct", async () => {
+      const mockCheckMlflow = vi.mocked(checkMlflow)
+      mockCheckMlflow.mockResolvedValue({
+        mlflow_installed: true,
+        mlflow_importable: true,
+        tracking_configured: false,
+        backend: "",
+        databricks_host: "",
+        detail: "tracking backend misconfigured",
+      })
+
+      useSettingsStore.getState().fetchMlflow()
+
+      await vi.waitFor(() => {
+        expect(useSettingsStore.getState().mlflow.status).toBe("error")
+      })
+      const { mlflow } = useSettingsStore.getState()
+      expect(mlflow.installed).toBe(true)
+      expect(mlflow.importable).toBe(true)
+      expect(mlflow.trackingConfigured).toBe(false)
+      expect(mlflow.detail).toBe("tracking backend misconfigured")
     })
   })
 
@@ -391,7 +443,7 @@ describe("useSettingsStore", () => {
 
     it("succeeds before the timeout if checkMlflow resolves quickly", async () => {
       const mockCheckMlflow = vi.mocked(checkMlflow)
-      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local" })
+      mockCheckMlflow.mockResolvedValue({ mlflow_installed: true, backend: "local", databricks_host: "" })
 
       useSettingsStore.getState().fetchMlflow()
 

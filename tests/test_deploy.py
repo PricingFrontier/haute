@@ -33,6 +33,14 @@ DATA_DIR = FIXTURE_DIR / "data"
 
 
 @pytest.fixture()
+def deploy_pipeline_file(tmp_path: Path) -> Path:
+    """Scratch pipeline path for mocked deploy tests that write build artifacts."""
+    pipeline_file = tmp_path / "pipeline.py"
+    pipeline_file.write_text("# mocked deploy pipeline\n", encoding="utf-8")
+    return pipeline_file
+
+
+@pytest.fixture()
 def full_graph() -> PipelineGraph:
     """Parse the fixture pipeline into a PipelineGraph."""
     return parse_pipeline_file(PIPELINE_FILE)
@@ -1200,11 +1208,11 @@ class TestBuildExperimentName:
 class TestDatabricksTracking:
     """Regression tests: deploy must target Databricks, not local MLflow."""
 
-    def test_deploy_sets_tracking_uri(self) -> None:
+    def test_deploy_sets_tracking_uri(self, deploy_pipeline_file: Path) -> None:
         """deploy_to_mlflow() must call mlflow.set_tracking_uri('databricks')."""
         from haute.deploy._mlflow import DeployResult, deploy_to_mlflow
 
-        resolved = _make_resolved()
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
 
         with mock_mlflow_deploy() as mocks:
             result = deploy_to_mlflow(resolved)
@@ -1216,14 +1224,15 @@ class TestDatabricksTracking:
             assert result.model_name == "test-model"
             assert result.model_version >= 1
             assert result.manifest_path.name == "deploy_manifest.json"
+            assert result.manifest_path.parent == deploy_pipeline_file.parent / ".haute_build"
 
-    def test_deploy_uses_uc_model_name(self) -> None:
+    def test_deploy_uses_uc_model_name(self, deploy_pipeline_file: Path) -> None:
         """Model must be registered with catalog.schema.model_name format."""
         from haute.deploy._config import DatabricksConfig, DeployConfig
         from haute.deploy._mlflow import deploy_to_mlflow
 
         config = DeployConfig(
-            pipeline_file=PIPELINE_FILE,
+            pipeline_file=deploy_pipeline_file,
             model_name="my-model",
             databricks=DatabricksConfig(catalog="workspace", schema="default"),
         )
@@ -1239,13 +1248,16 @@ class TestDatabricksTracking:
             # Verify the model URI uses the UC name
             assert "workspace.default.my-model" in result.model_uri
 
-    def test_experiment_name_includes_suffix_for_staging(self) -> None:
+    def test_experiment_name_includes_suffix_for_staging(
+        self,
+        deploy_pipeline_file: Path,
+    ) -> None:
         """Staging deploys must use a suffixed experiment and model name."""
         from haute.deploy._config import DatabricksConfig, DeployConfig
         from haute.deploy._mlflow import deploy_to_mlflow
 
         config = DeployConfig(
-            pipeline_file=PIPELINE_FILE,
+            pipeline_file=deploy_pipeline_file,
             model_name="test-model",
             endpoint_suffix="-staging",
             databricks=DatabricksConfig(
@@ -1270,13 +1282,16 @@ class TestDatabricksTracking:
 class TestServingEndpoint:
     """Regression tests: deploy must create/update the Databricks serving endpoint."""
 
-    def test_deploy_calls_create_or_update_endpoint(self) -> None:
+    def test_deploy_calls_create_or_update_endpoint(
+        self,
+        deploy_pipeline_file: Path,
+    ) -> None:
         """deploy_to_mlflow() must call _create_or_update_serving_endpoint."""
         from haute.deploy._config import DatabricksConfig, DeployConfig
         from haute.deploy._mlflow import deploy_to_mlflow
 
         config = DeployConfig(
-            pipeline_file=PIPELINE_FILE,
+            pipeline_file=deploy_pipeline_file,
             model_name="my-model",
             endpoint_name="my-endpoint",
             databricks=DatabricksConfig(catalog="ws", schema="default"),
@@ -1421,11 +1436,11 @@ class TestModelsFromCode:
         source = Path(_MODEL_CODE_PATH).read_text()
         assert "set_model(" in source
 
-    def test_log_model_receives_file_path(self) -> None:
+    def test_log_model_receives_file_path(self, deploy_pipeline_file: Path) -> None:
         """log_model(python_model=...) must receive a file path, not an object."""
         from haute.deploy._mlflow import deploy_to_mlflow
 
-        resolved = _make_resolved()
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
 
         with mock_mlflow_deploy() as mocks:
             deploy_to_mlflow(resolved)

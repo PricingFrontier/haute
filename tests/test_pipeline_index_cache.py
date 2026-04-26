@@ -328,12 +328,12 @@ pipeline.connect("source_c", "transform_c")
                 patch("haute.server.broadcast", _capture_broadcast),
                 patch("haute.server.is_self_write", return_value=False),
                 patch("haute.server.pipeline_dir", return_value=pipeline_project),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
             ):
                 from haute.server import _file_watcher
 
                 await _file_watcher()
-                # Allow the debounce task to flush (300ms + safety margin).
-                await asyncio.sleep(0.6)
+                await asyncio.sleep(0)
 
         asyncio.run(_run())
 

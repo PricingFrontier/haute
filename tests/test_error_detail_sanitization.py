@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 _SAFE_DETAIL = "Operation failed. Check the server logs for details."
 
 
-def _minimal_source_graph(path: str = "/tmp/fake.parquet") -> dict:
+def _minimal_source_graph(path: str = "fake.parquet") -> dict:
     """A single-node graph with one dataSource node (reused in many tests)."""
     return {
         "nodes": [
@@ -44,6 +44,25 @@ def _minimal_source_graph(path: str = "/tmp/fake.parquet") -> dict:
     }
 
 
+def _minimal_sink_graph(path: str = "fake.parquet") -> dict:
+    """A source plus sink graph for exercising the sink route."""
+    graph = _minimal_source_graph(path)
+    graph["nodes"].append(
+        {
+            "id": "sink",
+            "type": "pipelineNode",
+            "position": {"x": 300, "y": 0},
+            "data": {
+                "label": "sink",
+                "nodeType": "dataSink",
+                "config": {"path": "/tmp/out.parquet", "format": "parquet"},
+            },
+        }
+    )
+    graph["edges"] = [{"id": "e1", "source": "src", "target": "sink"}]
+    return graph
+
+
 def _source_and_transform_graph(
     transform_id: str = "txn",
     transform_label: str = "bad_transform",
@@ -59,7 +78,7 @@ def _source_and_transform_graph(
                 "data": {
                     "label": "source",
                     "nodeType": "dataSource",
-                    "config": {"path": "/tmp/fake.parquet"},
+                    "config": {"path": "fake.parquet"},
                 },
             },
             {
@@ -676,7 +695,7 @@ class TestLogOnError:
 
     def test_pipeline_sink_logs_error(self, client: TestClient) -> None:
         mock_logger = MagicMock()
-        graph = _minimal_source_graph()
+        graph = _minimal_sink_graph()
         with (
             # Route-scoped patch — see note in
             # ``test_pipeline_trace_logs_error``.
@@ -686,7 +705,7 @@ class TestLogOnError:
             ),
             patch("haute.routes.pipeline.logger", mock_logger),
         ):
-            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "src"})
+            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
         assert resp.status_code == 500
         mock_logger.error.assert_called()
         assert "real-sink-error" in str(mock_logger.error.call_args)
@@ -1139,7 +1158,7 @@ class TestSensitiveInfoLeakage:
 
     def test_sink_cpython_error_no_leak(self, client: TestClient) -> None:
         """POST /api/pipeline/sink -- CPython info in error must not leak."""
-        graph = _minimal_source_graph()
+        graph = _minimal_sink_graph()
         # Route-scoped patch — see note in
         # ``test_pipeline_trace_500_no_leak``.
         with patch(
@@ -1149,7 +1168,7 @@ class TestSensitiveInfoLeakage:
                 "[GCC 12.2.0] on linux: frame object is garbage collected"
             ),
         ):
-            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "src"})
+            resp = client.post("/api/pipeline/sink", json={"graph": graph, "node_id": "sink"})
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "CPython" not in detail

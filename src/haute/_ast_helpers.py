@@ -11,8 +11,7 @@ from __future__ import annotations
 import ast
 from typing import Any
 
-from haute._types import DECORATOR_TO_NODE_TYPE
-from haute.graph_utils import NodeType
+from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
 
 __all__ = [
     "_eval_ast_literal",

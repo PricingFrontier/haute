@@ -29,8 +29,8 @@ The developer must expose, on ``haute._model_scorer``:
   ``LRUCache[tuple[int, str], tuple[list[str], list[str]]]`` keyed by
   ``(id(scoring_model), schema_hash)``.
 * ``_compute_schema_hash(schema: pl.Schema) -> str`` — a stable xxh64
-  hex digest of the ``(name, dtype_str)`` pairs, sorted by name, so that
-  column renames and dtype changes produce different digests.
+  hex digest of the ordered ``(name, dtype_str)`` pairs, so that column
+  reorders, renames, and dtype changes produce different digests.
 * ``_clear_feature_validation_cache()`` — drops every entry (used as the
   blanket cascade for ``clear_model_cache()``).
 * ``_invalidate_feature_validation_cache_for(scoring_model)`` —
@@ -252,6 +252,28 @@ class TestValidationCacheHitsAndMisses:
 
         assert spy.call_count == 1
 
+    def test_different_schema_order_is_miss(self) -> None:
+        """A warm cache must not hide feature-order mismatches.
+
+        CatBoost categorical feature indices are positional. The validation
+        worker enforces training feature order, so the cache key must include
+        schema order. If it does not, a valid first call can prime the cache
+        and a reversed second call incorrectly returns success.
+        """
+        import haute._model_scorer as ms
+
+        sm = _make_scoring_model(["region", "age"])
+        _validate_features(sm, pl.Schema({"region": pl.Utf8, "age": pl.Float64}))
+
+        with patch.object(
+            ms, "_validate_features_uncached", wraps=ms._validate_features_uncached
+        ) as spy:
+            with pytest.raises(FeatureMismatchError) as exc_info:
+                _validate_features(sm, pl.Schema({"age": pl.Float64, "region": pl.Utf8}))
+
+        assert spy.call_count == 1
+        assert exc_info.value.context["actual"] == ["age", "region"]
+
     def test_different_scoring_model_instance_is_miss(self) -> None:
         """Two ``ScoringModel`` objects with identical attributes still miss.
 
@@ -399,18 +421,13 @@ class TestSchemaHashStability:
         b = pl.Schema({"col": pl.Int64})
         assert _compute_schema_hash(a) != _compute_schema_hash(b)
 
-    def test_column_order_does_not_affect_hash(self) -> None:
-        """Sorting inside the hasher keeps the key insensitive to input order.
-
-        Two different iteration orders of the same ``(name, dtype)`` pairs
-        must collapse to the same digest — otherwise a trivial reorder
-        of select() columns turns every cache hit into a miss.
-        """
+    def test_column_order_changes_hash(self) -> None:
+        """Feature order is part of the scoring contract and cache key."""
         from haute._model_scorer import _compute_schema_hash
 
         a = pl.Schema({"x": pl.Float64, "y": pl.Int64})
         b = pl.Schema({"y": pl.Int64, "x": pl.Float64})
-        assert _compute_schema_hash(a) == _compute_schema_hash(b)
+        assert _compute_schema_hash(a) != _compute_schema_hash(b)
 
     def test_hash_is_hex_string(self) -> None:
         """xxh64 hexdigest — 16 hex chars, all lowercase."""

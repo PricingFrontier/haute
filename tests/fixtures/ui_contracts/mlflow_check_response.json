@@ -1,0 +1,8 @@
+{
+  "mlflow_installed": true,
+  "mlflow_importable": true,
+  "tracking_configured": true,
+  "backend": "databricks",
+  "databricks_host": "https://dbc.example.com",
+  "detail": ""
+}

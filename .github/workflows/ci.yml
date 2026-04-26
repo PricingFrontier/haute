@@ -10,8 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  lint-and-test:
+  backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -26,13 +27,124 @@ jobs:
         with:
           node-version: 22
 
-      - run: uv sync --group dev
+      - run: uv sync --group dev --locked
 
       - name: Backend preflight
         run: bash scripts/preflight.sh --backend-only
 
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Python perf lane
+        run: uv run python scripts/run_perf_suite.py --output-dir .cache/perf
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .cache/perf/
+
+  optional-deps-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --locked --no-group dev
+      - run: uv pip install pytest pytest-asyncio httpx
+      - name: Optional dependency smoke (core install, no MLflow or Databricks extras)
+        run: uv run pytest tests/test_optional_dependency_matrix.py -q
+
+  optional-deps-present-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+      - name: Optional dependency smoke (extras installed)
+        run: uv run pytest tests/test_optional_dependency_extras.py -q
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+      - run: HAUTE_BUILD_FRONTEND=1 uv build --out-dir dist-smoke --sdist --wheel
+
+      - name: Wheel install smoke
+        run: |
+          uv venv .pkg-wheel --python 3.12
+          uv pip install --python .pkg-wheel/bin/python dist-smoke/*.whl
+          ./.pkg-wheel/bin/python scripts/package_smoke_check.py
+          ./.pkg-wheel/bin/haute --help >/dev/null
+
+      - name: Sdist install smoke
+        run: |
+          uv venv .pkg-sdist --python 3.12
+          uv pip install --python .pkg-sdist/bin/python dist-smoke/*.tar.gz
+          ./.pkg-sdist/bin/python scripts/package_smoke_check.py
+          ./.pkg-sdist/bin/haute --help >/dev/null
+
+  platform-smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Cross-platform path and debt smoke
+        run: uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py -q
+
+  mutation-config-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Validate mutation target plan
+        run: uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci
+
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -45,3 +157,36 @@ jobs:
 
       - run: npm ci
       - run: cd .. && bash scripts/preflight.sh --frontend-only
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: uv sync --group dev --locked
+        working-directory: .
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium firefox
+      - run: npm run test:e2e
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/playwright-report
+            frontend/test-results

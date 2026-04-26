@@ -1,0 +1,15 @@
+{
+  "path": "data/input.json",
+  "data_path": "cache/input.parquet",
+  "row_count": 1000,
+  "column_count": 4,
+  "columns": {
+    "quote_id": "Utf8",
+    "premium": "Float64",
+    "segment": "Utf8",
+    "exposure": "Float64"
+  },
+  "size_bytes": 4096,
+  "cached_at": 1713861000.0,
+  "cache_seconds": 1.25
+}

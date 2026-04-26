@@ -2446,6 +2446,7 @@ class TestBurnCostExample:
 # ===========================================================================
 
 
+@pytest.mark.perf
 class TestPerformanceLargeDataset:
     """O.1-2: Trace on pipeline with 100K rows.
 
@@ -2522,6 +2523,7 @@ class TestPerformanceLargeDataset:
         assert elapsed < 0.1, f"Cached trace took {elapsed:.3f}s, expected < 100ms"
 
 
+@pytest.mark.perf
 class TestPerformanceManyNodes:
     """O.3: Trace on pipeline with 20 nodes.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import polars as pl
 import pytest
@@ -1538,15 +1539,18 @@ class TestLiveSwitch:
 # ---------------------------------------------------------------------------
 
 
-def _api_input_node(nid: str, path: str) -> _n:
+def _api_input_node(nid: str, path: str, config_extra: dict | None = None) -> _n:
     """Build a minimal apiInput node."""
+    config = {"path": path}
+    if config_extra:
+        config.update(config_extra)
     return _n(
         {
             "id": nid,
             "data": {
                 "label": nid,
                 "nodeType": "apiInput",
-                "config": {"path": path},
+                "config": config,
             },
         }
     )
@@ -1597,6 +1601,64 @@ class TestApiInputLargeFileGating:
         result = fn()
         df = result.collect()
         assert df["x"].to_list() == [1, 2, 3]
+
+    def test_cache_with_matching_flatten_schema_succeeds(self, tmp_path, monkeypatch):
+        """Schema-aware caches can be consumed by preview when fingerprints match."""
+        from haute._json_flatten import read_json_flat
+
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        data_file.write_text('{"x": 1, "y": 2}\n')
+
+        read_json_flat(str(data_file), schema={"x": "int"}).collect()
+
+        node = _api_input_node(
+            "api",
+            str(data_file),
+            {"flattenSchema": {"x": "int"}},
+        )
+        _, fn, _ = _build_node_fn(node)
+
+        assert fn().collect().columns == ["x"]
+
+    def test_cache_with_mismatched_flatten_schema_raises(self, tmp_path, monkeypatch):
+        """Preview must not silently scan a cache built for another schema."""
+        from haute._json_flatten import read_json_flat
+
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        data_file.write_text('{"x": 1, "y": 2}\n')
+
+        read_json_flat(str(data_file), schema={"x": "int"}).collect()
+
+        node = _api_input_node(
+            "api",
+            str(data_file),
+            {"flattenSchema": {"x": "int", "y": "int"}},
+        )
+        _, fn, _ = _build_node_fn(node)
+
+        with pytest.raises(RuntimeError, match="stale"):
+            fn()
+
+    def test_stale_cache_raises_instead_of_scanning_old_rows(self, tmp_path, monkeypatch):
+        """Preview must reject caches older than the source JSON."""
+        from haute._json_flatten import _json_cache_path, read_json_flat
+
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        data_file.write_text('{"x": 1}\n')
+        read_json_flat(str(data_file)).collect()
+
+        cache_path = _json_cache_path(str(data_file))
+        os.utime(cache_path, (315532800.0, 315532800.0))
+        data_file.write_text('{"x": 2}\n')
+
+        node = _api_input_node("api", str(data_file))
+        _, fn, _ = _build_node_fn(node)
+
+        with pytest.raises(RuntimeError, match="stale"):
+            fn()
 
     def test_uncached_file_raises(self, tmp_path, monkeypatch):
         """Any uncached JSONL file should raise, regardless of size."""
