@@ -177,6 +177,7 @@ _DANGEROUS_MODULE_OBJECTS = frozenset(
     }
 )
 _DANGEROUS_MODULE_NAMES = frozenset(m.__name__ for m in _DANGEROUS_MODULE_OBJECTS)
+_PREAMBLE_NO_REFRESH_FINGERPRINT = "no-refresh"
 
 
 def _is_dangerous_preamble_binding(value: Any) -> bool:
@@ -255,12 +256,14 @@ def _prioritise_preamble_import_paths(
 
 
 def _preamble_has_imports(preamble: str) -> bool:
-    """Return whether preamble execution can consult import resolution state."""
+    """Return whether preamble execution can consult import resolution state.
+
+    Kept as a small diagnostic/test helper. The hot compile path deliberately
+    does not call this before the ``lru_cache`` lookup.
+    """
     try:
         tree = _ast.parse(preamble)
     except SyntaxError:
-        # The executor will raise the syntax error with richer context later.
-        # Preserve the old fully-serialised behavior for invalid preambles.
         return True
     return any(isinstance(node, (_ast.Import, _ast.ImportFrom)) for node in _ast.walk(tree))
 
@@ -318,15 +321,13 @@ def _compile_preamble_cached(
     cwd: str,
     pipeline_dir_str: str | None,
     _execution_fingerprint: str,
-    _imports_utility: bool,
-    _has_imports: bool,
 ) -> dict[str, Any]:
     """Pure cache-facing worker — compiles preamble bytes into a namespace.
 
-    Keyed on ``(preamble, cwd, pipeline_dir_str, _execution_fingerprint,
-    _imports_utility)`` so different pipelines sharing an identical
-    preamble text but different utility contents still get distinct cache
-    slots.
+    Keyed on ``(preamble, cwd, pipeline_dir_str, _execution_fingerprint)``
+    so different pipelines sharing an identical preamble text but different
+    utility contents still get distinct cache slots when callers request
+    dependency refresh.
 
     ``pipeline_dir_str`` is a normalised ``str`` (or ``None``) rather than a
     ``Path`` so that ``lru_cache``'s hash lookup produces the same key for
@@ -338,9 +339,11 @@ def _compile_preamble_cached(
     import statements execute with ``allow_imports=True`` and can consult
     process-global import state via helpers such as ``__import__``.
     """
+    validate_user_code(preamble, allow_imports=True)
+    imports_utility = preamble_imports_utility(preamble)
     with _preamble_lock:
         _prioritise_preamble_import_paths(cwd, pipeline_dir_str)
-        if _imports_utility:
+        if imports_utility:
             # Evict cached utility modules so digest-keyed cache misses pick up
             # GUI edits. Clearing matching pyc files prevents same-size,
             # same-mtime edits from being hidden by timestamp-based bytecode
@@ -372,8 +375,10 @@ def _compile_preamble(
     picked up without clearing unrelated cached preambles. Unchanged
     preamble/utility inputs reuse the cached namespace. When
     *force_refresh* is ``False`` (e.g. optimiser / sink paths that run in
-    tight loops), the same digest-keyed cache is used; the flag is retained
-    for API compatibility with existing callers.
+    tight loops), the caller is explicitly promising that imported helper
+    files are stable for the loop; the cache key uses the preamble text,
+    cwd, pipeline directory, and a stable no-refresh marker so hot hits
+    skip validation, AST walking, and utility-file hashing entirely.
 
     Caching diagnostics are exposed directly on this function via
     ``_compile_preamble.cache_info()`` and ``_compile_preamble.cache_clear()``
@@ -387,11 +392,6 @@ def _compile_preamble(
     # — empty preambles are common and shouldn't evict cache entries.
     if not preamble or not preamble.strip():
         return {}
-
-    # Preamble may contain imports (e.g. from utility.features import …)
-    # which are legitimate, but still validate against other dangerous
-    # patterns (dunder access, eval, exec, etc.).
-    validate_user_code(preamble, allow_imports=True)
 
     # Ensure project root is importable so `from utility.xxx import …` works
     # even when the server process was spawned by uvicorn reload.  We add
@@ -410,23 +410,22 @@ def _compile_preamble(
     if pipeline_dir is not None:
         pipeline_dir_str = str(Path(pipeline_dir).resolve())
 
-    execution_fingerprint = preamble_execution_fingerprint(
-        preamble,
-        pipeline_dir=pipeline_dir_str,
-        memo=memo,
-    )
-    if execution_fingerprint is None:
-        raise RuntimeError("non-empty preamble did not produce an execution fingerprint")
-    imports_utility = preamble_imports_utility(preamble)
-    has_imports = _preamble_has_imports(preamble)
+    if force_refresh:
+        execution_fingerprint = preamble_execution_fingerprint(
+            preamble,
+            pipeline_dir=pipeline_dir_str,
+            memo=memo,
+        )
+        if execution_fingerprint is None:
+            raise RuntimeError("non-empty preamble did not produce an execution fingerprint")
+    else:
+        execution_fingerprint = _PREAMBLE_NO_REFRESH_FINGERPRINT
 
     return _compile_preamble_cached(
         preamble,
         cwd,
         pipeline_dir_str,
         execution_fingerprint,
-        imports_utility,
-        has_imports,
     )
 
 

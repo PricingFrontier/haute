@@ -100,11 +100,17 @@ class _ManualTimer:
         self.callback = callback
         self.daemon = False
         self.started = False
+        self.cancelled = False
 
     def start(self) -> None:
         self.started = True
 
+    def cancel(self) -> None:
+        self.cancelled = True
+
     def fire(self) -> None:
+        if self.cancelled:
+            return
         self.callback()
 
 
@@ -170,19 +176,23 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
     assert points.serialized_rows == FRONTIER_POINT_LIMIT
 
 
-def test_completed_optimiser_jobs_slim_heavy_objects_then_evict_owned_artifacts(
-    tmp_path: Path,
-) -> None:
+def test_completed_optimiser_jobs_slim_heavy_objects_then_evict_owned_artifacts() -> None:
+    import polars as pl
+
+    from haute.routes._optimiser_service import _persist_apply_result_artifact
+
     timers: list[_ManualTimer] = []
     store = JobStore(
         ttl_seconds=5,
         heavy_object_ttl_seconds=1,
         heavy_object_timer_factory=_recording_timer_factory(timers),
     )
-    artifact_dir = tmp_path / "apply-artifact"
-    artifact_dir.mkdir()
-    artifact_path = artifact_dir / "result.parquet"
-    artifact_path.write_bytes(b"parquet-bytes")
+    apply_artifact_handle = _persist_apply_result_artifact(
+        SimpleNamespace(dataframe=pl.DataFrame({"quote_id": ["q1"]})),
+    )
+    assert apply_artifact_handle is not None
+    artifact_dir = Path(str(apply_artifact_handle["directory"]))
+    artifact_path = Path(str(apply_artifact_handle["path"]))
 
     solver = _HeavyPayload("solver")
     solve_result = _HeavyPayload("solve_result")
@@ -225,16 +235,7 @@ def test_completed_optimiser_jobs_slim_heavy_objects_then_evict_owned_artifacts(
                     "points_returned": FRONTIER_POINT_LIMIT,
                     "points": [],
                 },
-                "artifact_handles": {
-                    "apply_result": {
-                        "kind": "optimiser_apply_result",
-                        "version": 1,
-                        "format": "parquet",
-                        "path": str(artifact_path),
-                        "directory": str(artifact_dir),
-                        "row_count": 250_000,
-                    }
-                },
+                "artifact_handles": {"apply_result": apply_artifact_handle},
             },
         )
 
@@ -270,9 +271,10 @@ def test_completed_optimiser_jobs_slim_heavy_objects_then_evict_owned_artifacts(
     assert slimmed["result"]["total_objective"] == 1234.5
     assert slimmed["frontier_data"]["points_returned"] == FRONTIER_POINT_LIMIT
     assert slimmed["artifact_handles"]["apply_result"]["path"] == str(artifact_path)
-    assert slimmed["artifact_handles"]["apply_result"]["row_count"] == 250_000
+    assert slimmed["artifact_handles"]["apply_result"]["row_count"] == 1
     assert slimmed["heavy_objects_cleared_at"] == 102.0
     assert slimmed["heavy_objects_retention_seconds"] == 1
+    assert timers[0].cancelled is True
     assert artifact_path.is_file()
 
     with patch("haute.routes._job_store.time.time", return_value=106.0):

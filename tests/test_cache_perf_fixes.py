@@ -208,6 +208,34 @@ class TestPreambleCacheCorrectness:
 
         assert _compile_preamble(keep_source, force_refresh=False) is ns_keep
 
+    def test_force_refresh_false_skips_dependency_fingerprinting_on_hot_hits(
+        self,
+        monkeypatch,
+    ) -> None:
+        """Hot optimiser/sink loops should not hash dependencies on hits."""
+        import haute.executor as _ex
+
+        calls = {"validation": 0}
+        original_validate = _ex.validate_user_code
+
+        def counting_validate(source: str, *, allow_imports: bool) -> None:
+            calls["validation"] += 1
+            original_validate(source, allow_imports=allow_imports)
+
+        def forbidden_fingerprint(*args: Any, **kwargs: Any) -> str:
+            raise AssertionError("force_refresh=False must not compute dependency fingerprints")
+
+        monkeypatch.setattr(_ex, "validate_user_code", counting_validate)
+        monkeypatch.setattr(_ex, "preamble_execution_fingerprint", forbidden_fingerprint)
+
+        source = "HOT_VALUE = 123\n"
+        ns_first = _compile_preamble(source, force_refresh=False)
+        ns_second = _compile_preamble(source, force_refresh=False)
+
+        assert ns_second is ns_first
+        assert ns_second["HOT_VALUE"] == 123
+        assert calls["validation"] == 1
+
     def test_edited_preamble_gets_fresh_namespace(self) -> None:
         """Changing preamble text must produce a fresh namespace."""
         ns_before = _compile_preamble("EDITED_VALUE = 1\n", force_refresh=True)
