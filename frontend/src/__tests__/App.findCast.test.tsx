@@ -10,12 +10,24 @@
  * disappears — without leaving a dimmed, empty panel referring to a dead id.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, cleanup } from "@testing-library/react"
+import { act, render, screen, cleanup } from "@testing-library/react"
+
+const { graphProviderProps } = vi.hoisted(() => ({
+  graphProviderProps: [] as Array<{
+    allNodes: unknown[]
+    edges: unknown[]
+    children: React.ReactNode
+  }>,
+}))
 
 // Mock ReactFlow (same pattern as existing App.test.tsx)
 vi.mock("@xyflow/react", () => ({
   ReactFlow: ({ children, ...props }: Record<string, unknown>) => (
-    <div data-testid="react-flow" {...(props.onPaneClick ? { onClick: props.onPaneClick as React.MouseEventHandler } : {})}>
+    <div
+      data-testid="react-flow"
+      className={props.className as string | undefined}
+      {...(props.onPaneClick ? { onClick: props.onPaneClick as React.MouseEventHandler } : {})}
+    >
       {children as React.ReactNode}
     </div>
   ),
@@ -34,10 +46,11 @@ vi.mock("@xyflow/react", () => ({
 
 // Mock stateful hooks
 let mockNodes: Array<{ id: string; position: { x: number; y: number }; data: Record<string, unknown> }> = []
+let mockEdges: Array<{ id: string; source: string; target: string }> = []
 vi.mock("../hooks/useGraphCanvasState", () => ({
   default: () => ({
     nodes: mockNodes,
-    edges: [],
+    edges: mockEdges,
     setNodes: vi.fn(),
     setEdges: vi.fn(),
     setNodesRaw: vi.fn(),
@@ -115,6 +128,16 @@ vi.mock("../nodes/PipelineNode", () => ({ default: () => null }))
 vi.mock("../nodes/SubmodelNode", () => ({ default: () => null }))
 vi.mock("../nodes/SubmodelPortNode", () => ({ default: () => null }))
 vi.mock("../panels/NodePalette", () => ({ default: () => <div data-testid="palette" /> }))
+vi.mock("../panels/GraphContext", () => ({
+  GraphProvider: (props: {
+    allNodes: unknown[]
+    edges: unknown[]
+    children: React.ReactNode
+  }) => {
+    graphProviderProps.push(props)
+    return <>{props.children}</>
+  },
+}))
 
 // NodePanel — this is the component that receives the (possibly null) node
 // after the `.find()` call in App.tsx. We record what was passed so tests
@@ -168,11 +191,14 @@ import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import { GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT } from "../utils/graphPerformance"
 
 describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)", () => {
   beforeEach(() => {
     mockNodes = []
+    mockEdges = []
     passedNode = undefined
+    graphProviderProps.length = 0
     useUIStore.setState({
       paletteOpen: true,
       shortcutsOpen: false,
@@ -191,6 +217,9 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
       lastSavedSnapshot: null,
       undoStack: [],
       redoStack: [],
+      structuralVersion: 0,
+      panelContextVersion: 0,
+      panelContextFingerprint: "nodes:||edges:",
     })
     useSettingsStore.setState({
       mlflow: {
@@ -255,5 +284,91 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
 
     // Render must succeed without throwing
     expect(() => render(<App />)).not.toThrow()
+  })
+
+  it("keeps GraphProvider graph arrays stable across position-only node rerenders", () => {
+    useGraphStore.setState({ structuralVersion: 1, panelContextVersion: 1 })
+    const nodeData = { label: "Node 1", nodeType: "polars" }
+    mockNodes = [
+      {
+        id: "n1",
+        position: { x: 0, y: 0 },
+        data: nodeData,
+      },
+    ]
+    mockEdges = [{ id: "e1", source: "n1", target: "n2" }]
+    useGraphStore.setState({ nodes: mockNodes, edges: mockEdges, structuralVersion: 1, panelContextVersion: 1 })
+
+    const { rerender } = render(<App />)
+    const initial = graphProviderProps.at(-1)!
+
+    mockNodes = [
+      {
+        id: "n1",
+        position: { x: 100, y: 200 },
+        data: nodeData,
+      },
+    ]
+    useGraphStore.setState({ nodes: mockNodes, edges: mockEdges })
+    rerender(<App />)
+    const afterPositionOnly = graphProviderProps.at(-1)!
+
+    expect(afterPositionOnly.allNodes).toBe(initial.allNodes)
+    expect(afterPositionOnly.edges).toBe(initial.edges)
+  })
+
+  it("refreshes GraphProvider graph arrays when structuralVersion changes", () => {
+    useGraphStore.setState({ structuralVersion: 1, panelContextVersion: 1 })
+    mockNodes = [
+      {
+        id: "n1",
+        position: { x: 0, y: 0 },
+        data: { label: "Before", nodeType: "polars" },
+      },
+    ]
+    mockEdges = [{ id: "e1", source: "n1", target: "n2" }]
+    useGraphStore.setState({ nodes: mockNodes, edges: mockEdges, structuralVersion: 1, panelContextVersion: 1 })
+
+    render(<App />)
+    const initial = graphProviderProps.at(-1)!
+
+    mockNodes = [
+      {
+        id: "n1",
+        position: { x: 0, y: 0 },
+        data: { label: "After", nodeType: "polars" },
+      },
+    ]
+    mockEdges = [{ id: "e2", source: "n2", target: "n1" }]
+    act(() => {
+      useGraphStore.setState({ nodes: mockNodes, edges: mockEdges, structuralVersion: 2, panelContextVersion: 2 })
+    })
+    const afterStructural = graphProviderProps.at(-1)!
+
+    expect(afterStructural.allNodes).not.toBe(initial.allNodes)
+    expect(afterStructural.edges).not.toBe(initial.edges)
+    expect(afterStructural.allNodes).toEqual([
+      expect.objectContaining({
+        id: "n1",
+        data: expect.objectContaining({ label: "After" }),
+      }),
+    ])
+    expect(afterStructural.edges).toEqual([{ id: "e2", source: "n2", target: "n1" }])
+  })
+
+  it("adds the graph-effects-lite canvas class only when node and edge count reaches the shared threshold", () => {
+    mockNodes = Array.from({ length: GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT - 1 }, (_, index) => ({
+      id: `n${index}`,
+      position: { x: 0, y: 0 },
+      data: { label: `Node ${index}`, nodeType: "polars" },
+    }))
+    const { rerender } = render(<App />)
+
+    expect(screen.getByTestId("react-flow")).not.toHaveClass("graph-effects-lite")
+
+    mockEdges = [{ id: "e1", source: "n0", target: "n1" }]
+    rerender(<App />)
+
+    expect(screen.getByTestId("react-flow")).toHaveClass("graph-effects-lite")
   })
 })

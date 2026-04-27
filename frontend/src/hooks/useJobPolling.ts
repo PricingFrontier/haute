@@ -21,11 +21,16 @@ const POLL_TIMEOUT_MS = 30_000
 
 // ── Per-job polling state tracked alongside the timeout handle ──
 
-interface JobPollerState {
+interface JobPollerState<TStatus = unknown> {
+  jobId: string
   timeoutId?: ReturnType<typeof setTimeout>
+  progressTimeoutId?: ReturnType<typeof setTimeout>
   startedAt: number
   consecutiveErrors: number
   toastedWarning: boolean
+  lastProgressPublishedAt: number
+  hasPendingProgress: boolean
+  pendingProgress?: TStatus
 }
 
 // ── Public config interface ──
@@ -37,6 +42,11 @@ export interface UseJobPollingConfig<TJob, TStatus> {
   pollFn: (jobId: string) => Promise<TStatus>
   /** Called when a poll returns in-progress status. */
   onProgress: (nodeId: string, status: TStatus) => void
+  /**
+   * Minimum time between in-progress updates published to consumers.
+   * Terminal completion/error states bypass this throttle.
+   */
+  progressThrottleMs?: number
   /** Called when a job completes successfully. */
   onComplete: (nodeId: string, result: TStatus) => void
   /** Called when a job fails (API error status or network failure). */
@@ -71,27 +81,85 @@ export interface UseJobPollingConfig<TJob, TStatus> {
  */
 function reconcilePollers<TJob, TStatus>(
   configRef: MutableRefObject<UseJobPollingConfig<TJob, TStatus>>,
-  stateRef: React.MutableRefObject<Record<string, JobPollerState>>,
+  stateRef: React.MutableRefObject<Record<string, JobPollerState<TStatus>>>,
 ): void {
   const { jobs } = configRef.current
 
   const activeNodeIds = Object.keys(jobs)
   const pollingNodeIds = Object.keys(stateRef.current)
 
+  function clearPendingProgress(state: JobPollerState<TStatus>): void {
+    // Removal and terminal cleanup both drop queued throttled progress.
+    // Stale in-progress updates must not publish after the job is gone.
+    clearTimeout(state.progressTimeoutId)
+    state.progressTimeoutId = undefined
+    state.hasPendingProgress = false
+    state.pendingProgress = undefined
+  }
+
   // Start polling for new jobs
   for (const nodeId of activeNodeIds) {
-    if (stateRef.current[nodeId]) continue // already polling
+    const job = jobs[nodeId]
+    const jobId = configRef.current.jobIdFn(job)
+    const currentState = stateRef.current[nodeId]
+    if (currentState?.jobId === jobId) continue // already polling this exact job
+    if (currentState) {
+      clearTimeout(currentState.timeoutId)
+      clearPendingProgress(currentState)
+      delete stateRef.current[nodeId]
+    }
 
     const now = Date.now()
+    const isCurrentJob = (state: JobPollerState<TStatus>) => {
+      const currentJob = configRef.current.jobs[nodeId]
+      return (
+        stateRef.current[nodeId] === state &&
+        currentJob != null &&
+        configRef.current.jobIdFn(currentJob) === state.jobId
+      )
+    }
 
-    function schedulePoll(state: JobPollerState): void {
-      const { pollFn, jobIdFn, isComplete, isError, getResult, getErrorMessage, onProgress, onComplete, onFail, labelFn, addToast, successLabel, failLabel } = configRef.current
+    function publishProgress(state: JobPollerState<TStatus>, status: TStatus): void {
+      clearPendingProgress(state)
+      if (!isCurrentJob(state)) return
+      state.lastProgressPublishedAt = Date.now()
+      configRef.current.onProgress(nodeId, status)
+    }
+
+    function queueProgress(state: JobPollerState<TStatus>, status: TStatus): void {
+      const throttleMs = configRef.current.progressThrottleMs ?? 0
+      if (throttleMs <= 0) {
+        publishProgress(state, status)
+        return
+      }
+
+      const now = Date.now()
+      const elapsed = now - state.lastProgressPublishedAt
+      if (state.lastProgressPublishedAt === 0 || elapsed >= throttleMs) {
+        publishProgress(state, status)
+        return
+      }
+
+      state.pendingProgress = status
+      state.hasPendingProgress = true
+      if (state.progressTimeoutId) return
+
+      state.progressTimeoutId = setTimeout(() => {
+        state.progressTimeoutId = undefined
+        if (!state.hasPendingProgress) return
+        publishProgress(state, state.pendingProgress as TStatus)
+      }, throttleMs - elapsed)
+    }
+
+    function schedulePoll(state: JobPollerState<TStatus>): void {
+      const { pollFn, isComplete, isError, getResult, getErrorMessage, onComplete, onFail, labelFn, addToast, successLabel, failLabel } = configRef.current
       const job = configRef.current.jobs[nodeId]
-      if (!job) return
+      if (!job || !isCurrentJob(state)) return
       const elapsed = Date.now() - state.startedAt
 
       // ── Max lifetime check ──
       if (elapsed >= MAX_LIFETIME_MS) {
+        clearPendingProgress(state)
         delete stateRef.current[nodeId]
         onFail(nodeId, "Job timed out after 24 hours")
         addToast("error", `${failLabel}: ${labelFn(job)} — Job timed out after 24 hours`)
@@ -105,23 +173,25 @@ function reconcilePollers<TJob, TStatus>(
           : Math.min(BASE_INTERVAL_MS * Math.pow(2, state.consecutiveErrors), MAX_INTERVAL_MS)
 
       state.timeoutId = setTimeout(async () => {
+        if (!isCurrentJob(state)) return
         let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
         try {
           const status = await Promise.race([
-            pollFn(jobIdFn(job)),
+            pollFn(state.jobId),
             new Promise<never>((_, reject) => {
               pollTimeoutId = setTimeout(() => reject(new Error("Poll request timed out")), POLL_TIMEOUT_MS)
             }),
           ])
           clearTimeout(pollTimeoutId)
+          if (!isCurrentJob(state)) return
 
           // Reset backoff on successful network call
           state.consecutiveErrors = 0
           state.toastedWarning = false
 
           if (isComplete(status) || isError(status)) {
+            clearPendingProgress(state)
             delete stateRef.current[nodeId]
-
             if (isComplete(status) && getResult(status)) {
               onComplete(nodeId, getResult(status)!)
               addToast("success", `${successLabel}: ${labelFn(job)}`)
@@ -133,10 +203,16 @@ function reconcilePollers<TJob, TStatus>(
             return
           }
 
-          // Still in progress
-          onProgress(nodeId, status)
+          // Still in progress. The awaited poll may have been superseded by a
+          // newer job for the same node; stale statuses must not publish or
+          // enqueue another poll.
+          if (!isCurrentJob(state)) return
+          schedulePoll(state)
+          queueProgress(state, status)
+          return
         } catch (e) {
           clearTimeout(pollTimeoutId)
+          if (!isCurrentJob(state)) return
           state.consecutiveErrors += 1
           console.warn(`${failLabel} poll failed (attempt ${state.consecutiveErrors}, will retry):`, e)
 
@@ -147,16 +223,19 @@ function reconcilePollers<TJob, TStatus>(
         }
 
         // Schedule next poll (whether success-in-progress or error)
-        if (stateRef.current[nodeId]) {
+        if (isCurrentJob(state)) {
           schedulePoll(state)
         }
       }, delay)
     }
 
-    const initialState: JobPollerState = {
+    const initialState: JobPollerState<TStatus> = {
+      jobId,
       startedAt: now,
       consecutiveErrors: 0,
       toastedWarning: false,
+      lastProgressPublishedAt: 0,
+      hasPendingProgress: false,
     }
     stateRef.current[nodeId] = initialState
     schedulePoll(initialState)
@@ -166,6 +245,7 @@ function reconcilePollers<TJob, TStatus>(
   for (const nodeId of pollingNodeIds) {
     if (!jobs[nodeId]) {
       clearTimeout(stateRef.current[nodeId].timeoutId)
+      clearPendingProgress(stateRef.current[nodeId])
       delete stateRef.current[nodeId]
     }
   }
@@ -187,7 +267,7 @@ function reconcilePollers<TJob, TStatus>(
 export default function useJobPolling<TJob, TStatus>(
   config: UseJobPollingConfig<TJob, TStatus>,
 ): void {
-  const pollerState = useRef<Record<string, JobPollerState>>({})
+  const pollerState = useRef<Record<string, JobPollerState<TStatus>>>({})
   const configRef = useRef(config)
   useEffect(() => { configRef.current = config })
 
@@ -200,6 +280,7 @@ export default function useJobPolling<TJob, TStatus>(
     config.onComplete,
     config.onFail,
     config.addToast,
+    config.progressThrottleMs,
     // labelFn, jobIdFn, isComplete, isError, getResult, getErrorMessage,
     // successLabel, failLabel are typically stable literals — omitted from
     // deps to avoid unnecessary re-runs. If they change, the next jobs
@@ -212,6 +293,7 @@ export default function useJobPolling<TJob, TStatus>(
     return () => {
       for (const state of Object.values(ref)) {
         clearTimeout(state.timeoutId)
+        clearTimeout(state.progressTimeoutId)
       }
     }
   }, [])

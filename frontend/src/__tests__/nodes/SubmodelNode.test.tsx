@@ -242,6 +242,17 @@ describe("SubmodelNode", () => {
     expect(wrapper.style.opacity).toBe("0.3")
   })
 
+  it("disables trace motion transitions when requested by the tracing hook", () => {
+    const { container } = renderNode({
+      label: "Motion Lite",
+      _traceMotionDisabled: true,
+    })
+    const wrapper = container.querySelector(".rounded-xl") as HTMLElement
+    const stripe = container.querySelector(".absolute.left-0") as HTMLElement
+    expect(wrapper.style.transition).toBe("none")
+    expect(stripe.style.transition).toBe("none")
+  })
+
   it("has full opacity when neither dimmed flag is set", () => {
     const { container } = renderNode({ label: "Full" })
     const wrapper = container.querySelector(".rounded-xl") as HTMLElement

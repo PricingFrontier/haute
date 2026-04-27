@@ -949,29 +949,11 @@ class TestUtilityModuleLifecycle:
             del sys.modules[mod_name]
 
         # Step 6: Preview again — verify updated utility is used.
-        # Change node code slightly to invalidate the fingerprint cache
-        # (preamble is not part of the fingerprint).
-        nodes2 = [
-            _make_node("src", "src", NodeType.DATA_SOURCE, {"path": _posix_path(data_path)}),
-            _make_node(
-                "t2",
-                "transform",
-                NodeType.POLARS,
-                {
-                    "code": "df = df.with_columns(result=pl.lit(double_it(MAGIC_CONSTANT)))",
-                },
-            ),
-        ]
-        graph2 = PipelineGraph(
-            nodes=nodes2,
-            edges=[_make_edge("src", "t2")],
-            pipeline_name="util_test_v2",
-            preamble=preamble,
-        )
-        results2 = execute_graph(graph2)
-        assert results2["t2"].status == "ok"
+        # Reuse the same graph structure; utility content invalidates the cache.
+        results2 = execute_graph(graph)
+        assert results2["t"].status == "ok"
         # double_it(100) = 300 now (triple)
-        preview2 = results2["t2"].preview
+        preview2 = results2["t"].preview
         assert all(row["result"] == 300 for row in preview2)
 
         # Step 7: Delete utility

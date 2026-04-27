@@ -16,6 +16,10 @@ from fastapi import HTTPException
 from haute._parser_helpers import _build_node_config
 from haute._sandbox import set_project_root
 from haute.graph_utils import NodeType
+from haute.routes._optimiser_limits import (
+    APPLY_PREVIEW_ROW_LIMIT,
+    FRONTIER_POINT_LIMIT,
+)
 from haute.routes._optimiser_service import _compute_scenario_value_stats
 from haute.routes.optimiser import _build_artifact_payload
 from tests.conftest import make_edge, make_graph
@@ -310,6 +314,85 @@ class TestStatusRoute:
         resp = client.get("/api/optimiser/solve/status/nonexistent")
         assert resp.status_code == 404
 
+    def test_completed_status_includes_capped_frontier_metadata(
+        self,
+        client,
+        clean_job_store,
+    ):
+        frontier_data = {
+            "status": "ok",
+            "points": [{"total_objective": 100.0, "lambda_volume": 0.25}],
+            "n_points": 3,
+            "points_returned": 1,
+            "points_limit": 1,
+            "points_truncated": True,
+            "constraint_names": ["volume"],
+        }
+        clean_job_store.jobs["capped_frontier_status"] = {
+            "status": "completed",
+            "progress": 1.0,
+            "message": "Completed",
+            "elapsed_seconds": 0.2,
+            "frontier_data": frontier_data,
+            "result": {
+                "mode": "online",
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.9},
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 0.25},
+                "converged": True,
+                "frontier": frontier_data,
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.get("/api/optimiser/solve/status/capped_frontier_status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "completed"
+        for frontier in (data["frontier"], data["result"]["frontier"]):
+            assert frontier["points_truncated"] is True
+            assert frontier["points_returned"] == 1
+            assert frontier["points_limit"] == 1
+
+    def test_timeout_status_uses_atomic_update_result_when_job_evicted(
+        self,
+        client,
+        clean_job_store,
+    ):
+        job_id = "timed_out_evicted"
+        clean_job_store.jobs[job_id] = {
+            "status": "running",
+            "progress": 0.4,
+            "message": "Solving...",
+            "start_time": time.monotonic() - 2.0,
+            "timeout": 1.0,
+            "created_at": time.time(),
+        }
+        original_require_job = clean_job_store.require_job
+
+        def require_once_then_evicted(requested_job_id: str):
+            if requested_job_id == job_id and require_once_then_evicted.calls:
+                raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+            require_once_then_evicted.calls += 1
+            return original_require_job(requested_job_id)
+
+        require_once_then_evicted.calls = 0
+
+        with patch.object(clean_job_store, "require_job", side_effect=require_once_then_evicted):
+            resp = client.get(f"/api/optimiser/solve/status/{job_id}")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["progress"] == 0.4
+        assert data["message"] == (
+            "Solve timed out after 1.0s. Increase timeout or simplify the problem."
+        )
+        assert data["elapsed_seconds"] >= 1.0
+
 
 class TestEstimateRoute:
     """Exercises ``POST /api/optimiser/estimate`` — the lightweight cost
@@ -356,6 +439,7 @@ class TestApplyRoute:
         assert data["status"] == "ok"
         assert data["row_count"] > 0
         assert "total_objective" in data
+        assert data["from_artifact"] is False
 
     def test_apply_missing_job(self, client):
         resp = client.post("/api/optimiser/apply", json={"job_id": "nonexistent"})
@@ -1235,7 +1319,7 @@ class TestJobStateGuards:
         }
         resp = client.post("/api/optimiser/apply", json={"job_id": "no_sr"})
         assert resp.status_code == 400
-        assert "no solve result" in resp.json()["detail"].lower()
+        assert "apply artifact handle" in resp.json()["detail"].lower()
 
     def test_frontier_not_completed(self, client, clean_job_store):
         clean_job_store.jobs["running2"] = {
@@ -1772,6 +1856,42 @@ class TestFrontierSelect:
         assert resp.status_code == 400
         assert "out of range" in resp.json()["detail"].lower()
 
+    def test_select_point_beyond_capped_returned_points_is_explicit(
+        self,
+        client,
+        clean_job_store,
+    ):
+        clean_job_store.jobs["sel_capped"] = {
+            "status": "completed",
+            "solver": MagicMock(),
+            "quote_grid": MagicMock(),
+            "frontier_data": {
+                "status": "ok",
+                "points": [{"total_objective": 1.0, "lambda_volume": 0.5}],
+                "n_points": 3,
+                "points_returned": 1,
+                "points_limit": 1,
+                "points_truncated": True,
+                "constraint_names": ["volume"],
+            },
+            "result": {},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "sel_capped",
+                "point_index": 2,
+            },
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"].lower()
+        assert "not available" in detail
+        assert "1 of 3" in detail
+        assert "limit 1" in detail
+
     def test_select_negative_index(self, client, clean_job_store):
         """Negative point index returns 422 (Pydantic validation via Field(ge=0))."""
         resp = client.post(
@@ -1836,6 +1956,201 @@ class TestFrontierSelect:
         job = _store.require_job(job_id)
         assert job["selected_frontier_point"] == 0
         assert job["result"]["selected_frontier_point"] == 0
+
+    def test_select_touches_heavy_object_ttl_and_expires_without_followup(
+        self,
+        client,
+        clean_job_store,
+    ):
+        solver = MagicMock()
+        solver.solve.return_value = SimpleNamespace(
+            total_objective=120.0,
+            baseline_objective=100.0,
+            total_constraints={"volume": 0.9},
+            baseline_constraints={"volume": 0.85},
+            lambdas={"volume": 0.4},
+            converged=True,
+        )
+        clean_job_store.jobs["sel_touch_ttl"] = {
+            "status": "completed",
+            "created_at": 100.0,
+            "completed_at": 100.0,
+            "heavy_objects_expires_at": 1000.0,
+            "solver": solver,
+            "solve_result": object(),
+            "quote_grid": MagicMock(),
+            "frontier_data": {
+                "status": "ok",
+                "points": [
+                    {"total_objective": 120.0, "lambda_volume": 0.4},
+                    {"total_objective": 125.0, "lambda_volume": 0.5},
+                ],
+                "n_points": 2,
+                "constraint_names": ["volume"],
+            },
+            "result": {
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.8},
+                "lambdas": {"volume": 0.2},
+                "converged": True,
+            },
+            "artifact_handles": {},
+        }
+
+        with patch("haute.routes._job_store.time.time", return_value=940.0):
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": "sel_touch_ttl", "point_index": 0},
+            )
+        assert resp.status_code == 200
+        assert clean_job_store.jobs["sel_touch_ttl"]["heavy_objects_expires_at"] == pytest.approx(
+            1840.0
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=1780.0):
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": "sel_touch_ttl", "point_index": 0},
+            )
+        assert resp.status_code == 200
+        assert clean_job_store.jobs["sel_touch_ttl"]["heavy_objects_expires_at"] == pytest.approx(
+            2680.0
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=2741.0):
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": "sel_touch_ttl", "point_index": 1},
+            )
+
+        assert resp.status_code == 400
+        assert "re-run the solve" in resp.json()["detail"].lower()
+        job = clean_job_store.jobs["sel_touch_ttl"]
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
+
+    def test_select_reserves_heavy_objects_before_solver_work(
+        self,
+        client,
+        clean_job_store,
+    ):
+        current_time = {"value": 940.0}
+        solver = MagicMock()
+
+        def solve_after_original_expiry(_quote_grid, *, lambdas):
+            assert lambdas == {"volume": 0.4}
+            assert clean_job_store.jobs["sel_touch_before_work"][
+                "heavy_objects_expires_at"
+            ] == pytest.approx(1840.0)
+            current_time["value"] = 1001.0
+            return SimpleNamespace(
+                total_objective=120.0,
+                baseline_objective=100.0,
+                total_constraints={"volume": 0.9},
+                baseline_constraints={"volume": 0.85},
+                lambdas={"volume": 0.4},
+                converged=True,
+            )
+
+        solver.solve.side_effect = solve_after_original_expiry
+        clean_job_store.jobs["sel_touch_before_work"] = {
+            "status": "completed",
+            "created_at": 100.0,
+            "completed_at": 100.0,
+            "heavy_objects_expires_at": 1000.0,
+            "solver": solver,
+            "solve_result": object(),
+            "quote_grid": MagicMock(),
+            "frontier_data": {
+                "status": "ok",
+                "points": [{"total_objective": 120.0, "lambda_volume": 0.4}],
+                "n_points": 1,
+                "constraint_names": ["volume"],
+            },
+            "result": {"total_objective": 100.0, "lambdas": {"volume": 0.2}},
+            "artifact_handles": {},
+        }
+
+        with patch(
+            "haute.routes._job_store.time.time",
+            side_effect=lambda: current_time["value"],
+        ):
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": "sel_touch_before_work", "point_index": 0},
+            )
+            job = clean_job_store.get_job("sel_touch_before_work")
+
+        assert resp.status_code == 200
+        assert job is not None
+        assert "solver" in job
+        assert "solve_result" in job
+        assert "quote_grid" in job
+        assert job["heavy_objects_expires_at"] == pytest.approx(1840.0)
+
+    def test_select_orphan_artifact_cleanup_failure_preserves_primary_http_error(
+        self,
+        client,
+        clean_job_store,
+    ):
+        solver = MagicMock()
+        solver.solve.return_value = SimpleNamespace(
+            total_objective=120.0,
+            baseline_objective=100.0,
+            total_constraints={"volume": 0.9},
+            baseline_constraints={"volume": 0.85},
+            lambdas={"volume": 0.4},
+            converged=True,
+        )
+        clean_job_store.jobs["sel_cleanup_primary"] = {
+            "status": "completed",
+            "solver": solver,
+            "solve_result": object(),
+            "quote_grid": MagicMock(),
+            "frontier_data": {
+                "status": "ok",
+                "points": [{"total_objective": 120.0, "lambda_volume": 0.4}],
+                "n_points": 1,
+                "constraint_names": ["volume"],
+            },
+            "result": {"total_objective": 100.0, "lambdas": {"volume": 0.2}},
+            "artifact_handles": {},
+            "created_at": time.time(),
+        }
+        orphan_handle = {
+            "kind": "optimiser_apply_result",
+            "version": 1,
+            "format": "parquet",
+            "path": "orphan.parquet",
+        }
+
+        with (
+            patch(
+                "haute.routes.optimiser._persist_apply_result_artifact",
+                return_value=orphan_handle,
+            ),
+            patch.object(clean_job_store, "atomic_update_if_heavy_present", return_value=None),
+            patch(
+                "haute.routes.optimiser._cleanup_apply_result_artifact",
+                side_effect=OSError("cleanup failed"),
+            ),
+            patch("haute.routes.optimiser.logger.warning") as log_warning,
+        ):
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": "sel_cleanup_primary", "point_index": 0},
+            )
+
+        assert resp.status_code == 409
+        assert "runtime state changed" in resp.json()["detail"].lower()
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args == (
+            "frontier_select_orphan_apply_artifact_cleanup_failed",
+        )
+        assert log_warning.call_args.kwargs["exc_info"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -2107,8 +2422,150 @@ class TestFinalizeSolveResult:
         job = store.require_job(job_id)
         assert job["frontier_data"] is not None
         assert job["frontier_data"]["n_points"] == 2
+        assert job["frontier_data"]["points_returned"] == 2
+        assert job["frontier_data"]["points_limit"] == FRONTIER_POINT_LIMIT
+        assert job["frontier_data"]["points_truncated"] is False
         assert "volume" in job["frontier_data"]["constraint_names"]
         mock_solver.frontier.assert_called_once()
+
+    def test_auto_frontier_payload_is_capped_in_job_state(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_min": 0.8,
+                    "frontier_max": 1.1,
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+        frontier_points = pl.DataFrame({"total_objective": list(range(FRONTIER_POINT_LIMIT + 1))})
+        mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
+        mock_grid = MagicMock()
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=mock_grid,
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.require_job(job_id)
+        assert job["frontier_data"] is not None
+        assert job["frontier_data"]["n_points"] == FRONTIER_POINT_LIMIT + 1
+        assert len(job["frontier_data"]["points"]) == FRONTIER_POINT_LIMIT
+        assert job["frontier_data"]["points_returned"] == FRONTIER_POINT_LIMIT
+        assert job["frontier_data"]["points_limit"] == FRONTIER_POINT_LIMIT
+        assert job["frontier_data"]["points_truncated"] is True
+        assert job["result"]["frontier"] == job["frontier_data"]
+
+    def test_auto_frontier_slices_before_serialising_points(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        class VisiblePoints:
+            def __init__(self, size: int) -> None:
+                self.size = size
+
+            def to_dicts(self):
+                return [{"total_objective": i} for i in range(self.size)]
+
+        class HugePoints:
+            def __len__(self) -> int:
+                return FRONTIER_POINT_LIMIT + 1
+
+            def head(self, n: int):
+                assert n == FRONTIER_POINT_LIMIT
+                return VisiblePoints(n)
+
+            def to_dicts(self):
+                raise AssertionError("Full frontier must not be serialised")
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(points=HugePoints())
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.require_job(job_id)
+        assert job["frontier_data"]["n_points"] == FRONTIER_POINT_LIMIT + 1
+        assert len(job["frontier_data"]["points"]) == FRONTIER_POINT_LIMIT
+        assert job["frontier_data"]["points_truncated"] is True
+
+    def test_frontier_failure_is_surfaced_on_completed_status(
+        self,
+        client,
+        clean_job_store,
+    ):
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        job_id = clean_job_store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_min": 0.8,
+                    "frontier_max": 1.1,
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+        mock_solver.frontier.side_effect = RuntimeError("frontier exploded")
+
+        with patch("haute.routes._optimiser_service.logger.warning") as log_warning:
+            _finalize_solve_result(
+                solve_result,
+                mode="online",
+                solver=mock_solver,
+                quote_grid=MagicMock(),
+                store=clean_job_store,
+                job_id=job_id,
+                elapsed=1.0,
+            )
+
+        job = clean_job_store.require_job(job_id)
+        assert job["status"] == "completed"
+        assert job["frontier_data"] is None
+        assert job["result"]["frontier"] is None
+        assert job["result"]["frontier_error"] == ("Frontier unavailable: frontier exploded")
+        log_warning.assert_called_once()
+        assert log_warning.call_args.kwargs["exc_info"] is True
+
+        resp = client.get(f"/api/optimiser/solve/status/{job_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "completed"
+        assert data["result"]["frontier"] is None
+        assert data["result"]["frontier_error"] == ("Frontier unavailable: frontier exploded")
 
     def test_frontier_not_computed_for_ratebook_mode(self):
         from haute.routes._job_store import JobStore
@@ -2140,6 +2597,105 @@ class TestFinalizeSolveResult:
         job = store.require_job(job_id)
         assert job["frontier_data"] is None
         mock_solver.frontier.assert_not_called()
+
+    def test_finalized_job_slims_heavy_runtime_state_after_policy_window(self):
+        from unittest.mock import patch
+
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore(ttl_seconds=60, heavy_object_ttl_seconds=1)
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+        mock_grid = MagicMock()
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+            _finalize_solve_result(
+                solve_result,
+                mode="online",
+                solver=mock_solver,
+                quote_grid=mock_grid,
+                store=store,
+                job_id=job_id,
+                elapsed=1.0,
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            job = store.require_job(job_id)
+
+        assert job["status"] == "completed"
+        assert job["result"]["total_objective"] == 100.0
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
+
+    def test_finalized_job_persists_apply_artifact_handle(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        solve_result = self._make_solve_result()
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=MagicMock(),
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.require_job(job_id)
+        handle = job["artifact_handles"]["apply_result"]
+        assert handle["kind"] == "optimiser_apply_result"
+        assert handle["format"] == "parquet"
+        assert handle["row_count"] == len(solve_result.dataframe)
+        assert Path(handle["path"]).is_file()
+        assert "dataframe" not in job["result"]
+
+    def test_finalized_job_cleans_apply_artifact_when_status_guard_skips(
+        self,
+    ):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        store.atomic_update(
+            job_id,
+            {"status": "error", "message": "Solve timed out after 10s"},
+            expected_status="running",
+        )
+        artifact_dir: Path | None = None
+
+        def _mkdtemp(*, prefix: str, dir: str) -> str:
+            nonlocal artifact_dir
+            assert prefix == "apply_"
+            artifact_dir = Path(dir) / "apply_guard"
+            artifact_dir.mkdir(parents=True)
+            return str(artifact_dir)
+
+        with patch("haute.routes._optimiser_service.tempfile.mkdtemp", side_effect=_mkdtemp):
+            _finalize_solve_result(
+                self._make_solve_result(),
+                mode="online",
+                solver=MagicMock(),
+                quote_grid=MagicMock(),
+                store=store,
+                job_id=job_id,
+                elapsed=12.0,
+            )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert job["message"] == "Solve timed out after 10s"
+        assert job.get("result") is None
+        assert job.get("artifact_handles") is None
+        assert artifact_dir is not None
+        assert not artifact_dir.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -2228,6 +2784,182 @@ class TestApplyLambdasUnit:
         assert data["row_count"] == 5
         assert data["total_objective"] == 500.0
         assert len(data["preview"]) == 5
+        assert data["preview_row_count"] == 5
+        assert data["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
+        assert data["preview_truncated"] is False
+
+    def test_apply_preview_payload_is_capped_with_truncation_metadata(
+        self,
+        client,
+        clean_job_store,
+    ):
+        df = pl.DataFrame(
+            {
+                "quote_id": [f"q{i}" for i in range(APPLY_PREVIEW_ROW_LIMIT + 1)],
+                "optimal_scenario_value": [1.0] * (APPLY_PREVIEW_ROW_LIMIT + 1),
+            }
+        )
+        mock_solve_result = SimpleNamespace(
+            dataframe=df,
+            total_objective=500.0,
+            total_constraints={"volume": 0.95},
+        )
+        clean_job_store.jobs["apply_capped"] = {
+            "status": "completed",
+            "solve_result": mock_solve_result,
+            "created_at": time.time(),
+        }
+
+        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_capped"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["row_count"] == APPLY_PREVIEW_ROW_LIMIT + 1
+        assert len(data["preview"]) == APPLY_PREVIEW_ROW_LIMIT
+        assert data["preview_row_count"] == APPLY_PREVIEW_ROW_LIMIT
+        assert data["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
+        assert data["preview_truncated"] is True
+
+    def test_apply_loads_persisted_artifact_handle_after_heavy_result_is_slimmed(
+        self,
+        client,
+        clean_job_store,
+    ):
+        from haute.routes._optimiser_service import _persist_apply_result_artifact
+
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "optimal_scenario_value": [1.0, 1.1],
+            }
+        )
+        handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
+        assert handle is not None
+        clean_job_store.jobs["apply_handle"] = {
+            "status": "completed",
+            "result": {
+                "total_objective": 500.0,
+                "constraints": {"volume": 0.95},
+            },
+            "artifact_handles": {"apply_result": handle},
+            "created_at": time.time(),
+        }
+
+        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_handle"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["total_objective"] == 500.0
+        assert data["constraints"] == {"volume": 0.95}
+        assert data["row_count"] == 2
+        assert data["preview"] == [
+            {"quote_id": "q1", "optimal_scenario_value": 1.0},
+            {"quote_id": "q2", "optimal_scenario_value": 1.1},
+        ]
+
+    def test_apply_success_clears_heavy_result_but_keeps_handle_for_later_apply(
+        self,
+        client,
+        clean_job_store,
+    ):
+        from haute.routes._optimiser_service import _persist_apply_result_artifact
+
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "optimal_scenario_value": [1.0, 1.1],
+            }
+        )
+        handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
+        assert handle is not None
+        clean_job_store.jobs["apply_terminal"] = {
+            "status": "completed",
+            "solver": MagicMock(),
+            "quote_grid": MagicMock(),
+            "solve_result": SimpleNamespace(
+                dataframe=df,
+                total_objective=500.0,
+                total_constraints={"volume": 0.95},
+            ),
+            "result": {
+                "total_objective": 500.0,
+                "constraints": {"volume": 0.95},
+            },
+            "artifact_handles": {"apply_result": handle},
+            "created_at": time.time(),
+        }
+
+        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
+
+        assert resp.status_code == 200
+        job = clean_job_store.jobs["apply_terminal"]
+        assert "solver" not in job
+        assert "quote_grid" not in job
+        assert "solve_result" not in job
+        assert job["artifact_handles"]["apply_result"]["path"] == handle["path"]
+
+        second_resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
+
+        assert second_resp.status_code == 200
+        assert second_resp.json()["preview"] == [
+            {"quote_id": "q1", "optimal_scenario_value": 1.0},
+            {"quote_id": "q2", "optimal_scenario_value": 1.1},
+        ]
+
+    def test_apply_corrupt_artifact_handle_fails_loudly(
+        self,
+        client,
+        clean_job_store,
+    ):
+        from haute.routes._optimiser_service import _persist_apply_result_artifact
+
+        handle = _persist_apply_result_artifact(
+            SimpleNamespace(dataframe=pl.DataFrame({"quote_id": ["q1"]}))
+        )
+        assert handle is not None
+        Path(handle["path"]).unlink()
+        clean_job_store.jobs["apply_missing_handle"] = {
+            "status": "completed",
+            "result": {
+                "total_objective": 500.0,
+                "constraints": {"volume": 0.95},
+            },
+            "artifact_handles": {"apply_result": handle},
+            "created_at": time.time(),
+        }
+
+        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_missing_handle"})
+
+        assert resp.status_code == 500
+        assert "artifact" in resp.json()["detail"].lower()
+
+    def test_apply_after_heavy_result_policy_expiry_without_handle_returns_400(
+        self,
+        client,
+        clean_job_store,
+    ):
+        from haute.routes._job_store import _DEFAULT_HEAVY_OBJECT_TTL_SECONDS
+
+        clean_job_store.jobs["apply_expired"] = {
+            "status": "completed",
+            "solve_result": SimpleNamespace(
+                dataframe=pl.DataFrame({"quote_id": ["q1"]}),
+                total_objective=100.0,
+                total_constraints={},
+            ),
+            "result": {"total_objective": 100.0},
+            "created_at": time.time() - _DEFAULT_HEAVY_OBJECT_TTL_SECONDS - 1,
+        }
+
+        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_expired"})
+
+        assert resp.status_code == 400
+        assert "apply artifact handle" in resp.json()["detail"].lower()
+        job = clean_job_store.jobs["apply_expired"]
+        assert job["status"] == "completed"
+        assert job["result"] == {"total_objective": 100.0}
+        assert "solve_result" not in job
 
 
 # ---------------------------------------------------------------------------
@@ -2266,7 +2998,91 @@ class TestRunFrontierUnit:
         assert data["status"] == "ok"
         assert data["n_points"] == 3
         assert len(data["points"]) == 3
+        assert data["points_returned"] == 3
         assert data["constraint_names"] == ["volume"]
+        assert data["points_limit"] == FRONTIER_POINT_LIMIT
+        assert data["points_truncated"] is False
+
+    def test_frontier_payload_is_capped_with_total_point_metadata(
+        self,
+        client,
+        clean_job_store,
+    ):
+        mock_solver = MagicMock()
+        points = [{"obj": i, "lambda_vol": i / 100} for i in range(FRONTIER_POINT_LIMIT + 1)]
+        frontier_points = pl.DataFrame(points)
+        mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
+
+        clean_job_store.jobs["frontier_capped"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_capped",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["n_points"] == FRONTIER_POINT_LIMIT + 1
+        assert len(data["points"]) == FRONTIER_POINT_LIMIT
+        assert data["points_returned"] == FRONTIER_POINT_LIMIT
+        assert data["points_limit"] == FRONTIER_POINT_LIMIT
+        assert data["points_truncated"] is True
+
+    def test_frontier_route_slices_before_serialising_points(
+        self,
+        client,
+        clean_job_store,
+    ):
+        class VisiblePoints:
+            def __init__(self, size: int) -> None:
+                self.size = size
+
+            def to_dicts(self):
+                return [{"obj": i, "lambda_vol": i / 100} for i in range(self.size)]
+
+        class HugePoints:
+            def __len__(self) -> int:
+                return FRONTIER_POINT_LIMIT + 1
+
+            def head(self, n: int):
+                assert n == FRONTIER_POINT_LIMIT
+                return VisiblePoints(n)
+
+            def to_dicts(self):
+                raise AssertionError("Full frontier must not be serialised")
+
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(points=HugePoints())
+        clean_job_store.jobs["frontier_serialise_budget"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_serialise_budget",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["n_points"] == FRONTIER_POINT_LIMIT + 1
+        assert len(data["points"]) == FRONTIER_POINT_LIMIT
+        assert data["points_truncated"] is True
 
     def test_frontier_incomplete_job_returns_400(self, client, clean_job_store):
         clean_job_store.jobs["frontier_inc"] = {
@@ -2339,6 +3155,7 @@ class TestSaveResultUnit:
             "status": "completed",
             "solve_result": mock_solve_result,
             "solver": MagicMock(),
+            "quote_grid": MagicMock(),
             "config": {
                 "mode": "online",
                 "objective": "income",
@@ -2364,6 +3181,10 @@ class TestSaveResultUnit:
         assert saved["lambdas"] == {"volume": 0.5}
         assert saved["total_objective"] == 100.0
         assert saved["converged"] is True
+        job = clean_job_store.jobs["save_ok"]
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
 
 
 # ---------------------------------------------------------------------------
@@ -2413,6 +3234,38 @@ class TestSelectFrontierPointIdempotent:
         assert data["converged"] is True
         # Solver should NOT have been called (short circuit)
         clean_job_store.jobs["idem"]["solver"].solve.assert_not_called()
+
+    def test_reselect_same_point_returns_cached_after_heavy_cleanup(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Idempotent cached selection does not require retained solver objects."""
+        clean_job_store.jobs["idem_slimmed"] = {
+            "status": "completed",
+            "selected_frontier_point": 2,
+            "result": {
+                "total_objective": 150.0,
+                "constraints": {"volume": 0.93},
+                "baseline_objective": 140.0,
+                "baseline_constraints": {"volume": 0.87},
+                "lambdas": {"volume": 0.6},
+                "converged": True,
+            },
+            "created_at": time.time(),
+            "heavy_objects_cleared_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "idem_slimmed", "point_index": 2},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["total_objective"] == 150.0
+        assert data["lambdas"] == {"volume": 0.6}
 
 
 class TestSelectFrontierPointResolve:
@@ -2464,6 +3317,24 @@ class TestSelectFrontierPointResolve:
         # Verify the lambdas were extracted from the frontier point
         call_kwargs = mock_solver.solve.call_args
         assert call_kwargs[1]["lambdas"] == {"volume": 0.7}
+
+    def test_resolve_internal_error_logs_stack_trace(self, client, clean_job_store):
+        """Unexpected frontier selection failures are logged with traceback context."""
+        mock_solver = self._make_frontier_job(clean_job_store)
+        mock_solver.solve.side_effect = RuntimeError("resolve boom")
+
+        with patch("haute.routes.optimiser.logger.error") as log_error:
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": "fsel", "point_index": 1},
+            )
+
+        assert resp.status_code == 500
+        log_error.assert_called_once()
+        assert log_error.call_args.args == ("frontier_select_failed",)
+        assert log_error.call_args.kwargs["error"] == "resolve boom"
+        assert log_error.call_args.kwargs["job_id"] == "fsel"
+        assert log_error.call_args.kwargs["exc_info"] is True
 
     def test_resolve_non_converged_adds_warning(self, client, clean_job_store):
         """When re-solve doesn't converge, the result includes a warning."""
@@ -2518,6 +3389,120 @@ class TestSelectFrontierPointResolve:
         job = clean_job_store.jobs["fsel"]
         assert job["selected_frontier_point"] == 1
         assert job["result"]["selected_frontier_point"] == 1
+
+    def test_resolve_fails_loudly_if_runtime_state_is_cleared_during_solve(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """A re-solve must not merge partial runtime state after terminal cleanup."""
+        mock_solver = self._make_frontier_job(clean_job_store)
+        new_result = mock_solver.solve.return_value
+
+        def solve_and_clear(_quote_grid, *, lambdas):
+            assert lambdas == {"volume": 0.7}
+            clean_job_store.clear_result_data("fsel")
+            return new_result
+
+        mock_solver.solve.side_effect = solve_and_clear
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "fsel", "point_index": 1},
+        )
+
+        assert resp.status_code == 409
+        assert "runtime state changed" in resp.json()["detail"].lower()
+        job = clean_job_store.jobs["fsel"]
+        assert "solver" not in job
+        assert "quote_grid" not in job
+        assert "solve_result" not in job
+        assert "selected_frontier_point" not in job
+
+    def test_resolve_refreshes_apply_artifact_for_selected_result(
+        self,
+        client,
+        clean_job_store,
+    ):
+        from haute.routes._optimiser_service import _persist_apply_result_artifact
+
+        self._make_frontier_job(clean_job_store)
+        old_handle = _persist_apply_result_artifact(
+            SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [9.9]}))
+        )
+        assert old_handle is not None
+        old_artifact_dir = Path(old_handle["directory"])
+        old_artifact_path = Path(old_handle["path"])
+        clean_job_store.jobs["fsel"]["artifact_handles"] = {"apply_result": old_handle}
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "fsel", "point_index": 1},
+        )
+
+        assert resp.status_code == 200
+        job = clean_job_store.jobs["fsel"]
+        new_handle = job["artifact_handles"]["apply_result"]
+        assert new_handle["path"] != str(old_artifact_path)
+        assert Path(new_handle["path"]).is_file()
+        assert not old_artifact_dir.exists()
+
+        clean_job_store.clear_result_data("fsel")
+        resp = client.post("/api/optimiser/apply", json={"job_id": "fsel"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_objective"] == 200.0
+        assert data["constraints"] == {"volume": 0.95}
+        assert data["from_artifact"] is True
+        assert data["preview"][0]["optimal_scenario_value"] == 0.9
+
+    def test_resolve_keeps_success_when_old_apply_artifact_cleanup_fails(
+        self,
+        client,
+        clean_job_store,
+    ):
+        from haute.routes._optimiser_service import _persist_apply_result_artifact
+
+        self._make_frontier_job(clean_job_store)
+        old_handle = _persist_apply_result_artifact(
+            SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [9.9]}))
+        )
+        assert old_handle is not None
+        old_artifact_path = Path(old_handle["path"])
+        old_artifact_dir = Path(old_handle["directory"])
+        clean_job_store.jobs["fsel"]["artifact_handles"] = {"apply_result": old_handle}
+
+        cleanup_error = RuntimeError("cleanup denied")
+        with (
+            patch(
+                "haute.routes.optimiser._cleanup_apply_result_artifact",
+                side_effect=cleanup_error,
+            ),
+            patch("haute.routes.optimiser.logger.warning") as log_warning,
+        ):
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": "fsel", "point_index": 1},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_objective"] == 200.0
+        assert data["constraints"] == {"volume": 0.95}
+        job = clean_job_store.jobs["fsel"]
+        new_handle = job["artifact_handles"]["apply_result"]
+        assert new_handle["path"] != str(old_artifact_path)
+        assert Path(new_handle["path"]).is_file()
+        assert job["selected_frontier_point"] == 1
+        assert job["result"]["total_objective"] == 200.0
+
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args == ("frontier_select_old_apply_artifact_cleanup_failed",)
+        assert log_warning.call_args.kwargs["job_id"] == "fsel"
+        assert log_warning.call_args.kwargs["path"] == str(old_artifact_dir)
+        assert log_warning.call_args.kwargs["error"] == "cleanup denied"
+        assert log_warning.call_args.kwargs["exc_info"] is True
 
     def test_select_no_lambda_values(self, client, clean_job_store):
         """Frontier point with no lambda_ prefixed columns returns 400."""
@@ -2732,6 +3717,7 @@ class TestMlflowLogExtended:
             "status": "completed",
             "solver": mock_solver,
             "solve_result": mock_solve_result,
+            "quote_grid": MagicMock(),
             "config": {"mode": "online", "objective": "income", "constraints": {}},
             "node_label": "my_opt",
             "created_at": time.time(),
@@ -2800,6 +3786,10 @@ class TestMlflowLogExtended:
         # Verify frontier tags were set
         mock_mlflow.set_tag.assert_any_call("frontier.n_points", "2")
         mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "1")
+        job = clean_job_store.jobs["mlf_ok"]
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
 
     def test_mlflow_log_no_frontier(self, client, clean_job_store):
         """MLflow log without frontier data still succeeds."""
@@ -2902,6 +3892,48 @@ class TestSolveStatusTimeout:
         assert data["status"] == "error"
         assert "timed out" in data["message"].lower()
         assert data["elapsed_seconds"] > 0
+
+    def test_timeout_race_uses_current_job_when_guarded_write_skips(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """If a solve completes while timeout handling races, report the completion."""
+        start = time.monotonic() - 500
+        clean_job_store.jobs["tout_race"] = {
+            "status": "running",
+            "progress": 0.3,
+            "message": "Solving",
+            "start_time": start,
+            "timeout": 10,
+            "created_at": time.time(),
+        }
+
+        def complete_elsewhere(*args, **kwargs):
+            clean_job_store.jobs["tout_race"] = {
+                "status": "completed",
+                "progress": 1.0,
+                "message": "Completed",
+                "elapsed_seconds": 12.0,
+                "result": {
+                    "mode": "online",
+                    "total_objective": 100.0,
+                    "baseline_objective": 95.0,
+                    "constraints": {},
+                    "baseline_constraints": {},
+                    "lambdas": {},
+                    "converged": True,
+                },
+                "created_at": time.time(),
+            }
+            return None
+
+        with patch.object(clean_job_store, "atomic_update", side_effect=complete_elsewhere):
+            resp = client.get("/api/optimiser/solve/status/tout_race")
+
+        data = resp.json()
+        assert data["status"] == "completed"
+        assert data["message"] == "Completed"
 
     def test_running_job_not_timed_out(self, client, clean_job_store):
         """A running job with sufficient timeout remains running."""
@@ -3731,8 +4763,17 @@ class TestApplyException:
             "solve_result": FailingResult(),
             "created_at": time.time(),
         }
-        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
+        with patch("haute.routes.optimiser.logger.error") as log_error:
+            resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
+
         assert resp.status_code == 500
+        log_error.assert_called_once()
+        assert log_error.call_args.args == ("apply_failed",)
+        assert log_error.call_args.kwargs["error"] == "boom"
+        assert log_error.call_args.kwargs["job_id"] == "apply_err"
+        assert log_error.call_args.kwargs["exc_info"] is True
+        job = clean_job_store.jobs["apply_err"]
+        assert "solve_result" in job
 
 
 class TestFrontierException:
@@ -3748,19 +4789,67 @@ class TestFrontierException:
             "quote_grid": MagicMock(),
             "created_at": time.time(),
         }
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
-                "job_id": "front_err",
-                "threshold_ranges": {"volume": [0.85, 0.95]},
-                "n_points_per_dim": 3,
-            },
-        )
+        with patch("haute.routes.optimiser.logger.error") as log_error:
+            resp = client.post(
+                "/api/optimiser/frontier",
+                json={
+                    "job_id": "front_err",
+                    "threshold_ranges": {"volume": [0.85, 0.95]},
+                    "n_points_per_dim": 3,
+                },
+            )
         assert resp.status_code == 500
+        log_error.assert_called_once()
+        assert log_error.call_args.args == ("frontier_failed",)
+        assert log_error.call_args.kwargs["error"] == "frontier boom"
+        assert log_error.call_args.kwargs["job_id"] == "front_err"
+        assert log_error.call_args.kwargs["exc_info"] is True
 
 
 class TestSaveExceptionPaths:
     """Test save endpoint OSError and generic Exception paths."""
+
+    def test_save_touches_solve_result_before_reading_it(
+        self,
+        client,
+        clean_job_store,
+        tmp_path,
+    ):
+        """Saving reserves the heavy solve result before payload construction."""
+        from haute._sandbox import set_project_root
+
+        class ExpiryAssertingSolveResult:
+            @property
+            def lambdas(self):
+                assert clean_job_store.jobs["save_touch"][
+                    "heavy_objects_expires_at"
+                ] == pytest.approx(1840.0)
+                return {}
+
+            total_objective = 0.0
+            total_constraints = {}
+            baseline_constraints = {}
+            baseline_objective = 0.0
+            converged = True
+
+        clean_job_store.jobs["save_touch"] = {
+            "status": "completed",
+            "created_at": 100.0,
+            "completed_at": 100.0,
+            "heavy_objects_expires_at": 1000.0,
+            "solve_result": ExpiryAssertingSolveResult(),
+            "config": {"mode": "online"},
+            "node_label": "opt",
+        }
+        set_project_root(tmp_path)
+
+        with patch("haute.routes._job_store.time.time", return_value=940.0):
+            resp = client.post(
+                "/api/optimiser/save",
+                json={"job_id": "save_touch", "output_path": str(tmp_path / "out.json")},
+            )
+
+        assert resp.status_code == 200
 
     def test_save_os_error(self, client, clean_job_store, tmp_path):
         """OSError during save returns 500 with filesystem error message."""
@@ -3785,13 +4874,24 @@ class TestSaveExceptionPaths:
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
 
-        with patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
+        with (
+            patch("pathlib.Path.write_text", side_effect=OSError("disk full")),
+            patch("haute.routes.optimiser.logger.error") as log_error,
+        ):
             resp = client.post(
                 "/api/optimiser/save",
                 json={"job_id": "save_os", "output_path": out_path},
             )
         assert resp.status_code == 500
         assert "filesystem" in resp.json()["detail"].lower()
+        log_error.assert_called_once()
+        assert log_error.call_args.args == ("save_failed",)
+        assert log_error.call_args.kwargs["error"] == "disk full"
+        assert log_error.call_args.kwargs["job_id"] == "save_os"
+        assert log_error.call_args.kwargs["exc_info"] is True
+        job = clean_job_store.jobs["save_os"]
+        assert "solver" in job
+        assert "solve_result" in job
 
     def test_save_generic_exception(self, client, clean_job_store, tmp_path):
         """Generic Exception during save returns 500."""
@@ -3816,16 +4916,86 @@ class TestSaveExceptionPaths:
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
 
-        with patch("pathlib.Path.write_text", side_effect=RuntimeError("unexpected")):
+        with (
+            patch("pathlib.Path.write_text", side_effect=RuntimeError("unexpected")),
+            patch("haute.routes.optimiser.logger.error") as log_error,
+        ):
             resp = client.post(
                 "/api/optimiser/save",
                 json={"job_id": "save_gen", "output_path": out_path},
             )
         assert resp.status_code == 500
+        log_error.assert_called_once()
+        assert log_error.call_args.args == ("save_failed",)
+        assert log_error.call_args.kwargs["error"] == "unexpected"
+        assert log_error.call_args.kwargs["job_id"] == "save_gen"
+        assert log_error.call_args.kwargs["exc_info"] is True
 
 
 class TestMlflowLogExceptionPath:
     """Test mlflow_log generic exception path."""
+
+    def test_mlflow_log_touches_runtime_objects_before_reading_them(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """MLflow logging reserves solver and solve result before summary work."""
+        mock_solver = MagicMock()
+
+        def summary_after_touch(_solve_result):
+            assert clean_job_store.jobs["mlf_touch"]["heavy_objects_expires_at"] == pytest.approx(
+                1840.0
+            )
+            return {"params": {}, "metrics": {}, "artifacts": {}}
+
+        mock_solver.summary.side_effect = summary_after_touch
+        mock_solve_result = SimpleNamespace(
+            lambdas={},
+            total_objective=0,
+            total_constraints={},
+            baseline_constraints={},
+            baseline_objective=0,
+            converged=True,
+        )
+        clean_job_store.jobs["mlf_touch"] = {
+            "status": "completed",
+            "created_at": 100.0,
+            "completed_at": 100.0,
+            "heavy_objects_expires_at": 1000.0,
+            "solver": mock_solver,
+            "solve_result": mock_solve_result,
+            "config": {"mode": "online"},
+            "node_label": "opt",
+        }
+        mock_mlflow = MagicMock()
+        mock_run = MagicMock()
+        mock_run.info.run_id = "touch-run"
+        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("haute.routes._job_store.time.time", return_value=940.0),
+            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
+            patch(
+                "haute.modelling._mlflow_log.configure_mlflow_tracking",
+                return_value=("http://localhost:5000", "local"),
+            ),
+            patch(
+                "haute.modelling._mlflow_log.resolve_experiment_name",
+                return_value="/test",
+            ),
+            patch(
+                "haute.modelling._mlflow_log.build_run_url",
+                return_value="http://localhost:5000/touch-run",
+            ),
+        ):
+            resp = client.post(
+                "/api/optimiser/mlflow/log",
+                json={"job_id": "mlf_touch"},
+            )
+
+        assert resp.status_code == 200
 
     def test_mlflow_log_internal_error(self, client, clean_job_store):
         """When mlflow logging raises, endpoint returns 500."""
@@ -3846,12 +5016,23 @@ class TestMlflowLogExceptionPath:
             "created_at": time.time(),
         }
         mock_mlflow = MagicMock()
-        with patch.dict("sys.modules", {"mlflow": mock_mlflow}):
+        with (
+            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
+            patch("haute.routes.optimiser.logger.error") as log_error,
+        ):
             resp = client.post(
                 "/api/optimiser/mlflow/log",
                 json={"job_id": "mlf_err"},
             )
         assert resp.status_code == 500
+        log_error.assert_called_once()
+        assert log_error.call_args.args == ("mlflow_log_failed",)
+        assert log_error.call_args.kwargs["error"] == "summary boom"
+        assert log_error.call_args.kwargs["job_id"] == "mlf_err"
+        assert log_error.call_args.kwargs["exc_info"] is True
+        job = clean_job_store.jobs["mlf_err"]
+        assert "solver" in job
+        assert "solve_result" in job
 
 
 class TestSolveRatebookFallbackQuoteId:

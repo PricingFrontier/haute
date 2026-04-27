@@ -4,6 +4,7 @@
   "constraints": {
     "loss": 0.95
   },
+  "from_artifact": false,
   "preview": [
     {
       "scenario": "A",
@@ -11,5 +12,8 @@
     }
   ],
   "row_count": 1,
+  "preview_row_count": 1,
+  "preview_row_limit": 100,
+  "preview_truncated": false,
   "error": null
 }

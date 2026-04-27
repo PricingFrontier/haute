@@ -5,6 +5,7 @@ import useNodeHandlers from "../useNodeHandlers"
 import useToastStore from "../../stores/useToastStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import { makeNode } from "../../test-utils/factories"
+import { getLayoutedElements } from "../../utils/layout"
 
 vi.mock("../../utils/layout", () => ({
   getLayoutedElements: vi.fn(async (nodes: Node[]) => nodes),
@@ -27,6 +28,8 @@ describe("useNodeHandlers", () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
+    vi.mocked(getLayoutedElements).mockReset()
+    vi.mocked(getLayoutedElements).mockImplementation(async (nodes: Node[]) => nodes)
   })
 
   afterEach(() => {
@@ -162,6 +165,92 @@ describe("useNodeHandlers", () => {
     act(() => { vi.advanceTimersByTime(100) })
     expect(params.fitView).toHaveBeenCalledWith({ padding: 0.15 })
     vi.useRealTimers()
+  })
+
+  it("exposes pending auto-layout state while ELK is loading", async () => {
+    let resolveLayout!: (nodes: Node[]) => void
+    vi.mocked(getLayoutedElements).mockReturnValueOnce(new Promise((resolve) => {
+      resolveLayout = resolve
+    }))
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    expect(result.current.isAutoLayouting).toBe(false)
+
+    await act(async () => {
+      void result.current.handleAutoLayout()
+    })
+
+    expect(result.current.isAutoLayouting).toBe(true)
+    expect(params.setNodes).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveLayout([n1])
+    })
+
+    expect(result.current.isAutoLayouting).toBe(false)
+    expect(params.setNodes).toHaveBeenCalledOnce()
+  })
+
+  it("does not queue overlapping auto-layout runs from repeated clicks", async () => {
+    let resolveLayout!: (nodes: Node[]) => void
+    vi.mocked(getLayoutedElements).mockReturnValueOnce(new Promise((resolve) => {
+      resolveLayout = resolve
+    }))
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      void result.current.handleAutoLayout()
+    })
+    await act(async () => {
+      void result.current.handleAutoLayout()
+      void result.current.handleAutoLayout()
+    })
+
+    expect(getLayoutedElements).toHaveBeenCalledOnce()
+    expect(params.setNodes).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveLayout([n1])
+    })
+
+    expect(params.setNodes).toHaveBeenCalledOnce()
+  })
+
+  it("resets pending auto-layout state after a layout failure", async () => {
+    const layoutError = new Error("ELK failed")
+    vi.mocked(getLayoutedElements)
+      .mockRejectedValueOnce(layoutError)
+      .mockImplementationOnce(async (nodes: Node[]) => nodes)
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+    let thrown: unknown
+
+    await act(async () => {
+      try {
+        await result.current.handleAutoLayout()
+      } catch (error) {
+        thrown = error
+      }
+    })
+
+    expect(thrown).toBe(layoutError)
+    expect(result.current.isAutoLayouting).toBe(false)
+    expect(params.setNodes).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await result.current.handleAutoLayout()
+    })
+
+    expect(getLayoutedElements).toHaveBeenCalledTimes(2)
+    expect(params.setNodes).toHaveBeenCalledOnce()
   })
 
   it("handleAutoLayout does nothing with empty graph", async () => {

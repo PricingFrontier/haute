@@ -187,3 +187,8 @@ haute serve
 ```
 
 `haute serve` opens the visual editor in your browser. From there, you're building.
+
+## Development checks
+
+For local performance, benchmark, bundle, and memory smoke commands, see
+[Local Performance Checks](docs/PERFORMANCE_CHECKS.md).

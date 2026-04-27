@@ -1018,7 +1018,7 @@ class TestLogToMlflowCoverage:
         # Should return early without error
         job._log_to_mlflow(result)
 
-    def test_log_to_mlflow_import_error_returns_early(self):
+    def test_log_to_mlflow_import_error_fails_loudly_when_experiment_configured(self):
         from haute.modelling._training_job import TrainingJob, TrainResult
 
         job = TrainingJob(
@@ -1030,8 +1030,8 @@ class TestLogToMlflowCoverage:
 
         result = MagicMock(spec=TrainResult)
         with patch.dict(sys.modules, {"haute.modelling._mlflow_log": None}):
-            # ImportError on the module — should return early
-            job._log_to_mlflow(result)
+            with pytest.raises(ImportError):
+                job._log_to_mlflow(result)
 
 
 # ---------------------------------------------------------------------------

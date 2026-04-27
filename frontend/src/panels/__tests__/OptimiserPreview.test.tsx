@@ -8,11 +8,13 @@ import type { OptimiserPreviewData, SolveResult, FrontierData } from "../Optimis
 const mockSelectFrontierPointAPI = vi.fn()
 const mockSaveOptimiser = vi.fn()
 const mockLogOptimiserToMlflow = vi.fn()
+const mockApplyOptimiser = vi.fn()
 
 vi.mock("../../api/client", () => ({
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPointAPI(...args),
   saveOptimiser: (...args: unknown[]) => mockSaveOptimiser(...args),
   logOptimiserToMlflow: (...args: unknown[]) => mockLogOptimiserToMlflow(...args),
+  applyOptimiser: (...args: unknown[]) => mockApplyOptimiser(...args),
 }))
 
 vi.mock("../../hooks/useDragResize", () => ({
@@ -61,7 +63,7 @@ function makeSolveResult(overrides: Partial<SolveResult> = {}): SolveResult {
   }
 }
 
-function makeFrontier(n = 5): FrontierData {
+function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierData {
   const points = Array.from({ length: n }, (_, i) => ({
     total_objective: 1200000 + i * 10000,
     total_loss_ratio: 0.55 + i * 0.02,
@@ -70,7 +72,11 @@ function makeFrontier(n = 5): FrontierData {
   return {
     points,
     n_points: n,
+    points_returned: n,
     constraint_names: ["loss_ratio"],
+    points_limit: 2000,
+    points_truncated: false,
+    ...overrides,
   }
 }
 
@@ -114,6 +120,18 @@ describe("OptimiserPreview", () => {
     })
     mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_my_optimiser.json", message: "" })
     mockLogOptimiserToMlflow.mockResolvedValue({ status: "ok", backend: "mlflow", experiment_name: "", run_id: "abc123", run_url: null, tracking_uri: "", error: null })
+    mockApplyOptimiser.mockResolvedValue({
+      status: "ok",
+      total_objective: 1250000,
+      constraints: { loss_ratio: 0.66 },
+      from_artifact: false,
+      preview: [{ quote_id: "Q001", optimal_scenario_value: 1.05 }],
+      row_count: 1,
+      preview_row_count: 1,
+      preview_row_limit: 100,
+      preview_truncated: false,
+      error: null,
+    })
   })
 
   describe("Summary tab (default when no frontier)", () => {
@@ -140,6 +158,20 @@ describe("OptimiserPreview", () => {
     it("renders quote count", () => {
       renderPreview()
       expect(screen.getByText(/50,000 quotes/)).toBeInTheDocument()
+    })
+
+    it("surfaces frontier computation failures", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            frontier: null,
+            frontier_error: "Frontier unavailable: frontier exploded",
+          }),
+          frontier: null,
+        }),
+      })
+
+      expect(screen.getByText("Frontier unavailable: frontier exploded")).toBeInTheDocument()
     })
 
     it("renders Objective label and values", () => {
@@ -222,8 +254,34 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
     })
 
+    it("communicates when the frontier payload is capped", () => {
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(5, {
+            n_points: 2001,
+            points_limit: 2000,
+            points_truncated: true,
+          }),
+        }),
+      })
+
+      expect(screen.getByText(/Showing 5 of 2,001 frontier points/)).toBeInTheDocument()
+      expect(screen.getByText(/response cap is 2,000/)).toBeInTheDocument()
+    })
+
     it("hides Frontier tab when frontier has empty points", () => {
-      renderPreview({ data: makeData({ frontier: { points: [], n_points: 0, constraint_names: [] } }) })
+      renderPreview({
+        data: makeData({
+          frontier: {
+            points: [],
+            n_points: 0,
+            points_returned: 0,
+            constraint_names: [],
+            points_limit: 2000,
+            points_truncated: false,
+          },
+        }),
+      })
       expect(screen.queryByText("Frontier")).not.toBeInTheDocument()
     })
 
@@ -334,7 +392,10 @@ describe("OptimiserPreview", () => {
           total_volume: 100 + i * 10,
         })),
         n_points: 3,
+        points_returned: 3,
         constraint_names: ["loss_ratio", "volume"],
+        points_limit: 2000,
+        points_truncated: false,
       }
       renderPreview({
         data: makeData({
@@ -400,6 +461,146 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Export"))
       const mlflowElements = screen.getAllByText("Log to MLflow")
       expect(mlflowElements.length).toBeGreaterThanOrEqual(2)
+    })
+
+    it("shows on-demand result detail loading state", async () => {
+      let resolveApply: (value: unknown) => void = () => {}
+      mockApplyOptimiser.mockReturnValueOnce(new Promise((resolve) => { resolveApply = resolve }))
+
+      renderPreview()
+      fireEvent.click(screen.getByText("Export"))
+      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+
+      expect(mockApplyOptimiser).toHaveBeenCalledWith(
+        { job_id: "job_123" },
+        { signal: expect.any(AbortSignal) },
+      )
+      expect(screen.getByText("Loading result detail...")).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+
+      resolveApply({
+        status: "ok",
+        total_objective: 1250000,
+        constraints: { loss_ratio: 0.66 },
+        from_artifact: false,
+        preview: [{ quote_id: "Q001" }],
+        row_count: 1,
+        preview_row_count: 1,
+        preview_row_limit: 100,
+        preview_truncated: false,
+        error: null,
+      })
+
+      await waitFor(() => {
+        expect(screen.queryByText("Loading result detail...")).not.toBeInTheDocument()
+      })
+    })
+
+    it("shows loaded detail metadata and capped slice state", async () => {
+      mockApplyOptimiser.mockResolvedValueOnce({
+        status: "ok",
+        total_objective: 1250000,
+        constraints: { loss_ratio: 0.66 },
+        from_artifact: true,
+        preview: [{ quote_id: "Q001" }],
+        row_count: 1250,
+        preview_row_count: 100,
+        preview_row_limit: 100,
+        preview_truncated: true,
+        error: null,
+      })
+
+      renderPreview()
+      fireEvent.click(screen.getByText("Export"))
+      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+
+      await waitFor(() => {
+        expect(screen.getByText(/100 of 1,250 rows loaded/)).toBeInTheDocument()
+      })
+      expect(screen.getByText(/capped at 100/)).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+    })
+
+    it("shows result detail failure state", async () => {
+      mockApplyOptimiser.mockRejectedValueOnce(new Error("artifact missing"))
+
+      renderPreview()
+      fireEvent.click(screen.getByText("Export"))
+      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+
+      await waitFor(() => {
+        expect(screen.getByText(/Detail load failed/)).toBeInTheDocument()
+      })
+      expect(screen.getByText(/artifact missing/)).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Save result/i })).not.toBeDisabled()
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).not.toBeDisabled()
+    })
+
+    it("selects the current frontier point before loading result detail", async () => {
+      let resolveSelect: (value: unknown) => void = () => {}
+      mockSelectFrontierPointAPI.mockReturnValueOnce(new Promise((resolve) => { resolveSelect = resolve }))
+
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(),
+          selectedPointIndex: 0,
+        }),
+      })
+      fireEvent.click(screen.getByText("Export"))
+      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+
+      expect(mockSelectFrontierPointAPI).toHaveBeenCalledWith(
+        { job_id: "job_123", point_index: 0 },
+        { signal: expect.any(AbortSignal) },
+      )
+      expect(mockApplyOptimiser).not.toHaveBeenCalled()
+
+      resolveSelect({
+        status: "ok",
+        total_objective: 1250000,
+        constraints: { loss_ratio: 0.66 },
+        baseline_objective: 1200000,
+        baseline_constraints: { loss_ratio: 0.60 },
+        lambdas: { loss_ratio: 0.006 },
+        converged: true,
+        error: null,
+      })
+
+      await waitFor(() => {
+        expect(mockApplyOptimiser).toHaveBeenCalledWith(
+          { job_id: "job_123" },
+          { signal: expect.any(AbortSignal) },
+        )
+      })
+    })
+
+    it("aborts an in-flight result detail request when the job changes", async () => {
+      let firstReject: (reason?: unknown) => void = () => {}
+      mockApplyOptimiser
+        .mockImplementationOnce((_payload: unknown, options: { signal: AbortSignal }) => {
+          options.signal.addEventListener("abort", () => {
+            firstReject(new DOMException("Aborted", "AbortError"))
+          })
+          return new Promise((_resolve, reject) => {
+            firstReject = reject
+          })
+        })
+
+      const { rerender } = renderPreview()
+      fireEvent.click(screen.getByText("Export"))
+      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+      const firstSignal = mockApplyOptimiser.mock.calls[0][1].signal as AbortSignal
+
+      rerender(<OptimiserPreview data={makeData({ jobId: "job_456" })} nodeId="opt_1" />)
+      expect(firstSignal.aborted).toBe(true)
+
+      await waitFor(() => {
+        expect(screen.queryByText("Loading result detail...")).not.toBeInTheDocument()
+      })
+      expect(mockApplyOptimiser).toHaveBeenCalledTimes(1)
+      expect(screen.queryByText(/Detail load failed/)).not.toBeInTheDocument()
     })
   })
 

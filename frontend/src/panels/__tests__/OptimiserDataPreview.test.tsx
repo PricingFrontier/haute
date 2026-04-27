@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
-import OptimiserDataPreview from "../OptimiserDataPreview"
+import OptimiserDataPreview, { OPTIMISER_DATA_PREVIEW_ROW_LIMIT } from "../OptimiserDataPreview"
+import { computeScenarioStatsBySeries } from "../optimiserScenarioStats"
 import type { PreviewData } from "../DataPreview"
 
 vi.mock("../../hooks/useDragResize", () => ({
@@ -69,6 +70,87 @@ function renderComponent(
 
 describe("OptimiserDataPreview", () => {
   afterEach(cleanup)
+
+  describe("computeScenarioStatsBySeries", () => {
+    it("computes exact stats for multiple series in one pass over rows", () => {
+      const rows = [
+        { scenario_index: 0, scenario_value: 0.9, margin: 100, volume: 1 },
+        { scenario_index: 0, scenario_value: 0.9, margin: 200, volume: 3 },
+        { scenario_index: 2, scenario_value: 1.1, margin: 300, volume: 5 },
+        { scenario_index: 2, scenario_value: 1.1, margin: 500, volume: 9 },
+      ]
+      let rowVisits = 0
+      const countedRows = {
+        *[Symbol.iterator]() {
+          for (const row of rows) {
+            rowVisits += 1
+            yield row
+          }
+        },
+      }
+
+      const stats = computeScenarioStatsBySeries({
+        rows: countedRows,
+        scenarioIndices: [0, 1, 2],
+        series: ["margin", "volume"],
+        scenarioIndexCol: "scenario_index",
+        scenarioValueCol: "scenario_value",
+      })
+
+      expect(rowVisits).toBe(rows.length)
+      expect(stats.get("margin")?.[0]).toMatchObject({
+        scenarioIndex: 0,
+        scenarioValue: 0.9,
+        count: 2,
+        mean: 150,
+        min: 100,
+        p25: 125,
+        median: 150,
+        p75: 175,
+        max: 200,
+      })
+      expect(stats.get("margin")?.[1]).toEqual({
+        scenarioIndex: 1,
+        scenarioValue: 0,
+        count: 0,
+        mean: 0,
+        std: 0,
+        min: 0,
+        p25: 0,
+        median: 0,
+        p75: 0,
+        max: 0,
+      })
+      expect(stats.get("volume")?.[2]).toMatchObject({
+        scenarioIndex: 2,
+        scenarioValue: 1.1,
+        count: 2,
+        mean: 7,
+        min: 5,
+        p25: 6,
+        median: 7,
+        p75: 8,
+        max: 9,
+      })
+    })
+
+    it("handles empty input while preserving requested series and scenario buckets", () => {
+      const stats = computeScenarioStatsBySeries({
+        rows: [],
+        scenarioIndices: [3],
+        series: ["objective", "constraint"],
+        scenarioIndexCol: "scenario_index",
+        scenarioValueCol: "scenario_value",
+      })
+
+      expect(stats.get("objective")).toEqual([
+        { scenarioIndex: 3, scenarioValue: 0, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 },
+      ])
+      expect(stats.get("constraint")).toEqual([
+        { scenarioIndex: 3, scenarioValue: 0, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 },
+      ])
+    })
+  })
 
   describe("Header & metadata", () => {
     it("renders node label and quote/scenario counts", () => {
@@ -234,6 +316,32 @@ describe("OptimiserDataPreview", () => {
       const soloElements = screen.getAllByText("SOLO")
       expect(soloElements.length).toBeGreaterThanOrEqual(1)
       expect(screen.getByText("1/1")).toBeInTheDocument()
+    })
+
+    it("caps large optimiser previews before grouping or statistics work", () => {
+      const preview = Array.from({ length: OPTIMISER_DATA_PREVIEW_ROW_LIMIT + 1 }, (_, index) => ({
+        quote_id: index === OPTIMISER_DATA_PREVIEW_ROW_LIMIT ? "OUTSIDE_BUDGET" : `Q${index}`,
+        scenario_index: 0,
+        scenario_value: 1,
+        margin: index === OPTIMISER_DATA_PREVIEW_ROW_LIMIT ? 1_000_000 : 1,
+        volume: 1,
+      }))
+
+      renderComponent({
+        preview,
+        row_count: OPTIMISER_DATA_PREVIEW_ROW_LIMIT + 1,
+      })
+
+      expect(screen.getByText(/5,000 quotes/)).toBeInTheDocument()
+      expect(screen.getByText(/5,000 of 5,001 rows/)).toBeInTheDocument()
+
+      const searchInput = screen.getByPlaceholderText("Find quote...")
+      fireEvent.change(searchInput, { target: { value: "OUTSIDE_BUDGET" } })
+      fireEvent.keyDown(searchInput, { key: "Enter" })
+      expect(screen.queryByText("OUTSIDE_BUDGET")).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByText("Statistics"))
+      expect(screen.queryByText("1.00M")).not.toBeInTheDocument()
     })
 
     it("shows empty message when all series unchecked", () => {

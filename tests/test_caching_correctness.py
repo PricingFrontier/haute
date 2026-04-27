@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from haute._cache import graph_fingerprint
+from haute._cache import graph_fingerprint, preamble_imports_utility
 from haute._io import _load_cached, load_external_object
 from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 from haute._types import GraphNode, NodeData, PipelineGraph
@@ -255,6 +255,47 @@ class TestFingerprintTypeErrorForUnknown:
         assert fp1
         _, _, digest = fp1.partition(":")
         assert all(c in "0123456789abcdef" for c in digest)
+
+
+# ===========================================================================
+# Utility preamble import detection
+# ===========================================================================
+
+
+class TestPreambleUtilityImportDetection:
+    """Utility-sensitive preambles must opt into utility file fingerprinting.
+
+    Literal imports are straightforward to detect from the AST. Dynamic imports
+    matter just as much for cache correctness because they can still read the
+    project ``utility`` module while leaving no top-level import statement.
+    """
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            '__import__("utility.helpers")\n',
+            'import importlib\nhelpers = importlib.import_module("utility.helpers")\n',
+            'exec("import utility.helpers")\n',
+            'exec("from utility.helpers import VALUE")\n',
+        ],
+    )
+    def test_dynamic_utility_imports_are_detected(self, source: str) -> None:
+        assert preamble_imports_utility(source) is True
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            '__import__("json")\n',
+            'import importlib\njson_module = importlib.import_module("json")\n',
+            'exec("import json")\n',
+            'helper_name = "utility.helpers"\n',
+        ],
+    )
+    def test_non_import_utility_mentions_do_not_mark_utility_sensitive(
+        self,
+        source: str,
+    ) -> None:
+        assert preamble_imports_utility(source) is False
 
 
 # ===========================================================================

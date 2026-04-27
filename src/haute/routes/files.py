@@ -65,10 +65,28 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
     """
     import polars as pl
 
-    from haute.graph_utils import read_source
+    from haute import graph_utils
     from haute.schemas import ColumnInfo
 
-    lf = read_source(str(target))
+    lf = graph_utils.read_source(str(target))
+
+    if target.suffix.lower() == ".parquet":
+        from haute._polars_utils import read_parquet_metadata
+
+        schema = lf.collect_schema()
+        columns = [ColumnInfo(name=c, dtype=str(d)) for c, d in schema.items()]
+        preview_df = lf.head(5).collect()
+        meta = read_parquet_metadata(target)
+
+        return SchemaResponse(
+            path=path,
+            columns=columns,
+            row_count=meta["row_count"],
+            row_count_estimated=False,
+            column_count=len(columns),
+            preview=rows_to_json_safe(preview_df.to_dicts()),
+        )
+
     schema = lf.collect_schema()
     columns = [ColumnInfo(name=c, dtype=str(d)) for c, d in schema.items()]
     preview_df = lf.head(5).collect()
@@ -176,9 +194,10 @@ def _read_databricks_schema_blocking(table: str, p: Path) -> SchemaResponse:
     from haute._polars_utils import read_parquet_metadata
     from haute.schemas import ColumnInfo
 
-    df = pl.scan_parquet(p).head(1000).collect()
-    columns = [ColumnInfo(name=c, dtype=str(df[c].dtype)) for c in df.columns]
-    preview_df = df.head(5)
+    lf = pl.scan_parquet(p)
+    schema = lf.collect_schema()
+    columns = [ColumnInfo(name=c, dtype=str(d)) for c, d in schema.items()]
+    preview_df = lf.head(5).collect()
     meta = read_parquet_metadata(p)
     row_count = meta["row_count"]
 

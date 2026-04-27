@@ -1,6 +1,7 @@
 import { useMemo } from "react"
-import { InputSourcesBar, CodeEditor } from "./_shared"
+import { InputSourcesBar } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
+import { CodeEditor } from "./CodeEditor"
 import { configField } from "../../utils/configField"
 
 const API_INPUT_PLACEHOLDER = `# Clean up dot-notation columns:

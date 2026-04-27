@@ -51,6 +51,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
   const traceValue = nodeData._traceValue
+  const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const hasWarnings = (nodeData._schemaWarnings?.length ?? 0) > 0
   const zoomLevel = useStore(zoomSelector)
 
@@ -73,7 +74,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
           border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
           boxShadow: "var(--node-shadow)",
           opacity: dimmed ? 0.25 : 1,
-          transition: "opacity 0.2s ease",
+          transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
         }}
       >
         {!isSourceOnly && <Handle type="target" position={Position.Left} />}
@@ -102,7 +103,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
     border,
     boxShadow: shadow,
     opacity: dimmed ? 0.25 : 1,
-    transition: "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
+    transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
   // Header bar border-radius: matches inner edge of container (outer radius minus border)

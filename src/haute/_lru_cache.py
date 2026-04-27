@@ -26,6 +26,7 @@ Call-site shape::
 
 from __future__ import annotations
 
+import logging
 import threading
 import time as _time
 from collections import OrderedDict
@@ -37,6 +38,8 @@ V = TypeVar("V")
 
 _MISSING = object()
 """Sentinel distinguishing a cache miss from a stored ``None`` value."""
+
+_LOG = logging.getLogger(__name__)
 
 
 class LRUCache(Generic[K, V]):
@@ -54,19 +57,51 @@ class LRUCache(Generic[K, V]):
         Optional time-to-live in seconds.  Entries older than *ttl* are
         treated as misses and evicted lazily on the next ``get``.
         ``None`` (the default) disables expiry.
+    max_bytes:
+        Optional byte budget.  When configured, *size_of* must return a
+        deterministic byte weight for each value.  Eviction uses the same
+        LRU/pinning rules as the entry-count bound.
     """
 
-    __slots__ = ("_max_size", "_ttl", "_data", "_timestamps", "_pinned", "_lock")
+    __slots__ = (
+        "_max_size",
+        "_ttl",
+        "_data",
+        "_timestamps",
+        "_pinned",
+        "_lock",
+        "_max_bytes",
+        "_size_of",
+        "_sizes",
+        "_current_bytes",
+    )
 
-    def __init__(self, max_size: int = 128, ttl: float | None = None) -> None:
+    def __init__(
+        self,
+        max_size: int = 128,
+        ttl: float | None = None,
+        *,
+        max_bytes: int | None = None,
+        size_of: Callable[[V], int] | None = None,
+    ) -> None:
         if max_size < 1:
             raise ValueError(f"max_size must be >= 1, got {max_size}")
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError(f"max_bytes must be >= 1, got {max_bytes}")
+        if max_bytes is not None and size_of is None:
+            raise ValueError("size_of is required when max_bytes is configured")
+        if max_bytes is None and size_of is not None:
+            raise ValueError("max_bytes is required when size_of is configured")
         self._max_size = max_size
         self._ttl = ttl
         self._data: OrderedDict[K, V] = OrderedDict()
         self._timestamps: dict[K, float] = {}  # only populated when ttl is set
         self._pinned: set[K] = set()
         self._lock = threading.RLock()
+        self._max_bytes = max_bytes
+        self._size_of = size_of
+        self._sizes: dict[K, int] = {}
+        self._current_bytes = 0
 
     # -- public API --------------------------------------------------------
 
@@ -85,9 +120,7 @@ class LRUCache(Generic[K, V]):
             if self._ttl is not None:
                 stored_at = self._timestamps.get(key, 0.0)
                 if (_time.monotonic() - stored_at) > self._ttl:
-                    del self._data[key]
-                    self._timestamps.pop(key, None)
-                    self._pinned.discard(key)
+                    self._remove_key(key)
                     return None
             self._data.move_to_end(key)
             return value  # type: ignore[return-value]
@@ -100,15 +133,34 @@ class LRUCache(Generic[K, V]):
         allowed to exceed ``max_size`` — this is the FingerprintCache
         contract and keeps pinned entries from being silently dropped.
         """
+        size = self._measure(value)
         with self._lock:
+            if self._max_bytes is not None and size > self._max_bytes:
+                replaced_existing = key in self._data
+                _LOG.warning(
+                    "lru_cache_oversized_entry_not_cached",
+                    extra={
+                        "key": key,
+                        "measured_size": size,
+                        "max_bytes": self._max_bytes,
+                        "replaced_existing": replaced_existing,
+                    },
+                )
+                if replaced_existing:
+                    self._remove_key(key)
+                return
             if key in self._data:
                 self._data.move_to_end(key)
+                self._current_bytes -= self._sizes.pop(key, 0)
                 self._data[key] = value
             else:
                 self._data[key] = value
-                self._evict_if_over_capacity()
+            if self._max_bytes is not None:
+                self._sizes[key] = size
+                self._current_bytes += size
             if self._ttl is not None:
                 self._timestamps[key] = _time.monotonic()
+            self._evict_if_over_capacity()
 
     def pin(self, key: K) -> None:
         """Exempt *key* from LRU eviction.
@@ -126,6 +178,7 @@ class LRUCache(Generic[K, V]):
         """Remove eviction exemption for *key*.  Silent on unknown keys."""
         with self._lock:
             self._pinned.discard(key)
+            self._evict_if_over_capacity()
 
     def clear(self) -> None:
         """Remove all entries and pins."""
@@ -133,6 +186,8 @@ class LRUCache(Generic[K, V]):
             self._data.clear()
             self._timestamps.clear()
             self._pinned.clear()
+            self._sizes.clear()
+            self._current_bytes = 0
 
     def evict_where(self, predicate: Callable[[K], bool]) -> list[V]:
         """Atomically evict every entry whose key satisfies *predicate*.
@@ -156,10 +211,18 @@ class LRUCache(Generic[K, V]):
             # consistent even if another thread is queueing writes.
             evicted_pairs = [(k, v) for k, v in self._data.items() if predicate(k)]
             for k, _ in evicted_pairs:
-                del self._data[k]
-                self._timestamps.pop(k, None)
-                self._pinned.discard(k)
+                self._remove_key(k)
         return [v for _, v in evicted_pairs]
+
+    def stats(self) -> dict[str, int | None]:
+        """Return deterministic cache diagnostics for tests and operators."""
+        with self._lock:
+            return {
+                "entries": len(self._data),
+                "max_entries": self._max_size,
+                "bytes": self._current_bytes,
+                "max_bytes": self._max_bytes,
+            }
 
     def __contains__(self, key: K) -> bool:  # type: ignore[override]
         """Check presence *without* promoting the entry or checking TTL.
@@ -175,18 +238,43 @@ class LRUCache(Generic[K, V]):
             return len(self._data)
 
     def __repr__(self) -> str:
-        return f"LRUCache(max_size={self._max_size}, ttl={self._ttl}, entries={len(self)})"
+        with self._lock:
+            entries = len(self._data)
+            current_bytes = self._current_bytes
+        return (
+            f"LRUCache(max_size={self._max_size}, ttl={self._ttl}, "
+            f"entries={entries}, bytes={current_bytes}/{self._max_bytes})"
+        )
 
     # -- internal helpers --------------------------------------------------
 
+    def _measure(self, value: V) -> int:
+        """Return the byte weight for *value* when byte caps are enabled."""
+        if self._size_of is None:
+            return 0
+        size = self._size_of(value)
+        if type(size) is not int or size < 0:
+            raise ValueError(f"size_of must return a non-negative int, got {size!r}")
+        return size
+
+    def _remove_key(self, key: K) -> V:
+        """Delete *key* and keep all auxiliary bookkeeping in sync."""
+        value = self._data.pop(key)
+        self._timestamps.pop(key, None)
+        self._pinned.discard(key)
+        self._current_bytes -= self._sizes.pop(key, 0)
+        return value
+
     def _evict_if_over_capacity(self) -> None:
         """Evict LRU unpinned entries until the cache is at or below
-        ``max_size``.  Caller must hold ``self._lock``.
+        ``max_size`` and ``max_bytes``.  Caller must hold ``self._lock``.
 
         If every live entry is pinned, the loop exits without evicting
         and the cache is allowed to exceed capacity.
         """
-        while len(self._data) > self._max_size:
+        while len(self._data) > self._max_size or (
+            self._max_bytes is not None and self._current_bytes > self._max_bytes
+        ):
             evicted = False
             # Iterate from the LRU end (OrderedDict head).  ``list(...)``
             # materialises the keys so we can ``del`` during iteration
@@ -194,8 +282,7 @@ class LRUCache(Generic[K, V]):
             for candidate in list(self._data.keys()):
                 if candidate in self._pinned:
                     continue
-                del self._data[candidate]
-                self._timestamps.pop(candidate, None)
+                self._remove_key(candidate)
                 evicted = True
                 break
             if not evicted:

@@ -58,6 +58,15 @@ describe("API response guards", () => {
     expect(parsed.error).toBe("contract mismatch")
   })
 
+  it("parses preview truncation metadata", () => {
+    const parsed = parsePreviewNodeResponse(loadUiContractFixture("preview_node"))
+
+    expect(parsed.preview_row_count).toBe(2)
+    expect(parsed.preview_row_limit).toBe(10_000)
+    expect(parsed.preview_truncated).toBe(false)
+    expect(parsed.preview_columns).toEqual(["premium", "segment"])
+  })
+
   it("rejects malformed preview node ids", () => {
     expect(() =>
       parsePreviewNodeResponse({
@@ -107,6 +116,24 @@ describe("API response guards", () => {
     expect(parsed.frontier?.constraint_names).toEqual(["loss"])
   })
 
+  it("preserves optimiser status frontier errors", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("optimiser_status_response")
+    const result = fixture.result as Record<string, unknown>
+
+    const parsed = parseOptimiserStatusResponse({
+      ...fixture,
+      result: {
+        ...result,
+        frontier: null,
+        frontier_error: "Frontier unavailable: frontier exploded",
+      },
+      frontier: null,
+    })
+
+    expect(parsed.result?.frontier).toBeNull()
+    expect(parsed.result?.frontier_error).toBe("Frontier unavailable: frontier exploded")
+  })
+
   it("parses submodel response payloads", () => {
     const created = parseSubmodelCreateResponse(loadUiContractFixture("submodel_create_response"))
     const loaded = parseSubmodelGraphResponse(loadUiContractFixture("submodel_graph_response"))
@@ -140,8 +167,28 @@ describe("API response guards", () => {
 
     expect(solve.job_id).toBe("opt-job-1")
     expect(estimate.total_rows).toBe(10000)
+    expect(apply.from_artifact).toBe(false)
     expect(apply.preview[0]?.scenario).toBe("A")
+    const parsedApply = parseApplyOptimiserResponse({
+      status: "ok",
+      preview: [{ scenario: "A" }],
+      row_count: 200,
+      preview_row_count: 100,
+      preview_row_limit: 100,
+      preview_truncated: true,
+    })
+    expect(parsedApply.preview_truncated).toBe(true)
+    expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
+    expect(parseFrontierResponse({
+      status: "ok",
+      points: [{ total_objective: 1 }],
+      n_points: 2001,
+      points_returned: 1,
+      constraint_names: ["loss"],
+      points_limit: 2000,
+      points_truncated: true,
+    }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
   })

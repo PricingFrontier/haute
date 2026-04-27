@@ -18,6 +18,14 @@ import type { SolveResult, OptimiserPreviewData } from "../panels/OptimiserPrevi
 import type { FrontierSelectResponse, FrontierData } from "../api/types"
 import type { ColumnInfo } from "../types/node"
 
+export const MAX_CACHED_PREVIEWS = 24
+export const MAX_CACHED_SOLVE_RESULTS = 8
+export const MAX_CACHED_TRAIN_RESULTS = 8
+
+// Result caches use entry-count LRU deliberately: preview payloads are already
+// bounded by backend row/column limits, and byte-accurate browser-side accounting
+// would be expensive/noisy. Revisit byte caps if heap evidence shows store pressure.
+
 // ─── Types ───────────────────────────────────────────────────────
 
 export type SolveProgress = {
@@ -145,20 +153,137 @@ export function hashConfig(config: Record<string, unknown>): string {
 }
 
 // ─── Derived-getter caches (Issue #13) ──────────────────────────
-// These caches prevent getOptimiserPreview / getModellingPreview from creating
-// new objects on every call, which would cause unnecessary re-renders when
-// called during render (e.g. in App.tsx).
+// Writes keep these memo entries up to date so getOptimiserPreview /
+// getModellingPreview can be read during render without mutating module state.
 
-// eslint-disable-next-line prefer-const -- mutated via property assignment in getters and clearNode
-let _optimiserPreviewCache: Record<string, { source: CachedSolveResult; result: ReturnType<NodeResultsState["getOptimiserPreview"]> }> = {}
-// eslint-disable-next-line prefer-const -- mutated via property assignment in getters and clearNode
-let _modellingPreviewCache: Record<string, { source: CachedTrainResult; jobRef: ActiveTrainJob | undefined; result: ReturnType<NodeResultsState["getModellingPreview"]> }> = {}
+type ModellingPreviewData = { result: TrainResult; jobId: string; nodeLabel: string; configHash: string }
+
+const _optimiserPreviewCache: Record<string, { source: CachedSolveResult; result: OptimiserPreviewData }> = {}
+const _modellingPreviewCache: Record<string, { source: CachedTrainResult; nodeLabel: string; result: ModellingPreviewData }> = {}
+
+let resultCacheClock = 0
+const previewRecency = new Map<string, number>()
+const solveResultRecency = new Map<string, number>()
+const trainResultRecency = new Map<string, number>()
+
+export function resetNodeResultsDerivedCaches(): void {
+  for (const key of Object.keys(_optimiserPreviewCache)) delete _optimiserPreviewCache[key]
+  for (const key of Object.keys(_modellingPreviewCache)) delete _modellingPreviewCache[key]
+  previewRecency.clear()
+  solveResultRecency.clear()
+  trainResultRecency.clear()
+  resultCacheClock = 0
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    resetNodeResultsDerivedCaches()
+  })
+}
+
+function assertValidCacheLimit(maxEntries: number): void {
+  if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+    throw new Error(`Invalid node result cache limit: ${maxEntries}`)
+  }
+}
+
+function touchCachedResult(recency: Map<string, number>, key: string): void {
+  resultCacheClock += 1
+  recency.set(key, resultCacheClock)
+}
+
+function dropCachedResult(recency: Map<string, number>, key: string): void {
+  recency.delete(key)
+}
+
+function buildOptimiserPreview(cached: CachedSolveResult): OptimiserPreviewData {
+  return {
+    result: cached.result,
+    jobId: cached.jobId,
+    constraints: cached.constraints,
+    nodeLabel: cached.nodeLabel,
+    frontier: cached.frontier,
+    selectedPointIndex: cached.selectedPointIndex,
+  }
+}
+
+function cacheOptimiserPreview(nodeId: string, cached: CachedSolveResult): void {
+  _optimiserPreviewCache[nodeId] = { source: cached, result: buildOptimiserPreview(cached) }
+}
+
+function readOptimiserPreview(nodeId: string, cached: CachedSolveResult): OptimiserPreviewData {
+  const prev = _optimiserPreviewCache[nodeId]
+  return prev && prev.source === cached ? prev.result : buildOptimiserPreview(cached)
+}
+
+function modellingPreviewNodeLabel(job: ActiveTrainJob | undefined): string {
+  return job?.nodeLabel ?? "Model"
+}
+
+function buildModellingPreview(cached: CachedTrainResult, nodeLabel: string): ModellingPreviewData {
+  return {
+    result: cached.result,
+    jobId: cached.jobId,
+    nodeLabel,
+    configHash: cached.configHash,
+  }
+}
+
+function cacheModellingPreview(nodeId: string, cached: CachedTrainResult, job: ActiveTrainJob | undefined): void {
+  const nodeLabel = modellingPreviewNodeLabel(job)
+  _modellingPreviewCache[nodeId] = { source: cached, nodeLabel, result: buildModellingPreview(cached, nodeLabel) }
+}
+
+function readModellingPreview(
+  nodeId: string,
+  cached: CachedTrainResult,
+  job: ActiveTrainJob | undefined,
+): ModellingPreviewData {
+  const nodeLabel = modellingPreviewNodeLabel(job)
+  const prev = _modellingPreviewCache[nodeId]
+  return prev && prev.source === cached && prev.nodeLabel === nodeLabel
+    ? prev.result
+    : buildModellingPreview(cached, nodeLabel)
+}
+
+function trimCacheByRecency<T>(
+  records: Record<string, T>,
+  recency: Map<string, number>,
+  maxEntries: number,
+  pinnedKey?: string | null,
+): { records: Record<string, T>; evicted: string[] } {
+  assertValidCacheLimit(maxEntries)
+
+  for (const key of Array.from(recency.keys())) {
+    if (!Object.prototype.hasOwnProperty.call(records, key)) {
+      recency.delete(key)
+    }
+  }
+
+  const keys = Object.keys(records)
+  const evictCount = keys.length - maxEntries
+  if (evictCount <= 0) {
+    return { records, evicted: [] }
+  }
+
+  const evicted = keys
+    .filter((key) => key !== pinnedKey)
+    .sort((a, b) => (recency.get(a) ?? 0) - (recency.get(b) ?? 0) || a.localeCompare(b))
+    .slice(0, evictCount)
+  const nextRecords = { ...records }
+  for (const key of evicted) {
+    delete nextRecords[key]
+    recency.delete(key)
+  }
+  return { records: nextRecords, evicted }
+}
 
 // ─── Store ───────────────────────────────────────────────────────
 
 interface NodeResultsState {
   // Preview cache
   previews: Record<string, CachedPreview>
+  pinnedPreviewNodeId: string | null
 
   // Optimiser
   solveResults: Record<string, CachedSolveResult>
@@ -180,6 +305,8 @@ interface NodeResultsState {
   setPreview: (nodeId: string, data: PreviewData, structuralVersion: number, source?: string, rowLimit?: number) => void
   /** Returns cached preview, or null if no entry exists. */
   getPreview: (nodeId: string) => CachedPreview | null
+  /** Protect the open preview node from entry-count LRU eviction. */
+  setPinnedPreviewNodeId: (nodeId: string | null) => void
 
   // ── Optimiser actions ──
   startSolveJob: (nodeId: string, jobId: string, nodeLabel: string, constraints: Record<string, Record<string, number>>, configHash: string) => void
@@ -199,7 +326,11 @@ interface NodeResultsState {
   /** Build OptimiserPreviewData for a node (from completed result or null). */
   getOptimiserPreview: (nodeId: string) => OptimiserPreviewData | null
   /** Return completed training result for a node, or null. */
-  getModellingPreview: (nodeId: string) => { result: TrainResult; jobId: string; nodeLabel: string; configHash: string } | null
+  getModellingPreview: (nodeId: string) => ModellingPreviewData | null
+  /** Mark a solved optimiser preview as recently displayed outside render. */
+  touchOptimiserPreview: (nodeId: string) => void
+  /** Mark a completed modelling preview as recently displayed outside render. */
+  touchModellingPreview: (nodeId: string) => void
 
   // ── Cleanup ──
   clearNode: (nodeId: string) => void
@@ -207,6 +338,7 @@ interface NodeResultsState {
 
 const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   previews: {},
+  pinnedPreviewNodeId: null,
   columnCache: {},
   solveResults: {},
   solveJobs: {},
@@ -232,11 +364,36 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   // ── Preview ──
 
   setPreview: (nodeId, data, structuralVersion, source, rowLimit) =>
-    set((s) => ({
-      previews: { ...s.previews, [nodeId]: { data, structuralVersion, source, rowLimit } },
-    })),
+    set((s) => {
+      touchCachedResult(previewRecency, nodeId)
+      const bounded = trimCacheByRecency(
+        {
+          ...s.previews,
+          [nodeId]: { data, structuralVersion, source, rowLimit },
+        },
+        previewRecency,
+        MAX_CACHED_PREVIEWS,
+        s.pinnedPreviewNodeId,
+      )
+      return {
+        previews: bounded.records,
+      }
+    }),
 
-  getPreview: (nodeId) => get().previews[nodeId] ?? null,
+  getPreview: (nodeId) => {
+    const cached = get().previews[nodeId]
+    if (!cached) {
+      dropCachedResult(previewRecency, nodeId)
+      return null
+    }
+    touchCachedResult(previewRecency, nodeId)
+    return cached
+  },
+
+  setPinnedPreviewNodeId: (nodeId) => {
+    if (get().pinnedPreviewNodeId === nodeId) return
+    set({ pinnedPreviewNodeId: nodeId })
+  },
 
   // ── Optimiser ──
 
@@ -265,23 +422,42 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       // Extract frontier data from the result if present
       const rawFrontier = result.frontier
       const frontier: FrontierData | null = rawFrontier && rawFrontier.points?.length
-        ? { points: rawFrontier.points, n_points: rawFrontier.n_points, constraint_names: rawFrontier.constraint_names }
+        ? {
+            points: rawFrontier.points,
+            n_points: rawFrontier.n_points,
+            points_returned: rawFrontier.points_returned,
+            constraint_names: rawFrontier.constraint_names,
+            points_limit: rawFrontier.points_limit,
+            points_truncated: rawFrontier.points_truncated,
+          }
         : null
+      touchCachedResult(solveResultRecency, nodeId)
+      const nextCached: CachedSolveResult = {
+        result,
+        originalResult: result,
+        jobId: job.jobId,
+        configHash: job.configHash,
+        constraints: job.constraints,
+        nodeLabel: job.nodeLabel,
+        frontier,
+        selectedPointIndex: null,
+      }
+      const bounded = trimCacheByRecency(
+        {
+          ...s.solveResults,
+          [nodeId]: nextCached,
+        },
+        solveResultRecency,
+        MAX_CACHED_SOLVE_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      for (const evictedNodeId of bounded.evicted) {
+        delete _optimiserPreviewCache[evictedNodeId]
+      }
+      if (bounded.records[nodeId]) cacheOptimiserPreview(nodeId, bounded.records[nodeId])
       return {
         solveJobs: remainingJobs,
-        solveResults: {
-          ...s.solveResults,
-          [nodeId]: {
-            result,
-            originalResult: result,
-            jobId: job.jobId,
-            configHash: job.configHash,
-            constraints: job.constraints,
-            nodeLabel: job.nodeLabel,
-            frontier,
-            selectedPointIndex: null,
-          },
-        },
+        solveResults: bounded.records,
       }
     }),
 
@@ -290,24 +466,36 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const job = s.solveJobs[nodeId]
       if (!job) return s
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
+      touchCachedResult(solveResultRecency, nodeId)
+      const nextCached: CachedSolveResult = {
+        ...(s.solveResults[nodeId] ?? {
+          result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
+          originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
+        }),
+        jobId: job.jobId,
+        configHash: job.configHash,
+        constraints: job.constraints,
+        nodeLabel: job.nodeLabel,
+        frontier: null,
+        selectedPointIndex: null,
+        error,
+      }
+      const bounded = trimCacheByRecency(
+        {
+          ...s.solveResults,
+          [nodeId]: nextCached,
+        },
+        solveResultRecency,
+        MAX_CACHED_SOLVE_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      for (const evictedNodeId of bounded.evicted) {
+        delete _optimiserPreviewCache[evictedNodeId]
+      }
+      if (bounded.records[nodeId]) cacheOptimiserPreview(nodeId, bounded.records[nodeId])
       return {
         solveJobs: remainingJobs,
-        solveResults: {
-          ...s.solveResults,
-          [nodeId]: {
-            ...(s.solveResults[nodeId] ?? {
-              result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
-              originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
-            }),
-            jobId: job.jobId,
-            configHash: job.configHash,
-            constraints: job.constraints,
-            nodeLabel: job.nodeLabel,
-            frontier: null,
-            selectedPointIndex: null,
-            error,
-          },
-        },
+        solveResults: bounded.records,
       }
     }),
 
@@ -315,15 +503,18 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (!cached) return s
+      touchCachedResult(solveResultRecency, nodeId)
+      const nextCached = {
+        ...cached,
+        selectedPointIndex: pointIndex,
+        // Revert to original result when deselecting
+        ...(pointIndex === null ? { result: cached.originalResult } : {}),
+      }
+      cacheOptimiserPreview(nodeId, nextCached)
       return {
         solveResults: {
           ...s.solveResults,
-          [nodeId]: {
-            ...cached,
-            selectedPointIndex: pointIndex,
-            // Revert to original result when deselecting
-            ...(pointIndex === null ? { result: cached.originalResult } : {}),
-          },
+          [nodeId]: nextCached,
         },
       }
     }),
@@ -332,22 +523,25 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (!cached) return s
+      touchCachedResult(solveResultRecency, nodeId)
+      const nextCached = {
+        ...cached,
+        selectedPointIndex: pointIndex,
+        result: {
+          ...cached.result,
+          total_objective: selectResult.total_objective,
+          constraints: selectResult.constraints,
+          baseline_objective: selectResult.baseline_objective,
+          baseline_constraints: selectResult.baseline_constraints,
+          lambdas: selectResult.lambdas,
+          converged: selectResult.converged,
+        },
+      }
+      cacheOptimiserPreview(nodeId, nextCached)
       return {
         solveResults: {
           ...s.solveResults,
-          [nodeId]: {
-            ...cached,
-            selectedPointIndex: pointIndex,
-            result: {
-              ...cached.result,
-              total_objective: selectResult.total_objective,
-              constraints: selectResult.constraints,
-              baseline_objective: selectResult.baseline_objective,
-              baseline_constraints: selectResult.baseline_constraints,
-              lambdas: selectResult.lambdas,
-              converged: selectResult.converged,
-            },
-          },
+          [nodeId]: nextCached,
         },
       }
     }),
@@ -355,12 +549,19 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   // ── Training ──
 
   startTrainJob: (nodeId, jobId, nodeLabel, configHash) =>
-    set((s) => ({
-      trainJobs: {
-        ...s.trainJobs,
-        [nodeId]: { jobId, nodeId, nodeLabel, progress: null, error: null, configHash },
-      },
-    })),
+    set((s) => {
+      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash }
+      const cached = s.trainResults[nodeId]
+      if (cached && cached.result.status !== "error") {
+        cacheModellingPreview(nodeId, cached, nextJob)
+      }
+      return {
+        trainJobs: {
+          ...s.trainJobs,
+          [nodeId]: nextJob,
+        },
+      }
+    }),
 
   updateTrainProgress: (nodeId, progress) =>
     set((s) => {
@@ -377,16 +578,32 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       // Remove the active job if present; also works for direct completion
       // (no active job) used by ModellingConfig for sync/error results.
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
+      touchCachedResult(trainResultRecency, nodeId)
+      const nextCached: CachedTrainResult = {
+        result,
+        jobId: job?.jobId ?? "",
+        configHash: job?.configHash ?? "",
+      }
+      const bounded = trimCacheByRecency(
+        {
+          ...s.trainResults,
+          [nodeId]: nextCached,
+        },
+        trainResultRecency,
+        MAX_CACHED_TRAIN_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      for (const evictedNodeId of bounded.evicted) {
+        delete _modellingPreviewCache[evictedNodeId]
+      }
+      if (bounded.records[nodeId]?.result.status === "error") {
+        delete _modellingPreviewCache[nodeId]
+      } else if (bounded.records[nodeId]) {
+        cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
+      }
       return {
         trainJobs: job ? remainingJobs : s.trainJobs,
-        trainResults: {
-          ...s.trainResults,
-          [nodeId]: {
-            result,
-            jobId: job?.jobId ?? "",
-            configHash: job?.configHash ?? "",
-          },
-        },
+        trainResults: bounded.records,
       }
     }),
 
@@ -395,16 +612,28 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const job = s.trainJobs[nodeId]
       if (!job) return s
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
+      touchCachedResult(trainResultRecency, nodeId)
+      const nextCached: CachedTrainResult = {
+        result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, test_rows: 0 } as TrainResult,
+        jobId: job.jobId,
+        configHash: job.configHash,
+      }
+      const bounded = trimCacheByRecency(
+        {
+          ...s.trainResults,
+          [nodeId]: nextCached,
+        },
+        trainResultRecency,
+        MAX_CACHED_TRAIN_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      for (const evictedNodeId of bounded.evicted) {
+        delete _modellingPreviewCache[evictedNodeId]
+      }
+      delete _modellingPreviewCache[nodeId]
       return {
         trainJobs: remainingJobs,
-        trainResults: {
-          ...s.trainResults,
-          [nodeId]: {
-            result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, test_rows: 0 } as TrainResult,
-            jobId: job.jobId,
-            configHash: job.configHash,
-          },
-        },
+        trainResults: bounded.records,
       }
     }),
 
@@ -413,50 +642,46 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   getOptimiserPreview: (nodeId) => {
     const cached = get().solveResults[nodeId]
     if (!cached) {
-      delete _optimiserPreviewCache[nodeId]
       return null
     }
-    // Return cached object if the underlying CachedSolveResult is the same by reference
-    const prev = _optimiserPreviewCache[nodeId]
-    if (prev && prev.source === cached) return prev.result
-    const result = {
-      result: cached.result,
-      jobId: cached.jobId,
-      constraints: cached.constraints,
-      nodeLabel: cached.nodeLabel,
-      frontier: cached.frontier,
-      selectedPointIndex: cached.selectedPointIndex,
-    }
-    _optimiserPreviewCache[nodeId] = { source: cached, result }
-    return result
+    return readOptimiserPreview(nodeId, cached)
   },
 
   getModellingPreview: (nodeId) => {
     const cached = get().trainResults[nodeId]
     if (!cached || cached.result.status === "error") {
-      delete _modellingPreviewCache[nodeId]
       return null
     }
     const job = get().trainJobs[nodeId]
-    // Return cached object if the underlying references haven't changed
-    const prev = _modellingPreviewCache[nodeId]
-    if (prev && prev.source === cached && prev.jobRef === job) return prev.result
-    const result = {
-      result: cached.result,
-      jobId: cached.jobId,
-      nodeLabel: job?.nodeLabel ?? "Model",
-      configHash: cached.configHash,
-    }
-    _modellingPreviewCache[nodeId] = { source: cached, jobRef: job, result }
-    return result
+    return readModellingPreview(nodeId, cached, job)
   },
 
   // ── Cleanup ──
+
+  touchOptimiserPreview: (nodeId) => {
+    if (get().solveResults[nodeId]) {
+      touchCachedResult(solveResultRecency, nodeId)
+    } else {
+      dropCachedResult(solveResultRecency, nodeId)
+    }
+  },
+
+  touchModellingPreview: (nodeId) => {
+    const cached = get().trainResults[nodeId]
+    if (cached && cached.result.status !== "error") {
+      touchCachedResult(trainResultRecency, nodeId)
+    } else {
+      dropCachedResult(trainResultRecency, nodeId)
+    }
+  },
 
   clearNode: (nodeId) => {
     // Clear derived-getter caches for this node
     delete _optimiserPreviewCache[nodeId]
     delete _modellingPreviewCache[nodeId]
+    dropCachedResult(previewRecency, nodeId)
+    dropCachedResult(solveResultRecency, nodeId)
+    dropCachedResult(trainResultRecency, nodeId)
     set((s) => {
       const { [nodeId]: _rp, ...previews } = s.previews; void _rp
       const columnCache = Object.fromEntries(
@@ -466,7 +691,15 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _rsj, ...solveJobs } = s.solveJobs; void _rsj
       const { [nodeId]: _rtr, ...trainResults } = s.trainResults; void _rtr
       const { [nodeId]: _rtj, ...trainJobs } = s.trainJobs; void _rtj
-      return { previews, columnCache, solveResults, solveJobs, trainResults, trainJobs }
+      return {
+        previews,
+        pinnedPreviewNodeId: s.pinnedPreviewNodeId === nodeId ? null : s.pinnedPreviewNodeId,
+        columnCache,
+        solveResults,
+        solveJobs,
+        trainResults,
+        trainJobs,
+      }
     })
   },
 }))

@@ -453,6 +453,10 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     columns: optionalArray("parsePreviewNodeResponse", obj, "columns", parseColumnInfo),
     available_columns: optionalArray("parsePreviewNodeResponse", obj, "available_columns", parseColumnInfo),
     preview: optionalPlainObjectArray("parsePreviewNodeResponse", obj, "preview"),
+    preview_columns: optionalStringArray("parsePreviewNodeResponse", obj, "preview_columns"),
+    preview_row_count: optionalNumber("parsePreviewNodeResponse", obj, "preview_row_count"),
+    preview_row_limit: optionalNullableNumber("parsePreviewNodeResponse", obj, "preview_row_limit"),
+    preview_truncated: optionalBoolean("parsePreviewNodeResponse", obj, "preview_truncated"),
     error: optionalNullableString("parsePreviewNodeResponse", obj, "error"),
     error_line: optionalNullableNumber("parsePreviewNodeResponse", obj, "error_line"),
     timing_ms: optionalNumber("parsePreviewNodeResponse", obj, "timing_ms"),
@@ -893,7 +897,10 @@ export function parseFrontierResponse(value: unknown, field = "object"): Frontie
     status: expectString("parseOptimiserStatusResponse", obj.status, `${field}.status`),
     points: optionalPlainObjectArray("parseOptimiserStatusResponse", obj, "points"),
     n_points: optionalNumber("parseOptimiserStatusResponse", obj, "n_points"),
+    points_returned: optionalNumber("parseOptimiserStatusResponse", obj, "points_returned"),
     constraint_names: optionalStringArray("parseOptimiserStatusResponse", obj, "constraint_names"),
+    points_limit: optionalNullableNumber("parseOptimiserStatusResponse", obj, "points_limit"),
+    points_truncated: optionalBoolean("parseOptimiserStatusResponse", obj, "points_truncated"),
   }
 }
 
@@ -926,6 +933,7 @@ function parseOptimiserSolveResult(value: unknown, field: string): OptimiserSolv
     factor_tables: factorTables,
     history: obj.history === undefined || obj.history === null ? null : parseArray("parseOptimiserStatusResponse", obj.history, `${field}.history`, parseOptimiserHistoryEntry),
     warning: obj.warning === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "warning"),
+    frontier_error: obj.frontier_error === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "frontier_error"),
     scenario_value_stats: stats === null
       ? undefined
       : {
@@ -958,8 +966,12 @@ export function parseApplyOptimiserResponse(value: unknown): ApplyOptimiserRespo
     status: expectString("parseApplyOptimiserResponse", obj.status, "field `status`"),
     total_objective: optionalNumber("parseApplyOptimiserResponse", obj, "total_objective"),
     constraints: optionalNumberRecord("parseApplyOptimiserResponse", obj, "constraints"),
+    from_artifact: optionalBoolean("parseApplyOptimiserResponse", obj, "from_artifact"),
     preview: optionalPlainObjectArray("parseApplyOptimiserResponse", obj, "preview"),
     row_count: optionalNumber("parseApplyOptimiserResponse", obj, "row_count"),
+    preview_row_count: optionalNumber("parseApplyOptimiserResponse", obj, "preview_row_count"),
+    preview_row_limit: optionalNullableNumber("parseApplyOptimiserResponse", obj, "preview_row_limit"),
+    preview_truncated: optionalBoolean("parseApplyOptimiserResponse", obj, "preview_truncated"),
     error: optionalNullableString("parseApplyOptimiserResponse", obj, "error"),
   }
 }

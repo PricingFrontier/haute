@@ -211,12 +211,22 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=[],
         help="Additional argument forwarded to pytest. May be provided more than once.",
     )
+    parser.add_argument(
+        "--pytest-target",
+        action="append",
+        default=None,
+        help=(
+            "Pytest file or directory target to collect. May be provided more than once. "
+            "Defaults to tests/."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def _build_pytest_args(args: argparse.Namespace, junit_path: Path) -> list[str]:
+    targets = args.pytest_target or ["tests/"]
     return [
-        "tests/",
+        *targets,
         "-q",
         "-m",
         "perf",

@@ -12,6 +12,7 @@ can optimise the full plan end-to-end.
 
 from __future__ import annotations
 
+import ast as _ast
 import ctypes
 import functools
 import gc
@@ -38,6 +39,11 @@ from haute._builders import (  # noqa: F401
     _dispatch_apply,
     _passthrough_fn,
     resolve_instance_node,
+)
+from haute._cache import (
+    GraphFingerprintMemo,
+    preamble_execution_fingerprint,
+    preamble_imports_utility,
 )
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
@@ -70,6 +76,26 @@ ensure_registry_ready()
 # ── Default constants ─────────────────────────────────────────────
 _MAX_PREVIEW_ROWS = 10_000  # safety cap for execute_graph JSON payload
 
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
+PREVIEW_CACHE_MAX_BYTES = _positive_int_from_env(
+    "HAUTE_PREVIEW_CACHE_MAX_BYTES",
+    64 * 1024 * 1024,
+)
+"""Maximum retained bytes for materialized preview DataFrames."""
+PREVIEW_MAX_CELLS = _positive_int_from_env("HAUTE_PREVIEW_MAX_CELLS", 50_000)
+"""Maximum cells converted to JSON rows for a single node preview."""
+
 # Module-level toggle for column-contract enforcement.  ``True`` by
 # default: contract mismatches should fail loudly.  Benchmarks may
 # temporarily flip this to ``False`` to measure overhead.
@@ -85,6 +111,12 @@ ENFORCE_CONTRACTS: bool = True
 # "utility" from sys.modules while the other is mid-import, causing a KeyError
 # inside importlib._bootstrap._load_unlocked.
 _preamble_lock = threading.Lock()
+
+# ``sys.path`` and ``sys.modules`` are process-global.  Utility-importing
+# preambles hold ``_preamble_lock`` for the full eviction/import/exec window.
+# Non-utility preambles still take the same lock for their short path
+# reprioritisation so they cannot change import precedence while a utility
+# preamble is paused between path setup and ``exec``.
 
 
 def _pipeline_dir(graph: PipelineGraph) -> Path | None:
@@ -110,11 +142,16 @@ class PreambleError(HauteError):
         self.source_line = source_line
 
 
-# Cache compiled preamble results by (content, pipeline_dir) so unchanged
-# preambles (common during training / optimiser runs where the preamble
-# doesn't change between invocations) skip the expensive module eviction +
-# re-import cycle.  ``functools.lru_cache`` is C-implemented, gives O(1)
-# eviction, and ships with ``cache_info()`` diagnostics for free.
+class PreviewProjectionError(ValueError):
+    """Requested preview columns cannot be projected from the target DataFrame."""
+
+
+# Cache compiled preamble results by (content, pipeline_dir, execution
+# fingerprint) so unchanged preambles (common during training / optimiser
+# runs where the preamble doesn't change between invocations) skip the
+# expensive module eviction + re-import cycle.  ``functools.lru_cache`` is
+# C-implemented, gives O(1) eviction, and ships with ``cache_info()``
+# diagnostics for free.
 
 _DANGEROUS_MODULES = frozenset(
     {
@@ -165,83 +202,151 @@ def _is_dangerous_preamble_binding(value: Any) -> bool:
 _polars_config_lock = threading.Lock()
 
 
+def _utility_module_candidates(pipeline_dir_str: str | None) -> list[Path]:
+    bases: list[Path] = []
+    if pipeline_dir_str is not None:
+        bases.append(Path(pipeline_dir_str))
+    bases.append(Path.cwd().resolve())
+
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for base in bases:
+        for candidate in (base / "utility.py", base / "utility"):
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            candidates.append(resolved)
+    return candidates
+
+
+def _evict_utility_import_state(pipeline_dir_str: str | None) -> None:
+    """Discard utility import state before compiling a changed preamble key."""
+    _importlib.invalidate_caches()
+
+    for mod_name in [k for k in sys.modules if k == "utility" or k.startswith("utility.")]:
+        del sys.modules[mod_name]
+
+    for candidate in _utility_module_candidates(pipeline_dir_str):
+        if candidate.is_file():
+            pycache_dir = candidate.parent / "__pycache__"
+            if pycache_dir.is_dir():
+                for pyc in pycache_dir.glob(f"{candidate.stem}.*.pyc"):
+                    pyc.unlink()
+        elif candidate.is_dir():
+            for pycache_dir in candidate.rglob("__pycache__"):
+                if pycache_dir.is_dir():
+                    for pyc in pycache_dir.glob("*.pyc"):
+                        pyc.unlink()
+
+
+def _prioritise_preamble_import_paths(
+    cwd: str,
+    pipeline_dir_str: str | None,
+) -> None:
+    """Keep import resolution aligned with preamble dependency fingerprints."""
+    desired = [cwd]
+    if pipeline_dir_str is not None:
+        desired.insert(0, pipeline_dir_str)
+
+    for path in reversed(desired):
+        sys.path[:] = [existing for existing in sys.path if existing != path]
+        sys.path.insert(0, path)
+
+
+def _preamble_has_imports(preamble: str) -> bool:
+    """Return whether preamble execution can consult import resolution state."""
+    try:
+        tree = _ast.parse(preamble)
+    except SyntaxError:
+        # The executor will raise the syntax error with richer context later.
+        # Preserve the old fully-serialised behavior for invalid preambles.
+        return True
+    return any(isinstance(node, (_ast.Import, _ast.ImportFrom)) for node in _ast.walk(tree))
+
+
+def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
+    ns = safe_globals(pl=pl, allow_imports=True)
+    base_keys = set(ns.keys())
+    try:
+        exec(preamble, ns)  # noqa: S102  — single dict = shared globals
+    except Exception as exc:
+        # Extract the most useful line number and source file from
+        # the traceback or exception attributes.
+        import traceback as _tb
+        from pathlib import Path as _Path
+
+        source_line: int | None = None
+        source_file: str | None = None
+
+        # SyntaxError carries .filename and .lineno directly
+        if isinstance(exc, SyntaxError) and exc.filename:
+            source_file = exc.filename
+            source_line = exc.lineno
+
+        # For runtime errors, walk the traceback to find the utility frame
+        if source_file is None and exc.__traceback__:
+            for frame in reversed(_tb.extract_tb(exc.__traceback__)):
+                if "utility" in frame.filename:
+                    source_line = frame.lineno
+                    source_file = frame.filename
+                    break
+                if frame.filename == "<string>":
+                    source_line = frame.lineno
+                    break
+
+        msg = f"Import/preamble error: {exc}"
+        if source_file and source_file != "<string>":
+            try:
+                rel: str | Path = _Path(source_file).relative_to(_Path.cwd())
+            except ValueError:
+                rel = source_file
+            msg = f"Error in {rel} line {source_line}: {exc}"
+        elif source_line:
+            msg = f"Preamble line {source_line}: {exc}"
+
+        raise PreambleError(msg, source_line=source_line) from exc
+
+    return {
+        k: v for k, v in ns.items() if k not in base_keys and not _is_dangerous_preamble_binding(v)
+    }
+
+
 @functools.lru_cache(maxsize=128)
 def _compile_preamble_cached(
     preamble: str,
+    cwd: str,
     pipeline_dir_str: str | None,
+    _execution_fingerprint: str,
+    _imports_utility: bool,
+    _has_imports: bool,
 ) -> dict[str, Any]:
     """Pure cache-facing worker — compiles preamble bytes into a namespace.
 
-    Keyed on ``(preamble, pipeline_dir_str)`` so different pipelines sharing
-    an identical preamble text but different working directories still get
-    distinct cache slots — important because relative imports resolve
-    against the pipeline's parent directory.
+    Keyed on ``(preamble, cwd, pipeline_dir_str, _execution_fingerprint,
+    _imports_utility)`` so different pipelines sharing an identical
+    preamble text but different utility contents still get distinct cache
+    slots.
 
     ``pipeline_dir_str`` is a normalised ``str`` (or ``None``) rather than a
     ``Path`` so that ``lru_cache``'s hash lookup produces the same key for
     ``Path("/x")`` and ``"/x"`` — normalisation happens at the public
     entry point.
 
-    The ``_preamble_lock`` serialises the ``sys.modules`` eviction + ``exec()``
-    work so two threads can't observe a partially-evicted ``sys.modules``
-    (which raises ``KeyError`` inside ``importlib._bootstrap._load_unlocked``).
+    All cache misses run under ``_preamble_lock`` for the entire
+    path-prioritisation/import/exec window. Even preambles without literal
+    import statements execute with ``allow_imports=True`` and can consult
+    process-global import state via helpers such as ``__import__``.
     """
-    import sys
-
     with _preamble_lock:
-        # Evict cached utility modules so edits in the GUI are picked up
-        # on every cache miss instead of serving stale bytecode from
-        # sys.modules.  The lock prevents a concurrent request from seeing
-        # partially-evicted state.
-        for mod_name in [k for k in sys.modules if k == "utility" or k.startswith("utility.")]:
-            del sys.modules[mod_name]
-
-        ns = safe_globals(pl=pl, allow_imports=True)
-        base_keys = set(ns.keys())
-        try:
-            exec(preamble, ns)  # noqa: S102  — single dict = shared globals
-        except Exception as exc:
-            # Extract the most useful line number and source file from
-            # the traceback or exception attributes.
-            import traceback as _tb
-            from pathlib import Path as _Path
-
-            source_line: int | None = None
-            source_file: str | None = None
-
-            # SyntaxError carries .filename and .lineno directly
-            if isinstance(exc, SyntaxError) and exc.filename:
-                source_file = exc.filename
-                source_line = exc.lineno
-
-            # For runtime errors, walk the traceback to find the utility frame
-            if source_file is None and exc.__traceback__:
-                for frame in reversed(_tb.extract_tb(exc.__traceback__)):
-                    if "utility" in frame.filename:
-                        source_line = frame.lineno
-                        source_file = frame.filename
-                        break
-                    if frame.filename == "<string>":
-                        source_line = frame.lineno
-                        break
-
-            msg = f"Import/preamble error: {exc}"
-            if source_file and source_file != "<string>":
-                try:
-                    rel: str | Path = _Path(source_file).relative_to(_Path.cwd())
-                except ValueError:
-                    rel = source_file
-                msg = f"Error in {rel} line {source_line}: {exc}"
-            elif source_line:
-                msg = f"Preamble line {source_line}: {exc}"
-
-            raise PreambleError(msg, source_line=source_line) from exc
-
-        return {
-            k: v
-            for k, v in ns.items()
-            if k not in base_keys and not _is_dangerous_preamble_binding(v)
-        }
+        _prioritise_preamble_import_paths(cwd, pipeline_dir_str)
+        if _imports_utility:
+            # Evict cached utility modules so digest-keyed cache misses pick up
+            # GUI edits. Clearing matching pyc files prevents same-size,
+            # same-mtime edits from being hidden by timestamp-based bytecode
+            # validation.
+            _evict_utility_import_state(pipeline_dir_str)
+        return _exec_preamble_namespace(preamble)
 
 
 def _compile_preamble(
@@ -249,6 +354,7 @@ def _compile_preamble(
     *,
     force_refresh: bool = True,
     pipeline_dir: str | Path | None = None,
+    memo: GraphFingerprintMemo | None = None,
 ) -> dict[str, Any]:
     """Compile user-defined preamble code into a namespace dict.
 
@@ -261,12 +367,13 @@ def _compile_preamble(
     Uses a single dict for globals/locals so preamble functions can call
     each other (they share the same ``__globals__``).
 
-    When *force_refresh* is ``True`` (default), the cache is cleared and
-    the preamble is re-compiled — so edits to utility modules in the GUI
-    are always picked up.  When *force_refresh* is ``False`` (e.g.
-    optimiser / sink paths that run in tight loops), a cached result from
-    a previous call with the same preamble text and pipeline directory is
-    returned immediately.
+    When *force_refresh* is ``True`` (default), dependency fingerprints are
+    recomputed before lookup so edits to utility modules in the GUI are
+    picked up without clearing unrelated cached preambles. Unchanged
+    preamble/utility inputs reuse the cached namespace. When
+    *force_refresh* is ``False`` (e.g. optimiser / sink paths that run in
+    tight loops), the same digest-keyed cache is used; the flag is retained
+    for API compatibility with existing callers.
 
     Caching diagnostics are exposed directly on this function via
     ``_compile_preamble.cache_info()`` and ``_compile_preamble.cache_clear()``
@@ -294,30 +401,33 @@ def _compile_preamble(
     # idempotent (gated on ``not in sys.path``) so the list doesn't grow
     # on every call.
     import os
-    import sys
 
     cwd = os.getcwd()
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
 
     # Normalise pipeline_dir to a string at the boundary so lru_cache's
     # argument-hashing treats ``Path("/x")`` and ``"/x"`` identically.
     pipeline_dir_str: str | None = None
     if pipeline_dir is not None:
         pipeline_dir_str = str(Path(pipeline_dir).resolve())
-        if pipeline_dir_str not in sys.path:
-            sys.path.insert(0, pipeline_dir_str)
 
-    if force_refresh:
-        # lru_cache has no per-key eviction API, so clear the whole cache
-        # and let the next call repopulate it.  Targeted eviction would
-        # require a parallel dict — the simplicity of ``cache_clear()``
-        # outweighs the cost of evicting peers, especially because
-        # ``force_refresh=True`` is reserved for the GUI preview path
-        # where the user is actively editing utility modules.
-        _compile_preamble_cached.cache_clear()
+    execution_fingerprint = preamble_execution_fingerprint(
+        preamble,
+        pipeline_dir=pipeline_dir_str,
+        memo=memo,
+    )
+    if execution_fingerprint is None:
+        raise RuntimeError("non-empty preamble did not produce an execution fingerprint")
+    imports_utility = preamble_imports_utility(preamble)
+    has_imports = _preamble_has_imports(preamble)
 
-    return _compile_preamble_cached(preamble, pipeline_dir_str)
+    return _compile_preamble_cached(
+        preamble,
+        cwd,
+        pipeline_dir_str,
+        execution_fingerprint,
+        imports_utility,
+        has_imports,
+    )
 
 
 # Expose the cache diagnostics (``cache_info``, ``cache_clear``) directly on
@@ -337,6 +447,74 @@ _compile_preamble.cache_clear = _compile_preamble_cached.cache_clear  # type: ig
 # ---------------------------------------------------------------------------
 
 
+def _estimate_preview_cache_entry_bytes(entry: dict[str, Any]) -> int:
+    """Estimate retained bytes for a preview cache entry.
+
+    Preview entries intentionally cache materialized Polars DataFrames.
+    Polars exposes a deterministic retained-size estimate for those
+    frames, and unexpected payload shapes fail loudly so accounting
+    regressions cannot hide behind a default weight.
+    """
+    outputs = entry.get("eager_outputs", {})
+    if not isinstance(outputs, dict):
+        raise TypeError("preview cache entry eager_outputs must be a dict")
+
+    total = 0
+    for node_id, value in outputs.items():
+        if not isinstance(value, pl.DataFrame):
+            raise TypeError(
+                "preview cache size accounting expected Polars DataFrame "
+                f"for node {node_id!r}, got {type(value).__name__}"
+            )
+        size = value.estimated_size()
+        if type(size) is not int or size < 0:
+            raise ValueError(
+                f"Polars estimated_size for node {node_id!r} returned invalid value {size!r}"
+            )
+        total += size
+    return total
+
+
+def _preview_row_limit_for_width(max_preview_rows: int, column_count: int) -> int:
+    """Return the row limit that keeps preview JSON conversion bounded."""
+    if max_preview_rows < 0:
+        raise ValueError(f"max_preview_rows must be >= 0, got {max_preview_rows}")
+    if column_count < 0:
+        raise ValueError(f"column_count must be >= 0, got {column_count}")
+    if PREVIEW_MAX_CELLS < 1:
+        raise RuntimeError(f"PREVIEW_MAX_CELLS must be >= 1, got {PREVIEW_MAX_CELLS}")
+    if column_count == 0:
+        return max_preview_rows
+    return min(max_preview_rows, PREVIEW_MAX_CELLS // column_count)
+
+
+def _preview_projection_columns(
+    df: pl.DataFrame,
+    requested_preview_columns: list[str] | None,
+) -> list[str]:
+    if requested_preview_columns is None:
+        return list(df.columns)
+    if not requested_preview_columns:
+        raise PreviewProjectionError("requested_preview_columns must contain at least one column")
+
+    projected: list[str] = []
+    seen: set[str] = set()
+    for column in requested_preview_columns:
+        if not column:
+            raise PreviewProjectionError("requested_preview_columns cannot contain empty names")
+        if column in seen:
+            continue
+        seen.add(column)
+        projected.append(column)
+
+    missing = [column for column in projected if column not in df.columns]
+    if missing:
+        raise PreviewProjectionError(
+            "Requested preview column(s) not found on target: " + ", ".join(missing)
+        )
+    return projected
+
+
 _preview_cache = FingerprintCache(
     slots=(
         "eager_outputs",
@@ -347,6 +525,9 @@ _preview_cache = FingerprintCache(
         "error_lines",
         "available_columns",
     ),
+    max_bytes=PREVIEW_CACHE_MAX_BYTES,
+    size_of=_estimate_preview_cache_entry_bytes,
+    size_sensitive_slots=("eager_outputs",),
 )
 
 
@@ -421,6 +602,7 @@ def execute_graph(
     enforce_contracts: bool | None = None,
     *,
     target_preview_only: bool = False,
+    requested_preview_columns: list[str] | None = None,
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -466,7 +648,12 @@ def execute_graph(
     # between distinct cache slots instead of serving a stale entry
     # computed under a different enforcement mode.  Without this, the
     # contract-overhead benchmark measures cache-hit-vs-cache-hit.
-    fp = graph_fingerprint(graph, f"{row_limit}:{source}:contracts={int(enforce_contracts)}")
+    fingerprint_memo = GraphFingerprintMemo()
+    fp = graph_fingerprint(
+        graph,
+        f"{row_limit}:{source}:contracts={int(enforce_contracts)}",
+        memo=fingerprint_memo,
+    )
 
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
@@ -506,6 +693,7 @@ def execute_graph(
                     row_limit,
                     source=source,
                     enforce_contracts=enforce_contracts,
+                    fingerprint_memo=fingerprint_memo,
                 )
             )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
@@ -560,6 +748,7 @@ def execute_graph(
             row_limit,
             source=source,
             enforce_contracts=enforce_contracts,
+            fingerprint_memo=fingerprint_memo,
         )
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
         _preview_cache.store(
@@ -651,13 +840,26 @@ def execute_graph(
             if stale:
                 node_warnings.extend(SchemaWarning(column=c, status="stale") for c in sorted(stale))
 
+        if nid in preview_node_ids:
+            preview_columns = _preview_projection_columns(df, requested_preview_columns)
+            preview_row_limit = _preview_row_limit_for_width(max_preview_rows, len(preview_columns))
+            preview = df.select(preview_columns).head(preview_row_limit).to_dicts()
+        else:
+            preview_columns = []
+            preview_row_limit = None
+            preview = []
+
         results[nid] = NodeResult(
             status="ok",
             row_count=len(df),
             column_count=len(df.columns),
             columns=columns,
             available_columns=avail_col_infos,
-            preview=(df.head(max_preview_rows).to_dicts() if nid in preview_node_ids else []),
+            preview=preview,
+            preview_columns=preview_columns,
+            preview_row_count=len(preview),
+            preview_row_limit=preview_row_limit,
+            preview_truncated=preview_row_limit is not None and len(df) > len(preview),
             timing_ms=timings.get(nid, 0),
             memory_bytes=memory_bytes.get(nid, 0),
             schema_warnings=node_warnings,
@@ -684,6 +886,7 @@ def _eager_execute(
     row_limit: int | None,
     source: str = "live",
     enforce_contracts: bool = True,
+    fingerprint_memo: GraphFingerprintMemo | None = None,
 ) -> tuple[
     dict[str, pl.DataFrame | None],
     list[str],
@@ -708,6 +911,7 @@ def _eager_execute(
         preamble_ns = _compile_preamble(
             graph.preamble or "",
             pipeline_dir=_pipeline_dir(graph),
+            memo=fingerprint_memo,
         )
     except PreambleError as exc:
         # Don't abort — let non-preamble nodes (data sources, model scoring,

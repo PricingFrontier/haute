@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
@@ -6,8 +6,16 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import { nodeData } from "../types/node"
 import { traceCell } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
+import {
+  GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT,
+  shouldUseLiteGraphEffects,
+} from "../utils/graphPerformance"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
+
+export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
+const TRACE_MOTION_LITE_CLASS = "trace-motion-lite"
 
 interface TracingParams {
   nodes: Node[]
@@ -30,6 +38,134 @@ export interface TracingReturn {
   edgesWithTrace: Edge[]
 }
 
+export interface EdgeAdjacency {
+  nodesByNodeId: Map<string, Set<string>>
+  edgeIdsByNodeId: Map<string, Set<string>>
+  endpointsByEdgeId: Map<string, { source: string; target: string }>
+}
+
+function addToSetMap(map: Map<string, Set<string>>, key: string, value: string) {
+  const values = map.get(key)
+  if (values) {
+    values.add(value)
+    return
+  }
+  map.set(key, new Set([value]))
+}
+
+export function buildEdgeAdjacency(edges: Edge[]): EdgeAdjacency {
+  const nodesByNodeId = new Map<string, Set<string>>()
+  const edgeIdsByNodeId = new Map<string, Set<string>>()
+  const endpointsByEdgeId = new Map<string, { source: string; target: string }>()
+
+  for (const edge of edges) {
+    const { id, source, target } = edge
+    endpointsByEdgeId.set(id, { source, target })
+    addToSetMap(nodesByNodeId, source, source)
+    addToSetMap(nodesByNodeId, source, target)
+    addToSetMap(nodesByNodeId, target, target)
+    addToSetMap(nodesByNodeId, target, source)
+    addToSetMap(edgeIdsByNodeId, source, id)
+    addToSetMap(edgeIdsByNodeId, target, id)
+  }
+
+  return { nodesByNodeId, edgeIdsByNodeId, endpointsByEdgeId }
+}
+
+function mergeClassName(existing: string | undefined, added: string | undefined): string | undefined {
+  if (!added) return existing
+  if (!existing) return added
+  return existing.split(/\s+/).includes(added) ? existing : `${existing} ${added}`
+}
+
+function edgeWithVisuals(
+  edge: Edge,
+  endpoints: { source: string; target: string },
+  visuals: Partial<Pick<Edge, "style" | "markerEnd" | "animated" | "className">>,
+): Edge {
+  const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(edge)
+  delete descriptors.source
+  delete descriptors.target
+  delete descriptors.style
+  delete descriptors.markerEnd
+  delete descriptors.className
+  if ("animated" in visuals) {
+    delete descriptors.animated
+  }
+  return Object.defineProperties(
+    {
+      source: endpoints.source,
+      target: endpoints.target,
+      ...visuals,
+      className: mergeClassName(edge.className, visuals.className),
+    },
+    descriptors,
+  ) as Edge
+}
+
+type EdgeVisualState = "trace-active" | "trace-active-lite" | "trace-dimmed" | "trace-dimmed-lite" | "hover-connected" | "hover-dimmed" | "zoomed-out"
+
+interface CachedEdgeProjection {
+  source: Edge
+  visualState: EdgeVisualState
+  projected: Edge
+}
+
+function projectEdgeWithCache(
+  cache: Map<string, CachedEdgeProjection>,
+  edge: Edge,
+  endpoints: { source: string; target: string },
+  visualState: EdgeVisualState,
+  visuals: Partial<Pick<Edge, "style" | "markerEnd" | "animated" | "className">>,
+): Edge {
+  const cached = cache.get(edge.id)
+  if (
+    cached !== undefined &&
+    cached.source === edge &&
+    cached.visualState === visualState
+  ) {
+    return cached.projected
+  }
+
+  const projected = edgeWithVisuals(edge, endpoints, visuals)
+  cache.set(edge.id, { source: edge, visualState, projected })
+  return projected
+}
+
+function pruneEdgeProjectionCache(cache: Map<string, CachedEdgeProjection>, seenIds: Set<string>) {
+  if (cache.size <= seenIds.size) return
+  for (const id of cache.keys()) {
+    if (!seenIds.has(id)) cache.delete(id)
+  }
+}
+
+function subscribeToReducedMotion(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return () => {}
+  }
+  const mediaQuery = window.matchMedia(REDUCED_MOTION_QUERY)
+  mediaQuery.addEventListener("change", onStoreChange)
+  return () => mediaQuery.removeEventListener("change", onStoreChange)
+}
+
+function getReducedMotionSnapshot(): boolean {
+  return typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia(REDUCED_MOTION_QUERY).matches
+}
+
+function getServerReducedMotionSnapshot(): boolean {
+  return false
+}
+
+function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(
+    subscribeToReducedMotion,
+    getReducedMotionSnapshot,
+    getServerReducedMotionSnapshot,
+  )
+}
+
 export default function useTracing({
   nodes, edges, selectedNode,
   graphRef, parentGraphRef, submodelsRef,
@@ -42,8 +178,12 @@ export default function useTracing({
   const activeSource = useSettingsStore((s) => s.activeSource)
   // Boost edge contrast at low zoom — only re-renders on threshold change
   const zoomedOut = useStore((s) => s.transform[2] < 0.45)
+  const prefersReducedMotion = usePrefersReducedMotion()
+  const traceMotionLite = prefersReducedMotion || shouldUseLiteGraphEffects(nodes.length, edges.length)
   const [traceResult, setTraceResult] = useState<TraceResult | null>(null)
   const [tracedCell, setTracedCell] = useState<{ rowIndex: number; column: string } | null>(null)
+  const edgeAdjacency = useMemo(() => buildEdgeAdjacency(edges), [edges])
+  const [edgeProjectionCache] = useState<Map<string, CachedEdgeProjection>>(() => new Map())
 
   // clearTrace fully resets both traceResult and tracedCell, so trace
   // decorations (node highlights, edge styling) that depend on traceResult
@@ -146,13 +286,24 @@ export default function useTracing({
   // Hover highlight: set of node IDs connected to the hovered node (including itself)
   const hoverConnectedIds = useMemo(() => {
     if (!hoveredNodeId) return null
-    const ids = new Set<string>([hoveredNodeId])
-    for (const e of edges) {
-      if (e.source === hoveredNodeId) ids.add(e.target)
-      if (e.target === hoveredNodeId) ids.add(e.source)
+    return edgeAdjacency.nodesByNodeId.get(hoveredNodeId) ?? new Set<string>([hoveredNodeId])
+  }, [hoveredNodeId, edgeAdjacency])
+
+  const hoverConnectedEdgeIds = useMemo(() => {
+    if (!hoveredNodeId) return null
+    return edgeAdjacency.edgeIdsByNodeId.get(hoveredNodeId) ?? new Set<string>()
+  }, [hoveredNodeId, edgeAdjacency])
+
+  const traceConnectedEdgeIds = useMemo(() => {
+    if (!traceResult) return new Set<string>()
+    const edgeIds = new Set<string>()
+    for (const [edgeId, endpoints] of edgeAdjacency.endpointsByEdgeId) {
+      if (allTraceNodeIds.has(endpoints.source) && allTraceNodeIds.has(endpoints.target)) {
+        edgeIds.add(edgeId)
+      }
     }
-    return ids
-  }, [hoveredNodeId, edges])
+    return edgeIds
+  }, [traceResult, allTraceNodeIds, edgeAdjacency])
 
   // Per-node projection cache keyed by the source `Node` reference.
   // The cache is held via `useState` lazy-init (never reassigned) so it
@@ -165,8 +316,8 @@ export default function useTracing({
   // Invalidation shape: an entry is valid iff
   //   (a) the source node reference is unchanged AND
   //   (b) every computed flag (_status, _traceActive, _traceDimmed,
-  //       _hoverDimmed, _traceValue) matches what the current render
-  //       would produce.
+  //       _hoverDimmed, _traceValue, motion mode) matches what the
+  //       current render would produce.
   // Nodes no longer in the input list are pruned on each pass so the
   // Map can't grow without bound.
   interface CachedProjection {
@@ -176,6 +327,7 @@ export default function useTracing({
     traceDimmed: boolean
     hoverDimmed: boolean
     traceValue: unknown
+    traceMotionLite: boolean
     projected: Node
   }
   const [projectionCache] = useState<Map<string, CachedProjection>>(() => new Map())
@@ -204,7 +356,8 @@ export default function useTracing({
         cached.traceActive === traceActive &&
         cached.traceDimmed === traceDimmed &&
         cached.hoverDimmed === hoverDimmed &&
-        cached.traceValue === traceValue
+        cached.traceValue === traceValue &&
+        cached.traceMotionLite === traceMotionLite
       ) {
         next[i] = cached.projected
         continue
@@ -219,10 +372,12 @@ export default function useTracing({
           _traceDimmed: traceDimmed,
           _hoverDimmed: hoverDimmed,
           _traceValue: traceValue,
+          _traceMotionDisabled: traceMotionLite,
         },
+        className: mergeClassName(n.className, traceMotionLite ? TRACE_MOTION_LITE_CLASS : undefined),
         style: {
           ...(n.style || {}),
-          transition: 'opacity 0.2s ease',
+          transition: traceMotionLite ? "none" : 'opacity 0.2s ease',
         },
       }
       projectionCache.set(n.id, {
@@ -232,6 +387,7 @@ export default function useTracing({
         traceDimmed,
         hoverDimmed,
         traceValue,
+        traceMotionLite,
         projected,
       })
       next[i] = projected
@@ -246,60 +402,108 @@ export default function useTracing({
     }
 
     return next
-  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, projectionCache])
+  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, projectionCache, traceMotionLite])
 
   const edgesWithTrace = useMemo(() => {
     // Trace styling takes priority over hover styling
     if (traceResult) {
-      return edges.map((e) => {
-        const srcInTrace = allTraceNodeIds.has(e.source)
-        const tgtInTrace = allTraceNodeIds.has(e.target)
-        if (srcInTrace && tgtInTrace) {
-          return {
-            ...e,
-            style: { stroke: 'var(--accent)', strokeWidth: 2.5, filter: 'drop-shadow(0 0 4px var(--accent))' },
-            markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'var(--accent)' },
-            animated: true,
-          }
+      const seenIds = new Set<string>()
+      const next = edges.map((e) => {
+        seenIds.add(e.id)
+        const endpoints = edgeAdjacency.endpointsByEdgeId.get(e.id)!
+        if (traceConnectedEdgeIds.has(e.id)) {
+          return projectEdgeWithCache(
+            edgeProjectionCache,
+            e,
+            endpoints,
+            traceMotionLite ? "trace-active-lite" : "trace-active",
+            {
+              style: traceMotionLite
+                ? { stroke: 'var(--accent)', strokeWidth: 2.5, filter: 'none' }
+                : { stroke: 'var(--accent)', strokeWidth: 2.5, filter: 'drop-shadow(0 0 4px var(--accent))' },
+              markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'var(--accent)' },
+              animated: !traceMotionLite,
+              className: traceMotionLite ? TRACE_MOTION_LITE_CLASS : undefined,
+            },
+          )
         }
-        return {
-          ...e,
-          style: { stroke: 'rgba(255,255,255,.05)', strokeWidth: 1 },
-          markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.05)' },
-        }
+        return projectEdgeWithCache(
+          edgeProjectionCache,
+          e,
+          endpoints,
+          traceMotionLite ? "trace-dimmed-lite" : "trace-dimmed",
+          {
+            style: {
+              stroke: 'rgba(255,255,255,.05)',
+              strokeWidth: 1,
+              ...(traceMotionLite ? { filter: 'none' } : {}),
+            },
+            markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.05)' },
+            ...(traceMotionLite ? { animated: false } : {}),
+            className: traceMotionLite ? TRACE_MOTION_LITE_CLASS : undefined,
+          },
+        )
       })
+      pruneEdgeProjectionCache(edgeProjectionCache, seenIds)
+      return next
     }
 
     // Hover highlighting: when hovering a node, brighten connected edges, dim others
     if (hoveredNodeId) {
-      return edges.map((e) => {
-        const connected = e.source === hoveredNodeId || e.target === hoveredNodeId
-        if (connected) {
-          return {
-            ...e,
-            style: { stroke: 'rgba(255,255,255,.55)', strokeWidth: 2 },
-            markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.55)' },
-          }
+      const seenIds = new Set<string>()
+      const next = edges.map((e) => {
+        seenIds.add(e.id)
+        const endpoints = edgeAdjacency.endpointsByEdgeId.get(e.id)!
+        if (hoverConnectedEdgeIds?.has(e.id)) {
+          return projectEdgeWithCache(
+            edgeProjectionCache,
+            e,
+            endpoints,
+            "hover-connected",
+            {
+              style: { stroke: 'rgba(255,255,255,.55)', strokeWidth: 2 },
+              markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.55)' },
+            },
+          )
         }
-        return {
-          ...e,
-          style: { stroke: 'rgba(255,255,255,.06)', strokeWidth: 1 },
-          markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.06)' },
-        }
+        return projectEdgeWithCache(
+          edgeProjectionCache,
+          e,
+          endpoints,
+          "hover-dimmed",
+          {
+            style: { stroke: 'rgba(255,255,255,.06)', strokeWidth: 1 },
+            markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.06)' },
+          },
+        )
       })
+      pruneEdgeProjectionCache(edgeProjectionCache, seenIds)
+      return next
     }
 
     // At low zoom, boost edge contrast so connections remain visible
     if (zoomedOut) {
-      return edges.map((e) => ({
-        ...e,
-        style: { stroke: 'rgba(255,255,255,.38)', strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed as const, width: 16, height: 16, color: 'rgba(255,255,255,.38)' },
-      }))
+      const seenIds = new Set<string>()
+      const next = edges.map((e) => {
+        seenIds.add(e.id)
+        return projectEdgeWithCache(
+          edgeProjectionCache,
+          e,
+          edgeAdjacency.endpointsByEdgeId.get(e.id)!,
+          "zoomed-out",
+          {
+            style: { stroke: 'rgba(255,255,255,.38)', strokeWidth: 2 },
+            markerEnd: { type: MarkerType.ArrowClosed as const, width: 16, height: 16, color: 'rgba(255,255,255,.38)' },
+          },
+        )
+      })
+      pruneEdgeProjectionCache(edgeProjectionCache, seenIds)
+      return next
     }
 
+    if (edgeProjectionCache.size > 0) edgeProjectionCache.clear()
     return edges
-  }, [edges, traceResult, allTraceNodeIds, hoveredNodeId, zoomedOut])
+  }, [edges, edgeAdjacency, edgeProjectionCache, traceResult, traceConnectedEdgeIds, hoveredNodeId, hoverConnectedEdgeIds, zoomedOut, traceMotionLite])
 
   return {
     traceResult, tracedCell,

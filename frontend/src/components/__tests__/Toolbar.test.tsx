@@ -18,6 +18,7 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onOpenGit: vi.fn(),
     onCentre: vi.fn(),
     onAutoLayout: vi.fn(),
+    isAutoLayouting: false,
     onSave: vi.fn(),
     wsStatus: "connected" as const,
     ...overrides,
@@ -60,6 +61,18 @@ describe("Toolbar", () => {
     expect(props.onAutoLayout).toHaveBeenCalledOnce()
   })
 
+  it("shows a busy disabled Layout button while auto-layout is running", () => {
+    const props = makeProps({ isAutoLayouting: true })
+    render(<Toolbar {...props} />)
+    const layoutBtn = screen.getByRole("button", { name: /laying out/i })
+
+    expect(layoutBtn).toBeDisabled()
+    expect(layoutBtn).toHaveAttribute("aria-busy", "true")
+
+    fireEvent.click(layoutBtn)
+    expect(props.onAutoLayout).not.toHaveBeenCalled()
+  })
+
   it("Centre button is disabled when nodeCount is 0", () => {
     render(<Toolbar {...makeProps({ nodeCount: 0 })} />)
     const centreBtn = screen.getByText("Centre")
@@ -94,6 +107,11 @@ describe("Toolbar", () => {
     const undoBtn = screen.getByTitle("Undo (Ctrl+Z)")
     fireEvent.click(undoBtn)
     expect(props.onUndo).toHaveBeenCalledOnce()
+  })
+
+  it("undo button has an accessible name", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument()
   })
 
   it("redo button is disabled when canRedo is false", () => {

@@ -3,8 +3,6 @@ import { X, Link2, AlertTriangle, RefreshCw } from "lucide-react"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import { sanitizeName } from "../utils/sanitizeName"
-import ModellingConfig from "./ModellingConfig"
-import OptimiserConfig from "./OptimiserConfig"
 import {
   DataSourceEditor,
   TransformEditor,
@@ -20,10 +18,13 @@ import {
   OptimiserApplyEditor,
   ConstantEditor,
   SubmodelEditor,
-} from "./editors"
+  ColumnsTab,
+  GroupedColumnsTab,
+  ModellingConfig,
+  OptimiserConfig,
+  LazyEditorBoundary,
+} from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
-import ColumnsTab from "./editors/ColumnsTab"
-import GroupedColumnsTab from "./editors/GroupedColumnsTab"
 import PanelShell from "./PanelShell"
 import { useGraph } from "./useGraph"
 
@@ -211,23 +212,87 @@ function InstancePanel({
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
-/** Collect upstream columns from all nodes feeding into `nodeId`. */
-function collectUpstreamColumns(nodeId: string, edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): { name: string; dtype: string }[] {
-  const cols: { name: string; dtype: string }[] = []
+type ColumnInfo = { name: string; dtype: string }
+
+/** Collect upstream columns from already-filtered incoming edges. */
+function collectColumnsFromEdges(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): ColumnInfo[] {
+  const cols: ColumnInfo[] = []
   const seen = new Set<string>()
-  edges.filter(e => e.target === nodeId).forEach(e => {
+  edges.forEach(e => {
     const src = nodeMap[e.source]
-    const srcCols = (src?.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[] | undefined
+    const srcCols = (src?.data as Record<string, unknown>)?._columns as ColumnInfo[] | undefined
     if (srcCols) srcCols.forEach(c => { if (!seen.has(c.name)) { seen.add(c.name); cols.push(c) } })
   })
   return cols
 }
 
-/** Check if any upstream node is an api_input type. */
-function hasUpstreamApiInput(nodeId: string, edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): boolean {
+function columnsSignature(columns: ColumnInfo[] | undefined): string {
+  return columns?.map((column) => `${column.name}\u0002${column.dtype}`).join("\u0001") ?? ""
+}
+
+function upstreamColumnsSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
   return edges
-    .filter(e => e.target === nodeId)
-    .some(e => nodeMap[e.source]?.data?.nodeType === NODE_TYPES.API_INPUT)
+    .map((edge) => {
+      const src = nodeMap[edge.source]
+      const srcCols = (src?.data as Record<string, unknown> | undefined)?._columns as ColumnInfo[] | undefined
+      return `${edge.source}\u0003${columnsSignature(srcCols)}`
+    })
+    .join("\u0004")
+}
+
+function upstreamNodeTypeSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
+  return edges
+    .map((edge) => `${edge.source}\u0002${nodeMap[edge.source]?.data?.nodeType ?? ""}`)
+    .join("\u0001")
+}
+
+function UnknownNodeTypeDiagnostic({
+  nodeType,
+  config,
+}: {
+  nodeType: string
+  config: Record<string, unknown>
+}) {
+  return (
+    <div className="px-4 py-3 flex flex-col gap-3">
+      <div
+        role="alert"
+        className="flex flex-col gap-2 rounded-lg px-3 py-3"
+        style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}
+      >
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={14} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
+          <span className="text-[12px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
+            Unknown node type
+          </span>
+        </div>
+        <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+          Node type <code className="font-mono">{nodeType}</code> is not registered in this UI build. This node is shown as a diagnostic only so its config is not edited through the wrong editor.
+        </p>
+        <a
+          href="/docs/building-models/nodes/"
+          className="text-[12px] font-semibold underline underline-offset-2 w-fit"
+          style={{ color: 'var(--text-accent)' }}
+        >
+          Open node documentation
+        </a>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
+          Raw config diagnostic
+        </div>
+        <pre
+          data-testid="unknown-node-config-diagnostic"
+          aria-label="Raw config diagnostic"
+          className="text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-words rounded-md px-3 py-2 select-text overflow-x-auto"
+          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+        >
+          {JSON.stringify(config, null, 2)}
+        </pre>
+      </div>
+    </div>
+  )
 }
 
 // ─── NodePanel ────────────────────────────────────────────────────
@@ -260,28 +325,52 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
 
   // Compute input sources (must be before early return to satisfy hook ordering rules)
   const nodeMap = useMemo(() => Object.fromEntries(allNodes.map((n) => [n.id, n])), [allNodes])
+  const selectedNodeId = node?.id ?? null
+  const upstreamEdges = useMemo(
+    () => selectedNodeId ? edges.filter((e) => e.target === selectedNodeId) : [],
+    [edges, selectedNodeId],
+  )
   const inputSources: InputSource[] = useMemo(() => {
     if (!node) return []
-    return edges
-      .filter((e) => e.target === node.id)
+    return upstreamEdges
       .map((e) => ({
         varName: sanitizeName(nodeMap[e.source]?.data.label || e.source),
         sourceLabel: nodeMap[e.source]?.data.label || e.source,
         edgeId: e.id,
       }))
-  }, [edges, node, nodeMap])
+  }, [node, nodeMap, upstreamEdges])
+  const upstreamSchemaSignature = upstreamColumnsSignature(upstreamEdges, nodeMap)
+  const upstreamColumns = useMemo(() => {
+    if (!selectedNodeId) return []
+    return collectColumnsFromEdges(upstreamEdges, nodeMap)
+    // Intentionally keyed by selected node plus upstream schema content.
+    // Selected-node config/label edits rebuild nodeMap but do not change the
+    // upstream schema, so they should preserve this array identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNodeId, upstreamSchemaSignature])
+  const upstreamTypesSignature = upstreamNodeTypeSignature(upstreamEdges, nodeMap)
+  const hasApiInputUpstream = useMemo(
+    () => upstreamEdges.some((edge) => nodeMap[edge.source]?.data?.nodeType === NODE_TYPES.API_INPUT),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedNodeId, upstreamTypesSignature],
+  )
 
   if (!node) return null
 
   const isInstance = !!config.instanceOf
   const nodeType = node.data.nodeType
-  const showColumnsTab = !isInstance && !NO_COLUMNS_TAB.has(nodeType)
+  const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
+  const showColumnsTab = isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)
 
   // ── Render the right editor based on nodeType ──
 
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
 
   const renderEditor = () => {
+    if (!isKnownNodeType) {
+      return <UnknownNodeTypeDiagnostic nodeType={nodeType} config={config} />
+    }
+
     if (isInstance) {
       return (
         <InstancePanel
@@ -319,7 +408,7 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
             onUpdate={handleConfigUpdate}
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
-            upstreamColumns={collectUpstreamColumns(node.id, edges, nodeMap)}
+            upstreamColumns={upstreamColumns}
             accentColor={accentColor}
             previewRows={previewRows}
           />
@@ -332,7 +421,7 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
             onUpdate={handleConfigUpdate}
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
-            upstreamColumns={collectUpstreamColumns(node.id, edges, nodeMap)}
+            upstreamColumns={upstreamColumns}
             errorLine={errorLine}
           />
         )
@@ -344,10 +433,9 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
         return <ModelScoreEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
 
       case NODE_TYPES.MODELLING: {
-        const upstreamCols = collectUpstreamColumns(node.id, edges, nodeMap)
         // Modelling is a pass-through -- its own _columns (set by preview) ARE the upstream columns
-        const effectiveCols = upstreamCols.length > 0
-          ? upstreamCols
+        const effectiveCols = upstreamColumns.length > 0
+          ? upstreamColumns
           : ((node.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[] | undefined) || []
         return (
           <ModellingConfig
@@ -359,9 +447,8 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
       }
 
       case NODE_TYPES.OPTIMISER: {
-        const upstreamCols = collectUpstreamColumns(node.id, edges, nodeMap)
-        const effectiveCols = upstreamCols.length > 0
-          ? upstreamCols
+        const effectiveCols = upstreamColumns.length > 0
+          ? upstreamColumns
           : ((node.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[] | undefined) || []
         return (
           <OptimiserConfig
@@ -395,8 +482,8 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
             errorLine={errorLine}
-            upstreamColumns={collectUpstreamColumns(node.id, edges, nodeMap)}
-            hasApiInputUpstream={hasUpstreamApiInput(node.id, edges, nodeMap)}
+            upstreamColumns={upstreamColumns}
+            hasApiInputUpstream={hasApiInputUpstream}
           />
         )
 
@@ -404,20 +491,6 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
         return <SubmodelEditor config={config} accentColor={accentColor} />
 
       default:
-        // Fallback: show raw config
-        if (Object.keys(config).length > 0) {
-          return (
-            <div className="px-4 py-3">
-              <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>Config</label>
-              {Object.entries(config).map(([key, value]) => (
-                <div key={key} className="mt-1.5 flex items-center gap-2">
-                  <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{key}:</span>
-                  <span className="text-xs font-mono truncate" style={{ color: 'var(--text-primary)' }}>{String(value)}</span>
-                </div>
-              ))}
-            </div>
-          )
-        }
         return null
     }
   }
@@ -521,25 +594,25 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
       })()}
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {activeTab === "columns" && showColumnsTab ? (
-          nodeType === NODE_TYPES.API_INPUT ? (
-            <GroupedColumnsTab
-              config={config}
-              onUpdate={handleConfigUpdate}
-              availableColumns={availableColumns}
-              columns={currentColumns}
-            />
-          ) : (
-            <ColumnsTab
-              config={config}
-              onUpdate={handleConfigUpdate}
-              availableColumns={availableColumns}
-              columns={currentColumns}
-            />
-          )
-        ) : (
-          renderEditor()
-        )}
+        <LazyEditorBoundary>
+          {activeTab === "columns" && showColumnsTab ? (
+            nodeType === NODE_TYPES.API_INPUT ? (
+              <GroupedColumnsTab
+                config={config}
+                onUpdate={handleConfigUpdate}
+                availableColumns={availableColumns}
+                columns={currentColumns}
+              />
+            ) : (
+              <ColumnsTab
+                config={config}
+                onUpdate={handleConfigUpdate}
+                availableColumns={availableColumns}
+                columns={currentColumns}
+              />
+            )
+          ) : renderEditor()}
+        </LazyEditorBoundary>
       </div>
     </PanelShell>
   )

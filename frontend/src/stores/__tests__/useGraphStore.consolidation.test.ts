@@ -101,6 +101,7 @@ export interface GraphStoreShape {
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: GraphSnapshot[]
   redoStack: GraphSnapshot[]
+  dirty: boolean
 
   // Actions (graph mutations)
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -175,6 +176,7 @@ function reset() {
     lastSavedSnapshot: null,
     undoStack: [],
     redoStack: [],
+    dirty: false,
   })
 }
 
@@ -210,6 +212,7 @@ describe("useGraphStore — consolidation", () => {
       expect(s.lastSavedSnapshot).toBeNull()
       expect(s.undoStack).toEqual([])
       expect(s.redoStack).toEqual([])
+      expect(s.dirty).toBe(false)
     })
 
     it("exposes the required action functions", () => {
@@ -527,11 +530,19 @@ describe("useGraphStore — consolidation", () => {
 
   describe("isDirty() — pure selector", () => {
     it("returns false when no save has ever happened (lastSavedSnapshot null)", () => {
-      // The "never saved" state is deliberately not-dirty: a fresh
-      // pipeline with no changes shouldn't prompt for save. Dirty only
-      // becomes true once we know there's a saved baseline to diverge from.
+      // Fresh empty workspaces are clean. Once a user builds a graph without
+      // saving, the non-empty graph is dirty even without a saved baseline.
       const store = requireStore()
       expect(store.getState().isDirty()).toBe(false)
+    })
+
+    it("returns true for a fresh non-empty never-saved graph", () => {
+      const store = requireStore()
+      act(() => {
+        store.getState().setNodesRaw([makeNode("n1")])
+      })
+      expect(store.getState().isDirty()).toBe(true)
+      expect(store.getState().dirty).toBe(true)
     })
 
     it("returns false immediately after markSaved() with no changes", () => {
@@ -547,6 +558,7 @@ describe("useGraphStore — consolidation", () => {
         store.getState().markSaved()
       })
       expect(store.getState().isDirty()).toBe(false)
+      expect(store.getState().dirty).toBe(false)
     })
 
     it("returns true after nodes change post-save", () => {
@@ -561,6 +573,7 @@ describe("useGraphStore — consolidation", () => {
         store.getState().setNodesRaw([makeNode("n1"), makeNode("n2")])
       })
       expect(store.getState().isDirty()).toBe(true)
+      expect(store.getState().dirty).toBe(true)
     })
 
     it("returns true after edges change post-save", () => {
@@ -572,6 +585,7 @@ describe("useGraphStore — consolidation", () => {
         store.getState().setEdgesRaw([makeEdge("a", "b", { id: "e1" })])
       })
       expect(store.getState().isDirty()).toBe(true)
+      expect(store.getState().dirty).toBe(true)
     })
 
     it("returns true after preamble change post-save", () => {
@@ -583,6 +597,7 @@ describe("useGraphStore — consolidation", () => {
         store.getState().setPreambleRaw("import polars as pl")
       })
       expect(store.getState().isDirty()).toBe(true)
+      expect(store.getState().dirty).toBe(true)
     })
 
     it("returns to false after a subsequent markSaved()", () => {
@@ -598,6 +613,7 @@ describe("useGraphStore — consolidation", () => {
         store.getState().markSaved()
       })
       expect(store.getState().isDirty()).toBe(false)
+      expect(store.getState().dirty).toBe(false)
     })
 
     it("is stable across renders — calling isDirty twice gives same answer", () => {
@@ -607,6 +623,123 @@ describe("useGraphStore — consolidation", () => {
       })
       expect(store.getState().isDirty()).toBe(false)
       expect(store.getState().isDirty()).toBe(false)
+    })
+
+    it("dirty selector stays cheap across selection-only updates after save", () => {
+      const store = requireStore()
+      const initialNode = makeNode("n1", "polars", {
+        data: { label: "Node n1", nodeType: "polars", config: { alpha: 1 } },
+      })
+
+      act(() => {
+        store.getState().setNodesRaw([initialNode])
+        store.getState().markSaved()
+      })
+
+      const hazardousData = {
+        label: "Node n1",
+        nodeType: "polars",
+        config: {
+          alpha: 1,
+          toJSON() {
+            throw new Error("dirty selector serialized a visual-only update")
+          },
+        },
+      }
+      const currentNode = {
+        ...makeNode("n1", "polars", { data: hazardousData }),
+        selected: false,
+        position: { x: 0, y: 0 },
+      } as Node
+
+      act(() => {
+        store.setState({
+          nodes: [currentNode],
+          dirty: false,
+        })
+      })
+
+      const { result } = renderHook(() => store((s) => s.dirty))
+
+      expect(() => {
+        act(() => {
+          store.getState().setNodesRaw([
+            {
+              ...currentNode,
+              selected: true,
+            },
+          ])
+        })
+      }).not.toThrow()
+
+      expect(result.current).toBe(false)
+    })
+
+    it("position changes after save are persisted layout changes and become dirty without serializing", () => {
+      const store = requireStore()
+      let throwOnSerialize = false
+      const savedNode = makeNode("n1", "polars", {
+        position: { x: 0, y: 0 },
+        data: {
+          label: "Node n1",
+          nodeType: "polars",
+          config: {
+            alpha: 1,
+            toJSON() {
+              if (throwOnSerialize) {
+                throw new Error("position-only dirty update serialized node config")
+              }
+              return { alpha: 1 }
+            },
+          },
+        },
+      })
+
+      act(() => {
+        store.getState().setNodesRaw([savedNode])
+        store.getState().markSaved()
+      })
+      expect(store.getState().dirty).toBe(false)
+      throwOnSerialize = true
+
+      expect(() => {
+        act(() => {
+          store.getState().setNodesRaw([
+            {
+              ...savedNode,
+              position: { x: 100, y: 50 },
+            },
+          ])
+        })
+      }).not.toThrow()
+
+      expect(store.getState().dirty).toBe(true)
+
+      expect(() => {
+        act(() => {
+          store.getState().setNodesRaw([savedNode])
+        })
+      }).not.toThrow()
+
+      expect(store.getState().dirty).toBe(false)
+    })
+
+    it("node order remains part of the persisted dirty snapshot", () => {
+      const store = requireStore()
+      const first = makeNode("a")
+      const second = makeNode("b")
+
+      act(() => {
+        store.getState().setNodesRaw([first, second])
+        store.getState().markSaved()
+      })
+
+      act(() => {
+        store.getState().setNodesRaw([second, first])
+      })
+
+      expect(store.getState().dirty).toBe(true)
+      expect(store.getState().isDirty()).toBe(true)
     })
   })
 

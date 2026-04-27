@@ -45,21 +45,24 @@ vi.mock("../_shared", async () => {
       <div data-testid="input-sources">{inputSources.length}</div>
     ),
     MlflowStatusBadge: () => <div data-testid="mlflow-badge" />,
-    CodeEditor: ({
-      defaultValue,
-      onChange,
-    }: {
-      defaultValue: string
-      onChange: (v: string) => void
-    }) => (
-      <textarea
-        data-testid="code-editor"
-        defaultValue={defaultValue}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    ),
   }
 })
+
+vi.mock("../CodeEditor", () => ({
+  CodeEditor: ({
+    defaultValue,
+    onChange,
+  }: {
+    defaultValue: string
+    onChange: (v: string) => void
+  }) => (
+    <textarea
+      data-testid="code-editor"
+      defaultValue={defaultValue}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}))
 
 import ModelScoreEditor from "../ModelScoreEditor"
 

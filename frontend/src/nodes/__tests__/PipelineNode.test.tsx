@@ -277,6 +277,16 @@ describe("PipelineNode", () => {
     expect(rawStyle).toContain("opacity: 0.25")
   })
 
+  it("disables trace motion transitions when requested by the tracing hook", () => {
+    const { container } = renderNode({
+      label: "Motion Lite",
+      nodeType: NODE_TYPES.POLARS,
+      _traceMotionDisabled: true,
+    })
+    const nodeEl = container.querySelector(".rounded-xl") as HTMLElement
+    expect(nodeEl.style.transition).toBe("none")
+  })
+
   it("shows trace value when _traceActive and _traceValue are set", () => {
     renderNode({
       label: "Traced",

@@ -163,6 +163,16 @@ describe("SubmodelPortNode", () => {
     expect(wrapper.style.border).toContain("dashed")
   })
 
+  it("disables trace motion transitions when requested by the tracing hook", () => {
+    const { container } = renderPortNode({
+      portDirection: "input",
+      portName: "motion_lite",
+      _traceMotionDisabled: true,
+    })
+    const wrapper = container.querySelector(".rounded-full") as HTMLElement
+    expect(wrapper.style.transition).toBe("none")
+  })
+
   it("has box-shadow glow when _traceActive is true", () => {
     const { container } = renderPortNode({
       portDirection: "input",

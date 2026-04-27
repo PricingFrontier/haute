@@ -5,7 +5,7 @@
  * auto-layout operations so the main component stays focused on
  * orchestration and rendering.
  */
-import { useCallback, type MutableRefObject } from "react"
+import { useCallback, useRef, useState, type MutableRefObject } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -36,6 +36,8 @@ export default function useNodeHandlers({
   setPreviewData,
   fitView,
 }: UseNodeHandlersParams) {
+  const layoutInFlightRef = useRef(false)
+  const [isAutoLayouting, setIsAutoLayouting] = useState(false)
   const addToast = useToastStore((s) => s.addToast)
   const clearNode = useNodeResultsStore((s) => s.clearNode)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
@@ -114,12 +116,20 @@ export default function useNodeHandlers({
   }, [graphRef, setRenameDialog])
 
   const handleAutoLayout = useCallback(async () => {
+    if (layoutInFlightRef.current) return
     const { nodes: n, edges: e } = graphRef.current
     if (n.length === 0) return
-    const layouted = await getLayoutedElements(n, e)
-    setNodes(() => layouted)
-    setTimeout(() => fitView({ padding: 0.15 }), 50)
-    addToast("info", "Auto-layout applied")
+    layoutInFlightRef.current = true
+    setIsAutoLayouting(true)
+    try {
+      const layouted = await getLayoutedElements(n, e)
+      setNodes(() => layouted)
+      setTimeout(() => fitView({ padding: 0.15 }), 50)
+      addToast("info", "Auto-layout applied")
+    } finally {
+      layoutInFlightRef.current = false
+      setIsAutoLayouting(false)
+    }
   }, [graphRef, setNodes, fitView, addToast])
 
   return {
@@ -128,5 +138,6 @@ export default function useNodeHandlers({
     handleCreateInstance,
     handleRenameNode,
     handleAutoLayout,
+    isAutoLayouting,
   }
 }

@@ -180,7 +180,8 @@ def _validate_features_uncached(
     This is the raw worker.  Call sites should go through
     :func:`_validate_features`, which memoises the result.
     """
-    available = set(schema.names())
+    schema_order = schema.names()
+    available = set(schema_order)
     expected = scoring_model.feature_names
 
     missing = [f for f in expected if f not in available]
@@ -229,8 +230,13 @@ def _validate_features_uncached(
     # silently misaligns every categorical column.  Enforce that the input
     # schema presents the model's features in the same relative order as
     # training — extra columns elsewhere in the schema are fine.
-    schema_order = schema.names()
-    feature_positions = [(name, schema_order.index(name)) for name in expected if name in available]
+    schema_position_by_name: dict[str, int] = {}
+    for index, name in enumerate(schema_order):
+        schema_position_by_name.setdefault(name, index)
+
+    feature_positions = [
+        (name, schema_position_by_name[name]) for name in expected if name in available
+    ]
     actual_order_by_position = [name for name, _ in sorted(feature_positions, key=lambda p: p[1])]
     if actual_order_by_position != list(expected):
         raise FeatureMismatchError(
@@ -353,20 +359,20 @@ def _score_eager_unified(
     """
     from haute._mlflow_io import _prepare_predict_frame
 
-    df_eager = lf.collect(engine="streaming")
+    feature_df = lf.select(features).collect(engine="streaming")
     x_data = _prepare_predict_frame(
-        df_eager,
+        feature_df,
         features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
     )
     preds = np.asarray(model.predict(x_data)).flatten()
-    df_eager = df_eager.with_columns(pl.Series(output_col, preds))
+    prediction_columns = [pl.Series(output_col, preds)]
     if task == "classification":
         probas = _predict_positive_proba(model, x_data)
         if probas is not None:
-            df_eager = df_eager.with_columns(pl.Series(f"{output_col}_proba", probas))
-    return df_eager.lazy()
+            prediction_columns.append(pl.Series(f"{output_col}_proba", probas))
+    return lf.with_columns(prediction_columns)
 
 
 def _score_batched_unified(
@@ -822,8 +828,9 @@ def _batch_score_to_parquet(
                 chunk = chunk_raw.to_frame()
             else:
                 chunk = chunk_raw
+            feature_chunk = chunk.select(features)
             x_data = _prepare_predict_frame(
-                chunk,
+                feature_chunk,
                 features,
                 cat_feature_names=scoring_model.cat_feature_names,
                 flavor=scoring_model.flavor,

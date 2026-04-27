@@ -17,6 +17,8 @@ import type { SolveProgress, TrainProgress } from "../stores/useNodeResultsStore
 import useToastStore from "../stores/useToastStore"
 import useJobPolling from "./useJobPolling"
 
+const VISIBLE_PROGRESS_INTERVAL_MS = 1_000
+
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
 
@@ -43,6 +45,7 @@ export default function useBackgroundJobs() {
     jobs: solveJobs,
     pollFn: solvePollFn,
     onProgress: updateSolveProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: solveOnComplete,
     onFail: failSolveJob,
     labelFn: (job) => job.nodeLabel,
@@ -79,6 +82,7 @@ export default function useBackgroundJobs() {
     jobs: trainJobs,
     pollFn: trainPollFn,
     onProgress: updateTrainProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: trainOnComplete,
     onFail: failTrainJob,
     labelFn: (job) => job.nodeLabel,

@@ -33,6 +33,13 @@
       "segment": "B"
     }
   ],
+  "preview_columns": [
+    "premium",
+    "segment"
+  ],
+  "preview_row_count": 2,
+  "preview_row_limit": 10000,
+  "preview_truncated": false,
   "error": null,
   "error_line": null,
   "timing_ms": 3.5,

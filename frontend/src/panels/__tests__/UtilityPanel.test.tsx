@@ -3,7 +3,7 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-libra
 import UtilityPanel from "../UtilityPanel"
 
 // Mock the CodeEditor (heavy CodeMirror dependency)
-vi.mock("../editors", () => ({
+vi.mock("../editors/CodeEditor", () => ({
   CodeEditor: ({ defaultValue, onChange, placeholder, errorLine }: { defaultValue?: string; onChange?: (v: string) => void; placeholder?: string; errorLine?: number }) => (
     <textarea
       data-testid="code-editor"
