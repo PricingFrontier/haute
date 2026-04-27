@@ -136,6 +136,7 @@ class MockResizeObserver {
 // hook assigns.  useWebSocketSync tolerates this by retrying — we just keep
 // it quiet for the duration of the test.
 class MockWebSocket {
+  static instances: MockWebSocket[] = []
   url: string
   onopen: (() => void) | null = null
   onmessage: (() => void) | null = null
@@ -144,6 +145,7 @@ class MockWebSocket {
   readyState = 0 // CONNECTING
   constructor(url: string) {
     this.url = url
+    MockWebSocket.instances.push(this)
   }
   send(): void {}
   close(): void {
@@ -330,6 +332,7 @@ afterAll(() => {
 
 beforeEach(() => {
   resetAllStores()
+  MockWebSocket.instances = []
 
   // Reset all api mocks to their default resolution (empty graph, success).
   vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "" })
@@ -351,6 +354,26 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("App integration — mounts and renders main chrome", () => {
+  it("does not open websocket sync while the initial pipeline load is pending", async () => {
+    let resolveLoad!: (value: { nodes: []; edges: []; preamble: string }) => void
+    vi.mocked(api.loadPipeline).mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveLoad = resolve
+      }),
+    )
+
+    render(<App />)
+
+    expect(screen.getByText("Loading pipeline...")).toBeInTheDocument()
+    expect(MockWebSocket.instances).toHaveLength(0)
+
+    resolveLoad({ nodes: [], edges: [], preamble: "" })
+    await waitForAppReady()
+
+    expect(MockWebSocket.instances).toHaveLength(1)
+    expect(MockWebSocket.instances[0].url).toBe("ws://localhost:3000/ws/sync")
+  })
+
   it("mounts without error and shows the toolbar + canvas once loading completes", async () => {
     render(<App />)
     await waitForAppReady()

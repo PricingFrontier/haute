@@ -369,6 +369,98 @@ describe("retry: max attempts cap", () => {
 // Exponential backoff with jitter
 // ═══════════════════════════════════════════════════════════════════════════
 
+describe("retry: caller supplied policy", () => {
+  it("lets an idempotent caller opt into more retries than the default budget", async () => {
+    const stub = stubBackoffTimers()
+    try {
+      mockFetch
+        .mockRejectedValueOnce(new TypeError("cold start"))
+        .mockRejectedValueOnce(new TypeError("cold start"))
+        .mockRejectedValueOnce(new TypeError("cold start"))
+        .mockRejectedValueOnce(new TypeError("cold start"))
+        .mockRejectedValueOnce(new TypeError("cold start"))
+        .mockReturnValueOnce(jsonResponse({ nodes: [], edges: [] }))
+
+      const result = await loadPipeline({ retry: { maxRetries: 5, baseDelayMs: 25 } })
+
+      expect(result).toEqual({ nodes: [], edges: [] })
+      expect(mockFetch).toHaveBeenCalledTimes(6)
+      expect(stub.capturedDelays).toHaveLength(5)
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it("keeps the short default retry budget for regular GETs", async () => {
+    const stub = stubBackoffTimers()
+    try {
+      mockFetch.mockRejectedValue(new TypeError("still starting"))
+
+      await expect(checkMlflow()).rejects.toBeInstanceOf(TypeError)
+
+      expect(mockFetch).toHaveBeenCalledTimes(4)
+      expect(stub.capturedDelays).toHaveLength(3)
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it("does not retry non-idempotent POSTs even when a retry policy is provided", async () => {
+    const stub = stubBackoffTimers()
+    try {
+      mockFetch.mockRejectedValueOnce(new TypeError("connection dropped"))
+
+      await expect(
+        savePipeline(
+          {
+            name: "test",
+            description: "",
+            graph: dummyGraph,
+            preamble: "",
+            source_file: "pipe.py",
+          },
+          // @ts-expect-error retry policies are deliberately not exposed on
+          // mutation helpers until a real idempotency-key contract exists.
+          { retry: { maxRetries: 5, baseDelayMs: 25 } },
+        ),
+      ).rejects.toBeInstanceOf(TypeError)
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(stub.capturedDelays).toHaveLength(0)
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it("fails loudly when a retry policy has an invalid retry count", async () => {
+    const stub = stubBackoffTimers()
+    try {
+      await expect(loadPipeline({ retry: { maxRetries: -1 } })).rejects.toThrow(
+        "retry.maxRetries must be a non-negative integer",
+      )
+
+      expect(mockFetch).not.toHaveBeenCalled()
+      expect(stub.capturedDelays).toHaveLength(0)
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it("fails loudly when a retry policy has an invalid base delay", async () => {
+    const stub = stubBackoffTimers()
+    try {
+      await expect(loadPipeline({ retry: { baseDelayMs: 0 } })).rejects.toThrow(
+        "retry.baseDelayMs must be a positive finite number",
+      )
+
+      expect(mockFetch).not.toHaveBeenCalled()
+      expect(stub.capturedDelays).toHaveLength(0)
+    } finally {
+      stub.restore()
+    }
+  })
+})
+
 describe("retry: exponential backoff with jitter", () => {
   it("waits between retries (at least one setTimeout scheduled per retry)", async () => {
     const stub = stubBackoffTimers()

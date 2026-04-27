@@ -151,6 +151,51 @@ describe("useWebSocketSync", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("connection establishment", () => {
+    it("does not create a WebSocket connection when disabled", () => {
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync({ ...params, enabled: false }))
+
+      expect(mockWSInstances).toHaveLength(0)
+      expect(result.current).toBe("disconnected")
+    })
+
+    it("creates a WebSocket connection when enabled after an initially disabled mount", () => {
+      const params = makeHookParams()
+      const { rerender } = renderHook(
+        ({ enabled }) => useWebSocketSync({ ...params, enabled }),
+        { initialProps: { enabled: false } },
+      )
+
+      expect(mockWSInstances).toHaveLength(0)
+
+      rerender({ enabled: true })
+
+      expect(mockWSInstances).toHaveLength(1)
+      expect(latestWS().url).toBe("ws://localhost:3000/ws/sync")
+    })
+
+    it("closes the active WebSocket and cancels reconnects when disabled after connecting", () => {
+      const params = makeHookParams()
+      const { rerender } = renderHook(
+        ({ enabled }) => useWebSocketSync({ ...params, enabled }),
+        { initialProps: { enabled: true } },
+      )
+      const ws = latestWS()
+
+      act(() => {
+        ws.onclose?.({} as CloseEvent)
+      })
+      expect(mockWSInstances).toHaveLength(1)
+
+      rerender({ enabled: false })
+
+      expect(ws.close).toHaveBeenCalled()
+      act(() => {
+        vi.advanceTimersByTime(5_000)
+      })
+      expect(mockWSInstances).toHaveLength(1)
+    })
+
     it("creates a WebSocket connection on mount", () => {
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))

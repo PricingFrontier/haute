@@ -27,9 +27,12 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import click
 
@@ -38,6 +41,9 @@ from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browse
 
 logger = get_logger(component="serve")
 
+_BACKEND_READY_TIMEOUT_SECONDS = 30.0
+_BACKEND_READY_POLL_INTERVAL_SECONDS = 0.1
+
 
 # ``127.0.0.1`` is the canonical IPv4 loopback; ``::1`` is the IPv6
 # loopback; ``localhost`` is the DNS name conventionally resolved to
@@ -45,6 +51,18 @@ logger = get_logger(component="serve")
 # other host — including the wildcard ``0.0.0.0`` and ``::`` — is
 # non-loopback and therefore triggers the exposure warning.
 _LOOPBACK_HOSTNAMES: frozenset[str] = frozenset({"localhost"})
+
+
+class _Closable(Protocol):
+    """Small socket-like protocol used by the readiness probe."""
+
+    def close(self) -> None:
+        """Release the connection."""
+
+
+_Connect = Callable[[tuple[str, int], float], _Closable]
+_Sleep = Callable[[float], None]
+_Monotonic = Callable[[], float]
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -173,6 +191,72 @@ def _port_is_available(host: str, port: int) -> bool:
     return True
 
 
+def _backend_probe_host(bind_host: str) -> str:
+    """Return a host that can be connected to for a uvicorn bind target.
+
+    Uvicorn can bind to wildcard addresses such as ``0.0.0.0`` and
+    ``::``, but those are not meaningful remote endpoints for a TCP
+    readiness check.  Probe the corresponding loopback address instead
+    while preserving explicit concrete hosts.
+    """
+    host = bind_host.strip()
+    if host.lower() == "localhost":
+        return "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if address.is_unspecified:
+        return "::1" if address.version == 6 else "127.0.0.1"
+    return host
+
+
+def _wait_for_tcp_ready(
+    host: str,
+    port: int,
+    *,
+    timeout: float = _BACKEND_READY_TIMEOUT_SECONDS,
+    poll_interval: float = _BACKEND_READY_POLL_INTERVAL_SECONDS,
+    connect: _Connect = socket.create_connection,
+    sleep: _Sleep = time.sleep,
+    monotonic: _Monotonic = time.monotonic,
+) -> None:
+    """Block until ``host:port`` accepts TCP connections or raise.
+
+    Only connection-refused / timed-out attempts are treated as
+    "backend not ready yet".  Unexpected socket errors, such as an
+    unresolvable host, are allowed to propagate so the CLI does not
+    paper over a broken configuration with a misleading timed open.
+    """
+    if timeout <= 0:
+        raise ValueError("timeout must be greater than zero")
+    if poll_interval <= 0:
+        raise ValueError("poll_interval must be greater than zero")
+
+    deadline = monotonic() + timeout
+    last_not_ready: BaseException | None = None
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        try:
+            conn = connect((host, port), min(poll_interval, remaining))
+        except (ConnectionRefusedError, TimeoutError) as exc:
+            last_not_ready = exc
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            sleep(min(poll_interval, remaining))
+            continue
+
+        conn.close()
+        return
+
+    raise TimeoutError(
+        f"Timed out waiting for backend at {host}:{port} to accept TCP connections"
+    ) from last_not_ready
+
+
 def _warn_if_non_loopback(config: ServeConfig) -> None:
     """Emit the structured exposure warning when binding off-loopback.
 
@@ -244,6 +328,48 @@ def _schedule_browser_open(url: str, delay: float) -> None:
     threading.Timer(delay, _open_browser, args=(url,)).start()
 
 
+def _wait_for_backend_then_open_browser(
+    browser_url: str,
+    backend_host: str,
+    backend_port: int,
+) -> None:
+    """Open the browser once the backend socket is accepting connections."""
+    probe_host = _backend_probe_host(backend_host)
+    try:
+        _wait_for_tcp_ready(probe_host, backend_port)
+    except TimeoutError as exc:
+        logger.warning(
+            "browser_open_backend_ready_timeout",
+            host=probe_host,
+            port=backend_port,
+            frontend_url=browser_url,
+            reason=str(exc),
+        )
+        click.echo(
+            "Backend did not become ready in time; the browser was not opened "
+            f"automatically. Open {browser_url} once the backend is ready.",
+            err=True,
+        )
+        return
+    _open_browser(browser_url)
+
+
+def _open_browser_after_backend_ready(
+    browser_url: str,
+    backend_host: str,
+    backend_port: int,
+) -> None:
+    """Start a background readiness wait before opening *browser_url*."""
+    import threading
+
+    threading.Thread(
+        target=_wait_for_backend_then_open_browser,
+        args=(browser_url, backend_host, backend_port),
+        name="haute-open-browser-after-backend-ready",
+        daemon=True,
+    ).start()
+
+
 def _start_vite_subprocess(frontend_dir: Path) -> subprocess.Popen[bytes]:
     """Launch ``npm run dev`` in *frontend_dir* and wire signals for cleanup.
 
@@ -296,7 +422,11 @@ def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
 
     vite_proc = _start_vite_subprocess(frontend_dir)
     if not config.no_browser:
-        _schedule_browser_open("http://localhost:5173", delay=2.0)
+        _open_browser_after_backend_ready(
+            "http://localhost:5173",
+            config.host,
+            config.port,
+        )
     try:
         uvicorn.run(
             "haute.server:app",

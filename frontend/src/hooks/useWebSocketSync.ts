@@ -16,6 +16,7 @@ interface WebSocketSyncParams {
   graphRefreshingRef: React.MutableRefObject<number>
   nodeIdCounter: React.MutableRefObject<number>
   fitView: (options?: { padding?: number }) => void
+  enabled?: boolean
 }
 
 const MAX_RETRIES = 50
@@ -32,14 +33,21 @@ function formatSyncError(err: unknown): string {
 
 export default function useWebSocketSync({
   setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
-  nodeIdCounter, fitView,
+  nodeIdCounter, fitView, enabled = true,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
-  const [status, setStatus] = useState<WsStatus>("reconnecting")
+  const [status, setStatus] = useState<WsStatus>(() => enabled ? "reconnecting" : "disconnected")
   const retriesRef = useRef(0)
 
   useEffect(() => {
+    if (!enabled) {
+      retriesRef.current = 0
+      setStatus("disconnected")
+      return
+    }
+
+    setStatus("reconnecting")
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const wsUrl = `${protocol}//${window.location.host}/ws/sync`
     let ws: WebSocket | null = null
@@ -232,7 +240,7 @@ export default function useWebSocketSync({
       }
       ws?.close()
     }
-  }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
+  }, [enabled, setNodesRaw, setEdgesRaw, setPreamble, preambleRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
 
   return status
 }
