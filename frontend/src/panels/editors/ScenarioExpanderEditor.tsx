@@ -1,5 +1,6 @@
-import { InputSourcesBar, CodeEditor, INPUT_STYLE } from "./_shared"
+import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
+import { CodeEditor } from "./CodeEditor"
 import { configField } from "../../utils/configField"
 
 export default function ScenarioExpanderEditor({

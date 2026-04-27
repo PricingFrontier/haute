@@ -466,6 +466,9 @@ Hooks do **not** run tests (too slow for commit-time). Run tests via the preflig
 
 ### Manual checks for specific changes
 
+For opt-in performance, benchmark, bundle, and memory smoke lanes, see
+[Local Performance Checks](PERFORMANCE_CHECKS.md).
+
 If you only touched backend Python:
 ```bash
 uv run ruff check src/ && uv run mypy src/haute/ && uv run pytest tests/ -q

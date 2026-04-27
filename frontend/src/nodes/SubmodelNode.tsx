@@ -15,6 +15,7 @@ function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>)
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
+  const traceMotionDisabled = !!nodeData._traceMotionDisabled
 
   return (
     <div
@@ -32,12 +33,12 @@ function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>)
           ? `0 0 12px ${accent}40, var(--node-shadow)`
           : "var(--node-shadow)",
         opacity: traceDimmed || hoverDimmed ? 0.3 : 1,
-        transition: "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
+        transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
       }}
     >
       <div
         className="absolute left-0 top-3 bottom-3 w-[3px] rounded-full"
-        style={{ backgroundColor: accent, opacity: selected ? 1 : 0.6, transition: "opacity 0.2s ease" }}
+        style={{ backgroundColor: accent, opacity: selected ? 1 : 0.6, transition: traceMotionDisabled ? "none" : "opacity 0.2s ease" }}
       />
 
       {/* Hidden per-port input handles so React Flow can resolve existing edges */}

@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
+from haute._hashing import content_hash_bytes
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
@@ -19,12 +20,13 @@ from haute._path_resolution import resolve_runtime_file_path
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
 from haute.errors import ContractMismatchError
-from haute.executor import _preview_cache, execute_graph, execute_sink
+from haute.executor import PreviewProjectionError, _preview_cache, execute_graph, execute_sink
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
     _prune_live_switch_edges,
     flatten_graph,
+    graph_fingerprint,
 )
 from haute.parser import parse_pipeline_file
 from haute.routes._helpers import (
@@ -37,6 +39,7 @@ from haute.routes._helpers import (
     validate_safe_path,
 )
 from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes._timeouts import run_blocking_with_response_timeout
 from haute.schemas import (
     NodeMemoryInfo,
@@ -63,6 +66,26 @@ router = APIRouter(prefix="/api", tags=["pipeline"])
 _TRACE_TIMEOUT = float(os.environ.get("HAUTE_TRACE_TIMEOUT", "120"))
 _PREVIEW_TIMEOUT = float(os.environ.get("HAUTE_PREVIEW_TIMEOUT", "120"))
 _SINK_TIMEOUT = float(os.environ.get("HAUTE_SINK_TIMEOUT", "300"))
+
+_preview_supersession = SupersessionCoordinator()
+_trace_supersession = SupersessionCoordinator()
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
+_PREVIEW_MAX_CONCURRENCY = _positive_int_from_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2)
+_TRACE_MAX_CONCURRENCY = _positive_int_from_env("HAUTE_TRACE_MAX_CONCURRENCY", 2)
+_preview_work_slots = asyncio.Semaphore(_PREVIEW_MAX_CONCURRENCY)
+_trace_work_slots = asyncio.Semaphore(_TRACE_MAX_CONCURRENCY)
 
 
 _RUNTIME_INPUT_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
@@ -104,6 +127,69 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
         except ValueError as exc:
             status_code = 400 if "embedded null byte" in str(exc) else 403
             raise HTTPException(status_code=status_code, detail=str(exc)) from None
+
+
+def _supersession_key(
+    operation: str,
+    graph: PipelineGraph,
+    source: str,
+) -> tuple[str, ...]:
+    return (
+        operation,
+        graph.source_file or "",
+        source,
+        graph_fingerprint(graph),
+    )
+
+
+def _preview_supersession_key(
+    graph: PipelineGraph,
+    source: str,
+    node_id: str,
+    row_limit: int,
+    requested_preview_columns: list[str] | None,
+) -> tuple[str, ...]:
+    requested_columns = tuple(requested_preview_columns or ())
+    return (
+        *_supersession_key("preview", graph, source),
+        "node",
+        node_id,
+        "row_limit",
+        str(row_limit),
+        "requested_preview_columns",
+        *requested_columns,
+    )
+
+
+def _trace_row_values_fingerprint(row_values: dict[str, Any] | None) -> str:
+    if row_values is None:
+        return ""
+    payload = json.dumps(row_values, sort_keys=True, separators=(",", ":"))
+    return content_hash_bytes(payload.encode())
+
+
+def _trace_supersession_key(
+    graph: PipelineGraph,
+    source: str,
+    target_node_id: str | None,
+    row_index: int,
+    column: str | None,
+    row_limit: int,
+    row_values: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    return (
+        *_supersession_key("trace", graph, source),
+        "target",
+        target_node_id or "",
+        "row_index",
+        str(row_index),
+        "column",
+        column or "",
+        "row_limit",
+        str(row_limit),
+        "row_values",
+        _trace_row_values_fingerprint(row_values),
+    )
 
 
 def _ensure_source_file(graph: PipelineGraph) -> None:
@@ -257,29 +343,48 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
     _validate_runtime_input_paths(graph)
 
     try:
-        result = await run_blocking_with_response_timeout(
-            execute_trace,
-            graph,
-            row_index=body.row_index,
-            target_node_id=body.target_node_id,
-            column=body.column,
-            row_limit=body.row_limit,
-            source=body.source,
-            row_values=body.row_values,
-            # Inject the executor's preview cache explicitly so the
-            # trace module is not coupled to a private singleton on
-            # another module.  ``FingerprintCache``
-            # already satisfies the :class:`~haute.trace.PreviewReader`
-            # protocol — its ``try_get`` returns the slot dict on hit
-            # or ``None`` on miss.
-            preview=_preview_cache,
-            timeout=_TRACE_TIMEOUT,
-            operation="pipeline_trace",
+
+        async def _run_trace() -> Any:
+            return await run_blocking_with_response_timeout(
+                execute_trace,
+                graph,
+                row_index=body.row_index,
+                target_node_id=body.target_node_id,
+                column=body.column,
+                row_limit=body.row_limit,
+                source=body.source,
+                row_values=body.row_values,
+                # Inject the executor's preview cache explicitly so the
+                # trace module is not coupled to a private singleton on
+                # another module.  ``FingerprintCache``
+                # already satisfies the :class:`~haute.trace.PreviewReader`
+                # protocol — its ``try_get`` returns the slot dict on hit
+                # or ``None`` on miss.
+                preview=_preview_cache,
+                timeout=_TRACE_TIMEOUT,
+                operation="pipeline_trace",
+            )
+
+        result = await _trace_supersession.run_latest(
+            _trace_supersession_key(
+                graph,
+                body.source,
+                body.target_node_id,
+                body.row_index,
+                body.column,
+                body.row_limit,
+                body.row_values,
+            ),
+            _run_trace,
+            limiter=_trace_work_slots,
+            superseded_message="Trace request superseded by a newer request",
         )
         return TraceResponse(
             status="ok",
             trace=trace_result_to_dict(result),  # type: ignore[arg-type]
         )
+    except SupersededRequestError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except TimeoutError:
         raise HTTPException(
             status_code=504,
@@ -328,15 +433,31 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     _validate_runtime_input_paths(graph)
 
     try:
-        results = await run_blocking_with_response_timeout(
-            execute_graph,
-            graph,
-            target_node_id=body.node_id,
-            row_limit=body.row_limit,
-            source=body.source,
-            target_preview_only=True,
-            timeout=_PREVIEW_TIMEOUT,
-            operation="pipeline_preview",
+
+        async def _run_preview() -> dict[str, Any]:
+            return await run_blocking_with_response_timeout(
+                execute_graph,
+                graph,
+                target_node_id=body.node_id,
+                row_limit=body.row_limit,
+                source=body.source,
+                target_preview_only=True,
+                requested_preview_columns=body.requested_preview_columns,
+                timeout=_PREVIEW_TIMEOUT,
+                operation="pipeline_preview",
+            )
+
+        results = await _preview_supersession.run_latest(
+            _preview_supersession_key(
+                graph,
+                body.source,
+                body.node_id,
+                body.row_limit,
+                body.requested_preview_columns,
+            ),
+            _run_preview,
+            limiter=_preview_work_slots,
+            superseded_message="Preview request superseded by a newer request",
         )
         node_result = results.get(body.node_id)
         if not node_result:
@@ -394,6 +515,10 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             columns=node_result.columns,
             available_columns=node_result.available_columns,
             preview=rows_to_json_safe(node_result.preview),
+            preview_columns=node_result.preview_columns,
+            preview_row_count=node_result.preview_row_count,
+            preview_row_limit=node_result.preview_row_limit,
+            preview_truncated=node_result.preview_truncated,
             error=node_result.error,
             error_line=node_result.error_line,
             timing_ms=node_result.timing_ms,
@@ -403,6 +528,8 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             schema_warnings=node_result.schema_warnings,
             node_statuses=node_statuses,
         )
+    except SupersededRequestError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except TimeoutError:
         raise HTTPException(
             status_code=504,
@@ -423,6 +550,9 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             status="error",
             error=str(e),
         )
+    except PreviewProjectionError as e:
+        logger.warning("preview_bad_request", error=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     except Exception as e:
         logger.error("preview_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

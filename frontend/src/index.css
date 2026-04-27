@@ -204,7 +204,7 @@ html, body, #root {
   padding: 0;
   width: 100%;
   height: 100%;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background: var(--bg-base);
@@ -220,6 +220,10 @@ html, body, #root {
 /* React Flow overrides */
 .react-flow__node {
   transition: filter 0.2s ease, box-shadow 0.15s ease !important;
+}
+/* Perf toggle: tracing/large-graph paths add this class to preserve interaction latency; see docs/PERFORMANCE_CHECKS.md. */
+.react-flow__node.trace-motion-lite {
+  transition: none !important;
 }
 .react-flow__node:hover:not(.selected) > div {
   border-color: var(--node-hover-border) !important;
@@ -262,6 +266,10 @@ html, body, #root {
 .react-flow__edge-path {
   stroke-width: 1.5 !important;
   transition: stroke 0.15s ease, stroke-width 0.15s ease !important;
+}
+.react-flow__edge.trace-motion-lite .react-flow__edge-path {
+  transition: none !important;
+  filter: none !important;
 }
 /* Edge hover */
 .react-flow__edge:hover .react-flow__edge-path {
@@ -319,6 +327,27 @@ html, body, #root {
 }
 .react-flow__controls button svg {
   fill: var(--text-secondary) !important;
+}
+
+/* Large-graph mode disables decorative graph effects while preserving selection, handles, and layout affordances. */
+.react-flow.graph-effects-lite .react-flow__node {
+  transition: none !important;
+}
+.react-flow.graph-effects-lite .react-flow__node:hover:not(.selected) > div {
+  box-shadow: none !important;
+}
+.react-flow.graph-effects-lite .react-flow__edge-path {
+  transition: none !important;
+  filter: none !important;
+}
+.react-flow.graph-effects-lite .react-flow__edge.selected .react-flow__edge-path {
+  filter: none !important;
+}
+.react-flow.graph-effects-lite .react-flow__controls {
+  box-shadow: none !important;
+}
+.react-flow.graph-effects-lite .animate-pulse-dot {
+  animation: none !important;
 }
 
 /* Animations - GPU accelerated (transform + opacity only) */

@@ -19,7 +19,10 @@ import { renderHook, act, cleanup } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 
 // ── Store imports ────────────────────────────────────────────────
-import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
+import useNodeResultsStore, {
+  MAX_CACHED_PREVIEWS,
+  resetNodeResultsDerivedCaches,
+} from "../../stores/useNodeResultsStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
@@ -34,8 +37,10 @@ import { makePreviewData } from "../../utils/makePreviewData.ts"
 // ── Helpers ──────────────────────────────────────────────────────
 
 function resetStores() {
+  resetNodeResultsDerivedCaches()
   useNodeResultsStore.setState({
     previews: {},
+    pinnedPreviewNodeId: null,
     columnCache: {},
     solveResults: {},
     solveJobs: {},
@@ -334,7 +339,7 @@ describe("3. Very large graph (500 nodes, 1000 edges)", () => {
     expect(elapsed).toBeLessThan(200)
   })
 
-  it("nodeResultsStore handles 500 preview entries", () => {
+  it("nodeResultsStore handles 500 preview writes within the bounded preview cache", () => {
     const store = useNodeResultsStore.getState()
 
     const start = performance.now()
@@ -347,8 +352,14 @@ describe("3. Very large graph (500 nodes, 1000 edges)", () => {
     }
     const elapsed = performance.now() - start
 
-    // Verify all cached
-    for (let i = 0; i < 500; i++) {
+    const { previews } = useNodeResultsStore.getState()
+    expect(Object.keys(previews)).toHaveLength(MAX_CACHED_PREVIEWS)
+
+    const firstRetainedIndex = 500 - MAX_CACHED_PREVIEWS
+    for (let i = 0; i < firstRetainedIndex; i += 1) {
+      expect(previews[`node_${i}`]).toBeUndefined()
+    }
+    for (let i = firstRetainedIndex; i < 500; i += 1) {
       expect(useNodeResultsStore.getState().getPreview(`node_${i}`)).not.toBeNull()
     }
 

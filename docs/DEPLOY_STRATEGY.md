@@ -350,12 +350,16 @@ haute deploy
 ```
 
 The generated container:
-- **FastAPI app** wrapping `score_graph()` with `POST /quote` and `POST /quote/batch`
+- **FastAPI app** wrapping `score_graph()` with `POST /quote` for single-quote objects and batch arrays
 - **Health check** at `GET /health` (with version info)
 - **Baked-in** pipeline graph, model files, and static data
 - **No pandas** - JSON → Polars → JSON, no MLflow shim
 - **No runtime dependency** on Databricks, AWS, or Azure
 - **Configurable** via environment variables
+
+`/quote/batch` is no longer a separate endpoint. Clients that previously called
+`POST /quote/batch` must send the same batch payload to `POST /quote`; the
+stable response envelope is returned per scored row.
 
 Why container-first:
 - It's just an API - teams already know how APIs work

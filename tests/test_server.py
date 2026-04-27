@@ -205,6 +205,36 @@ class TestPreviewNode:
         )
         assert resp.status_code == 400
 
+    def test_preview_superseded_returns_409(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from haute.parser import parse_pipeline_file
+        from haute.routes._supersession import SupersededRequestError
+        from haute.routes.pipeline import _preview_supersession
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+        node_id = graph.nodes[0].id
+
+        async def raise_superseded(*args, **kwargs):
+            raise SupersededRequestError("Preview request superseded by a newer request")
+
+        monkeypatch.setattr(_preview_supersession, "run_latest", raise_superseded)
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(),
+                "node_id": node_id,
+                "row_limit": 10,
+            },
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Preview request superseded by a newer request"
+
 
 # ---------------------------------------------------------------------------
 # POST /api/pipeline/trace
@@ -238,6 +268,34 @@ class TestTraceRow:
             },
         )
         assert resp.status_code == 400
+
+    def test_trace_superseded_returns_409(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from haute.parser import parse_pipeline_file
+        from haute.routes._supersession import SupersededRequestError
+        from haute.routes.pipeline import _trace_supersession
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+
+        async def raise_superseded(*args, **kwargs):
+            raise SupersededRequestError("Trace request superseded by a newer request")
+
+        monkeypatch.setattr(_trace_supersession, "run_latest", raise_superseded)
+
+        resp = client.post(
+            "/api/pipeline/trace",
+            json={
+                "graph": graph.model_dump(),
+                "row_index": 0,
+            },
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Trace request superseded by a newer request"
 
 
 # ---------------------------------------------------------------------------

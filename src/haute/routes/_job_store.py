@@ -18,11 +18,32 @@ import functools
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import HTTPException
 
+from haute._logging import get_logger
+
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+_DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
+_DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result", "quote_grid")
+_HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"
+
+logger = get_logger(component="server.job_store")
+
+ArtifactCleaner = Callable[[dict[str, Any]], None]
+_ARTIFACT_CLEANERS: dict[str, ArtifactCleaner] = {}
+
+
+def register_artifact_cleaner(kind: str, cleaner: ArtifactCleaner) -> None:
+    """Register a typed cleanup hook for server-owned artifact handles."""
+    if not kind:
+        raise ValueError("artifact cleaner kind must be non-empty")
+    existing = _ARTIFACT_CLEANERS.get(kind)
+    if existing is not None and existing is not cleaner:
+        raise RuntimeError(f"Artifact cleaner already registered for kind {kind!r}")
+    _ARTIFACT_CLEANERS[kind] = cleaner
 
 
 class JobStore:
@@ -32,13 +53,32 @@ class JobStore:
     independent (a training job ID will never collide with an optimiser
     job ID, just as before the refactor).
 
+    Completed jobs keep their lightweight status/result metadata for
+    ``ttl_seconds`` but shed known heavy runtime objects after
+    ``heavy_object_ttl_seconds``.  Optimiser status polling can therefore
+    keep working without retaining solver/dataframe/grid objects for the
+    full completed-job TTL.
+
     Mutations linearise on ``_write_lock`` so concurrent ``atomic_update``
     calls cannot lose writes when two threads merge disjoint keys.
     """
 
-    def __init__(self, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
+    def __init__(
+        self,
+        ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+        heavy_object_ttl_seconds: int = _DEFAULT_HEAVY_OBJECT_TTL_SECONDS,
+        *,
+        heavy_object_timer_factory: Callable[
+            [float, Callable[[], None]], threading.Timer
+        ] = threading.Timer,
+    ) -> None:
+        if heavy_object_ttl_seconds < 0:
+            raise ValueError("heavy_object_ttl_seconds must be >= 0")
         self._jobs: dict[str, dict[str, Any]] = {}
         self._ttl_seconds = ttl_seconds
+        self._heavy_object_ttl_seconds = heavy_object_ttl_seconds
+        self._heavy_object_timer_factory = heavy_object_timer_factory
+        self._heavy_object_timers: dict[str, Any] = {}
         self._write_lock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -46,16 +86,226 @@ class JobStore:
     # ------------------------------------------------------------------
 
     def _evict_stale(self) -> None:
-        """Remove jobs older than TTL to bound memory usage."""
+        """Remove expired jobs and slim expired heavy payloads."""
         with self._write_lock:
-            cutoff = time.time() - self._ttl_seconds
+            now = time.time()
+            self._clear_expired_heavy_objects_locked(now)
+            cutoff = now - self._ttl_seconds
             stale = [
                 jid
                 for jid, j in self._jobs.items()
                 if j.get("created_at", 0) < cutoff and j.get("status") not in ("running",)
             ]
             for jid in stale:
+                self._cleanup_artifact_handles(jid, self._jobs[jid])
+                self._cancel_heavy_object_timer_locked(jid)
                 del self._jobs[jid]
+
+    @staticmethod
+    def _cleanup_artifact_handles(job_id: str, job: dict[str, Any]) -> None:
+        """Remove persisted artifact files when the owning job expires."""
+        handles = job.get("artifact_handles")
+        if not isinstance(handles, dict):
+            return
+        for handle in handles.values():
+            if not isinstance(handle, dict):
+                continue
+            kind = handle.get("kind")
+            cleaner = _ARTIFACT_CLEANERS.get(kind) if isinstance(kind, str) else None
+            if cleaner is None:
+                logger.warning(
+                    "job_artifact_cleanup_unknown_handle_kind",
+                    job_id=job_id,
+                    kind=kind,
+                )
+                continue
+            try:
+                cleaner(handle)
+            except Exception as exc:
+                raw_path = handle.get("directory") or handle.get("path") or "<unknown>"
+                logger.warning(
+                    "job_artifact_cleanup_failed",
+                    job_id=job_id,
+                    path=str(raw_path),
+                    kind=kind,
+                    error=str(exc),
+                    exc_info=True,
+                )
+
+    def _clear_expired_heavy_objects_locked(self, now: float) -> None:
+        """Strip completed-job heavy objects once their short retention expires."""
+        for job_id, job in list(self._jobs.items()):
+            if job.get("status") != "completed":
+                continue
+            if not any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+                continue
+            expires_at = self._heavy_objects_expires_at(job)
+            if expires_at > now:
+                continue
+            self._clear_heavy_objects_locked(job_id, job, now=now)
+
+    def _clear_expired_heavy_objects(
+        self,
+        job_id: str | None = None,
+        timer: Any | None = None,
+    ) -> None:
+        """Timer entry point: slim heavy completed-job payloads if due."""
+        with self._write_lock:
+            now = time.time()
+            if job_id is not None:
+                if self._heavy_object_timers.get(job_id) is timer:
+                    self._heavy_object_timers.pop(job_id, None)
+                job = self._jobs.get(job_id)
+                if job is not None and job.get("status") == "completed":
+                    expires_at = self._heavy_objects_expires_at(job)
+                    if expires_at <= now and any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+                        self._clear_heavy_objects_locked(job_id, job, now=now)
+                return
+            self._clear_expired_heavy_objects_locked(now)
+
+    def _cancel_heavy_object_timer_locked(self, job_id: str) -> None:
+        timer = self._heavy_object_timers.pop(job_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _clear_heavy_objects_locked(
+        self,
+        job_id: str,
+        job: dict[str, Any],
+        *,
+        now: float,
+    ) -> None:
+        cleaned = {k: v for k, v in job.items() if k not in _DEFAULT_HEAVY_OBJECT_KEYS}
+        cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
+        cleaned["heavy_objects_cleared_at"] = now
+        cleaned["heavy_objects_retention_seconds"] = self._heavy_object_ttl_seconds
+        self._jobs[job_id] = cleaned
+        self._cancel_heavy_object_timer_locked(job_id)
+
+    def _heavy_objects_expires_at(self, job: dict[str, Any]) -> float:
+        """Return the expiry timestamp for completed-job heavy fields."""
+        expires_at = job.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
+        if expires_at is not None:
+            return float(expires_at)
+        completed_at = job.get("completed_at", job.get("created_at", 0.0))
+        return float(completed_at) + self._heavy_object_ttl_seconds
+
+    def _prepare_heavy_object_policy_locked(
+        self,
+        job: dict[str, Any],
+        *,
+        now: float,
+    ) -> bool:
+        """Stamp lifecycle metadata and report whether a cleanup timer is needed."""
+        if job.get("status") != "completed":
+            return False
+
+        job.setdefault("completed_at", now)
+        has_heavy_objects = any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS)
+        if not has_heavy_objects:
+            job.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
+            return False
+
+        if _HEAVY_OBJECT_EXPIRES_AT_KEY in job:
+            return False
+
+        job[_HEAVY_OBJECT_EXPIRES_AT_KEY] = self._heavy_objects_expires_at(job)
+        return True
+
+    def _store_merged_job_locked(
+        self,
+        job_id: str,
+        old: dict[str, Any],
+        fields: dict[str, Any],
+        *,
+        now: float,
+    ) -> tuple[dict[str, Any], bool, float | None]:
+        merged = {**old, **fields}
+        if old.get("status") != "completed" and merged.get("status") == "completed":
+            merged.setdefault("completed_at", now)
+        schedule_cleanup = self._prepare_heavy_object_policy_locked(merged, now=now)
+        expires_at = merged.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
+        self._jobs[job_id] = merged
+        if merged.get("status") != "completed" or not any(
+            key in merged for key in _DEFAULT_HEAVY_OBJECT_KEYS
+        ):
+            self._cancel_heavy_object_timer_locked(job_id)
+        return merged, schedule_cleanup, expires_at
+
+    def _schedule_heavy_object_cleanup(self, job_id: str, expires_at: float) -> None:
+        """Schedule active heavy-object cleanup; lazy sweeps remain the backstop."""
+        delay = max(0.0, expires_at - time.time())
+        timer_ref: dict[str, Any] = {}
+
+        def callback() -> None:
+            self._clear_expired_heavy_objects(job_id, timer_ref["timer"])
+
+        timer = self._heavy_object_timer_factory(delay, callback)
+        timer_ref["timer"] = timer
+        timer.daemon = True
+        with self._write_lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.get("status") != "completed":
+                return
+            if not any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+                self._cancel_heavy_object_timer_locked(job_id)
+                return
+            if self._heavy_objects_expires_at(job) != expires_at:
+                return
+            self._cancel_heavy_object_timer_locked(job_id)
+            self._heavy_object_timers[job_id] = timer
+        timer.start()
+
+    def _schedule_heavy_object_cleanup_if_needed(
+        self,
+        job_id: str,
+        schedule_cleanup: bool,
+        expires_at: object | None,
+    ) -> None:
+        if not schedule_cleanup:
+            return
+        if not isinstance(expires_at, int | float):
+            raise RuntimeError("heavy object cleanup scheduled without an expiry")
+        self._schedule_heavy_object_cleanup(job_id, float(expires_at))
+
+    def touch_heavy_objects(
+        self,
+        job_id: str,
+        *,
+        required_keys: tuple[str, ...] = _DEFAULT_HEAVY_OBJECT_KEYS,
+    ) -> bool:
+        """Extend a completed job's heavy-object window after successful access.
+
+        Returns ``False`` when the job exists but any required heavy object is
+        missing.  Callers should keep raising their domain-specific error in
+        that case; this method never fabricates or restores cleared objects.
+        """
+        schedule_cleanup = False
+        expires_at: float | None = None
+        with self._write_lock:
+            self._evict_stale()
+            job = self._jobs.get(job_id)
+            if job is None:
+                return False
+            if job.get("status") != "completed":
+                return False
+            if any(job.get(key) is None for key in required_keys):
+                return False
+
+            now = time.time()
+            metadata_expires_at = float(job.get("created_at", now)) + self._ttl_seconds
+            refreshed_expires_at = min(now + self._heavy_object_ttl_seconds, metadata_expires_at)
+            current_expires_at = self._heavy_objects_expires_at(job)
+            if refreshed_expires_at <= current_expires_at:
+                return True
+
+            updated = dict(job)
+            updated[_HEAVY_OBJECT_EXPIRES_AT_KEY] = refreshed_expires_at
+            self._jobs[job_id] = updated
+            schedule_cleanup = True
+            expires_at = refreshed_expires_at
+        self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
+        return True
 
     # ------------------------------------------------------------------
     # Public API
@@ -69,9 +319,14 @@ class JobStore:
         with self._write_lock:
             self._evict_stale()
             job_id = uuid.uuid4().hex[:12]
-            initial_status.setdefault("created_at", time.time())
-            self._jobs[job_id] = dict(initial_status)
-            return job_id
+            now = time.time()
+            job = dict(initial_status)
+            job.setdefault("created_at", now)
+            schedule_cleanup = self._prepare_heavy_object_policy_locked(job, now=now)
+            expires_at = job.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
+            self._jobs[job_id] = job
+        self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
+        return job_id
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:  # pragma: no mutate
         """Return the job dict for *job_id*, or ``None`` if not found.
@@ -101,7 +356,7 @@ class JobStore:
         fields: dict[str, Any],
         *,
         expected_status: str | None = None,  # pragma: no mutate
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         """Replace the job dict with a merged copy — thread-safe.
 
         Instead of mutating the existing dict (which can race with
@@ -118,16 +373,57 @@ class JobStore:
 
         When *expected_status* is provided, the update is skipped if the
         current status does not match (prevents timeout from overwriting
-        a completed job).
+        a completed job). A skipped guarded update returns ``None`` so
+        callers must handle the race explicitly.
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
+        schedule_cleanup = False
+        expires_at: float | None = None
         with self._write_lock:
             old = self._jobs[job_id]
             if expected_status is not None and old.get("status") != expected_status:
-                return old
-            merged = {**old, **fields}
-            self._jobs[job_id] = merged
+                return None
+            merged, schedule_cleanup, expires_at = self._store_merged_job_locked(
+                job_id,
+                old,
+                fields,
+                now=time.time(),
+            )
+        self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
+        return merged
+
+    def atomic_update_if_heavy_present(
+        self,
+        job_id: str,
+        fields: dict[str, Any],
+        *,
+        required_keys: tuple[str, ...],
+        expected_status: str | None = None,  # pragma: no mutate
+    ) -> dict[str, Any] | None:
+        """Atomically update a job only if required heavy keys still exist.
+
+        Returns ``None`` if the job no longer matches the expected status or if
+        another path has already cleared required heavy runtime state. Callers
+        can then fail loudly without merging partial heavy state back in.
+
+        Raises ``KeyError`` if *job_id* does not exist.
+        """
+        schedule_cleanup = False
+        expires_at: float | None = None
+        with self._write_lock:
+            old = self._jobs[job_id]
+            if expected_status is not None and old.get("status") != expected_status:
+                return None
+            if any(old.get(key) is None for key in required_keys):
+                return None
+            merged, schedule_cleanup, expires_at = self._store_merged_job_locked(
+                job_id,
+                old,
+                fields,
+                now=time.time(),
+            )
+        self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
         return merged
 
     def require_job(self, job_id: str) -> dict[str, Any]:
@@ -172,7 +468,7 @@ class JobStore:
     def clear_result_data(
         self,
         job_id: str,
-        keys: tuple[str, ...] = ("solver", "solve_result", "quote_grid"),
+        keys: tuple[str, ...] = _DEFAULT_HEAVY_OBJECT_KEYS,
     ) -> None:
         """Remove heavy objects from a completed job to free memory.
 
@@ -189,6 +485,9 @@ class JobStore:
             if job is None:
                 return
             cleaned = {k: v for k, v in job.items() if k not in keys}
+            if not any(key in cleaned for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+                cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
+                self._cancel_heavy_object_timer_locked(job_id)
             self._jobs[job_id] = cleaned
 
     @property

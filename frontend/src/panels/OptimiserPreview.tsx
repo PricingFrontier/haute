@@ -9,9 +9,10 @@
  * detail card (right) with metrics and Save/Log actions.
  */
 
-import { useState, useMemo, useCallback, useEffect } from "react"
-import { ChevronDown, ChevronUp, Loader2, Target, Save, Upload } from "lucide-react"
+import { useState, useMemo, useCallback, useEffect, useRef } from "react"
+import { AlertCircle, ChevronDown, ChevronUp, Loader2, Target, Save, Table2, Upload } from "lucide-react"
 import {
+  applyOptimiser,
   selectFrontierPoint as selectFrontierPointAPI,
   saveOptimiser,
   logOptimiserToMlflow,
@@ -22,7 +23,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { MODEL_COLORS } from "../theme/colors"
-import type { FrontierData } from "../api/types"
+import type { ApplyOptimiserResponse, FrontierData } from "../api/types"
 import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
@@ -52,6 +53,7 @@ export type SolveResult = {
     total_constraints?: Record<string, number>
   }[] | null
   warning?: string
+  frontier_error?: string | null
   scenario_value_stats?: {
     mean: number; std: number; min: number; max: number
     p5: number; p25: number; p50: number; p75: number; p95: number
@@ -63,7 +65,10 @@ export type SolveResult = {
     status: string
     points: Record<string, unknown>[]
     n_points: number
+    points_returned: number
     constraint_names: string[]
+    points_limit: number | null
+    points_truncated: boolean
   } | null
 }
 
@@ -86,6 +91,11 @@ interface OptimiserPreviewProps {
 }
 
 type TabKey = "frontier" | "summary" | "convergence" | "export"
+type ResultDetailState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "loaded"; data: ApplyOptimiserResponse }
+  | { status: "error"; error: string }
 
 export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps) {
   const { result, jobId, constraints } = data
@@ -114,6 +124,9 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   const [saving, setSaving] = useState(false)
   const [logging, setLogging] = useState(false)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
+  const [resultDetail, setResultDetail] = useState<ResultDetailState>({ status: "idle" })
+  const resultDetailAbortRef = useRef<AbortController | null>(null)
+  const terminalDetailBlocksActions = resultDetail.status === "loading" || resultDetail.status === "loaded"
 
   // ── Frontier point selection ──
   const frontier = data.frontier
@@ -121,6 +134,15 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
   // Clear action feedback when the selected point changes (M8)
   useEffect(() => { setActionMsg(null) }, [selectedIdx])
+  const abortResultDetailRequest = useCallback(() => {
+    resultDetailAbortRef.current?.abort()
+    resultDetailAbortRef.current = null
+  }, [])
+  useEffect(() => {
+    abortResultDetailRequest()
+    setResultDetail({ status: "idle" })
+  }, [abortResultDetailRequest, jobId])
+  useEffect(() => abortResultDetailRequest, [abortResultDetailRequest])
 
   const handlePointClick = useCallback(
     async (index: number) => {
@@ -189,6 +211,32 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
       setLogging(false)
     }
   }, [selectedIdx, frontier, jobId])
+
+  const handleLoadResultDetail = useCallback(async () => {
+    abortResultDetailRequest()
+    const controller = new AbortController()
+    resultDetailAbortRef.current = controller
+    setResultDetail({ status: "loading" })
+    try {
+      if (selectedIdx != null && frontier) {
+        await selectFrontierPointAPI(
+          { job_id: jobId, point_index: selectedIdx },
+          { signal: controller.signal },
+        )
+      }
+      const res = await applyOptimiser({ job_id: jobId }, { signal: controller.signal })
+      if (resultDetailAbortRef.current !== controller) return
+      setResultDetail({ status: "loaded", data: res })
+    } catch (e) {
+      if (controller.signal.aborted) return
+      const detail = e instanceof Error ? e.message : String(e)
+      setResultDetail({ status: "error", error: detail })
+    } finally {
+      if (resultDetailAbortRef.current === controller) {
+        resultDetailAbortRef.current = null
+      }
+    }
+  }, [abortResultDetailRequest, selectedIdx, frontier, jobId])
 
   // ── Collapsed ──
   if (collapsed) {
@@ -265,6 +313,20 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
         </div>
       </div>
 
+      {result.frontier_error && (
+        <div
+          className="flex items-start gap-2 px-4 py-2 text-xs"
+          style={{
+            color: "var(--warning-strong)",
+            background: "var(--warning-soft-emphasis)",
+            borderBottom: "1px solid var(--warning-border-strong)",
+          }}
+        >
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <span>{result.frontier_error}</span>
+        </div>
+      )}
+
       {/* Content */}
       <div className="flex-1 overflow-auto px-4 py-3">
         {/* ── Frontier Tab ── */}
@@ -283,6 +345,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
             onLogMlflow={handleLogMlflow}
             saving={saving}
             logging={logging}
+            terminalActionsDisabled={terminalDetailBlocksActions}
             mlflowAvailable={mlflowAvailable}
             actionMsg={actionMsg}
           />
@@ -304,10 +367,13 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
             result={result}
             onSave={handleSave}
             onLogMlflow={handleLogMlflow}
+            onLoadResultDetail={handleLoadResultDetail}
             saving={saving}
             logging={logging}
+            terminalActionsDisabled={terminalDetailBlocksActions}
             mlflowAvailable={mlflowAvailable}
             actionMsg={actionMsg}
+            resultDetail={resultDetail}
           />
         )}
       </div>
@@ -331,6 +397,7 @@ interface FrontierTabProps {
   onLogMlflow: () => void
   saving: boolean
   logging: boolean
+  terminalActionsDisabled: boolean
   mlflowAvailable: boolean
   actionMsg: string | null
 }
@@ -349,6 +416,7 @@ function FrontierTab({
   onLogMlflow,
   saving,
   logging,
+  terminalActionsDisabled,
   mlflowAvailable,
   actionMsg,
 }: FrontierTabProps) {
@@ -361,6 +429,8 @@ function FrontierTab({
   }
 
   const points = frontier.points
+  const shownPointCount = frontier.points_returned || points.length
+  const totalPointCount = frontier.n_points || points.length
   const xConstraintName = constraintNames[xConstraintIdx] ?? constraintNames[0]
   const xKey = xConstraintName ? `total_${xConstraintName}` : null
   const yKey = "total_objective"
@@ -417,7 +487,16 @@ function FrontierTab({
         )}
 
         <div className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>
-          {points.length} frontier points. Click a point for details.
+          {frontier.points_truncated ? (
+            <>
+              Showing {shownPointCount.toLocaleString()} of {totalPointCount.toLocaleString()} frontier points;
+              response cap is {(frontier.points_limit ?? shownPointCount).toLocaleString()}. Click a point for details.
+            </>
+          ) : (
+            <>
+              {shownPointCount.toLocaleString()} frontier points. Click a point for details.
+            </>
+          )}
         </div>
       </div>
 
@@ -435,6 +514,7 @@ function FrontierTab({
             onLogMlflow={onLogMlflow}
             saving={saving}
             logging={logging}
+            terminalActionsDisabled={terminalActionsDisabled}
             mlflowAvailable={mlflowAvailable}
             actionMsg={actionMsg}
           />
@@ -450,21 +530,50 @@ function ExportTab({
   result,
   onSave,
   onLogMlflow,
+  onLoadResultDetail,
   saving,
   logging,
+  terminalActionsDisabled,
   mlflowAvailable,
   actionMsg,
+  resultDetail,
 }: {
   result: SolveResult
   onSave: () => void
   onLogMlflow: () => void
+  onLoadResultDetail: () => void
   saving: boolean
   logging: boolean
+  terminalActionsDisabled: boolean
   mlflowAvailable: boolean
   actionMsg: string | null
+  resultDetail: ResultDetailState
 }) {
+  const detailBusy = resultDetail.status === "loading"
+  const detailButtonLabel = resultDetail.status === "loaded" ? "Refresh detail" : "Load detail"
+  const terminalActionBusy = saving || logging || terminalActionsDisabled
+
   return (
     <div className="space-y-4 max-w-md">
+      <div className="space-y-1">
+        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+          Result detail
+        </label>
+        <button
+          onClick={onLoadResultDetail}
+          disabled={saving || logging || detailBusy}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1"
+          style={{
+            background: saving || logging || detailBusy ? "var(--chrome-hover)" : "var(--accent-soft)",
+            color: saving || logging || detailBusy ? "var(--text-muted)" : "var(--accent)",
+          }}
+        >
+          {detailBusy ? <Loader2 size={12} className="animate-spin" /> : <Table2 size={12} />}
+          {detailBusy ? "Loading detail" : detailButtonLabel}
+        </button>
+        <ResultDetailStatus detail={resultDetail} />
+      </div>
+
       <div className="space-y-1">
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
           Save to file
@@ -474,11 +583,11 @@ function ExportTab({
         </p>
         <button
           onClick={onSave}
-          disabled={saving || logging}
+          disabled={terminalActionBusy}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
           style={{
-            background: saving || logging ? "var(--chrome-hover)" : "var(--warning-soft-emphasis)",
-            color: saving || logging ? "var(--text-muted)" : "var(--warning-strong)",
+            background: terminalActionBusy ? "var(--chrome-hover)" : "var(--warning-soft-emphasis)",
+            color: terminalActionBusy ? "var(--text-muted)" : "var(--warning-strong)",
           }}
         >
           {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
@@ -496,11 +605,11 @@ function ExportTab({
           </p>
           <button
             onClick={onLogMlflow}
-            disabled={saving || logging}
+            disabled={terminalActionBusy}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
             style={{
-              background: saving || logging ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
-              color: saving || logging ? "var(--text-muted)" : MODEL_COLORS.accent,
+              background: terminalActionBusy ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+              color: terminalActionBusy ? "var(--text-muted)" : MODEL_COLORS.accent,
             }}
           >
             {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
@@ -540,6 +649,43 @@ function ExportTab({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function ResultDetailStatus({ detail }: { detail: ResultDetailState }) {
+  if (detail.status === "idle") return null
+
+  if (detail.status === "loading") {
+    return (
+      <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+        <Loader2 size={12} className="animate-spin" />
+        Loading result detail...
+      </div>
+    )
+  }
+
+  if (detail.status === "error") {
+    return (
+      <div className="flex items-start gap-1.5 text-[11px] px-2 py-1.5 rounded" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
+        <AlertCircle size={12} className="mt-0.5 shrink-0" />
+        <span>Detail load failed: {detail.error}</span>
+      </div>
+    )
+  }
+
+  const returnedRows = detail.data.preview_row_count ?? detail.data.preview.length
+  const totalRows = detail.data.row_count ?? returnedRows
+  const limit = detail.data.preview_row_limit ?? returnedRows
+
+  return (
+    <div className="text-[11px] px-2 py-1.5 rounded" style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}>
+      <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>
+        {returnedRows.toLocaleString()} of {totalRows.toLocaleString()} rows loaded
+      </span>
+      {detail.data.preview_truncated && (
+        <span> · capped at {limit.toLocaleString()}</span>
+      )}
     </div>
   )
 }

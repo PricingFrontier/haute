@@ -336,7 +336,7 @@ No `Protocol` or base class until three targets exist.
 ### 5.5 Data Flow - Container Target
 
 ```
-POST /quote  →  JSON → pl.DataFrame → score_graph() → result.to_dicts() → JSON
+POST /quote  →  JSON → pl.DataFrame → score_graph() → { rows, row_count, returned_rows, truncated, limit } → JSON
 ```
 
 No pandas. JSON in, Polars throughout, JSON out.

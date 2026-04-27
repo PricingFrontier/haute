@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitFork } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitFork, Loader2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
@@ -37,6 +37,7 @@ interface ToolbarProps {
   onOpenGit: () => void
   onCentre: () => void
   onAutoLayout: () => void
+  isAutoLayouting: boolean
   onSave: () => void
   wsStatus: WsStatus
   timings?: NodeTiming[]
@@ -49,6 +50,7 @@ export default function Toolbar({
   onZoomIn, onZoomOut,
   onOpenUtility, onOpenImports, onOpenGit,
   onCentre, onAutoLayout,
+  isAutoLayouting,
   onSave,
   wsStatus, timings, memory,
 }: ToolbarProps) {
@@ -199,6 +201,7 @@ export default function Toolbar({
       <button
         onClick={onUndo}
         disabled={!canUndo}
+        aria-label="Undo"
         className="p-1.5 rounded-md transition-colors disabled:opacity-20 ml-3 hover-chrome"
         title="Undo (Ctrl+Z)"
       >
@@ -274,11 +277,13 @@ export default function Toolbar({
         </button>
         <button
           onClick={onAutoLayout}
-          disabled={nodeCount === 0}
-          className="px-2.5 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome"
-          title="Auto-arrange nodes"
+          disabled={nodeCount === 0 || isAutoLayouting}
+          aria-busy={isAutoLayouting}
+          className="w-[104px] px-2.5 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome inline-flex items-center justify-center gap-1.5"
+          title={isAutoLayouting ? "Auto-arranging nodes" : "Auto-arrange nodes"}
         >
-          Layout
+          {isAutoLayouting && <Loader2 size={13} aria-hidden="true" className="animate-spin" />}
+          {isAutoLayouting ? "Laying out" : "Layout"}
         </button>
         <button
           onClick={onSave}

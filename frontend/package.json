@@ -6,13 +6,16 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "check:bundle": "node scripts/check-bundle-size.mjs",
+    "analyze:bundle": "tsc -b && vite build --sourcemap && node scripts/analyze-bundle-sourcemaps.mjs",
+    "check:bundle": "node scripts/check-bundle-size.mjs && node scripts/check-ui-dependencies.mjs",
+    "check:ui-deps": "node scripts/check-ui-dependencies.mjs",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage && node scripts/check-critical-coverage.mjs",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --grep-invert @benchmark",
+    "test:e2e:benchmark": "playwright test --grep @benchmark --project=chromium --retries=0",
     "test:e2e:smoke": "playwright test --grep @smoke --retries=0",
     "test:e2e:headed": "playwright test --headed"
   },

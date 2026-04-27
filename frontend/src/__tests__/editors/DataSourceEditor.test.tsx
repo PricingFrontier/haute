@@ -21,16 +21,19 @@ vi.mock("../../panels/editors/_shared", async () => {
         <button data-testid="select-file" onClick={() => onSelect("test.parquet")}>Select</button>
       </div>
     ),
-    CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange: (v: string) => void; placeholder?: string; errorLine?: number | null }) => (
-      <textarea
-        data-testid="code-editor"
-        defaultValue={defaultValue}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-      />
-    ),
   }
 })
+
+vi.mock("../../panels/editors/CodeEditor", () => ({
+  CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange: (v: string) => void; placeholder?: string; errorLine?: number | null }) => (
+    <textarea
+      data-testid="code-editor"
+      defaultValue={defaultValue}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+    />
+  ),
+}))
 
 vi.mock("../../panels/editors/_DatabricksSelector", () => ({
   WarehousePicker: ({ httpPath }: { httpPath: string; onSelect: (v: string) => void }) => (

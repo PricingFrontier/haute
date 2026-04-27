@@ -2301,6 +2301,69 @@ class TestPreviewCachePartialHit:
 class TestPreviewCacheInvalidation:
     """Verify _preview_cache.invalidate() actually clears cached results."""
 
+    def test_preamble_change_forces_re_execution(self, tmp_path):
+        """Changing only graph.preamble must not serve stale preview rows."""
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(p)
+        code = "df = df.with_columns(y=pl.col('x') * FACTOR)"
+
+        graph1 = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+                "preamble": "FACTOR = 2\n",
+            }
+        )
+        graph2 = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+                "preamble": "FACTOR = 3\n",
+            }
+        )
+
+        results1 = execute_graph(graph1, target_node_id="t")
+        assert results1["t"].preview[0]["y"] == 2
+
+        results2 = execute_graph(graph2, target_node_id="t")
+        assert results2["t"].preview[0]["y"] == 3
+
+    def test_utility_change_forces_re_execution(
+        self,
+        tmp_path,
+        monkeypatch,
+        _widen_sandbox_root,
+    ):
+        """Changing imported utility code must not serve stale preview rows."""
+        monkeypatch.chdir(tmp_path)
+        utility_dir = tmp_path / "utility"
+        utility_dir.mkdir()
+        (utility_dir / "__init__.py").write_text("", encoding="utf-8")
+        helper = utility_dir / "helpers.py"
+        helper.write_text("FACTOR = 2\n", encoding="utf-8")
+
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * FACTOR)"),
+                ],
+                "edges": [_edge("src", "t")],
+                "preamble": "from utility.helpers import FACTOR\n",
+                "source_file": str(tmp_path / "pipeline.py"),
+            }
+        )
+
+        results1 = execute_graph(graph, target_node_id="t")
+        assert results1["t"].preview[0]["y"] == 2
+
+        helper.write_text("FACTOR = 20\n", encoding="utf-8")
+
+        results2 = execute_graph(graph, target_node_id="t")
+        assert results2["t"].preview[0]["y"] == 20
+
     def test_invalidate_forces_re_execution(self, tmp_path):
         """After invalidation, the same graph fingerprint triggers a
         full re-execution instead of returning stale cached results.
@@ -2353,6 +2416,251 @@ class TestPreviewCacheInvalidation:
 
 class TestPreambleLockConcurrency:
     """Verify _preamble_lock prevents race conditions during preamble compilation."""
+
+    def test_non_utility_cache_miss_waits_for_active_preamble_exec(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Even non-import preambles execute under the shared import-state lock."""
+        import threading
+        import types
+
+        import haute.executor as executor
+
+        monkeypatch.chdir(tmp_path)
+        executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
+
+        blocker = types.ModuleType("preamble_blocker")
+        blocker.started = threading.Event()
+        blocker.release = threading.Event()
+        real_safe_globals = executor.safe_globals
+
+        def safe_globals_with_blocker(*args, **kwargs):
+            ns = real_safe_globals(*args, **kwargs)
+            ns["preamble_blocker"] = blocker
+            return ns
+
+        monkeypatch.setattr(executor, "safe_globals", safe_globals_with_blocker)
+
+        errors: list[BaseException] = []
+        slow_done = threading.Event()
+        fast_done = threading.Event()
+
+        slow_source = (
+            "preamble_blocker.started.set()\n"
+            "assert preamble_blocker.release.wait(2)\n"
+            "SLOW_VALUE = 1\n"
+        )
+
+        def compile_slow():
+            try:
+                _compile_preamble(slow_source, force_refresh=True)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                slow_done.set()
+
+        def compile_fast():
+            try:
+                assert _compile_preamble("FAST_VALUE = 2\n", force_refresh=True)["FAST_VALUE"] == 2
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                fast_done.set()
+
+        slow_thread = threading.Thread(target=compile_slow)
+        slow_thread.start()
+        assert blocker.started.wait(2), "slow compile never reached preamble exec"
+
+        fast_thread = threading.Thread(target=compile_fast)
+        fast_thread.start()
+        assert not fast_done.wait(0.2), "non-import cache miss bypassed active preamble exec"
+
+        blocker.release.set()
+        slow_thread.join(timeout=5)
+        fast_thread.join(timeout=5)
+
+        assert not slow_thread.is_alive()
+        assert not fast_thread.is_alive()
+        assert slow_done.is_set()
+        assert fast_done.is_set()
+        assert not errors
+
+    def test_hot_cache_hit_does_not_wait_for_import_lock(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Hot preamble hits should not pass through the import-state lock."""
+        import threading
+
+        import haute.executor as executor
+
+        monkeypatch.chdir(tmp_path)
+        executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
+        source = "HOT_HIT = 1\n"
+        ns_first = _compile_preamble(source, force_refresh=False)
+
+        errors: list[BaseException] = []
+        finished = threading.Event()
+        result: list[dict] = []
+
+        executor._preamble_lock.acquire()
+
+        def compile_worker():
+            try:
+                result.append(_compile_preamble(source, force_refresh=False))
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        try:
+            thread = threading.Thread(target=compile_worker)
+            thread.start()
+            assert finished.wait(1), "hot cache hit waited on the import-state lock"
+            thread.join(timeout=1)
+        finally:
+            executor._preamble_lock.release()
+
+        assert not errors
+        assert result == [ns_first]
+
+    def test_concurrent_pipeline_import_keeps_active_utility_path(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A competing compile must not change sys.path during utility import."""
+        import threading
+
+        import haute.executor as executor
+
+        monkeypatch.chdir(tmp_path)
+        pipeline_a = tmp_path / "pipeline_a"
+        pipeline_b = tmp_path / "pipeline_b"
+        for pipeline_dir, value in ((pipeline_a, "A"), (pipeline_b, "B")):
+            util_dir = pipeline_dir / "utility"
+            util_dir.mkdir(parents=True)
+            (util_dir / "__init__.py").write_text("", encoding="utf-8")
+            (util_dir / "helpers.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
+
+        original_evict = executor._evict_utility_import_state
+        a_waiting = threading.Event()
+        b_started = threading.Event()
+        release_a = threading.Event()
+
+        def delayed_evict(pipeline_dir_str):
+            original_evict(pipeline_dir_str)
+            if pipeline_dir_str == str(pipeline_a.resolve()):
+                a_waiting.set()
+                assert b_started.wait(2), "competing compile never started"
+                assert release_a.wait(2), "test did not release first compile"
+
+        monkeypatch.setattr(executor, "_evict_utility_import_state", delayed_evict)
+        executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
+
+        source = "from utility.helpers import VALUE\n"
+        results: dict[str, str] = {}
+        errors: list[BaseException] = []
+
+        def compile_a():
+            try:
+                results["a"] = _compile_preamble(
+                    source,
+                    force_refresh=True,
+                    pipeline_dir=pipeline_a,
+                )["VALUE"]
+            except BaseException as exc:
+                errors.append(exc)
+
+        def compile_b():
+            b_started.set()
+            try:
+                results["b"] = _compile_preamble(
+                    source,
+                    force_refresh=True,
+                    pipeline_dir=pipeline_b,
+                )["VALUE"]
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread_a = threading.Thread(target=compile_a)
+        thread_a.start()
+        assert a_waiting.wait(2), "first compile never reached utility eviction"
+
+        thread_b = threading.Thread(target=compile_b)
+        thread_b.start()
+        assert b_started.wait(2)
+        release_a.set()
+
+        thread_a.join(timeout=5)
+        thread_b.join(timeout=5)
+
+        assert not thread_a.is_alive()
+        assert not thread_b.is_alive()
+        assert not errors
+        assert results == {"a": "A", "b": "B"}
+
+    def test_execute_graph_reuses_request_memo_for_preamble_and_graph_fingerprint(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """One preview request should hash utility files once via a shared memo."""
+        import haute._cache as cache
+        import haute.executor as executor
+
+        monkeypatch.chdir(tmp_path)
+        executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
+        executor._preview_cache.invalidate()
+
+        util_dir = tmp_path / "utility"
+        util_dir.mkdir()
+        init_file = util_dir / "__init__.py"
+        helper_file = util_dir / "helpers.py"
+        init_file.write_text("", encoding="utf-8")
+        helper_file.write_text(
+            "import polars as pl\n\ndef add_one(column):\n    return pl.col(column) + 1\n",
+            encoding="utf-8",
+        )
+
+        data_path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(data_path)
+
+        original_content_hash = cache.content_hash
+        utility_hash_counts: dict[object, int] = {}
+
+        def counted_content_hash(path):
+            resolved = path.resolve()
+            if resolved in {init_file.resolve(), helper_file.resolve()}:
+                utility_hash_counts[resolved] = utility_hash_counts.get(resolved, 0) + 1
+            return original_content_hash(path)
+
+        monkeypatch.setattr(cache, "content_hash", counted_content_hash)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(data_path)),
+                    _transform_node("t", "df = df.with_columns(y=add_one('x'))"),
+                ],
+                "edges": [_edge("src", "t")],
+                "preamble": "import polars as pl\nfrom utility.helpers import add_one\n",
+            }
+        )
+
+        results = execute_graph(graph)
+
+        assert results["t"].status == "ok"
+        assert results["t"].preview[0]["y"] == 2
+        assert utility_hash_counts == {
+            init_file.resolve(): 1,
+            helper_file.resolve(): 1,
+        }
+
+        executor._preview_cache.invalidate()
 
     def test_concurrent_preamble_compilation_no_crash(self, tmp_path, monkeypatch):
         """Two threads compiling the same preamble concurrently should not

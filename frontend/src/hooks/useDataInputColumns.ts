@@ -5,6 +5,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { buildGraph } from "../utils/buildGraph"
+import { columnFingerprint } from "../utils/columnFingerprint"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 
 type DataInputColumn = { name: string; dtype: string }
@@ -38,7 +39,10 @@ export function useDataInputColumns(
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
   const enabled = options.enabled ?? true
   const fallbackColumns = options.fallbackColumns ?? EMPTY_COLUMNS
-  const fallbackColumnsJson = useMemo(() => JSON.stringify(fallbackColumns), [fallbackColumns])
+  const fallbackColumnsFingerprint = useMemo(
+    () => columnFingerprint(fallbackColumns),
+    [fallbackColumns],
+  )
 
   // Source-aware cache key: "nodeId:source"
   const cacheKey = dataInput ? `${dataInput}:${activeSource}` : ""
@@ -86,37 +90,47 @@ export function useDataInputColumns(
   // instance or a WebSocket graph refresh).  Compare by content to avoid
   // triggering a re-render when the store creates a new array reference
   // for the same column data.
-  const prevCacheJson = useRef(JSON.stringify(initialColumns))
+  const prevColumnFingerprint = useRef<string | null>(null)
+  if (prevColumnFingerprint.current === null) {
+    prevColumnFingerprint.current = columnFingerprint(initialColumns)
+  }
   useEffect(() => {
     if (!enabled) return
     if (!cachedColumns) return
-    const json = JSON.stringify(cachedColumns)
-    if (json !== prevCacheJson.current) {
-      prevCacheJson.current = json
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing store-owned cache into local state only when content actually changes (ref-equal but value-different arrays are skipped via JSON compare)
+    const fingerprint = columnFingerprint(cachedColumns)
+    if (fingerprint !== prevColumnFingerprint.current) {
+      prevColumnFingerprint.current = fingerprint
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing store-owned cache into local state only when content actually changes (ref-equal but value-different arrays are skipped via column fingerprint compare)
       setDataInputColumns(cachedColumns)
     }
   }, [cachedColumns, enabled])
 
   useEffect(() => {
     if (!enabled) {
-      if (fallbackColumnsJson !== prevCacheJson.current) {
-        prevCacheJson.current = fallbackColumnsJson
+      if (fallbackColumnsFingerprint !== prevColumnFingerprint.current) {
+        prevColumnFingerprint.current = fallbackColumnsFingerprint
         setDataInputColumns(fallbackColumnsRef.current)
       }
       return
     }
     if (!dataInput) {
-      if (fallbackColumnsJson !== prevCacheJson.current) {
-        prevCacheJson.current = fallbackColumnsJson
+      if (fallbackColumnsFingerprint !== prevColumnFingerprint.current) {
+        prevColumnFingerprint.current = fallbackColumnsFingerprint
         setDataInputColumns(fallbackColumnsRef.current)
       }
       return
     }
     // Show cached columns immediately (no loading flash)
     if (cachedColumnsRef.current) {
-      setDataInputColumns(cachedColumnsRef.current)
+      const cachedFingerprint = columnFingerprint(cachedColumnsRef.current)
+      if (cachedFingerprint !== prevColumnFingerprint.current) {
+        prevColumnFingerprint.current = cachedFingerprint
+        setDataInputColumns(cachedColumnsRef.current)
+      }
       if (isCacheFreshRef.current) return // cache is current, skip API call
+    } else if (fallbackColumnsFingerprint !== prevColumnFingerprint.current) {
+      prevColumnFingerprint.current = fallbackColumnsFingerprint
+      setDataInputColumns(fallbackColumnsRef.current)
     }
     // Abort in-flight request when deps change (prevents stale responses overwriting fresh data)
     const controller = new AbortController()
@@ -126,10 +140,10 @@ export function useDataInputColumns(
     previewNode(graph, dataInput, 1, activeSource, { signal: controller.signal })
       .then((result) => {
         if (result.columns) {
-          const json = JSON.stringify(result.columns)
+          const fingerprint = columnFingerprint(result.columns)
           // Only update local state if columns actually changed (avoids re-render cascade)
-          if (json !== prevCacheJson.current) {
-            prevCacheJson.current = json
+          if (fingerprint !== prevColumnFingerprint.current) {
+            prevColumnFingerprint.current = fingerprint
             setDataInputColumns(result.columns)
           }
           setColumnsCache(dataInput, result.columns, requestStructuralVersion, activeSource)
@@ -156,7 +170,7 @@ export function useDataInputColumns(
     setColumnsCache,
     addToast,
     enabled,
-    fallbackColumnsJson,
+    fallbackColumnsFingerprint,
   ])
 
   return dataInputColumns

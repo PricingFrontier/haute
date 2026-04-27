@@ -3,7 +3,13 @@
  * config hashing, column cache, and cleanup.
  */
 import { describe, it, expect, beforeEach } from "vitest"
-import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore.ts"
+import useNodeResultsStore, {
+  MAX_CACHED_PREVIEWS,
+  MAX_CACHED_SOLVE_RESULTS,
+  MAX_CACHED_TRAIN_RESULTS,
+  hashConfig,
+  resetNodeResultsDerivedCaches,
+} from "../../stores/useNodeResultsStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { SolveResult } from "../../panels/OptimiserPreview.tsx"
@@ -12,9 +18,11 @@ import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
 // ── Helpers ──────────────────────────────────────────────────────
 
 function resetStore() {
+  resetNodeResultsDerivedCaches()
   useGraphStore.setState({ structuralVersion: 0 })
   useNodeResultsStore.setState({
     previews: {},
+    pinnedPreviewNodeId: null,
     columnCache: {},
     solveResults: {},
     solveJobs: {},
@@ -502,6 +510,213 @@ describe("useNodeResultsStore", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
+  // Bounded result caches
+  // ────────────────────────────────────────────────────────────────
+
+  describe("bounded result caches", () => {
+    it("evicts the oldest cached previews when the preview cap is exceeded", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_PREVIEWS + 2; i += 1) {
+        s.setPreview(`p${i}`, makePreviewData({ nodeId: `p${i}` }), 0)
+      }
+
+      const { previews } = useNodeResultsStore.getState()
+      expect(Object.keys(previews)).toHaveLength(MAX_CACHED_PREVIEWS)
+      expect(previews.p0).toBeUndefined()
+      expect(previews.p1).toBeUndefined()
+      expect(previews[`p${MAX_CACHED_PREVIEWS + 1}`]).toBeDefined()
+    })
+
+    it("keeps recently read previews when evicting", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_PREVIEWS; i += 1) {
+        s.setPreview(`p${i}`, makePreviewData({ nodeId: `p${i}` }), 0)
+      }
+      expect(s.getPreview("p0")).not.toBeNull()
+      s.setPreview("p-new", makePreviewData({ nodeId: "p-new" }), 0)
+
+      const { previews } = useNodeResultsStore.getState()
+      expect(Object.keys(previews)).toHaveLength(MAX_CACHED_PREVIEWS)
+      expect(previews.p0).toBeDefined()
+      expect(previews.p1).toBeUndefined()
+      expect(previews["p-new"]).toBeDefined()
+    })
+
+    it("keeps the pinned preview node when evicting by recency", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_PREVIEWS; i += 1) {
+        s.setPreview(`p${i}`, makePreviewData({ nodeId: `p${i}` }), 0)
+      }
+      s.setPinnedPreviewNodeId("p0")
+      s.setPreview("p-new-1", makePreviewData({ nodeId: "p-new-1" }), 0)
+      s.setPreview("p-new-2", makePreviewData({ nodeId: "p-new-2" }), 0)
+
+      const { previews } = useNodeResultsStore.getState()
+      expect(Object.keys(previews)).toHaveLength(MAX_CACHED_PREVIEWS)
+      expect(previews.p0).toBeDefined()
+      expect(previews.p1).toBeUndefined()
+      expect(previews.p2).toBeUndefined()
+      expect(previews["p-new-1"]).toBeDefined()
+      expect(previews["p-new-2"]).toBeDefined()
+    })
+
+    it("allows the previously pinned preview node to be evicted after clearing the pin", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_PREVIEWS; i += 1) {
+        s.setPreview(`p${i}`, makePreviewData({ nodeId: `p${i}` }), 0)
+      }
+      s.setPinnedPreviewNodeId("p0")
+      s.setPreview("p-new-1", makePreviewData({ nodeId: "p-new-1" }), 0)
+      s.setPinnedPreviewNodeId(null)
+      s.setPreview("p-new-2", makePreviewData({ nodeId: "p-new-2" }), 0)
+
+      const { previews } = useNodeResultsStore.getState()
+      expect(Object.keys(previews)).toHaveLength(MAX_CACHED_PREVIEWS)
+      expect(previews.p0).toBeUndefined()
+      expect(previews.p1).toBeUndefined()
+      expect(previews.p2).toBeDefined()
+      expect(previews["p-new-1"]).toBeDefined()
+      expect(previews["p-new-2"]).toBeDefined()
+    })
+
+    it("evicts the oldest cached solve results without removing active solve jobs", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("active-solve", "active-job", "Still Running", {}, "active-hash")
+
+      for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS + 1; i += 1) {
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
+      }
+
+      const { solveJobs, solveResults } = useNodeResultsStore.getState()
+      expect(solveJobs["active-solve"]).toBeDefined()
+      expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
+      expect(solveResults.s0).toBeUndefined()
+      expect(solveResults[`s${MAX_CACHED_SOLVE_RESULTS}`]?.result.total_objective).toBe(MAX_CACHED_SOLVE_RESULTS)
+    })
+
+    it("keeps explicitly touched solve results when evicting", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
+      }
+      expect(s.getOptimiserPreview("s0")).not.toBeNull()
+      s.touchOptimiserPreview("s0")
+      s.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new")
+      s.completeSolveJob("s-new", makeSolveResult({ total_objective: 999 }))
+
+      const { solveResults } = useNodeResultsStore.getState()
+      expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
+      expect(solveResults.s0).toBeDefined()
+      expect(solveResults.s1).toBeUndefined()
+      expect(solveResults["s-new"]?.result.total_objective).toBe(999)
+    })
+
+    it("keeps the pinned optimiser preview result when evicting by recency", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
+      }
+      s.setPinnedPreviewNodeId("s0")
+      s.startSolveJob("s-new-1", "job-new-1", "Solve new 1", {}, "hash-new-1")
+      s.completeSolveJob("s-new-1", makeSolveResult({ total_objective: 998 }))
+      s.startSolveJob("s-new-2", "job-new-2", "Solve new 2", {}, "hash-new-2")
+      s.completeSolveJob("s-new-2", makeSolveResult({ total_objective: 999 }))
+
+      const { solveResults } = useNodeResultsStore.getState()
+      expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
+      expect(solveResults.s0).toBeDefined()
+      expect(solveResults.s1).toBeUndefined()
+      expect(solveResults.s2).toBeUndefined()
+      expect(solveResults["s-new-1"]?.result.total_objective).toBe(998)
+      expect(solveResults["s-new-2"]?.result.total_objective).toBe(999)
+    })
+
+    it("evicts the oldest cached train results without removing active train jobs", () => {
+      const s = useNodeResultsStore.getState()
+      s.startTrainJob("active-train", "active-job", "Still Running", "active-hash")
+
+      for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS + 1; i += 1) {
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+      }
+
+      const { trainJobs, trainResults } = useNodeResultsStore.getState()
+      expect(trainJobs["active-train"]).toBeDefined()
+      expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
+      expect(trainResults.t0).toBeUndefined()
+      expect(trainResults[`t${MAX_CACHED_TRAIN_RESULTS}`]?.result.metrics.rmse).toBe(MAX_CACHED_TRAIN_RESULTS)
+    })
+
+    it("keeps explicitly touched train results when evicting", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+      }
+      expect(s.getModellingPreview("t0")).not.toBeNull()
+      s.touchModellingPreview("t0")
+      s.startTrainJob("t-new", "job-new", "Train new", "hash-new")
+      s.completeTrainJob("t-new", makeTrainResult({ metrics: { rmse: 999 } }))
+
+      const { trainResults } = useNodeResultsStore.getState()
+      expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
+      expect(trainResults.t0).toBeDefined()
+      expect(trainResults.t1).toBeUndefined()
+      expect(trainResults["t-new"]?.result.metrics.rmse).toBe(999)
+    })
+
+    it("keeps the pinned modelling preview result when evicting by recency", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+      }
+      s.setPinnedPreviewNodeId("t0")
+      s.startTrainJob("t-new-1", "job-new-1", "Train new 1", "hash-new-1")
+      s.completeTrainJob("t-new-1", makeTrainResult({ metrics: { rmse: 998 } }))
+      s.startTrainJob("t-new-2", "job-new-2", "Train new 2", "hash-new-2")
+      s.completeTrainJob("t-new-2", makeTrainResult({ metrics: { rmse: 999 } }))
+
+      const { trainResults } = useNodeResultsStore.getState()
+      expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
+      expect(trainResults.t0).toBeDefined()
+      expect(trainResults.t1).toBeUndefined()
+      expect(trainResults.t2).toBeUndefined()
+      expect(trainResults["t-new-1"]?.result.metrics.rmse).toBe(998)
+      expect(trainResults["t-new-2"]?.result.metrics.rmse).toBe(999)
+    })
+
+    it("clearNode removes preview eviction bookkeeping for the cleared node", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_PREVIEWS; i += 1) {
+        s.setPreview(`p${i}`, makePreviewData({ nodeId: `p${i}` }), 0)
+      }
+      s.clearNode("p0")
+      s.setPreview("p-new-1", makePreviewData({ nodeId: "p-new-1" }), 0)
+      s.setPreview("p-new-2", makePreviewData({ nodeId: "p-new-2" }), 0)
+
+      const { previews } = useNodeResultsStore.getState()
+      expect(Object.keys(previews)).toHaveLength(MAX_CACHED_PREVIEWS)
+      expect(previews.p0).toBeUndefined()
+      expect(previews.p1).toBeUndefined()
+      expect(previews["p-new-1"]).toBeDefined()
+      expect(previews["p-new-2"]).toBeDefined()
+    })
+  })
+
+  // ────────────────────────────────────────────────────────────────
   // getOptimiserPreview
   // ────────────────────────────────────────────────────────────────
 
@@ -539,7 +754,10 @@ describe("useNodeResultsStore", () => {
         status: "ok",
         points: [{ total_objective: 100, total_vol: 0.95, lambda_vol: 0.01 }],
         n_points: 1,
+        points_returned: 1,
         constraint_names: ["vol"],
+        points_limit: 2000,
+        points_truncated: false,
       }
       const result = makeSolveResult({ frontier })
       s.completeSolveJob("n1", result)
@@ -549,6 +767,7 @@ describe("useNodeResultsStore", () => {
       expect(cached.frontier).not.toBeNull()
       expect(cached.frontier!.points).toHaveLength(1)
       expect(cached.frontier!.n_points).toBe(1)
+      expect(cached.frontier!.points_returned).toBe(1)
       expect(cached.frontier!.constraint_names).toEqual(["vol"])
       expect(cached.selectedPointIndex).toBeNull()
     })
@@ -561,7 +780,10 @@ describe("useNodeResultsStore", () => {
         status: "ok",
         points: [],
         n_points: 0,
+        points_returned: 0,
         constraint_names: [],
+        points_limit: 2000,
+        points_truncated: false,
       }
       const result = makeSolveResult({ frontier })
       s.completeSolveJob("n1", result)
@@ -888,7 +1110,10 @@ describe("useNodeResultsStore", () => {
           { total_objective: 110, total_vol: 0.92, lambda_vol: 0.02 },
         ],
         n_points: 2,
+        points_returned: 2,
         constraint_names: ["vol"],
+        points_limit: 2000,
+        points_truncated: false,
       }
       s.completeSolveJob("n1", makeSolveResult({ frontier }))
       s.selectFrontierPoint("n1", 1)
@@ -908,6 +1133,34 @@ describe("useNodeResultsStore", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("derived getter caching (Issue #13)", () => {
+    it("resetNodeResultsDerivedCaches clears module-scope derived caches and recency state", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Label", {}, "h1")
+      s.completeSolveJob("n1", makeSolveResult())
+      const stalePreview = s.getOptimiserPreview("n1")
+
+      resetNodeResultsDerivedCaches()
+      useNodeResultsStore.setState({
+        solveResults: {
+          n1: {
+            result: makeSolveResult({ total_objective: 999 }),
+            originalResult: makeSolveResult({ total_objective: 999 }),
+            jobId: "j2",
+            configHash: "h2",
+            constraints: {},
+            nodeLabel: "Fresh Label",
+            frontier: null,
+            selectedPointIndex: null,
+          },
+        },
+      })
+
+      const freshPreview = useNodeResultsStore.getState().getOptimiserPreview("n1")
+      expect(freshPreview).not.toBe(stalePreview)
+      expect(freshPreview?.result.total_objective).toBe(999)
+      expect(freshPreview?.nodeLabel).toBe("Fresh Label")
+    })
+
     it("getOptimiserPreview returns same reference on repeated calls", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Label", {}, "h1")
@@ -960,6 +1213,31 @@ describe("useNodeResultsStore", () => {
       s.completeTrainJob("n1", makeTrainResult({ status: "completed", metrics: { rmse: 0.01 } }))
       const b = useNodeResultsStore.getState().getModellingPreview("n1")
       expect(a).not.toBe(b)
+    })
+
+    it("getModellingPreview keeps its reference across active job progress updates", () => {
+      const s = useNodeResultsStore.getState()
+      s.startTrainJob("n1", "j1", "Initial Label", "h1")
+      s.completeTrainJob("n1", makeTrainResult())
+      s.startTrainJob("n1", "j2", "Updated Label", "h2")
+
+      const beforeProgress = useNodeResultsStore.getState().getModellingPreview("n1")
+      expect(beforeProgress!.nodeLabel).toBe("Updated Label")
+
+      s.updateTrainProgress("n1", {
+        status: "running",
+        progress: 0.25,
+        message: "training",
+        iteration: 1,
+        total_iterations: 4,
+        train_loss: { rmse: 0.4 },
+        elapsed_seconds: 2,
+      })
+
+      const afterProgressA = useNodeResultsStore.getState().getModellingPreview("n1")
+      const afterProgressB = useNodeResultsStore.getState().getModellingPreview("n1")
+      expect(afterProgressA).toBe(beforeProgress)
+      expect(afterProgressB).toBe(afterProgressA)
     })
 
     it("getModellingPreview returns null for error results", () => {

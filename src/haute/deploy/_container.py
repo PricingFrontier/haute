@@ -19,6 +19,7 @@ logger = get_logger(component="deploy.container")
 
 _VALID_BASE_IMAGE_RE = re.compile(r"^[a-zA-Z0-9._:/@-]+$")
 _VALID_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+DEFAULT_QUOTE_RESPONSE_ROW_LIMIT = 1_000
 
 
 def _validate_base_image(base_image: str) -> None:
@@ -250,6 +251,7 @@ _input_node_ids = _manifest["input_node_ids"]
 _output_node_id = _manifest["output_node_id"]
 _artifact_paths = _manifest["artifacts"]
 _output_fields = _manifest.get("output_fields")
+_QUOTE_RESPONSE_ROW_LIMIT = {DEFAULT_QUOTE_RESPONSE_ROW_LIMIT}
 
 app = FastAPI(
     title="{model_name}",
@@ -271,12 +273,25 @@ def health() -> dict:
     }}
 
 
+def _quote_response_content(result: pl.DataFrame):
+    row_count = result.height
+    returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
+    return {{
+        "rows": result.head(returned_rows).to_dicts(),
+        "row_count": row_count,
+        "returned_rows": returned_rows,
+        "truncated": row_count > _QUOTE_RESPONSE_ROW_LIMIT,
+        "limit": _QUOTE_RESPONSE_ROW_LIMIT,
+    }}
+
+
 @app.post("/quote")
 async def quote(request: Request) -> JSONResponse:
     """Score one or more quotes.
 
     Accepts a JSON object (single quote) or JSON array (batch).
-    Returns a JSON array of result objects.
+    Returns a stable JSON object with rows, row_count, returned_rows,
+    truncated, and limit fields.
     """
     body = await request.json()
 
@@ -300,7 +315,7 @@ async def quote(request: Request) -> JSONResponse:
             artifact_paths=_artifact_paths,
             output_fields=_output_fields,
         )
-        return JSONResponse(content=result.to_dicts())
+        return JSONResponse(content=_quote_response_content(result))
     except Exception as exc:
         return JSONResponse(
             status_code=422,

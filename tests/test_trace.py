@@ -358,6 +358,69 @@ class TestExecuteTrace:
         r2 = execute_trace(graph2, row_index=0)
         assert r2.output_value["y"] == 2
 
+    def test_cache_invalidates_on_preamble_change(self, tmp_path):
+        """Changing only graph.preamble must not serve stale trace rows."""
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(p)
+        code = "df = df.with_columns(y=pl.col('x') * FACTOR)"
+
+        graph1 = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+                "preamble": "FACTOR = 2\n",
+            }
+        )
+        graph2 = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+                "preamble": "FACTOR = 3\n",
+            }
+        )
+
+        r1 = execute_trace(graph1, row_index=0, target_node_id="t", column="y")
+        assert r1.output_value == 2
+
+        r2 = execute_trace(graph2, row_index=0, target_node_id="t", column="y")
+        assert r2.output_value == 3
+
+    def test_cache_invalidates_on_utility_change(
+        self,
+        tmp_path,
+        monkeypatch,
+        _widen_sandbox_root,
+    ):
+        """Changing imported utility code must not serve stale trace rows."""
+        monkeypatch.chdir(tmp_path)
+        utility_dir = tmp_path / "utility"
+        utility_dir.mkdir()
+        (utility_dir / "__init__.py").write_text("", encoding="utf-8")
+        helper = utility_dir / "helpers.py"
+        helper.write_text("FACTOR = 2\n", encoding="utf-8")
+
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * FACTOR)"),
+                ],
+                "edges": [_edge("src", "t")],
+                "preamble": "from utility.helpers import FACTOR\n",
+                "source_file": str(tmp_path / "pipeline.py"),
+            }
+        )
+
+        r1 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
+        assert r1.output_value == 2
+
+        helper.write_text("FACTOR = 20\n", encoding="utf-8")
+
+        r2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
+        assert r2.output_value == 20
+
     def test_empty_graph_raises(self):
         with pytest.raises(ValueError, match="Empty graph"):
             execute_trace(_g({"nodes": [], "edges": []}))

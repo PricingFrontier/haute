@@ -19,9 +19,11 @@ import { useDragResize } from "../hooks/useDragResize"
 import { CHART_COLORS } from "../theme/colors"
 import { formatAxisLabel, yTicks } from "../utils/chartHelpers"
 import type { PreviewData } from "./DataPreview"
+import { computeScenarioStatsBySeries, type ScenarioStats } from "./optimiserScenarioStats"
 
 // ─── Colours for series lines (CVD-safe Okabe-Ito subset) ─────────
 const SERIES_COLORS = CHART_COLORS.optimiserSeries
+export const OPTIMISER_DATA_PREVIEW_ROW_LIMIT = 5_000
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -230,76 +232,6 @@ const ChartArea = memo(function ChartArea({
 
 // ─── Scenario-level summary statistics ───────────────────────────
 
-type ScenarioStats = {
-  scenarioIndex: number
-  scenarioValue: number
-  count: number
-  mean: number
-  std: number
-  min: number
-  p25: number
-  median: number
-  p75: number
-  max: number
-}
-
-function computeScenarioStats(
-  rows: PreviewRow[],
-  scenarioIndices: number[],
-  column: string,
-  scenarioIndexCol: string,
-  scenarioValueCol: string,
-): ScenarioStats[] {
-  const valuesByScenario = new Map<number, { scenarioValue: number; values: number[] }>()
-  for (const row of rows) {
-    const scenarioIndex = Number(row[scenarioIndexCol] ?? 0)
-    const bucket = valuesByScenario.get(scenarioIndex)
-    if (bucket) {
-      bucket.values.push(Number(row[column] ?? 0))
-      bucket.scenarioValue = Number(row[scenarioValueCol] ?? bucket.scenarioValue)
-    } else {
-      valuesByScenario.set(scenarioIndex, {
-        scenarioValue: Number(row[scenarioValueCol] ?? 0),
-        values: [Number(row[column] ?? 0)],
-      })
-    }
-  }
-
-  return scenarioIndices.map((si) => {
-    const bucket = valuesByScenario.get(si)
-    const vals = bucket?.values ?? []
-    const scenarioValue = bucket?.scenarioValue ?? 0
-    vals.sort((a, b) => a - b)
-    const n = vals.length
-    if (n === 0) {
-      return { scenarioIndex: si, scenarioValue, count: 0, mean: 0, std: 0, min: 0, p25: 0, median: 0, p75: 0, max: 0 }
-    }
-    const sum = vals.reduce((a, b) => a + b, 0)
-    const mean = sum / n
-    const variance = vals.reduce((a, v) => a + (v - mean) ** 2, 0) / n
-    const std = Math.sqrt(variance)
-    const percentile = (p: number) => {
-      const idx = (p / 100) * (n - 1)
-      const lo = Math.floor(idx)
-      const hi = Math.ceil(idx)
-      if (lo === hi) return vals[lo]
-      return vals[lo] + (vals[hi] - vals[lo]) * (idx - lo)
-    }
-    return {
-      scenarioIndex: si,
-      scenarioValue,
-      count: n,
-      mean,
-      std,
-      min: vals[0],
-      p25: percentile(25),
-      median: percentile(50),
-      p75: percentile(75),
-      max: vals[n - 1],
-    }
-  })
-}
-
 function formatStat(v: number): string {
   if (Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(2) + "M"
   if (Math.abs(v) >= 10_000) return (v / 1_000).toFixed(1) + "K"
@@ -430,6 +362,19 @@ export default function OptimiserDataPreview({
   // Stable key for detecting when the actual series list changes
   const allSeriesKey = JSON.stringify(allSeries)
 
+  const previewRows = useMemo(
+    () =>
+      data.preview.length > OPTIMISER_DATA_PREVIEW_ROW_LIMIT
+        ? data.preview.slice(0, OPTIMISER_DATA_PREVIEW_ROW_LIMIT)
+        : data.preview,
+    [data.preview],
+  )
+  const previewTotalRows = Math.max(data.row_count ?? 0, data.preview.length)
+  const previewBudgetLabel =
+    previewRows.length < previewTotalRows
+      ? `${previewRows.length.toLocaleString()} of ${previewTotalRows.toLocaleString()} rows`
+      : null
+
   // ── Checkbox state: which series are visible ──
   const [checkedSeries, setCheckedSeries] = useState<Set<string>>(
     () => new Set(allSeries),
@@ -453,7 +398,7 @@ export default function OptimiserDataPreview({
   const { quoteIds, quoteRowsByQuote } = useMemo(() => {
     const map = new Map<string, PreviewRow[]>()
     const ids: string[] = []
-    for (const row of data.preview) {
+    for (const row of previewRows) {
       const qid = String(row[quoteIdCol] ?? "")
       const rows = map.get(qid)
       if (rows) {
@@ -464,7 +409,7 @@ export default function OptimiserDataPreview({
       }
     }
     return { quoteIds: ids, quoteRowsByQuote: map }
-  }, [data.preview, quoteIdCol])
+  }, [previewRows, quoteIdCol])
 
   // ── Quote navigation ──
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -509,23 +454,15 @@ export default function OptimiserDataPreview({
   // ── Scenario-level summary statistics (aggregated across all quotes) ──
   // Deferred: only computed when the statistics tab is active to avoid
   // expensive O(n·log·n × #series) sorting on every render.
-  const scenarioIndices = useMemo(() => {
-    if (tab !== "statistics") return []
-    const idxSet = new Set<number>()
-    for (const row of data.preview) {
-      idxSet.add(Number(row[scenarioIndexCol] ?? 0))
-    }
-    return [...idxSet].sort((a, b) => a - b)
-  }, [data.preview, scenarioIndexCol, tab])
-
   const scenarioStatsBySeries = useMemo(() => {
     if (tab !== "statistics") return new Map<string, ScenarioStats[]>()
-    const map = new Map<string, ScenarioStats[]>()
-    for (const col of allSeries) {
-      map.set(col, computeScenarioStats(data.preview, scenarioIndices, col, scenarioIndexCol, scenarioValueCol))
-    }
-    return map
-  }, [allSeries, data.preview, scenarioIndices, scenarioIndexCol, scenarioValueCol, tab])
+    return computeScenarioStatsBySeries({
+      rows: previewRows,
+      series: allSeries,
+      scenarioIndexCol,
+      scenarioValueCol,
+    })
+  }, [allSeries, previewRows, scenarioIndexCol, scenarioValueCol, tab])
 
   // ── No config / no data guards ──
   if (!objectiveCol) {
@@ -551,6 +488,9 @@ export default function OptimiserDataPreview({
     )
   }
 
+  const quoteCountLabel = quoteIds.length.toLocaleString()
+  const scenarioCountLabel = currentRows.length.toLocaleString()
+
   // ── Collapsed ──
   if (collapsed) {
     return (
@@ -564,7 +504,8 @@ export default function OptimiserDataPreview({
           <Target size={14} />
           <span className="font-medium">{data.nodeLabel}</span>
           <span style={{ color: "var(--text-muted)" }}>
-            {quoteIds.length} quotes · {currentRows.length} scenarios
+            {quoteCountLabel} quotes · {scenarioCountLabel} scenarios
+            {previewBudgetLabel ? ` · ${previewBudgetLabel}` : ""}
           </span>
         </button>
       </StatusBar>
@@ -604,7 +545,8 @@ export default function OptimiserDataPreview({
           {data.nodeLabel}
         </span>
         <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {quoteIds.length} quotes · {currentRows.length} scenarios
+          {quoteCountLabel} quotes · {scenarioCountLabel} scenarios
+          {previewBudgetLabel ? ` · ${previewBudgetLabel}` : ""}
         </span>
 
         {/* Quote navigation (chart tab only) */}

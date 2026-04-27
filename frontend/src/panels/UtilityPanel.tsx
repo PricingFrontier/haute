@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
-import { CodeEditor } from "./editors"
+import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
 import useToastStore from "../stores/useToastStore"

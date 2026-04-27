@@ -6,12 +6,52 @@ to verify dict-backed mutation doesn't lose data under threading.
 
 from __future__ import annotations
 
+import shutil
 import threading
 import time
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from haute.routes._job_store import _DEFAULT_TTL_SECONDS, JobStore
+from haute.routes._job_store import (
+    _DEFAULT_HEAVY_OBJECT_TTL_SECONDS,
+    _DEFAULT_TTL_SECONDS,
+    JobStore,
+    get_job_store,
+    register_artifact_cleaner,
+)
+
+
+def _manual_timer_factory(timers: list[object]) -> type:
+    class ManualTimer:
+        def __init__(self, delay: float, callback) -> None:
+            self.delay = delay
+            self.callback = callback
+            self.daemon = False
+            self.started = False
+            self.cancelled = False
+
+        def start(self) -> None:
+            self.started = True
+            timers.append(self)
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def fire(self) -> None:
+            if not getattr(self, "cancelled", False):
+                self.callback()
+
+        def force_fire(self) -> None:
+            self.callback()
+
+    return ManualTimer
+
+
+def _job_store_without_cleanup_threads(**kwargs) -> JobStore:
+    return JobStore(heavy_object_timer_factory=_manual_timer_factory([]), **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Basic CRUD
@@ -125,6 +165,189 @@ class TestJobStoreTTL:
         store.create_job({"status": "trigger"})
         assert store.get_job(stale_id) is None
         assert store.get_job(fresh_id) is not None
+
+    def test_stale_job_artifacts_are_removed_on_eviction(self, tmp_path: Path) -> None:
+        store = JobStore(ttl_seconds=1)
+        kind = "test_job_store_cleanup_artifact"
+        artifact_dir = tmp_path / "haute_opt_apply_test"
+        artifact_dir.mkdir()
+        artifact_path = artifact_dir / "result.parquet"
+        artifact_path.write_bytes(b"artifact")
+        cleaned: list[str] = []
+
+        def cleaner(handle: dict) -> None:
+            cleaned.append(handle["path"])
+            shutil.rmtree(handle["directory"])
+
+        register_artifact_cleaner(kind, cleaner)
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "artifact_handles": {
+                    "apply_result": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(artifact_path),
+                        "directory": str(artifact_dir),
+                    }
+                },
+            }
+        )
+
+        assert artifact_path.exists()
+        assert store.get_job(job_id) is None
+        assert cleaned == [str(artifact_path)]
+        assert not artifact_dir.exists()
+
+    def test_stale_job_path_only_artifacts_are_not_deleted_without_registered_cleaner(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = JobStore(ttl_seconds=1)
+        artifact_path = tmp_path / "apply_result.parquet"
+        artifact_path.write_bytes(b"artifact")
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "artifact_handles": {
+                    "apply_result": {
+                        "kind": "unregistered_test_artifact",
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(artifact_path),
+                    }
+                },
+            }
+        )
+
+        with patch("haute.routes._job_store.logger.warning") as log_warning:
+            assert store.get_job(job_id) is None
+
+        assert artifact_path.exists()
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args == ("job_artifact_cleanup_unknown_handle_kind",)
+        assert log_warning.call_args.kwargs["job_id"] == job_id
+
+    def test_stale_job_artifact_cleanup_failure_is_observable(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = JobStore(ttl_seconds=1)
+        kind = "test_job_store_cleanup_failure"
+        artifact_dir = tmp_path / "locked_apply_result"
+        artifact_dir.mkdir()
+        artifact_path = artifact_dir / "result.parquet"
+        artifact_path.write_bytes(b"artifact")
+
+        def cleaner(_handle: dict) -> None:
+            raise OSError("locked")
+
+        register_artifact_cleaner(kind, cleaner)
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "artifact_handles": {
+                    "apply_result": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(artifact_path),
+                        "directory": str(artifact_dir),
+                    }
+                },
+            }
+        )
+
+        with patch("haute.routes._job_store.logger.warning") as log_warning:
+            assert store.get_job(job_id) is None
+
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args == ("job_artifact_cleanup_failed",)
+        assert log_warning.call_args.kwargs["job_id"] == job_id
+        assert log_warning.call_args.kwargs["path"] == str(artifact_dir)
+        assert log_warning.call_args.kwargs["kind"] == kind
+        assert log_warning.call_args.kwargs["exc_info"] is True
+
+    def test_stale_job_artifact_cleanup_skips_malformed_handles(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = JobStore(ttl_seconds=1)
+        kind = "test_job_store_cleanup_with_malformed_handles"
+        artifact_path = tmp_path / "valid_apply_result.parquet"
+        artifact_path.write_bytes(b"artifact")
+
+        def cleaner(handle: dict) -> None:
+            Path(handle["path"]).unlink()
+
+        register_artifact_cleaner(kind, cleaner)
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "artifact_handles": {
+                    "legacy_string_handle": "not-a-dict",
+                    "empty_path_handle": {"path": ""},
+                    "apply_result": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(artifact_path),
+                    },
+                },
+            }
+        )
+
+        assert store.get_job(job_id) is None
+        assert not artifact_path.exists()
+
+    def test_stale_job_path_cleanup_failure_is_observable_through_registered_cleaner(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = JobStore(ttl_seconds=1)
+        kind = "test_job_store_path_cleanup_failure"
+        artifact_path = tmp_path / "locked_apply_result.parquet"
+        artifact_path.write_bytes(b"artifact")
+
+        def cleaner(_handle: dict) -> None:
+            raise OSError("locked")
+
+        register_artifact_cleaner(kind, cleaner)
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "artifact_handles": {
+                    "apply_result": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(artifact_path),
+                    }
+                },
+            }
+        )
+
+        with patch("haute.routes._job_store.logger.warning") as log_warning:
+            assert store.get_job(job_id) is None
+
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args == ("job_artifact_cleanup_failed",)
+        assert log_warning.call_args.kwargs["job_id"] == job_id
+        assert log_warning.call_args.kwargs["path"] == str(artifact_path)
+        assert log_warning.call_args.kwargs["kind"] == kind
+        assert log_warning.call_args.kwargs["error"] == "locked"
+        assert log_warning.call_args.kwargs["exc_info"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +771,7 @@ class TestClearResultData:
     """Tests for clear_result_data — memory cleanup for completed jobs."""
 
     def test_clears_default_heavy_keys(self) -> None:
-        store = JobStore()
+        store = _job_store_without_cleanup_threads()
         job_id = store.create_job(
             {
                 "status": "completed",
@@ -571,6 +794,28 @@ class TestClearResultData:
         assert job["config"] == {"objective": "income"}
         assert job["result"] == {"converged": True}
 
+    def test_clear_default_heavy_keys_removes_expiry_marker(self) -> None:
+        store = _job_store_without_cleanup_threads()
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": "heavy_solver_object",
+                "solve_result": "heavy_result_object",
+                "quote_grid": "heavy_grid_object",
+                "result": {"converged": True},
+            }
+        )
+
+        assert "heavy_objects_expires_at" in store.jobs[job_id]
+
+        store.clear_result_data(job_id)
+
+        job = store.get_job(job_id)
+        assert job is not None
+        assert "heavy_objects_expires_at" not in job
+        assert "solver" not in job
+        assert job["result"] == {"converged": True}
+
     def test_clears_custom_keys(self) -> None:
         store = JobStore()
         job_id = store.create_job(
@@ -587,6 +832,26 @@ class TestClearResultData:
         assert "big_thing" not in job
         assert "another" not in job
         assert job["keep"] == "this"
+
+    def test_custom_clear_preserves_expiry_marker_when_heavy_objects_remain(self) -> None:
+        store = _job_store_without_cleanup_threads()
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": "heavy_solver_object",
+                "trace_blob": "large-debug-payload",
+                "result": {"converged": True},
+            }
+        )
+        original_expires_at = store.jobs[job_id]["heavy_objects_expires_at"]
+
+        store.clear_result_data(job_id, keys=("trace_blob",))
+
+        job = store.get_job(job_id)
+        assert job is not None
+        assert job["solver"] == "heavy_solver_object"
+        assert "trace_blob" not in job
+        assert job["heavy_objects_expires_at"] == original_expires_at
 
     def test_noop_for_missing_job(self) -> None:
         """Should not raise for a nonexistent job ID."""
@@ -605,7 +870,7 @@ class TestClearResultData:
 
     def test_idempotent(self) -> None:
         """Calling clear_result_data twice should not error or change state."""
-        store = JobStore()
+        store = _job_store_without_cleanup_threads()
         job_id = store.create_job(
             {
                 "status": "completed",
@@ -622,7 +887,7 @@ class TestClearResultData:
 
     def test_clear_uses_atomic_replacement(self) -> None:
         """The old dict reference should not be mutated."""
-        store = JobStore()
+        store = _job_store_without_cleanup_threads()
         job_id = store.create_job(
             {
                 "status": "completed",
@@ -637,6 +902,413 @@ class TestClearResultData:
         # New dict should not
         assert "solver" not in new_dict
         assert old_dict is not new_dict
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: automatic heavy-object lifecycle policy
+# ---------------------------------------------------------------------------
+
+
+class TestHeavyObjectLifecyclePolicy:
+    """Completed jobs keep summaries, but heavy runtime objects age out sooner."""
+
+    @staticmethod
+    def _manual_timer_factory(timers: list) -> object:
+        return _manual_timer_factory(timers)
+
+    def test_default_heavy_object_retention_is_shorter_than_job_ttl(self) -> None:
+        store = JobStore()
+
+        assert _DEFAULT_HEAVY_OBJECT_TTL_SECONDS < _DEFAULT_TTL_SECONDS
+        assert store._heavy_object_ttl_seconds == _DEFAULT_HEAVY_OBJECT_TTL_SECONDS
+
+    def test_completed_job_heavy_objects_are_slimmed_after_policy_window(self) -> None:
+        timers: list = []
+        store = JobStore(
+            ttl_seconds=60,
+            heavy_object_ttl_seconds=1,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "running", "config": {"objective": "loss"}})
+            store.atomic_update(
+                job_id,
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                    "result": {"total_objective": 123.0},
+                    "frontier_data": {"n_points": 0},
+                },
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.5):
+            job = store.get_job(job_id)
+        assert job is not None
+        assert "solver" in job
+        assert "solve_result" in job
+        assert "quote_grid" in job
+
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            job = store.get_job(job_id)
+
+        assert job is not None
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
+        assert job["status"] == "completed"
+        assert job["config"] == {"objective": "loss"}
+        assert job["result"] == {"total_objective": 123.0}
+        assert job["frontier_data"] == {"n_points": 0}
+        assert job["heavy_objects_cleared_at"] == 102.0
+        assert job["heavy_objects_retention_seconds"] == 1
+
+    def test_completed_job_schedules_active_heavy_object_cleanup(self) -> None:
+        timers: list = []
+        store = JobStore(
+            ttl_seconds=60,
+            heavy_object_ttl_seconds=1,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "running"})
+            store.atomic_update(
+                job_id,
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                },
+            )
+
+        assert len(timers) == 1
+        assert timers[0].started is True
+        assert timers[0].daemon is True
+        assert timers[0].delay == pytest.approx(1.0)
+        assert store._heavy_object_timers[job_id] is timers[0]
+        assert "solver" in store.jobs[job_id]
+
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            timers[0].fire()
+            job = store.get_job(job_id)
+        assert job is not None
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
+        assert job_id not in store._heavy_object_timers
+
+    def test_touch_heavy_objects_replaces_stale_cleanup_timer(self) -> None:
+        timers: list = []
+        store = JobStore(
+            ttl_seconds=1000,
+            heavy_object_ttl_seconds=10,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        assert len(timers) == 1
+        first_timer = timers[0]
+
+        with patch("haute.routes._job_store.time.time", return_value=105.0):
+            assert store.touch_heavy_objects(job_id) is True
+
+        assert len(timers) == 2
+        second_timer = timers[1]
+        assert first_timer.cancelled is True
+        assert second_timer.cancelled is False
+        assert store._heavy_object_timers[job_id] is second_timer
+
+        with patch("haute.routes._job_store.time.time", return_value=111.0):
+            first_timer.force_fire()
+        assert "solver" in store.jobs[job_id]
+        assert store._heavy_object_timers[job_id] is second_timer
+
+        with patch("haute.routes._job_store.time.time", return_value=116.0):
+            second_timer.fire()
+        assert "solver" not in store.jobs[job_id]
+        assert job_id not in store._heavy_object_timers
+
+    def test_clear_result_data_cancels_pending_heavy_object_timer(self) -> None:
+        timers: list = []
+        store = JobStore(
+            ttl_seconds=1000,
+            heavy_object_ttl_seconds=10,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        assert len(timers) == 1
+        store.clear_result_data(job_id)
+
+        assert timers[0].cancelled is True
+        assert job_id not in store._heavy_object_timers
+        assert "heavy_objects_expires_at" not in store.jobs[job_id]
+
+    def test_stale_job_eviction_cancels_pending_heavy_object_timer(self) -> None:
+        timers: list = []
+        store = JobStore(
+            ttl_seconds=1,
+            heavy_object_ttl_seconds=100,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        assert len(timers) == 1
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            assert store.get_job(job_id) is None
+
+        assert timers[0].cancelled is True
+        assert job_id not in store._heavy_object_timers
+
+    def test_running_jobs_are_not_slimmed_by_heavy_object_policy(self) -> None:
+        timers: list = []
+        store = JobStore(
+            ttl_seconds=60,
+            heavy_object_ttl_seconds=1,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "running",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            job = store.get_job(job_id)
+
+        assert job is not None
+        assert "solver" in job
+        assert "solve_result" in job
+        assert "quote_grid" in job
+        assert timers == []
+
+    def test_invalid_heavy_object_ttl_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="heavy_object_ttl_seconds"):
+            JobStore(heavy_object_ttl_seconds=-1)
+
+    def test_heavy_object_cleanup_contract_requires_expiry(self) -> None:
+        store = JobStore()
+
+        with pytest.raises(RuntimeError, match="without an expiry"):
+            store._schedule_heavy_object_cleanup_if_needed("job-id", True, None)
+
+    def test_touch_heavy_objects_returns_false_for_running_job(self) -> None:
+        store = JobStore(ttl_seconds=3600, heavy_object_ttl_seconds=900)
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "solver": object(),
+                "solve_result": object(),
+                "quote_grid": object(),
+            }
+        )
+
+        assert store.touch_heavy_objects(job_id) is False
+        assert "heavy_objects_expires_at" not in store.jobs[job_id]
+
+    def test_touch_heavy_objects_extends_successful_access_window(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=940.0):
+            assert store.touch_heavy_objects(job_id) is True
+
+        job = store.jobs[job_id]
+        assert job["heavy_objects_expires_at"] == pytest.approx(1840.0)
+
+        with patch("haute.routes._job_store.time.time", return_value=1839.0):
+            job = store.get_job(job_id)
+        assert job is not None
+        assert "solver" in job
+        assert "solve_result" in job
+        assert "quote_grid" in job
+
+        with patch("haute.routes._job_store.time.time", return_value=1841.0):
+            job = store.get_job(job_id)
+        assert job is not None
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
+
+    def test_touch_heavy_objects_is_capped_by_job_metadata_ttl(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=1000,
+            heavy_object_ttl_seconds=900,
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=950.0):
+            assert store.touch_heavy_objects(job_id) is True
+
+        assert store.jobs[job_id]["heavy_objects_expires_at"] == pytest.approx(1100.0)
+
+    def test_touch_heavy_objects_does_not_fabricate_missing_runtime_state(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=1001.0):
+            job = store.get_job(job_id)
+        assert job is not None
+        assert "solver" not in job
+
+        with patch("haute.routes._job_store.time.time", return_value=1002.0):
+            assert store.touch_heavy_objects(job_id) is False
+
+        job = store.jobs[job_id]
+        assert "solver" not in job
+        assert "solve_result" not in job
+        assert "quote_grid" not in job
+
+    def test_touch_heavy_objects_returns_false_for_evicted_job(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=1,
+            heavy_object_ttl_seconds=900,
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=102.0):
+            assert store.touch_heavy_objects(job_id) is False
+
+        assert job_id not in store.jobs
+
+    def test_guarded_atomic_update_refuses_slimmed_runtime_state(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+        )
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": object(),
+                "quote_grid": object(),
+                "result": {"total_objective": 100.0},
+            }
+        )
+
+        store.clear_result_data(job_id)
+
+        updated = store.atomic_update_if_heavy_present(
+            job_id,
+            {"result": {"total_objective": 200.0}},
+            required_keys=("solver", "quote_grid"),
+            expected_status="completed",
+        )
+
+        assert updated is None
+        assert store.jobs[job_id]["result"] == {"total_objective": 100.0}
+
+    def test_guarded_atomic_update_refuses_unexpected_status(self) -> None:
+        store = JobStore(ttl_seconds=3600, heavy_object_ttl_seconds=900)
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "solver": object(),
+                "quote_grid": object(),
+                "result": {"total_objective": 100.0},
+            }
+        )
+
+        updated = store.atomic_update_if_heavy_present(
+            job_id,
+            {"result": {"total_objective": 200.0}},
+            required_keys=("solver", "quote_grid"),
+            expected_status="completed",
+        )
+
+        assert updated is None
+        assert store.jobs[job_id]["status"] == "running"
+        assert store.jobs[job_id]["result"] == {"total_objective": 100.0}
+
+
+# ---------------------------------------------------------------------------
+# Factory allow-list
+# ---------------------------------------------------------------------------
+
+
+class TestJobStoreFactoryAllowList:
+    """Factory prefixes are deliberately closed to keep singleton storage bounded."""
+
+    def test_unknown_prefix_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="Unknown JobStore prefix 'pipeline'"):
+            get_job_store("pipeline")
 
 
 # ---------------------------------------------------------------------------
@@ -891,7 +1563,7 @@ class TestClearResultDataManualCleanup:
 
     def test_clear_result_data_is_available_for_explicit_cleanup(self) -> None:
         """The helper remains callable even when routes retain runtime state."""
-        store = JobStore()
+        store = _job_store_without_cleanup_threads()
         job_id = store.create_job({"status": "completed", "solver": object()})
 
         store.clear_result_data(job_id, keys=("solver",))
@@ -904,7 +1576,7 @@ class TestClearResultDataManualCleanup:
         """Exercise clear_result_data on a dict shaped like a real
         optimiser completed job — the use case it was designed for.
         """
-        store = JobStore()
+        store = _job_store_without_cleanup_threads()
         job_id = store.create_job(
             {
                 "status": "completed",
@@ -945,7 +1617,7 @@ class TestClearResultDataManualCleanup:
 
     def test_clear_after_clear_is_safe(self) -> None:
         """Double-clear should not raise or corrupt."""
-        store = JobStore()
+        store = _job_store_without_cleanup_threads()
         job_id = store.create_job(
             {
                 "status": "completed",
@@ -1256,10 +1928,7 @@ class TestAtomicUpdateExpectedStatus:
             {"status": "error", "message": "timeout"},
             expected_status="running",
         )
-        # Should return the old dict unchanged
-        assert result["status"] == "completed"
-        assert result["progress"] == 1.0
-        assert "message" not in result
+        assert result is None
         # Store should also be unchanged
         assert store.get_job(job_id)["status"] == "completed"
 
@@ -1270,18 +1939,16 @@ class TestAtomicUpdateExpectedStatus:
         result = store.atomic_update(job_id, {"status": "error"})
         assert result["status"] == "error"
 
-    def test_expected_status_returns_old_dict_on_mismatch(self) -> None:
-        """The returned dict on mismatch is the existing stored dict."""
+    def test_expected_status_returns_none_on_mismatch(self) -> None:
+        """A skipped guarded update is explicit to callers."""
         store = JobStore()
         job_id = store.create_job({"status": "completed", "result": {"score": 0.9}})
-        old = store.get_job(job_id)
         result = store.atomic_update(
             job_id,
             {"status": "error"},
             expected_status="running",
         )
-        # The returned dict should be the original stored dict
-        assert result is old
+        assert result is None
 
     def test_expected_status_guard_prevents_timeout_overwrite(self) -> None:
         """Realistic scenario: timeout callback fires after job already completed.
@@ -1296,13 +1963,14 @@ class TestAtomicUpdateExpectedStatus:
         store.atomic_update(job_id, {"status": "completed", "progress": 1.0})
 
         # Timeout callback fires late — tries to set error, but only if still running
-        store.atomic_update(
+        result = store.atomic_update(
             job_id,
             {"status": "error", "message": "Training timed out"},
             expected_status="running",
         )
 
         # Job should still be completed, not error
+        assert result is None
         job = store.get_job(job_id)
         assert job["status"] == "completed"
         assert job["progress"] == 1.0

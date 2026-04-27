@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import polars as pl
 import pytest
+from fastapi.testclient import TestClient
 
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._container import (
+    DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
     ContainerBuildResult,
     _check_docker_available,
     _detect_extra_deps,
@@ -61,6 +67,42 @@ def _make_resolved(
         output_schema={"premium": "float"},
         removed_node_ids=["exposure"],
     )
+
+
+def _load_generated_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result_df: pl.DataFrame,
+):
+    manifest = {
+        "pruned_graph": PipelineGraph(
+            nodes=[GraphNode(id="quotes", data=NodeData(label="quotes"))],
+            edges=[],
+        ).model_dump(mode="json"),
+        "input_node_ids": ["quotes"],
+        "output_node_id": "quotes",
+        "artifacts": {},
+        "output_fields": None,
+    }
+    (tmp_path / "deploy_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    app_path = tmp_path / "app.py"
+    app_path.write_text(_generate_app_source("motor", 8080), encoding="utf-8")
+
+    def fake_score_graph(**_kwargs):
+        return result_df
+
+    monkeypatch.setattr("haute.deploy._scorer.score_graph", fake_score_graph)
+    module_name = f"_haute_generated_app_{tmp_path.name}"
+    spec = importlib.util.spec_from_file_location(module_name, app_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +226,75 @@ class TestGenerateAppSource:
     def test_imports_score_graph(self) -> None:
         source = _generate_app_source("m", 8080)
         assert "from haute.deploy._scorer import score_graph" in source
+
+    @pytest.mark.parametrize(
+        "row_count",
+        [
+            1,
+            DEFAULT_QUOTE_RESPONSE_ROW_LIMIT - 1,
+            DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
+            DEFAULT_QUOTE_RESPONSE_ROW_LIMIT + 1,
+            10 * DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
+        ],
+    )
+    def test_quote_response_uses_stable_envelope_at_limit_boundaries(
+        self,
+        row_count: int,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": list(range(row_count))}),
+        )
+        original_to_dicts = pl.DataFrame.to_dicts
+        serialized_heights: list[int] = []
+
+        def guarded_to_dicts(self: pl.DataFrame, *args, **kwargs):
+            serialized_heights.append(self.height)
+            if self.height > DEFAULT_QUOTE_RESPONSE_ROW_LIMIT:
+                raise AssertionError("quote response serialized more rows than the limit")
+            return original_to_dicts(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.DataFrame, "to_dicts", guarded_to_dicts)
+
+        response = TestClient(module.app).post("/quote", json=[{"age": 30}])
+
+        assert response.status_code == 200
+        body = response.json()
+        expected_returned_rows = min(row_count, DEFAULT_QUOTE_RESPONSE_ROW_LIMIT)
+        assert set(body) == {"rows", "row_count", "returned_rows", "truncated", "limit"}
+        assert body["row_count"] == row_count
+        assert body["returned_rows"] == expected_returned_rows
+        assert body["limit"] == DEFAULT_QUOTE_RESPONSE_ROW_LIMIT
+        assert body["truncated"] is (row_count > DEFAULT_QUOTE_RESPONSE_ROW_LIMIT)
+        assert len(body["rows"]) == expected_returned_rows
+        assert body["rows"][0] == {"premium": 0}
+        assert body["rows"][-1] == {"premium": expected_returned_rows - 1}
+        assert serialized_heights == [expected_returned_rows]
+
+    def test_quote_response_uses_stable_empty_envelope_for_zero_rows(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": pl.Series([], dtype=pl.Int64)}),
+        )
+
+        response = TestClient(module.app).post("/quote", json=[])
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "rows": [],
+            "row_count": 0,
+            "returned_rows": 0,
+            "truncated": False,
+            "limit": DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
+        }
 
 
 # ---------------------------------------------------------------------------

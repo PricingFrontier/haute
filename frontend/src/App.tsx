@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef, useMemo } from "react"
+import { useEffect, useCallback, useState, useRef } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -15,7 +15,7 @@ import PipelineNode from "./nodes/PipelineNode"
 import SubmodelNode from "./nodes/SubmodelNode"
 import SubmodelPortNode from "./nodes/SubmodelPortNode"
 import NodePalette from "./panels/NodePalette"
-import NodePanel, { type SimpleNode, type SimpleEdge } from "./panels/NodePanel"
+import NodePanel from "./panels/NodePanel"
 import { GraphProvider } from "./panels/GraphContext"
 import DataPreview from "./panels/DataPreview"
 import OptimiserPreview from "./panels/OptimiserPreview"
@@ -31,6 +31,7 @@ import BreadcrumbBar from "./components/BreadcrumbBar"
 import Toolbar from "./components/Toolbar"
 import SubmodelDialog from "./components/SubmodelDialog"
 import RenameDialog from "./components/RenameDialog"
+import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
 import GitPanel from "./panels/GitPanel"
@@ -42,9 +43,9 @@ import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing from "./hooks/useTracing"
 import useSubmodelNavigation from "./hooks/useSubmodelNavigation"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
-import useBackgroundJobs from "./hooks/useBackgroundJobs"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
+import usePanelGraphContext from "./hooks/usePanelGraphContext"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
@@ -52,6 +53,7 @@ import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
+import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
@@ -70,25 +72,6 @@ const connectionLineStyle = { stroke: 'var(--accent)', strokeWidth: 2, strokeDas
 const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
-
-function toSimpleNode(node: Node): SimpleNode {
-  const data = nodeData(node)
-  return {
-    id: node.id,
-    type: node.type,
-    data: {
-      ...node.data,
-      label: data.label || node.id,
-      description: data.description ?? "",
-      nodeType: data.nodeType || node.type || "",
-      config: data.config,
-    },
-  }
-}
-
-function toSimpleEdge(edge: Edge): SimpleEdge {
-  return { id: edge.id, source: edge.source, target: edge.target }
-}
 
 // ---------------------------------------------------------------------------
 // ReactFlow node type â†’ component registry
@@ -194,6 +177,9 @@ function FlowEditor() {
   // Node results store â€” background jobs + cached results
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
+  const touchOptimiserPreview = useNodeResultsStore((s) => s.touchOptimiserPreview)
+  const touchModellingPreview = useNodeResultsStore((s) => s.touchModellingPreview)
+  const setPinnedPreviewNodeId = useNodeResultsStore((s) => s.setPinnedPreviewNodeId)
 
   // Refs
   const submodelsRef = useRef<Record<string, unknown>>({})
@@ -213,31 +199,29 @@ function FlowEditor() {
   }, [nodes, edges])
 
   const activePanelNodeId = selectedNode?.id ?? lastSelectedId
-  const panelNodes = useMemo(() => nodes.map(toSimpleNode), [nodes])
-  const panelEdges = useMemo(() => edges.map(toSimpleEdge), [edges])
-  const panelNode = useMemo(() => {
-    if (!activePanelNodeId) return null
-    const node = nodes.find((n) => n.id === activePanelNodeId)
-    return node ? toSimpleNode(node) : null
-  }, [nodes, activePanelNodeId])
+  const panelGraph = usePanelGraphContext()
+  const panelNode = panelGraph.getNode(activePanelNodeId)
+
+  useEffect(() => {
+    setPinnedPreviewNodeId(activePanelNodeId ?? null)
+    if (!activePanelNodeId) return
+    touchModellingPreview(activePanelNodeId)
+    touchOptimiserPreview(activePanelNodeId)
+  }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
 
   useEffect(() => {
     if (!activePanelNodeId) return
-    if (nodes.some((n) => n.id === activePanelNodeId)) return
+    if (panelGraph.getNode(activePanelNodeId)) return
     setSelectedNode(null)
     lastSelectedNodeRef.current = null
     setLastSelectedId(null)
     setPreviewDataRef.current(null)
-  }, [nodes, activePanelNodeId])
+  }, [panelGraph, activePanelNodeId])
 
-  // Derived dirty flag.
-  //
-  // `isDirty` is a pure selector on useGraphStore that canonicalises the
-  // current {nodes, edges, preamble} and string-compares against the
-  // saved snapshot.  Zustand reruns the selector on every store update
-  // but re-renders only when the returned boolean flips â€” so position
-  // drags and other no-op changes don't thrash App.tsx.
-  const dirty = useGraphStore((s) => s.isDirty())
+  // Store-maintained dirty flag.
+  // Subscribe to the primitive so frequent React Flow node updates do not
+  // serialize the graph from App's selector.
+  const dirty = useGraphStore((s) => s.dirty)
 
   // ---------------------------------------------------------------------------
   // Hooks
@@ -294,9 +278,6 @@ function FlowEditor() {
     isInsideSubmodel: viewStack.length > 1,
   })
 
-  // Background polling for optimiser/training jobs (survives panel unmount)
-  useBackgroundJobs()
-
   // ---------------------------------------------------------------------------
   // Node + edge interaction handlers (extracted to custom hooks)
   // ---------------------------------------------------------------------------
@@ -311,7 +292,7 @@ function FlowEditor() {
 
   const {
     handleDeleteNode, handleDuplicateNode,
-    handleCreateInstance, handleRenameNode, handleAutoLayout,
+    handleCreateInstance, handleRenameNode, handleAutoLayout, isAutoLayouting,
   } = useNodeHandlers({
     graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setSelectedNode,
@@ -319,10 +300,13 @@ function FlowEditor() {
   })
 
   const shouldSkipAutomaticPreview = useCallback(
-    (node: Node) =>
-      nodeData(node).nodeType === NODE_TYPES.OPTIMISER &&
-      !!getOptimiserPreview(node.id),
-    [getOptimiserPreview],
+    (node: Node) => {
+      if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
+      const hasPreview = !!getOptimiserPreview(node.id)
+      if (hasPreview) touchOptimiserPreview(node.id)
+      return hasPreview
+    },
+    [getOptimiserPreview, touchOptimiserPreview],
   )
 
   const {
@@ -353,6 +337,7 @@ function FlowEditor() {
 
   // eslint-disable-next-line react-hooks/refs -- ref is mutated by hooks; reading here is intentional
   const submodelsSnapshot = submodelsRef.current
+  const useLiteGraphEffects = shouldUseLiteGraphEffects(nodes.length, edges.length)
 
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
@@ -370,6 +355,7 @@ function FlowEditor() {
         onOpenGit={() => { setGitOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
+        isAutoLayouting={isAutoLayouting}
         onSave={handleSave}
         wsStatus={wsStatus}
         timings={previewData?.timings}
@@ -407,6 +393,7 @@ function FlowEditor() {
             <div className="flex-1 min-h-0 relative">
               <BreadcrumbBar viewStack={viewStack} onNavigate={handleBreadcrumbNavigate} />
               <ReactFlow
+                className={useLiteGraphEffects ? "graph-effects-lite" : undefined}
                 nodes={nodesWithStatus}
                 edges={edgesWithTrace}
                 onNodesChange={onNodesChange}
@@ -466,9 +453,7 @@ function FlowEditor() {
                 )
               }
               // Pre-solve chart view for optimiser nodes
-              const activeNode = activeNodeId
-                ? nodes.find((n) => n.id === activeNodeId)
-                : null
+              const activeNode = panelGraph.getNode(activeNodeId)
               if (
                 activeNode &&
                 nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
@@ -525,8 +510,8 @@ function FlowEditor() {
               <TracePanel trace={traceResult} onClose={clearTrace} />
             ) : (
               <GraphProvider
-                allNodes={panelNodes}
-                edges={panelEdges}
+                allNodes={panelGraph.allNodes}
+                edges={panelGraph.edges}
                 submodels={submodelsSnapshot}
                 preamble={preamble}
               >
@@ -622,6 +607,7 @@ function FlowEditor() {
 function App() {
   return (
     <ReactFlowProvider>
+      <BackgroundJobPolling />
       <FlowEditor />
     </ReactFlowProvider>
   )

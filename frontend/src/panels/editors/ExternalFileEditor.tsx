@@ -1,5 +1,6 @@
-import { InputSourcesBar, FileBrowser, CodeEditor } from "./_shared"
+import { InputSourcesBar, FileBrowser } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
+import { CodeEditor } from "./CodeEditor"
 import { configField } from "../../utils/configField"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 

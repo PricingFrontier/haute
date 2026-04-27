@@ -22,11 +22,13 @@ guards for behaviour that must hold both before and after the optimisation.
 from __future__ import annotations
 
 import time
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from haute._cache import graph_fingerprint
+from haute._cache import GraphFingerprintMemo, graph_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
 # ---------------------------------------------------------------------------
@@ -241,10 +243,179 @@ class TestMutationBehaviour:
         g2 = PipelineGraph(nodes=[n2], edges=[])
         assert graph_fingerprint(g1) != graph_fingerprint(g2)
 
+    def test_different_preamble_means_different_fingerprint(self) -> None:
+        """Preview/trace caches must invalidate when helper code changes."""
+        nodes = [_make_node("a", {"code": "df = df.with_columns(y=pl.lit(FACTOR))"})]
+        g1 = PipelineGraph(nodes=nodes, edges=[], preamble="FACTOR = 2\n")
+        g2 = PipelineGraph(nodes=nodes, edges=[], preamble="FACTOR = 3\n")
+
+        assert graph_fingerprint(g1) != graph_fingerprint(g2)
+
+    def test_utility_module_content_changes_fingerprint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Utility edits must invalidate cache keys even for the same graph instance."""
+        monkeypatch.chdir(tmp_path)
+        utility_dir = tmp_path / "utility"
+        utility_dir.mkdir()
+        (utility_dir / "__init__.py").write_text("", encoding="utf-8")
+        helper = utility_dir / "helpers.py"
+        helper.write_text("FACTOR = 2\n", encoding="utf-8")
+
+        graph = PipelineGraph(
+            nodes=[_make_node("a", {"code": "df = df.with_columns(y=pl.lit(FACTOR))"})],
+            edges=[],
+            preamble="from utility.helpers import FACTOR\n",
+            source_file=str(tmp_path / "pipeline.py"),
+        )
+
+        fp_before = graph_fingerprint(graph)
+        helper.write_text("FACTOR = 20\n", encoding="utf-8")
+
+        assert graph_fingerprint(graph) != fp_before
+
 
 # ---------------------------------------------------------------------------
 # Call-counting spy — trace passthrough (item #94)
 # ---------------------------------------------------------------------------
+
+
+class TestUtilityFileContentHashMemo:
+    """Utility package file hashes can be memoised inside one request."""
+
+    def _make_utility_package(self, tmp_path: Path, n_modules: int) -> tuple[Path, list[Path]]:
+        utility_dir = tmp_path / "utility"
+        utility_dir.mkdir()
+        files = [utility_dir / "__init__.py"]
+        files[0].write_text("", encoding="utf-8")
+        for i in range(n_modules):
+            module_path = utility_dir / f"module_{i}.py"
+            module_path.write_text(f"VALUE_{i} = {i}\n", encoding="utf-8")
+            files.append(module_path)
+        return utility_dir, files
+
+    def _make_utility_graph(self, tmp_path: Path) -> PipelineGraph:
+        return PipelineGraph(
+            nodes=[_make_node("a", {"code": "df = df"})],
+            edges=[],
+            preamble="import utility\n",
+            source_file=str(tmp_path / "pipeline.py"),
+        )
+
+    def test_unchanged_utility_files_are_content_hashed_once_with_request_memo(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Repeated request-local fingerprints should not stream unchanged files."""
+        import haute._cache as cache_mod
+
+        monkeypatch.chdir(tmp_path)
+        _, files = self._make_utility_package(tmp_path, n_modules=30)
+        graph = self._make_utility_graph(tmp_path)
+
+        calls: list[Path] = []
+        original_content_hash = cache_mod.content_hash
+        memo = GraphFingerprintMemo()
+
+        def counting_content_hash(path: Path) -> str:
+            calls.append(Path(path).resolve())
+            return original_content_hash(path)
+
+        monkeypatch.setattr(cache_mod, "content_hash", counting_content_hash)
+
+        for _ in range(12):
+            graph_fingerprint(graph, memo=memo)
+
+        expected = {path.resolve() for path in files}
+        assert set(calls) == expected
+        assert Counter(calls) == Counter({path: 1 for path in expected})
+
+    def test_request_memo_invalidates_only_changed_files_with_changed_metadata(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Edits/creates/replacements hash affected files; deletes hash nothing."""
+        import haute._cache as cache_mod
+
+        monkeypatch.chdir(tmp_path)
+        _, files = self._make_utility_package(tmp_path, n_modules=6)
+        graph = self._make_utility_graph(tmp_path)
+
+        calls: list[Path] = []
+        original_content_hash = cache_mod.content_hash
+        memo = GraphFingerprintMemo()
+
+        def counting_content_hash(path: Path) -> str:
+            calls.append(Path(path).resolve())
+            return original_content_hash(path)
+
+        monkeypatch.setattr(cache_mod, "content_hash", counting_content_hash)
+
+        fp_initial = graph_fingerprint(graph, memo=memo)
+        assert Counter(calls) == Counter({path.resolve(): 1 for path in files})
+
+        changed = files[2]
+        calls.clear()
+        changed.write_text("VALUE_1 = 100\nEXTRA = 'changed'\n", encoding="utf-8")
+        fp_changed = graph_fingerprint(graph, memo=memo)
+        assert fp_changed != fp_initial
+        assert calls == [changed.resolve()]
+
+        created = tmp_path / "utility" / "new_module.py"
+        calls.clear()
+        created.write_text("CREATED = True\n", encoding="utf-8")
+        fp_created = graph_fingerprint(graph, memo=memo)
+        assert fp_created != fp_changed
+        assert calls == [created.resolve()]
+
+        deleted = files[3]
+        calls.clear()
+        deleted.unlink()
+        fp_deleted = graph_fingerprint(graph, memo=memo)
+        assert fp_deleted != fp_created
+        assert calls == []
+
+        replaced = files[4]
+        replacement = tmp_path / "replacement.py"
+        calls.clear()
+        replacement.write_text("VALUE_3 = 300\nREPLACED = True\n", encoding="utf-8")
+        replacement.replace(replaced)
+        fp_replaced = graph_fingerprint(graph, memo=memo)
+        assert fp_replaced != fp_deleted
+        assert calls == [replaced.resolve()]
+
+    def test_independent_calls_detect_same_size_same_mtime_utility_edit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Independent fingerprints must not trust preserved file metadata."""
+        import os
+
+        monkeypatch.chdir(tmp_path)
+        utility_dir = tmp_path / "utility"
+        utility_dir.mkdir()
+        (utility_dir / "__init__.py").write_text("", encoding="utf-8")
+        helper = utility_dir / "helpers.py"
+        helper.write_text("VALUE = 1\n", encoding="utf-8")
+        fixed_mtime = 1_700_000_000
+        os.utime(helper, (fixed_mtime, fixed_mtime))
+        graph = PipelineGraph(
+            nodes=[_make_node("a", {"code": "df = df"})],
+            edges=[],
+            preamble="from utility.helpers import VALUE\n",
+            source_file=str(tmp_path / "pipeline.py"),
+        )
+
+        fp_before = graph_fingerprint(graph)
+        helper.write_text("VALUE = 2\n", encoding="utf-8")
+        os.utime(helper, (fixed_mtime, fixed_mtime))
+
+        assert graph_fingerprint(graph) != fp_before
 
 
 class _CallCountingFingerprint:

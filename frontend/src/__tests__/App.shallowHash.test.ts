@@ -22,7 +22,8 @@
  *   RESULT KEYS — downstream products of prior previews; ignoring them
  *   is the whole point of the optimisation:
  *     - _columns, _availableColumns, _schemaWarnings  (preview results)
- *     - _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue
+ *     - _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue,
+ *       _traceMotionDisabled
  *       (trace / hover UI state that is downstream of, not input to,
  *       the preview computation)
  *
@@ -130,6 +131,7 @@ describe("shallowNodeDataHash — input-identity invariants", () => {
       _traceDimmed: false,
       _hoverDimmed: true,
       _traceValue: 42,
+      _traceMotionDisabled: true,
     })
     expect(afterTraceActive).toBe(before)
   })

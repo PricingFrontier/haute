@@ -325,10 +325,17 @@ export function previewNode(
   rowLimit: number,
   source?: string,
   options?: { signal?: AbortSignal; timeout?: number },
+  requestedPreviewColumns?: string[],
 ): Promise<PreviewNodeResponse> {
   return post<unknown>(
     "/api/pipeline/preview",
-    { graph, node_id: nodeId, row_limit: rowLimit, source: source ?? "live" },
+    {
+      graph,
+      node_id: nodeId,
+      row_limit: rowLimit,
+      source: source ?? "live",
+      ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
+    },
     {
       timeout: 120_000,
       ...options,

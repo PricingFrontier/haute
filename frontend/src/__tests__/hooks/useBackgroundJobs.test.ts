@@ -165,6 +165,30 @@ describe("useBackgroundJobs", () => {
       expect(job?.progress?.progress).toBe(0.7)
       expect(job?.progress?.message).toBe("Iterating")
     })
+
+    it("throttles repeated running progress before writing solve job state", async () => {
+      const mockGetStatus = vi.mocked(getOptimiserStatus)
+      mockGetStatus.mockReset()
+      mockGetStatus
+        .mockResolvedValueOnce(makeSolveProgress({ status: "running", progress: 0.1, message: "10%" }))
+        .mockResolvedValueOnce(makeSolveProgress({ status: "running", progress: 0.2, message: "20%" }))
+        .mockResolvedValueOnce(makeSolveProgress({ status: "running", progress: 0.3, message: "30%" }))
+
+      act(() => {
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.1)
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.1)
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.3)
+    })
   })
 
   // ────────────────────────────────────────────────────────────────
@@ -199,6 +223,30 @@ describe("useBackgroundJobs", () => {
       expect(state.trainResults["t1"]).toBeDefined()
       expect(state.trainResults["t1"].result.metrics.rmse).toBe(0.05)
       expect(state.trainJobs["t1"]).toBeUndefined()
+    })
+
+    it("throttles repeated running progress before writing train job state", async () => {
+      const mockGetStatus = vi.mocked(getTrainStatus)
+      mockGetStatus.mockReset()
+      mockGetStatus
+        .mockResolvedValueOnce(makeTrainProgress({ status: "running", progress: 0.1, message: "10%" }))
+        .mockResolvedValueOnce(makeTrainProgress({ status: "running", progress: 0.2, message: "20%" }))
+        .mockResolvedValueOnce(makeTrainProgress({ status: "running", progress: 0.3, message: "30%" }))
+
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.1)
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.1)
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.3)
     })
   })
 
@@ -247,7 +295,7 @@ describe("useBackgroundJobs", () => {
       // Poll 6: at +12500 + 500 = +13000ms (backoff resets after success on poll 5,
       //         but poll 5 also errors so backoff = 5000, then poll 6 at +17500)
       // Let's just advance enough to get all 5 errors
-      await advance(13_000)
+      await advance(18_000)
 
       // All 5 error polls should have fired
       expect(callTracker.length).toBeGreaterThanOrEqual(5)

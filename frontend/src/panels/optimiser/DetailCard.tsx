@@ -24,6 +24,7 @@ interface DetailCardProps {
   onLogMlflow: () => void
   saving: boolean
   logging: boolean
+  terminalActionsDisabled?: boolean
   mlflowAvailable: boolean
   actionMsg: string | null
 }
@@ -39,6 +40,7 @@ export default function DetailCard({
   onLogMlflow,
   saving,
   logging,
+  terminalActionsDisabled = false,
   mlflowAvailable,
   actionMsg,
 }: DetailCardProps) {
@@ -48,6 +50,7 @@ export default function DetailCard({
   const objValue = Number(point.total_objective ?? 0)
   const baselineObj = result.baseline_objective
   const objVsBaseline = baselineObj !== 0 ? ((objValue / baselineObj - 1) * 100) : null
+  const actionsDisabled = saving || logging || terminalActionsDisabled
 
   return (
     <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
@@ -149,11 +152,11 @@ export default function DetailCard({
       <div className="flex gap-2 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           onClick={onSave}
-          disabled={saving || logging}
+          disabled={actionsDisabled}
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
           style={{
-            background: saving || logging ? "var(--chrome-hover)" : "var(--warning-soft-emphasis)",
-            color: saving || logging ? "var(--text-muted)" : "var(--warning-strong)",
+            background: actionsDisabled ? "var(--chrome-hover)" : "var(--warning-soft-emphasis)",
+            color: actionsDisabled ? "var(--text-muted)" : "var(--warning-strong)",
             border: "1px solid var(--warning-border-strong)",
           }}
         >
@@ -163,11 +166,11 @@ export default function DetailCard({
         {mlflowAvailable && (
           <button
             onClick={onLogMlflow}
-            disabled={saving || logging}
+            disabled={actionsDisabled}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
             style={{
-              background: saving || logging ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
-              color: saving || logging ? "var(--text-muted)" : MODEL_COLORS.accent,
+              background: actionsDisabled ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+              color: actionsDisabled ? "var(--text-muted)" : MODEL_COLORS.accent,
               border: `1px solid ${MODEL_COLORS.accentSoft}`,
             }}
           >

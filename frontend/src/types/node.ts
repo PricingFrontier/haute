@@ -34,6 +34,7 @@ export interface HauteNodeData extends Record<string, unknown> {
   _traceDimmed?: boolean
   _hoverDimmed?: boolean
   _traceValue?: unknown
+  _traceMotionDisabled?: boolean
 }
 
 export type PipelineNodeData = HauteNodeData
@@ -55,6 +56,7 @@ export interface SubmodelPortData extends Record<string, unknown> {
   portName: string
   _traceActive?: boolean
   _traceDimmed?: boolean
+  _traceMotionDisabled?: boolean
 }
 export type SubmodelPortFlowNode = Node<SubmodelPortData>
 
