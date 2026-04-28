@@ -17,11 +17,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from haute._banding_config import (
+    compact_banding_config_for_sidecar,
+    expand_banding_config_from_sidecar,
+)
 from haute._graph_utils import _sanitize_func_name
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._rating_step_config import (
+    compact_rating_step_config_for_sidecar,
+    expand_rating_step_config_from_sidecar,
+)
 from haute._types import NodeType, PipelineGraph
 
 logger = get_logger(component="config_io")
@@ -61,10 +69,53 @@ def _strip_internal_keys(obj: Any) -> Any:
     misses these; this function walks the full structure.
     """
     if isinstance(obj, dict):
-        return {k: _strip_internal_keys(v) for k, v in obj.items() if not k.startswith("_")}
+        return {
+            k: _strip_internal_keys(v)
+            for k, v in obj.items()
+            if not isinstance(k, str) or not k.startswith("_")
+        }
     if isinstance(obj, list):
         return [_strip_internal_keys(item) for item in obj]
     return obj
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    """Load a config JSON object, rejecting duplicate keys."""
+
+    def object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    loaded = json.loads(read_user_text(path), object_pairs_hook=object_pairs_hook)
+    if not isinstance(loaded, dict):
+        raise ValueError("Node config JSON must contain an object")
+    return loaded
+
+
+def _config_node_type_from_path(path: Path) -> NodeType | None:
+    return FOLDER_TO_NODE_TYPE.get(path.parent.name)
+
+
+def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
+    if node_type == NodeType.BANDING:
+        return expand_banding_config_from_sidecar(config)
+    if node_type == NodeType.RATING_STEP:
+        return expand_rating_step_config_from_sidecar(config)
+    return config
+
+
+def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
+    filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
+    filtered = cast(dict[str, Any], _strip_internal_keys(filtered))
+    if node_type == NodeType.BANDING:
+        return compact_banding_config_for_sidecar(filtered)
+    if node_type == NodeType.RATING_STEP:
+        return compact_rating_step_config_for_sidecar(filtered)
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +183,8 @@ def load_node_config(
         root = base_dir.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"Config path {config_path!r} resolves outside project root")
-    return dict(json.loads(read_user_text(resolved)))
+    config = _load_json_object(resolved)
+    return _normalise_loaded_config(config, _config_node_type_from_path(resolved))
 
 
 def save_node_config(
@@ -149,8 +201,7 @@ def save_node_config(
     rel_path = config_path_for_node(node_type, node_name)
     abs_path = base_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
-    filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
-    filtered = _strip_internal_keys(filtered)
+    filtered = _prepare_config_for_sidecar(node_type, config)
     abs_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     logger.info("config_saved", path=str(rel_path), node_type=node_type.value)
     return rel_path
@@ -195,7 +246,7 @@ def find_config_by_func_name(
         candidate = base_dir / "config" / folder / f"{func_name}.json"
         if candidate.is_file():
             try:
-                config = dict(json.loads(read_user_text(candidate)))
+                config = _normalise_loaded_config(_load_json_object(candidate), node_type)
             except (json.JSONDecodeError, OSError, ValueError) as exc:
                 logger.warning(
                     "config_recovery_failed",
@@ -236,12 +287,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()
-        filtered = {
-            k: v
-            for k, v in node.data.config.items()
-            if k not in _CODE_KEYS and not k.startswith("_")
-        }
-        filtered = _strip_internal_keys(filtered)
+        filtered = _prepare_config_for_sidecar(nt, node.data.config)
         configs[rel_path] = json.dumps(filtered, indent=2, ensure_ascii=False) + "\n"
     return configs
 

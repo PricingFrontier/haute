@@ -211,6 +211,25 @@ class TestBuildNodeFn:
         result = fn(lf).collect()
         assert result["type_band"].to_list() == ["Group1", "Group1", "Group2", None]
 
+    def test_banding_node_fn_accepts_compact_categorical_rules(self):
+        node = _multi_banding_node(
+            "band_prop",
+            [
+                {
+                    "banding": "categorical",
+                    "column": "type",
+                    "outputColumn": "type_band",
+                    "rules": {"A": "Group1", "B": "Group1", "C": "Group2"},
+                }
+            ],
+        )
+
+        _, fn, _ = _build_node_fn(node)
+        lf = pl.DataFrame({"type": ["A", "B", "C", "D"]}).lazy()
+        result = fn(lf).collect()
+
+        assert result["type_band"].to_list() == ["Group1", "Group1", "Group2", None]
+
     def test_banding_node_empty_config_passthrough(self):
         node = _banding_node("empty", column="", output_column="", rules=[])
         _, fn, _ = _build_node_fn(node)
@@ -300,6 +319,81 @@ def band_prop(df: pl.LazyFrame) -> pl.LazyFrame:
         node = graph.nodes[0]
         assert node.data.nodeType == "banding"
         assert node.data.config["factors"][0]["banding"] == "categorical"
+
+    def test_parse_compact_categorical_banding_sidecar(self, tmp_path):
+        from haute.parser import parse_pipeline_source
+
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band_fuel",
+            {
+                "factors": [
+                    {
+                        "banding": "categorical",
+                        "column": "fuel_type",
+                        "outputColumn": "fuel_band",
+                        "rules": {"Petrol": "Standard", "Electric": "Green"},
+                    }
+                ]
+            },
+        )
+        code = f'''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("test")
+
+@pipeline.banding(config="{band_config}")
+def band_fuel(df: pl.LazyFrame) -> pl.LazyFrame:
+    """Band fuel type"""
+    return df
+'''
+        graph = parse_pipeline_source(code, _base_dir=tmp_path)
+        factor = graph.nodes[0].data.config["factors"][0]
+
+        assert factor["rules"] == [
+            {"value": "Petrol", "assignment": "Standard"},
+            {"value": "Electric", "assignment": "Green"},
+        ]
+
+    def test_parse_compact_breakpoint_banding_sidecar(self, tmp_path):
+        from haute.parser import parse_pipeline_source
+
+        band_config = write_node_config(
+            tmp_path,
+            NodeType.BANDING,
+            "band_age",
+            {
+                "factors": [
+                    {
+                        "banding": "breakpoints",
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "rules": {"25": "young", "65": "adult", "": "senior"},
+                    }
+                ]
+            },
+        )
+        code = f'''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("test")
+
+@pipeline.banding(config="{band_config}")
+def band_age(df: pl.LazyFrame) -> pl.LazyFrame:
+    """Band age"""
+    return df
+'''
+        graph = parse_pipeline_source(code, _base_dir=tmp_path)
+        factor = graph.nodes[0].data.config["factors"][0]
+
+        assert factor["rules"] == [
+            {"boundary": "25", "label": "young"},
+            {"boundary": "65", "label": "adult"},
+            {"boundary": "", "label": "senior"},
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +864,21 @@ class TestBreakpointsMode:
         assert bands[1] == "B"  # >= 10, < 20
         assert bands[2] == "B"  # >= 10, < 20
         assert bands[3] is None  # >= 20 but no open-ended
+
+    def test_build_banding_accepts_compact_breakpoint_rules(self):
+        factor = {
+            "banding": "breakpoints",
+            "column": "age",
+            "outputColumn": "age_band",
+            "rules": {"25": "young", "65": "adult", "": "senior"},
+        }
+        node = _multi_banding_node("age_bands", [factor])
+
+        _, fn, _ = _build_node_fn(node)
+        lf = pl.DataFrame({"age": [20, 40, 80]}).lazy()
+        result = fn(lf).collect()
+
+        assert result["age_band"].to_list() == ["young", "adult", "senior"]
 
 
 # ---------------------------------------------------------------------------

@@ -1016,3 +1016,197 @@ class TestRatingStepCodegen:
 
         assert "apply_rating_step_from_config" in generated
         assert generated.index("apply_rating_step_from_config") < generated.index("final_premium")
+
+
+class TestRatingStepCompactSidecarIntegration:
+    def test_parser_expands_compact_rating_sidecar_to_canonical_rows(self, tmp_path):
+        import json
+
+        config_path = tmp_path / "config" / "rating_step" / "rating.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tables": [
+                        {
+                            "name": "vehicle_factor",
+                            "factors": ["vehicle_age_band", "cover_type"],
+                            "outputColumn": "vehicle_factor",
+                            "entries": {"1-3": {"comprehensive": 0.9}},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        code = """
+import polars as pl
+from haute import pipeline
+
+@pipeline.rating_step(config="config/rating_step/rating.json")
+def rating(df: pl.LazyFrame) -> pl.LazyFrame:
+    return df
+"""
+
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+        rating_node = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
+
+        assert rating_node.data.config["tables"][0]["entries"] == [
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "value": 0.9,
+            }
+        ]
+
+    def test_parser_expands_three_factor_sidecar_using_editor_axis_order(self, tmp_path):
+        import json
+
+        config_path = tmp_path / "config" / "rating_step" / "rating.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tables": [
+                        {
+                            "name": "vehicle_factor",
+                            "factors": ["vehicle_age_band", "cover_type", "channel"],
+                            "outputColumn": "vehicle_factor",
+                            "entries": {
+                                "confused": {
+                                    "comprehensive": {
+                                        "1-3": 0.91,
+                                        "4-5": 0.96,
+                                    }
+                                }
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        code = """
+import polars as pl
+from haute import pipeline
+
+@pipeline.rating_step(config="config/rating_step/rating.json")
+def rating(df: pl.LazyFrame) -> pl.LazyFrame:
+    return df
+"""
+
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+        rating_node = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
+
+        assert rating_node.data.config["tables"][0]["entries"] == [
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "channel": "confused",
+                "value": 0.91,
+            },
+            {
+                "vehicle_age_band": "4-5",
+                "cover_type": "comprehensive",
+                "channel": "confused",
+                "value": 0.96,
+            },
+        ]
+
+    def test_collect_then_parse_keeps_graph_canonical_but_sidecar_compact(self, tmp_path):
+        import json
+
+        from haute._config_io import collect_node_configs
+
+        node = _rating_node(
+            "rating",
+            [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "outputColumn": "vehicle_factor",
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "value": 0.9,
+                        }
+                    ],
+                }
+            ],
+        )
+        src = _source_node("src")
+        graph = PipelineGraph(
+            nodes=[src, node],
+            edges=[GraphEdge(id="e1", source="src", target="rating")],
+        )
+        code = graph_to_code(graph)
+        configs = collect_node_configs(graph)
+        rating_config = json.loads(configs["config/rating_step/rating.json"])
+        assert rating_config["tables"][0]["entries"] == {"1-3": {"comprehensive": 0.9}}
+        for rel_path, content in configs.items():
+            config_file = tmp_path / rel_path
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text(content, encoding="utf-8")
+
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+        rating_node = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
+
+        assert isinstance(rating_node.data.config["tables"][0]["entries"], list)
+        assert rating_node.data.config["tables"][0]["entries"][0] == {
+            "vehicle_age_band": "1-3",
+            "cover_type": "comprehensive",
+            "value": 0.9,
+        }
+
+    def test_collect_then_parse_three_factor_keeps_editor_axis_sidecar_order(self, tmp_path):
+        import json
+
+        from haute._config_io import collect_node_configs
+
+        expected_entries = [
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "channel": "confused",
+                "value": 0.91,
+            },
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "third_party_only",
+                "channel": "compare_the_market",
+                "value": 1.08,
+            },
+        ]
+        node = _rating_node(
+            "rating",
+            [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type", "channel"],
+                    "outputColumn": "vehicle_factor",
+                    "entries": expected_entries,
+                }
+            ],
+        )
+        src = _source_node("src")
+        graph = PipelineGraph(
+            nodes=[src, node],
+            edges=[GraphEdge(id="e1", source="src", target="rating")],
+        )
+        code = graph_to_code(graph)
+        configs = collect_node_configs(graph)
+        rating_config = json.loads(configs["config/rating_step/rating.json"])
+        assert rating_config["tables"][0]["entries"] == {
+            "confused": {"comprehensive": {"1-3": 0.91}},
+            "compare_the_market": {"third_party_only": {"1-3": 1.08}},
+        }
+        for rel_path, content in configs.items():
+            config_file = tmp_path / rel_path
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text(content, encoding="utf-8")
+
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+        rating_node = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
+
+        assert rating_node.data.config["tables"][0]["entries"] == expected_entries

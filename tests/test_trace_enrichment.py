@@ -2935,6 +2935,52 @@ class TestEnrichBandingRealConfig:
         assert result["upper_bound"] == 65.0
         assert result["upper_inclusive"] is True
 
+    def test_compact_categorical_banding_trace_matches_rule(self):
+        """Trace enrichment accepts the compact sidecar rule map."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "fuel_type",
+                    "outputColumn": "fuel_band",
+                    "banding": "categorical",
+                    "rules": {"Petrol": "Standard", "Electric": "Green"},
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"fuel_type": "Petrol"}, {"fuel_band": "Standard"})
+
+        assert result["input_column"] == "fuel_type"
+        assert result["input_value"] == "Petrol"
+        assert result["selected_band"] == "Standard"
+        assert result["matched_value"] == "Petrol"
+        assert result["rule_index"] == 0
+
+    def test_compact_breakpoint_banding_trace_reports_range(self):
+        """Trace enrichment expands compact breakpoint maps before range matching."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "breakpoints",
+                    "rules": {"25": "young", "65": "adult", "": "senior"},
+                    "rightClosed": True,
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"age": 35}, {"age_band": "adult"})
+
+        assert result["input_value"] == 35
+        assert result["selected_band"] == "adult"
+        assert result["lower_bound"] == 25.0
+        assert result["upper_bound"] == 65.0
+
     def test_multiple_factors_focuses_top_level_detail_on_traced_output(self):
         """Multi-factor banding reports the traced output's source value at top level."""
         from haute._trace_enrichment import enrich_banding
@@ -3351,6 +3397,37 @@ class TestEnrichRatingStepRealConfig:
         assert result["tables"][0]["name"] == "region_factor"
         assert result["tables"][0]["factors"] == [{"column": "region", "value": "north"}]
         assert result["tables"][0]["selected_value"] == 1.1
+
+    def test_compact_table_entries_trace_like_canonical_rows(self):
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "entries": {"1-3": {"comprehensive": 0.9}},
+                    "outputColumn": "vehicle_factor",
+                    "defaultValue": "1.0",
+                }
+            ]
+        }
+        result = enrich_rating_step(
+            config,
+            input_row={"vehicle_age_band": "1-3", "cover_type": "comprehensive"},
+            output_row={"vehicle_factor": 0.9},
+        )
+
+        assert result["matched_key"] == {
+            "vehicle_age_band": "1-3",
+            "cover_type": "comprehensive",
+        }
+        assert result["matched"] is True
+        assert result["tables"][0]["matched_entry"] == {
+            "vehicle_age_band": "1-3",
+            "cover_type": "comprehensive",
+            "value": 0.9,
+        }
 
     def test_multiple_tables_with_combined_column(self):
         from haute._trace_enrichment import enrich_rating_step

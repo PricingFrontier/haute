@@ -38,8 +38,10 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from haute._banding_config import normalise_banding_factors
 from haute._logging import get_logger
 from haute._rating import _breakpoints_to_rules, _normalise_combined_outputs
+from haute._rating_step_config import normalise_rating_tables
 
 if TYPE_CHECKING:
     from haute.trace import TraceStep
@@ -179,7 +181,7 @@ def enrich_rating_step(
     Handles both real Haute config (with ``tables`` list) and simplified
     test config (with ``join_key`` and ``rate_column``).
     """
-    tables: list[dict[str, Any]] = config.get("tables", []) or []
+    tables = normalise_rating_tables(config)
     combined_col = str(config.get("combinedColumn", "") or "").strip()
     has_combined_outputs = "combinedOutputs" in config
 
@@ -490,7 +492,7 @@ def enrich_banding(
     ``rules``).
     """
     try:
-        factors = config.get("factors", [])
+        factors = normalise_banding_factors(config)
 
         if isinstance(factors, list) and factors and isinstance(factors[0], dict):
             # Real Haute config — multiple banding factors

@@ -26,17 +26,24 @@ A new `banding` node type that supports **multiple factors per node**, each inde
       "banding": "categorical",
       "column": "property_type",
       "outputColumn": "prop_band",
-      "rules": [
-        { "value": "Semi-detached House", "assignment": "House" }
-      ],
+      "rules": {
+        "Semi-detached House": "House",
+        "Detached House": "House"
+      },
       "default": null
     }
   ]
 }
 ```
 
+Categorical and breakpoint sidecars use compact key/value maps. The parser
+expands those maps back to the internal row-array shape before execution,
+tracing, or frontend editing. Continuous rules stay as explicit objects because
+they need operator and threshold fields.
+
 ### Backend
 
+- **Banding config helpers** (`_banding_config.py`): Expands compact sidecar rule maps to the canonical row-array shape and compacts categorical/breakpoint rules when writing JSON.
 - **Executor** (`executor.py`): `_normalise_banding_factors` reads the `factors` array. The handler loops over factors, calling `_apply_banding` for each. Continuous rules build a Polars `when/then/otherwise` chain. Categorical rules use `replace_strict`.
 - **Parser** (`_parser_helpers.py`): Detects `banding=` or `factors=` in the decorator → infers `"banding"` node type. Always normalises to `factors: [...]` in config (permissive parsing).
 - **Codegen** (`codegen.py`): Single factor → clean decorator `@pipeline.banding(banding=..., column=..., ...)`. Multiple factors → `@pipeline.banding(factors=[...])`.

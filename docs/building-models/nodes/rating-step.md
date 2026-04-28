@@ -27,9 +27,9 @@ Each table has:
 | `factors` | **Required.** Input columns to match on (up to 3 for multi-way lookups) |
 | `outputColumn` | **Required.** Column name for this table's looked-up value |
 | `defaultValue` | Value used when the input doesn't match any entry in the table (e.g. an area code you haven't mapped) |
-| `entries` | **Required.** The rows of your factor table  - each entry maps a combination of factor values to an output |
+| `entries` | **Required.** The factor table. In JSON sidecars, factor values are nested keys and the leaf is the looked-up value. |
 
-A one-way table maps a single column. A two-way table maps two columns. Here's a one-way area factor and a one-way age factor, multiplied together:
+A one-way table maps a single column. A two-way table maps two columns. In the sidecar JSON, a one-way area factor and a one-way age factor look like this:
 
 ```json
 {
@@ -39,28 +39,30 @@ A one-way table maps a single column. A two-way table maps two columns. Here's a
       "factors": ["area"],
       "outputColumn": "area_factor",
       "defaultValue": "1.0",
-      "entries": [
-        { "area": "London",     "area_factor": "1.25" },
-        { "area": "Manchester", "area_factor": "1.10" },
-        { "area": "Rural",      "area_factor": "0.85" }
-      ]
+      "entries": {
+        "London": 1.25,
+        "Manchester": 1.10,
+        "Rural": 0.85
+      }
     },
     {
       "name": "Age Factor",
       "factors": ["age_band"],
       "outputColumn": "age_factor",
       "defaultValue": "1.0",
-      "entries": [
-        { "age_band": "18-25", "age_factor": "1.40" },
-        { "age_band": "26-65", "age_factor": "1.00" },
-        { "age_band": "65+",   "age_factor": "1.15" }
-      ]
+      "entries": {
+        "18-25": 1.40,
+        "26-65": 1.00,
+        "65+": 1.15
+      }
     }
   ],
   "operation": "multiply",
   "combinedColumn": "location_age_factor"
 }
 ```
+
+For two-way tables, each factor adds one nesting level in the order listed in `factors`. For three-way tables, the sidecar matches the editor: the third factor is the outer dropdown, the second factor is the column group, and the first factor is the row key. With `factors` set to `["vehicle_age_band", "cover_type", "channel"]`, entries nest as `channel -> cover_type -> vehicle_age_band -> value`. When Haute loads the sidecar, it expands these maps back into row entries with one key per factor plus `value` for the editor, execution, and trace.
 
 **Before and after:**
 
