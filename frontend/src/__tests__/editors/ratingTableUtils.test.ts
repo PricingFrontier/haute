@@ -12,15 +12,35 @@ import {
   tableStats,
   buildCartesianEntries,
   resolveDefault,
+  extractPreviewCategoricalLevels,
+  extractTableEntryFactorLevels,
+  mergeFactorLevels,
+  ratingTableStatus,
 } from "../../panels/editors/rating/ratingTableUtils"
 
 // ─── normaliseRatingTables ───────────────────────────────────────
 
 describe("normaliseRatingTables", () => {
-  it("returns existing tables when present", () => {
+  it("returns normalised copies of existing tables when present", () => {
     const tables = [{ name: "T1", factors: ["age"], outputColumn: "af", defaultValue: "1.0", entries: [] }]
     const result = normaliseRatingTables({ tables })
-    expect(result).toBe(tables)
+    expect(result).toEqual([{ name: "af", factors: ["age"], outputColumn: "af", defaultValue: "1.0", entries: [] }])
+    expect(result).not.toBe(tables)
+    expect(result[0]).not.toBe(tables[0])
+  })
+
+  it("uses outputColumn as the table name and falls back to table number when blank", () => {
+    const result = normaliseRatingTables({
+      tables: [
+        { name: "Legacy Age Name", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
+        { name: "Legacy Blank Name", factors: [], outputColumn: "   ", defaultValue: "1.0", entries: [] },
+        { name: "Missing Output", factors: [], defaultValue: "1.0", entries: [] },
+        { name: "Numeric Output", factors: [], outputColumn: 42, defaultValue: "1.0", entries: [] },
+      ],
+    })
+
+    expect(result.map(table => table.name)).toEqual(["age_factor", "Table 2", "Table 3", "Table 4"])
+    expect(result.map(table => table.outputColumn)).toEqual(["age_factor", "   ", "", ""])
   })
 
   it("returns default table when tables is undefined", () => {
@@ -40,6 +60,137 @@ describe("normaliseRatingTables", () => {
   it("returns default table when tables is non-array", () => {
     const result = normaliseRatingTables({ tables: "not an array" })
     expect(result).toHaveLength(1)
+  })
+
+  it("normalises malformed table fields without preserving invalid entries", () => {
+    const result = normaliseRatingTables({
+      tables: [
+        null,
+        [],
+        {
+          name: "Malformed",
+          factors: ["age", 42, "region"],
+          outputColumn: "risk_factor",
+          defaultValue: 1.25,
+          entries: [
+            { age: "young", value: 1.1 },
+            ["not", "an", "entry"],
+            null,
+          ],
+        },
+        {
+          name: "Fallback Default",
+          factors: "age",
+          outputColumn: "fallback_factor",
+          defaultValue: { bad: true },
+          entries: "not entries",
+        },
+      ],
+    })
+
+    expect(result).toEqual([
+      { name: "Table 1", factors: [], outputColumn: "", defaultValue: "1.0", entries: [] },
+      { name: "Table 2", factors: [], outputColumn: "", defaultValue: "1.0", entries: [] },
+      {
+        name: "risk_factor",
+        factors: ["age", "region"],
+        outputColumn: "risk_factor",
+        defaultValue: "1.25",
+        entries: [{ age: "young", value: 1.1 }],
+      },
+      {
+        name: "fallback_factor",
+        factors: [],
+        outputColumn: "fallback_factor",
+        defaultValue: "1.0",
+        entries: [],
+      },
+    ])
+  })
+
+  it("preserves explicit null default values", () => {
+    expect(normaliseRatingTables({
+      tables: [
+        {
+          factors: ["channel"],
+          outputColumn: "channel_factor",
+          defaultValue: null,
+          entries: [],
+        },
+      ],
+    })).toEqual([
+      {
+        name: "channel_factor",
+        factors: ["channel"],
+        outputColumn: "channel_factor",
+        defaultValue: null,
+        entries: [],
+      },
+    ])
+  })
+})
+
+describe("ratingTableStatus", () => {
+  it("marks a complete table as healthy", () => {
+    const tables = [{
+      name: "Age Factor",
+      factors: ["age_band"],
+      outputColumn: "age_factor",
+      defaultValue: "1.0",
+      entries: [{ age_band: "young", value: 1.1 }],
+    }]
+
+    expect(ratingTableStatus(tables[0], 0, tables)).toEqual({
+      state: "healthy",
+      issues: [],
+    })
+  })
+
+  it("reports blank output columns, missing factors, and missing entries", () => {
+    const tables = [{
+      name: "Table 1",
+      factors: [],
+      outputColumn: " ",
+      defaultValue: "1.0",
+      entries: [],
+    }]
+
+    expect(ratingTableStatus(tables[0], 0, tables)).toEqual({
+      state: "problem",
+      issues: [
+        "Output column is required",
+        "Add at least one factor",
+        "Add at least one rating entry",
+      ],
+    })
+  })
+
+  it("reports duplicate output column names across tables", () => {
+    const tables = [
+      {
+        name: "A",
+        factors: ["region"],
+        outputColumn: "region_factor",
+        defaultValue: "1.0",
+        entries: [{ region: "north", value: 1.0 }],
+      },
+      {
+        name: "B",
+        factors: ["region"],
+        outputColumn: "region_factor",
+        defaultValue: "1.0",
+        entries: [{ region: "south", value: 1.0 }],
+      },
+    ]
+
+    expect(ratingTableStatus(tables[0], 0, tables)).toEqual({
+      state: "problem",
+      issues: ["Output column name must be unique"],
+    })
+    expect(ratingTableStatus(tables[1], 1, tables)).toEqual({
+      state: "problem",
+      issues: ["Output column name must be unique"],
+    })
   })
 })
 
@@ -242,6 +393,22 @@ describe("buildCartesianEntries", () => {
     expect(youngEntry?.value).toBe(1.3)
   })
 
+  it("ignores blank, null, and invalid existing values and invalid defaults", () => {
+    const existing = [
+      { age_band: "young", value: "" },
+      { age_band: "mid", value: null as unknown as string },
+      { age_band: "old", value: "not numeric" },
+    ]
+
+    const result = buildCartesianEntries(["age_band"], bandingLevels, existing, "not numeric")
+
+    expect(result).toEqual([
+      { age_band: "young", value: 1.0 },
+      { age_band: "mid", value: 1.0 },
+      { age_band: "old", value: 1.0 },
+    ])
+  })
+
   it("handles 3-way product", () => {
     const levels3 = { ...bandingLevels, size: ["small", "large"] }
     const result = buildCartesianEntries(["age_band", "region", "size"], levels3, [], "1.0")
@@ -264,7 +431,140 @@ describe("buildCartesianEntries", () => {
   })
 })
 
+// ─── preview-derived factor levels ──────────────────────────────
+
+describe("extractPreviewCategoricalLevels", () => {
+  const previewRows = [
+    { region: "north", channel: "direct", premium: 120.5, empty: "", mixed: "A" },
+    { region: "south", channel: "broker", premium: 99.9, empty: null, mixed: 2 },
+    { region: "north", channel: "direct", premium: 110.0, empty: undefined, mixed: "B" },
+  ]
+
+  it("extracts distinct string levels from preview rows in first-seen order", () => {
+    expect(extractPreviewCategoricalLevels(previewRows)).toEqual({
+      region: ["north", "south"],
+      channel: ["direct", "broker"],
+    })
+  })
+
+  it("does not expose numeric, empty-only, or mixed-type preview columns", () => {
+    const levels = extractPreviewCategoricalLevels(previewRows)
+    expect(levels.premium).toBeUndefined()
+    expect(levels.empty).toBeUndefined()
+    expect(levels.mixed).toBeUndefined()
+  })
+
+  it("uses upstream string/categorical dtypes when available and excludes numeric upstream columns", () => {
+    expect(extractPreviewCategoricalLevels(previewRows, [
+      { name: "scheme", dtype: "str" },
+      { name: "region", dtype: "String" },
+      { name: "channel", dtype: "Categorical" },
+      { name: "tier", dtype: "Enum" },
+      { name: "premium", dtype: "Float64" },
+      { name: "not_in_preview", dtype: "Utf8" },
+    ])).toEqual({
+      region: ["north", "south"],
+      channel: ["direct", "broker"],
+    })
+  })
+
+  it("recognises legacy Utf8 upstream dtypes from preview rows", () => {
+    expect(extractPreviewCategoricalLevels([{ legacy_text: "A" }, { legacy_text: "B" }], [
+      { name: "legacy_text", dtype: "Utf8" },
+    ])).toEqual({
+      legacy_text: ["A", "B"],
+    })
+  })
+
+  it("returns no preview levels when rows are unavailable", () => {
+    expect(extractPreviewCategoricalLevels(undefined)).toEqual({})
+    expect(extractPreviewCategoricalLevels([])).toEqual({})
+  })
+})
+
+describe("mergeFactorLevels", () => {
+  it("preserves banding levels first and appends preview-derived raw levels", () => {
+    expect(mergeFactorLevels(
+      { age_band: ["young", "old"], region: ["north"] },
+      { region: ["north", "south"], channel: ["direct", "broker"] },
+    )).toEqual({
+      age_band: ["young", "old"],
+      region: ["north", "south"],
+      channel: ["direct", "broker"],
+    })
+  })
+})
+
 // ─── resolveDefault ─────────────────────────────────────────────
+
+describe("extractTableEntryFactorLevels", () => {
+  it("extracts saved factor levels from existing table entries", () => {
+    expect(extractTableEntryFactorLevels([
+      {
+        name: "Channel",
+        factors: ["channel"],
+        outputColumn: "channel_factor",
+        defaultValue: "1.0",
+        entries: [
+          { channel: "direct", value: 1.0 },
+          { channel: "broker", value: 1.1 },
+          { channel: "direct", value: 1.0 },
+        ],
+      },
+    ])).toEqual({
+      channel: ["direct", "broker"],
+    })
+  })
+
+  it("extracts multi-factor levels and skips empty values", () => {
+    expect(extractTableEntryFactorLevels([
+      {
+        name: "Two Way",
+        factors: ["channel", "segment"],
+        outputColumn: "factor",
+        defaultValue: "1.0",
+        entries: [
+          { channel: "direct", segment: "retail", value: 1.0 },
+          { channel: "broker", segment: "fleet", value: 1.1 },
+          { channel: "", segment: "", value: 1.2 },
+        ],
+      },
+    ])).toEqual({
+      channel: ["direct", "broker"],
+      segment: ["retail", "fleet"],
+    })
+  })
+
+  it("skips null and undefined saved factor values", () => {
+    expect(extractTableEntryFactorLevels([
+      {
+        name: "Sparse",
+        factors: ["channel"],
+        outputColumn: "channel_factor",
+        defaultValue: "1.0",
+        entries: [
+          { channel: null as unknown as string, value: 1.0 },
+          { channel: undefined as unknown as string, value: 1.1 },
+          { channel: "direct", value: 1.2 },
+        ],
+      },
+    ])).toEqual({
+      channel: ["direct"],
+    })
+  })
+
+  it("returns no saved levels when configured factors have no entries", () => {
+    expect(extractTableEntryFactorLevels([
+      {
+        name: "Empty",
+        factors: ["channel"],
+        outputColumn: "channel_factor",
+        defaultValue: "1.0",
+        entries: [],
+      },
+    ])).toEqual({})
+  })
+})
 
 describe("resolveDefault", () => {
   it("returns 1 for null", () => {

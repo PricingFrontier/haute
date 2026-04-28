@@ -504,8 +504,7 @@ class TestASTInvariants:
 
         result = _extract_user_code(body, ["source"])
 
-        _assert_is_valid_python(result, context="windows")
-        assert "df = source" in result
+        assert result == ""
 
     def test_deeply_nested_function_return_preserved(self) -> None:
         """Triple-nested ``def`` inside ``if`` inside ``def`` — still scope-correct.
@@ -586,6 +585,8 @@ class TestModelScoreExtractor:
         assert "doubled" in result
         assert "score_from_config" not in result
         assert "return result" not in result
+        assert "result" not in result
+        assert 'df = df.with_columns(doubled=pl.col("prediction") * 2)' in result
 
     def test_model_score_inner_fn_return_result_preserved(self) -> None:
         """Inner helper returning ``result`` must NOT have that return stripped.
@@ -620,6 +621,8 @@ class TestModelScoreExtractor:
         assert not result.rstrip().endswith("return result"), (
             f"Outer trailing `return result` not stripped:\n{result}"
         )
+        assert "result = process(result)" not in result
+        assert "df = process(df)" in result
 
     def test_model_score_inner_fn_return_result_at_end_preserved(self) -> None:
         """Inner helper whose body's ABSOLUTE LAST line is ``return result``.
@@ -643,13 +646,14 @@ class TestModelScoreExtractor:
         result = _extract_model_score_user_code(body)
 
         _assert_is_valid_python(result, context="modelScore inner at end")
-        # Inner fn's `return result` must survive — it belongs to
-        # `identity`, not to the outer node body:
+        # The inner function survives, but generated score variables are
+        # normalised to the UI/runtime name (`df`).
         assert "def identity" in result
-        assert "return result" in result, (
-            "Inner `return result` eaten by trailing-strip.  An AST walk "
-            f"would see that it's inside `identity`, not the outer scope:\n{result}"
+        assert "return df" in result, (
+            "Inner `return result` should become `return df` after generated "
+            f"score variable normalisation:\n{result}"
         )
+        assert "return result" not in result
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
+from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._config_io import config_path_for_node
 from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
 from haute._registry import (
@@ -241,7 +242,8 @@ def {func_name}({params}) -> pl.LazyFrame:
     from pathlib import Path
     from haute.graph_utils import score_from_config
     base = str(Path(__file__).parent)
-    return score_from_config({first_param}, config={config_path_repr}, base_dir=base)
+    df = score_from_config({first_param}, config={config_path_repr}, base_dir=base)
+    return df
 '''
 
 
@@ -305,7 +307,11 @@ _RATING_STEP = '''\
 @pipeline.rating_step(tables={tables_repr}{extra_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_rating_step_from_config
+    base = Path(__file__).parent
+    df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)
+    return df
 '''
 
 _SINK_PARQUET = '''\
@@ -475,7 +481,10 @@ def _gen_live_switch(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.DATA_SOURCE)
 def _gen_data_source(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    code = (config.get("code") or "").strip()
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="data_source",
+    )
     decorator, imports, load_expr = _data_source_parts(config)
 
     if not code:
@@ -539,7 +548,11 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
     source_type = config.get("sourceType", "run")
     task_val = config.get("task", "regression")
     output_column = config.get("output_column", "prediction")
-    user_code = (config.get("code") or "").strip()
+    user_code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="model_score",
+        param_names=source_names,
+    )
     params = _build_params(source_names)
     first_param = _first_source(source_names)
     cfg_path = config_path_for_node(NodeType.MODEL_SCORE, func_name).as_posix()
@@ -572,7 +585,6 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
             decorator_kwargs += f", experiment_id={exp_id!r}"
 
     if user_code:
-        indented = "\n".join(f"    {line}" for line in user_code.splitlines())
         return (
             f"@pipeline.model_score({decorator_kwargs})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
@@ -580,12 +592,11 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
             f"    from pathlib import Path\n"
             f"    from haute.graph_utils import score_from_config\n"
             f"    base = str(Path(__file__).parent)\n"
-            f"    result = score_from_config(\n"
+            f"    df = score_from_config(\n"
             f"        {first_param}, config={_safe_path(cfg_path)},\n"
             f"        base_dir=base,\n"
             f"    )\n"
-            f"{indented}\n"
-            f"    return result\n"
+            f"{_wrap_user_code(user_code, ['df'])}\n"
         )
 
     return _MODEL_SCORE.format(
@@ -652,6 +663,12 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     tables = config.get("tables", []) or []
     params = _build_params(source_names)
+    first = _first_source(source_names)
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="rating_step",
+        param_names=(first,),
+    )
     emit_tables = []
     for t in tables:
         et: dict = {
@@ -670,8 +687,23 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
     combined = config.get("combinedColumn")
     if combined:
         extra_parts.append(f"combined_column={combined!r}")
+    combined_outputs = config.get("combinedOutputs")
+    if combined_outputs:
+        extra_parts.append(f"combined_outputs={combined_outputs!r}")
     extra_kwargs = (", " + ", ".join(extra_parts)) if extra_parts else ""
-    first = _first_source(source_names)
+    config_path_repr = _safe_path(config_path_for_node(NodeType.RATING_STEP, func_name).as_posix())
+    if code:
+        user_body = _wrap_user_code(code, ["df"])
+        return (
+            f"@pipeline.rating_step(tables={emit_tables!r}{extra_kwargs})\n"
+            f"def {func_name}({params}) -> pl.LazyFrame:\n"
+            f'    """{description}"""\n'
+            f"    from pathlib import Path\n"
+            f"    from haute.graph_utils import apply_rating_step_from_config\n"
+            f"    base = Path(__file__).parent\n"
+            f"    df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)\n"
+            f"{user_body}\n"
+        )
     return _RATING_STEP.format(
         func_name=func_name,
         description=description,
@@ -679,6 +711,7 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
         params=params,
         first=first,
         extra_kwargs=extra_kwargs,
+        config_path_repr=config_path_repr,
     )
 
 
@@ -718,7 +751,11 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
     first = _first_source(source_names)
     extra_parts = _build_extra_kwargs(config, SCENARIO_EXPANDER_CONFIG_KEYS)
     dec_kwargs = ", ".join(extra_parts)
-    code = (config.get("code") or "").strip()
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="scenario_expander",
+        param_names=(first,),
+    )
 
     if not code:
         return _SCENARIO_EXPANDER.format(
@@ -760,7 +797,11 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     path = config.get("path", "model.pkl")
     file_type = config.get("fileType", "pickle")
-    code = (config.get("code") or "").strip()
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="external",
+        param_names=source_names,
+    )
     params = _build_params(source_names)
     body = _wrap_external_code(code)
     extra_dec = ""
@@ -826,8 +867,12 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.POLARS)
 def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    code = (config.get("code") or "").strip()
     first = source_names[0] if source_names else "df"
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="polars",
+        param_names=tuple(source_names),
+    )
     params = _build_params(source_names)
     sel = config.get("selected_columns", [])
 

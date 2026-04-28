@@ -740,6 +740,242 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.getByText("Default Rate")).toBeInTheDocument()
   })
 
+  it("renders backend rating_step table factors, selected values, and combined outputs", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Adjustments",
+              node_type: "ratingStep",
+              node_detail: {
+                detail_type: "rating_step",
+                tables: [
+                  {
+                    name: "vehicle_factor",
+                    output_column: "vehicle_factor",
+                    factors: [
+                      { column: "vehicle_age_band", value: "1-3" },
+                      { column: "cover_type", value: "comprehensive" },
+                    ],
+                    selected_value: 0.9,
+                    status: "matched",
+                    matched: true,
+                    default_used: false,
+                  },
+                  {
+                    name: "channel_factor",
+                    output_column: "channel_factor",
+                    factors: [{ column: "channel", value: "direct" }],
+                    selected_value: 1.2,
+                    status: "matched",
+                    matched: true,
+                    default_used: false,
+                  },
+                ],
+                combined_outputs: [
+                  {
+                    column: "technical_premium_factor",
+                    operation: "multiply",
+                    base_value: 100,
+                    input_values: { vehicle_factor: 0.9, channel_factor: 1.2 },
+                    value: 108,
+                  },
+                ],
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("Nodes"))
+    fireEvent.click(screen.getByText("Adjustments").closest("button") as HTMLElement)
+
+    expect(screen.getByText("Rating Tables")).toBeInTheDocument()
+    expect(screen.getByText("vehicle_factor")).toBeInTheDocument()
+    expect(screen.getByText("channel_factor")).toBeInTheDocument()
+    expect(screen.getByText(/vehicle_age_band:.*1-3/)).toBeInTheDocument()
+    expect(screen.getByText(/cover_type:.*comprehensive/)).toBeInTheDocument()
+    expect(screen.getByText(/channel:.*direct/)).toBeInTheDocument()
+    expect(screen.getByText(/selected.*0.9/)).toBeInTheDocument()
+    expect(screen.getByText(/selected.*1.2/)).toBeInTheDocument()
+    expect(screen.getAllByText("status: matched")).toHaveLength(2)
+    expect(screen.getByText("Combined Outputs")).toBeInTheDocument()
+    expect(screen.getByText(/technical_premium_factor.*108/)).toBeInTheDocument()
+    expect(screen.getByText(/base.*100/)).toBeInTheDocument()
+  })
+
+  it("shows opaque rating_step table details directly on the Calculation tab", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "adjustments",
+          column: "veh_age_adj",
+          output_value: 0.11,
+          steps: [
+            makeStep({
+              node_id: "adjustments",
+              node_name: "adjustments",
+              node_type: "ratingStep",
+              schema_diff: {
+                columns_added: ["veh_age_adj"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["veh_age", "cover"],
+              },
+              output_values: { veh_age: 2, cover: "comp", veh_age_adj: 0.11 },
+              expression: {
+                expression_text: "",
+                expression_type: "opaque",
+                referenced_columns: [],
+              },
+              calculation: {
+                substituted_text: "computed",
+                result_value: 0.11,
+                input_values: { veh_age: 2, cover: "comp" },
+              },
+              node_detail: {
+                detail_type: "rating_step",
+                tables: [
+                  {
+                    name: "veh_age_adj",
+                    output_column: "veh_age_adj",
+                    factors: [
+                      { column: "veh_age", value: 2 },
+                      { column: "cover", value: "comp" },
+                    ],
+                    selected_value: 0.11,
+                    status: "matched",
+                    matched: true,
+                    default_used: false,
+                  },
+                ],
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Calculation")).toBeInTheDocument()
+    expect(screen.getByText("Rating Tables")).toBeInTheDocument()
+    expect(screen.getAllByText("veh_age_adj").length).toBeGreaterThan(0)
+    expect(screen.getByText("traced column")).toBeInTheDocument()
+    expect(screen.getByText(/veh_age:.*2/)).toBeInTheDocument()
+    expect(screen.getByText(/cover:.*comp/)).toBeInTheDocument()
+    expect(screen.getByText(/selected.*0.11/)).toBeInTheDocument()
+  })
+
+  it("opens target rating_step table details by default when no formula is available", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "adjustments",
+          column: "technical_premium_factor",
+          output_value: 0.9,
+          steps: [
+            makeStep({
+              node_id: "adjustments",
+              node_name: "Adjustments",
+              node_type: "ratingStep",
+              schema_diff: {
+                columns_added: ["technical_premium_factor"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["vehicle_age_band"],
+              },
+              output_values: { vehicle_age_band: "1-3", technical_premium_factor: 0.9 },
+              expression: null,
+              calculation: null,
+              node_detail: {
+                detail_type: "rating_step",
+                tables: [
+                  {
+                    name: "vehicle_factor",
+                    output_column: "vehicle_factor",
+                    factors: [{ column: "vehicle_age_band", value: "1-3" }],
+                    selected_value: 0.9,
+                    status: "matched",
+                    matched: true,
+                    default_used: false,
+                  },
+                ],
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Rating Tables")).toBeInTheDocument()
+    expect(screen.getByText("vehicle_factor")).toBeInTheDocument()
+    expect(screen.getByText("status: matched")).toBeInTheDocument()
+  })
+
+  it("renders rating table default and no-match statuses", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "adjustments",
+          column: "technical_premium_factor",
+          output_value: 1,
+          steps: [
+            makeStep({
+              node_id: "adjustments",
+              node_name: "Adjustments",
+              node_type: "ratingStep",
+              schema_diff: {
+                columns_added: ["technical_premium_factor"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["vehicle_age_band", "channel"],
+              },
+              output_values: { vehicle_age_band: "unknown", channel: "broker", technical_premium_factor: 1 },
+              expression: null,
+              calculation: null,
+              node_detail: {
+                detail_type: "rating_step",
+                tables: [
+                  {
+                    name: "vehicle_factor",
+                    output_column: "vehicle_factor",
+                    factors: [{ column: "vehicle_age_band", value: "unknown" }],
+                    selected_value: 1,
+                    status: "default",
+                    matched: false,
+                    default_used: true,
+                    default_value: 1,
+                  },
+                  {
+                    name: "channel_factor",
+                    output_column: "channel_factor",
+                    factors: [{ column: "channel", value: "broker" }],
+                    selected_value: null,
+                    status: "no_match",
+                    matched: false,
+                    default_used: false,
+                  },
+                ],
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("status: default")).toBeInTheDocument()
+    expect(screen.getByText("default used")).toBeInTheDocument()
+    expect(screen.getByText(/default:.*1/)).toBeInTheDocument()
+    expect(screen.getByText("status: no match")).toBeInTheDocument()
+    expect(screen.getByText(/selected.*null/)).toBeInTheDocument()
+  })
+
   it("renders banding detail with edge boundary value", () => {
     render(
       <TracePanel
@@ -1145,4 +1381,3 @@ describe("TracePanel — Waterfall View Concepts", () => {
     expect(screen.getByText("Rating Step")).toBeInTheDocument()
   })
 })
-

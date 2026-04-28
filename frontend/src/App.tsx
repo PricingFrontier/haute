@@ -227,11 +227,6 @@ function FlowEditor() {
   // Hooks
   // ---------------------------------------------------------------------------
 
-  const wsStatus = useWebSocketSync({
-    setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
-    nodeIdCounter, fitView,
-  })
-
   const {
     loading, previewData, setPreviewData,
     nodeStatuses,
@@ -242,6 +237,12 @@ function FlowEditor() {
     setNodesRaw, setEdgesRaw, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
     nodeIdCounter,
+  })
+
+  const wsStatus = useWebSocketSync({
+    setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
+    nodeIdCounter, fitView,
+    enabled: !loading,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
 

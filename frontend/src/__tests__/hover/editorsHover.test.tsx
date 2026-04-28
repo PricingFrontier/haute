@@ -699,7 +699,7 @@ describe("RatingStepEditor hover integration", () => {
       { allNodes: BANDING_NODES },
     )
 
-    const rebuildBtn = screen.getByText(/Rebuild from banding levels/).closest("button")
+    const rebuildBtn = screen.getByText(/Rebuild from factor levels/).closest("button")
     expect(rebuildBtn, "expected to find the '↻ Rebuild' button").toBeTruthy()
 
     const initBorder = rebuildBtn!.style.borderColor

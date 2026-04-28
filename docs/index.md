@@ -105,6 +105,8 @@ pipeline.connect("frequency", "premium")
 
 That same file is also a visual graph. Run `haute serve` and your pipeline appears in a browser-based editor - nodes for data sources, models, transforms, and outputs, connected by edges showing how data flows through the rating structure.
 
+Rating step nodes support spreadsheet-style pricing work: many factor tables, raw string factors as well as banded factors, Excel-style paste/copy, optional combined outputs, and optional Polars code that runs after the table lookups. When you trace a rating-step output, Haute shows the factor values used, the selected table values, default usage, and combined-output inputs.
+
 ---
 
 ## :material-star-shooting: What makes it different
@@ -147,7 +149,7 @@ That same file is also a visual graph. Run `haute serve` and your pipeline appea
 
     ---
 
-    Click any row and trace exactly how it becomes a price. Per-node snapshots show which columns changed, what was added, and how long each step took - no print statements, no guesswork.
+    Click any row and trace exactly how it becomes a price. Per-node snapshots show which columns changed, what was added, how rating table factors were selected, and how long each step took - no print statements, no guesswork.
 
 - :material-source-branch-check:{ .lg .middle } **Git without the command line**
 

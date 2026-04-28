@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from haute.cli import _serve as serve_mod
 from haute.cli import cli
-from haute.cli._serve import _socket_family_for_host
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -47,8 +47,151 @@ class TestServe:
 
     def test_ipv6_loopback_uses_ipv6_probe_socket(self) -> None:
         """The port probe must match IPv6 hosts such as ``::1``."""
-        assert _socket_family_for_host("::1") == socket.AF_INET6
-        assert _socket_family_for_host("127.0.0.1") == socket.AF_INET
+        assert serve_mod._socket_family_for_host("::1") == socket.AF_INET6
+        assert serve_mod._socket_family_for_host("127.0.0.1") == socket.AF_INET
+
+    def test_backend_probe_host_maps_wildcard_binds_to_loopback(self) -> None:
+        """Readiness probes need a connectable host when uvicorn binds all interfaces."""
+        assert serve_mod._backend_probe_host("0.0.0.0") == "127.0.0.1"
+        assert serve_mod._backend_probe_host("::") == "::1"
+        assert serve_mod._backend_probe_host("127.0.0.42") == "127.0.0.42"
+
+    def test_wait_for_tcp_ready_retries_refused_connections(self) -> None:
+        """The backend readiness probe should poll until a connection is accepted."""
+        attempts: list[tuple[tuple[str, int], float]] = []
+        sleeps: list[float] = []
+        now = 0.0
+
+        class _Connection:
+            def close(self) -> None:
+                pass
+
+        def fake_connect(address: tuple[str, int], timeout: float) -> _Connection:
+            attempts.append((address, timeout))
+            if len(attempts) < 3:
+                raise ConnectionRefusedError("not ready")
+            return _Connection()
+
+        def fake_monotonic() -> float:
+            return now
+
+        def fake_sleep(duration: float) -> None:
+            nonlocal now
+            sleeps.append(duration)
+            now += duration
+
+        serve_mod._wait_for_tcp_ready(
+            "127.0.0.1",
+            8000,
+            timeout=1.0,
+            poll_interval=0.1,
+            connect=fake_connect,
+            sleep=fake_sleep,
+            monotonic=fake_monotonic,
+        )
+
+        assert [attempt[0] for attempt in attempts] == [
+            ("127.0.0.1", 8000),
+            ("127.0.0.1", 8000),
+            ("127.0.0.1", 8000),
+        ]
+        assert sleeps == [0.1, 0.1]
+
+    def test_wait_for_tcp_ready_times_out_without_fallback(self) -> None:
+        """A backend that never accepts connections should not trigger a blind browser open."""
+        attempts = 0
+        now = 0.0
+
+        def fake_connect(address: tuple[str, int], timeout: float) -> object:
+            nonlocal attempts
+            attempts += 1
+            raise ConnectionRefusedError("not ready")
+
+        def fake_monotonic() -> float:
+            return now
+
+        def fake_sleep(duration: float) -> None:
+            nonlocal now
+            now += duration
+
+        with pytest.raises(TimeoutError, match="127.0.0.1:8000"):
+            serve_mod._wait_for_tcp_ready(
+                "127.0.0.1",
+                8000,
+                timeout=0.25,
+                poll_interval=0.1,
+                connect=fake_connect,
+                sleep=fake_sleep,
+                monotonic=fake_monotonic,
+            )
+
+        assert attempts > 1
+
+    def test_wait_for_tcp_ready_fails_loudly_on_unexpected_socket_error(self) -> None:
+        """Unexpected connect errors should surface instead of being treated as not-ready."""
+        sleeps: list[float] = []
+
+        def fake_connect(address: tuple[str, int], timeout: float) -> object:
+            raise socket.gaierror("bad host")
+
+        with pytest.raises(socket.gaierror):
+            serve_mod._wait_for_tcp_ready(
+                "bad host",
+                8000,
+                timeout=1.0,
+                poll_interval=0.1,
+                connect=fake_connect,
+                sleep=sleeps.append,
+                monotonic=lambda: 0.0,
+            )
+
+        assert sleeps == []
+
+    def test_open_browser_after_backend_ready_waits_then_opens(self) -> None:
+        """The dev-mode browser opener should open only after the backend probe succeeds."""
+        events: list[tuple[str, object]] = []
+
+        def fake_wait(host: str, port: int) -> None:
+            events.append(("wait", (host, port)))
+
+        def fake_open(url: str) -> None:
+            events.append(("open", url))
+
+        with (
+            patch("haute.cli._serve._wait_for_tcp_ready", side_effect=fake_wait),
+            patch("haute.cli._serve._open_browser", side_effect=fake_open),
+        ):
+            serve_mod._wait_for_backend_then_open_browser(
+                "http://localhost:5173",
+                "0.0.0.0",
+                8000,
+            )
+
+        assert events == [
+            ("wait", ("127.0.0.1", 8000)),
+            ("open", "http://localhost:5173"),
+        ]
+
+    def test_open_browser_after_backend_timeout_reports_without_opening(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Expected readiness timeouts should be actionable, not raw thread tracebacks."""
+        with (
+            patch(
+                "haute.cli._serve._wait_for_tcp_ready",
+                side_effect=TimeoutError("timed out"),
+            ),
+            patch("haute.cli._serve._open_browser") as mock_open,
+        ):
+            serve_mod._wait_for_backend_then_open_browser(
+                "http://localhost:5173",
+                "127.0.0.1",
+                8000,
+            )
+
+        mock_open.assert_not_called()
+        assert "browser was not opened automatically" in capsys.readouterr().err
 
     def test_prod_mode_with_static_dir(
         self,
@@ -146,13 +289,13 @@ class TestServe:
             npm_basename = os.path.basename(cmd[0]).lower()
             assert npm_basename.startswith("npm"), f"Expected npm as first arg, got: {cmd}"
 
-    def test_dev_mode_opens_browser_when_flag_not_set(
+    def test_dev_mode_opens_browser_after_backend_is_ready_when_flag_not_set(
         self,
         runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Dev mode without --no-browser should schedule _open_browser."""
+        """Dev mode should not use a blind timer before opening the browser."""
         monkeypatch.chdir(tmp_path)
         fe = tmp_path / "frontend"
         fe.mkdir()
@@ -160,24 +303,20 @@ class TestServe:
         (fe / "node_modules").mkdir()
 
         mock_proc = MagicMock()
-        mock_timer = MagicMock()
 
         with (
             patch("haute.cli._serve._find_frontend_dir", return_value=fe),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("uvicorn.run"),
             patch("signal.signal"),
-            patch("threading.Timer", return_value=mock_timer) as timer_cls,
+            patch("threading.Timer") as timer_cls,
+            patch("haute.cli._serve._open_browser_after_backend_ready") as ready_open,
         ):
-            result = runner.invoke(cli, ["serve"])
+            result = runner.invoke(cli, ["serve", "--host", "127.0.0.1", "--port", "8765"])
 
         assert result.exit_code == 0, result.output
-        timer_cls.assert_called_once()
-        # Timer should target localhost:5173 for dev mode
-        call_args = timer_cls.call_args
-        assert call_args[0][0] == 2.0
-        assert "5173" in str(call_args)
-        mock_timer.start.assert_called_once()
+        ready_open.assert_called_once_with("http://localhost:5173", "127.0.0.1", 8765)
+        timer_cls.assert_not_called()
 
     def test_prod_mode_opens_browser_when_flag_not_set(
         self,

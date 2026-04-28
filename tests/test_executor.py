@@ -1031,6 +1031,38 @@ class TestDataSourceUserCode:
             f"Parser should extract .limit(2) from the function body, got: {code!r}"
         )
 
+    def test_parser_does_not_put_repeated_source_load_in_code_box(self, tmp_path):
+        """A repeated generated source load is scaffold, not user transform code."""
+        py_file = tmp_path / "pipeline.py"
+        parquet_path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1, 2, 3]}).write_parquet(parquet_path)
+
+        py_file.write_text(
+            "import polars as pl\n"
+            "import haute\n"
+            "from pathlib import Path\n"
+            'pipeline = haute.Pipeline("test")\n\n'
+            '@pipeline.data_source(config="config/data_source/src.json")\n'
+            "def src() -> pl.LazyFrame:\n"
+            '    """src node"""\n'
+            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
+            "    df = pl.scan_parquet(\n"
+            '        Path(__file__).parent / "data.parquet"\n'
+            "    )\n"
+            "    df = df.limit(2)\n"
+            "    return df\n"
+        )
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "src.json").write_text(json.dumps({"path": str(parquet_path)}))
+
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(py_file)
+        code = graph.nodes[0].data.config.get("code", "")
+        assert "scan_parquet" not in code
+        assert code == "df = df.limit(2)"
+
     def test_parsed_data_source_code_executes_correctly(self, tmp_path):
         """Full round-trip: parse .py → execute_graph → user code applied."""
         py_file = tmp_path / "pipeline.py"
@@ -1060,6 +1092,183 @@ class TestDataSourceUserCode:
         assert results["src"].row_count == 5, (
             f"Expected 5 rows (limit applied), got {results['src'].row_count}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Additional Polars code scaffold sanitisation
+# ---------------------------------------------------------------------------
+
+
+class TestAdditionalPolarsCodeScaffoldSanitisation:
+    def test_data_source_exec_strips_stale_loader_code(self, tmp_path):
+        source_path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": range(5)}).write_parquet(source_path)
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "path": str(source_path),
+                        "code": (
+                            "from pathlib import Path\n"
+                            'df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
+                            "df = df.limit(2)\n"
+                            "return df"
+                        ),
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(node)
+        assert fn().collect().height == 2
+
+    def test_transform_exec_strips_stale_alias_and_return(self):
+        lf = pl.DataFrame({"x": range(5)}).lazy()
+        node = _n(
+            {
+                "id": "clean",
+                "data": {
+                    "label": "clean",
+                    "nodeType": "polars",
+                    "config": {"code": "df = claims\ndf = df.limit(2)\nreturn df"},
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["claims"])
+        assert fn(lf).collect().height == 2
+
+    def test_scenario_expander_exec_strips_stale_alias_and_return(self):
+        lf = pl.DataFrame({"quote_id": [1, 2, 3]}).lazy()
+        node = _n(
+            {
+                "id": "expand",
+                "data": {
+                    "label": "expand",
+                    "nodeType": "scenarioExpander",
+                    "config": {
+                        "quote_id": "quote_id",
+                        "column_name": "scenario_value",
+                        "steps": 3,
+                        "code": "df = quotes\ndf = df.limit(2)\nreturn df",
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["quotes"])
+        assert fn(lf).collect().height == 2
+
+    def test_rating_step_exec_strips_stale_apply_scaffold(self):
+        lf = pl.DataFrame({"region": ["North", "South", "West"]}).lazy()
+        node = _n(
+            {
+                "id": "rate",
+                "data": {
+                    "label": "rate",
+                    "nodeType": "ratingStep",
+                    "config": {
+                        "tables": [
+                            {
+                                "name": "Region",
+                                "factors": ["region"],
+                                "outputColumn": "region_factor",
+                                "entries": [{"region": "North", "value": 1.1}],
+                                "defaultValue": "1.0",
+                            }
+                        ],
+                        "code": (
+                            "from pathlib import Path\n"
+                            "from haute.graph_utils import apply_rating_step_from_config\n"
+                            "base = Path(__file__).parent\n"
+                            "df = apply_rating_step_from_config(\n"
+                            '    quotes, "config/rating_step/rate.json", base_dir=base\n'
+                            ")\n"
+                            "df = df.limit(2)\n"
+                            "return df"
+                        ),
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["quotes"])
+        assert fn(lf).collect().height == 2
+
+    def test_external_file_exec_strips_stale_loader_scaffold(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "haute._builders.load_external_object",
+            lambda _path, _file_type, _model_class: {"ok": True},
+        )
+        model_path = tmp_path / "model.json"
+        model_path.write_text(json.dumps({"ok": True}))
+        lf = pl.DataFrame({"x": range(5)}).lazy()
+        node = _n(
+            {
+                "id": "ext",
+                "data": {
+                    "label": "ext",
+                    "nodeType": "externalFile",
+                    "config": {
+                        "path": str(model_path),
+                        "fileType": "json",
+                        "code": (
+                            "from pathlib import Path\n"
+                            "from haute.graph_utils import load_external_object\n"
+                            "obj = load_external_object(\n"
+                            '    Path(__file__).parent / "model.json", "json"\n'
+                            ")\n"
+                            "df = df.limit(2)\n"
+                            "return df"
+                        ),
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["features"])
+        assert fn(lf).collect().height == 2
+
+    def test_model_score_exec_strips_stale_scoring_scaffold(self, monkeypatch):
+        class FakeScoringModel:
+            feature_names = ["x"]
+            cat_feature_names: list[str] = []
+
+        def fake_score_eager(scoring_model, lf, features, output_col, task):
+            return lf.with_columns(pl.lit(1.0).alias(output_col))
+
+        monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", lambda **_: FakeScoringModel())
+        monkeypatch.setattr("haute._mlflow_io._score_eager", fake_score_eager)
+        lf = pl.DataFrame({"x": range(5)}).lazy()
+        node = _n(
+            {
+                "id": "score",
+                "data": {
+                    "label": "score",
+                    "nodeType": "modelScore",
+                    "config": {
+                        "sourceType": "run",
+                        "run_id": "abc123",
+                        "artifact_path": "model",
+                        "task": "regression",
+                        "output_column": "prediction",
+                        "code": (
+                            "from pathlib import Path\n"
+                            "from haute.graph_utils import score_from_config\n"
+                            "base = str(Path(__file__).parent)\n"
+                            "result = score_from_config(\n"
+                            '    source, config="config/model_scoring/score.json",\n'
+                            "    base_dir=base,\n"
+                            ")\n"
+                            "result = result.limit(2)\n"
+                            "return result"
+                        ),
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["source"])
+        df = fn(lf).collect()
+        assert df.height == 2
+        assert "prediction" in df.columns
 
 
 # ---------------------------------------------------------------------------

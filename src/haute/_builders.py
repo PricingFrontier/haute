@@ -19,14 +19,17 @@ from typing import Any
 
 import polars as pl
 
+from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_source
 from haute._logging import get_logger
 from haute._rating import (
     _apply_banding,
+    _apply_rating_step_outputs,
     _apply_rating_table,
     _combine_rating_columns,
     _normalise_banding_factors,
+    _normalise_combined_outputs,
 )
 from haute._registry import (
     NODE_REGISTRY,
@@ -370,7 +373,10 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     path = config.get("path", "")
     source_type = config.get("sourceType", "flat_file")
-    code = (config.get("code") or "").strip()
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="data_source",
+    )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     base_fn: Callable[..., _Frame]
@@ -470,7 +476,11 @@ def _build_data_sink(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 @_register(NodeType.EXTERNAL_FILE, opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    code = config.get("code", "").strip()
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="external",
+        param_names=ctx.source_names,
+    )
     path = config.get("path", "")
     file_type = config.get("fileType", "pickle")
     model_class = config.get("modelClass", "classifier")
@@ -547,6 +557,8 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 
 def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
+    if (config.get("code") or "").strip():
+        return OPAQUE_CONTRACT
     tables = config.get("tables") or []
     produced: set[str] = set()
     referenced: set[str] = set()
@@ -555,10 +567,11 @@ def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
         if out:
             produced.add(out)
         referenced.update(t.get("factors") or [])
-    combined = config.get("combinedColumn", "")
     table_out_cols = [t.get("outputColumn", "") for t in tables if t.get("outputColumn")]
-    if combined and len(table_out_cols) >= 2:
-        produced.add(combined)
+    for combined in _normalise_combined_outputs(config):
+        if combined.get("_legacy") and len(table_out_cols) < 2:
+            continue
+        produced.add(combined["outputColumn"])
     return produced, referenced
 
 
@@ -566,31 +579,25 @@ def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     tables: list[dict[str, Any]] = config.get("tables", []) or []
-    # GUI config may send None for these fields, so `or` ensures a usable default
-    _rs_operation: str = config.get("operation", "multiply") or "multiply"
-    _rs_combined: str = config.get("combinedColumn", "") or ""
+    combined_outputs = _normalise_combined_outputs(config)
+    first = ctx.source_names[0] if ctx.source_names else "df"
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="rating_step",
+        param_names=(first,),
+    )
+    _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def rating_fn(
         *dfs: _Frame,
         _tables: list = list(tables),
-        _op: str = _rs_operation,
-        _combined: str = _rs_combined,
+        _combined_outputs: list[dict[str, Any]] = list(combined_outputs),
+        _code: str = code,
     ) -> _Frame:
         lf = dfs[0] if dfs else pl.LazyFrame()
-        out_cols: list[str] = []
-        for t in _tables:
-            lf = _apply_rating_table(lf, t)
-            oc = t.get("outputColumn", "")
-            if oc:
-                out_cols.append(oc)
-        if _combined and len(out_cols) >= 2:
-            logger.info(
-                "combining_rating_columns",
-                columns=out_cols,
-                operation=_op,
-                output=_combined,
-            )
-            lf = _combine_rating_columns(lf, out_cols, _op, _combined)
+        lf = _apply_rating_step_outputs(lf, _tables, _combined_outputs)
+        if _code:
+            lf = _exec_user_code(_code, ["df"], (lf,), extra_ns=_preamble)
         return lf
 
     return ctx.func_name, rating_fn, False
@@ -623,7 +630,12 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     if _steps < 1:
         raise ValueError(f"Scenario expander requires steps >= 1, got {_steps}")
     _step_col = config.get("step_column") or "scenario_index"
-    code = (config.get("code") or "").strip()
+    first = ctx.source_names[0] if ctx.source_names else "df"
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="scenario_expander",
+        param_names=(first,),
+    )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def scenario_expand_fn(
@@ -842,6 +854,11 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
 @_register(NodeType.MODEL_SCORE, columns=_model_score_columns)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="model_score",
+        param_names=ctx.source_names,
+    )
     # Default to "" (not "run") — empty sourceType means the node is
     # unconfigured and should passthrough.  Codegen and score_from_config
     # default to "run" because they only execute for configured nodes.
@@ -869,7 +886,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         version=config.get("version", "latest"),
         task=_task,
         output_col=config.get("output_column", "prediction"),
-        code=config.get("code", "").strip(),
+        code=code,
         source_names=list(ctx.source_names),
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
@@ -881,8 +898,12 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 @_register(NodeType.POLARS, opaque=True)
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    code = config.get("code", "").strip()
     _src_names = list(ctx.source_names)
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="polars",
+        param_names=_src_names,
+    )
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None

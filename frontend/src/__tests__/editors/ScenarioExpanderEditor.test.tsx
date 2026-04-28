@@ -227,6 +227,8 @@ describe("ScenarioExpanderEditor", () => {
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} />)
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("")
+    expect(editor.defaultValue).not.toContain("scenario_index")
+    expect(editor.defaultValue).not.toContain("join")
   })
 
   it("renders CodeEditor with code from config", () => {
@@ -234,6 +236,15 @@ describe("ScenarioExpanderEditor", () => {
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={config} />)
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe('.filter(pl.col("x") > 0)')
+  })
+
+  it("does not synthesize expansion scaffold around configured code", () => {
+    const config = { code: "df = df.limit(10)" }
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={config} />)
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("df = df.limit(10)")
+    expect(editor.defaultValue).not.toContain("df = quotes")
+    expect(editor.defaultValue).not.toContain("return df")
   })
 
   it("CodeEditor onChange calls onUpdate with code key", () => {

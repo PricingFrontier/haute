@@ -82,6 +82,73 @@ describe("API response guards", () => {
     expect(Array.isArray(parsed.trace?.waterfall)).toBe(true)
   })
 
+  it("parses trace responses with rich rating_step node details intact", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const steps = trace.steps as Array<Record<string, unknown>>
+    const sourceStep = steps[0] ?? {}
+
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        target_node_id: "adjustments",
+        column: "technical_premium_factor",
+        output_value: 0.9,
+        steps: [
+          {
+            ...sourceStep,
+            node_id: "adjustments",
+            node_name: "Adjustments",
+            node_type: "ratingStep",
+            schema_diff: {
+              columns_added: ["technical_premium_factor"],
+              columns_removed: [],
+              columns_modified: [],
+              columns_passed: ["vehicle_age_band"],
+            },
+            output_values: { vehicle_age_band: "1-3", technical_premium_factor: 0.9 },
+            node_detail: {
+              detail_type: "rating_step",
+              tables: [
+                {
+                  name: "vehicle_factor",
+                  output_column: "vehicle_factor",
+                  factors: [{ column: "vehicle_age_band", value: "1-3" }],
+                  selected_value: 0.9,
+                  status: "matched",
+                  matched: true,
+                  default_used: false,
+                },
+              ],
+              combined_outputs: [
+                {
+                  column: "technical_premium_factor",
+                  operation: "multiply",
+                  base_value: 1,
+                  input_values: { vehicle_factor: 0.9 },
+                  value: 0.9,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    })
+
+    expect(parsed.trace).toBeDefined()
+    const parsedTrace = parsed.trace!
+    const detail = parsedTrace.steps[0]?.node_detail as Record<string, unknown>
+    const tables = detail.tables as Array<Record<string, unknown>>
+    const factors = tables[0]?.factors as Array<Record<string, unknown>>
+    const combinedOutputs = detail.combined_outputs as Array<Record<string, unknown>>
+
+    expect(detail.detail_type).toBe("rating_step")
+    expect(tables[0]?.status).toBe("matched")
+    expect(factors[0]).toEqual({ column: "vehicle_age_band", value: "1-3" })
+    expect(combinedOutputs[0]?.input_values).toEqual({ vehicle_factor: 0.9 })
+  })
+
   it("parses completed training responses with GLM diagnostics", () => {
     const parsed = parseTrainResponse(loadUiContractFixture("train_response"))
 

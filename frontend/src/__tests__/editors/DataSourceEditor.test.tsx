@@ -166,6 +166,25 @@ describe("DataSourceEditor", () => {
     expect(editor.defaultValue).toBe(".filter(pl.col('x') > 0)")
   })
 
+  it("does not synthesize file loading code in the editor", () => {
+    render(<DataSourceEditor {...DEFAULT_PROPS} config={{ path: "data/input.parquet" }} />)
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("")
+    expect(editor.defaultValue).not.toContain("scan_parquet")
+  })
+
+  it("shows only post-load transform code for selected files", () => {
+    render(
+      <DataSourceEditor
+        {...DEFAULT_PROPS}
+        config={{ path: "data/input.parquet", code: "df = df.limit(10)" }}
+      />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("df = df.limit(10)")
+    expect(editor.defaultValue).not.toContain("scan_parquet")
+  })
+
   it("code editor onChange calls onUpdate with 'code' key", () => {
     const onUpdate = vi.fn()
     render(<DataSourceEditor {...DEFAULT_PROPS} onUpdate={onUpdate} />)

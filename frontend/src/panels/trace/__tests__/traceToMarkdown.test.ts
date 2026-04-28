@@ -514,6 +514,132 @@ describe("traceToMarkdown", () => {
     expect(md).toContain("matched_row")
   })
 
+  it("summarizes backend rating_step tables, selected values, and combined outputs", () => {
+    const trace = makeTrace({
+      column: "technical_premium_factor",
+      output_value: 108,
+      steps: [
+        makeStep({ node_id: "n1", node_name: "Source", node_type: "source" }),
+        makeStep({
+          node_id: "n2",
+          node_name: "Adjustments",
+          node_type: "ratingStep",
+          schema_diff: {
+            columns_added: ["vehicle_factor", "channel_factor", "technical_premium_factor"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: ["vehicle_age_band", "cover_type", "channel"],
+          },
+          node_detail: {
+            detail_type: "rating_step",
+            tables: [
+              {
+                name: "vehicle_factor",
+                output_column: "vehicle_factor",
+                factors: [
+                  { column: "vehicle_age_band", value: "1-3" },
+                  { column: "cover_type", value: "comprehensive" },
+                ],
+                selected_value: 0.9,
+                status: "matched",
+                matched: true,
+                default_used: false,
+              },
+              {
+                name: "channel_factor",
+                output_column: "channel_factor",
+                factors: [{ column: "channel", value: "direct" }],
+                selected_value: 1.2,
+                status: "matched",
+                matched: true,
+                default_used: false,
+              },
+            ],
+            combined_outputs: [
+              {
+                column: "technical_premium_factor",
+                operation: "multiply",
+                base_value: 100,
+                input_values: { vehicle_factor: 0.9, channel_factor: 1.2 },
+                value: 108,
+              },
+            ],
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[1])
+
+    expect(md).toContain("Rating tables: vehicle_factor")
+    expect(md).toContain("vehicle_age_band=1-3")
+    expect(md).toContain("cover_type=comprehensive")
+    expect(md).toContain("status=matched")
+    expect(md).toContain("selected=0.9")
+    expect(md).toContain("channel_factor")
+    expect(md).toContain("channel=direct")
+    expect(md).toContain("selected=1.2")
+    expect(md).toContain("Combined outputs: technical_premium_factor = 108")
+    expect(md).toContain("multiply from base 100")
+    expect(md).toContain("vehicle_factor=0.9")
+    expect(md).toContain("channel_factor=1.2")
+  })
+
+  it("summarizes rating_step default and no-match table statuses", () => {
+    const trace = makeTrace({
+      column: "technical_premium_factor",
+      output_value: 1,
+      steps: [
+        makeStep({ node_id: "n1", node_name: "Source", node_type: "source" }),
+        makeStep({
+          node_id: "n2",
+          node_name: "Adjustments",
+          node_type: "ratingStep",
+          schema_diff: {
+            columns_added: ["technical_premium_factor"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: ["vehicle_age_band", "channel"],
+          },
+          node_detail: {
+            detail_type: "rating_step",
+            tables: [
+              {
+                name: "vehicle_factor",
+                output_column: "vehicle_factor",
+                factors: [{ column: "vehicle_age_band", value: "unknown" }],
+                selected_value: 1,
+                status: "default",
+                matched: false,
+                default_used: true,
+                default_value: 1,
+              },
+              {
+                name: "channel_factor",
+                output_column: "channel_factor",
+                factors: [{ column: "channel", value: "broker" }],
+                selected_value: null,
+                status: "no_match",
+                matched: false,
+                default_used: false,
+              },
+            ],
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[1])
+
+    expect(md).toContain("vehicle_factor")
+    expect(md).toContain("status=default")
+    expect(md).toContain("default=1")
+    expect(md).toContain("default used")
+    expect(md).toContain("channel_factor")
+    expect(md).toContain("status=no_match")
+    expect(md).toContain("selected=null")
+  })
+
   it("empty steps array produces minimal output with header but no data flow", () => {
     const trace = makeTrace({ steps: [] })
     const md = traceToMarkdown(trace, null)

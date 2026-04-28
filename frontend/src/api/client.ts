@@ -128,8 +128,8 @@ export class ApiError extends Error {
 //
 // Idempotent verbs (GET, HEAD, PUT, DELETE, OPTIONS) retry transient failures
 // - network errors (TypeError from fetch) and 5xx responses - with exponential
-// backoff + equal jitter, capped at `MAX_RETRIES` retries (so up to
-// MAX_RETRIES + 1 attempts total).
+// backoff + equal jitter, capped at the default retry policy (so up to
+// maxRetries + 1 attempts total).
 //
 // POST is NOT retried by default: retrying a non-idempotent request without
 // server-side deduplication risks duplicate side-effects. 4xx responses are
@@ -137,15 +137,32 @@ export class ApiError extends Error {
 //
 // Backoff uses equal jitter: delay in [base*2^n / 2, base*2^n], giving growth
 // without the pathological case of every client retrying in lockstep. With
-// BASE_DELAY_MS=100 and MAX_RETRIES=3, the worst-case total backoff budget is
+// baseDelayMs=100 and maxRetries=3, the worst-case total backoff budget is
 // 100 + 200 + 400 = 700ms - well under a 1s user-perceived latency ceiling.
 //
 // A caller-supplied AbortSignal cancels the retry loop immediately, including
 // while sleeping between attempts. AbortError from fetch (user intent) is
 // surfaced as-is and never retried.
 
-const MAX_RETRIES = 3
-const BASE_DELAY_MS = 100
+export interface RetryPolicy {
+  maxRetries?: number
+  baseDelayMs?: number
+}
+
+export interface ApiClientOptions {
+  signal?: AbortSignal
+  timeout?: number
+  retry?: RetryPolicy
+}
+
+type ResolvedRetryPolicy = Required<RetryPolicy>
+type RequestOptions = RequestInit & ApiClientOptions
+type MutationOptions = Pick<ApiClientOptions, "signal" | "timeout">
+
+const DEFAULT_RETRY_POLICY: ResolvedRetryPolicy = {
+  maxRetries: 3,
+  baseDelayMs: 100,
+}
 
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
 
@@ -175,10 +192,24 @@ function shouldRetry(method: string | undefined, err: unknown): boolean {
  *   attempt 1 -> [BASE,   BASE*2]          ~ [100, 200] ms
  *   attempt 2 -> [BASE*2, BASE*4]          ~ [200, 400] ms
  *
- * Worst-case sum for MAX_RETRIES=3, BASE_DELAY_MS=100 is 700ms.
+ * Worst-case sum for maxRetries=3, baseDelayMs=100 is 700ms.
  */
-function backoffDelayMs(attempt: number): number {
-  const exp = BASE_DELAY_MS * Math.pow(2, attempt)
+function resolveRetryPolicy(policy?: RetryPolicy): ResolvedRetryPolicy {
+  const resolved = {
+    ...DEFAULT_RETRY_POLICY,
+    ...policy,
+  }
+  if (!Number.isInteger(resolved.maxRetries) || resolved.maxRetries < 0) {
+    throw new Error("retry.maxRetries must be a non-negative integer")
+  }
+  if (!Number.isFinite(resolved.baseDelayMs) || resolved.baseDelayMs <= 0) {
+    throw new Error("retry.baseDelayMs must be a positive finite number")
+  }
+  return resolved
+}
+
+function backoffDelayMs(attempt: number, policy: ResolvedRetryPolicy): number {
+  const exp = policy.baseDelayMs * Math.pow(2, attempt)
   return exp / 2 + Math.random() * (exp / 2)
 }
 
@@ -221,7 +252,7 @@ async function attemptFetch<T>(
 
   // If an external signal is provided, abort our controller when it fires.
   // We track the listener so we can remove it in the finally block below —
-  // otherwise up to MAX_RETRIES one-shot listeners accumulate on the
+  // otherwise retry-loop one-shot listeners accumulate on the
   // caller's signal across retries before any of them fire.  The signal
   // itself typically lives at least as long as a user interaction, so
   // ambient listener pressure during a retry burst is worth avoiding.
@@ -259,16 +290,17 @@ async function attemptFetch<T>(
 
 async function request<T>(
   url: string,
-  options: RequestInit & { timeout?: number } = {},
+  options: RequestOptions = {},
 ): Promise<T> {
-  const { timeout = 30_000, signal: rawSignal, ...fetchOptions } = options
+  const { timeout = 30_000, signal: rawSignal, retry, ...fetchOptions } = options
   // Normalise RequestInit's `AbortSignal | null` to `AbortSignal | undefined`
   // so internal helpers can use a single optional shape.
   const externalSignal: AbortSignal | undefined = rawSignal ?? undefined
   const method = fetchOptions.method
+  const retryPolicy = resolveRetryPolicy(retry)
 
   let lastError: unknown
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
     // Honor external abort before issuing the next attempt.
     if (externalSignal?.aborted) {
       throw new DOMException("Aborted", "AbortError")
@@ -281,17 +313,17 @@ async function request<T>(
       // Non-retryable errors (AbortError, 4xx, non-idempotent method) short-circuit.
       if (!shouldRetry(method, err)) throw err
       // Out of budget - surface the last failure.
-      if (attempt >= MAX_RETRIES) throw err
+      if (attempt >= retryPolicy.maxRetries) throw err
       // Sleep before retrying; a caller-supplied signal cancels the sleep.
-      await backoffSleep(backoffDelayMs(attempt), externalSignal)
+      await backoffSleep(backoffDelayMs(attempt, retryPolicy), externalSignal)
     }
   }
   // Unreachable: the loop either returns, throws inside the catch, or completes
-  // the final iteration and throws via the `attempt >= MAX_RETRIES` guard.
+  // the final iteration and throws via the `attempt >= maxRetries` guard.
   throw lastError
 }
 
-function post<T>(url: string, body: unknown, options: { signal?: AbortSignal; timeout?: number } = {}): Promise<T> {
+function post<T>(url: string, body: unknown, options: MutationOptions = {}): Promise<T> {
   return request<T>(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -300,7 +332,7 @@ function post<T>(url: string, body: unknown, options: { signal?: AbortSignal; ti
   })
 }
 
-function del<T>(url: string, options: { signal?: AbortSignal; timeout?: number } = {}): Promise<T> {
+function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
   return request<T>(url, { method: "DELETE", ...options })
 }
 
@@ -308,7 +340,7 @@ function del<T>(url: string, options: { signal?: AbortSignal; timeout?: number }
 // Pipeline endpoints
 // ---------------------------------------------------------------------------
 
-export function loadPipeline(options?: { signal?: AbortSignal }): Promise<PipelineGraph> {
+export function loadPipeline(options?: ApiClientOptions): Promise<PipelineGraph> {
   return request<unknown>("/api/pipeline", options)
     .then(parsePipelineResponse)
     .catch((err) => {
@@ -353,7 +385,7 @@ export function savePipeline(
     sources?: string[]
     active_source?: string
   },
-  options?: { signal?: AbortSignal },
+  options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
   return post<unknown>("/api/pipeline/save", payload, options).then(parseSavePipelineResponse)
 }

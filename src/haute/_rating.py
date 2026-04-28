@@ -9,6 +9,8 @@ module itself, keeping the dependency graph acyclic.
 from __future__ import annotations
 
 import math
+from os import PathLike
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -220,6 +222,18 @@ def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 _LOOKUP_VAL = "__haute_lookup_val__"
+_SUPPORTED_COMBINE_OPERATIONS = frozenset({"multiply", "add", "min", "max"})
+
+
+def _normalise_combine_operation(operation: object) -> str:
+    """Return a validated rating combine operation."""
+    normalised = str(operation or "multiply")
+    if normalised not in _SUPPORTED_COMBINE_OPERATIONS:
+        raise ValueError(
+            f"Unsupported rating combine operation {normalised!r}; "
+            f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}"
+        )
+    return normalised
 
 
 def _apply_rating_table(
@@ -330,6 +344,7 @@ def _combine_rating_columns(
 
     Supported operations: multiply (default), add, min, max.
     """
+    operation = _normalise_combine_operation(operation)
     if not columns:
         return lf
     if len(columns) == 1:
@@ -353,3 +368,156 @@ def _combine_rating_columns(
             expr = expr * pl.col(c).fill_null(1.0).fill_nan(1.0)
 
     return lf.with_columns(expr.alias(output_col))
+
+
+def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return validated combined-output definitions for a rating step.
+
+    Legacy configs with ``combinedColumn``/``operation`` are converted to a
+    single output definition. New ``combinedOutputs`` entries are validated
+    strictly so misspelled operations or non-finite base values fail loudly.
+    """
+    raw_outputs = config.get("combinedOutputs")
+    combined_raw = config.get("combinedColumn")
+    combined = str(combined_raw).strip() if combined_raw is not None else ""
+    operation = _normalise_combine_operation(config.get("operation", "multiply"))
+    legacy_output = (
+        {
+            "outputColumn": str(combined),
+            "operation": operation,
+            "baseValue": None,
+            "_legacy": True,
+        }
+        if combined
+        else None
+    )
+    if raw_outputs is None or raw_outputs == []:
+        return [legacy_output] if legacy_output else []
+    if not isinstance(raw_outputs, list):
+        raise ValueError("ratingStep combinedOutputs must be a list")
+
+    outputs: list[dict[str, Any]] = []
+    seen_output_cols: set[str] = {
+        str(t.get("outputColumn", "") or "").strip()
+        for t in config.get("tables", []) or []
+        if str(t.get("outputColumn", "") or "").strip()
+    }
+    raw_output_cols = {
+        str(item.get("outputColumn", "") or "").strip()
+        for item in raw_outputs
+        if isinstance(item, dict)
+    }
+    if legacy_output and combined not in raw_output_cols:
+        outputs.append(legacy_output)
+        seen_output_cols.add(combined)
+    for idx, item in enumerate(raw_outputs):
+        if not isinstance(item, dict):
+            raise ValueError(f"ratingStep combinedOutputs[{idx}] must be an object")
+        output_col = str(item.get("outputColumn", "") or "").strip()
+        if not output_col:
+            raise ValueError(f"ratingStep combinedOutputs[{idx}] requires outputColumn")
+        if output_col in seen_output_cols:
+            raise ValueError(
+                f"ratingStep combinedOutputs[{idx}].outputColumn {output_col!r} "
+                "duplicates another rating output column"
+            )
+        seen_output_cols.add(output_col)
+        operation = _normalise_combine_operation(item.get("operation", "multiply"))
+
+        base_raw = item.get("baseValue")
+        if (
+            base_raw is None
+            or isinstance(base_raw, bool)
+            or (isinstance(base_raw, str) and not base_raw.strip())
+        ):
+            raise ValueError(f"ratingStep combinedOutputs[{idx}] requires baseValue")
+        try:
+            base_value = float(base_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"ratingStep combinedOutputs[{idx}].baseValue must be numeric"
+            ) from exc
+        if not math.isfinite(base_value):
+            raise ValueError(f"ratingStep combinedOutputs[{idx}].baseValue must be finite")
+        outputs.append(
+            {
+                "outputColumn": output_col,
+                "operation": operation,
+                "baseValue": base_value,
+            }
+        )
+    return outputs
+
+
+def _combine_rating_output(
+    lf: _Frame,
+    columns: list[str],
+    operation: str,
+    output_col: str,
+    base_value: float | None = None,
+) -> _Frame:
+    """Combine table outputs, optionally including a numeric base value."""
+    if base_value is None:
+        return _combine_rating_columns(lf, columns, operation, output_col)
+    base_col = f"__haute_rating_base_{output_col}__"
+    existing_cols = set(
+        lf.collect_schema().names() if hasattr(lf, "collect_schema") else lf.columns
+    )
+    while base_col in columns or base_col in existing_cols:
+        base_col = f"_{base_col}"
+    with_base = lf.with_columns(pl.lit(base_value, dtype=pl.Float64).alias(base_col))
+    combined = _combine_rating_columns(with_base, [base_col, *columns], operation, output_col)
+    return combined.drop(base_col)
+
+
+def _apply_rating_step_outputs(
+    lf: _Frame,
+    tables: list[dict[str, Any]],
+    combined_outputs: list[dict[str, Any]],
+) -> _Frame:
+    """Apply rating tables and combined outputs to a frame."""
+    if isinstance(lf, pl.DataFrame):
+        lf = lf.lazy()
+
+    out_cols: list[str] = []
+    for table in tables:
+        lf = _apply_rating_table(lf, table)
+        output_col = str(table.get("outputColumn", "") or "").strip()
+        if output_col:
+            out_cols.append(output_col)
+
+    for combined in combined_outputs:
+        if combined.get("_legacy") and len(out_cols) < 2:
+            continue
+        lf = _combine_rating_output(
+            lf,
+            out_cols,
+            combined["operation"],
+            combined["outputColumn"],
+            combined["baseValue"],
+        )
+    return lf
+
+
+def apply_rating_step_from_config(
+    lf: _Frame,
+    config: dict[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+) -> _Frame:
+    """Apply a rating-step JSON/dict config before custom post-processing code."""
+    if isinstance(config, dict):
+        resolved_config = config
+    else:
+        from haute._config_io import load_node_config
+
+        config_path = config if isinstance(config, str) else Path(config)
+        resolved_config = load_node_config(
+            config_path, base_dir=Path(base_dir) if base_dir else None
+        )
+
+    return _apply_rating_step_outputs(
+        lf,
+        resolved_config.get("tables", []) or [],
+        _normalise_combined_outputs(resolved_config),
+    )

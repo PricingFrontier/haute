@@ -35,6 +35,7 @@ from haute._mlflow_io import load_mlflow_model as load_mlflow_model
 from haute._model_scorer import score_from_config as score_from_config
 from haute._optimiser_io import load_mlflow_optimiser_artifact as load_mlflow_optimiser_artifact
 from haute._optimiser_io import load_optimiser_artifact as load_optimiser_artifact
+from haute._rating import apply_rating_step_from_config as apply_rating_step_from_config
 from haute._topo import CycleError as CycleError
 from haute._topo import ancestors as ancestors
 from haute._topo import topo_sort_ids as topo_sort_ids

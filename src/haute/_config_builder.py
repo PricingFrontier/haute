@@ -15,6 +15,8 @@ from typing import Any
 from haute._code_extraction import (
     _extract_external_user_code,
     _extract_model_score_user_code,
+    _extract_rating_step_user_code,
+    _extract_scenario_expander_user_code,
     _extract_source_user_code,
     _extract_user_code,
 )
@@ -147,9 +149,16 @@ def _build_node_config(
         )
         if combined:
             config["combinedColumn"] = str(combined)
+        combined_outputs = decorator_kwargs.get(
+            "combined_outputs",
+            decorator_kwargs.get("combinedOutputs"),
+        )
+        if combined_outputs is not None:
+            config["combinedOutputs"] = combined_outputs
+        config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
     elif node_type == NodeType.SCENARIO_EXPANDER:
         _copy_config_keys(config, decorator_kwargs, SCENARIO_EXPANDER_CONFIG_KEYS)
-        config["code"] = _extract_source_user_code(body) if body else ""
+        config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
     elif node_type == NodeType.OPTIMISER_APPLY:
         for key in OPTIMISER_APPLY_CONFIG_KEYS:
             decorator_key = "source_type" if key == "sourceType" else key
@@ -360,7 +369,9 @@ def _resolve_node_config(
         elif node_type == NodeType.DATA_SOURCE:
             config["code"] = _extract_source_user_code(body) if body else ""
         elif node_type == NodeType.SCENARIO_EXPANDER:
-            config["code"] = _extract_source_user_code(body) if body else ""
+            config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
+        elif node_type == NodeType.RATING_STEP:
+            config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
     elif has_config_folder(node_type):
         raise ConfigError(
             "Node config must be stored in a JSON sidecar and referenced with "

@@ -103,6 +103,47 @@ describe("usePipelineAPI", () => {
     expect(params.setPreamble).toHaveBeenCalledWith("import polars as pl")
   })
 
+  it("uses the cold-start retry policy for the initial pipeline load", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+    const params = makeParams()
+    renderHook(() => usePipelineAPI(params))
+
+    await waitFor(() => expect(mockLoad).toHaveBeenCalled())
+    expect(mockLoad).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
+      retry: { maxRetries: 6, baseDelayMs: 250 },
+    })
+  })
+
+  it("aborts the initial pipeline load on unmount", async () => {
+    mockLoad.mockImplementation(() => new Promise(() => {}))
+
+    const params = makeParams()
+    const { unmount } = renderHook(() => usePipelineAPI(params))
+
+    await waitFor(() => expect(mockLoad).toHaveBeenCalled())
+    const options = mockLoad.mock.calls[0][0] as { signal: AbortSignal }
+    expect(options.signal.aborted).toBe(false)
+
+    unmount()
+
+    expect(options.signal.aborted).toBe(true)
+  })
+
+  it("surfaces initial load AbortErrors that were not caused by unmount cleanup", async () => {
+    mockLoad.mockRejectedValue(new DOMException("request timed out", "AbortError"))
+
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false)
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) => t.type === "error" && t.text.includes("request timed out"))).toBe(true)
+    })
+  })
+
   it("loads successful backend responses with nullable metadata", async () => {
     mockLoad.mockResolvedValue({
       nodes: [],

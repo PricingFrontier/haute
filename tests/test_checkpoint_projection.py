@@ -175,10 +175,138 @@ class TestGetColumnContract:
         )
         assert produced == {"x_out"}
 
+    def test_rating_step_empty_combined_outputs_without_legacy_multiple_tables_is_noop(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {"factors": ["age"], "outputColumn": "age_factor"},
+                    {"factors": ["region"], "outputColumn": "region_factor"},
+                ],
+                "combinedOutputs": [],
+            },
+        )
+        assert produced == {"age_factor", "region_factor"}
+        assert referenced == {"age", "region"}
+
+    def test_rating_step_empty_combined_outputs_with_blank_legacy_is_noop(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {"factors": ["age"], "outputColumn": "age_factor"},
+                    {"factors": ["region"], "outputColumn": "region_factor"},
+                ],
+                "combinedColumn": "  ",
+                "combinedOutputs": [],
+            },
+        )
+        assert produced == {"age_factor", "region_factor"}
+        assert referenced == {"age", "region"}
+
     def test_rating_step_empty_tables(self):
         produced, referenced = get_column_contract(NodeType.RATING_STEP, {"tables": []})
         assert produced == set()
         assert referenced == set()
+
+    def test_rating_step_combined_outputs_produced(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {"factors": ["age"], "outputColumn": "age_factor"},
+                    {"factors": ["region"], "outputColumn": "region_factor"},
+                ],
+                "combinedOutputs": [
+                    {
+                        "outputColumn": "technical_premium",
+                        "operation": "multiply",
+                        "baseValue": 100,
+                    },
+                    {"outputColumn": "additive_score", "operation": "add", "baseValue": 0},
+                ],
+            },
+        )
+        assert produced == {
+            "age_factor",
+            "region_factor",
+            "technical_premium",
+            "additive_score",
+        }
+        assert referenced == {"age", "region"}
+
+    def test_rating_step_legacy_combined_survives_empty_combined_outputs(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {"factors": ["age"], "outputColumn": "age_factor"},
+                    {"factors": ["region"], "outputColumn": "region_factor"},
+                ],
+                "operation": "multiply",
+                "combinedColumn": "technical_premium",
+                "combinedOutputs": [],
+            },
+        )
+        assert produced == {"age_factor", "region_factor", "technical_premium"}
+        assert referenced == {"age", "region"}
+
+    def test_rating_step_empty_combined_outputs_without_legacy_is_noop(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [{"factors": ["age"], "outputColumn": "age_factor"}],
+                "combinedOutputs": [],
+            },
+        )
+        assert produced == {"age_factor"}
+        assert referenced == {"age"}
+
+    def test_rating_step_combined_output_base_only_produced(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [],
+                "combinedOutputs": [
+                    {
+                        "outputColumn": "technical_premium",
+                        "operation": "multiply",
+                        "baseValue": 100,
+                    },
+                ],
+            },
+        )
+        assert produced == {"technical_premium"}
+        assert referenced == set()
+
+    def test_rating_step_legacy_combined_produced_with_new_combined_outputs(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {"factors": ["age"], "outputColumn": "age_factor"},
+                    {"factors": ["region"], "outputColumn": "region_factor"},
+                ],
+                "operation": "min",
+                "combinedColumn": "legacy_min",
+                "combinedOutputs": [
+                    {"outputColumn": "new_total", "operation": "add", "baseValue": 10},
+                ],
+            },
+        )
+        assert produced == {"age_factor", "region_factor", "legacy_min", "new_total"}
+        assert referenced == {"age", "region"}
+
+    def test_rating_step_with_code_is_opaque(self):
+        produced, referenced = get_column_contract(
+            NodeType.RATING_STEP,
+            {
+                "tables": [{"factors": ["x"], "outputColumn": "x_factor"}],
+                "code": "df = df.with_columns(pl.col('y').alias('z'))",
+            },
+        )
+        assert produced is None
+        assert referenced is None
 
     # -- MODEL_SCORE ----------------------------------------------------
 

@@ -1,6 +1,12 @@
 import { useState, useMemo, useRef, useEffect } from "react"
 import { X, ChevronDown, ChevronRight, Scan, Copy, Check } from "lucide-react"
-import type { TraceResult, TraceStep } from "../types/trace"
+import type {
+  RatingStepCombinedOutputDetail,
+  RatingStepTableDetail,
+  TraceNodeDetail,
+  TraceResult,
+  TraceStep,
+} from "../types/trace"
 import { nodeTypeLabels, nodeTypeColors } from "../utils/nodeTypes"
 import { formatValue as _formatValue } from "../utils/formatValue"
 import { formatExpression } from "../utils/formatTrace"
@@ -9,14 +15,181 @@ import CalculationHero from "../trace/CalculationHero"
 import { CHART_COLORS } from "../theme/colors"
 import { findTargetStep, collapsePassthroughs } from "./trace/traceGrouping"
 import { traceToMarkdown } from "./trace/traceToMarkdown"
+import useToastStore from "../stores/useToastStore"
 
 const formatValue = (v: unknown) => _formatValue(v, 2)
 
-function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
+function asRatingStepTables(detail: TraceNodeDetail): RatingStepTableDetail[] {
+  return Array.isArray(detail.tables) ? detail.tables as RatingStepTableDetail[] : []
+}
+
+function asRatingStepCombinedOutputs(detail: TraceNodeDetail): RatingStepCombinedOutputDetail[] {
+  return Array.isArray(detail.combined_outputs) ? detail.combined_outputs as RatingStepCombinedOutputDetail[] : []
+}
+
+function ratingTableStatus(table: RatingStepTableDetail): string | undefined {
+  if (typeof table.status === "string" && table.status.length > 0) return table.status
+  if (table.default_used) return "default"
+  if (table.matched === false) return "no_match"
+  if (table.matched === true) return "matched"
+  return undefined
+}
+
+function formatRatingStatus(status: string): string {
+  return status.replace(/_/g, " ")
+}
+
+function ratingStatusStyle(status: string) {
+  if (status === "matched") {
+    return { background: "var(--success-soft-mid)", color: "var(--color-added, var(--success-hover))" }
+  }
+  if (status === "default") {
+    return { background: "var(--warning-bright-soft-strong)", color: "var(--warning)" }
+  }
+  return { background: "var(--danger-soft)", color: "var(--danger-text)" }
+}
+
+function hasRichRatingStepDetail(step: TraceStep | null | undefined): boolean {
+  const detail = step?.node_detail
+  return Boolean(
+    detail?.detail_type === "rating_step" &&
+    (Array.isArray(detail.tables) || Array.isArray(detail.combined_outputs)),
+  )
+}
+
+function isCalculationRoutineSparse(step: TraceStep | null | undefined): boolean {
+  return step != null && step.expression == null && step.calculation == null && hasRichRatingStepDetail(step)
+}
+
+function initialTraceTab(trace: TraceResult): TraceTab {
+  const targetStep = findTargetStep(trace.steps, trace.column)
+  return isCalculationRoutineSparse(targetStep) ? "nodes" : "calculation"
+}
+
+function traceTabKey(trace: TraceResult): string {
+  return `${trace.target_node_id}\u0000${trace.row_index}\u0000${trace.column ?? ""}`
+}
+
+function NodeDetailBlock({ detail, tracedColumn }: { detail: TraceNodeDetail; tracedColumn?: string | null }) {
   const detailType = detail.detail_type as string | undefined
 
   const labelStyle = { color: "var(--text-muted)", fontSize: "10px" }
   const valueStyle = { color: "var(--text-secondary)", fontSize: "11px", fontFamily: "var(--font-mono, monospace)" }
+
+  if (detailType === "rating_step" && (Array.isArray(detail.tables) || Array.isArray(detail.combined_outputs))) {
+    const tables = asRatingStepTables(detail)
+    const combinedOutputs = asRatingStepCombinedOutputs(detail)
+
+    return (
+      <div className="my-2 space-y-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        {tables.length > 0 && (
+          <div className="space-y-1.5">
+            <div style={labelStyle}>Rating Tables</div>
+            {tables.map((table, tableIndex) => {
+              const title = table.name || table.output_column || `table ${tableIndex + 1}`
+              const status = ratingTableStatus(table)
+              const isTracedTable = tracedColumn != null &&
+                (table.output_column === tracedColumn || table.name === tracedColumn)
+              return (
+                <div
+                  key={`${title}-${tableIndex}`}
+                  className="space-y-1 py-1.5"
+                  style={{
+                    borderTop: tableIndex === 0 ? "none" : "1px solid var(--border)",
+                    borderLeft: isTracedTable ? "2px solid var(--accent)" : "2px solid transparent",
+                    paddingLeft: isTracedTable ? 8 : 0,
+                  }}
+                >
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono font-semibold" style={{ color: "var(--text-primary)" }}>
+                      {title}
+                    </span>
+                    {isTracedTable && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                        traced column
+                      </span>
+                    )}
+                    {status && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={ratingStatusStyle(status)}>
+                        status: {formatRatingStatus(status)}
+                      </span>
+                    )}
+                    {table.selected_value !== undefined && (
+                      <span className="font-mono" style={{ color: "var(--accent)" }}>
+                        selected: {formatValue(table.selected_value)}
+                      </span>
+                    )}
+                    {table.default_value !== undefined && (
+                      <span className="font-mono" style={{ color: "var(--text-muted)" }}>
+                        default: {formatValue(table.default_value)}
+                      </span>
+                    )}
+                    {table.default_used && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: "var(--warning-bright-soft-strong)", color: "var(--warning)" }}>
+                        default used
+                      </span>
+                    )}
+                  </div>
+                  {table.factors && table.factors.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {table.factors.map((factor) => (
+                        <span key={`${factor.column}-${String(factor.value)}`} className="px-1 py-0.5 rounded font-mono" style={{ background: "rgba(255,255,255,.06)" }}>
+                          {factor.column}: {formatValue(factor.value)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {combinedOutputs.length > 0 && (
+          <div className="space-y-1.5">
+            <div style={labelStyle}>Combined Outputs</div>
+            {combinedOutputs.map((combined) => {
+              const isTracedCombined = tracedColumn != null && combined.column === tracedColumn
+              return (
+                <div
+                  key={combined.column}
+                  className="space-y-1 py-1.5"
+                  style={{
+                    borderTop: "1px solid var(--border)",
+                    borderLeft: isTracedCombined ? "2px solid var(--accent)" : "2px solid transparent",
+                    paddingLeft: isTracedCombined ? 8 : 0,
+                  }}
+                >
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono font-semibold" style={{ color: "var(--text-primary)" }}>
+                      {combined.column} = {formatValue(combined.value)}
+                    </span>
+                    {isTracedCombined && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                        traced column
+                      </span>
+                    )}
+                  </div>
+                  <div style={valueStyle}>
+                    {combined.operation} from base {formatValue(combined.base_value)}
+                  </div>
+                  {Object.keys(combined.input_values).length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {Object.entries(combined.input_values).map(([column, value]) => (
+                        <span key={column} className="px-1 py-0.5 rounded font-mono" style={{ background: "rgba(255,255,255,.06)" }}>
+                          {column}: {formatValue(value)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   if (detailType === "rate_table_lookup" || detailType === "rating_step") {
     const keys = detail.lookup_keys as Record<string, unknown> | undefined
@@ -115,8 +288,8 @@ function NodeDetailBlock({ detail }: { detail: Record<string, unknown> }) {
   )
 }
 
-function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep; index: number; tracedColumn: string | null; isTargetStep?: boolean }) {
-  const [expanded, setExpanded] = useState(false)
+function StepCard({ step, index, tracedColumn, isTargetStep, defaultExpanded = false }: { step: TraceStep; index: number; tracedColumn: string | null; isTargetStep?: boolean; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
   const accent = nodeTypeColors[step.node_type] || CHART_COLORS.cyan
   const typeLabel = nodeTypeLabels[step.node_type] || "NODE"
   const relevant = step.column_relevant
@@ -268,7 +441,7 @@ function StepCard({ step, index, tracedColumn, isTargetStep }: { step: TraceStep
 
           {/* Node detail section */}
           {step.node_detail && (
-            <NodeDetailBlock detail={step.node_detail} />
+            <NodeDetailBlock detail={step.node_detail} tracedColumn={tracedColumn} />
           )}
 
           {/* Schema changes summary */}
@@ -354,16 +527,28 @@ interface TracePanelProps {
 type DetailLevel = "formula" | "sources" | "all"
 
 export default function TracePanel({ trace, onClose }: TracePanelProps) {
-  const [activeTab, setActiveTab] = useState<TraceTab>("calculation")
+  const currentTraceTabKey = traceTabKey(trace)
+  const [activeTabState, setActiveTabState] = useState<{ traceKey: string; activeTab: TraceTab }>(() => ({
+    traceKey: currentTraceTabKey,
+    activeTab: initialTraceTab(trace),
+  }))
+  const activeTab = activeTabState.traceKey === currentTraceTabKey
+    ? activeTabState.activeTab
+    : initialTraceTab(trace)
+  const setActiveTab = (activeTab: TraceTab) => {
+    setActiveTabState({ traceKey: currentTraceTabKey, activeTab })
+  }
   const [detailLevel, setDetailLevel] = useState<DetailLevel>("sources")
   const [copied, setCopied] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const addToast = useToastStore((s) => s.addToast)
 
   // Clear copy timer on unmount
   useEffect(() => () => clearTimeout(copyTimerRef.current), [])
 
   const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])
+  const targetStepOpensAsNodeDetail = isCalculationRoutineSparse(targetStep)
   // Build a set of node IDs that are collapsed (pass-through)
   const collapsedIds = useMemo(() => {
     if (!trace.column) return new Set<string>()
@@ -381,16 +566,32 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
 
   const handleCopy = async () => {
     const md = traceToMarkdown(trace, targetStep)
+    let didCopy = false
     try {
       await navigator.clipboard.writeText(md)
-    } catch {
-      // Fallback for non-HTTPS contexts
+      didCopy = true
+    } catch (clipboardError) {
+      // WHY console-only: the fallback may still complete the user action.
+      console.warn("Clipboard API copy failed; trying document fallback", clipboardError)
       const ta = document.createElement("textarea")
       ta.value = md
       document.body.appendChild(ta)
       ta.select()
-      document.execCommand("copy")
-      document.body.removeChild(ta)
+      try {
+        didCopy = document.execCommand("copy")
+        if (!didCopy) {
+          throw new Error("document.execCommand('copy') returned false")
+        }
+      } catch (fallbackError) {
+        // WHY console-only: the user-visible toast below reports the failed copy.
+        console.warn("Clipboard fallback copy failed", fallbackError)
+      } finally {
+        document.body.removeChild(ta)
+      }
+    }
+    if (!didCopy) {
+      addToast("error", "Could not copy trace markdown")
+      return
     }
     setCopied(true)
     clearTimeout(copyTimerRef.current)
@@ -433,7 +634,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           onClick={handleCopy}
           className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
           style={{ color: copied ? "var(--color-added, var(--success-hover))" : "var(--text-muted)" }}
-          title="Copy trace as markdown"
+          title={copied ? "Copied trace" : "Copy trace as markdown"}
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}
         </button>
@@ -481,15 +682,22 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           background: "linear-gradient(180deg, var(--accent-soft-faint) 0%, var(--accent-soft-whisper) 100%)",
         }}>
           {targetStep && trace.column ? (
-            <CalculationHero
-              column={trace.column}
-              expression={targetStep.expression ?? null}
-              calculation={targetStep.calculation ?? null}
-              executionMs={trace.execution_ms}
-              stepCount={trace.steps.length}
-              nodeName={targetStep.node_name}
-              waterfall={trace.waterfall}
-            />
+            <>
+              <CalculationHero
+                column={trace.column}
+                expression={targetStep.expression ?? null}
+                calculation={targetStep.calculation ?? null}
+                executionMs={trace.execution_ms}
+                stepCount={trace.steps.length}
+                nodeName={targetStep.node_name}
+                waterfall={trace.waterfall}
+              />
+              {hasRichRatingStepDetail(targetStep) && targetStep.node_detail && (
+                <div className="px-3 pb-3">
+                  <NodeDetailBlock detail={targetStep.node_detail} tracedColumn={trace.column} />
+                </div>
+              )}
+            </>
           ) : (
             <div className="px-4 py-4">
               <div className="flex items-center gap-2">
@@ -535,12 +743,19 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {detailLevel === "formula" ? (
               targetStep && (
-                <StepCard step={targetStep} index={trace.steps.indexOf(targetStep)} tracedColumn={trace.column} isTargetStep={true} />
+                <StepCard step={targetStep} index={trace.steps.indexOf(targetStep)} tracedColumn={trace.column} isTargetStep={true} defaultExpanded={targetStepOpensAsNodeDetail} />
               )
             ) : (
               <>
                 {visibleSteps.map((step) => (
-                  <StepCard key={step.node_id} step={step} index={trace.steps.indexOf(step)} tracedColumn={trace.column} isTargetStep={targetStep?.node_id === step.node_id} />
+                  <StepCard
+                    key={step.node_id}
+                    step={step}
+                    index={trace.steps.indexOf(step)}
+                    tracedColumn={trace.column}
+                    isTargetStep={targetStep?.node_id === step.node_id}
+                    defaultExpanded={targetStepOpensAsNodeDetail && targetStep?.node_id === step.node_id}
+                  />
                 ))}
                 {hiddenSteps.length > 0 && !showHidden && (
                   <button

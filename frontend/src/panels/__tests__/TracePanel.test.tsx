@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
+import useToastStore from "../../stores/useToastStore"
 
 function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
   return {
@@ -47,7 +48,11 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
 }
 
 describe("TracePanel", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
 
   it("renders the Trace header with column name", () => {
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
@@ -101,6 +106,45 @@ describe("TracePanel", () => {
     const closeBtn = copyBtn.nextElementSibling as HTMLElement
     fireEvent.click(closeBtn)
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it("logs and does not show copied when clipboard fallback fails", async () => {
+    const originalClipboard = navigator.clipboard
+    const originalExecCommand = document.execCommand
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"))
+    const execCommand = vi.fn((): boolean => false)
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    })
+    document.execCommand = execCommand
+
+    try {
+      render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+
+      fireEvent.click(screen.getByTitle("Copy trace as markdown"))
+
+      await waitFor(() => expect(execCommand).toHaveBeenCalledWith("copy"))
+      expect(warn).toHaveBeenCalledWith(
+        "Clipboard API copy failed; trying document fallback",
+        expect.any(Error),
+      )
+      expect(warn).toHaveBeenCalledWith("Clipboard fallback copy failed", expect.any(Error))
+      expect(screen.getByTitle("Copy trace as markdown")).toBeInTheDocument()
+      expect(screen.queryByTitle("Copied trace")).not.toBeInTheDocument()
+      expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+        type: "error",
+        text: "Could not copy trace markdown",
+      }))
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      })
+      document.execCommand = originalExecCommand
+    }
   })
 
   it("renders step names in order", () => {

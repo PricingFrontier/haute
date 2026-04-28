@@ -2978,6 +2978,41 @@ class TestEnrichSingleTable:
         assert result["matched_entry"]["region"] == "north"
         assert result["default_used"] is False
 
+    def test_explicit_table_detail_contract(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "name": "territory_factor",
+            "factors": ["state", "vehicle_type"],
+            "entries": [
+                {"state": "CA", "vehicle_type": "sedan", "value": 1.15},
+            ],
+            "outputColumn": "territory_factor",
+            "defaultValue": "1.0",
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"state": "CA", "vehicle_type": "sedan"},
+            output_row={"territory_factor": 1.15},
+        )
+
+        assert result == {
+            "name": "territory_factor",
+            "output_column": "territory_factor",
+            "lookup_keys": {"state": "CA", "vehicle_type": "sedan"},
+            "factors": [
+                {"column": "state", "value": "CA"},
+                {"column": "vehicle_type", "value": "sedan"},
+            ],
+            "selected_value": 1.15,
+            "rate_value": 1.15,
+            "matched": True,
+            "default_used": False,
+            "status": "matched",
+            "default_value": 1.0,
+            "matched_entry": {"state": "CA", "vehicle_type": "sedan", "value": 1.15},
+        }
+
     def test_no_entry_match_uses_default(self):
         from haute._trace_enrichment import _enrich_single_table
 
@@ -3070,6 +3105,7 @@ class TestEnrichSingleTable:
         from haute._trace_enrichment import _enrich_single_table
 
         table = {
+            "name": "region_tier_factor",
             "factors": ["region", "tier"],
             "entries": [
                 {"region": "north", "tier": "gold", "rate": 1.5},
@@ -3086,6 +3122,72 @@ class TestEnrichSingleTable:
         assert result["matched"] is True
         assert result["matched_entry"]["tier"] == "silver"
         assert result["lookup_keys"] == {"region": "north", "tier": "silver"}
+        assert result["name"] == "region_tier_factor"
+        assert result["factors"] == [
+            {"column": "region", "value": "north"},
+            {"column": "tier", "value": "silver"},
+        ]
+        assert result["selected_value"] == 1.2
+        assert result["status"] == "matched"
+
+    def test_duplicate_entries_follow_runtime_keep_last_semantics(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "name": "region_factor",
+            "factors": ["region"],
+            "entries": [
+                {"region": "north", "value": 1.1, "version": "old"},
+                {"region": "north", "value": 1.3, "version": "new"},
+            ],
+            "outputColumn": "region_factor",
+            "defaultValue": None,
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "north"},
+            output_row={"region_factor": 1.3},
+        )
+        assert result["matched"] is True
+        assert result["selected_value"] == 1.3
+        assert result["status"] == "matched"
+        assert result["matched_entry"] == {"region": "north", "value": 1.3, "version": "new"}
+
+    def test_no_match_without_default_has_explicit_status(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "name": "region_factor",
+            "factors": ["region"],
+            "entries": [{"region": "north", "value": 1.1}],
+            "outputColumn": "region_factor",
+            "defaultValue": None,
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "west"},
+            output_row={"region_factor": None},
+        )
+        assert result["matched"] is False
+        assert result["status"] == "no_match"
+
+    def test_default_used_has_explicit_status(self):
+        from haute._trace_enrichment import _enrich_single_table
+
+        table = {
+            "name": "region_factor",
+            "factors": ["region"],
+            "entries": [{"region": "north", "value": 1.1}],
+            "outputColumn": "region_factor",
+            "defaultValue": "1.0",
+        }
+        result = _enrich_single_table(
+            table,
+            input_row={"region": "west"},
+            output_row={"region_factor": 1.0},
+        )
+        assert result["default_used"] is True
+        assert result["status"] == "default"
 
 
 class TestEnrichRatingStepRealConfig:
@@ -3097,10 +3199,11 @@ class TestEnrichRatingStepRealConfig:
         config = {
             "tables": [
                 {
+                    "name": "region_factor",
                     "factors": ["region"],
                     "entries": [
-                        {"region": "north", "rate": 1.1},
-                        {"region": "south", "rate": 0.9},
+                        {"region": "north", "value": 1.1},
+                        {"region": "south", "value": 0.9},
                     ],
                     "outputColumn": "rate",
                     "defaultValue": None,
@@ -3118,6 +3221,9 @@ class TestEnrichRatingStepRealConfig:
         assert result["matched"] is True
         assert "tables" in result
         assert len(result["tables"]) == 1
+        assert result["tables"][0]["name"] == "region_factor"
+        assert result["tables"][0]["factors"] == [{"column": "region", "value": "north"}]
+        assert result["tables"][0]["selected_value"] == 1.1
 
     def test_multiple_tables_with_combined_column(self):
         from haute._trace_enrichment import enrich_rating_step
@@ -3125,14 +3231,16 @@ class TestEnrichRatingStepRealConfig:
         config = {
             "tables": [
                 {
+                    "name": "region_factor",
                     "factors": ["region"],
-                    "entries": [{"region": "north", "rate_a": 1.1}],
+                    "entries": [{"region": "north", "value": 1.1}],
                     "outputColumn": "rate_a",
                     "defaultValue": None,
                 },
                 {
+                    "name": "tier_factor",
                     "factors": ["tier"],
-                    "entries": [{"tier": "gold", "rate_b": 2.0}],
+                    "entries": [{"tier": "gold", "value": 2.0}],
                     "outputColumn": "rate_b",
                     "defaultValue": None,
                 },
@@ -3157,6 +3265,131 @@ class TestEnrichRatingStepRealConfig:
         assert result["rate_value"] == 2.2
         # matched if any table matched
         assert result["matched"] is True
+
+    def test_combined_outputs_include_base_value_and_named_inputs(self):
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "value": 0.9,
+                        }
+                    ],
+                    "outputColumn": "vehicle_factor",
+                    "defaultValue": "1.0",
+                },
+                {
+                    "name": "channel_factor",
+                    "factors": ["channel"],
+                    "entries": [{"channel": "direct", "value": 1.2}],
+                    "outputColumn": "channel_factor",
+                    "defaultValue": "1.0",
+                },
+            ],
+            "combinedOutputs": [
+                {
+                    "outputColumn": "technical_premium_factor",
+                    "operation": "multiply",
+                    "baseValue": "100",
+                },
+                {
+                    "outputColumn": "additive_adjustment",
+                    "operation": "add",
+                    "baseValue": "10",
+                },
+            ],
+        }
+        result = enrich_rating_step(
+            config,
+            input_row={
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "channel": "direct",
+            },
+            output_row={
+                "vehicle_factor": 0.9,
+                "channel_factor": 1.2,
+                "technical_premium_factor": 108.0,
+                "additive_adjustment": 12.1,
+            },
+        )
+
+        assert result["combined_outputs"] == [
+            {
+                "column": "technical_premium_factor",
+                "operation": "multiply",
+                "base_value": 100.0,
+                "input_values": {"vehicle_factor": 0.9, "channel_factor": 1.2},
+                "value": 108.0,
+            },
+            {
+                "column": "additive_adjustment",
+                "operation": "add",
+                "base_value": 10.0,
+                "input_values": {"vehicle_factor": 0.9, "channel_factor": 1.2},
+                "value": 12.1,
+            },
+        ]
+
+    def test_combined_outputs_without_tables_still_trace(self):
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [],
+            "combinedOutputs": [
+                {
+                    "outputColumn": "base_premium",
+                    "operation": "multiply",
+                    "baseValue": "100",
+                }
+            ],
+        }
+        result = enrich_rating_step(
+            config,
+            input_row={"policy_id": 1},
+            output_row={"policy_id": 1, "base_premium": 100.0},
+        )
+
+        assert result["detail_type"] == "rating_step"
+        assert result["tables"] == []
+        assert result["combined_outputs"] == [
+            {
+                "column": "base_premium",
+                "operation": "multiply",
+                "base_value": 100.0,
+                "input_values": {},
+                "value": 100.0,
+            }
+        ]
+        assert result["rate_value"] == 100.0
+        assert result["matched"] is False
+
+    def test_invalid_combined_outputs_operation_raises(self):
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [],
+            "combinedOutputs": [
+                {
+                    "outputColumn": "technical_premium",
+                    "operation": "divide",
+                    "baseValue": "100",
+                }
+            ],
+        }
+
+        with pytest.raises(ValueError, match="Unsupported rating combine operation"):
+            enrich_rating_step(
+                config,
+                input_row={"policy_id": 1},
+                output_row={"technical_premium": 100.0},
+            )
 
     def test_multiple_tables_no_combined_column(self):
         """Multiple tables without a combinedColumn should not have combined key."""

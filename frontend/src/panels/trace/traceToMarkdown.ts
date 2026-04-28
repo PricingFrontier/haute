@@ -1,4 +1,10 @@
-import type { TraceResult, TraceStep } from "../../types/trace"
+import type {
+  RatingStepCombinedOutputDetail,
+  RatingStepTableDetail,
+  TraceNodeDetail,
+  TraceResult,
+  TraceStep,
+} from "../../types/trace"
 
 function formatVal(v: unknown): string {
   if (v === null || v === undefined) return "null"
@@ -15,6 +21,59 @@ function formatVal(v: unknown): string {
 /** Escape pipe characters so they don't break markdown tables. */
 function escPipe(s: string): string {
   return s.replace(/\|/g, "\\|")
+}
+
+function ratingStepTables(detail: TraceNodeDetail): RatingStepTableDetail[] {
+  return Array.isArray(detail.tables) ? detail.tables as RatingStepTableDetail[] : []
+}
+
+function ratingStepCombinedOutputs(detail: TraceNodeDetail): RatingStepCombinedOutputDetail[] {
+  return Array.isArray(detail.combined_outputs) ? detail.combined_outputs as RatingStepCombinedOutputDetail[] : []
+}
+
+function ratingTableStatus(table: RatingStepTableDetail): string | undefined {
+  if (typeof table.status === "string" && table.status.length > 0) return table.status
+  if (table.default_used) return "default"
+  if (table.matched === false) return "no_match"
+  if (table.matched === true) return "matched"
+  return undefined
+}
+
+function formatRatingStepDetail(detail: TraceNodeDetail): string[] {
+  const parts: string[] = []
+  const tables = ratingStepTables(detail)
+  const combinedOutputs = ratingStepCombinedOutputs(detail)
+
+  if (tables.length > 0) {
+    const tableSummaries = tables.map((table, index) => {
+      const title = table.name || table.output_column || `table ${index + 1}`
+      const fields: string[] = []
+      if (table.factors && table.factors.length > 0) {
+        fields.push(table.factors.map((factor) => `${factor.column}=${formatVal(factor.value)}`).join(", "))
+      }
+      const status = ratingTableStatus(table)
+      if (status) fields.push(`status=${status}`)
+      if (table.selected_value !== undefined) fields.push(`selected=${formatVal(table.selected_value)}`)
+      if (table.default_value !== undefined) fields.push(`default=${formatVal(table.default_value)}`)
+      if (table.default_used) fields.push("default used")
+      return fields.length > 0 ? `${title} (${fields.join("; ")})` : title
+    })
+    parts.push(`Rating tables: ${tableSummaries.join("; ")}`)
+  }
+
+  if (combinedOutputs.length > 0) {
+    const combinedSummaries = combinedOutputs.map((combined) => {
+      const inputs = Object.entries(combined.input_values)
+        .map(([column, value]) => `${column}=${formatVal(value)}`)
+        .join(", ")
+      const details = [`${combined.operation} from base ${formatVal(combined.base_value)}`]
+      if (inputs) details.push(inputs)
+      return `${combined.column} = ${formatVal(combined.value)} (${details.join("; ")})`
+    })
+    parts.push(`Combined outputs: ${combinedSummaries.join("; ")}`)
+  }
+
+  return parts
 }
 
 /**
@@ -91,8 +150,15 @@ export function traceToMarkdown(
 
       // Node detail
       if (step.node_detail) {
-        for (const [key, val] of Object.entries(step.node_detail)) {
-          parts.push(`${key}: ${formatVal(val)}`)
+        if (
+          step.node_detail.detail_type === "rating_step" &&
+          (Array.isArray(step.node_detail.tables) || Array.isArray(step.node_detail.combined_outputs))
+        ) {
+          parts.push(...formatRatingStepDetail(step.node_detail))
+        } else {
+          for (const [key, val] of Object.entries(step.node_detail)) {
+            parts.push(`${key}: ${formatVal(val)}`)
+          }
         }
       }
 

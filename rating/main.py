@@ -3,12 +3,6 @@
 import polars as pl
 import haute
 
-from utility.features import (
-    clean_columns,
-    to_date,
-    years_between,
-)
-
 pipeline = haute.Pipeline("my_pipeline", description='')
 
 
@@ -79,7 +73,9 @@ def processing(quotes: pl.LazyFrame) -> pl.LazyFrame:
             ad_age_cols.append(name)
         if lic in cols:
             df = df.with_columns(
-                years_between(to_date(lic), cover_start).alias(f"additional_driver_{i}_licence_years")
+                years_between(to_date(lic), cover_start).alias(
+                    f"additional_driver_{i}_licence_years"
+                )
             )
     
     # Youngest driver across proposer + additional drivers
@@ -109,11 +105,12 @@ def competitor_scoring(policies: pl.LazyFrame) -> pl.LazyFrame:
     from pathlib import Path
     from haute.graph_utils import score_from_config
     base = str(Path(__file__).parent)
-    return score_from_config(policies, config="config/model_scoring/competitor_scoring.json", base_dir=base)
+    df = score_from_config(policies, config="config/model_scoring/competitor_scoring.json", base_dir=base)
+    return df
 
 
-@pipeline.banding(config="config/banding/Banding_7.json", contract={"inputs": ['proposer_age'], "outputs": ['proposer_age_band']})
-def Banding_7(policies: pl.LazyFrame) -> pl.LazyFrame:
+@pipeline.banding(config="config/banding/age_veh_banding.json", contract={"inputs": ['channel', 'proposer_age', 'vehicle_age'], "outputs": ['channel_band', 'proposer_age_band', 'vehicle_age_band']})
+def age_veh_banding(policies: pl.LazyFrame) -> pl.LazyFrame:
     """Banding 7 node"""
     return policies
 
@@ -129,6 +126,17 @@ def join_scoring(policies: pl.LazyFrame, competitor_scoring: pl.LazyFrame) -> pl
     """Join competitor scoring onto policies"""
     df = policies
     df = policies.join(competitor_scoring, on="quote_id", how="left")
+    return df
+
+
+@pipeline.rating_step(config="config/rating_step/adjustments.json", contract="opaque")
+def adjustments(age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
+    """"""
+    from pathlib import Path
+    from haute.graph_utils import apply_rating_step_from_config
+    base = Path(__file__).parent
+    df = apply_rating_step_from_config(age_veh_banding, "config/rating_step/adjustments.json", base_dir=base)
+    df = df.with_columns(test=pl.col('multiplied') * 2)
     return df
 
 
@@ -151,7 +159,7 @@ def join_premiums(join_policy_data: pl.LazyFrame, quoted_premiums: pl.LazyFrame)
     return df
 
 
-@pipeline.polars(selected_columns=['quote_id', 'sale_flag', 'competitor_premium', 'premium', 'difference_to_market', 'proposer_age', 'cover_type', 'margin', 'burn_cost'], contract="opaque")
+@pipeline.polars(selected_columns=['quote_id', 'sale_flag', 'competitor_premium', 'premium', 'difference_to_market', 'proposer_age', 'cover_type', 'burn_cost'], contract="opaque")
 def competitor_features(join_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """competitor_features node"""
     df = join_premiums
@@ -190,7 +198,8 @@ def conversion_scoring(competitor_features_scenarios: pl.LazyFrame) -> pl.LazyFr
     from pathlib import Path
     from haute.graph_utils import score_from_config
     base = str(Path(__file__).parent)
-    return score_from_config(competitor_features_scenarios, config="config/model_scoring/conversion_scoring.json", base_dir=base)
+    df = score_from_config(competitor_features_scenarios, config="config/model_scoring/conversion_scoring.json", base_dir=base)
+    return df
 
 
 @pipeline.polars(contract="opaque")
@@ -247,4 +256,5 @@ pipeline.connect("optimiser_input", "online_optimiser")
 pipeline.connect("quotes", "processing")
 pipeline.connect("processing", "policies")
 pipeline.connect("optimiser_input", "apply_optimisation")
-pipeline.connect("policies", "Banding_7")
+pipeline.connect("policies", "age_veh_banding")
+pipeline.connect("age_veh_banding", "adjustments")

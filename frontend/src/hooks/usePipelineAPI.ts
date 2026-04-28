@@ -3,6 +3,7 @@ import type { Node, Edge } from "@xyflow/react"
 import type { PreviewData } from "../panels/DataPreview"
 import { makePreviewData } from "../utils/makePreviewData"
 import { ApiError, loadPipeline, previewNode, savePipeline } from "../api/client"
+import type { RetryPolicy } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { NodeResult } from "../api/types"
@@ -57,6 +58,11 @@ function nodeLabel(node: Node): string {
 }
 
 type ColumnDef = ColumnFingerprintInput[number]
+
+const INITIAL_PIPELINE_RETRY_POLICY = {
+  maxRetries: 6,
+  baseDelayMs: 250,
+} satisfies RetryPolicy
 
 export const DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT = 4
 export const PREVIEW_INITIAL_COLUMN_LIMIT = 200
@@ -156,8 +162,12 @@ export default function usePipelineAPI({
 
   // Initial pipeline load
   useEffect(() => {
-    loadPipeline()
+    const controller = new AbortController()
+    let disposed = false
+
+    loadPipeline({ signal: controller.signal, retry: INITIAL_PIPELINE_RETRY_POLICY })
       .then((raw) => {
+        if (disposed) return
         // Narrow the response at the ingestion boundary.  Any drift in
         // the backend contract (missing `nodes`/`edges`, wrong type on an
         // optional field) throws a named Error that flows into the
@@ -194,9 +204,15 @@ export default function usePipelineAPI({
         setLoading(false)
       })
       .catch((err) => {
+        if (disposed || (isAbortError(err) && controller.signal.aborted)) return
         addToast("error", `Failed to load pipeline: ${err.message}`)
         setLoading(false)
       })
+
+    return () => {
+      disposed = true
+      controller.abort()
+    }
   }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number) => {
