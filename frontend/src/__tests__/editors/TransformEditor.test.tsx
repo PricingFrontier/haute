@@ -11,16 +11,19 @@ vi.mock("../../panels/editors/_shared", async () => {
   const actual = await vi.importActual("../../panels/editors/_shared")
   return {
     ...(actual as Record<string, unknown>),
-    CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange?: (v: string) => void; placeholder?: string }) => (
-      <textarea
-        data-testid="code-editor"
-        defaultValue={defaultValue}
-        onChange={(e) => onChange?.(e.target.value)}
-        placeholder={placeholder}
-      />
-    ),
   }
 })
+
+vi.mock("../../panels/editors/CodeEditor", () => ({
+  CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange?: (v: string) => void; placeholder?: string }) => (
+    <textarea
+      data-testid="code-editor"
+      defaultValue={defaultValue}
+      onChange={(e) => onChange?.(e.target.value)}
+      placeholder={placeholder}
+    />
+  ),
+}))
 
 afterEach(cleanup)
 

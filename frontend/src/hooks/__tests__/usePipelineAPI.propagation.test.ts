@@ -35,7 +35,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import usePipelineAPI from "../usePipelineAPI"
+import type { MutableRefObject } from "react"
+import usePipelineAPI, { DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT } from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -46,15 +47,40 @@ vi.mock("../../api/client", () => ({
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
   ApiError: class ApiError extends Error {
-    constructor(msg: string) {
+    status: number
+    detail?: string
+
+    constructor(msg: string, status?: number, detail?: string) {
       super(msg)
       this.name = "ApiError"
+      this.status = status ?? Number(msg.match(/HTTP (\d+)/)?.[1] ?? 0)
+      this.detail = detail
     }
   },
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  resolveGraphFromRefs: vi.fn(
+    (
+      graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
+      parentGraphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>,
+      submodelsRef: MutableRefObject<Record<string, unknown>>,
+      preambleRef: MutableRefObject<string>,
+    ) =>
+      parentGraphRef.current
+        ? {
+          nodes: parentGraphRef.current.nodes,
+          edges: parentGraphRef.current.edges,
+          submodels: parentGraphRef.current.submodels,
+          preamble: preambleRef.current,
+        }
+        : {
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges,
+          submodels: submodelsRef.current,
+          preamble: preambleRef.current,
+        },
+  ),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -75,7 +101,7 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { loadPipeline, previewNode } from "../../api/client"
+import { ApiError, loadPipeline, previewNode } from "../../api/client"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -106,17 +132,21 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
  */
 function makeControllablePreview() {
   const callOrder: string[] = []
+  const graphsByNode = new Map<string, unknown[]>()
   const deferreds = new Map<
     string,
     { resolve: (v: unknown) => void; reject: (e: unknown) => void; source?: string; rowLimit?: number }
   >()
-  mockPreview.mockImplementation((_g: unknown, nodeId: string, rowLimit: number, source?: string) => {
+  mockPreview.mockImplementation((graph: unknown, nodeId: string, rowLimit: number, source?: string) => {
     callOrder.push(nodeId)
+    const graphs = graphsByNode.get(nodeId) ?? []
+    graphs.push(graph)
+    graphsByNode.set(nodeId, graphs)
     return new Promise((resolve, reject) => {
       deferreds.set(nodeId, { resolve: resolve as (v: unknown) => void, reject, source, rowLimit })
     })
   })
-  return { callOrder, deferreds }
+  return { callOrder, deferreds, graphsByNode }
 }
 
 async function flushAsyncWork() {
@@ -124,6 +154,13 @@ async function flushAsyncWork() {
     await Promise.resolve()
     await Promise.resolve()
   })
+}
+
+function columnsByNodeFromGraph(graph: unknown) {
+  const nodes = (graph as { nodes: Node[] }).nodes
+  return Object.fromEntries(
+    nodes.map((node) => [node.id, (node.data as { _columns?: unknown })._columns]),
+  )
 }
 
 describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
@@ -581,6 +618,412 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
         column_count: 1,
         columns: [{ name: "c_col", dtype: "f64" }],
         preview: [{ c_col: 1 }],
+      })
+    })
+  })
+
+  it("caps concurrent downstream previews for a wide fan-out while eventually running all affected nodes", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const callOrder: string[] = []
+    const activeDownstream = new Set<string>()
+    const deferreds = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
+    let maxConcurrentDownstream = 0
+
+    mockPreview.mockImplementation((_graph: unknown, nodeId: string) => {
+      callOrder.push(nodeId)
+      if (nodeId !== "A") {
+        activeDownstream.add(nodeId)
+        maxConcurrentDownstream = Math.max(maxConcurrentDownstream, activeDownstream.size)
+      }
+      return new Promise<Awaited<ReturnType<typeof previewNode>>>((resolve, reject) => {
+        deferreds.set(nodeId, {
+          resolve: (value: unknown) => {
+            activeDownstream.delete(nodeId)
+            resolve(value as Awaited<ReturnType<typeof previewNode>>)
+          },
+          reject,
+        })
+      })
+    })
+
+    const A = makeNode("A")
+    const downstreamIds = Array.from(
+      { length: DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT * 2 + 1 },
+      (_, index) => `B${index + 1}`,
+    )
+    const downstreamNodes = downstreamIds.map((id) => makeNode(id))
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [A, ...downstreamNodes],
+      edges: downstreamIds.map((id) => makeEdge("A", id)),
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(A) })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+
+    act(() => {
+      deferreds.get("A")!.resolve({
+        node_id: "A",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "a_col", dtype: "f64" }],
+        preview: [{ a_col: 1 }],
+      })
+    })
+
+    await waitFor(() => {
+      expect(callOrder.filter((id) => id !== "A")).toHaveLength(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    }, { timeout: 2000 })
+    expect(activeDownstream.size).toBe(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    expect(maxConcurrentDownstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+
+    let resolvedDownstream = 0
+    while (resolvedDownstream < downstreamIds.length) {
+      const runningIds = [...activeDownstream]
+      resolvedDownstream += runningIds.length
+      act(() => {
+        for (const nodeId of runningIds) {
+          deferreds.get(nodeId)!.resolve({
+            node_id: nodeId,
+            status: "ok",
+            row_count: 1,
+            column_count: 1,
+            columns: [{ name: `${nodeId}_col`, dtype: "f64" }],
+            preview: [{ [`${nodeId}_col`]: 1 }],
+          })
+        }
+      })
+
+      const remaining = downstreamIds.length - resolvedDownstream
+      await waitFor(() => {
+        expect(activeDownstream.size).toBe(Math.min(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT, remaining))
+      }, { timeout: 2000 })
+      expect(maxConcurrentDownstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    }
+
+    expect(callOrder.filter((id) => id !== "A").sort()).toEqual([...downstreamIds].sort())
+  })
+
+  it("suppresses stale downstream failure toasts after a newer preview supersedes the cascade", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const { callOrder, deferreds } = makeControllablePreview()
+
+    const A = makeNode("A")
+    const B = makeNode("B")
+    const X = makeNode("X")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [A, B, X],
+      edges: [makeEdge("A", "B")],
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(A) })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+
+    act(() => {
+      deferreds.get("A")!.resolve({
+        node_id: "A",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "a_col", dtype: "f64" }],
+        preview: [{ a_col: 1 }],
+      })
+    })
+
+    await waitFor(() => expect(callOrder).toContain("B"), { timeout: 2000 })
+
+    act(() => { result.current.fetchPreview(X) })
+    act(() => { deferreds.get("B")!.reject(new Error("stale downstream boom")) })
+
+    await flushAsyncWork()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts.some((toast) => toast.type === "warning" && toast.text.includes("stale downstream boom"))).toBe(false)
+  })
+
+  it("treats expected downstream preview supersession as cancellation, not a warning", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const { callOrder, deferreds } = makeControllablePreview()
+
+    const A = makeNode("A")
+    const B = makeNode("B", "polars", {
+      data: { label: "Competitor features", nodeType: "polars", config: {} },
+    })
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [A, B],
+      edges: [makeEdge("A", "B")],
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(A) })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+
+    act(() => {
+      deferreds.get("A")!.resolve({
+        node_id: "A",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "a_col", dtype: "f64" }],
+        preview: [{ a_col: 1 }],
+      })
+    })
+
+    await waitFor(() => expect(callOrder).toEqual(["A", "B"]), { timeout: 2000 })
+
+    act(() => {
+      deferreds.get("B")!.reject(
+        new ApiError("HTTP 409", 409, "Preview request superseded by a newer request"),
+      )
+    })
+
+    await flushAsyncWork()
+
+    const toasts = useToastStore.getState().toasts
+    expect(toasts.some((toast) => toast.type === "warning" && toast.text.includes("Preview propagation failed"))).toBe(false)
+  })
+
+  it("still warns for downstream conflicts that are not preview supersession", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const { callOrder, deferreds } = makeControllablePreview()
+
+    const A = makeNode("A")
+    const B = makeNode("B")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [A, B],
+      edges: [makeEdge("A", "B")],
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(A) })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+
+    act(() => {
+      deferreds.get("A")!.resolve({
+        node_id: "A",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "a_col", dtype: "f64" }],
+        preview: [{ a_col: 1 }],
+      })
+    })
+
+    await waitFor(() => expect(callOrder).toEqual(["A", "B"]), { timeout: 2000 })
+
+    act(() => {
+      deferreds.get("B")!.reject(new ApiError("HTTP 409", 409, "Trace data does not match selected row"))
+    })
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((toast) =>
+        toast.type === "warning" &&
+        toast.text.includes("Preview propagation failed") &&
+        toast.text.includes("Trace data does not match selected row"),
+      )).toBe(true)
+    }, { timeout: 2000 })
+  })
+
+  it("dedupes diamond-shaped downstream propagation so a shared child previews once", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const { callOrder, deferreds, graphsByNode } = makeControllablePreview()
+
+    const A = makeNode("A")
+    const B = makeNode("B")
+    const C = makeNode("C")
+    const D = makeNode("D")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [A, B, C, D],
+      edges: [
+        makeEdge("A", "B"),
+        makeEdge("A", "C"),
+        makeEdge("B", "D"),
+        makeEdge("C", "D"),
+      ],
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(A) })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+
+    act(() => {
+      deferreds.get("A")!.resolve({
+        node_id: "A",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "a_col", dtype: "f64" }],
+        preview: [{ a_col: 1 }],
+      })
+    })
+
+    await waitFor(() => {
+      expect(callOrder).toContain("B")
+      expect(callOrder).toContain("C")
+    }, { timeout: 2000 })
+
+    act(() => {
+      deferreds.get("B")!.resolve({
+        node_id: "B",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "b_col", dtype: "f64" }],
+        preview: [{ b_col: 1 }],
+      })
+    })
+
+    await flushAsyncWork()
+    expect(callOrder).not.toContain("D")
+
+    act(() => {
+      deferreds.get("C")!.resolve({
+        node_id: "C",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "c_col", dtype: "f64" }],
+        preview: [{ c_col: 1 }],
+      })
+    })
+
+    await flushAsyncWork()
+    expect(callOrder.filter((id) => id === "D")).toHaveLength(1)
+    expect(columnsByNodeFromGraph(graphsByNode.get("D")![0])).toMatchObject({
+      A: [{ name: "a_col", dtype: "f64" }],
+      B: [{ name: "b_col", dtype: "f64" }],
+      C: [{ name: "c_col", dtype: "f64" }],
+    })
+
+    act(() => {
+      deferreds.get("D")!.resolve({
+        node_id: "D",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "d_col", dtype: "f64" }],
+        preview: [{ d_col: 1 }],
+      })
+    })
+  })
+
+  it("waits for a longer sibling branch before previewing an uneven diamond join", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const { callOrder, deferreds, graphsByNode } = makeControllablePreview()
+
+    const A = makeNode("A")
+    const B = makeNode("B")
+    const C = makeNode("C")
+    const E = makeNode("E")
+    const D = makeNode("D")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [A, B, C, E, D],
+      edges: [
+        makeEdge("A", "B"),
+        makeEdge("A", "C"),
+        makeEdge("A", "D"),
+        makeEdge("B", "D"),
+        makeEdge("C", "E"),
+        makeEdge("E", "D"),
+      ],
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(A) })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+
+    act(() => {
+      deferreds.get("A")!.resolve({
+        node_id: "A",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "a_col", dtype: "f64" }],
+        preview: [{ a_col: 1 }],
+      })
+    })
+
+    await waitFor(() => {
+      expect(callOrder).toContain("B")
+      expect(callOrder).toContain("C")
+    }, { timeout: 2000 })
+
+    act(() => {
+      deferreds.get("B")!.resolve({
+        node_id: "B",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "b_col", dtype: "f64" }],
+        preview: [{ b_col: 1 }],
+      })
+    })
+
+    await flushAsyncWork()
+    expect(callOrder).not.toContain("D")
+
+    act(() => {
+      deferreds.get("C")!.resolve({
+        node_id: "C",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "c_col", dtype: "f64" }],
+        preview: [{ c_col: 1 }],
+      })
+    })
+
+    await waitFor(() => expect(callOrder).toContain("E"), { timeout: 2000 })
+    expect(callOrder).not.toContain("D")
+
+    act(() => {
+      deferreds.get("E")!.resolve({
+        node_id: "E",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "e_col", dtype: "f64" }],
+        preview: [{ e_col: 1 }],
+      })
+    })
+
+    await waitFor(() => {
+      expect(callOrder.filter((id) => id === "D")).toHaveLength(1)
+    }, { timeout: 2000 })
+    expect(columnsByNodeFromGraph(graphsByNode.get("D")![0])).toMatchObject({
+      A: [{ name: "a_col", dtype: "f64" }],
+      B: [{ name: "b_col", dtype: "f64" }],
+      E: [{ name: "e_col", dtype: "f64" }],
+    })
+
+    act(() => {
+      deferreds.get("D")!.resolve({
+        node_id: "D",
+        status: "ok",
+        row_count: 1,
+        column_count: 1,
+        columns: [{ name: "d_col", dtype: "f64" }],
+        preview: [{ d_col: 1 }],
       })
     })
   })

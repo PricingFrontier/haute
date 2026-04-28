@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { readFileSync } from "node:fs"
+import path from "node:path"
+import { StrictMode } from "react"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import type { EditorView } from "@codemirror/view"
-import { CodeEditor, FileBrowser, MlflowStatusBadge, SchemaPreview } from "../_shared"
+import { FileBrowser, MlflowStatusBadge, SchemaPreview } from "../_shared"
 import type { SchemaInfo } from "../_shared"
+import CodeEditor from "../CodeMirrorEditor"
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -59,6 +63,15 @@ const mockListFiles = listFiles as ReturnType<typeof vi.fn>
 // ═══════════════════════════════════════════════════════════════════════════
 // CodeEditor (CodeMirror 6)
 // ═══════════════════════════════════════════════════════════════════════════
+
+describe("_shared import surface", () => {
+  it("does not eagerly import CodeMirror packages", () => {
+    const source = readFileSync(path.resolve(__dirname, "..", "_shared.tsx"), "utf8")
+
+    expect(source).not.toContain("@codemirror/")
+    expect(source).not.toMatch(/\bCodeEditor\b/)
+  })
+})
 
 describe("MlflowStatusBadge", () => {
   afterEach(cleanup)
@@ -281,6 +294,213 @@ describe("CodeEditor", () => {
       expect(getEditorText(container)).toContain("import local_edit")
     })
     expect(getEditorText(container)).not.toContain("websocket_sync_probe")
+  })
+
+  it("flushes a pending local edit before an external sync is applied", () => {
+    vi.useFakeTimers()
+    try {
+      let view: EditorView | null = null
+      const onChange = vi.fn()
+      const { container, rerender } = render(
+        <CodeEditor
+          defaultValue="print('initial')"
+          onChange={onChange}
+          onEditorView={(editorView) => { view = editorView }}
+        />,
+      )
+
+      act(() => {
+        view?.dispatch({
+          changes: {
+            from: 0,
+            to: view.state.doc.length,
+            insert: "print('stale local edit')",
+          },
+        })
+      })
+      expect(onChange).not.toHaveBeenCalled()
+
+      rerender(
+        <CodeEditor
+          defaultValue="print('external sync')"
+          onChange={onChange}
+          onEditorView={(editorView) => { view = editorView }}
+        />,
+      )
+
+      expect(onChange).toHaveBeenCalledWith("print('stale local edit')")
+      expect(getEditorText(container)).toContain("print('external sync')")
+
+      act(() => {
+        vi.advanceTimersByTime(151)
+      })
+
+      expect(onChange).toHaveBeenCalledTimes(1)
+      expect(getEditorText(container)).toContain("print('external sync')")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("applies a pending empty external sync on blur after local edits are reverted", () => {
+    vi.useFakeTimers()
+    try {
+      let view: EditorView | null = null
+      const onChange = vi.fn()
+      const { container, rerender } = render(
+        <CodeEditor
+          defaultValue="import math"
+          onChange={onChange}
+          onEditorView={(editorView) => { view = editorView }}
+        />,
+      )
+
+      act(() => {
+        view?.focus()
+        view?.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: "import local_edit" },
+        })
+      })
+
+      rerender(
+        <CodeEditor
+          defaultValue=""
+          onChange={onChange}
+          onEditorView={(editorView) => { view = editorView }}
+        />,
+      )
+
+      expect(getEditorText(container)).toContain("import local_edit")
+
+      act(() => {
+        view?.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: "import math" },
+        })
+        view?.contentDOM.dispatchEvent(new Event("blur"))
+      })
+
+      expect(getEditorText(container)).not.toContain("import math")
+      expect(getEditorText(container)).not.toContain("import local_edit")
+
+      act(() => {
+        vi.advanceTimersByTime(151)
+      })
+
+      expect(onChange).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps onEditorView callbacks fresh while preserving the editor instance", () => {
+    let view: EditorView | null = null
+    const firstCallback = vi.fn((editorView: EditorView | null) => { view = editorView })
+    const secondCallback = vi.fn()
+    const { rerender, unmount } = render(
+      <CodeEditor
+        defaultValue="x = 1"
+        onChange={vi.fn()}
+        onEditorView={firstCallback}
+      />,
+    )
+
+    expect(firstCallback).toHaveBeenCalledWith(view)
+    expect(firstCallback).not.toHaveBeenCalledWith(null)
+    expect(view).not.toBeNull()
+    const editorView = view
+
+    rerender(
+      <CodeEditor
+        defaultValue="x = 1"
+        onChange={vi.fn()}
+        onEditorView={secondCallback}
+      />,
+    )
+
+    expect(secondCallback).toHaveBeenCalledWith(editorView)
+    expect(firstCallback).toHaveBeenCalledWith(null)
+
+    rerender(
+      <CodeEditor
+        defaultValue="x = 1"
+        onChange={vi.fn()}
+      />,
+    )
+
+    expect(secondCallback).toHaveBeenCalledWith(null)
+    secondCallback.mockClear()
+
+    unmount()
+
+    expect(secondCallback).not.toHaveBeenCalled()
+  })
+
+  it("does not expose a destroyed stale editor view during StrictMode effect replay", () => {
+    const calls: (EditorView | null)[] = []
+    const onEditorView = vi.fn((editorView: EditorView | null) => {
+      calls.push(editorView)
+    })
+    const { unmount } = render(
+      <StrictMode>
+        <CodeEditor
+          defaultValue="x = 1"
+          onChange={vi.fn()}
+          onEditorView={onEditorView}
+        />
+      </StrictMode>,
+    )
+
+    const seenBeforeNull = new Set<EditorView>()
+    let hasSeenNull = false
+    for (const call of calls) {
+      if (call === null) {
+        hasSeenNull = true
+        continue
+      }
+      if (hasSeenNull) {
+        expect(seenBeforeNull.has(call)).toBe(false)
+      }
+      seenBeforeNull.add(call)
+    }
+
+    const nullCallsBeforeUnmount = calls.filter((call) => call === null).length
+    unmount()
+
+    expect(calls.at(-1)).toBeNull()
+    expect(calls.filter((call) => call === null)).toHaveLength(nullCallsBeforeUnmount + 1)
+  })
+
+  it("emits local edits before unmount without leaving pending callbacks", () => {
+    vi.useFakeTimers()
+    try {
+      let view: EditorView | null = null
+      const onChange = vi.fn()
+      const { unmount } = render(
+        <CodeEditor
+          defaultValue="x = 1"
+          onChange={onChange}
+          onEditorView={(editorView) => { view = editorView }}
+        />,
+      )
+
+      act(() => {
+        view?.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: "x = 2" },
+        })
+      })
+      expect(onChange).not.toHaveBeenCalled()
+
+      unmount()
+      expect(onChange).toHaveBeenCalledWith("x = 2")
+
+      act(() => {
+        vi.advanceTimersByTime(151)
+      })
+
+      expect(onChange).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("mounts the CodeMirror editor DOM structure", () => {

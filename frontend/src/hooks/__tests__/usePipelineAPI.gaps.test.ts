@@ -20,9 +20,14 @@ vi.mock("../../api/client", () => ({
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
   ApiError: class ApiError extends Error {
-    constructor(msg: string) {
+    status: number
+    detail?: string
+
+    constructor(msg: string, status = 0, detail?: string) {
       super(msg)
       this.name = "ApiError"
+      this.status = status
+      this.detail = detail
     }
   },
 }))
@@ -166,6 +171,28 @@ describe("usePipelineAPI — gap tests", () => {
       expect(mockPreview).toHaveBeenCalledTimes(1)
 
       // AbortError should be ignored — previewData should still be "loading", NOT "error"
+      expect(result.current.previewData?.status).not.toBe("error")
+    })
+
+    it("does NOT show error preview when the backend supersedes an obsolete preview", async () => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+      mockPreview.mockRejectedValue(
+        new ApiError("HTTP 409", 409, "Preview request superseded by a newer request"),
+      )
+
+      const params = makeParams()
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+
+      await advanceTimers(200)
+      expect(mockPreview).toHaveBeenCalledTimes(1)
       expect(result.current.previewData?.status).not.toBe("error")
     })
   })

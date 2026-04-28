@@ -32,7 +32,8 @@ from haute._types import (
 )
 from haute.graph_utils import NodeType
 from haute.routes._helpers import find_typed_node
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import JobStore, register_artifact_cleaner
+from haute.routes._optimiser_limits import limited_frontier_payload
 from haute.schemas import OptimiserSolveRequest, OptimiserSolveResponse
 
 logger = get_logger(component="server.optimiser.solve")
@@ -45,6 +46,148 @@ _DEFAULT_CHUNK_SIZE = 500_000  # rows per chunk for solver processing
 _DEFAULT_TOLERANCE = 1e-6  # convergence tolerance for solver
 _DEFAULT_MAX_CD_ITERATIONS = 10  # max coordinate-descent iterations (ratebook)
 _DEFAULT_CD_TOLERANCE = 1e-3  # coordinate-descent convergence tolerance (ratebook)
+_APPLY_RESULT_HANDLE_KEY = "apply_result"
+_APPLY_RESULT_HANDLE_KIND = "optimiser_apply_result"
+_ARTIFACT_HANDLE_VERSION = 1
+_APPLY_ARTIFACT_ROOT_NAME = "haute/optimiser_apply"
+_APPLY_ARTIFACT_DIR_PREFIX = "apply_"
+_APPLY_RESULT_FILENAME = "result.parquet"
+
+
+def _apply_artifact_root() -> Path:
+    return (Path(tempfile.gettempdir()) / _APPLY_ARTIFACT_ROOT_NAME).resolve()
+
+
+def _prepare_apply_artifact_root() -> Path:
+    root = _apply_artifact_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _validate_apply_result_artifact_handle(handle: dict[str, Any]) -> tuple[Path, Path]:
+    """Return validated ``(path, directory)`` for a server-owned apply artifact."""
+    if handle.get("kind") != _APPLY_RESULT_HANDLE_KIND:
+        raise ValueError("Invalid optimiser apply artifact handle.")
+    if handle.get("version") != _ARTIFACT_HANDLE_VERSION:
+        raise ValueError("Unsupported optimiser apply artifact handle.")
+    if handle.get("format") != "parquet":
+        raise ValueError("Unsupported optimiser apply artifact format.")
+
+    raw_directory = handle.get("directory")
+    if not isinstance(raw_directory, str) or not raw_directory:
+        raise ValueError("Optimiser apply artifact handle has no directory.")
+    raw_path = handle.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        raise ValueError("Optimiser apply artifact handle has no path.")
+    if "\x00" in raw_directory or "\x00" in raw_path:
+        raise ValueError("Optimiser apply artifact handle contains an invalid path.")
+
+    directory_input = Path(raw_directory)
+    path_input = Path(raw_path)
+    if not directory_input.is_absolute() or not path_input.is_absolute():
+        raise ValueError("Optimiser apply artifact handle must use absolute paths.")
+
+    root = _apply_artifact_root()
+    directory = directory_input.resolve(strict=directory_input.exists())
+    artifact_path = path_input.resolve(strict=path_input.exists())
+
+    if not directory.is_relative_to(root):
+        raise ValueError("Optimiser apply artifact directory is outside the artifact root.")
+    if directory.parent != root or not directory.name.startswith(_APPLY_ARTIFACT_DIR_PREFIX):
+        raise ValueError("Optimiser apply artifact directory is invalid.")
+    if artifact_path.parent != directory:
+        raise ValueError("Optimiser apply artifact path is outside its directory.")
+    if artifact_path.name != _APPLY_RESULT_FILENAME:
+        raise ValueError("Optimiser apply artifact path is invalid.")
+    return artifact_path, directory
+
+
+def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any] | None:
+    """Persist the large apply/detail dataframe behind an explicit handle."""
+    if not hasattr(solve_result, "dataframe"):
+        return None
+
+    import polars as pl
+
+    df = solve_result.dataframe
+    if not isinstance(df, pl.DataFrame):
+        return None
+
+    artifact_dir = Path(
+        tempfile.mkdtemp(
+            prefix=_APPLY_ARTIFACT_DIR_PREFIX,
+            dir=_prepare_apply_artifact_root(),
+        ),
+    )
+    artifact_path = artifact_dir / _APPLY_RESULT_FILENAME
+    try:
+        df.write_parquet(artifact_path)
+        row_count = len(df)
+    except BaseException:
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+        raise
+
+    return {
+        "kind": _APPLY_RESULT_HANDLE_KIND,
+        "version": _ARTIFACT_HANDLE_VERSION,
+        "format": "parquet",
+        "path": str(artifact_path),
+        "directory": str(artifact_dir),
+        "row_count": row_count,
+    }
+
+
+def _cleanup_apply_result_artifact(handle: dict[str, Any]) -> None:
+    """Remove a newly-created apply artifact that no job owns."""
+    _artifact_path, artifact_dir = _validate_apply_result_artifact_handle(handle)
+    if artifact_dir.exists():
+        shutil.rmtree(artifact_dir)
+
+
+def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
+    """Load a persisted optimiser apply dataframe from a validated handle."""
+    import polars as pl
+
+    try:
+        artifact_path, _artifact_dir = _validate_apply_result_artifact_handle(handle)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not artifact_path.is_file():
+        raise HTTPException(
+            status_code=500,
+            detail="Optimiser apply artifact is missing. Re-run the solve to regenerate it.",
+        )
+
+    try:
+        return pl.read_parquet(artifact_path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Optimiser apply artifact is corrupt. Re-run the solve to regenerate it.",
+        ) from exc
+
+
+register_artifact_cleaner(_APPLY_RESULT_HANDLE_KIND, _cleanup_apply_result_artifact)
+
+
+def _cleanup_orphan_apply_result_artifact(
+    handle: dict[str, Any],
+    *,
+    job_id: str,
+    event: str,
+) -> None:
+    """Best-effort cleanup for apply artifacts that were never attached to a job."""
+    try:
+        _cleanup_apply_result_artifact(handle)
+    except Exception as cleanup_exc:
+        raw_path = handle.get("directory") or handle.get("path") or "<unknown>"
+        logger.warning(
+            event,
+            job_id=job_id,
+            path=str(raw_path),
+            error=str(cleanup_exc),
+            exc_info=True,
+        )
 
 
 def _find_optimiser_node(graph: PipelineGraph, node_id: str) -> GraphNode:
@@ -151,6 +294,7 @@ def _finalize_solve_result(
 
     # ── Compute efficient frontier (online mode only, non-fatal) ────
     frontier_data = None
+    frontier_error = None
     # M6: Use direct dict access to avoid _evict_stale() from background thread
     job_snapshot = store.jobs.get(job_id, {})
     config = job_snapshot.get("config", {})
@@ -173,21 +317,31 @@ def _finalize_solve_result(
                     threshold_ranges=ranges,
                     n_points_per_dim=frontier_steps,
                 )
-                frontier_data = {
-                    "status": "ok",
-                    "points": frontier_result.points.to_dicts(),
-                    "n_points": len(frontier_result.points),
-                    "constraint_names": list(ranges.keys()),
-                }
+                frontier_data = limited_frontier_payload(
+                    frontier_result.points,
+                    constraint_names=list(ranges.keys()),
+                )
                 logger.info(
                     "frontier_computed",
                     n_points=frontier_data["n_points"],
                     job_id=job_id,
                 )
         except Exception as exc:
-            logger.warning("frontier_computation_failed", error=str(exc), job_id=job_id)
+            frontier_error = f"Frontier unavailable: {exc}"
+            logger.warning(
+                "frontier_computation_failed",
+                error=str(exc),
+                job_id=job_id,
+                exc_info=True,
+            )
 
     result_dict["frontier"] = frontier_data
+    if frontier_error is not None:
+        result_dict["frontier_error"] = frontier_error
+    artifact_handles: dict[str, Any] = {}
+    apply_result_handle = _persist_apply_result_artifact(solve_result)
+    if apply_result_handle is not None:
+        artifact_handles[_APPLY_RESULT_HANDLE_KEY] = apply_result_handle
 
     # P7: Atomic update — replace the entire dict to avoid races with
     # status-polling reads on the main thread.
@@ -195,7 +349,7 @@ def _finalize_solve_result(
     # (consumed by OptimiserStatusResponse).  "frontier_data" is a top-level
     # job key used by internal endpoints (e.g. /frontier/select) to look up
     # raw frontier points without going through the result dict.
-    store.atomic_update(
+    updated_job = store.atomic_update(
         job_id,
         {
             "status": "completed",
@@ -207,14 +361,32 @@ def _finalize_solve_result(
             "quote_grid": quote_grid,
             "result": result_dict,
             "frontier_data": frontier_data,
+            "artifact_handles": artifact_handles,
         },
         expected_status="running",
     )
+    if updated_job is None:
+        logger.info("solve_completion_skipped", job_id=job_id, expected_status="running")
+        if apply_result_handle is not None:
+            _cleanup_orphan_apply_result_artifact(
+                apply_result_handle,
+                job_id=job_id,
+                event="solve_completion_orphan_apply_artifact_cleanup_failed",
+            )
+        return
+    if (
+        apply_result_handle is not None
+        and updated_job.get("artifact_handles") is not artifact_handles
+    ):
+        _cleanup_orphan_apply_result_artifact(
+            apply_result_handle,
+            job_id=job_id,
+            event="solve_completion_orphan_apply_artifact_cleanup_failed",
+        )
 
-    # Retain the in-memory solver and QuoteGrid for the completed-job window.
-    # Post-solve routes such as /frontier, /frontier/select, and /mlflow/log
-    # are first-class workflows and depend on this runtime state being
-    # available after the initial solve completes.
+    # The job store keeps these heavy runtime objects for its short
+    # heavy-object retention window, then slims the completed job down to
+    # API-facing summaries/metadata while preserving the 24h status record.
 
 
 def _solve_online(
@@ -520,7 +692,12 @@ class OptimiserSolveService:
             raise
         except Exception as exc:
             error_msg = f"Pipeline execution failed: {exc}"
-            logger.error("pipeline_exec_failed", error=str(exc), node_id=body.node_id)
+            logger.error(
+                "pipeline_exec_failed",
+                error=str(exc),
+                node_id=body.node_id,
+                exc_info=True,
+            )
             self._store.atomic_update(job_id, {"status": "error", "message": error_msg})
             raise HTTPException(
                 status_code=500,
@@ -652,12 +829,20 @@ class OptimiserSolveService:
             raise
         except Exception as exc:
             detail = f"Grid construction failed: {exc}"
-            logger.error("grid_build_failed", error=str(exc), node_id=node_id)
+            logger.error("grid_build_failed", error=str(exc), node_id=node_id, exc_info=True)
             self._store.atomic_update(job_id, {"status": "error", "message": detail})
             raise HTTPException(status_code=400, detail=detail) from exc
         finally:
             if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+                try:
+                    os.unlink(tmp_path)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "optimiser_grid_temp_cleanup_failed",
+                        path=tmp_path,
+                        error=str(cleanup_exc),
+                        exc_info=True,
+                    )
 
         return quote_grid
 
@@ -685,7 +870,7 @@ class OptimiserSolveService:
                 # P7: Use atomic_update instead of mutating the job dict
                 # directly, so status-polling reads on the main thread
                 # always see a consistent snapshot.
-                self._store.atomic_update(
+                progress_job = self._store.atomic_update(
                     job_id,
                     {
                         "message": "Solving",
@@ -694,6 +879,9 @@ class OptimiserSolveService:
                     },
                     expected_status="running",
                 )
+                if progress_job is None:
+                    logger.info("solve_start_skipped", job_id=job_id, expected_status="running")
+                    return
                 if mode == "ratebook":
                     _solve_ratebook(
                         quote_grid,
@@ -721,8 +909,14 @@ class OptimiserSolveService:
                     ("Unexpected error", "unexpected"),
                 )
                 error_msg = f"{prefix}: {exc}"
-                logger.error("solve_failed", error=str(exc), node_id=node_id, category=category)
-                self._store.atomic_update(
+                logger.error(
+                    "solve_failed",
+                    error=str(exc),
+                    node_id=node_id,
+                    category=category,
+                    exc_info=True,
+                )
+                error_job = self._store.atomic_update(
                     job_id,
                     {
                         "status": "error",
@@ -731,12 +925,19 @@ class OptimiserSolveService:
                     },
                     expected_status="running",
                 )
+                if error_job is None:
+                    logger.info("solve_error_update_skipped", job_id=job_id)
 
         thread = threading.Thread(target=_solve_background, daemon=True)
         try:
             thread.start()
         except Exception as exc:
-            logger.error("solve_worker_start_failed", error=str(exc), node_id=node_id)
+            logger.error(
+                "solve_worker_start_failed",
+                error=str(exc),
+                node_id=node_id,
+                exc_info=True,
+            )
             self._store.atomic_update(
                 job_id,
                 {

@@ -87,6 +87,17 @@ describe("client runtime contracts", () => {
     await expect(previewNode(dummyGraph, "n1", 10)).rejects.toThrow(/parsePreviewNodeResponse/i)
   })
 
+  it("previewNode sends requested preview columns when provided", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    await previewNode(dummyGraph, "n1", 10, "live", undefined, ["premium", "segment"])
+
+    const [, init] = mockFetch.mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      requested_preview_columns: ["premium", "segment"],
+    })
+  })
+
   it("traceCell rejects malformed trace payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok", trace: { row_index: 0 } }))
 
@@ -142,6 +153,28 @@ describe("client runtime contracts", () => {
     )
 
     await expect(getOptimiserStatus("job-1")).rejects.toThrow(/parseOptimiserStatusResponse/i)
+  })
+
+  it("preserves optimiser payload budget metadata from contract fixtures", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_frontier_response")))
+
+    const frontier = await runFrontier({
+      job_id: "opt-job-1",
+      threshold_ranges: { loss: [0.8, 1.0] },
+    })
+
+    expect(frontier.points_returned).toBe(1)
+    expect(frontier.points_limit).toBe(2000)
+    expect(frontier.points_truncated).toBe(false)
+
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
+
+    const applyResult = await applyOptimiser({ job_id: "opt-job-1" })
+
+    expect(applyResult.from_artifact).toBe(false)
+    expect(applyResult.preview_row_count).toBe(1)
+    expect(applyResult.preview_row_limit).toBe(100)
+    expect(applyResult.preview_truncated).toBe(false)
   })
 
   it("getGitStatus rejects malformed git payloads", async () => {

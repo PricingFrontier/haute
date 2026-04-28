@@ -23,6 +23,7 @@ machinery is now shared with the other three LRU-backed caches in
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from haute._logging import get_logger
@@ -45,19 +46,38 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
         Maximum number of fingerprint entries to keep.  When exceeded,
         the least-recently-used *unpinned* entry is evicted.  Default
         ``8`` allows caching ~4 sources × 2 row-limits without thrashing.
+    max_bytes:
+        Optional retained-byte budget for entries.  When set, *size_of*
+        must deterministically estimate each slot dict's byte weight.
+        Eviction follows the same LRU and pinning rules as *max_entries*.
+    size_of:
+        Byte-estimation callback used only when *max_bytes* is configured.
     """
 
-    __slots__ = ("_slots",)
+    __slots__ = ("_slots", "_size_sensitive_slots")
 
     def __init__(
         self,
         slots: tuple[str, ...],
         max_entries: int = 8,
+        *,
+        max_bytes: int | None = None,
+        size_of: Callable[[dict[str, Any]], int] | None = None,
+        size_sensitive_slots: tuple[str, ...] | None = None,
     ) -> None:
         if not slots:
             raise ValueError("At least one slot name is required")
-        super().__init__(max_size=max(max_entries, 1))
+        if size_sensitive_slots is None:
+            size_sensitive_slots = slots
+        unknown_size_slots = set(size_sensitive_slots) - set(slots)
+        if unknown_size_slots:
+            raise ValueError(
+                "Unknown size-sensitive slot(s): "
+                f"{sorted(unknown_size_slots)}. Declared slots: {sorted(slots)}"
+            )
+        super().__init__(max_size=max(max_entries, 1), max_bytes=max_bytes, size_of=size_of)
         self._slots = slots
+        self._size_sensitive_slots = frozenset(size_sensitive_slots)
 
     # -- public API --------------------------------------------------------
 
@@ -107,9 +127,13 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
     def update_slot(self, slot: str, value: Any, *, fingerprint: str) -> None:
         """Replace a single slot's value on the entry matching *fingerprint*.
 
-        Useful for the preview cache's "extend" path where only some
-        slots are merged.  If *fingerprint* is not found, a warning is
-        logged and the call is a no-op.
+        Useful for the preview cache's "extend" path where only some slots
+        are merged. Byte-capped caches preserve the stored byte estimate when
+        a slot outside ``size_sensitive_slots`` changes, avoiding allocator-
+        dependent remeasurement drift for unchanged heavy objects. Updates to
+        size-sensitive slots still route through ``put()`` so growth, shrink,
+        and oversize replacements are accounted for. If *fingerprint* is not
+        found, a warning is logged and the call is a no-op.
         """
         if slot not in self._slots:
             raise ValueError(f"Unknown slot: {slot!r}. Declared slots: {sorted(self._slots)}")
@@ -118,7 +142,13 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
             if entry is None:
                 logger.warning("update_slot_unknown_fingerprint", fingerprint=fingerprint[:8])
                 return
-            entry[slot] = value
+            updated = dict(entry)
+            updated[slot] = value
+            if self._max_bytes is not None and slot not in self._size_sensitive_slots:
+                self._data.move_to_end(fingerprint)
+                self._data[fingerprint] = updated
+                return
+            self.put(fingerprint, updated)
 
     def invalidate(self) -> None:
         """Clear all entries and pins (alias for :meth:`LRUCache.clear`)."""

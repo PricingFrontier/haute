@@ -178,6 +178,43 @@ class TestGetSchemaParquet:
         assert body["column_count"] == 50
         assert len(body["columns"]) == 50
 
+    def test_parquet_row_count_uses_metadata_without_len_collect(
+        self,
+        work_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from haute.routes.files import _read_schema_blocking
+
+        path = work_dir / "metadata_count.parquet"
+        pl.DataFrame(
+            {
+                "id": list(range(12)),
+                "label": [f"row-{i}" for i in range(12)],
+            }
+        ).write_parquet(path)
+
+        original_collect = pl.LazyFrame.collect
+        collected_schemas: list[tuple[str, ...]] = []
+
+        def guarded_collect(self: pl.LazyFrame, *args, **kwargs):
+            schema_names = tuple(self.collect_schema().names())
+            collected_schemas.append(schema_names)
+            if schema_names == ("len",):
+                raise AssertionError(
+                    "Parquet row count must use file metadata, not pl.len().collect()"
+                )
+            return original_collect(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
+
+        response = _read_schema_blocking("metadata_count.parquet", path)
+
+        assert response.row_count == 12
+        assert response.row_count_estimated is False
+        assert response.column_count == 2
+        assert len(response.preview) == 5
+        assert ("len",) not in collected_schemas
+
 
 class TestGetSchemaCsv:
     def test_valid_csv_returns_schema(self, client: TestClient, work_dir: Path):
@@ -248,6 +285,56 @@ class TestGetDatabricksSchemaCached:
         assert "value" in col_names
         assert body["row_count"] == 3
         assert len(body["preview"]) == 3
+
+    def test_cached_parquet_schema_collects_only_preview_sample(
+        self,
+        work_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from haute.routes.files import _read_databricks_schema_blocking
+
+        cache_file = work_dir / "cached_table.parquet"
+        pl.DataFrame(
+            {
+                "id": list(range(20)),
+                "value": [float(i) for i in range(20)],
+            }
+        ).write_parquet(cache_file)
+
+        original_head = pl.LazyFrame.head
+        original_collect = pl.LazyFrame.collect
+        limit_by_frame_id: dict[int, int] = {}
+        collected_frames: list[tuple[tuple[str, ...], int, int | None]] = []
+
+        def guarded_collect(self: pl.LazyFrame, *args, **kwargs):
+            collected = original_collect(self, *args, **kwargs)
+            columns = tuple(collected.columns)
+            preview_limit = limit_by_frame_id.get(id(self))
+            collected_frames.append((columns, collected.height, preview_limit))
+            if columns == ("len",):
+                raise AssertionError(
+                    "Cached parquet schema must use parquet metadata for row count"
+                )
+            if columns == ("id", "value") and collected.height > 5:
+                raise AssertionError(
+                    "Cached parquet schema must not collect a large sample for dtypes"
+                )
+            return collected
+
+        def tracked_head(self: pl.LazyFrame, n: int = 5, *args, **kwargs):
+            limited = original_head(self, n, *args, **kwargs)
+            limit_by_frame_id[id(limited)] = n
+            return limited
+
+        monkeypatch.setattr(pl.LazyFrame, "head", tracked_head)
+        monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
+
+        response = _read_databricks_schema_blocking("catalog.schema.table", cache_file)
+
+        assert response.row_count == 20
+        assert response.column_count == 2
+        assert len(response.preview) == 5
+        assert collected_frames == [(("id", "value"), 5, 5)]
 
 
 # ───────────────────────────── edge cases ─────────────────────────────

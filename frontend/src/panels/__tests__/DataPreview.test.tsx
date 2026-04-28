@@ -1,13 +1,29 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import DataPreview from "../DataPreview"
 import type { PreviewData } from "../DataPreview"
 
+const resizeObserverStats = {
+  constructed: 0,
+  observed: 0,
+  disconnected: 0,
+}
+
 // jsdom does not provide ResizeObserver
 class MockResizeObserver {
-  observe() {}
+  constructor() {
+    resizeObserverStats.constructed += 1
+  }
+
+  observe() {
+    resizeObserverStats.observed += 1
+  }
+
   unobserve() {}
-  disconnect() {}
+
+  disconnect() {
+    resizeObserverStats.disconnected += 1
+  }
 }
 
 vi.mock("../../hooks/useDragResize", () => ({
@@ -41,6 +57,9 @@ function makePreview(overrides: Partial<PreviewData> = {}): PreviewData {
 
 describe("DataPreview", () => {
   beforeEach(() => {
+    resizeObserverStats.constructed = 0
+    resizeObserverStats.observed = 0
+    resizeObserverStats.disconnected = 0
     // Provide ResizeObserver for jsdom
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
   })
@@ -88,6 +107,14 @@ describe("DataPreview", () => {
     expect(onCellClick).toHaveBeenCalledWith(0, "age", { age: 25, premium: 100.5 })
   })
 
+  it("marks data cells with stable row and column attributes for delegated clicks", () => {
+    render(<DataPreview data={makePreview()} onCellClick={vi.fn()} />)
+
+    const cell = screen.getByText("25").closest("td") as HTMLElement
+    expect(cell.dataset.rowIndex).toBe("0")
+    expect(cell.dataset.column).toBe("age")
+  })
+
   it("renders null values with italic styling", () => {
     render(
       <DataPreview
@@ -120,6 +147,27 @@ describe("DataPreview", () => {
     expect(screen.getByText(/Showing 2 of 10,000 rows/)).toBeInTheDocument()
   })
 
+  it("shows the API preview cap when truncated even if row counts match", () => {
+    render(
+      <DataPreview
+        data={makePreview({
+          row_count: 3,
+          preview_row_count: 3,
+          preview_row_limit: 3,
+          preview_truncated: true,
+          preview: [
+            { age: 25, premium: 100 },
+            { age: 30, premium: 200 },
+            { age: 35, premium: 150 },
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText(/Showing 3 of 3 rows/)).toBeInTheDocument()
+    expect(screen.getByText(/capped at 3/)).toBeInTheDocument()
+  })
+
   it("virtualizes large previews on first render before ResizeObserver reports height", () => {
     const rows = Array.from({ length: 500 }, (_, i) => ({
       age: i,
@@ -137,6 +185,247 @@ describe("DataPreview", () => {
 
     expect(screen.getByText("row-0")).toBeInTheDocument()
     expect(screen.queryByText("row-499")).not.toBeInTheDocument()
+  })
+
+  it("keeps one ResizeObserver when preview data refreshes without remounting the scroll container", async () => {
+    const firstData = makePreview({
+      preview: [
+        { age: 25, premium: 100.5 },
+        { age: 30, premium: 200.0 },
+      ],
+      row_count: 2,
+    })
+    const nextData = makePreview({
+      preview: [
+        { age: 41, premium: 301.25 },
+        { age: 42, premium: 302.75 },
+      ],
+      row_count: 2,
+    })
+
+    const { rerender, unmount } = render(<DataPreview data={firstData} />)
+
+    await waitFor(() => {
+      expect(resizeObserverStats.constructed).toBe(1)
+    })
+    expect(resizeObserverStats.observed).toBe(1)
+    expect(resizeObserverStats.disconnected).toBe(0)
+
+    rerender(<DataPreview data={nextData} />)
+
+    expect(screen.getByText("41")).toBeInTheDocument()
+    expect(screen.getByText("302.75")).toBeInTheDocument()
+    expect(resizeObserverStats.constructed).toBe(1)
+    expect(resizeObserverStats.observed).toBe(1)
+    expect(resizeObserverStats.disconnected).toBe(0)
+
+    unmount()
+
+    expect(resizeObserverStats.constructed).toBe(1)
+    expect(resizeObserverStats.observed).toBe(1)
+    expect(resizeObserverStats.disconnected).toBe(1)
+  })
+
+  it("virtualizes wide previews to avoid rendering every column", () => {
+    const columns = Array.from({ length: 1000 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+    const preview = [
+      Object.fromEntries(columns.map((col, i) => [col.name, `value-${i}`])),
+    ]
+
+    render(
+      <DataPreview
+        data={makePreview({
+          column_count: columns.length,
+          columns,
+          preview,
+          row_count: 1,
+        })}
+      />,
+    )
+
+    expect(screen.getByText("col_0")).toBeInTheDocument()
+    expect(screen.getByText("value-0")).toBeInTheDocument()
+    expect(screen.queryByText("col_999")).not.toBeInTheDocument()
+    expect(screen.queryByText("value-999")).not.toBeInTheDocument()
+    expect(screen.getAllByRole("columnheader").length).toBeLessThan(40)
+  })
+
+  it("bounds rendered rows and columns for a 10k by 1000 preview", () => {
+    const columns = Array.from({ length: 1000 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+    const preview = Array.from({ length: 10_000 }, (_, i) => ({
+      col_0: `row-${i}`,
+    }))
+
+    render(
+      <DataPreview
+        data={makePreview({
+          column_count: columns.length,
+          columns,
+          preview,
+          row_count: preview.length,
+        })}
+      />,
+    )
+
+    expect(screen.getByText("row-0")).toBeInTheDocument()
+    expect(screen.queryByText("row-9999")).not.toBeInTheDocument()
+    expect(screen.getByText("col_0")).toBeInTheDocument()
+    expect(screen.queryByText("col_999")).not.toBeInTheDocument()
+    expect(screen.getAllByRole("columnheader").length).toBeLessThan(40)
+  })
+
+  it("reveals later columns when horizontally scrolled", async () => {
+    const columns = Array.from({ length: 120 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+    const preview = [
+      Object.fromEntries(columns.map((col, i) => [col.name, `value-${i}`])),
+    ]
+
+    render(
+      <DataPreview
+        data={makePreview({
+          column_count: columns.length,
+          columns,
+          preview,
+          row_count: 1,
+        })}
+      />,
+    )
+
+    const scrollRegion = screen.getByTestId("data-preview-scroll")
+    fireEvent.scroll(scrollRegion, { target: { scrollLeft: 80 * 160 } })
+
+    await waitFor(() => {
+      expect(screen.queryByText("col_0")).not.toBeInTheDocument()
+      expect(screen.getByText("col_80")).toBeInTheDocument()
+      expect(screen.getByText("value-80")).toBeInTheDocument()
+    })
+  })
+
+  it("clicks a horizontally virtualized cell with delegated row and column metadata", async () => {
+    const columns = Array.from({ length: 120 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+    const row = Object.fromEntries(columns.map((col, i) => [col.name, `value-${i}`]))
+    const onCellClick = vi.fn()
+
+    render(
+      <DataPreview
+        data={makePreview({
+          column_count: columns.length,
+          columns,
+          preview: [row],
+          row_count: 1,
+        })}
+        onCellClick={onCellClick}
+      />,
+    )
+
+    const scrollRegion = screen.getByTestId("data-preview-scroll")
+    fireEvent.scroll(scrollRegion, { target: { scrollLeft: 80 * 160 } })
+
+    await waitFor(() => {
+      expect(screen.getByText("value-80")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText("value-80"))
+
+    expect(onCellClick).toHaveBeenCalledWith(0, "col_80", row)
+  })
+
+  it("clamps the visible column window when a scrolled preview changes to fewer columns", async () => {
+    const makeWidePreview = (count: number) => {
+      const columns = Array.from({ length: count }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+      return makePreview({
+        column_count: columns.length,
+        columns,
+        preview: [
+          Object.fromEntries(columns.map((col, i) => [col.name, `value-${i}`])),
+        ],
+        row_count: 1,
+      })
+    }
+
+    const { rerender } = render(<DataPreview data={makeWidePreview(1000)} />)
+    const scrollRegion = screen.getByTestId("data-preview-scroll")
+    fireEvent.scroll(scrollRegion, { target: { scrollLeft: 900 * 160 } })
+
+    await waitFor(() => {
+      expect(screen.getByText("col_900")).toBeInTheDocument()
+    })
+
+    rerender(<DataPreview data={makeWidePreview(80)} />)
+
+    expect(screen.getByText("col_79")).toBeInTheDocument()
+    expect(screen.getByText("value-79")).toBeInTheDocument()
+  })
+
+  it("column search can show a matching column outside the initial virtual window", () => {
+    const columns = Array.from({ length: 1000 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+    const preview = [
+      Object.fromEntries(columns.map((col, i) => [col.name, `value-${i}`])),
+    ]
+
+    render(
+      <DataPreview
+        data={makePreview({
+          column_count: columns.length,
+          columns,
+          preview,
+          row_count: 1,
+        })}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText("Search columns..."), { target: { value: "col_999" } })
+
+    expect(screen.getByText("col_999")).toBeInTheDocument()
+    expect(screen.getByText("value-999")).toBeInTheDocument()
+    expect(screen.queryByText("col_0")).not.toBeInTheDocument()
+  })
+
+  it("builds the column search index once across searches, scrolls, and unrelated rerenders", async () => {
+    const columns = Array.from({ length: 1000 }, (_, i) => ({ name: `IndexedColumn_${i}`, dtype: "i64" }))
+    const preview = [
+      Object.fromEntries(columns.map((col, i) => [col.name, `value-${i}`])),
+    ]
+    const data = makePreview({
+      column_count: columns.length,
+      columns,
+      preview,
+      row_count: 1,
+    })
+    const originalToLowerCase = String.prototype.toLowerCase
+    let indexedColumnLowerCalls = 0
+    const toLowerCaseSpy = vi.spyOn(String.prototype, "toLowerCase").mockImplementation(function toLowerCaseSpy(this: string) {
+      const value = String(this)
+      if (value.startsWith("IndexedColumn_")) indexedColumnLowerCalls += 1
+      return originalToLowerCase.call(value)
+    })
+
+    try {
+      const { rerender } = render(<DataPreview data={data} />)
+
+      expect(indexedColumnLowerCalls).toBe(columns.length)
+
+      fireEvent.change(screen.getByPlaceholderText("Search columns..."), { target: { value: "INDEXEDCOLUMN_999" } })
+      expect(screen.getByText("IndexedColumn_999")).toBeInTheDocument()
+      expect(indexedColumnLowerCalls).toBe(columns.length)
+
+      fireEvent.change(screen.getByPlaceholderText("Search columns..."), { target: { value: "" } })
+      fireEvent.change(screen.getByPlaceholderText("Search columns..."), { target: { value: "indexedcolumn_998" } })
+      expect(screen.getByText("IndexedColumn_998")).toBeInTheDocument()
+      expect(indexedColumnLowerCalls).toBe(columns.length)
+
+      fireEvent.scroll(screen.getByTestId("data-preview-scroll"), { target: { scrollLeft: 40 * 160 } })
+      await waitFor(() => {
+        expect(screen.getByText("IndexedColumn_998")).toBeInTheDocument()
+      })
+      expect(indexedColumnLowerCalls).toBe(columns.length)
+
+      rerender(<DataPreview data={data} tracedCell={{ rowIndex: 0, column: "IndexedColumn_998" }} />)
+      expect(screen.getByText("IndexedColumn_998")).toBeInTheDocument()
+      expect(indexedColumnLowerCalls).toBe(columns.length)
+    } finally {
+      toLowerCaseSpy.mockRestore()
+    }
   })
 
   it("does not show 'Showing X of Y' when preview has all rows", () => {
@@ -204,6 +493,32 @@ describe("DataPreview", () => {
     const headers = screen.getAllByRole("columnheader")
     const headerTexts = headers.map((h) => h.textContent)
     expect(headerTexts.some((t) => t?.includes("age"))).toBe(false)
+  })
+
+  it("displays only projected preview columns when preview rows omit full-schema columns", () => {
+    render(
+      <DataPreview
+        data={makePreview({
+          column_count: 3,
+          columns: [
+            { name: "age", dtype: "i64" },
+            { name: "premium", dtype: "f64" },
+            { name: "segment", dtype: "str" },
+          ],
+          preview_columns: ["premium"],
+          preview: [
+            { premium: 100.5 },
+          ],
+          row_count: 1,
+        })}
+      />,
+    )
+
+    expect(screen.getByText("premium")).toBeInTheDocument()
+    expect(screen.getByText("100.5")).toBeInTheDocument()
+    expect(screen.queryByText("age")).not.toBeInTheDocument()
+    expect(screen.queryByText("segment")).not.toBeInTheDocument()
+    expect(screen.queryByText("null")).not.toBeInTheDocument()
   })
 
   it("clearing column search shows all columns again", () => {

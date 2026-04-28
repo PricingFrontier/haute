@@ -22,6 +22,13 @@ const sampleColumns = [
   { name: "premium", dtype: "f64" },
 ]
 
+function makeWideColumns(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    name: `feature_${index}`,
+    dtype: index % 2 === 0 ? "f64" : "str",
+  }))
+}
+
 const nodes = [
   { id: "ds1", data: { label: "DS1", description: "", nodeType: "dataSource" } },
   { id: "t1", data: { label: "T1", description: "", nodeType: "polars" } },
@@ -385,6 +392,98 @@ describe("useDataInputColumns", () => {
     expect(batchResult.current[0].name).toBe("batch_col")
   })
 
+  it("keeps current column state when the cache refresh has an equivalent schema", async () => {
+    const cachedColumns = makeWideColumns(120)
+    const equivalentColumns = cachedColumns.map((column) => ({ ...column }))
+    useNodeResultsStore.setState({
+      columnCache: {
+        "ds1:live": { columns: cachedColumns, structuralVersion: 0 },
+      },
+    })
+
+    const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
+    const initialColumnsRef = result.current
+
+    act(() => {
+      useNodeResultsStore.getState().setColumns("ds1", equivalentColumns, 0, "live")
+    })
+
+    await waitFor(() => {
+      expect(useNodeResultsStore.getState().columnCache["ds1:live"].columns).toBe(equivalentColumns)
+    })
+    expect(result.current).toBe(initialColumnsRef)
+  })
+
+  it("does not repaint equivalent cached columns when the fetch effect reruns", async () => {
+    const cachedColumns = makeWideColumns(120)
+    const equivalentColumns = cachedColumns.map((column) => ({ ...column }))
+    useNodeResultsStore.setState({
+      columnCache: {
+        "ds1:live": { columns: cachedColumns, structuralVersion: 0 },
+      },
+    })
+    mockPreview.mockReturnValue(new Promise(() => {}))
+
+    const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
+    const initialColumnsRef = result.current
+
+    act(() => {
+      useNodeResultsStore.getState().setColumns("ds1", equivalentColumns, 0, "live")
+    })
+    await waitFor(() => {
+      expect(useNodeResultsStore.getState().columnCache["ds1:live"].columns).toBe(equivalentColumns)
+    })
+
+    act(() => {
+      useGraphStore.setState({ structuralVersion: 1 })
+    })
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
+    expect(result.current).toBe(initialColumnsRef)
+  })
+
+  it("updates current column state when cache order changes", async () => {
+    const cachedColumns = [
+      { name: "age", dtype: "i64" },
+      { name: "premium", dtype: "f64" },
+    ]
+    const reorderedColumns = [cachedColumns[1], cachedColumns[0]]
+    useNodeResultsStore.setState({
+      columnCache: {
+        "ds1:live": { columns: cachedColumns, structuralVersion: 0 },
+      },
+    })
+
+    const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
+
+    act(() => {
+      useNodeResultsStore.getState().setColumns("ds1", reorderedColumns, 0, "live")
+    })
+
+    await waitFor(() => expect(result.current).toBe(reorderedColumns))
+  })
+
+  it("does not stringify wide fallback column arrays while syncing local state", () => {
+    const fallbackColumns = makeWideColumns(400)
+    const stringifySpy = vi.spyOn(JSON, "stringify")
+
+    const { result, rerender } = renderHook(
+      ({ columns }: { columns: typeof fallbackColumns }) =>
+        useDataInputColumns("", nodes, edges, undefined, undefined, {
+          enabled: false,
+          fallbackColumns: columns,
+        }),
+      { initialProps: { columns: fallbackColumns } },
+    )
+
+    expect(result.current).toBe(fallbackColumns)
+    rerender({ columns: fallbackColumns.map((column) => ({ ...column })) })
+
+    expect(
+      stringifySpy.mock.calls.some(([value]) => value === fallbackColumns),
+    ).toBe(false)
+  })
+
   it("refetches when source changes even if structuralVersion is same", async () => {
     // Cache exists for "live" but not for "nb_batch"
     useNodeResultsStore.setState({
@@ -412,6 +511,26 @@ describe("useDataInputColumns", () => {
   })
 
   // ── Toast on error (Issue 5) ───────────────────────────────────────
+
+  it("clears stale columns while fetching an uncached source", async () => {
+    useNodeResultsStore.setState({
+      columnCache: {
+        "ds1:live": { columns: sampleColumns, structuralVersion: 0 },
+      },
+    })
+    useSettingsStore.setState({ activeSource: "live" })
+    mockPreview.mockReturnValue(new Promise(() => {}))
+
+    const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
+    expect(result.current[0].name).toBe("age")
+
+    act(() => {
+      useSettingsStore.setState({ activeSource: "nb_batch" })
+    })
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
+    expect(result.current).toEqual([])
+  })
 
   it("shows toast when API call fails", async () => {
     mockPreview.mockRejectedValue(new Error("Server error"))

@@ -2,7 +2,7 @@ import { useEffect, useCallback, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { PreviewData } from "../panels/DataPreview"
 import { makePreviewData } from "../utils/makePreviewData"
-import { loadPipeline, previewNode, savePipeline } from "../api/client"
+import { ApiError, loadPipeline, previewNode, savePipeline } from "../api/client"
 import type { RetryPolicy } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
@@ -14,6 +14,8 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { nodeData } from "../types/node"
 import { parsePipelineResponse } from "../types/guards"
+import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
+export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
   selectedNode: Node | null
@@ -55,48 +57,19 @@ function nodeLabel(node: Node): string {
   return String(node.data.label || node.id)
 }
 
-type ColumnDef = { name: string; dtype: string }
+type ColumnDef = ColumnFingerprintInput[number]
 
 const INITIAL_PIPELINE_RETRY_POLICY = {
   maxRetries: 6,
   baseDelayMs: 250,
 } satisfies RetryPolicy
 
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === "AbortError"
-}
+export const DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT = 4
+export const PREVIEW_INITIAL_COLUMN_LIMIT = 200
 
-/**
- * Produce a collision-safe string fingerprint for a column list.
- *
- * Encoding: each column is written as
- *   `${name.length}:${name}\u0002${dtype.length}:${dtype}`
- * and columns are joined with `\u0003`. The length-prefix is what makes the
- * scheme collision-safe: no value of `name` or `dtype` — including ones
- * containing the separators — can be confused with a different column list,
- * because the parser would need to see a different length prefix.
- *
- * `undefined` maps to `""` so never-previewed nodes get a stable sentinel
- * distinct from any non-empty list (the empty list `[]` maps to `"0:"` via
- * the implementation below, not `""`, so the two cases remain distinguishable).
- *
- * This is the fingerprint consumed by {@link columnsEqual} — the hot path
- * that decides whether a preview cascade must propagate downstream.
- */
-export function columnFingerprint(columns: ColumnDef[] | undefined): string {
-  if (columns === undefined) return ""
-  if (columns.length === 0) return "0:"
-  const parts: string[] = new Array(columns.length)
-  for (let i = 0; i < columns.length; i++) {
-    const { name, dtype } = columns[i]
-    parts[i] = `${name.length}:${name}\u0002${dtype.length}:${dtype}`
-  }
-  return parts.join("\u0003")
-}
-
-/** Compare two column arrays by name+dtype — returns true if identical. */
+/** Compare two column arrays by name+dtype; returns true if identical. */
 function columnsEqual(a: ColumnDef[] | undefined, b: ColumnDef[] | undefined): boolean {
-  return columnFingerprint(a) === columnFingerprint(b)
+  return columnsEqualByFingerprint(a, b)
 }
 
 function resultToPreview(nodeId: string, label: string, r: NodeResult): PreviewData {
@@ -107,6 +80,10 @@ function resultToPreview(nodeId: string, label: string, r: NodeResult): PreviewD
     column_count: r.column_count ?? 0,
     columns: r.columns ?? [],
     preview: r.preview ?? [],
+    preview_columns: r.preview_columns,
+    preview_row_count: r.preview_row_count,
+    preview_row_limit: r.preview_row_limit,
+    preview_truncated: r.preview_truncated,
     error: r.error ?? null,
     error_line: r.error_line ?? null,
     timing_ms: r.timing_ms ?? 0,
@@ -115,6 +92,48 @@ function resultToPreview(nodeId: string, label: string, r: NodeResult): PreviewD
     memory: r.memory ?? [],
     schema_warnings: r.schema_warnings ?? [],
   })
+}
+
+function previewColumnNamesForNode(node: Node): string[] | undefined {
+  const columns = nodeData(node)._columns
+  return columns && columns.length > 0
+    ? columns.slice(0, PREVIEW_INITIAL_COLUMN_LIMIT).map((column) => column.name)
+    : undefined
+}
+
+function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult): Node[] {
+  return nodes.map((n) =>
+    n.id === nodeId
+      ? {
+        ...n,
+        data: {
+          ...n.data,
+          _columns: columns,
+          _availableColumns: result.available_columns ?? columns,
+          _schemaWarnings: result.schema_warnings ?? [],
+        },
+      }
+      : n,
+  )
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error
+    ? err.name === "AbortError"
+    : typeof err === "object" &&
+      err !== null &&
+      (err as { name?: unknown }).name === "AbortError"
+}
+
+function isPreviewSupersededError(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 409) return false
+  const text = `${err.detail ?? ""} ${err.message}`
+  return text.toLowerCase().includes("superseded")
+}
+
+function previewErrorDetail(err: unknown): string {
+  if (err instanceof ApiError && err.detail) return err.detail
+  return err instanceof Error ? err.message : String(err)
 }
 
 export default function usePipelineAPI({
@@ -234,45 +253,140 @@ export default function usePipelineAPI({
     }
 
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    let cascadeNodes = graph.nodes
+    const resolveCascadeGraph = () => ({
+      ...resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+      nodes: cascadeNodes,
+    })
     const controller = new AbortController()
     previewAbort.current = controller
 
-    // Recursively cascade downstream when a node's columns change.  The
-    // snapshotted rowLimit/source are closed over so every node in the
-    // cascade uses the same values as the root preview (Issues #33/#34).
+    // Cascade downstream when a node's columns change. The snapshotted
+    // rowLimit/source are closed over so every node in the cascade uses
+    // the same values as the root preview (Issues #33/#34).
     const propagate = (changedNodeId: string) => {
-      const { edges, nodes: currentNodes } = graphRef.current
-      const downstreamIds = edges
-        .filter((e) => e.source === changedNodeId)
-        .map((e) => e.target)
-      if (downstreamIds.length === 0) return
-      const cascadeGraph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
-      for (const dsId of downstreamIds) {
-        const dsNode = currentNodes.find((n) => n.id === dsId)
-        const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
-        previewNode(cascadeGraph, dsId, snapshotRowLimit, snapshotSource)
-          .then((result) => {
-            if (!requestStillCurrent()) return
-            if (result.columns) {
-              const newColumns = result.columns as ColumnDef[]
-              setNodes((nds) => nds.map((n) =>
-                n.id === dsId
-                  ? { ...n, data: { ...n.data, _columns: newColumns, _availableColumns: result.available_columns ?? newColumns, _schemaWarnings: result.schema_warnings ?? [] } }
-                  : n,
-              ))
-              if (!columnsEqual(oldColumns, newColumns)) {
-                propagate(dsId)
-              }
-            }
-          })
-          .catch((err: unknown) => {
-            const detail = err instanceof Error ? err.message : String(err)
-            addToast("warning", `Preview propagation failed for "${dsId}": ${detail}`)
-          })
+      const { edges } = graphRef.current
+      const childrenBySource = new Map<string, string[]>()
+      const reachableNodeIds = new Set<string>()
+      const queue = [changedNodeId]
+
+      for (const edge of edges) {
+        const children = childrenBySource.get(edge.source)
+        if (children) {
+          children.push(edge.target)
+        } else {
+          childrenBySource.set(edge.source, [edge.target])
+        }
       }
+
+      for (let i = 0; i < queue.length; i++) {
+        const sourceId = queue[i]
+        for (const targetId of childrenBySource.get(sourceId) ?? []) {
+          if (reachableNodeIds.has(targetId)) continue
+          reachableNodeIds.add(targetId)
+          queue.push(targetId)
+        }
+      }
+
+      if (reachableNodeIds.size === 0) return
+
+      const inCascadeSourceIds = new Set<string>([changedNodeId, ...reachableNodeIds])
+      const pendingParents = new Map<string, number>()
+      for (const nodeId of reachableNodeIds) pendingParents.set(nodeId, 0)
+      for (const edge of edges) {
+        if (!reachableNodeIds.has(edge.target) || !inCascadeSourceIds.has(edge.source)) continue
+        pendingParents.set(edge.target, (pendingParents.get(edge.target) ?? 0) + 1)
+      }
+
+      const hasChangedParent = new Set<string>()
+      const scheduledNodeIds = new Set<string>()
+      const settledNodeIds = new Set<string>()
+      const readyQueue: string[] = []
+      let activePreviewCount = 0
+
+      const settleNode = (nodeId: string, columnsChanged: boolean) => {
+        if (settledNodeIds.has(nodeId)) return
+        settledNodeIds.add(nodeId)
+
+        for (const childId of childrenBySource.get(nodeId) ?? []) {
+          if (!reachableNodeIds.has(childId)) continue
+          if (columnsChanged) hasChangedParent.add(childId)
+          const remainingParents = (pendingParents.get(childId) ?? 0) - 1
+          pendingParents.set(childId, remainingParents)
+          if (remainingParents > 0) continue
+          if (hasChangedParent.has(childId)) {
+            queueNodePreview(childId)
+          } else {
+            settleNode(childId, false)
+          }
+        }
+      }
+
+      const drainReadyQueue = () => {
+        while (
+          activePreviewCount < DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT &&
+          readyQueue.length > 0 &&
+          requestStillCurrent()
+        ) {
+          const nodeId = readyQueue.shift()!
+          activePreviewCount += 1
+          const cascadeGraph = resolveCascadeGraph()
+          const dsNode = cascadeNodes.find((n) => n.id === nodeId)
+          const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
+          previewNode(
+            cascadeGraph,
+            nodeId,
+            snapshotRowLimit,
+            snapshotSource,
+            undefined,
+            dsNode ? previewColumnNamesForNode(dsNode) : undefined,
+          )
+            .then((result) => {
+              if (!requestStillCurrent()) return
+              if (!result.columns) {
+                settleNode(nodeId, false)
+                return
+              }
+              const newColumns = result.columns as ColumnDef[]
+              cascadeNodes = applyPreviewColumnsToNodes(cascadeNodes, nodeId, newColumns, result)
+              setNodes((nds) => applyPreviewColumnsToNodes(nds, nodeId, newColumns, result))
+              settleNode(nodeId, !columnsEqual(oldColumns, newColumns))
+            })
+            .catch((err: unknown) => {
+              if (!requestStillCurrent()) return
+              if (isAbortError(err) || isPreviewSupersededError(err)) {
+                settleNode(nodeId, false)
+                return
+              }
+              const detail = previewErrorDetail(err)
+              addToast("warning", `Preview propagation failed for "${nodeId}": ${detail}`)
+              settleNode(nodeId, false)
+            })
+            .finally(() => {
+              activePreviewCount -= 1
+              drainReadyQueue()
+            })
+        }
+      }
+
+      const queueNodePreview = (nodeId: string) => {
+        if (scheduledNodeIds.has(nodeId) || !requestStillCurrent()) return
+        scheduledNodeIds.add(nodeId)
+        readyQueue.push(nodeId)
+        drainReadyQueue()
+      }
+
+      settleNode(changedNodeId, true)
     }
 
-    previewNode(graph, node.id, snapshotRowLimit, snapshotSource, { signal: controller.signal })
+    previewNode(
+      graph,
+      node.id,
+      snapshotRowLimit,
+      snapshotSource,
+      { signal: controller.signal },
+      previewColumnNamesForNode(node),
+    )
       .then((result) => {
         if (!requestStillCurrent()) return
         const preview = resultToPreview(node.id, label, result)
@@ -285,7 +399,8 @@ export default function usePipelineAPI({
         if (result.columns) {
           const oldColumns = nodeData(node)._columns
           const newColumns = result.columns as ColumnDef[]
-          setNodes((nds) => nds.map((n) => n.id === node.id ? { ...n, data: { ...n.data, _columns: newColumns, _availableColumns: result.available_columns ?? newColumns, _schemaWarnings: result.schema_warnings ?? [] } } : n))
+          cascadeNodes = applyPreviewColumnsToNodes(cascadeNodes, node.id, newColumns, result)
+          setNodes((nds) => applyPreviewColumnsToNodes(nds, node.id, newColumns, result))
           // Cascade to downstream nodes if columns changed.
           if (!columnsEqual(oldColumns, newColumns)) {
             propagate(node.id)
@@ -294,14 +409,8 @@ export default function usePipelineAPI({
       })
       .catch((err: unknown) => {
         if (!requestStillCurrent()) return
-        const isAbortError =
-          err instanceof Error
-            ? err.name === "AbortError"
-            : typeof err === "object" &&
-              err !== null &&
-              (err as { name?: unknown }).name === "AbortError"
-        if (isAbortError) return
-        const detail = err instanceof Error ? err.message : String(err)
+        if (isAbortError(err) || isPreviewSupersededError(err)) return
+        const detail = previewErrorDetail(err)
         setPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }))
         setNodeStatuses({})
       })
@@ -349,6 +458,18 @@ export default function usePipelineAPI({
 
   /** Lazily preview upstream nodes that are missing _columns, then preview the target node. */
   const refreshPreview = useCallback((node: Node) => {
+    const requestId = ++previewRequestSeq.current
+    previewAbort.current?.abort()
+    previewAbort.current = null
+    if (previewDebounce.current) {
+      clearTimeout(previewDebounce.current)
+      previewDebounce.current = null
+    }
+    const structuralVersion = useGraphStore.getState().structuralVersion
+    const requestStillCurrent = () =>
+      previewRequestSeq.current === requestId &&
+      useGraphStore.getState().structuralVersion === structuralVersion
+
     const { nodes, edges } = graphRef.current
     const nodeMap = new Map(nodes.map((n) => [n.id, n]))
 
@@ -362,12 +483,14 @@ export default function usePipelineAPI({
 
     if (staleUpstream.length === 0) {
       // No upstream gaps — just preview the selected node directly
-      fetchPreviewImmediate(node)
+      fetchPreviewImmediate(node, requestId)
       return
     }
 
     // Show loading state for the target node
-    setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))
+    if (requestStillCurrent()) {
+      setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))
+    }
 
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
@@ -379,8 +502,16 @@ export default function usePipelineAPI({
     // Preview stale upstream nodes in parallel, then the target node
     Promise.all(
       staleUpstream.map((upstream) =>
-        previewNode(graph, upstream.id, snapshotRowLimit, snapshotSource)
+          previewNode(
+            graph,
+            upstream.id,
+            snapshotRowLimit,
+            snapshotSource,
+            undefined,
+            previewColumnNamesForNode(upstream),
+          )
           .then((result) => {
+            if (!requestStillCurrent()) return
             if (result.columns) {
               setNodes((nds) => nds.map((n) =>
                 n.id === upstream.id
@@ -390,12 +521,15 @@ export default function usePipelineAPI({
             }
           })
           .catch((err: unknown) => {
-            const detail = err instanceof Error ? err.message : String(err)
+            if (!requestStillCurrent()) return
+            if (isAbortError(err) || isPreviewSupersededError(err)) return
+            const detail = previewErrorDetail(err)
             addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}": ${detail}`)
           }),
       ),
     ).then(() => {
-      fetchPreviewImmediate(node)
+      if (!requestStillCurrent()) return
+      fetchPreviewImmediate(node, requestId)
     })
   }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
 
@@ -430,12 +564,14 @@ export default function usePipelineAPI({
       })
   }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
 
-  // Clear node statuses when selected node changes (including deselect)
+  const selectedNodeId = selectedNode?.id ?? null
+
+  // Clear node statuses when selected node id changes (including deselect)
   // so statuses from a previous node don't bleed into the next selection.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset derived state on node switch
     setNodeStatuses({})
-  }, [selectedNode])
+  }, [selectedNodeId])
 
   // Cleanup on unmount
   useEffect(() => {

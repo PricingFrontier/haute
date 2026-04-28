@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import useTracing from "../useTracing"
+import useTracing, {
+  TRACE_MOTION_GRAPH_SIZE_LIMIT,
+  buildEdgeAdjacency,
+} from "../useTracing"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
@@ -22,6 +25,49 @@ vi.mock("../../utils/buildGraph", () => ({
 import { traceCell } from "../../api/client"
 const mockTraceCell = vi.mocked(traceCell)
 
+function mockReducedMotion(matches: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)" ? matches : false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  })
+}
+
+function makeInstrumentedEdge(
+  id: string,
+  source: string,
+  target: string,
+  counters: { sourceReads: number; targetReads: number },
+): Edge {
+  const edge = { id, type: "default" } as Edge
+  Object.defineProperties(edge, {
+    source: {
+      enumerable: true,
+      get() {
+        counters.sourceReads += 1
+        return source
+      },
+    },
+    target: {
+      enumerable: true,
+      get() {
+        counters.targetReads += 1
+        return target
+      },
+    },
+  })
+  return edge
+}
+
 function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
   return {
     nodes: [makeNode("n1"), makeNode("n2")] as Node[],
@@ -37,11 +83,36 @@ function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
   }
 }
 
+function makeTrace(nodeIds: string[]) {
+  return {
+    steps: nodeIds.map((nodeId) => ({
+      node_id: nodeId,
+      node_name: nodeId,
+      node_type: "polars",
+      schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] },
+      input_values: {},
+      output_values: {},
+      column_relevant: true,
+      execution_ms: 5,
+    })),
+    target_node_id: nodeIds.at(-1) ?? "",
+    row_index: 0,
+    column: "price",
+    output_value: 1,
+    total_nodes_in_pipeline: nodeIds.length,
+    nodes_in_trace: nodeIds.length,
+    execution_ms: 10,
+    row_id_column: null,
+    row_id_value: null,
+  }
+}
+
 describe("useTracing", () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live" })
     mockTraceCell.mockReset()
+    mockReducedMotion(false)
   })
 
   afterEach(() => {
@@ -261,10 +332,153 @@ describe("useTracing", () => {
     expect(edge.style?.strokeWidth).toBe(2.5)
   })
 
+  it("small graph trace styling keeps motion affordances", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result } = renderHook(() => useTracing(makeParams()))
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    expect(result.current.nodesWithStatus[0].style?.transition).toBe("opacity 0.2s ease")
+    expect(result.current.edgesWithTrace[0].animated).toBe(true)
+    expect(result.current.edgesWithTrace[0].style?.filter).toBe("drop-shadow(0 0 4px var(--accent))")
+    expect(result.current.edgesWithTrace[0].className).toBeUndefined()
+  })
+
+  it("reduced-motion users get non-animated trace styling", async () => {
+    mockReducedMotion(true)
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result } = renderHook(() => useTracing(makeParams()))
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    expect(result.current.nodesWithStatus[0].style?.transition).toBe("none")
+    expect(result.current.nodesWithStatus[0].data._traceMotionDisabled).toBe(true)
+    expect(result.current.nodesWithStatus[0].className).toContain("trace-motion-lite")
+    expect(result.current.edgesWithTrace[0].animated).toBe(false)
+    expect(result.current.edgesWithTrace[0].style?.filter).toBe("none")
+    expect(result.current.edgesWithTrace[0].className).toContain("trace-motion-lite")
+  })
+
+  it("very large graphs disable expensive trace filter styles for active and dimmed traced edges", async () => {
+    const nodes = Array.from({ length: TRACE_MOTION_GRAPH_SIZE_LIMIT }, (_, index) => makeNode(`n${index}`)) as Node[]
+    const edges = [makeEdge("n0", "n1"), makeEdge("n1", "n2")] as Edge[]
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n0", "n1"]) })
+    const { result } = renderHook(() => useTracing(makeParams({
+      nodes,
+      edges,
+      selectedNode: nodes[1],
+    })))
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    expect(result.current.nodesWithStatus[0].style?.transition).toBe("none")
+    expect(result.current.nodesWithStatus[0].data._traceMotionDisabled).toBe(true)
+    expect(result.current.nodesWithStatus[0].className).toContain("trace-motion-lite")
+    for (const edge of result.current.edgesWithTrace) {
+      expect(edge.animated).toBe(false)
+      expect(edge.style?.filter).toBe("none")
+      expect(edge.className).toContain("trace-motion-lite")
+    }
+  })
+
+  it("removes traced-edge drop shadows when a traced graph grows past the motion threshold", async () => {
+    const stableNodes = [makeNode("n0"), makeNode("n1")] as Node[]
+    const edges = [makeEdge("n0", "n1")] as Edge[]
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n0", "n1"]) })
+    const params = makeParams({ nodes: stableNodes, edges, selectedNode: stableNodes[1] })
+    const { result, rerender } = renderHook((p) => useTracing(p), { initialProps: params })
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+    expect(result.current.edgesWithTrace[0].style?.filter).toBe("drop-shadow(0 0 4px var(--accent))")
+
+    rerender({
+      ...params,
+      nodes: [
+        ...stableNodes,
+        ...Array.from({ length: TRACE_MOTION_GRAPH_SIZE_LIMIT }, (_, index) => makeNode(`large-${index}`)),
+      ],
+    })
+
+    expect(result.current.edgesWithTrace[0].style?.filter).toBe("none")
+    expect(result.current.edgesWithTrace[0].animated).toBe(false)
+    expect(result.current.edgesWithTrace[0].className).toContain("trace-motion-lite")
+  })
+
+  it("reprojects cached nodes when the graph crosses the trace-motion threshold", () => {
+    const stableNodes = [makeNode("n0"), makeNode("n1")] as Node[]
+    const params = makeParams({ nodes: stableNodes, edges: [makeEdge("n0", "n1")] as Edge[] })
+    const { result, rerender } = renderHook((p) => useTracing(p), { initialProps: params })
+
+    expect(result.current.nodesWithStatus[0].style?.transition).toBe("opacity 0.2s ease")
+    expect(result.current.nodesWithStatus[0].data._traceMotionDisabled).toBe(false)
+
+    const largeNodes = [
+      ...stableNodes,
+      ...Array.from({ length: TRACE_MOTION_GRAPH_SIZE_LIMIT }, (_, index) => makeNode(`large-${index}`)),
+    ] as Node[]
+    rerender({ ...params, nodes: largeNodes })
+
+    expect(result.current.nodesWithStatus[0].style?.transition).toBe("none")
+    expect(result.current.nodesWithStatus[0].data._traceMotionDisabled).toBe(true)
+    expect(result.current.nodesWithStatus[0].className).toContain("trace-motion-lite")
+  })
+
   it("edgesWithTrace returns original edges when no trace", () => {
     const params = makeParams()
     const { result } = renderHook(() => useTracing(params))
     expect(result.current.edgesWithTrace).toBe(params.edges)
+  })
+
+  describe("edge adjacency", () => {
+    it("precomputes connected node and edge ids for each endpoint", () => {
+      const adjacency = buildEdgeAdjacency([
+        makeEdge("n1", "n2"),
+        makeEdge("n1", "n3"),
+        makeEdge("n3", "n4"),
+      ] as Edge[])
+
+      expect([...adjacency.nodesByNodeId.get("n1")!]).toEqual(["n1", "n2", "n3"])
+      expect([...adjacency.edgeIdsByNodeId.get("n1")!]).toEqual(["e_n1_n2", "e_n1_n3"])
+      expect([...adjacency.nodesByNodeId.get("n3")!]).toEqual(["n3", "n1", "n4"])
+      expect(adjacency.endpointsByEdgeId.get("e_n1_n2")).toEqual({ source: "n1", target: "n2" })
+    })
+
+    it("reuses precomputed adjacency for same-edge hover changes without rereading edge endpoints", () => {
+      const counters = { sourceReads: 0, targetReads: 0 }
+      const n1 = makeNode("n1")
+      const n2 = makeNode("n2")
+      const n3 = makeNode("n3")
+      const edges = [
+        makeInstrumentedEdge("e1", "n1", "n2", counters),
+        makeInstrumentedEdge("e2", "n2", "n3", counters),
+      ]
+      const params = makeParams({
+        nodes: [n1, n2, n3] as Node[],
+        edges,
+        hoveredNodeId: "n1",
+      })
+      const { rerender } = renderHook((p) => useTracing(p), { initialProps: params })
+      const sourceReadsAfterBuild = counters.sourceReads
+      const targetReadsAfterBuild = counters.targetReads
+
+      rerender({ ...params, hoveredNodeId: "n2" })
+      rerender({ ...params, hoveredNodeId: "n3" })
+
+      expect(counters.sourceReads).toBe(sourceReadsAfterBuild)
+      expect(counters.targetReads).toBe(targetReadsAfterBuild)
+    })
   })
 
   // ── Hover dimming ─────────────────────────────────────────────────
@@ -342,6 +556,54 @@ describe("useTracing", () => {
     // n2→n3 is NOT connected to hovered node → dim
     expect(edgeStyles["n2-n3"]?.strokeWidth).toBe(1)
     expect(edgeStyles["n2-n3"]?.stroke).toBe("rgba(255,255,255,.06)")
+  })
+
+  it("preserves unchanged edge object references across hover-to-hover transitions", () => {
+    const nodes = [makeNode("n1"), makeNode("n2"), makeNode("n3"), makeNode("n4")] as Node[]
+    const edges = [
+      makeEdge("n1", "n2"),
+      makeEdge("n2", "n3"),
+      makeEdge("n3", "n4"),
+    ] as Edge[]
+    const params = makeParams({ nodes, edges, hoveredNodeId: "n1" })
+    const { result, rerender } = renderHook((p) => useTracing(p), { initialProps: params })
+    const firstEdges = Object.fromEntries(result.current.edgesWithTrace.map((edge) => [edge.id, edge]))
+
+    rerender({ ...params, hoveredNodeId: "n2" })
+
+    const nextEdges = Object.fromEntries(result.current.edgesWithTrace.map((edge) => [edge.id, edge]))
+    expect(nextEdges.e_n1_n2).toBe(firstEdges.e_n1_n2)
+    expect(nextEdges.e_n2_n3).not.toBe(firstEdges.e_n2_n3)
+    expect(nextEdges.e_n3_n4).toBe(firstEdges.e_n3_n4)
+  })
+
+  it("preserves unchanged edge object references across trace-to-trace transitions", async () => {
+    const nodes = [makeNode("n1"), makeNode("n2"), makeNode("n3"), makeNode("n4")] as Node[]
+    const edges = [
+      makeEdge("n1", "n2"),
+      makeEdge("n2", "n3"),
+      makeEdge("n3", "n4"),
+    ] as Edge[]
+    mockTraceCell
+      .mockResolvedValueOnce({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+      .mockResolvedValueOnce({ status: "ok", trace: makeTrace(["n2", "n3"]) })
+    const { result } = renderHook(() => useTracing(makeParams({ nodes, edges, selectedNode: nodes[3] })))
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult?.target_node_id).toBe("n2"))
+    const firstEdges = Object.fromEntries(result.current.edgesWithTrace.map((edge) => [edge.id, edge]))
+
+    await act(async () => {
+      result.current.handleCellClick(1, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult?.target_node_id).toBe("n3"))
+
+    const nextEdges = Object.fromEntries(result.current.edgesWithTrace.map((edge) => [edge.id, edge]))
+    expect(nextEdges.e_n1_n2).not.toBe(firstEdges.e_n1_n2)
+    expect(nextEdges.e_n2_n3).not.toBe(firstEdges.e_n2_n3)
+    expect(nextEdges.e_n3_n4).toBe(firstEdges.e_n3_n4)
   })
 
   it("_hoverDimmed reverts when hoveredNodeId becomes null", () => {

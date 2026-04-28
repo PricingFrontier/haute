@@ -169,10 +169,10 @@ As an analyst, **you can stop reading here** - your job is done after Step 4 abo
 
     | Endpoint | Method | Purpose |
     |---|---|---|
-    | `/quote` | `POST` | Send quote data (JSON array), receive premium results |
+    | `/quote` | `POST` | Send quote data (JSON object or array), receive premium results in a stable envelope |
     | `/health` | `GET` | Returns `{"status": "ok"}` - used by infrastructure to check the service is alive |
 
-    The `/quote` endpoint accepts a JSON array of quote objects and returns the pipeline output as JSON. No MLflow, no pandas - just JSON in, JSON out.
+    The `/quote` endpoint accepts a JSON object or array of quote objects and returns `{ "rows": [...], "row_count": n, "returned_rows": n, "truncated": false, "limit": 1000 }`. For larger results, `rows` is capped at `limit`, `row_count` reports the full result size, and `truncated` is `true`. No MLflow, no pandas - just JSON in, JSON out.
 
 ??? note "Registry options (click to expand)"
 

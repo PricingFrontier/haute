@@ -34,3 +34,38 @@ jobs:
         with:
           name: python-performance-${{ github.run_id }}
           path: .perf-artifacts
+
+  frontend-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: uv sync --group dev --locked
+        working-directory: .
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run analyze:bundle
+      - run: npm run test:e2e:benchmark
+
+      - name: Upload frontend performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-performance-${{ github.run_id }}
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+            src/haute/static/assets/*.map

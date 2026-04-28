@@ -9,7 +9,8 @@ from __future__ import annotations
 import contextvars
 import os
 import threading
-from typing import Any
+from collections.abc import Hashable
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import polars as pl
@@ -38,11 +39,17 @@ _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystat
 # same input schema thousands of times in a row — the answer never changes
 # but the O(n_features) walk + set construction still shows up in profiles.
 #
-# We memoise the ``(usable, missing)`` tuple keyed by
-# ``(id(scoring_model), schema_hash)``.  ``id()`` is stable for the lifetime
-# of the object, so a reload (which produces a fresh ``ScoringModel``
-# instance) naturally misses; an eviction cascade from ``_mlflow_io``'s
-# ``_model_cache`` drops stale entries so we never accumulate dead pins.
+# We memoise the ``(usable, missing)`` tuple keyed by model identity and a
+# schema-content key. ``id()`` is stable for the lifetime of the object, so a
+# reload (which produces a fresh ``ScoringModel`` instance) naturally misses;
+# an eviction cascade from ``_mlflow_io``'s ``_model_cache`` drops stale
+# entries so we never accumulate dead pins.
+#
+# The in-memory cache key intentionally uses Polars dtype objects directly
+# instead of serialising them to a digest on every score call. It is still
+# content-based across fresh ``pl.Schema`` instances, but the hot path avoids
+# the stringification/hash work that made cache hits barely faster than a
+# cold validation.
 #
 # Bounded: LRUCache, same max_size as ``_model_cache`` so the two caches
 # evict on roughly the same timeline.  Thread-safe via LRUCache's RLock.
@@ -57,9 +64,15 @@ _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystat
 # to pull through once at module load.
 from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SIZE  # noqa: E402
 
-_feature_validation_cache: LRUCache[tuple[int, str], tuple[list[str], list[str]]] = LRUCache(
-    max_size=_MLFLOW_MODEL_CACHE_MAX_SIZE,
+_SchemaValidationKey: TypeAlias = tuple[tuple[str, Hashable], ...]
+_FeatureValidationCacheKey: TypeAlias = tuple[int, _SchemaValidationKey]
+_FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
+_FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
+
+_feature_validation_cache: LRUCache[_FeatureValidationCacheKey, _FeatureValidationResult] = (
+    LRUCache(max_size=_MLFLOW_MODEL_CACHE_MAX_SIZE)
 )
+_feature_validation_last_entry: _FeatureValidationLastEntry | None = None
 
 
 def _compute_schema_hash(schema: pl.Schema) -> str:
@@ -73,13 +86,10 @@ def _compute_schema_hash(schema: pl.Schema) -> str:
     Uses the project's standard ``xxh64`` hasher so the digest is
     consistent with every other content-addressed key in the codebase.
 
-    No per-object memoisation: production callers always hand us a fresh
-    ``pl.Schema`` object (``lf.collect_schema()`` returns a new instance
-    each call), so a side table keyed on ``id(schema)`` was permanent
-    cold cache with zero hit rate while adding weakref bookkeeping and a
-    threading lock.  The downstream feature-validation LRU still keys on
-    the digest itself, so every pair of equal ordered schemas collapses
-    to the same cache slot regardless of object identity.
+    This digest is retained for stable diagnostics and tests. The hot
+    feature-validation path uses ``_schema_validation_cache_key`` instead
+    so repeated score calls do not pay stringification/hash work before
+    every LRU lookup.
     """
     # Polars dtypes have stable ``str(...)`` reprs (e.g. "Float64", "Int64",
     # "Utf8") that differ per dtype — good enough as a lightweight equality
@@ -89,13 +99,27 @@ def _compute_schema_hash(schema: pl.Schema) -> str:
     return content_hash_bytes(payload)
 
 
+def _schema_validation_cache_key(schema: pl.Schema) -> _SchemaValidationKey:
+    """Return the hot-path schema key used by ``_validate_features``.
+
+    This is process-local cache state, not a persisted digest. ``pl.Schema``
+    preserves ordered ``(name, dtype)`` pairs, and Polars dtype objects are
+    hashable/equality-comparable, so this key remains sensitive to column
+    order, renames, and dtype changes while avoiding per-call string
+    serialisation.
+    """
+    return cast(_SchemaValidationKey, tuple(schema.items()))
+
+
 def _clear_feature_validation_cache() -> None:
     """Drop every entry in the feature-validation cache.
 
     Used as the blanket cascade target for
     :func:`haute._mlflow_io.clear_model_cache`.
     """
+    global _feature_validation_last_entry
     _feature_validation_cache.clear()
+    _feature_validation_last_entry = None
 
 
 def _invalidate_feature_validation_cache_for(scoring_model: Any) -> None:
@@ -109,8 +133,12 @@ def _invalidate_feature_validation_cache_for(scoring_model: Any) -> None:
     Silent on an unknown model: the predicate simply matches no keys
     and ``evict_where`` returns an empty list.
     """
+    global _feature_validation_last_entry
     target_id = id(scoring_model)
     _feature_validation_cache.evict_where(lambda k: k[0] == target_id)
+    last_entry = _feature_validation_last_entry
+    if last_entry is not None and last_entry[0][0] == target_id:
+        _feature_validation_last_entry = None
 
 
 def _format_feature_mismatch(
@@ -180,7 +208,8 @@ def _validate_features_uncached(
     This is the raw worker.  Call sites should go through
     :func:`_validate_features`, which memoises the result.
     """
-    available = set(schema.names())
+    schema_order = schema.names()
+    available = set(schema_order)
     expected = scoring_model.feature_names
 
     missing = [f for f in expected if f not in available]
@@ -229,8 +258,13 @@ def _validate_features_uncached(
     # silently misaligns every categorical column.  Enforce that the input
     # schema presents the model's features in the same relative order as
     # training — extra columns elsewhere in the schema are fine.
-    schema_order = schema.names()
-    feature_positions = [(name, schema_order.index(name)) for name in expected if name in available]
+    schema_position_by_name: dict[str, int] = {}
+    for index, name in enumerate(schema_order):
+        schema_position_by_name.setdefault(name, index)
+
+    feature_positions = [
+        (name, schema_position_by_name[name]) for name in expected if name in available
+    ]
     actual_order_by_position = [name for name, _ in sorted(feature_positions, key=lambda p: p[1])]
     if actual_order_by_position != list(expected):
         raise FeatureMismatchError(
@@ -254,11 +288,11 @@ def _validate_features(
 ) -> tuple[list[str], list[str]]:
     """Memoised façade over :func:`_validate_features_uncached`.
 
-    Keys on ``(id(scoring_model), _compute_schema_hash(schema))``.
-    Cache hits short-circuit the O(n_features) walk that the uncached
-    worker performs — a measurable win on the batch / preview hot path
-    where the same model is scored thousands of times against the same
-    input schema.
+    Keys on ``(id(scoring_model), ordered schema items)``.
+    The immediate last-entry probe covers the dominant batch/preview hot
+    path without taking the LRU lock or promoting an ``OrderedDict`` entry
+    on every score call. The bounded LRU remains the general cache for
+    callers that alternate among several schemas or models.
 
     Errors are NOT cached: when
     :class:`~haute.errors.FeatureMismatchError` propagates, we leave the
@@ -266,12 +300,19 @@ def _validate_features(
     the validator again and re-raises.  A cached exception would
     silently swallow a later fix.
     """
-    key = (id(scoring_model), _compute_schema_hash(schema))
+    global _feature_validation_last_entry
+    key = (id(scoring_model), _schema_validation_cache_key(schema))
+    last_entry = _feature_validation_last_entry
+    if last_entry is not None and last_entry[0] == key:
+        return last_entry[1]
+
     cached = _feature_validation_cache.get(key)
     if cached is not None:
+        _feature_validation_last_entry = (key, cached)
         return cached
     result = _validate_features_uncached(scoring_model, schema)
     _feature_validation_cache.put(key, result)
+    _feature_validation_last_entry = (key, result)
     return result
 
 
@@ -353,20 +394,20 @@ def _score_eager_unified(
     """
     from haute._mlflow_io import _prepare_predict_frame
 
-    df_eager = lf.collect(engine="streaming")
+    feature_df = lf.select(features).collect(engine="streaming")
     x_data = _prepare_predict_frame(
-        df_eager,
+        feature_df,
         features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
     )
     preds = np.asarray(model.predict(x_data)).flatten()
-    df_eager = df_eager.with_columns(pl.Series(output_col, preds))
+    prediction_columns = [pl.Series(output_col, preds)]
     if task == "classification":
         probas = _predict_positive_proba(model, x_data)
         if probas is not None:
-            df_eager = df_eager.with_columns(pl.Series(f"{output_col}_proba", probas))
-    return df_eager.lazy()
+            prediction_columns.append(pl.Series(f"{output_col}_proba", probas))
+    return lf.with_columns(prediction_columns)
 
 
 def _score_batched_unified(
@@ -822,8 +863,9 @@ def _batch_score_to_parquet(
                 chunk = chunk_raw.to_frame()
             else:
                 chunk = chunk_raw
+            feature_chunk = chunk.select(features)
             x_data = _prepare_predict_frame(
-                chunk,
+                feature_chunk,
                 features,
                 cat_feature_names=scoring_model.cat_feature_names,
                 flavor=scoring_model.flavor,

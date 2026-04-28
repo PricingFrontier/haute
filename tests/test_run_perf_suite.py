@@ -48,6 +48,27 @@ def test_build_pytest_args_selects_owned_perf_lane(tmp_path: Path) -> None:
     assert pytest_args[-3:] == ["tests/custom", "-k", "cache"]
 
 
+def test_build_pytest_args_allows_targeted_perf_lane(tmp_path: Path) -> None:
+    args = run_perf_suite._parse_args(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--pytest-target",
+            "tests/performance/test_preview_trace_perf.py",
+            "--pytest-arg=-k",
+            "--pytest-arg",
+            "trace",
+        ]
+    )
+    junit_path = tmp_path / "perf-junit.xml"
+
+    pytest_args = run_perf_suite._build_pytest_args(args, junit_path)
+
+    assert pytest_args[0] == "tests/performance/test_preview_trace_perf.py"
+    assert "tests/" not in pytest_args[:1]
+    assert pytest_args[-2:] == ["-k", "trace"]
+
+
 def test_budget_violations_fail_for_empty_or_slow_lane() -> None:
     budgets = run_perf_suite.PerfBudgets(max_total_seconds=10.0, max_test_seconds=1.0)
     slow_result = run_perf_suite.PerfTestResult(

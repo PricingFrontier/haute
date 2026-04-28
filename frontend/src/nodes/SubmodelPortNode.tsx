@@ -11,6 +11,7 @@ function SubmodelPortNode({ data: nodeData }: NodeProps<SubmodelPortFlowNode>) {
   const Icon = isInput ? ArrowRight : ArrowLeft
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
+  const traceMotionDisabled = !!nodeData._traceMotionDisabled
 
   return (
     <div
@@ -24,7 +25,7 @@ function SubmodelPortNode({ data: nodeData }: NodeProps<SubmodelPortFlowNode>) {
           ? "0 0 10px var(--text-accent-glow)"
           : "none",
         opacity: traceDimmed ? 0.3 : 0.85,
-        transition: "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
+        transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
       }}
     >
       {!isInput && <Handle type="target" position={Position.Left} />}

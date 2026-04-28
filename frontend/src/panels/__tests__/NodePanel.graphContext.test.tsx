@@ -47,7 +47,8 @@ const { sinkEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoist
   optimiserConfigProps: [] as Record<string, unknown>[],
 }))
 
-vi.mock("../editors", () => ({
+vi.mock("../LazyNodeEditors", () => ({
+  LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
   TransformEditor: () => <div data-testid="TransformEditor" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
@@ -65,17 +66,13 @@ vi.mock("../editors", () => ({
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
-}))
-
-vi.mock("../ModellingConfig", () => ({
-  default: (props: Record<string, unknown>) => {
+  ColumnsTab: () => <div data-testid="ColumnsTab" />,
+  GroupedColumnsTab: () => <div data-testid="GroupedColumnsTab" />,
+  ModellingConfig: (props: Record<string, unknown>) => {
     modellingConfigProps.push(props)
     return <div data-testid="ModellingConfig" />
   },
-}))
-
-vi.mock("../OptimiserConfig", () => ({
-  default: (props: Record<string, unknown>) => {
+  OptimiserConfig: (props: Record<string, unknown>) => {
     optimiserConfigProps.push(props)
     return <div data-testid="OptimiserConfig" />
   },

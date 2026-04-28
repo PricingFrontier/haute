@@ -3,7 +3,7 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import ImportsPanel from "../ImportsPanel"
 
 // Mock the CodeEditor (heavy CodeMirror dependency)
-vi.mock("../editors", () => ({
+vi.mock("../editors/CodeEditor", () => ({
   CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue?: string; onChange?: (v: string) => void; placeholder?: string }) => (
     <textarea
       data-testid="code-editor"

@@ -21,8 +21,9 @@ classes based on which state they expect:
 
   * ``TestPreambleCacheCorrectness`` — semantic invariants that must hold
     both pre- and post-refactor.  Same preamble → same namespace,
-    different preamble → different namespace, ``force_refresh=True``
-    bypasses cached values, max size honoured, thread-safe.
+    different preamble → different namespace, digest-keyed
+    ``force_refresh=True`` reuses unchanged content while refreshing
+    edited preambles / utilities, max size honoured, thread-safe.
 
   * ``TestPreambleCachePostRefactor`` — invariants specific to the
     ``functools.lru_cache`` shape (presence of ``cache_info()``,
@@ -51,6 +52,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import os
 import secrets
 import threading
 import time
@@ -178,41 +180,129 @@ class TestPreambleCacheCorrectness:
         assert ns_a["X"] == 1
         assert ns_b["X"] == 2
 
-    def test_force_refresh_busts_cache(self) -> None:
-        """``force_refresh=True`` must not return a cached entry.
+    def test_force_refresh_reuses_unchanged_preamble(self) -> None:
+        """``force_refresh=True`` should reuse unchanged preamble content.
 
-        The preview path passes ``force_refresh=True`` so edits to
-        utility modules in the GUI are always picked up.  If
-        ``lru_cache`` quietly serves a stale hit, GUI edits stop
-        propagating — a silent correctness regression.
+        The preview path passes ``force_refresh=True`` on every click.
+        Clearing the global cache on each call makes identical previews
+        recompile unnecessarily; the digest key should let unchanged
+        content hit the cache by object identity.
         """
         source = "UTILITY_VALUE = 42\n"
-        ns_cached = _compile_preamble(source, force_refresh=False)
-        ns_forced = _compile_preamble(source, force_refresh=True)
-        assert ns_cached is not ns_forced, (
-            "force_refresh=True must return a freshly-compiled namespace;"
-            " received the cached dict instead"
-        )
-        # Content equivalence holds even though identity doesn't.
-        assert ns_forced["UTILITY_VALUE"] == 42
+        ns_first = _compile_preamble(source, force_refresh=True)
+        ns_second = _compile_preamble(source, force_refresh=True)
+        assert ns_second is ns_first
+        assert ns_second["UTILITY_VALUE"] == 42
 
-    def test_force_refresh_then_cached_reuses_latest_entry(self) -> None:
-        """After a ``force_refresh=True`` re-compile, a subsequent
-        ``force_refresh=False`` call should return the freshly-written
-        entry (object identity with the forced result).
+    def test_force_refresh_does_not_clear_unrelated_entries(self) -> None:
+        """``force_refresh=True`` must not clear the global preamble cache.
 
-        This exercises the write-through semantics: a forced recompile
-        must still update the cache so future cache hits serve the new
-        namespace, not a pre-forced stale one.
+        GUI previews should refresh only the digest-keyed entry whose
+        inputs changed.  Other hot preambles should remain cached.
         """
-        source = "WRITE_THROUGH = 7\n"
-        _ns_initial = _compile_preamble(source, force_refresh=False)
-        ns_forced = _compile_preamble(source, force_refresh=True)
-        ns_hit = _compile_preamble(source, force_refresh=False)
-        assert ns_hit is ns_forced, (
-            "cache entry after force_refresh must serve the freshly-compiled ns,"
-            " not the pre-forced one"
-        )
+        keep_source = "KEEP_ME = 7\n"
+        refresh_source = "REFRESH_ME = 11\n"
+
+        ns_keep = _compile_preamble(keep_source, force_refresh=False)
+        _compile_preamble(refresh_source, force_refresh=True)
+
+        assert _compile_preamble(keep_source, force_refresh=False) is ns_keep
+
+    def test_force_refresh_false_skips_dependency_fingerprinting_on_hot_hits(
+        self,
+        monkeypatch,
+    ) -> None:
+        """Hot optimiser/sink loops should not hash dependencies on hits."""
+        import haute.executor as _ex
+
+        calls = {"validation": 0}
+        original_validate = _ex.validate_user_code
+
+        def counting_validate(source: str, *, allow_imports: bool) -> None:
+            calls["validation"] += 1
+            original_validate(source, allow_imports=allow_imports)
+
+        def forbidden_fingerprint(*args: Any, **kwargs: Any) -> str:
+            raise AssertionError("force_refresh=False must not compute dependency fingerprints")
+
+        monkeypatch.setattr(_ex, "validate_user_code", counting_validate)
+        monkeypatch.setattr(_ex, "preamble_execution_fingerprint", forbidden_fingerprint)
+
+        source = "HOT_VALUE = 123\n"
+        ns_first = _compile_preamble(source, force_refresh=False)
+        ns_second = _compile_preamble(source, force_refresh=False)
+
+        assert ns_second is ns_first
+        assert ns_second["HOT_VALUE"] == 123
+        assert calls["validation"] == 1
+
+    def test_edited_preamble_gets_fresh_namespace(self) -> None:
+        """Changing preamble text must produce a fresh namespace."""
+        ns_before = _compile_preamble("EDITED_VALUE = 1\n", force_refresh=True)
+        ns_after = _compile_preamble("EDITED_VALUE = 2\n", force_refresh=True)
+
+        assert ns_after is not ns_before
+        assert ns_before["EDITED_VALUE"] == 1
+        assert ns_after["EDITED_VALUE"] == 2
+
+    def test_edited_utility_gets_fresh_namespace_same_size(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """Utility content edits must refresh even when mtime/size are unchanged."""
+        monkeypatch.chdir(tmp_path)
+        util_dir = tmp_path / "utility"
+        util_dir.mkdir()
+        (util_dir / "__init__.py").write_text("", encoding="utf-8")
+        helper = util_dir / "helpers.py"
+        helper.write_text("VALUE = 1\n", encoding="utf-8")
+        fixed_mtime = 1_700_000_000
+        os.utime(helper, (fixed_mtime, fixed_mtime))
+
+        source = "from utility.helpers import VALUE\n"
+        ns_before = _compile_preamble(source, force_refresh=True)
+        assert ns_before["VALUE"] == 1
+
+        # Same byte length and same integer mtime: timestamp-based pyc
+        # validation would otherwise be allowed to reuse stale bytecode.
+        helper.write_text("VALUE = 2\n", encoding="utf-8")
+        os.utime(helper, (fixed_mtime, fixed_mtime))
+
+        ns_after = _compile_preamble(source, force_refresh=True)
+
+        assert ns_after is not ns_before
+        assert ns_after["VALUE"] == 2
+
+    def test_pipeline_dir_utility_import_is_reprioritised_between_pipelines(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """A later pipeline must not leave its utility ahead of the active one."""
+        monkeypatch.chdir(tmp_path)
+
+        pipeline_a = tmp_path / "pipeline_a"
+        pipeline_b = tmp_path / "pipeline_b"
+        for pipeline_dir, value in ((pipeline_a, "A1"), (pipeline_b, "B1")):
+            util_dir = pipeline_dir / "utility"
+            util_dir.mkdir(parents=True)
+            (util_dir / "__init__.py").write_text("", encoding="utf-8")
+            (util_dir / "helpers.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
+
+        source = "from utility.helpers import VALUE\n"
+
+        ns_a1 = _compile_preamble(source, force_refresh=True, pipeline_dir=pipeline_a)
+        assert ns_a1["VALUE"] == "A1"
+
+        ns_b1 = _compile_preamble(source, force_refresh=True, pipeline_dir=pipeline_b)
+        assert ns_b1["VALUE"] == "B1"
+
+        helper_a = pipeline_a / "utility" / "helpers.py"
+        helper_a.write_text("VALUE = 'A2'\n", encoding="utf-8")
+
+        ns_a2 = _compile_preamble(source, force_refresh=True, pipeline_dir=pipeline_a)
+        assert ns_a2["VALUE"] == "A2"
 
     def test_cache_is_bounded(self) -> None:
         """Cache size must stay at or below the declared bound.

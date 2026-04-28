@@ -351,7 +351,7 @@ vi.mock("../../stores/useSettingsStore", () => ({
 }))
 
 // UtilityPanel-only support mocks
-vi.mock("../editors", () => ({
+vi.mock("../editors/CodeEditor", () => ({
   CodeEditor: ({
     defaultValue,
     onChange,
@@ -421,7 +421,10 @@ describe("#83 behavioral: OptimiserPreview frontier-point failure surfaces a toa
           lambda_loss_ratio: 0.001 + i * 0.001,
         })),
         n_points: 5,
+        points_returned: 5,
         constraint_names: ["loss_ratio"],
+        points_limit: 2000,
+        points_truncated: false,
       },
       selectedPointIndex: null,
     }

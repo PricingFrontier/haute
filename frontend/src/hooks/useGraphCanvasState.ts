@@ -14,7 +14,7 @@ import {
   type NodeChange,
   type EdgeChange,
 } from "@xyflow/react"
-import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphStore"
+import useGraphStore, { computePanelContextFingerprint, computeStructuralFingerprint } from "../stores/useGraphStore"
 
 export interface GraphCanvasState {
   nodes: Node[]
@@ -47,6 +47,8 @@ export default function useGraphCanvasState(
       redoStack: [],
       structuralVersion: 0,
       structuralFingerprint: computeStructuralFingerprint(initialNodes, initialEdges),
+      panelContextVersion: 0,
+      panelContextFingerprint: computePanelContextFingerprint(initialNodes, initialEdges),
     })
     // initialNodes/initialEdges are constructor-style seeds, not reactive.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- seed-once semantics

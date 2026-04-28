@@ -1,5 +1,5 @@
 import { Package } from "lucide-react"
-import { CodeEditor } from "./editors"
+import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 
 interface ImportsPanelProps {

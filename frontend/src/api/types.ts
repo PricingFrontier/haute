@@ -30,6 +30,10 @@ export interface NodeResult {
   columns?: ColumnInfo[]
   available_columns?: ColumnInfo[]
   preview?: Record<string, unknown>[]
+  preview_columns?: string[]
+  preview_row_count?: number
+  preview_row_limit?: number | null
+  preview_truncated?: boolean
   error?: string | null
   error_line?: number | null
   timing_ms?: number
@@ -309,8 +313,12 @@ export interface ApplyOptimiserResponse {
   status: string
   total_objective: number
   constraints: Record<string, number>
+  from_artifact: boolean
   preview: Record<string, unknown>[]
   row_count: number
+  preview_row_count: number
+  preview_row_limit: number | null
+  preview_truncated: boolean
   error: string | null
 }
 
@@ -324,7 +332,10 @@ export interface FrontierResponse {
   status: string
   points: Record<string, unknown>[]
   n_points: number
+  points_returned: number
   constraint_names: string[]
+  points_limit: number | null
+  points_truncated: boolean
 }
 
 export type FrontierData = Omit<FrontierResponse, 'status'>
@@ -372,6 +383,7 @@ export interface OptimiserSolveResult {
   factor_tables?: Record<string, Record<string, unknown>[]>
   history?: OptimiserHistoryEntry[] | null
   warning?: string | null
+  frontier_error?: string | null
   scenario_value_stats?: OptimiserScenarioValueStats
   scenario_value_histogram?: OptimiserScenarioValueHistogram
   clamp_rate?: number | null

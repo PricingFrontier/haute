@@ -618,7 +618,13 @@ When deployed, the pipeline receives a JSON request, converts it to a 1-row Pola
 ```
 POST /quote
 {"vehicle_age": 3, "postcode": "SW1A", "driver_age": 35}
-→ {"technical_price": 412.50}
+-> {
+  "rows": [{"technical_price": 412.50}],
+  "row_count": 1,
+  "returned_rows": 1,
+  "truncated": false,
+  "limit": 1000
+}
 ```
 
 ### 5.3 Deploy Targets

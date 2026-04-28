@@ -5,12 +5,25 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
+const { transformEditorProps, bandingEditorProps, modellingConfigProps } = vi.hoisted(() => ({
+  transformEditorProps: [] as Record<string, unknown>[],
+  bandingEditorProps: [] as Record<string, unknown>[],
+  modellingConfigProps: [] as Record<string, unknown>[],
+}))
+
 // Mock all editor components — we only care that the right one renders
-vi.mock("../editors", () => ({
+vi.mock("../LazyNodeEditors", () => ({
+  LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DataSourceEditor: () => <div data-testid="DataSourceEditor" />,
-  TransformEditor: () => <div data-testid="TransformEditor" />,
+  TransformEditor: (props: Record<string, unknown>) => {
+    transformEditorProps.push(props)
+    return <div data-testid="TransformEditor" />
+  },
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
-  BandingEditor: (props: Record<string, unknown>) => <div data-testid="BandingEditor" data-preview-rows={props.previewRows ? JSON.stringify(props.previewRows) : undefined} />,
+  BandingEditor: (props: Record<string, unknown>) => {
+    bandingEditorProps.push(props)
+    return <div data-testid="BandingEditor" data-preview-rows={props.previewRows ? JSON.stringify(props.previewRows) : undefined} />
+  },
   RatingStepEditor: (props: Record<string, unknown>) => (
     <div
       data-testid="RatingStepEditor"
@@ -28,14 +41,13 @@ vi.mock("../editors", () => ({
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
-}))
-
-vi.mock("../ModellingConfig", () => ({
-  default: () => <div data-testid="ModellingConfig" />,
-}))
-
-vi.mock("../OptimiserConfig", () => ({
-  default: () => <div data-testid="OptimiserConfig" />,
+  ColumnsTab: () => <div data-testid="ColumnsTab" />,
+  GroupedColumnsTab: () => <div data-testid="GroupedColumnsTab" />,
+  ModellingConfig: (props: Record<string, unknown>) => {
+    modellingConfigProps.push(props)
+    return <div data-testid="ModellingConfig" />
+  },
+  OptimiserConfig: () => <div data-testid="OptimiserConfig" />,
 }))
 
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
@@ -86,6 +98,9 @@ describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
     useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true })
+    transformEditorProps.length = 0
+    bandingEditorProps.length = 0
+    modellingConfigProps.length = 0
   })
 
   afterEach(cleanup)
@@ -194,25 +209,92 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("SubmodelEditor")).toBeInTheDocument()
   })
 
-  it("renders raw config for unknown node types with config", () => {
+  it("renders a fail-loud unknown-node-type banner with read-only diagnostic config", () => {
     renderPanel({
       node: makeNode({
-        data: { label: "Unknown", description: "", nodeType: "unknownType", config: { foo: "bar" } },
+        data: {
+          label: "Unknown",
+          description: "",
+          nodeType: "unknownType",
+          config: { foo: "bar", nested: { count: 2 }, enabled: true },
+        },
       }),
     })
-    expect(screen.getByText("foo:")).toBeInTheDocument()
-    expect(screen.getByText("bar")).toBeInTheDocument()
+
+    const banner = screen.getByRole("alert")
+    expect(banner).toHaveTextContent("Unknown node type")
+    expect(banner).toHaveTextContent("unknownType")
+    expect(screen.getByRole("link", { name: /node documentation/i })).toHaveAttribute(
+      "href",
+      "/docs/building-models/nodes/",
+    )
+
+    const diagnostic = screen.getByTestId("unknown-node-config-diagnostic")
+    expect(diagnostic.tagName).toBe("PRE")
+    expect(diagnostic).toHaveTextContent('"foo": "bar"')
+    expect(diagnostic).toHaveTextContent('"count": 2')
+    expect(diagnostic).not.toHaveAttribute("contenteditable", "true")
+    expect(screen.queryByText("foo:")).not.toBeInTheDocument()
   })
 
-  it("renders nothing in editor area for unknown node types without config", () => {
+  it("renders the unknown-node-type banner even when the node has no config", () => {
     renderPanel({
       node: makeNode({
         data: { label: "Unknown", description: "", nodeType: "unknownType", config: {} },
       }),
     })
-    // The panel itself renders (header), but no editor content
+
     expect(screen.getByDisplayValue("Unknown")).toBeInTheDocument()
-    expect(screen.queryByText("Config")).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent("Unknown node type")
+    expect(screen.getByRole("link", { name: /node documentation/i })).toBeInTheDocument()
+    expect(screen.getByTestId("unknown-node-config-diagnostic")).toHaveTextContent("{}")
+  })
+
+  it("renders unknown instance-like nodes as diagnostics instead of the instance editor", () => {
+    const origNode = makeNode({
+      id: "orig_1",
+      data: { label: "Original", description: "", nodeType: "polars", config: {} },
+    })
+    const unknownInstanceNode = makeNode({
+      id: "unknown_inst",
+      data: {
+        label: "Unknown",
+        description: "",
+        nodeType: "unknownType",
+        config: { instanceOf: "orig_1", inputMapping: { a: "b" } },
+      },
+    })
+
+    renderPanel({ node: unknownInstanceNode, allNodes: [origNode, unknownInstanceNode] })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Unknown node type")
+    expect(screen.getByTestId("unknown-node-config-diagnostic")).toHaveTextContent('"instanceOf": "orig_1"')
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+  })
+
+  it("renders prototype-key node types as unknown instead of treating them as inherited metadata", () => {
+    const origNode = makeNode({
+      id: "orig_1",
+      data: { label: "Original", description: "", nodeType: "polars", config: {} },
+    })
+    const inheritedKeyNode = makeNode({
+      id: "unknown_inst",
+      data: {
+        label: "Unknown",
+        description: "",
+        nodeType: "toString",
+        config: { instanceOf: "orig_1", inputMapping: { a: "b" } },
+      },
+    })
+
+    renderPanel({ node: inheritedKeyNode, allNodes: [origNode, inheritedKeyNode] })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Unknown node type")
+    expect(screen.getByRole("alert")).toHaveTextContent("toString")
+    expect(screen.getByTestId("unknown-node-config-diagnostic")).toHaveTextContent('"instanceOf": "orig_1"')
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
   })
 
   it("instance node shows 'Instance of' panel instead of editor", () => {
@@ -626,6 +708,218 @@ describe("NodePanel", () => {
   // ─── collectUpstreamColumns integration ─────────────────────────
 
   describe("upstream columns", () => {
+    it("keeps upstreamColumns prop identity stable across rerenders with the same graph context", () => {
+      const upstreamNode = makeNode({
+        id: "up_1",
+        data: {
+          label: "Source",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [{ name: "age", dtype: "Int64" }],
+        },
+      })
+      const transformNode = makeNode({
+        id: "polars_1",
+        data: { label: "Transform", description: "", nodeType: "polars", config: {} },
+      })
+      const edges: SimpleEdge[] = [{ id: "e1", source: "up_1", target: "polars_1" }]
+      const allNodes = [upstreamNode, transformNode]
+
+      const { rerender } = render(
+        <GraphProvider allNodes={allNodes} edges={edges}>
+          <NodePanel
+            node={transformNode}
+            onClose={vi.fn()}
+            onUpdateNode={vi.fn()}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
+      )
+
+      const firstColumns = transformEditorProps.at(-1)?.upstreamColumns
+
+      rerender(
+        <GraphProvider allNodes={allNodes} edges={edges}>
+          <NodePanel
+            node={{ ...transformNode }}
+            onClose={vi.fn()}
+            onUpdateNode={vi.fn()}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
+      )
+
+      expect(transformEditorProps).toHaveLength(2)
+      expect(transformEditorProps.at(-1)?.upstreamColumns).toBe(firstColumns)
+    })
+
+    it("keeps upstreamColumns prop identity stable when selected node config changes only", () => {
+      const upstreamNode = makeNode({
+        id: "up_1",
+        data: {
+          label: "Source",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [{ name: "age", dtype: "Int64" }],
+        },
+      })
+      const transformNode = makeNode({
+        id: "polars_1",
+        data: { label: "Transform", description: "", nodeType: "polars", config: { code: "old" } },
+      })
+      const updatedTransformNode = makeNode({
+        id: "polars_1",
+        data: { label: "Transform", description: "", nodeType: "polars", config: { code: "new" } },
+      })
+      const edges: SimpleEdge[] = [{ id: "e1", source: "up_1", target: "polars_1" }]
+
+      const { rerender } = render(
+        <GraphProvider allNodes={[upstreamNode, transformNode]} edges={edges}>
+          <NodePanel
+            node={transformNode}
+            onClose={vi.fn()}
+            onUpdateNode={vi.fn()}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
+      )
+
+      const firstColumns = transformEditorProps.at(-1)?.upstreamColumns
+
+      rerender(
+        <GraphProvider allNodes={[{ ...upstreamNode }, updatedTransformNode]} edges={edges}>
+          <NodePanel
+            node={updatedTransformNode}
+            onClose={vi.fn()}
+            onUpdateNode={vi.fn()}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
+      )
+
+      expect(transformEditorProps).toHaveLength(2)
+      expect(transformEditorProps.at(-1)?.upstreamColumns).toBe(firstColumns)
+    })
+
+    it("refreshes memoized upstreamColumns when upstream preview columns change in graph context", () => {
+      const transformNode = makeNode({
+        id: "polars_1",
+        data: { label: "Transform", description: "", nodeType: "polars", config: {} },
+      })
+      const upstreamNode = makeNode({
+        id: "up_1",
+        data: {
+          label: "Source",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [{ name: "age", dtype: "Int64" }],
+        },
+      })
+      const updatedUpstreamNode = makeNode({
+        id: "up_1",
+        data: {
+          label: "Source",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [
+            { name: "age", dtype: "Int64" },
+            { name: "income", dtype: "Float64" },
+          ],
+        },
+      })
+      const edges: SimpleEdge[] = [{ id: "e1", source: "up_1", target: "polars_1" }]
+
+      const { rerender } = render(
+        <GraphProvider allNodes={[upstreamNode, transformNode]} edges={edges}>
+          <NodePanel
+            node={transformNode}
+            onClose={vi.fn()}
+            onUpdateNode={vi.fn()}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
+      )
+
+      const firstColumns = transformEditorProps.at(-1)?.upstreamColumns
+
+      rerender(
+        <GraphProvider allNodes={[updatedUpstreamNode, transformNode]} edges={edges}>
+          <NodePanel
+            node={transformNode}
+            onClose={vi.fn()}
+            onUpdateNode={vi.fn()}
+            onDeleteEdge={vi.fn()}
+            onRefreshPreview={vi.fn()}
+          />
+        </GraphProvider>,
+      )
+
+      const nextColumns = transformEditorProps.at(-1)?.upstreamColumns
+      expect(nextColumns).not.toBe(firstColumns)
+      expect(nextColumns).toEqual([
+        { name: "age", dtype: "Int64" },
+        { name: "income", dtype: "Float64" },
+      ])
+    })
+
+    it("dedupes upstream columns by name while preserving first upstream edge order", () => {
+      const upstreamA = makeNode({
+        id: "up_a",
+        data: {
+          label: "Source A",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [
+            { name: "age", dtype: "Int64" },
+            { name: "income", dtype: "Float64" },
+          ],
+        },
+      })
+      const upstreamB = makeNode({
+        id: "up_b",
+        data: {
+          label: "Source B",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [
+            { name: "income", dtype: "Decimal" },
+            { name: "region", dtype: "Utf8" },
+          ],
+        },
+      })
+      const bandingNode = makeNode({
+        id: "band_1",
+        data: { label: "Band", description: "", nodeType: "banding", config: {} },
+      })
+      const edges: SimpleEdge[] = [
+        { id: "e1", source: "up_a", target: "band_1" },
+        { id: "e2", source: "up_b", target: "band_1" },
+      ]
+
+      renderPanel({
+        node: bandingNode,
+        edges,
+        allNodes: [upstreamA, upstreamB, bandingNode],
+      })
+
+      expect(bandingEditorProps.at(-1)?.upstreamColumns).toEqual([
+        { name: "age", dtype: "Int64" },
+        { name: "income", dtype: "Float64" },
+        { name: "region", dtype: "Utf8" },
+      ])
+    })
+
     it("passes upstream columns to ModellingConfig when upstream nodes have _columns", () => {
       const upstreamNode = makeNode({
         id: "up_1",
@@ -655,6 +949,10 @@ describe("NodePanel", () => {
       // ModellingConfig is mocked — it still renders, but the fact that it renders
       // (and not the fallback) confirms the node type dispatch works with edges present
       expect(screen.getByTestId("ModellingConfig")).toBeInTheDocument()
+      expect(modellingConfigProps.at(-1)?.upstreamColumns).toEqual([
+        { name: "age", dtype: "Int64" },
+        { name: "income", dtype: "Float64" },
+      ])
     })
 
     it("falls back to node own _columns when no upstream edges exist for modelling", () => {
@@ -676,6 +974,9 @@ describe("NodePanel", () => {
       })
 
       expect(screen.getByTestId("ModellingConfig")).toBeInTheDocument()
+      expect(modellingConfigProps.at(-1)?.upstreamColumns).toEqual([
+        { name: "fallback_col", dtype: "Utf8" },
+      ])
     })
   })
 })

@@ -179,6 +179,115 @@ describe("useJobPolling", () => {
   // Exponential backoff
   // ────────────────────────────────────────────────────────────────
 
+  describe("progress throttling", () => {
+    it("coalesces frequent running progress updates and emits the latest pending status", async () => {
+      let progress = 0
+      const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>()
+        .mockImplementation(() => {
+          progress = Math.round((progress + 0.1) * 10) / 10
+          return Promise.resolve({
+            status: "running",
+            progress,
+            message: `Progress ${progress}`,
+          })
+        })
+      const onProgress = vi.fn()
+
+      const config = makeConfig({
+        jobs: { n1: { jobId: "j1", nodeLabel: "Node 1" } },
+        pollFn,
+        onProgress,
+        progressThrottleMs: 2000,
+      })
+
+      renderHook(() => useJobPolling(config))
+
+      await advance(500)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+      expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({ progress: 0.1 }))
+
+      await advance(1500)
+      expect(pollFn.mock.calls.length).toBeGreaterThan(1)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+
+      await advance(1000)
+      expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(onProgress.mock.calls.length).toBeLessThan(pollFn.mock.calls.length)
+      expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({
+        progress: expect.any(Number),
+      }))
+      expect(onProgress.mock.lastCall?.[1].progress).toBeGreaterThan(0.1)
+    })
+    it("does not delay completion behind a pending throttled progress update", async () => {
+      const result = { value: 42 }
+      const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>()
+        .mockResolvedValueOnce({ status: "running", progress: 0.1, message: "Starting" })
+        .mockResolvedValueOnce({ status: "running", progress: 0.2, message: "Almost there" })
+        .mockResolvedValueOnce({
+          status: "completed",
+          progress: 1,
+          message: "Done",
+          result,
+        })
+      const onProgress = vi.fn()
+      const onComplete = vi.fn()
+
+      const config = makeConfig({
+        jobs: { n1: { jobId: "j1", nodeLabel: "Node 1" } },
+        pollFn,
+        onProgress,
+        onComplete,
+        progressThrottleMs: 2000,
+      })
+
+      renderHook(() => useJobPolling(config))
+
+      await advance(500)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+
+      await advance(500)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+      expect(onComplete).not.toHaveBeenCalled()
+
+      await advance(500)
+      expect(onComplete).toHaveBeenCalledTimes(1)
+      expect(onComplete).toHaveBeenCalledWith("n1", expect.objectContaining({ result }))
+
+      await advance(2000)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+    })
+
+    it("does not delay error statuses behind a pending throttled progress update", async () => {
+      const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>()
+        .mockResolvedValueOnce({ status: "running", progress: 0.1, message: "Starting" })
+        .mockResolvedValueOnce({ status: "running", progress: 0.2, message: "Almost there" })
+        .mockResolvedValueOnce({ status: "error", progress: 0.2, message: "Failed" })
+      const onProgress = vi.fn()
+      const onFail = vi.fn()
+
+      const config = makeConfig({
+        jobs: { n1: { jobId: "j1", nodeLabel: "Node 1" } },
+        pollFn,
+        onProgress,
+        onFail,
+        progressThrottleMs: 2000,
+      })
+
+      renderHook(() => useJobPolling(config))
+
+      await advance(1000)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+      expect(onFail).not.toHaveBeenCalled()
+
+      await advance(500)
+      expect(onFail).toHaveBeenCalledTimes(1)
+      expect(onFail).toHaveBeenCalledWith("n1", "Failed")
+
+      await advance(2000)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe("exponential backoff", () => {
     it("increases delay after network errors", async () => {
       const callTimes: number[] = []
@@ -282,6 +391,160 @@ describe("useJobPolling", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("cleanup", () => {
+    it("does not publish stale progress when a nodeId is removed and re-added before an old poll resolves", async () => {
+      let resolveOldPoll!: (status: TestStatus) => void
+      const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>()
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveOldPoll = resolve }))
+        .mockResolvedValue({ status: "running", progress: 0.9, message: "New job progress" })
+      const onProgress = vi.fn()
+
+      const { rerender } = renderHook(
+        (props: { config: UseJobPollingConfig<TestJob, TestStatus> }) =>
+          useJobPolling(props.config),
+        {
+          initialProps: {
+            config: makeConfig({
+              jobs: { n1: { jobId: "old-job", nodeLabel: "Node 1" } },
+              pollFn,
+              onProgress,
+            }),
+          },
+        },
+      )
+
+      await advance(500)
+      expect(pollFn).toHaveBeenCalledWith("old-job")
+
+      rerender({
+        config: makeConfig({
+          jobs: {},
+          pollFn,
+          onProgress,
+        }),
+      })
+      rerender({
+        config: makeConfig({
+          jobs: { n1: { jobId: "new-job", nodeLabel: "Node 1" } },
+          pollFn,
+          onProgress,
+        }),
+      })
+
+      await act(async () => {
+        resolveOldPoll({ status: "running", progress: 0.1, message: "Old job progress" })
+        await Promise.resolve()
+      })
+
+      expect(onProgress).not.toHaveBeenCalledWith("n1", expect.objectContaining({
+        message: "Old job progress",
+      }))
+
+      await advance(500)
+      expect(pollFn).toHaveBeenCalledWith("new-job")
+      expect(onProgress).toHaveBeenCalledWith("n1", expect.objectContaining({
+        message: "New job progress",
+      }))
+    })
+
+    it("restarts polling when the same nodeId is assigned a different jobId", async () => {
+      let resolveOldPoll!: (status: TestStatus) => void
+      const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>()
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveOldPoll = resolve }))
+        .mockResolvedValue({ status: "running", progress: 0.8, message: "Replacement job progress" })
+      const onProgress = vi.fn()
+
+      const { rerender } = renderHook(
+        (props: { config: UseJobPollingConfig<TestJob, TestStatus> }) =>
+          useJobPolling(props.config),
+        {
+          initialProps: {
+            config: makeConfig({
+              jobs: { n1: { jobId: "old-job", nodeLabel: "Node 1" } },
+              pollFn,
+              onProgress,
+            }),
+          },
+        },
+      )
+
+      await advance(500)
+      expect(pollFn).toHaveBeenCalledWith("old-job")
+
+      rerender({
+        config: makeConfig({
+          jobs: { n1: { jobId: "new-job", nodeLabel: "Node 1" } },
+          pollFn,
+          onProgress,
+        }),
+      })
+
+      await act(async () => {
+        resolveOldPoll({ status: "running", progress: 0.1, message: "Old job progress" })
+        await Promise.resolve()
+      })
+
+      expect(onProgress).not.toHaveBeenCalledWith("n1", expect.objectContaining({
+        message: "Old job progress",
+      }))
+
+      await advance(500)
+      expect(pollFn).toHaveBeenCalledWith("new-job")
+      expect(onProgress).toHaveBeenCalledWith("n1", expect.objectContaining({
+        message: "Replacement job progress",
+      }))
+    })
+
+    it("does not publish stale warning toasts when an old poll rejects after a nodeId is re-added", async () => {
+      let rejectOldPoll!: (error: Error) => void
+      const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>()
+        .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOldPoll = reject }))
+        .mockResolvedValue({ status: "running", progress: 0.9, message: "New job progress" })
+      const addToast = vi.fn()
+
+      const { rerender } = renderHook(
+        (props: { config: UseJobPollingConfig<TestJob, TestStatus> }) =>
+          useJobPolling(props.config),
+        {
+          initialProps: {
+            config: makeConfig({
+              jobs: { n1: { jobId: "old-job", nodeLabel: "Old label" } },
+              pollFn,
+              addToast,
+            }),
+          },
+        },
+      )
+
+      await advance(500)
+      expect(pollFn).toHaveBeenCalledWith("old-job")
+
+      rerender({
+        config: makeConfig({
+          jobs: {},
+          pollFn,
+          addToast,
+        }),
+      })
+      rerender({
+        config: makeConfig({
+          jobs: { n1: { jobId: "new-job", nodeLabel: "New label" } },
+          pollFn,
+          addToast,
+        }),
+      })
+
+      await act(async () => {
+        rejectOldPoll(new Error("old poll failed"))
+        await Promise.resolve()
+      })
+
+      expect(addToast).not.toHaveBeenCalled()
+
+      await advance(500)
+      expect(pollFn).toHaveBeenCalledWith("new-job")
+      expect(addToast).not.toHaveBeenCalled()
+    })
+
     it("stops polling when job is removed from the jobs map via rerender", async () => {
       let callCount = 0
       const pollFn = vi.fn<(jobId: string) => Promise<TestStatus>>().mockImplementation(() => {

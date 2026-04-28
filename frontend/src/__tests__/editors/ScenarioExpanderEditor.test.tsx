@@ -16,17 +16,20 @@ vi.mock("../../panels/editors/_shared", async () => {
     InputSourcesBar: ({ inputSources }: { inputSources: { varName: string; edgeId: string; sourceLabel: string }[] }) => (
       <div data-testid="input-sources">{inputSources?.length ?? 0} inputs</div>
     ),
-    CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange: (v: string) => void; placeholder?: string; errorLine?: number | null }) => (
-      <textarea
-        data-testid="code-editor"
-        defaultValue={defaultValue}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-      />
-    ),
     INPUT_STYLE: {},
   }
 })
+
+vi.mock("../../panels/editors/CodeEditor", () => ({
+  CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange: (v: string) => void; placeholder?: string; errorLine?: number | null }) => (
+    <textarea
+      data-testid="code-editor"
+      defaultValue={defaultValue}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+    />
+  ),
+}))
 
 afterEach(cleanup)
 

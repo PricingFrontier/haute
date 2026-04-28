@@ -45,6 +45,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
 
+from haute._cache import GraphFingerprintMemo
 from haute._expression_parser import (
     evaluate_expression,
     parse_expression,
@@ -295,7 +296,13 @@ def execute_trace(
     # The pipeline structure doesn't change between trace clicks — only the
     # row_index and column change.  Cache the materialized DataFrames and
     # reuse them: first click ~1.7s, subsequent clicks <10ms.
-    fp = graph_fingerprint(graph, target_node_id, f"{row_limit}:{source}")
+    fingerprint_memo = GraphFingerprintMemo()
+    fp = graph_fingerprint(
+        graph,
+        target_node_id,
+        f"{row_limit}:{source}",
+        memo=fingerprint_memo,
+    )
 
     cached = _cache.try_get(fp)
     if cached is not None:
@@ -334,6 +341,7 @@ def execute_trace(
             preview_fp=graph_fingerprint(
                 graph,
                 f"{row_limit}:{source}:contracts={int(ENFORCE_CONTRACTS)}",
+                memo=fingerprint_memo,
             ),
             fp=fp,
             preview=preview,

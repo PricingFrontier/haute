@@ -135,6 +135,7 @@ class _PreparedData:
     # the MLflow signature and the feature contract artifact.
     feature_dtypes: dict[str, str] = field(default_factory=dict)
     target_dtype: str = ""
+    target_null_count: int = 0
 
 
 @dataclass
@@ -336,6 +337,7 @@ class TrainingJob:
                         f: dt for f, dt in prepared.feature_dtypes.items() if f in term_names
                     },
                     target_dtype=prepared.target_dtype,
+                    target_null_count=prepared.target_null_count,
                 )
                 _report(
                     f"GLM: using {len(prepared.features)} term features "
@@ -470,29 +472,53 @@ class TrainingJob:
         schema_df = schema_lf.head(0).collect()
         self._validate_columns(schema_df)
 
-        # Drop null targets -- re-write parquet without nulls if needed
+        # Null targets cannot be passed to trainers.  External parquet inputs
+        # keep the filter fused into the split sink to avoid an extra wide
+        # clean file; owned temp inputs are already materialized, so publish a
+        # clean prepared source for callers that inspect _prepare_data directly.
         null_count = (
             pl.scan_parquet(data_path).select(pl.col(self.target).is_null().sum()).collect().item()
         )
-        if null_count is not None and null_count > 0:
-            clean_lf = pl.scan_parquet(data_path).filter(pl.col(self.target).is_not_null())
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet",
-                prefix="haute_clean_",
-                delete=False,
-            ) as f:
-                clean_path = f.name
-            from haute._polars_utils import safe_sink
-
-            safe_sink(clean_lf, clean_path)
-            # Swap: delete old temp, use new one
+        target_null_count = int(null_count or 0)
+        filtered_row_count = pq_meta["row_count"] - target_null_count
+        if target_null_count > 0:
+            _mem_checkpoint(
+                f"target has {target_null_count:,} null rows (will be filtered during split)"
+            )
+            if filtered_row_count == 0:
+                if owns_tmp and data_path and os.path.exists(data_path):
+                    os.unlink(data_path)
+                raise ValueError(
+                    f"Target column '{self.target}' contains only null values; "
+                    "cannot train on zero non-null target rows"
+                )
             if owns_tmp:
+                clean_path: str | None = None
+                with tempfile.NamedTemporaryFile(
+                    suffix=".parquet",
+                    prefix="haute_clean_",
+                    delete=False,
+                ) as f:
+                    clean_path = f.name
+                try:
+                    from haute._polars_utils import safe_sink
+
+                    safe_sink(
+                        pl.scan_parquet(data_path).filter(pl.col(self.target).is_not_null()),
+                        clean_path,
+                        fast_checkpoint=True,
+                    )
+                except BaseException:
+                    if clean_path and os.path.exists(clean_path):
+                        os.unlink(clean_path)
+                    if data_path and os.path.exists(data_path):
+                        os.unlink(data_path)
+                    raise
                 os.unlink(data_path)
-            data_path = clean_path
-            owns_tmp = True
-            _mem_checkpoint(f"dropped {null_count:,} null-target rows")
-            # Re-read row count from cleaned file so split mask matches
-            pq_meta = read_parquet_metadata(Path(data_path))
+                data_path = clean_path
+                _mem_checkpoint(
+                    f"wrote clean temp parquet without {target_null_count:,} null target rows"
+                )
 
         # Derive features from schema
         features, cat_features = self._derive_features(schema_df)
@@ -512,9 +538,10 @@ class TrainingJob:
             owns_tmp=owns_tmp,
             features=features,
             cat_features=cat_features,
-            total_rows=pq_meta["row_count"],
+            total_rows=filtered_row_count,
             feature_dtypes=feature_dtypes,
             target_dtype=target_dtype,
+            target_null_count=target_null_count,
         )
 
     def _split_data(
@@ -528,12 +555,16 @@ class TrainingJob:
         data_path = prepared.data_path
         owns_tmp = prepared.owns_tmp
         total_rows = prepared.total_rows
+        target_null_count = prepared.target_null_count
+        split_lf = pl.scan_parquet(data_path)
+        if target_null_count > 0:
+            split_lf = split_lf.filter(pl.col(self.target).is_not_null())
 
         # Compute mask -- for temporal/group we need a small scan
         mask_df = None
         if self.split_config.strategy in ("temporal", "group"):
             col = self.split_config.date_column or self.split_config.group_column
-            mask_df = pl.scan_parquet(data_path).select(col).collect()
+            mask_df = split_lf.select(col).collect()
         mask = split_mask(total_rows, self.split_config, df=mask_df)
         del mask_df
         n_train = int((mask == PARTITION_TRAIN).sum())
@@ -544,14 +575,34 @@ class TrainingJob:
         )
 
         # Write split parquet: original data + _partition column.
-        # Lazy scan avoids doubling peak memory; collect + write is a single pass.
+        # Prefer Polars' streaming sink so wide split files do not have to
+        # materialize as one full eager DataFrame before writing.
         with tempfile.NamedTemporaryFile(
             suffix=".parquet",
             prefix="haute_split_",
             delete=False,
         ) as f:
             split_path = f.name
-        pl.scan_parquet(data_path).with_columns(mask).collect().write_parquet(split_path)
+        from haute._polars_utils import safe_sink
+
+        try:
+            safe_sink(
+                split_lf.with_columns(mask),
+                split_path,
+                fast_checkpoint=True,
+            )
+        except BaseException:
+            if os.path.exists(split_path):
+                try:
+                    os.unlink(split_path)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "training_split_temp_cleanup_failed",
+                        path=split_path,
+                        error=str(cleanup_exc),
+                        exc_info=True,
+                    )
+            raise
         del mask
         gc.collect()
         _malloc_trim()
@@ -746,12 +797,29 @@ class TrainingJob:
             needed.add(self.offset)
         return sorted(needed)
 
+    def _catboost_select_columns(self, features: list[str]) -> list[str] | None:
+        """Column subset needed for CatBoost train/eval partition reads.
+
+        Preserve feature order for pool construction, then append target,
+        weight, and offset columns required to extract labels/aux arrays.
+        Returning ``None`` means "read all columns" for non-CatBoost paths.
+        """
+        if self.algorithm != "catboost":
+            return None
+        needed: list[str] = []
+        for column in [*features, self.target, self.weight, self.offset]:
+            if column and column not in needed:
+                needed.append(column)
+        return needed
+
     def _scan_with_columns(self, data_path: str, features: list[str]) -> pl.LazyFrame:
-        """Scan parquet with optional GLM column projection (includes _partition)."""
+        """Scan parquet with training-column projection when the algorithm supports it."""
         scan = pl.scan_parquet(data_path)
-        glm_columns = self._glm_select_columns(features)
-        if glm_columns is not None:
-            scan = scan.select([*glm_columns, "_partition"])
+        projected_columns = self._glm_select_columns(features)
+        if projected_columns is None:
+            projected_columns = self._catboost_select_columns(features)
+        if projected_columns is not None:
+            scan = scan.select([*projected_columns, "_partition"])
         return scan
 
     def _read_partition(
@@ -1120,10 +1188,7 @@ class TrainingJob:
         Delegates to the standalone ``log_experiment()`` function so the
         same logic is reused by the "Log to MLflow" button in the UI.
         """
-        try:
-            from haute.modelling._mlflow_log import log_experiment
-        except ImportError:
-            return
+        from haute.modelling._mlflow_log import log_experiment
         from haute.modelling._result_types import (
             ModelCardMetadata,
             ModelDiagnostics,

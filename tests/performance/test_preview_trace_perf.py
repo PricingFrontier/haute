@@ -1,0 +1,418 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+from collections import Counter
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import httpx
+import polars as pl
+import pytest
+
+from haute._cache import graph_fingerprint
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.executor import _preview_cache, execute_graph
+from haute.schemas import NodeResult
+from haute.trace import TraceResult, execute_trace
+from haute.trace import _cache as _trace_cache
+
+pytestmark = pytest.mark.perf
+
+_ROW_LIMIT = 3_000
+_MAX_PREVIEW_ROWS = 128
+_TARGET_NODE = "premium"
+_EXPECTED_NODE_IDS = ("source", "features", "freq", "sev", "join", "premium")
+
+
+def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
+    return GraphNode(
+        id=node_id,
+        data=NodeData(label=node_id, nodeType=node_type, config=config),
+    )
+
+
+def _edge(source: str, target: str) -> GraphEdge:
+    return GraphEdge(id=f"e-{source}-{target}", source=source, target=target)
+
+
+def _write_preview_trace_source(tmp_path: Path, rows: int = _ROW_LIMIT) -> Path:
+    path = tmp_path / "preview_trace_perf.parquet"
+    pl.DataFrame(
+        {
+            "policy_id": list(range(rows)),
+            "age": [18 + (idx % 70) for idx in range(rows)],
+            "base": [100.0 + float((idx * 7) % 900) for idx in range(rows)],
+            "exposure": [0.5 + float(idx % 12) / 12.0 for idx in range(rows)],
+            "territory": [f"T{idx % 9}" for idx in range(rows)],
+            "claim_count": [idx % 5 for idx in range(rows)],
+        }
+    ).write_parquet(path)
+    return path
+
+
+def _preview_trace_graph(tmp_path: Path) -> PipelineGraph:
+    source_path = _write_preview_trace_source(tmp_path)
+    return PipelineGraph(
+        nodes=[
+            _node(
+                "source",
+                NodeType.DATA_SOURCE,
+                {"path": str(source_path)},
+            ),
+            _node(
+                "features",
+                NodeType.POLARS,
+                {
+                    "code": """
+df = df.with_columns(
+    age_factor=(pl.col("age") / 100.0 + 1.0),
+    base_exposure=pl.col("base") * pl.col("exposure"),
+    territory_key=pl.col("territory"),
+)
+""",
+                },
+            ),
+            _node(
+                "freq",
+                NodeType.POLARS,
+                {
+                    "code": """
+df = df.with_columns(
+    freq=(pl.col("claim_count") + 1) * pl.col("age_factor"),
+).select(["policy_id", "territory_key", "freq"])
+""",
+                },
+            ),
+            _node(
+                "sev",
+                NodeType.POLARS,
+                {
+                    "code": """
+df = df.with_columns(
+    severity=pl.col("base_exposure") * ((pl.col("policy_id") % 17) + 1),
+).select(["policy_id", "territory_key", "severity"])
+""",
+                },
+            ),
+            _node(
+                "join",
+                NodeType.POLARS,
+                {
+                    "code": """
+df = freq.join(sev, on=["policy_id", "territory_key"], how="inner")
+""",
+                },
+            ),
+            _node(
+                "premium",
+                NodeType.POLARS,
+                {
+                    "code": """
+df = df.with_columns(
+    premium=(pl.col("freq") * pl.col("severity")).round(4),
+    risk_bucket=pl.when(pl.col("severity") > 1000.0)
+        .then(pl.lit("high"))
+        .otherwise(pl.lit("standard")),
+).sort("policy_id")
+""",
+                },
+            ),
+        ],
+        edges=[
+            _edge("source", "features"),
+            _edge("features", "freq"),
+            _edge("features", "sev"),
+            _edge("freq", "join"),
+            _edge("sev", "join"),
+            _edge("join", "premium"),
+        ],
+    )
+
+
+def _preview_cache_fingerprint(graph: PipelineGraph) -> str:
+    return graph_fingerprint(graph, f"{_ROW_LIMIT}:live:contracts=1")
+
+
+def _single_node_graph_payload() -> dict[str, Any]:
+    graph = PipelineGraph(
+        nodes=[
+            _node(
+                "target",
+                NodeType.POLARS,
+                {},
+            ),
+        ],
+        edges=[],
+    )
+    return graph.model_dump()
+
+
+def _count_executor_node_calls(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
+    import haute.executor as executor_mod
+
+    original_build_node_fn = executor_mod._build_node_fn
+    calls: Counter[str] = Counter()
+
+    def counting_build_node_fn(
+        node: GraphNode,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[str, Callable[..., Any], bool]:
+        func_name, func, is_source = original_build_node_fn(node, *args, **kwargs)
+
+        def counted_func(*func_args: Any, **func_kwargs: Any) -> Any:
+            calls[node.id] += 1
+            return func(*func_args, **func_kwargs)
+
+        return func_name, counted_func, is_source
+
+    monkeypatch.setattr(executor_mod, "_build_node_fn", counting_build_node_fn)
+    return calls
+
+
+def test_preview_warm_cache_avoids_reexecuting_representative_dag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _preview_trace_graph(tmp_path)
+    node_calls = _count_executor_node_calls(monkeypatch)
+
+    start = time.perf_counter()
+    cold = execute_graph(
+        graph,
+        target_node_id=_TARGET_NODE,
+        row_limit=_ROW_LIMIT,
+        max_preview_rows=_MAX_PREVIEW_ROWS,
+        target_preview_only=True,
+        requested_preview_columns=["policy_id", "premium", "risk_bucket"],
+    )
+    cold_seconds = time.perf_counter() - start
+
+    start = time.perf_counter()
+    warm = execute_graph(
+        graph,
+        target_node_id=_TARGET_NODE,
+        row_limit=_ROW_LIMIT,
+        max_preview_rows=_MAX_PREVIEW_ROWS,
+        target_preview_only=True,
+        requested_preview_columns=["policy_id", "premium", "risk_bucket"],
+    )
+    warm_seconds = time.perf_counter() - start
+
+    assert cold[_TARGET_NODE].status == "ok"
+    assert warm[_TARGET_NODE].status == "ok"
+    assert warm[_TARGET_NODE].preview == cold[_TARGET_NODE].preview
+    assert warm[_TARGET_NODE].row_count == _ROW_LIMIT
+
+    assert node_calls == Counter(dict.fromkeys(_EXPECTED_NODE_IDS, 1))
+    cache_entry = _preview_cache.try_get(_preview_cache_fingerprint(graph))
+    assert cache_entry is not None
+    assert tuple(cache_entry["order"]) == _EXPECTED_NODE_IDS
+    assert set(cache_entry["eager_outputs"]) == set(_EXPECTED_NODE_IDS)
+    assert _preview_cache.stats()["bytes"] > 0
+
+    assert warm_seconds < 0.5, (
+        f"warm preview took {warm_seconds:.3f}s after a {cold_seconds:.3f}s cold run"
+    )
+
+
+def test_trace_reuses_preview_cache_then_hits_trace_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute.trace as trace_mod
+
+    graph = _preview_trace_graph(tmp_path)
+    preview = execute_graph(
+        graph,
+        target_node_id=_TARGET_NODE,
+        row_limit=_ROW_LIMIT,
+        max_preview_rows=_MAX_PREVIEW_ROWS,
+        target_preview_only=True,
+        requested_preview_columns=["policy_id", "premium", "risk_bucket"],
+    )
+    assert preview[_TARGET_NODE].status == "ok"
+
+    calls = {"materialize": 0, "cold_execute": 0}
+    original_materialize = trace_mod._materialize_eager_outputs
+
+    def counting_materialize(*args: Any, **kwargs: Any) -> Any:
+        calls["materialize"] += 1
+        return original_materialize(*args, **kwargs)
+
+    def forbidden_cold_execute(*args: Any, **kwargs: Any) -> Any:
+        calls["cold_execute"] += 1
+        raise AssertionError("trace should reuse preview outputs, not execute the DAG")
+
+    monkeypatch.setattr(trace_mod, "_materialize_eager_outputs", counting_materialize)
+    monkeypatch.setattr(trace_mod, "_execute_eager_core", forbidden_cold_execute)
+
+    start = time.perf_counter()
+    first = execute_trace(
+        graph,
+        row_index=7,
+        target_node_id=_TARGET_NODE,
+        column="premium",
+        row_limit=_ROW_LIMIT,
+        preview=_preview_cache,
+    )
+    first_seconds = time.perf_counter() - start
+
+    start = time.perf_counter()
+    second = execute_trace(
+        graph,
+        row_index=19,
+        target_node_id=_TARGET_NODE,
+        column="risk_bucket",
+        row_limit=_ROW_LIMIT,
+        preview=_preview_cache,
+    )
+    second_seconds = time.perf_counter() - start
+
+    assert calls == {"materialize": 1, "cold_execute": 0}
+    assert first.output_value == preview[_TARGET_NODE].preview[7]["premium"]
+    assert second.output_value == preview[_TARGET_NODE].preview[19]["risk_bucket"]
+    assert {"source", "features", "freq", "sev", "join", "premium"}.issubset(
+        {step.node_id for step in first.steps}
+    )
+    assert _trace_cache.stats()["entries"] == 1
+
+    assert first_seconds < 0.8, f"preview-backed first trace took {first_seconds:.3f}s"
+    assert second_seconds < 0.3, f"trace-cache hit took {second_seconds:.3f}s"
+
+
+async def _wait_for_thread_event(event: threading.Event, label: str) -> None:
+    assert await asyncio.to_thread(event.wait, 2), f"timed out waiting for {label}"
+
+
+async def _wait_for_latest_generation(coordinator: Any, expected: int) -> None:
+    deadline = time.perf_counter() + 2
+    while time.perf_counter() < deadline:
+        states = list((await coordinator.snapshot_for_tests()).values())
+        latest = max((state.latest_generation for state in states), default=0)
+        if latest >= expected:
+            return
+        await asyncio.sleep(0)
+    pytest.fail(f"supersession generation did not reach {expected}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["preview", "trace"])
+async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
+    operation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute.routes.pipeline as route_mod
+    from haute.routes._supersession import SupersessionCoordinator
+    from haute.server import app
+
+    request_count = 6
+    coordinator = SupersessionCoordinator()
+    started = threading.Event()
+    release = threading.Event()
+    state_lock = threading.Lock()
+    call_count = 0
+    active = 0
+    max_active = 0
+
+    def enter_worker() -> int:
+        nonlocal active, call_count, max_active
+        with state_lock:
+            call_count += 1
+            call_number = call_count
+            active += 1
+            max_active = max(max_active, active)
+        started.set()
+        return call_number
+
+    def leave_worker() -> None:
+        nonlocal active
+        with state_lock:
+            active -= 1
+
+    if operation == "preview":
+        monkeypatch.setattr(route_mod, "_preview_supersession", coordinator)
+        monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(1))
+
+        def slow_preview(*args: Any, **kwargs: Any) -> dict[str, NodeResult]:
+            call_number = enter_worker()
+            try:
+                assert release.wait(2), "preview worker release timed out"
+                return {
+                    kwargs["target_node_id"]: NodeResult(
+                        status="ok",
+                        row_count=1,
+                        column_count=1,
+                        preview=[{"call": call_number}],
+                    )
+                }
+            finally:
+                leave_worker()
+
+        monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
+        endpoint = "/api/pipeline/preview"
+        payload = {
+            "graph": _single_node_graph_payload(),
+            "node_id": "target",
+            "row_limit": 100,
+            "source": "live",
+        }
+    else:
+        monkeypatch.setattr(route_mod, "_trace_supersession", coordinator)
+        monkeypatch.setattr(route_mod, "_trace_work_slots", asyncio.Semaphore(1))
+
+        def slow_trace(*args: Any, **kwargs: Any) -> TraceResult:
+            call_number = enter_worker()
+            try:
+                assert release.wait(2), "trace worker release timed out"
+                return TraceResult(
+                    target_node_id="target",
+                    row_index=0,
+                    column=None,
+                    output_value={"call": call_number},
+                    steps=[],
+                    total_nodes_in_pipeline=1,
+                    nodes_in_trace=0,
+                )
+            finally:
+                leave_worker()
+
+        monkeypatch.setattr(route_mod, "execute_trace", slow_trace)
+        endpoint = "/api/pipeline/trace"
+        payload = {
+            "graph": _single_node_graph_payload(),
+            "target_node_id": "target",
+            "row_index": 0,
+            "row_limit": 100,
+            "source": "live",
+        }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+
+        async def post() -> httpx.Response:
+            return await client.post(endpoint, json=payload)
+
+        first = asyncio.create_task(post())
+        await _wait_for_thread_event(started, f"first {operation} worker")
+        rest = [asyncio.create_task(post()) for _ in range(request_count - 1)]
+        await _wait_for_latest_generation(coordinator, request_count)
+        release.set()
+        responses = await asyncio.gather(first, *rest)
+
+    statuses = [response.status_code for response in responses]
+    assert statuses.count(200) == 1
+    assert statuses.count(409) == request_count - 1
+    assert all(
+        "superseded" in response.json()["detail"].lower()
+        for response in responses
+        if response.status_code == 409
+    )
+    with state_lock:
+        assert call_count == 2
+        assert max_active == 1
+        assert active == 0
+    assert await coordinator.snapshot_for_tests() == {}

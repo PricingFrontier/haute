@@ -23,6 +23,7 @@ import { describe, it, expect, afterEach, vi } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import type { NodeChange, EdgeChange } from "@xyflow/react"
 import useGraphCanvasState from "../useGraphCanvasState"
+import useGraphStore from "../../stores/useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 
 /**
@@ -102,6 +103,48 @@ describe("useGraphCanvasState — Phase 2D-6 drag simplification", () => {
     })
 
     expect(result.current.canUndo).toBe(false)
+  })
+
+  it("selection NodeChanges do not recompute the structural fingerprint", () => {
+    const initialNode = makeNode("A", "polars", {
+      data: { label: "Node A", nodeType: "polars", config: { alpha: 1 } },
+    })
+    const { result } = renderHook(() => useGraphCanvasState([initialNode], []))
+    const { structuralFingerprint, structuralVersion } = useGraphStore.getState()
+    const hazardousData = {
+      label: "Node A",
+      nodeType: "polars",
+      config: {
+        alpha: 1,
+        toJSON() {
+          throw new Error("visual-only canvas update recomputed the structural fingerprint")
+        },
+      },
+    }
+    const currentNode = {
+      ...makeNode("A", "polars", { data: hazardousData }),
+      selected: false,
+      position: { x: 0, y: 0 },
+    }
+
+    act(() => {
+      useGraphStore.setState({
+        nodes: [currentNode],
+        structuralFingerprint,
+        structuralVersion,
+      })
+    })
+
+    expect(() => {
+      act(() => {
+        result.current.onNodesChange([
+          { type: "select", id: "A", selected: true } as NodeChange,
+        ])
+      })
+    }).not.toThrow()
+
+    expect(useGraphStore.getState().structuralFingerprint).toBe(structuralFingerprint)
+    expect(useGraphStore.getState().structuralVersion).toBe(structuralVersion)
   })
 
   // ────────────────────────────────────────────────────────────────────

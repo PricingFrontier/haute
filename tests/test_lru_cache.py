@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import pytest
@@ -128,6 +129,172 @@ class TestEviction:
         assert cache.get(97) == 970
         assert cache.get(98) == 980
         assert cache.get(99) == 990
+
+
+# ---------------------------------------------------------------------------
+# Byte-aware eviction
+# ---------------------------------------------------------------------------
+
+
+class TestByteAwareEviction:
+    def test_byte_budget_requires_size_callback(self) -> None:
+        with pytest.raises(ValueError, match="size_of is required"):
+            LRUCache[str, int](max_bytes=100)
+
+        with pytest.raises(ValueError, match="max_bytes is required"):
+            LRUCache[str, int](size_of=lambda value: value)
+
+    def test_evicts_lru_when_byte_budget_exceeded_below_count_cap(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=100,
+            size_of=lambda value: value,
+        )
+
+        cache.put("old", 40)
+        cache.put("middle", 25)
+        cache.put("new", 45)
+
+        assert cache.get("old") is None
+        assert cache.get("middle") == 25
+        assert cache.get("new") == 45
+        assert cache.stats()["bytes"] == 70
+
+    def test_overwrite_replaces_previous_byte_weight(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=100,
+            size_of=lambda value: value,
+        )
+
+        cache.put("a", 40)
+        cache.put("b", 40)
+        cache.put("a", 10)
+
+        assert cache.get("a") == 10
+        assert cache.get("b") == 40
+        assert cache.stats()["bytes"] == 50
+
+    def test_evict_where_updates_byte_stats(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=100,
+            size_of=lambda value: value,
+        )
+        cache.put("a", 20)
+        cache.put("b", 30)
+        cache.put("c", 40)
+
+        assert cache.evict_where(lambda key: key in {"a", "c"}) == [20, 40]
+
+        assert cache.stats()["bytes"] == 30
+        assert cache.get("b") == 30
+
+    def test_ttl_expiry_updates_byte_stats(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            ttl=5.0,
+            max_bytes=100,
+            size_of=lambda value: value,
+        )
+        cache.put("a", 45)
+        assert cache.stats()["bytes"] == 45
+
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert cache.get("a") is None
+
+        assert cache.stats()["bytes"] == 0
+        assert len(cache) == 0
+
+    def test_size_callback_must_return_plain_non_negative_int(self) -> None:
+        cache_bool: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=100,
+            size_of=lambda _value: True,
+        )
+        with pytest.raises(ValueError, match="non-negative int"):
+            cache_bool.put("a", 1)
+
+        cache_negative: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=100,
+            size_of=lambda _value: -1,
+        )
+        with pytest.raises(ValueError, match="non-negative int"):
+            cache_negative.put("a", 1)
+
+    def test_oversized_put_warns_with_drop_details_and_removes_stale_entry(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cache: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=50,
+            size_of=lambda value: value,
+        )
+        cache.put("same-fp", 25)
+
+        with caplog.at_level(logging.WARNING, logger="haute._lru_cache"):
+            cache.put("same-fp", 75)
+
+        assert cache.get("same-fp") is None
+        assert cache.stats()["bytes"] == 0
+        record = next(
+            record
+            for record in caplog.records
+            if record.message == "lru_cache_oversized_entry_not_cached"
+        )
+        assert record.key == "same-fp"
+        assert record.measured_size == 75
+        assert record.max_bytes == 50
+        assert record.replaced_existing is True
+
+    def test_oversized_put_warns_for_new_key_without_caching(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cache: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=50,
+            size_of=lambda value: value,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="haute._lru_cache"):
+            cache.put("too-large", 75)
+
+        assert cache.get("too-large") is None
+        assert cache.stats()["bytes"] == 0
+        record = next(
+            record
+            for record in caplog.records
+            if record.message == "lru_cache_oversized_entry_not_cached"
+        )
+        assert record.key == "too-large"
+        assert record.measured_size == 75
+        assert record.max_bytes == 50
+        assert record.replaced_existing is False
+
+    def test_ordinary_byte_budget_eviction_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cache: LRUCache[str, int] = LRUCache(
+            max_size=10,
+            max_bytes=100,
+            size_of=lambda value: value,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="haute._lru_cache"):
+            cache.put("old", 40)
+            cache.put("new", 70)
+
+        assert cache.get("old") is None
+        assert cache.get("new") == 70
+        assert "lru_cache_oversized_entry_not_cached" not in {
+            record.message for record in caplog.records
+        }
 
 
 # ---------------------------------------------------------------------------

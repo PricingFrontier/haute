@@ -65,6 +65,10 @@ class NodeResult(BaseModel):
     columns: list[ColumnInfo] = Field(default_factory=list)
     available_columns: list[ColumnInfo] = Field(default_factory=list)
     preview: list[dict[str, Any]] = Field(default_factory=list)
+    preview_columns: list[str] = Field(default_factory=list)
+    preview_row_count: int = 0
+    preview_row_limit: int | None = None
+    preview_truncated: bool = False
     error: str | None = None
     error_line: int | None = None
     timing_ms: float = 0
@@ -82,6 +86,7 @@ class PreviewNodeRequest(BaseModel):
     node_id: str
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
+    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
 
 
 class NodeTimingInfo(BaseModel):
@@ -669,7 +674,10 @@ class OptimiserFrontierResponse(BaseModel):
     status: str
     points: list[dict[str, Any]] = Field(default_factory=list)
     n_points: int = 0
+    points_returned: int = 0
     constraint_names: list[str] = Field(default_factory=list)
+    points_limit: int | None = None
+    points_truncated: bool = False
 
 
 class OptimiserHistoryEntry(BaseModel):
@@ -719,6 +727,7 @@ class OptimiserSolveResult(BaseModel):
     scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
     clamp_rate: float | None = None
     frontier: OptimiserFrontierResponse | None = None
+    frontier_error: str | None = None
 
 
 class OptimiserStatusResponse(BaseModel):
@@ -738,8 +747,12 @@ class OptimiserApplyResponse(BaseModel):
     status: str
     total_objective: float = 0.0
     constraints: dict[str, float] = Field(default_factory=dict)
+    from_artifact: bool = False
     preview: list[dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
+    preview_row_count: int = 0
+    preview_row_limit: int | None = None
+    preview_truncated: bool = False
     error: str | None = None
 
 

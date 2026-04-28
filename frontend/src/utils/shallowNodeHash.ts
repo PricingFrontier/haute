@@ -15,6 +15,28 @@
  */
 
 const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
+type InputKey = (typeof INPUT_KEYS)[number]
+
+// Structural edits replace data/config objects; WeakMaps keep visual churn cheap
+// without retaining old graph payloads after React releases them.
+const objectInputHashCache = new WeakMap<object, string>()
+const nodeDataHashCache = new WeakMap<Record<string, unknown>, string>()
+
+function stringifyInputValue(key: InputKey, value: unknown): string {
+  if (value === undefined) return ""
+  if (value !== null && typeof value === "object") {
+    const cached = objectInputHashCache.get(value)
+    if (cached !== undefined) return cached
+
+    const serialized = JSON.stringify(value)
+    if (serialized === undefined) {
+      throw new TypeError(`Cannot hash object-valued node input "${key}"`)
+    }
+    objectInputHashCache.set(value, serialized)
+    return serialized
+  }
+  return String(value)
+}
 
 /**
  * Shallow hash of a node's data — only input-identity keys contribute.
@@ -23,22 +45,22 @@ const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_
  * are String()-coerced; the ``config`` object (nested rules / code /
  * scoring parameters) is JSON.stringify()'d because its content genuinely
  * matters.  Result-only keys (_columns, _availableColumns, _schemaWarnings,
- * _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue) are
- * ignored.
+ * _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue,
+ * _traceMotionDisabled) are ignored.
  *
  * Keys are joined with a non-empty delimiter (``\u0001``) to avoid
  * collisions between adjacent values like label="abc" + nodeType="def"
  * vs. label="ab" + nodeType="cdef".
  */
 export function shallowNodeDataHash(data: Record<string, unknown>): string {
+  const cached = nodeDataHashCache.get(data)
+  if (cached !== undefined) return cached
+
   const parts: string[] = []
   for (const key of INPUT_KEYS) {
-    const v = data[key]
-    if (v === undefined) {
-      parts.push("")
-      continue
-    }
-    parts.push(typeof v === "object" ? JSON.stringify(v) : String(v))
+    parts.push(stringifyInputValue(key, data[key]))
   }
-  return parts.join("\u0001")
+  const hash = parts.join("\u0001")
+  nodeDataHashCache.set(data, hash)
+  return hash
 }

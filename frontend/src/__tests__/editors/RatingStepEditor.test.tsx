@@ -6,7 +6,7 @@
  * adding/removing tables, operation select for 2+ tables, rebuild button.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render as rtlRender, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { render as rtlRender, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
 import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import { GraphProvider } from "../../panels/GraphContext"
@@ -1001,7 +1001,7 @@ describe("RatingStepEditor", () => {
     }))
   })
 
-  it("renders a Polars Code box in code mode", () => {
+  it("renders a Polars Code box in code mode", async () => {
     const { container } = render(
       <RatingStepEditor
         config={{ code: "df = df.with_columns(pl.lit(1).alias('x'))" }}
@@ -1016,7 +1016,7 @@ describe("RatingStepEditor", () => {
     expect(screen.getByText("Polars Code")).toBeTruthy()
     expect(screen.getByRole("radio", { name: /Code set/ })).toBeTruthy()
     expect(screen.getByTestId("code-editor-wrapper")).toBeTruthy()
-    expect(getCodeEditorText(container)).toContain("df = df.with_columns")
+    await waitFor(() => expect(getCodeEditorText(container)).toContain("df = df.with_columns"))
     expect(getCodeEditorText(container)).not.toContain("apply_rating_step_from_config")
   })
 
