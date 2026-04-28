@@ -223,6 +223,49 @@ class TestNodeToCode:
         assert "return df" in code
         _compile_node_code(code)
 
+    def test_data_source_codegen_strips_stale_scan_user_code(self):
+        """A polluted data-source code box must not duplicate source loading."""
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "Load Data",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "path": "data/input.parquet",
+                        "code": (
+                            "from pathlib import Path\n"
+                            'df = pl.scan_parquet(Path(__file__).parent / "data/input.parquet")\n'
+                            "df = df.limit(10)"
+                        ),
+                    },
+                },
+            }
+        )
+        code = _node_to_code(node)
+        assert code.count("scan_parquet") == 1
+        assert "df = df.limit(10)" in code
+        _compile_node_code(code)
+
+    def test_data_source_codegen_preserves_non_loader_user_code(self):
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "Load Data",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "path": "data/input.parquet",
+                        "code": "import math\ndf = df.limit(math.floor(10.9))",
+                    },
+                },
+            }
+        )
+        code = _node_to_code(node)
+        assert "import math" in code
+        assert "df = df.limit(math.floor(10.9))" in code
+        _compile_node_code(code)
+
     def test_transform_with_code(self):
         node = _n(
             {
@@ -238,6 +281,24 @@ class TestNodeToCode:
         assert "def Clean(load_data: pl.LazyFrame)" in code
         assert "filter" in code
         assert "return df" in code
+        _compile_node_code(code)
+
+    def test_transform_codegen_strips_stale_alias_scaffold_from_code(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Clean",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": "df = claims\ndf = df.limit(10)\nreturn df",
+                    },
+                },
+            }
+        )
+        code = _node_to_code(node, source_names=["claims"])
+        assert code.count("df = claims") == 1
+        assert "df = df.limit(10)" in code
         _compile_node_code(code)
 
     def test_transform_without_code_uses_first_source(self):
@@ -373,7 +434,7 @@ class TestNodeToCode:
                         "artifact_path": "model.cbm",
                         "task": "regression",
                         "output_column": "prediction",
-                        "code": "result = result * 2",
+                        "code": "df = df.with_columns(double_score=pl.col('prediction') * 2)",
                     },
                 },
             }
@@ -383,7 +444,46 @@ class TestNodeToCode:
         assert "base = str(Path(__file__).parent)" in code
         assert "base_dir=base" in code
         assert "from pathlib import Path" in code
-        assert "result = result * 2" in code
+        assert "df = score_from_config(" in code
+        assert "df = df.with_columns(double_score=pl.col('prediction') * 2)" in code
+        assert "return df" in code
+        assert "return result" not in code
+        _compile_node_code(code)
+
+    def test_model_score_codegen_strips_stale_scoring_scaffold_from_code(self):
+        """A polluted modelScore code box must not duplicate scoring calls."""
+        node = _n(
+            {
+                "id": "ms",
+                "data": {
+                    "label": "ScorePost",
+                    "nodeType": "modelScore",
+                    "config": {
+                        "sourceType": "run",
+                        "run_id": "abc123",
+                        "artifact_path": "model.cbm",
+                        "task": "regression",
+                        "output_column": "prediction",
+                        "code": (
+                            "from pathlib import Path\n"
+                            "from haute.graph_utils import score_from_config\n"
+                            "base = str(Path(__file__).parent)\n"
+                            "result = score_from_config(\n"
+                            '    source, config="config/model_scoring/ScorePost.json",\n'
+                            "    base_dir=base,\n"
+                            ")\n"
+                            "result = result.with_columns(double_score=pl.col('prediction') * 2)\n"
+                            "return result"
+                        ),
+                    },
+                },
+            }
+        )
+        code = _node_to_code(node, source_names=["source"])
+        assert code.count("score_from_config") == 2  # import + generated call only
+        assert "result = score_from_config" not in code
+        assert "result = result.with_columns" not in code
+        assert "df = df.with_columns(double_score=pl.col('prediction') * 2)" in code
         _compile_node_code(code)
 
     def test_rating_step(self):
@@ -411,6 +511,63 @@ class TestNodeToCode:
         assert 'config="config/rating_step/Lookup.json"' in code
         assert "def Lookup(" in code
         assert "return df" in code
+        _compile_node_code(code)
+
+    def test_rating_step_codegen_strips_stale_rating_scaffold_from_code(self):
+        node = _n(
+            {
+                "id": "rs",
+                "data": {
+                    "label": "Lookup",
+                    "nodeType": "ratingStep",
+                    "config": {
+                        "tables": [
+                            {
+                                "name": "Region",
+                                "factors": ["region"],
+                                "outputColumn": "region_factor",
+                                "defaultValue": 1.0,
+                                "entries": [{"region": "North", "value": 1.1}],
+                            }
+                        ],
+                        "code": (
+                            "from pathlib import Path\n"
+                            "from haute.graph_utils import apply_rating_step_from_config\n"
+                            "base = Path(__file__).parent\n"
+                            "df = apply_rating_step_from_config(\n"
+                            '    quotes, "config/rating_step/Lookup.json", base_dir=base\n'
+                            ")\n"
+                            "df = df.limit(10)\n"
+                            "return df"
+                        ),
+                    },
+                },
+            }
+        )
+        code = _node_to_code(node, source_names=["quotes"])
+        assert code.count("apply_rating_step_from_config(") == 1
+        assert "df = df.limit(10)" in code
+        _compile_node_code(code)
+
+    def test_scenario_expander_codegen_strips_stale_alias_scaffold_from_code(self):
+        node = _n(
+            {
+                "id": "scn",
+                "data": {
+                    "label": "Scenarios",
+                    "nodeType": "scenarioExpander",
+                    "config": {
+                        "quote_id": "quote_id",
+                        "column_name": "scenario_value",
+                        "steps": 3,
+                        "code": "df = quotes\ndf = df.limit(10)\nreturn df",
+                    },
+                },
+            }
+        )
+        code = _node_to_code(node, source_names=["quotes"])
+        assert code.count("df = quotes") == 1
+        assert "df = df.limit(10)" in code
         _compile_node_code(code)
 
     @pytest.mark.parametrize(
@@ -453,6 +610,34 @@ class TestNodeToCode:
         )
         for s in expected_strings:
             assert s in code, f"Expected {s!r} in generated code"
+        _compile_node_code(code)
+
+    def test_external_file_codegen_strips_stale_loader_scaffold_from_code(self):
+        node = _n(
+            {
+                "id": "ext",
+                "data": {
+                    "label": "Model",
+                    "nodeType": "externalFile",
+                    "config": {
+                        "path": "model.pkl",
+                        "fileType": "pickle",
+                        "code": (
+                            "from pathlib import Path\n"
+                            "from haute.graph_utils import load_external_object\n"
+                            "obj = load_external_object(\n"
+                            '    Path(__file__).parent / "model.pkl", "pickle"\n'
+                            ")\n"
+                            "df = df.limit(10)\n"
+                            "return df"
+                        ),
+                    },
+                },
+            }
+        )
+        code = _node_to_code(node, source_names=["features"])
+        assert code.count("load_external_object(") == 1
+        assert "df = df.limit(10)" in code
         _compile_node_code(code)
 
 
@@ -1125,8 +1310,8 @@ class TestTemplateParamConsistency:
         assert "return df" not in code
         _compile_node_code(code)
 
-    def test_rating_step_returns_first_param(self):
-        """Rating step should return the first upstream name, not 'df'."""
+    def test_rating_step_applies_config_to_first_param(self):
+        """Rating step should apply its config to the first upstream frame."""
         node = _n(
             {
                 "id": "rs",
@@ -1147,8 +1332,8 @@ class TestTemplateParamConsistency:
             }
         )
         code = _node_to_code(node, source_names=["input_df"])
-        assert "return input_df" in code
-        assert "return df" not in code
+        assert "apply_rating_step_from_config(input_df" in code
+        assert "return df" in code
         _compile_node_code(code)
 
     def test_modelling_returns_first_param(self):
@@ -2852,10 +3037,12 @@ class TestRoundTripEdgeCases:
         assert "tables=" in raw_code
         assert "operation='add'" in raw_code
         assert "combined_column='total_factor'" in raw_code
-        assert "return base" in raw_code
+        assert "apply_rating_step_from_config(base" in raw_code
+        assert "return df" in raw_code
         final_code = _node_to_code(node, source_names=["base"])
         assert 'config="config/rating_step/MultiRate.json"' in final_code
-        assert "return base" in final_code
+        assert "apply_rating_step_from_config(base" in final_code
+        assert "return df" in final_code
         _compile_node_code(final_code)
 
     def test_data_source_with_databricks_config(self):

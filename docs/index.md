@@ -105,6 +105,8 @@ pipeline.connect("frequency", "premium")
 
 That same file is also a visual graph. Run `haute serve` and your pipeline appears in a browser-based editor - nodes for data sources, models, transforms, and outputs, connected by edges showing how data flows through the rating structure.
 
+Rating step nodes support spreadsheet-style pricing work: many factor tables, raw string factors as well as banded factors, Excel-style paste/copy, optional combined outputs, and optional Polars code that runs after the table lookups.
+
 ---
 
 ## :material-star-shooting: What makes it different

@@ -8,10 +8,72 @@ export type RatingTable = {
   entries: Record<string, string | number>[]
 }
 
+export type RatingFactorColumn = {
+  name: string
+  dtype: string
+}
+
+export type RatingTableStatus = {
+  state: "healthy" | "problem"
+  issues: string[]
+}
+
+function defaultRatingTable(idx: number): RatingTable {
+  return { name: `Table ${idx + 1}`, factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
+}
+
+function isEntry(value: unknown): value is Record<string, string | number> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function normaliseRatingTable(raw: unknown, idx: number): RatingTable {
+  const fallback = defaultRatingTable(idx)
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback
+
+  const table = raw as Record<string, unknown>
+  const outputColumn = typeof table.outputColumn === "string" ? table.outputColumn : ""
+  return {
+    name: outputColumn.trim() || fallback.name,
+    factors: Array.isArray(table.factors)
+      ? table.factors.filter((factor): factor is string => typeof factor === "string")
+      : [],
+    outputColumn,
+    defaultValue: typeof table.defaultValue === "string" || table.defaultValue === null
+      ? table.defaultValue
+      : typeof table.defaultValue === "number"
+        ? String(table.defaultValue)
+        : fallback.defaultValue,
+    entries: Array.isArray(table.entries) ? table.entries.filter(isEntry) : [],
+  }
+}
+
 export function normaliseRatingTables(config: Record<string, unknown>): RatingTable[] {
-  const raw = config.tables as RatingTable[] | undefined
-  if (Array.isArray(raw) && raw.length > 0) return raw
-  return [{ name: "Table 1", factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }]
+  const raw = config.tables
+  if (Array.isArray(raw) && raw.length > 0) return raw.map(normaliseRatingTable)
+  return [defaultRatingTable(0)]
+}
+
+export function ratingTableStatus(
+  table: RatingTable,
+  idx: number,
+  tables: RatingTable[],
+): RatingTableStatus {
+  const issues: string[] = []
+  const outputColumn = table.outputColumn.trim()
+
+  if (!outputColumn) {
+    issues.push("Output column is required")
+  } else if (tables.some((other, otherIdx) => otherIdx !== idx && other.outputColumn.trim() === outputColumn)) {
+    issues.push("Output column name must be unique")
+  }
+
+  if (table.factors.length === 0) issues.push("Add at least one factor")
+  if ((table.entries || []).length === 0) issues.push("Add at least one rating entry")
+
+  return {
+    state: issues.length > 0 ? "problem" : "healthy",
+    issues,
+  }
 }
 
 /** Heatmap color for actuarial relativity values. */
@@ -80,6 +142,123 @@ export function buildCartesianEntries(
 }
 
 // ─── Shared helpers for rating editors ────────────────────────────
+
+/** True when a dtype can provide finite categorical rating levels from preview rows. */
+function isStringLikeDtype(dtype: string): boolean {
+  const normalized = dtype.trim().toLowerCase()
+  return normalized === "str" ||
+    normalized.includes("string") ||
+    normalized.includes("utf8") ||
+    normalized.includes("categorical") ||
+    normalized.includes("enum")
+}
+
+function previewCandidateColumns(
+  previewRows: Record<string, unknown>[],
+  upstreamColumns?: RatingFactorColumn[],
+): string[] {
+  if (upstreamColumns && upstreamColumns.length > 0) {
+    return upstreamColumns
+      .filter(col => isStringLikeDtype(col.dtype))
+      .map(col => col.name)
+  }
+
+  const seen = new Set<string>()
+  const names: string[] = []
+  for (const row of previewRows) {
+    for (const name of Object.keys(row)) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      names.push(name)
+    }
+  }
+  return names
+}
+
+export function extractPreviewCategoricalLevels(
+  previewRows: Record<string, unknown>[] | undefined,
+  upstreamColumns?: RatingFactorColumn[],
+): Record<string, string[]> {
+  if (!previewRows?.length) return {}
+
+  const names = previewCandidateColumns(previewRows, upstreamColumns)
+  const levelSets = new Map<string, Set<string>>(names.map(name => [name, new Set<string>()]))
+  const invalidColumns = new Set<string>()
+
+  for (const row of previewRows) {
+    for (const name of names) {
+      const value = row[name]
+      if (value === null || value === undefined) continue
+      if (typeof value !== "string") {
+        invalidColumns.add(name)
+        continue
+      }
+      if (value.trim() === "") continue
+      levelSets.get(name)?.add(value)
+    }
+  }
+
+  const levels: Record<string, string[]> = {}
+  for (const name of names) {
+    const values = levelSets.get(name)
+    if (!values || values.size === 0 || invalidColumns.has(name)) continue
+    levels[name] = [...values]
+  }
+  return levels
+}
+
+export function mergeFactorLevels(
+  baseLevels: Record<string, string[]>,
+  extraLevels: Record<string, string[]>,
+): Record<string, string[]> {
+  const merged: Record<string, string[]> = {}
+
+  for (const [name, levels] of Object.entries(baseLevels)) {
+    merged[name] = [...levels]
+  }
+
+  for (const [name, levels] of Object.entries(extraLevels)) {
+    if (!merged[name]) {
+      merged[name] = [...levels]
+      continue
+    }
+    const existing = new Set(merged[name])
+    for (const level of levels) {
+      if (existing.has(level)) continue
+      merged[name].push(level)
+      existing.add(level)
+    }
+  }
+
+  return merged
+}
+
+export function extractTableEntryFactorLevels(
+  tables: RatingTable[],
+): Record<string, string[]> {
+  const levelSets: Record<string, Set<string>> = {}
+
+  for (const table of tables) {
+    for (const factor of table.factors) {
+      if (!levelSets[factor]) levelSets[factor] = new Set()
+    }
+    for (const entry of table.entries || []) {
+      for (const factor of table.factors) {
+        const value = entry[factor]
+        if (value === null || value === undefined) continue
+        const level = String(value)
+        if (!level) continue
+        levelSets[factor].add(level)
+      }
+    }
+  }
+
+  const levels: Record<string, string[]> = {}
+  for (const [factor, values] of Object.entries(levelSets)) {
+    if (values.size > 0) levels[factor] = [...values]
+  }
+  return levels
+}
 
 /** Resolve the table's defaultValue to a safe numeric fallback. */
 export function resolveDefault(defaultValue: string | number | null | undefined): number {

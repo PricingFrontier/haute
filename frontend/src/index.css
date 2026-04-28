@@ -511,6 +511,23 @@ html, body, #root {
   box-shadow: 0 0 0 2px var(--focus-ring-shadow, var(--accent-soft));
 }
 
+/* Rating editor grid cells: neutral spreadsheet-style focus, without the
+   app accent ring used by form controls. */
+.rating-editor-number-cell:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.rating-editor-value-cell:focus-within {
+  box-shadow: none;
+}
+.rating-editor-value-cell[data-selected="true"] {
+  background: var(--accent-soft);
+}
+.rating-editor-grid-region:focus-visible {
+  outline: 1px solid var(--border-bright);
+  outline-offset: -1px;
+}
+
 /* FileBrowser row in _shared.tsx — rests transparent, hovers to
    var(--bg-hover).  The [data-selected="true"] variant disables
    the hover (the accent-soft background is pinned for the selected

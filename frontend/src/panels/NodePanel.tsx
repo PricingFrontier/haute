@@ -338,7 +338,19 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
         )
 
       case NODE_TYPES.RATING_STEP:
-        return <RatingStepEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />
+        return (
+          <RatingStepEditor
+            config={config}
+            onUpdate={handleConfigUpdate}
+            inputSources={inputSources}
+            onDeleteInput={onDeleteEdge}
+            upstreamColumns={collectUpstreamColumns(node.id, edges, nodeMap)}
+            previewRows={previewRows}
+            accentColor={accentColor}
+            errorLine={errorLine}
+            nodeId={node.id}
+          />
+        )
 
       case NODE_TYPES.MODEL_SCORE:
         return <ModelScoreEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />

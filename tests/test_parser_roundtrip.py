@@ -113,6 +113,21 @@ def _strip_upstream_prefix(code: str, all_node_ids: set[str]) -> str:
     return code.strip()
 
 
+def _assert_code_roundtrip(
+    node_id: str,
+    orig: dict[str, Any],
+    parsed: dict[str, Any],
+    all_node_ids: set[str],
+) -> None:
+    """Assert UI-facing code fields survive codegen -> parse without scaffold."""
+    orig_code = (orig.get("code") or "").strip()
+    parsed_code = (parsed.get("code") or "").strip()
+    parsed_code = _strip_upstream_prefix(parsed_code, all_node_ids)
+    assert parsed_code == orig_code, (
+        f"[{node_id}] code mismatch:\n  original={orig_code!r}\n  parsed={parsed_code!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Hypothesis strategies
 # ---------------------------------------------------------------------------
@@ -455,6 +470,7 @@ def _assert_config_equivalence(
         assert parsed.get("sourceType") == orig.get("sourceType"), (
             f"[{node_id}] sourceType mismatch"
         )
+        _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.API_INPUT:
         assert parsed.get("path") == orig.get("path"), (
@@ -462,16 +478,7 @@ def _assert_config_equivalence(
         )
 
     elif node_type == NodeType.POLARS:
-        # Code round-trip: codegen indents user code and appends ``return df``;
-        # the parser strips that back out. For old-format files that used
-        # chain wrapping, the parser may include an upstream prefix which
-        # ``_strip_upstream_prefix`` removes.
-        orig_code = (orig.get("code") or "").strip()
-        parsed_code = (parsed.get("code") or "").strip()
-        parsed_code = _strip_upstream_prefix(parsed_code, all_node_ids)
-        assert parsed_code == orig_code, (
-            f"[{node_id}] code mismatch:\n  original={orig_code!r}\n  parsed={parsed_code!r}"
-        )
+        _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.OUTPUT:
         assert parsed.get("fields") == orig.get("fields"), (
@@ -524,12 +531,14 @@ def _assert_config_equivalence(
                 f"[{node_id}] table outputColumn mismatch"
             )
             assert pt.get("entries") == ot.get("entries"), f"[{node_id}] table entries mismatch"
+        _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.EXTERNAL_FILE:
         assert parsed.get("path") == orig.get("path"), f"[{node_id}] externalFile path mismatch"
         assert parsed.get("fileType") == orig.get("fileType"), (
             f"[{node_id}] externalFile fileType mismatch"
         )
+        _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.LIVE_SWITCH:
         assert parsed.get("input_scenario_map") == orig.get("input_scenario_map"), (
@@ -539,6 +548,7 @@ def _assert_config_equivalence(
     elif node_type == NodeType.MODEL_SCORE:
         for key in ("sourceType", "task", "output_column"):
             assert parsed.get(key) == orig.get(key), f"[{node_id}] modelScore {key} mismatch"
+        _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.MODELLING:
         for key in ("name", "target", "algorithm", "task"):
@@ -563,6 +573,7 @@ def _assert_config_equivalence(
                 assert parsed.get(key) == orig.get(key), (
                     f"[{node_id}] scenarioExpander {key} mismatch"
                 )
+        _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -1016,10 +1027,9 @@ class TestEdgeCases:
     def test_empty_transform_code(self, tmp_path: Path) -> None:
         """Transform with empty code round-trips.
 
-        Codegen produces ``return <upstream>`` for empty code.  The parser
-        extracts the upstream name as the code body.  This is expected:
-        the user's "code" was empty, and after round-trip the parsed code
-        is the upstream name (which the executor treats as a passthrough).
+        Codegen produces ``return <upstream>`` for empty code, but that is
+        generated passthrough scaffolding. It must not round-trip into the
+        UI-facing ``config.code`` field.
         """
         graph = PipelineGraph(
             nodes=[
@@ -1053,10 +1063,10 @@ class TestEdgeCases:
         orig_edges = _edge_pairs(graph.edges)
         parsed_edges = _edge_pairs(parsed.edges)
         assert orig_edges.issubset(parsed_edges)
-        # Empty code becomes the upstream name after round-trip
+        # Empty user code stays empty after round-trip
         transform_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.POLARS)
         parsed_code = (transform_node.data.config.get("code") or "").strip()
-        assert parsed_code == "df = source"  # upstream name extracted from "return source"
+        assert parsed_code == ""
 
     def test_output_no_fields(self, tmp_path: Path) -> None:
         """Output with empty fields list round-trips."""
@@ -1208,6 +1218,53 @@ class TestEdgeCases:
         _assert_structural_equivalence(graph, parsed)
         src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_SOURCE)
         assert "select" in src_node.data.config.get("code", "")
+
+    def test_data_source_stale_generated_loader_is_dropped_from_code_box(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Stale generated import/load code is not parsed as source user code."""
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="src",
+                    data=NodeData(
+                        label="src",
+                        nodeType=NodeType.DATA_SOURCE,
+                        config={
+                            "path": "data/input.parquet",
+                            "sourceType": "flat_file",
+                            "code": "\n".join(
+                                [
+                                    "from pathlib import Path",
+                                    (
+                                        "df = pl.scan_parquet("
+                                        'Path(__file__).parent / "data/input.parquet")'
+                                    ),
+                                    "df = df.limit(10)",
+                                ]
+                            ),
+                        },
+                    ),
+                ),
+                GraphNode(
+                    id="out",
+                    data=NodeData(
+                        label="out",
+                        nodeType=NodeType.OUTPUT,
+                        config={"fields": ["x"]},
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e1", source="src", target="out")],
+            pipeline_name="roundtrip_test",
+        )
+        parsed = _parse_roundtrip(graph, tmp_path)
+        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_SOURCE)
+        parsed_code = src_node.data.config.get("code", "")
+        assert parsed_code == "df = df.limit(10)"
+        assert "scan_parquet" not in parsed_code
+        assert "from pathlib" not in parsed_code
 
     def test_multiple_constants_roundtrip(self, tmp_path: Path) -> None:
         """Multiple constant values with numeric and string coercion."""
@@ -1401,6 +1458,100 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+
+    def test_model_score_with_post_code(self, tmp_path: Path) -> None:
+        """modelScore post-processing code round-trips without scoring scaffold."""
+        graph = PipelineGraph(
+            nodes=[
+                self._source_node(),
+                GraphNode(
+                    id="scorer",
+                    data=NodeData(
+                        label="scorer",
+                        nodeType=NodeType.MODEL_SCORE,
+                        config={
+                            "sourceType": "run",
+                            "task": "regression",
+                            "output_column": "prediction",
+                            "run_id": "abc123",
+                            "artifact_path": "models/model.cbm",
+                            "code": "df = df.with_columns(double_score=pl.col('prediction') * 2)",
+                        },
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e1", source="source", target="scorer")],
+            pipeline_name="roundtrip_test",
+        )
+        parsed = _parse_roundtrip(graph, tmp_path)
+        _assert_structural_equivalence(graph, parsed)
+        scorer = next(n for n in parsed.nodes if n.data.nodeType == NodeType.MODEL_SCORE)
+        parsed_code = scorer.data.config.get("code", "")
+        assert parsed_code == "df = df.with_columns(double_score=pl.col('prediction') * 2)"
+        assert "score_from_config" not in parsed_code
+        assert "return" not in parsed_code
+
+    def test_rating_step_with_post_code(self, tmp_path: Path) -> None:
+        """ratingStep code sees rated df and does not expose apply_config scaffold."""
+        graph = PipelineGraph(
+            nodes=[
+                self._source_node(),
+                GraphNode(
+                    id="rating",
+                    data=NodeData(
+                        label="rating",
+                        nodeType=NodeType.RATING_STEP,
+                        config={
+                            "tables": [
+                                {
+                                    "name": "T1",
+                                    "factors": ["region"],
+                                    "outputColumn": "region_factor",
+                                    "defaultValue": "1.0",
+                                    "entries": [{"region": "north", "value": 1.1}],
+                                }
+                            ],
+                            "code": "df = df.with_columns(final=pl.col('region_factor') * 100)",
+                        },
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e1", source="source", target="rating")],
+            pipeline_name="roundtrip_test",
+        )
+        parsed = _parse_roundtrip(graph, tmp_path)
+        rating = next(n for n in parsed.nodes if n.data.nodeType == NodeType.RATING_STEP)
+        parsed_code = rating.data.config.get("code", "")
+        assert parsed_code == "df = df.with_columns(final=pl.col('region_factor') * 100)"
+        assert "apply_rating_step_from_config" not in parsed_code
+
+    def test_external_file_with_code(self, tmp_path: Path) -> None:
+        """externalFile code round-trips without file-loading scaffold."""
+        graph = PipelineGraph(
+            nodes=[
+                self._source_node(),
+                GraphNode(
+                    id="ext_lookup",
+                    data=NodeData(
+                        label="ext_lookup",
+                        nodeType=NodeType.EXTERNAL_FILE,
+                        config={
+                            "path": "models/lookup.pkl",
+                            "fileType": "pickle",
+                            "code": "df = df.with_columns(lookup_loaded=pl.lit(obj is not None))",
+                        },
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e1", source="source", target="ext_lookup")],
+            pipeline_name="roundtrip_test",
+        )
+        parsed = _parse_roundtrip(graph, tmp_path)
+        ext = next(n for n in parsed.nodes if n.data.nodeType == NodeType.EXTERNAL_FILE)
+        parsed_code = ext.data.config.get("code", "")
+        assert parsed_code == "df = df.with_columns(lookup_loaded=pl.lit(obj is not None))"
+        assert "load_external_object" not in parsed_code
+        assert "return df" not in parsed_code
 
     def test_modelling(self, tmp_path: Path) -> None:
         """modelling round-trips with core config keys."""

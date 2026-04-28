@@ -1,15 +1,29 @@
-# Rating Step — Multivariate Table Design
+# Rating Step Design
 
 ## Problem
 
-Actuarial pricing models apply multiplicative factors (relativities) based on risk characteristics. After banding creates discrete factor levels (e.g. `age_band: "25-35"`, `prop_band: "House"`), the rating step looks up the corresponding relativity from a rating table.
+Pricing teams need to maintain rating tables that are easy to inspect, easy to edit in bulk, and still saved as plain Python-backed configuration. A rating step may apply one table, dozens of tables, optional combined outputs, and optional custom Polars post-processing. Analysts also need to use raw categorical/string columns directly, not only columns produced by a banding step.
 
-Tables can be:
-- **1-way**: single factor → value (e.g. age_band → 1.15)
-- **2-way**: two factors → value (grid: age_band × prop_band)
-- **3-way**: three factors → value (dropdown selects factor3 level, shows 2-way grid of factor1 × factor2)
+The rating step therefore has to support:
 
-A single rating step node supports **multiple tables**, each producing an output column.
+- one-, two-, and three-factor lookup tables;
+- factors from upstream banding outputs and raw upstream string/categorical columns;
+- Excel-style copy and paste for table values;
+- a navigable UI when many tables exist;
+- optional combined outputs with explicit base values;
+- optional Polars code that runs after table and combined outputs exist.
+
+## Approach
+
+The rating step is split into three UI sections: **Tables**, **Combined**, and **Code**. The section selector is local UI state only; it is not persisted in node config.
+
+Execution order is fixed:
+
+1. Apply each configured rating table and create its output column.
+2. Apply each configured combined output, if any.
+3. Run custom Polars code, if present.
+
+This means code in `rating/main.py` can reference columns produced by both the table stage and the combined stage.
 
 ## Config Schema
 
@@ -17,204 +31,156 @@ A single rating step node supports **multiple tables**, each producing an output
 {
   "tables": [
     {
-      "name": "Age Factor",
+      "name": "age_factor",
       "factors": ["age_band"],
       "outputColumn": "age_factor",
       "defaultValue": "1.0",
       "entries": [
-        { "age_band": "young", "value": "1.3" },
-        { "age_band": "older", "value": "0.9" }
-      ]
-    },
-    {
-      "name": "Age × Property",
-      "factors": ["age_band", "prop_band"],
-      "outputColumn": "age_prop_factor",
-      "defaultValue": "1.0",
-      "entries": [
-        { "age_band": "young", "prop_band": "House", "value": "1.2" },
-        { "age_band": "young", "prop_band": "Flat",  "value": "1.5" },
-        { "age_band": "older", "prop_band": "House", "value": "0.9" },
-        { "age_band": "older", "prop_band": "Flat",  "value": "1.1" }
+        { "age_band": "young", "value": 1.2 },
+        { "age_band": "older", "value": 0.9 }
       ]
     }
-  ]
+  ],
+  "combinedOutputs": [
+    {
+      "outputColumn": "technical_premium",
+      "operation": "multiply",
+      "baseValue": 100
+    }
+  ],
+  "code": "df = df.with_columns(...)"
 }
 ```
 
 Key points:
-- `factors` is an array of 1–3 column names (typically banding output columns).
-- `entries` is a flat list of records. Each record has one key per factor + a `value` key.
-- `defaultValue` is used when a lookup misses (no matching entry).
-- This flat format works uniformly for 1/2/3-way tables — the dimensionality is implicit from the `factors` length.
 
-## Auto-populating Factor Levels
+- `tables` is the canonical table list.
+- `outputColumn` is also the display name for a table; a separate editable table name is not needed.
+- `factors` contains one to three column names.
+- `entries` stays flat: one key per factor plus `value`.
+- `defaultValue` is used when a table lookup misses.
+- `combinedOutputs` is optional. An empty or missing list means no combined output.
+- `code` is optional and runs last.
 
-When the user selects a factor column, the UI looks for upstream **banding nodes** and extracts the unique `assignment` values from their rules. This populates the table skeleton instantly without running the pipeline.
+Legacy `combinedColumn` and `operation` configs are still read by execution/codegen paths where needed, but the current UI writes `combinedOutputs` for new combined definitions.
 
-Algorithm:
-1. Walk upstream edges from the rating step node.
-2. For each upstream banding node, inspect `config.factors[].outputColumn` and `config.factors[].rules[].assignment`.
-3. Build a map: `column_name → Set<assignment_values>`.
-4. When the user picks a factor, populate the table rows/columns with those values.
+## Factor Levels
 
-If no upstream banding node provides the column, fall back to manually typed levels (or cached `_columns` preview data if available).
+The UI builds factor-level options from three sources:
+
+1. Banding nodes: `config.factors[].outputColumn` and each rule assignment.
+2. Preview rows: upstream columns with string/categorical-like dtypes and finite string values.
+3. Saved rating table entries: existing factor values already persisted in the node config.
+
+Banding levels take precedence. Raw string levels are used for unbanded fields such as `channel` or `cover_type`; they come from preview rows and saved table entries. Values not listed in a table use the table default.
+
+Raw level editing controls are intentionally not shown for unbanded fields. The source of truth is the preview data plus the saved table entries.
+
+## Tables UI
+
+The **Tables** section uses a selector suited to large numbers of tables:
+
+- a search box filters by output column or factor name;
+- an issues filter shows only tables with validation problems;
+- each row has a green/yellow status marker, factor count, and entry count;
+- selecting a table opens only that table's editor;
+- adding a table clears search/filter state and selects the new table.
+
+Validation is visible in the editor. Blank output columns are flagged, duplicate output columns are flagged, and incomplete table setup is summarised for the selected table.
+
+The table editor variants are:
+
+- one factor: two-column table of level and value;
+- two factors: grid with row and column labels;
+- three factors: selector for the third factor's slice, then a two-factor grid.
+
+Editable cells use neutral Excel-style borders rather than value-based heatmap colouring. Labels are visually distinct from editable cells. Users can paste numeric matrices from Excel, paste labelled tables where row/column order differs, drag-select multiple cells, copy selected values as TSV, and copy the visible two-way table via the icon-only copy action below the grid.
+
+Clipboard failures are logged with context rather than being swallowed.
+
+## Combined UI
+
+The **Combined** section is optional. A rating step can have no combined outputs.
+
+When combined outputs are configured, the UI uses a selector similar to banding nodes:
+
+- each combined output has an output column, operation, and base value;
+- multiple combined outputs can be configured;
+- each output gets a green/yellow status marker;
+- output columns must be unique across tables and combined outputs;
+- base value is required for non-legacy combined outputs.
+
+Supported operations are:
+
+- `multiply`: base value multiplied by all table outputs;
+- `add`: base value plus all table outputs;
+- `min`: minimum of base value and table outputs;
+- `max`: maximum of base value and table outputs.
+
+The backend validates new `combinedOutputs` strictly. Unsupported operations, blank output columns, duplicate output columns, missing base values, and non-finite base values raise errors instead of silently falling back.
+
+## Code UI
+
+The **Code** section exposes an optional Polars code editor. The code editor receives available columns from:
+
+- upstream columns;
+- rating table output columns;
+- combined output columns.
+
+The code should use `df` for the rated data. Since code runs after table and combined outputs, it can reference any column created earlier in the same rating step.
 
 ## Backend
 
-### Executor (`executor.py`)
+For each table:
 
-For each table in `config.tables`:
+1. Build a Polars lookup frame from `entries`.
+2. Cast `value` to `Float64`.
+3. Reject NaN/Inf values.
+4. Deduplicate lookup rows on the factor columns, keeping the last entry.
+5. Left join the lookup frame onto the input frame.
+6. Fill misses with `defaultValue` when a numeric default is configured.
+7. Emit the table's `outputColumn`.
 
-1. Build a Polars `DataFrame` from `entries`:
-   ```python
-   lookup_df = pl.DataFrame(table["entries"])
-   # Cast value column to Float64 for numeric relativities
-   lookup_df = lookup_df.with_columns(pl.col("value").cast(pl.Float64))
-   ```
-2. Left join the main `LazyFrame` on the factor columns:
-   ```python
-   lf = lf.join(
-       lookup_df.lazy(),
-       on=table["factors"],
-       how="left",
-   )
-   ```
-3. Rename the `value` column to `outputColumn`, fill nulls with `defaultValue`:
-   ```python
-   lf = lf.with_columns(
-       pl.col("value").fill_null(float(default)).alias(output_col)
-   ).drop("value")
-   ```
+Combined outputs are then applied over the table output columns. Custom code is extracted/generated after `apply_rating_step_from_config(...)` so it observes the table and combined columns.
 
-This is simple, efficient, and works for any number of factors.
+## Tests
 
-### Parser (`_parser_helpers.py`)
+The rating step test coverage is intentionally layered:
 
-Detect `tables=` in decorator kwargs → infer `"ratingStep"` node type.
-Normalise each table entry's `output_column` → `outputColumn` (Python snake → JS camel).
+- backend tests cover table lookup behaviour, combined output validation, codegen, parsing, config loading, and code-after-combined execution;
+- frontend utility tests cover table normalisation, factor-level extraction, cartesian table rebuilding, status calculation, and malformed config shapes;
+- editor tests cover section navigation, output column validation, unbanded raw string factors, large table selectors, combined output selection, and code editor columns;
+- grid tests cover neutral editable-cell styling, paste semantics, drag selection, selected-range copy, visible-table copy, and clipboard rejection logging;
+- the frontend critical coverage gate requires full statement/function/line coverage on `ratingTableUtils.ts` and high branch coverage.
 
-### Codegen (`codegen.py`)
+## Alternatives Considered
 
-Emit `@pipeline.rating_step(tables=[...])` with the entries as Python literals.
-For readability, single-table nodes could use a flatter decorator, but `tables=[...]` is always valid.
+### Single Long Editor
 
-## Frontend
+Rejected because it becomes difficult to navigate once a rating step has many tables. The section selector keeps table editing, combined output setup, and code editing distinct.
 
-### RatingStepConfig component
+### Only Allow Banded Factors
 
-Structure mirrors `BandingConfig`:
-- **Tab bar** for multiple tables (add/remove).
-- Each tab shows:
-  - **Name** input
-  - **Factor dropdowns** (up to 3, populated from upstream columns/banding)
-  - **Output column** input
-  - **Default value** input
-  - **Table editor** (varies by factor count)
+Rejected because analysts need to rate directly on raw string columns such as `channel`. The UI now merges banded levels with preview-derived and saved-entry levels.
 
-### Table Editor Variants
+### Persist The Active UI Section
 
-**1 factor** — simple two-column table:
-```
-| age_band | value |
-|----------|-------|
-| young    | 1.3   |
-| older    | 0.9   |
-```
+Rejected because the selected UI section is not execution configuration. Persisting it creates stale config and transition fields.
 
-**2 factors** — grid (factor1 = rows, factor2 = columns):
-```
-|           | House | Flat | Bungalow |
-|-----------|-------|------|----------|
-| young     | 1.2   | 1.5  | 1.0      |
-| older     | 0.9   | 1.1  | 0.8      |
-```
+### Heatmap Formatting In Editable Cells
 
-**3 factors** — dropdown for factor3, then 2-way grid of factor1 × factor2:
-```
-[Factor3: region_band ▼]  [North ▼]
+Rejected for the current table editor because the user's workflow is closer to spreadsheet editing. Neutral editable cells reduce visual noise and make labels vs editable values clearer.
 
-|           | House | Flat | Bungalow |
-|-----------|-------|------|----------|
-| young     | 1.2   | 1.5  | 1.0      |
-| older     | 0.9   | 1.1  | 0.8      |
-```
+### Separate Node Per Rating Table
 
-Switching the dropdown value shows the corresponding 2-way slice.
+Rejected because a production rating structure can have many factors. Keeping related tables inside one rating step keeps the graph manageable.
 
-### entries ↔ grid conversion
+### Store 2D/3D Arrays
 
-The config stores a flat `entries` array. The UI converts to/from grid format:
+Rejected because flat entries are easier to diff, parse, generate, and execute uniformly.
 
-- **To grid**: group entries by factor values, build row/col headers from unique values.
-- **From grid**: flatten back to entries array on every cell edit.
+## Open Questions
 
-This keeps the config format uniform while the UI adapts to dimensionality.
-
-## Files to touch
-
-- `src/haute/executor.py` — `_apply_rating_table`, rating step handler
-- `src/haute/_parser_helpers.py` — detect `tables=`, build config
-- `src/haute/codegen.py` — rating step template + code generation
-- `frontend/src/panels/NodePanel.tsx` — `RatingStepConfig`, table editors
-- `frontend/src/panels/NodePalette.tsx` — update default config
-- `tests/test_rating_step.py` — new test file
-
-## Table Combination
-
-When a rating step has 2+ tables, their outputs can be combined into a single column using a configurable operation:
-
-- **multiply** (default) — standard multiplicative relativities: `combined = age_factor × region_factor`
-- **add** — additive loadings: `combined = loading_a + loading_b`
-- **min** / **max** — floor/cap across factors: `combined = min(factor_a, factor_b)`
-
-### Config fields
-
-```json
-{
-  "tables": [...],
-  "operation": "multiply",
-  "combinedColumn": "combined_factor"
-}
-```
-
-- `operation` defaults to `"multiply"` if omitted. Codegen only emits it when non-default.
-- `combinedColumn` is the output column name. If empty, no combination is performed.
-- Combination is skipped when fewer than 2 tables have an `outputColumn`.
-
-### Codegen
-
-```python
-@pipeline.rating_step(tables=[...], operation='add', combined_column='total_loading')
-def Rating_Step_1(df: pl.LazyFrame) -> pl.LazyFrame:
-    ...
-```
-
-`operation='multiply'` is omitted from the decorator since it is the default.
-
-## UI Design
-
-The table editor UI draws from actuarial pricing tool conventions:
-
-- **Heatmap cell coloring** — cells are tinted by relativity magnitude. Surcharges (>1.0) show warm red/orange, discounts (<1.0) show cool blue. Intensity scales with distance from 1.0, saturating at ±0.5. This gives instant visual feedback on factor impact without needing to read every number.
-- **Relativity bar chart** (1-way tables) — a horizontal bar per row shows the magnitude relative to the table maximum, reinforcing the heatmap with a second visual channel.
-- **Zebra striping** — alternating row backgrounds for dense table readability.
-- **Sticky row headers** (2-way grids) — row labels stay visible when scrolling wide tables horizontally.
-- **Row↓ / Col→ indicators** — the corner header cell labels which factor maps to rows vs columns.
-- **Stats footer** — every table shows `n=`, `min`, `avg`, `max` in color-coded text.
-- **Tab badges** — each table tab shows its entry count.
-- **Formula summary** — when 2+ tables exist, a live formula shows the combination expression (e.g. `combined = age × region`). Uses function notation for min/max operations.
-
-## Design decisions
-
-- **Values are always Float64** — rating table cell values are numeric relativities, not strings. The executor casts all `value` fields to `pl.Float64`.
-- **Flat entries array** — uniform across 1/2/3-way tables. The UI converts to/from grid on the fly.
-- **Factor levels from banding assignments** — `extractBandingLevels` scans all banding nodes in the graph (not just direct upstream) and builds a `column → levels[]` map from rule assignments.
-- **Heatmap scale** — ±0.5 deviation from 1.0 reaches full intensity. This covers the typical actuarial relativity range (0.5–1.5) while keeping extreme values visually distinct.
-
-## Alternatives considered
-
-1. **External CSV/Excel rating tables** — rejected: inline editing in the GUI is faster, keeps tables version-controlled in `.py`, no file management overhead.
-2. **Separate node per table** — rejected: clutters the graph when a single pricing step applies 5+ factors.
-3. **Store 2D/3D arrays instead of flat entries** — rejected: flat entries are simpler to parse/generate, work uniformly across dimensions, and are easier to diff in git.
-4. **Separate heatmap overlay vs inline coloring** — rejected: inline tinting on the input cell itself is simpler and doesn't require a separate read-only view. The user sees the color while editing.
+- Very large two-way grids may eventually need virtualised rendering.
+- A visible toast for failed copy actions may be useful in addition to the current logged warning.
+- Malformed persisted table entries are currently normalised so the editor remains usable; a dedicated malformed-config banner would make that recovery path more explicit.

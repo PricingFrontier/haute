@@ -277,6 +277,23 @@ describe("ModelScoreEditor", () => {
     expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
   })
 
+  it("does not synthesize scoring scaffold in the post-processing editor", () => {
+    render(<ModelScoreEditor {...defaultProps()} />)
+    fireEvent.click(screen.getByText("Post-processing Code (optional)"))
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("")
+    expect(editor.defaultValue).not.toContain("score_from_config")
+  })
+
+  it("shows only configured post-processing code", () => {
+    const props = defaultProps()
+    props.config = { code: "df = df.with_columns(double_score=pl.col('prediction') * 2)" }
+    render(<ModelScoreEditor {...props} />)
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("df = df.with_columns(double_score=pl.col('prediction') * 2)")
+    expect(editor.defaultValue).not.toContain("score_from_config")
+  })
+
   // 17. Shows error messages when MLflow hooks have errors
   it("shows error messages when MLflow hooks have errors", () => {
     mockMlflow.errorModels = "Models endpoint unavailable"

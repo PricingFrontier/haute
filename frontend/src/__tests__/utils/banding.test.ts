@@ -73,6 +73,28 @@ describe("extractBandingLevelsForNode", () => {
     expect(result).toEqual({ age_band: ["Young", "Middle", "Senior"] })
   })
 
+  it("extracts breakpoint labels as levels", () => {
+    const nodes: SimpleNode[] = [
+      makeBandingNode("b1", [
+        {
+          banding: "breakpoints",
+          column: "proposer_age",
+          outputColumn: "proposer_age_band",
+          rules: [
+            { boundary: "25", label: "Under 25" },
+            { boundary: "50", label: "25 to 49" },
+            { boundary: "", label: "50 plus" },
+          ],
+        },
+      ]),
+    ]
+
+    const result = extractBandingLevelsForNode(nodes, "b1")
+    expect(result).toEqual({
+      proposer_age_band: ["Under 25", "25 to 49", "50 plus"],
+    })
+  })
+
   it("extracts multiple factor levels", () => {
     const nodes: SimpleNode[] = [
       makeBandingNode("b1", [
@@ -224,6 +246,48 @@ describe("extractBandingLevels", () => {
     expect(result.age_band).toHaveLength(2)
     expect(result.vehicle_band).toEqual(expect.arrayContaining(["Car", "Truck"]))
     expect(result.vehicle_band).toHaveLength(2)
+  })
+
+  it("aggregates categorical assignments and breakpoint labels for rating factors", () => {
+    const nodes: SimpleNode[] = [
+      makeBandingNode("b1", [
+        {
+          banding: "categorical",
+          column: "channel",
+          outputColumn: "channel_band",
+          rules: [
+            { value: "direct", assignment: "Direct" },
+            { value: "broker", assignment: "Broker" },
+          ],
+        },
+        {
+          banding: "breakpoints",
+          column: "proposer_age",
+          outputColumn: "proposer_age_band",
+          rules: [
+            { boundary: "25", label: "Under 25" },
+            { boundary: "50", label: "25 to 49" },
+            { boundary: "", label: "50 plus" },
+          ],
+        },
+        {
+          banding: "breakpoints",
+          column: "vehicle_age",
+          outputColumn: "vehicle_age_band",
+          rules: [
+            { boundary: "1", label: "New" },
+            { boundary: "5", label: "Established" },
+            { boundary: "", label: "Older" },
+          ],
+        },
+      ]),
+    ]
+
+    expect(extractBandingLevels(nodes)).toEqual({
+      channel_band: ["Direct", "Broker"],
+      proposer_age_band: ["Under 25", "25 to 49", "50 plus"],
+      vehicle_age_band: ["New", "Established", "Older"],
+    })
   })
 
   it("handles nodes with no config", () => {

@@ -132,6 +132,14 @@ describe("ExternalFileEditor", () => {
     expect(editor.defaultValue).toBe("df = pl.DataFrame()")
   })
 
+  it("does not synthesize file loading scaffold in the code editor", () => {
+    render(<ExternalFileEditor {...DEFAULT_PROPS} config={{ path: "models/model.pkl" }} />)
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("")
+    expect(editor.defaultValue).not.toContain("load_external_object")
+    expect(editor.defaultValue).not.toContain("with open")
+  })
+
   it("shows empty placeholder for code editor", () => {
     render(<ExternalFileEditor {...DEFAULT_PROPS} />)
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement

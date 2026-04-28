@@ -42,6 +42,8 @@ from haute._parser_helpers import (
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
+    _extract_rating_step_user_code,
+    _extract_scenario_expander_user_code,
     _extract_source_user_code,
     _extract_submodel_meta,
     _extract_user_code,
@@ -1405,10 +1407,101 @@ class TestExtractSourceUserCode:
         assert "rename" in result
         assert "select" in result
 
+    def test_repeated_generated_loads_are_not_user_code(self):
+        body = (
+            '    df = pl.scan_parquet("data.parquet")\n'
+            '    df = pl.scan_parquet("data.parquet")\n'
+            "    df = df.limit(10)\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert "scan_parquet" not in result
+        assert result == "df = df.limit(10)"
+
+    def test_repeated_multiline_generated_loads_are_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
+            "    df = pl.scan_parquet(\n"
+            '        Path(__file__).parent / "data.parquet"\n'
+            "    )\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert result == ""
+
     def test_empty_rest_returns_empty(self):
         body = '    df = pl.scan_parquet("data.parquet")\n    return df'
         result = _extract_source_user_code(body)
         assert result == ""
+
+    def test_blank_before_return_load_is_not_user_code(self):
+        body = (
+            "    \n"
+            "    from pathlib import Path\n"
+            '    return pl.scan_parquet(Path(__file__).parent / "data.parquet")'
+        )
+        result = _extract_source_user_code(body)
+        assert result == ""
+
+    def test_duplicate_generated_load_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
+            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert result == ""
+
+    def test_stale_generated_import_and_load_block_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
+            "    from pathlib import Path\n"
+            "    df = pl.scan_parquet(\n"
+            '        Path(__file__).parent / "data.parquet"\n'
+            "    )\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert result == ""
+
+    def test_transform_after_stale_generated_load_block_is_preserved(self):
+        body = (
+            "    from pathlib import Path\n"
+            '    df = pl.scan_csv(Path(__file__).parent / "data.csv")\n'
+            "    from pathlib import Path\n"
+            "    df = pl.scan_csv(\n"
+            '        Path(__file__).parent / "data.csv"\n'
+            "    )\n"
+            "    df = df.filter(pl.col('x') > 0)\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert result == "df = df.filter(pl.col('x') > 0)"
+
+
+# ===========================================================================
+# _extract_scenario_expander_user_code
+# ===========================================================================
+
+
+class TestExtractScenarioExpanderUserCode:
+    def test_generated_passthrough_is_not_user_code(self):
+        body = "    return quotes"
+        result = _extract_scenario_expander_user_code(body, ["quotes"])
+        assert result == ""
+
+    def test_generated_alias_is_stripped_but_post_code_is_preserved(self):
+        body = "    df = quotes\n    df = df.filter(pl.col('scenario_value') > 1)\n    return df"
+        result = _extract_scenario_expander_user_code(body, ["quotes"])
+        assert result == "df = df.filter(pl.col('scenario_value') > 1)"
+
+    def test_handwritten_first_statement_is_not_mistaken_for_scaffold(self):
+        body = "    df = df.filter(pl.col('scenario_value') > 1)\n    return df"
+        result = _extract_scenario_expander_user_code(body, ["quotes"])
+        assert result == "df = df.filter(pl.col('scenario_value') > 1)"
 
 
 # ===========================================================================
@@ -1426,6 +1519,8 @@ class TestExtractModelScoreUserCode:
         )
         result = _extract_model_score_user_code(body)
         assert "with_columns" in result
+        assert "result" not in result
+        assert "df" in result
 
     def test_extracts_code_after_scoring_call(self):
         body = (
@@ -1435,6 +1530,7 @@ class TestExtractModelScoreUserCode:
         )
         result = _extract_model_score_user_code(body)
         assert "filter" in result
+        assert result == "df = df.filter(pl.col('x') > 0)"
 
     def test_no_sentinel_and_no_score_returns_empty(self):
         body = "    x = 1\n    return x"
@@ -1454,6 +1550,7 @@ class TestExtractModelScoreUserCode:
         result = _extract_model_score_user_code(body)
         assert "with_columns" in result
         assert "score_from_config" not in result
+        assert "result" not in result
 
     def test_no_code_after_score_returns_empty(self):
         body = (
@@ -1463,6 +1560,72 @@ class TestExtractModelScoreUserCode:
         )
         result = _extract_model_score_user_code(body)
         assert result == ""
+
+    def test_score_to_df_template_return_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import score_from_config\n"
+            "    base = str(Path(__file__).parent)\n"
+            "    df = score_from_config(\n"
+            '        source, config="config/model_scoring/Score.json",\n'
+            "        base_dir=base,\n"
+            "    )\n"
+            "    return df"
+        )
+        result = _extract_model_score_user_code(body)
+        assert result == ""
+
+    def test_score_to_df_template_preserves_only_post_score_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import score_from_config\n"
+            "    base = str(Path(__file__).parent)\n"
+            "    df = score_from_config(\n"
+            '        source, config="config/model_scoring/Score.json",\n'
+            "        base_dir=base,\n"
+            "    )\n"
+            "    df = df.with_columns(double_score=pl.col('prediction') * 2)\n"
+            "    return df"
+        )
+        result = _extract_model_score_user_code(body)
+        assert result == "df = df.with_columns(double_score=pl.col('prediction') * 2)"
+        assert "score_from_config" not in result
+
+
+# ===========================================================================
+# _extract_rating_step_user_code
+# ===========================================================================
+
+
+class TestExtractRatingStepUserCode:
+    def test_rating_scaffold_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import apply_rating_step_from_config\n"
+            "    base = Path(__file__).parent\n"
+            "    df = apply_rating_step_from_config(\n"
+            '        quotes, "config/rating_step/Rate.json", base_dir=base\n'
+            "    )\n"
+            "    return df"
+        )
+        result = _extract_rating_step_user_code(body, ["quotes"])
+        assert result == ""
+
+    def test_rating_post_code_can_reference_original_input_name(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import apply_rating_step_from_config\n"
+            "    base = Path(__file__).parent\n"
+            "    df = apply_rating_step_from_config(\n"
+            '        quotes, "config/rating_step/Rate.json", base_dir=base\n'
+            "    )\n"
+            "    audit = quotes.select('quote_id')\n"
+            "    df = df.join(audit, on='quote_id')\n"
+            "    return df"
+        )
+        result = _extract_rating_step_user_code(body, ["quotes"])
+        assert "audit = quotes.select('quote_id')" in result
+        assert "apply_rating_step_from_config" not in result
 
 
 # ===========================================================================
@@ -1520,6 +1683,20 @@ class TestExtractExternalUserCode:
         result = _extract_external_user_code(body, ["df"])
         assert "x = obj.predict" in result
         assert "with_columns" in result
+
+    def test_multiline_load_external_object_is_not_user_code(self):
+        body = (
+            "from pathlib import Path\n"
+            "from haute.graph_utils import load_external_object\n"
+            "obj = load_external_object(\n"
+            '    Path(__file__).parent / "model.pkl", "pickle"\n'
+            ")\n"
+            "df = df.limit(10)\n"
+            "return df"
+        )
+        result = _extract_external_user_code(body, ["df"])
+        assert result == "df = df.limit(10)"
+        assert "load_external_object" not in result
 
 
 # ===========================================================================

@@ -208,7 +208,9 @@ class TestModelScoreCodegen:
 
         assert "score_from_config" in code
         assert "doubled" in code
-        assert "return result" in code
+        assert 'df = df.with_columns(doubled=pl.col("prediction") * 2)' in code
+        assert "return df" in code
+        assert "return result" not in code
         compile(code, "<test_user_code>", "exec")
 
 

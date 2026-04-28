@@ -30,6 +30,8 @@ from haute._ast_helpers import (
 from haute._code_extraction import (
     _extract_external_user_code,
     _extract_model_score_user_code,
+    _extract_rating_step_user_code,
+    _extract_scenario_expander_user_code,
     _extract_source_user_code,
     _extract_user_code,
     _unwrap_chain_assignment,
@@ -65,7 +67,9 @@ __all__ = [
     # Code extraction
     "_extract_user_code",
     "_extract_source_user_code",
+    "_extract_scenario_expander_user_code",
     "_extract_model_score_user_code",
+    "_extract_rating_step_user_code",
     "_extract_external_user_code",
     "_unwrap_chain_assignment",
     # Config construction

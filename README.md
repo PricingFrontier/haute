@@ -56,6 +56,8 @@ The visual editor and the code are always the same thing. Every node you create,
 
 If you've built rating structures in spreadsheets or used other pricing tools, this will feel familiar - except everything runs on your machine and you own the output.
 
+Rating step nodes are built for the messy middle of pricing work: many factor tables, raw string factors as well as banded factors, Excel-style copy and paste, optional combined outputs, and optional Polars code that runs after the table lookups.
+
 ---
 
 ## Click any price. See exactly how it was calculated.

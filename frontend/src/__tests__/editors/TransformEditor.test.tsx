@@ -86,6 +86,18 @@ describe("TransformEditor", () => {
     expect(editor.defaultValue).toBe("")
   })
 
+  it("does not synthesize input alias scaffold when inputs are connected", () => {
+    const inputs = [
+      { varName: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+    ]
+    render(
+      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("")
+    expect(editor.defaultValue).not.toContain("df = claims")
+  })
+
   it("shows single input source name with 'Input' singular label", () => {
     const inputs = [
       { varName: "quotes", sourceLabel: "Quotes Data", edgeId: "e1" },

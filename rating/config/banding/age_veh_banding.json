@@ -1,0 +1,148 @@
+{
+  "factors": [
+    {
+      "banding": "breakpoints",
+      "column": "proposer_age",
+      "outputColumn": "proposer_age_band",
+      "rules": [
+        {
+          "boundary": "27",
+          "label": "20-27"
+        },
+        {
+          "boundary": "34",
+          "label": "28-34"
+        },
+        {
+          "boundary": "41",
+          "label": "35-41"
+        },
+        {
+          "boundary": "48",
+          "label": "42-48"
+        },
+        {
+          "boundary": "55",
+          "label": "49-55"
+        },
+        {
+          "boundary": "62",
+          "label": "56-62"
+        },
+        {
+          "boundary": "69",
+          "label": "63-69"
+        },
+        {
+          "boundary": "76",
+          "label": "70-76"
+        },
+        {
+          "boundary": "83",
+          "label": "77-83"
+        },
+        {
+          "boundary": "88",
+          "label": "84-88"
+        }
+      ],
+      "default": null
+    },
+    {
+      "banding": "breakpoints",
+      "column": "vehicle_age",
+      "outputColumn": "vehicle_age_band",
+      "rules": [
+        {
+          "boundary": "3",
+          "label": "1–3"
+        },
+        {
+          "boundary": "5",
+          "label": "4–5"
+        },
+        {
+          "boundary": "7",
+          "label": "6–7"
+        },
+        {
+          "boundary": "9",
+          "label": "8–9"
+        },
+        {
+          "boundary": "11",
+          "label": "10–11"
+        },
+        {
+          "boundary": "13",
+          "label": "12–13"
+        },
+        {
+          "boundary": "15",
+          "label": "14–15"
+        },
+        {
+          "boundary": "17",
+          "label": "16–17"
+        },
+        {
+          "boundary": "19",
+          "label": "18–19"
+        },
+        {
+          "boundary": "21",
+          "label": "20–21"
+        }
+      ],
+      "default": null
+    },
+    {
+      "banding": "categorical",
+      "column": "channel",
+      "outputColumn": "channel_band",
+      "rules": [
+        {
+          "value": "compare_the_market",
+          "assignment": "compare_the_market"
+        },
+        {
+          "value": "moneysupermarket",
+          "assignment": "moneysupermarket"
+        },
+        {
+          "value": "confused",
+          "assignment": "confused"
+        },
+        {
+          "value": "gocompare",
+          "assignment": "gocompare"
+        },
+        {
+          "value": "direct_web",
+          "assignment": "direct_web"
+        },
+        {
+          "value": "broker",
+          "assignment": "broker"
+        },
+        {
+          "value": "direct_phone",
+          "assignment": "direct_phone"
+        }
+      ],
+      "default": null
+    }
+  ],
+  "contract": {
+    "inputs": [
+      "channel",
+      "proposer_age",
+      "vehicle_age"
+    ],
+    "outputs": [
+      "channel_band",
+      "proposer_age_band",
+      "vehicle_age_band"
+    ]
+  }
+}

@@ -11,7 +11,14 @@ vi.mock("../editors", () => ({
   TransformEditor: () => <div data-testid="TransformEditor" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => <div data-testid="BandingEditor" data-preview-rows={props.previewRows ? JSON.stringify(props.previewRows) : undefined} />,
-  RatingStepEditor: () => <div data-testid="RatingStepEditor" />,
+  RatingStepEditor: (props: Record<string, unknown>) => (
+    <div
+      data-testid="RatingStepEditor"
+      data-node-id={props.nodeId ? String(props.nodeId) : undefined}
+      data-preview-rows={props.previewRows ? JSON.stringify(props.previewRows) : undefined}
+      data-upstream-columns={props.upstreamColumns ? JSON.stringify(props.upstreamColumns) : undefined}
+    />
+  ),
   OutputEditor: () => <div data-testid="OutputEditor" />,
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
   ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
@@ -153,8 +160,8 @@ describe("NodePanel", () => {
   })
 
   it("renders RatingStepEditor for ratingStep nodes", () => {
-    renderPanel({ node: makeNode({ data: { label: "RS", description: "", nodeType: "ratingStep", config: {} } }) })
-    expect(screen.getByTestId("RatingStepEditor")).toBeInTheDocument()
+    renderPanel({ node: makeNode({ id: "rating_1", data: { label: "RS", description: "", nodeType: "ratingStep", config: {} } }) })
+    expect(screen.getByTestId("RatingStepEditor")).toHaveAttribute("data-node-id", "rating_1")
   })
 
   it("renders ModellingConfig for modelling nodes", () => {
@@ -577,6 +584,42 @@ describe("NodePanel", () => {
       })
       const editor = screen.getByTestId("BandingEditor")
       expect(editor.getAttribute("data-preview-rows")).toBeNull()
+    })
+
+    it("passes previewRows and upstream columns to RatingStepEditor", () => {
+      const rows = [{ channel: "direct", premium: 100 }, { channel: "broker", premium: 125 }]
+      const upstreamNode = makeNode({
+        id: "up_1",
+        data: {
+          label: "Source",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [
+            { name: "channel", dtype: "String" },
+            { name: "premium", dtype: "Float64" },
+          ],
+        },
+      })
+      const ratingNode = makeNode({
+        id: "rating_1",
+        data: { label: "Rating", description: "", nodeType: "ratingStep", config: {} },
+      })
+      const edges: SimpleEdge[] = [{ id: "e1", source: "up_1", target: "rating_1" }]
+
+      renderPanel({
+        node: ratingNode,
+        allNodes: [upstreamNode, ratingNode],
+        edges,
+        previewRows: rows,
+      })
+
+      const editor = screen.getByTestId("RatingStepEditor")
+      expect(editor.getAttribute("data-preview-rows")).toBe(JSON.stringify(rows))
+      expect(editor.getAttribute("data-upstream-columns")).toBe(JSON.stringify([
+        { name: "channel", dtype: "String" },
+        { name: "premium", dtype: "Float64" },
+      ]))
     })
   })
 

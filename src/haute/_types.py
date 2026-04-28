@@ -164,6 +164,8 @@ class RatingStepConfig(TypedDict, total=False):
     tables: list[RatingTable]
     operation: str  # "multiply" | "add" | "min" | "max"
     combinedColumn: str
+    combinedOutputs: list[dict[str, Any]]
+    code: str
 
 
 class OutputConfig(TypedDict, total=False):

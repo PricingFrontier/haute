@@ -1,0 +1,1128 @@
+{
+  "tables": [
+    {
+      "name": "veh_age_adj",
+      "factors": [
+        "vehicle_age_band",
+        "cover_type",
+        "channel"
+      ],
+      "outputColumn": "veh_age_adj",
+      "defaultValue": "1.0",
+      "entries": [
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.06
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.09
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.09
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.09
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.06
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.06
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "1–3",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.07
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.07
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.07
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "4–5",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.08
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.08
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.08
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "6–7",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.09
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.09
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.09
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "8–9",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "10–11",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.16
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.16
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.11
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.16
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "12–13",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.17
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.17
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.12
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.17
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "14–15",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.18
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.18
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.16
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.16
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.16
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.13
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.18
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "16–17",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.19
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.19
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.17
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.17
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.17
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.14
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.19
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "18–19",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_only",
+          "channel": "confused",
+          "value": 0.2
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_only",
+          "channel": "compare_the_market",
+          "value": 0.2
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_only",
+          "channel": "moneysupermarket",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_only",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_only",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_only",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "comprehensive",
+          "channel": "confused",
+          "value": 0.18
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "comprehensive",
+          "channel": "compare_the_market",
+          "value": 0.18
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "comprehensive",
+          "channel": "moneysupermarket",
+          "value": 0.18
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "comprehensive",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "comprehensive",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "comprehensive",
+          "channel": "broker",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "confused",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "compare_the_market",
+          "value": 0.15
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "moneysupermarket",
+          "value": 0.2
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "direct_web",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "gocompare",
+          "value": 1
+        },
+        {
+          "vehicle_age_band": "20–21",
+          "cover_type": "third_party_fire_and_theft",
+          "channel": "broker",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "cover_adj",
+      "factors": [
+        "cover_type"
+      ],
+      "outputColumn": "cover_adj",
+      "defaultValue": "1.0",
+      "entries": [
+        {
+          "cover_type": "third_party_only",
+          "value": 1.2
+        },
+        {
+          "cover_type": "comprehensive",
+          "value": 1.1
+        },
+        {
+          "cover_type": "third_party_fire_and_theft",
+          "value": 1
+        }
+      ]
+    }
+  ],
+  "operation": "multiply",
+  "combinedColumn": "multiplied",
+  "contract": "opaque",
+  "combinedOutputs": [
+    {
+      "outputColumn": "multiplied",
+      "operation": "multiply",
+      "baseValue": "1.0"
+    }
+  ]
+}
