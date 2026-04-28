@@ -376,11 +376,12 @@ def _focus_banding_factor(
     factor_details: list[dict[str, Any]],
     traced_column: str | None,
 ) -> dict[str, Any] | None:
-    """Return the banding factor for the traced output, falling back to the first."""
+    """Return the traced factor, or the first factor when no trace column is set."""
     if traced_column:
         for detail in factor_details:
             if detail.get("output_column") == traced_column:
                 return detail
+        return None
     return factor_details[0] if factor_details else None
 
 
@@ -531,9 +532,13 @@ def enrich_banding(
                                 matched_rule = dict(rule)
                                 break
 
-                if rule_index == -1 and default is not None and _values_equivalent(
-                    selected_band,
-                    default,
+                if (
+                    rule_index == -1
+                    and default is not None
+                    and _values_equivalent(
+                        selected_band,
+                        default,
+                    )
                 ):
                     is_default = True
 
@@ -976,8 +981,10 @@ def _build_input_sources(
     result: dict[str, Any] = {}
     try:
         current_step_index = all_steps.index(current_step)
-    except ValueError:
-        current_step_index = len(all_steps)
+    except ValueError as exc:
+        raise ValueError(
+            f"current_step {current_step.node_id!r} is not present in all_steps"
+        ) from exc
 
     for ref_col in ref_cols:
         visit_key = (current_step.node_id, ref_col)

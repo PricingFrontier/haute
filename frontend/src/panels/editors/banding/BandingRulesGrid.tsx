@@ -2,7 +2,7 @@ import { useRef, useEffect, useMemo, useCallback } from "react"
 import { Copy, Trash } from "lucide-react"
 import { CHART_COLORS } from "../../../theme/colors"
 import useToastStore from "../../../stores/useToastStore"
-import { buildTsv, parsePastedGrid } from "../shared/tableClipboard"
+import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 import type { BandingFactor, ContinuousRule, CategoricalRule, BreakpointRule } from "../../../types/banding"
 
 const OPS = ["<", "<=", ">", ">=", "="]
@@ -257,7 +257,7 @@ export function BandingRulesGrid({
   }, [rules, bt])
 
   const handleCopyBanding = useCallback(() => {
-    void navigator.clipboard.writeText(rulesToTsv(rules, bt === "categorical" ? "categorical" : "continuous")).catch((error: unknown) => {
+    void writeClipboardText(rulesToTsv(rules, bt === "categorical" ? "categorical" : "continuous")).catch((error: unknown) => {
       const detail = error instanceof Error ? error.message : String(error)
       addToast("error", `Could not copy banding TSV: ${detail}`)
     })

@@ -81,6 +81,17 @@ function formatBandingDetail(detail: TraceNodeDetail): string[] {
   const banding = detail as BandingNodeDetail
   const inputColumn = banding.input_column ?? banding.column
   const matchedBand = banding.matched_band ?? banding.selected_band
+  if (banding.input_value === undefined && matchedBand === undefined) {
+    const factors = Array.isArray(banding.factors) ? banding.factors : []
+    if (factors.length === 0) return ["Banding"]
+    const factorSummaries = factors.map((factor, index) => {
+      const factorInput = factor.input_column ?? factor.column
+      const factorOutput = factor.output_column
+      if (factorInput && factorOutput) return `${factorInput} -> ${factorOutput}`
+      return factorOutput ?? factorInput ?? `factor ${index + 1}`
+    })
+    return [`Banding factors: ${factorSummaries.join("; ")}`]
+  }
   const parts = [
     `Banding: ${inputColumn ? `${inputColumn}=` : ""}${formatVal(banding.input_value)} -> ${formatVal(matchedBand)}`,
   ]

@@ -1,11 +1,25 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { BreakpointGrid } from "../BreakpointGrid"
+import useToastStore from "../../../../stores/useToastStore"
 
 const ACCENT = "#f97316"
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+
+function restoreClipboard(): void {
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor)
+    return
+  }
+  Reflect.deleteProperty(navigator, "clipboard")
+}
 
 describe("BreakpointGrid", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    restoreClipboard()
+  })
 
   it("renders empty state with helpful guidance when no breakpoints", () => {
     render(
@@ -179,6 +193,31 @@ describe("BreakpointGrid", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
 
     expect(writeText).toHaveBeenCalledWith("Up to\tBand name\n10\tLow\n20\tMid")
+  })
+
+  it("shows a toast when the clipboard API is unavailable", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    })
+    render(
+      <BreakpointGrid
+        breakpoints={[{ boundary: "10", label: "Low" }]}
+        onUpdate={vi.fn()}
+        accentColor={ACCENT}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          text: "Could not copy banding TSV: Clipboard API is not available",
+        }),
+      )
+    })
   })
 
   it("flags breakpoint boundaries that are out of sequence", () => {

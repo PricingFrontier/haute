@@ -1,7 +1,7 @@
 import { AlertTriangle, Copy, Plus, Trash } from "lucide-react"
 import { withAlpha } from "../../../utils/color"
 import useToastStore from "../../../stores/useToastStore"
-import { buildTsv, parsePastedGrid } from "../shared/tableClipboard"
+import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 
 type Breakpoint = { boundary: string; label: string }
 
@@ -143,7 +143,7 @@ export function BreakpointGrid({
   }
 
   const copyBanding = () => {
-    void navigator.clipboard.writeText(breakpointsToTsv(breakpoints)).catch((error: unknown) => {
+    void writeClipboardText(breakpointsToTsv(breakpoints)).catch((error: unknown) => {
       const detail = error instanceof Error ? error.message : String(error)
       addToast("error", `Could not copy banding TSV: ${detail}`)
     })

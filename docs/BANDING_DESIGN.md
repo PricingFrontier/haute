@@ -78,3 +78,44 @@ The parser accepts both; the codegen emits whichever is appropriate.
 - `frontend/src/App.tsx` — node type registration
 - `frontend/src/utils/nodeTypes.ts` — icon, colour, label
 - `tests/test_banding.py` — 21 tests
+
+---
+
+# Banding Editor And Trace Improvements
+
+## Problem
+
+Banding rules are often copied in from spreadsheets, adjusted in-place, and then audited through preview traces. Before this improvement, the banding grids had wider spreadsheet-like spacing, could paste only whole rule rows reliably, and had no one-click copy for the whole factor. Trace output for banding-created fields also looked like a generic computed value, which hid the source value and made the lineage harder to follow.
+
+## Approach
+
+The banding editor keeps the existing boxed-cell visual style, but reduces cell padding and removes row divider lines so dense rule tables remain easy to scan. Continuous, categorical, and breakpoint grids support range paste starting from any editable cell; pasted header rows are ignored when they match the supported copy headers. Each factor has a copy action that exports the visible rules as TSV for spreadsheet use.
+
+Breakpoint rows validate ordering in the editor and surface out-of-order ranges as inline warnings rather than changing runtime semantics. The warnings are local UI feedback only; execution still uses the Python config as the source of truth.
+
+Trace enrichment now emits structured banding details for the traced output column, including the input column/value, selected band, matched rule, default status, and range bounds where applicable. The calculation payload uses compact text such as `driver_age -> age_band` and `22 -> "young"`, and recursively attaches upstream input sources so a banding output continues the same lineage chain as other calculated fields.
+
+The frontend renders banding traces as one concise line such as `driver_age=22 -> young`. Range/default metadata appears as small secondary chips, and markdown export collapses real backend payloads into a single `Banding:` detail instead of repeating the expression, substituted value, and raw metadata separately.
+
+## Alternatives Considered
+
+### Reuse The Rating-Step Table Renderer
+
+Rejected. Rating-step tables are lookup tables, while banding rules are editable range/category definitions. Sharing clipboard helpers is useful, but forcing both editors through one renderer would make the banding UI less direct.
+
+### Keep Banding Trace As Opaque Computed Output
+
+Rejected because it breaks the traceability requirement. Users need to see the input value that selected a band and then continue following that input's upstream source.
+
+### Show Full Rule Conditions In The Trace Headline
+
+Rejected because the trace panel is narrow and long condition text truncates quickly. The headline stays `input=value -> band`; bounds/default metadata is secondary.
+
+## Open Questions
+
+- Whether multi-factor banding traces should expose a compact factor switcher when the user traces the node rather than a specific output column.
+- Whether breakpoint warning styling should eventually block saving invalid configurations or remain advisory while Python remains canonical.
+
+## Verification
+
+The regression coverage includes clipboard parsing/copy tests for banding grids, breakpoint ordering warnings, direct backend enrichment tests, execute-trace integration tests for banding-created fields and chained lineage, frontend calculation-panel tests, markdown export tests, and response parser contract tests for nested input sources.

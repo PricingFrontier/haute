@@ -247,6 +247,8 @@ function NodeDetailBlock({
     const banding = asBandingDetail(detail)
     const inputColumn = banding.input_column ?? banding.column
     const matchedBand = banding.matched_band ?? banding.selected_band
+    const hasBandingSummary = banding.input_value !== undefined || matchedBand !== undefined
+    const factorCount = Array.isArray(banding.factors) ? banding.factors.length : 0
     const hasRange = banding.lower_bound != null || banding.upper_bound != null
     const lower = banding.lower_bound != null ? formatValue(banding.lower_bound) : ""
     const upper = banding.upper_bound != null ? formatValue(banding.upper_bound) : ""
@@ -257,13 +259,18 @@ function NodeDetailBlock({
     return (
       <div className="my-2 flex flex-wrap items-center gap-1.5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
         {showBandingSummary && <span style={labelStyle}>Banding</span>}
-        {showBandingSummary && (
+        {showBandingSummary && hasBandingSummary && (
           <span
             aria-label={`Banding: ${bandingSummary}`}
             className="px-1.5 py-0.5 rounded"
             style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}
           >
             {bandingSummary}
+          </span>
+        )}
+        {showBandingSummary && !hasBandingSummary && factorCount > 0 && (
+          <span className="px-1.5 py-0.5 rounded" style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}>
+            {factorCount} factor{factorCount === 1 ? "" : "s"}
           </span>
         )}
         {hasRange && (

@@ -1,8 +1,19 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { BandingRulesGrid } from "../BandingRulesGrid"
 import type { BandingFactor, ContinuousRule, CategoricalRule } from "../../../../types/banding"
 import { CHART_COLORS } from "../../../../theme/colors"
+import useToastStore from "../../../../stores/useToastStore"
+
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+
+function restoreClipboard(): void {
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor)
+    return
+  }
+  Reflect.deleteProperty(navigator, "clipboard")
+}
 
 function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
   return {
@@ -16,7 +27,11 @@ function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
 }
 
 describe("BandingRulesGrid", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    restoreClipboard()
+  })
 
   it("renders empty state for continuous banding with no rules", () => {
     render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={vi.fn()} />)
@@ -507,6 +522,28 @@ describe("BandingRulesGrid", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
 
     expect(writeText).toHaveBeenCalledWith("Value\tMaps To\nLondon\tSouth\nLeeds\tNorth")
+  })
+
+  it("shows a toast when the clipboard API is unavailable", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    })
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "copy-missing" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          text: "Could not copy banding TSV: Clipboard API is not available",
+        }),
+      )
+    })
   })
 
   it("shows the copy banding action as an icon-only control below the grid", () => {

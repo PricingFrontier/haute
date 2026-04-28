@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from haute.graph_utils import GraphNode, NodeData, NodeType
-from haute.trace import TraceResult, TraceStep, execute_trace
+from haute.trace import SchemaDiff, TraceResult, TraceStep, execute_trace
 from tests.conftest import (
     make_edge as _edge,
 )
@@ -41,6 +42,34 @@ def _banding_node(
             config={"factors": [factor]},
         ),
     )
+
+
+def test_build_input_sources_rejects_steps_outside_trace_order():
+    """Lineage should fail loudly if called with a step outside the trace order."""
+    from haute._trace_enrichment import _build_input_sources
+
+    current_step = TraceStep(
+        node_id="current",
+        node_name="Current",
+        node_type="polars",
+        schema_diff=SchemaDiff(
+            columns_added=["derived"],
+            columns_removed=[],
+            columns_modified=[],
+            columns_passed=[],
+        ),
+        input_values={"source": 1},
+        output_values={"derived": 2},
+    )
+
+    with pytest.raises(ValueError, match="current_step 'current' is not present"):
+        _build_input_sources(
+            ["source"],
+            current_step,
+            [],
+            {},
+            None,
+        )
 
 
 def test_banding_trace_shows_source_value_and_lineage(tmp_path):

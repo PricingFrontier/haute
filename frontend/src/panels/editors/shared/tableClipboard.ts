@@ -15,3 +15,11 @@ export function parsePastedGrid(text: string): string[][] {
 export function buildTsv(rows: readonly (readonly string[])[]): string {
   return rows.map(row => row.join("\t")).join("\n")
 }
+
+export function writeClipboardText(text: string): Promise<void> {
+  const clipboard = navigator.clipboard
+  if (!clipboard) {
+    return Promise.reject(new Error("Clipboard API is not available"))
+  }
+  return clipboard.writeText(text)
+}

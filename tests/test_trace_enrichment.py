@@ -2969,6 +2969,39 @@ class TestEnrichBandingRealConfig:
         assert result["matched_band"] == "N"
         assert result["selected_band"] == "N"
 
+    def test_multiple_factors_do_not_fallback_when_traced_output_is_unknown(self):
+        """Unknown traced outputs keep factor details without inventing a top-level match."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                },
+                {
+                    "column": "region",
+                    "outputColumn": "region_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "north", "assignment": "N"}],
+                },
+            ]
+        }
+
+        result = enrich_banding(
+            config,
+            {"age": 20, "region": "north"},
+            {"age_band": "young", "region_band": "N"},
+            traced_column="passed_through_column",
+        )
+
+        assert len(result["factors"]) == 2
+        assert "input_column" not in result
+        assert "output_column" not in result
+        assert "selected_band" not in result
+
     def test_continuous_banding_no_match_uses_default(self):
         """Continuous banding falls to default when no rule matches."""
         from haute._trace_enrichment import enrich_banding

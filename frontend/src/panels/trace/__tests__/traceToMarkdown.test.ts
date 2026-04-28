@@ -693,6 +693,38 @@ describe("traceToMarkdown", () => {
     expect(md).not.toContain("detail_type: banding")
   })
 
+  it("does not invent a banding summary when traced column is not a banding output", () => {
+    const trace = makeTrace({
+      column: "driver_age",
+      output_value: 35,
+      steps: [
+        makeStep({
+          node_id: "n1",
+          node_name: "Age Banding",
+          node_type: "banding",
+          schema_diff: {
+            columns_added: ["age_band", "region_band"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: ["driver_age"],
+          },
+          node_detail: {
+            detail_type: "banding",
+            factors: [
+              { column: "driver_age", output_column: "age_band" },
+              { column: "region", output_column: "region_band" },
+            ],
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("Banding factors: driver_age -> age_band; region -> region_band")
+    expect(md).not.toContain("Banding: null -> null")
+  })
+
   it("empty steps array produces minimal output with header but no data flow", () => {
     const trace = makeTrace({ steps: [] })
     const md = traceToMarkdown(trace, null)
