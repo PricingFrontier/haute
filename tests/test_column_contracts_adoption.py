@@ -1049,27 +1049,29 @@ class TestContractOverheadBenchmark:
         pl_.DataFrame({"age": [float(i) for i in range(10_000)]}).write_parquet(pq)
         graph = self._build_chain_graph(100, str(pq))
 
+        # Warm both paths before timing so the perf lane measures
+        # enforcement overhead, not first-run import/setup asymmetry.
         self._execute(graph, enforce=False)
+        self._execute(graph, enforce=True)
 
         iterations = 5
-        t_without_total = 0.0
-        t_with_total = 0.0
-        for _ in range(iterations):
-            _preview_cache.invalidate()
-            t0 = time.perf_counter()
-            self._execute(graph, enforce=False)
-            t_without_total += time.perf_counter() - t0
+        without_samples: list[float] = []
+        with_samples: list[float] = []
+        for iteration in range(iterations):
+            order = (False, True) if iteration % 2 == 0 else (True, False)
+            for enforce in order:
+                _preview_cache.invalidate()
+                t0 = time.perf_counter()
+                self._execute(graph, enforce=enforce)
+                elapsed = time.perf_counter() - t0
+                if enforce:
+                    with_samples.append(elapsed)
+                else:
+                    without_samples.append(elapsed)
 
-            _preview_cache.invalidate()
-            t0 = time.perf_counter()
-            self._execute(graph, enforce=True)
-            t_with_total += time.perf_counter() - t0
-
-        t_without = t_without_total / iterations
-        t_with = t_with_total / iterations
-        overhead = (
-            (t_with_total - t_without_total) / t_without_total if t_without_total > 0 else 0.0
-        )
+        t_without = statistics.median(without_samples)
+        t_with = statistics.median(with_samples)
+        overhead = ((t_with - t_without) / t_without) if t_without > 0 else 0.0
         assert overhead < 0.05, (
             f"Contract enforcement overhead is {overhead:.1%} "
             f"({t_without * 1000:.1f}ms -> {t_with * 1000:.1f}ms), exceeds "
