@@ -54,6 +54,24 @@ def test_changed_file_selection_limits_pr_smoke_to_owned_target() -> None:
     assert [target.name for target in selected] == ["path-resolution"]
 
 
+def test_changed_file_selection_ignores_unowned_python_files() -> None:
+    selected = _select_targets_for_changed_files(
+        _targets(),
+        ["tests/test_column_contracts_adoption.py", "src/haute/_rating.py"],
+    )
+
+    assert selected == []
+
+
+def test_changed_runner_script_does_not_select_unrelated_targets() -> None:
+    selected = _select_targets_for_changed_files(
+        _targets(),
+        ["scripts/run_mutation_suite.py"],
+    )
+
+    assert selected == []
+
+
 def test_mutation_runner_dry_run_writes_manifest_without_cosmic_ray(tmp_path) -> None:
     exit_code = main(["--dry-run", "--output-dir", str(tmp_path), "--run-id", "dry"])
 
