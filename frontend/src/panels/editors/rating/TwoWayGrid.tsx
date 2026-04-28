@@ -6,17 +6,7 @@ import { ControlledNumberCell } from "./ControlledNumberCell"
 import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
 import useToastStore from "../../../stores/useToastStore"
-
-function parsePastedGrid(text: string): string[][] {
-  const rows = text
-    .replace(/\r/g, "")
-    .split("\n")
-    .map(line => line.split("\t"))
-  while (rows.length > 0 && rows[rows.length - 1].every(cell => cell.trim() === "")) {
-    rows.pop()
-  }
-  return rows
-}
+import { parsePastedGrid } from "../shared/tableClipboard"
 
 type PastedNumber = { kind: "value"; value: number } | { kind: "blank" } | { kind: "invalid" }
 

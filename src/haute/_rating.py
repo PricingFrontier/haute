@@ -15,6 +15,11 @@ from typing import Any
 
 import polars as pl
 
+from haute._banding_config import (
+    normalise_banding_factors,
+    normalise_banding_rules,
+)
+from haute._rating_step_config import normalise_rating_tables
 from haute._types import _Frame
 
 # ---------------------------------------------------------------------------
@@ -55,7 +60,7 @@ def _apply_banding(
     column: str,
     output_column: str,
     banding_type: str,
-    rules: list[dict[str, Any]],
+    rules: list[dict[str, Any]] | dict[str, Any],
     default: Any = None,
     right_closed: bool = True,
 ) -> _Frame:
@@ -69,6 +74,7 @@ def _apply_banding(
 
         {"value": "Semi-detached House", "assignment": "House"}
     """
+    rules = normalise_banding_rules(banding_type, rules)
     col = pl.col(column)
     default_lit = pl.lit(default) if default is not None else pl.lit(None, dtype=pl.Utf8)
 
@@ -124,7 +130,7 @@ def _apply_banding(
 
 
 def _breakpoints_to_rules(
-    breakpoints: list[dict[str, Any]],
+    breakpoints: list[dict[str, Any]] | dict[str, Any],
     right_closed: bool = True,
 ) -> list[dict[str, Any]]:
     """Convert breakpoint-format rules to continuous banding rules.
@@ -136,6 +142,7 @@ def _breakpoints_to_rules(
     rule uses ``<=`` for its upper bound and subsequent rules use ``>`` / ``<=``.
     When False, intervals are ``[lower, upper)`` using ``>=`` / ``<``.
     """
+    breakpoints = normalise_banding_rules("breakpoints", breakpoints)
     if not breakpoints:
         return []
 
@@ -211,10 +218,7 @@ def _breakpoints_to_rules(
 
 def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the ``factors`` list from banding config."""
-    factors = config.get("factors")
-    if isinstance(factors, list):
-        return factors
-    return []
+    return normalise_banding_factors(config)
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +522,6 @@ def apply_rating_step_from_config(
 
     return _apply_rating_step_outputs(
         lf,
-        resolved_config.get("tables", []) or [],
+        normalise_rating_tables(resolved_config),
         _normalise_combined_outputs(resolved_config),
     )

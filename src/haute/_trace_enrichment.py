@@ -38,8 +38,10 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from haute._banding_config import normalise_banding_factors
 from haute._logging import get_logger
-from haute._rating import _normalise_combined_outputs
+from haute._rating import _breakpoints_to_rules, _normalise_combined_outputs
+from haute._rating_step_config import normalise_rating_tables
 
 if TYPE_CHECKING:
     from haute.trace import TraceStep
@@ -179,7 +181,7 @@ def enrich_rating_step(
     Handles both real Haute config (with ``tables`` list) and simplified
     test config (with ``join_key`` and ``rate_column``).
     """
-    tables: list[dict[str, Any]] = config.get("tables", []) or []
+    tables = normalise_rating_tables(config)
     combined_col = str(config.get("combinedColumn", "") or "").strip()
     has_combined_outputs = "combinedOutputs" in config
 
@@ -309,10 +311,178 @@ def _match_continuous_rule(
     return True
 
 
+def _values_equivalent(left: Any, right: Any) -> bool:
+    """Compare labels the same way banding runtime casts assignments."""
+    return str(left) == str(right)
+
+
+def _categorical_rule_matches(
+    input_value: Any,
+    selected_band: Any,
+    rule: dict[str, Any],
+) -> bool:
+    """Mirror categorical banding's Utf8 remap semantics for one rule."""
+    rule_val = rule.get("value", "")
+    rule_assignment = rule.get("assignment", "")
+    if rule_val is None or rule_val == "":
+        return False
+    if rule_assignment is None or rule_assignment == "":
+        return False
+    return str(input_value) == str(rule_val) and str(selected_band) == str(rule_assignment)
+
+
+def _continuous_rule_bounds(rule: dict[str, Any]) -> dict[str, Any]:
+    """Extract range metadata from a continuous banding rule for trace display."""
+    result: dict[str, Any] = {
+        "lower_bound": None,
+        "upper_bound": None,
+        "lower_inclusive": None,
+        "upper_inclusive": None,
+        "conditions": [],
+    }
+
+    for suffix in ("1", "2"):
+        op = str(rule.get(f"op{suffix}", "") or "").strip()
+        threshold = rule.get(f"val{suffix}")
+        if not op or threshold is None or threshold == "":
+            continue
+        try:
+            threshold_value: Any = float(threshold)
+        except (ValueError, TypeError):
+            threshold_value = threshold
+
+        result["conditions"].append({"operator": op, "value": threshold_value})
+
+        if op == ">":
+            result["lower_bound"] = threshold_value
+            result["lower_inclusive"] = False
+        elif op == ">=":
+            result["lower_bound"] = threshold_value
+            result["lower_inclusive"] = True
+        elif op == "<":
+            result["upper_bound"] = threshold_value
+            result["upper_inclusive"] = False
+        elif op == "<=":
+            result["upper_bound"] = threshold_value
+            result["upper_inclusive"] = True
+        elif op in {"=", "=="}:
+            result["lower_bound"] = threshold_value
+            result["upper_bound"] = threshold_value
+            result["lower_inclusive"] = True
+            result["upper_inclusive"] = True
+
+    return result
+
+
+def _focus_banding_factor(
+    factor_details: list[dict[str, Any]],
+    traced_column: str | None,
+) -> dict[str, Any] | None:
+    """Return the traced factor, or the first factor when no trace column is set."""
+    if traced_column:
+        for detail in factor_details:
+            if detail.get("output_column") == traced_column:
+                return detail
+        return None
+    return factor_details[0] if factor_details else None
+
+
+def _copy_banding_factor_summary(result: dict[str, Any], factor: dict[str, Any]) -> None:
+    """Populate top-level convenience fields from one factor detail."""
+    for key in (
+        "column",
+        "input_column",
+        "output_column",
+        "banding_type",
+        "input_value",
+        "selected_band",
+        "matched_band",
+        "rule_index",
+        "is_default",
+        "status",
+        "matched_rule",
+        "matched_value",
+        "lower_bound",
+        "upper_bound",
+        "lower_inclusive",
+        "upper_inclusive",
+        "conditions",
+    ):
+        if key in factor:
+            result[key] = factor[key]
+
+
+def _quote_trace_value(value: Any) -> str:
+    """Format a trace value for compact human-readable calculation text."""
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return f'"{value}"'
+    return str(value)
+
+
+def _format_banding_expression(factor: dict[str, Any]) -> str:
+    input_column = str(factor.get("column", "") or "")
+    output_column = str(factor.get("output_column", "") or "")
+    is_default = bool(factor.get("is_default"))
+
+    expression = f"{input_column} -> {output_column}"
+    return f"{expression} (default)" if is_default else expression
+
+
+def _banding_expression_payload(factor: dict[str, Any]) -> dict[str, Any]:
+    input_column = str(factor.get("column", "") or "")
+    output_column = str(factor.get("output_column", "") or "")
+    return {
+        "target_column": output_column,
+        "expression_text": _format_banding_expression(factor),
+        "expression_type": "banding",
+        "referenced_columns": [input_column] if input_column else [],
+        "constants": [],
+        "sub_expressions": [],
+        "source_line": None,
+    }
+
+
+def _banding_calculation_payload(factor: dict[str, Any]) -> dict[str, Any]:
+    input_column = str(factor.get("column", "") or "")
+    input_value = factor.get("input_value")
+    selected_band = factor.get("selected_band")
+    expression = _banding_expression_payload(factor)
+    rule_index = factor.get("rule_index")
+    taken_branch_index = rule_index if isinstance(rule_index, int) and rule_index >= 0 else None
+    return {
+        **expression,
+        "substituted_text": (
+            f"{_quote_trace_value(input_value)} -> {_quote_trace_value(selected_band)}"
+        ),
+        "result_value": selected_band,
+        "input_values": {input_column: input_value} if input_column else {},
+        "taken_branch": _format_banding_expression(factor),
+        "taken_branch_index": taken_branch_index,
+        "dimmed_branches": [],
+        "nested_branches": [],
+    }
+
+
+def _banding_factor_for_column(
+    detail: dict[str, Any],
+    column: str,
+) -> dict[str, Any] | None:
+    factors = detail.get("factors")
+    if not isinstance(factors, list):
+        return None
+    for factor in factors:
+        if isinstance(factor, dict) and factor.get("output_column") == column:
+            return factor
+    return None
+
+
 def enrich_banding(
     config: dict[str, Any],
     input_row: dict[str, Any],
     output_row: dict[str, Any],
+    traced_column: str | None = None,
 ) -> dict[str, Any]:
     """Enrich a banding node trace.
 
@@ -322,7 +492,7 @@ def enrich_banding(
     ``rules``).
     """
     try:
-        factors = config.get("factors", [])
+        factors = normalise_banding_factors(config)
 
         if isinstance(factors, list) and factors and isinstance(factors[0], dict):
             # Real Haute config — multiple banding factors
@@ -330,9 +500,15 @@ def enrich_banding(
             for factor_cfg in factors:
                 col = factor_cfg.get("column", "")
                 out_col = factor_cfg.get("outputColumn", "")
-                rules = factor_cfg.get("rules", []) or []
+                raw_rules = factor_cfg.get("rules", []) or []
+                rules = raw_rules
                 banding_type = factor_cfg.get("banding", "continuous")
                 default = factor_cfg.get("default")
+                if banding_type == "breakpoints":
+                    rules = _breakpoints_to_rules(
+                        raw_rules,
+                        right_closed=bool(factor_cfg.get("rightClosed", True)),
+                    )
 
                 input_value = input_row.get(col)
                 selected_band = output_row.get(out_col)
@@ -340,50 +516,63 @@ def enrich_banding(
                 # Find which rule matched
                 rule_index = -1
                 is_default = False
+                matched_rule: dict[str, Any] | None = None
 
                 if banding_type == "categorical":
-                    for i, rule in enumerate(rules):
-                        rule_val = rule.get("value", "")
-                        rule_assignment = rule.get("assignment", "")
-                        if str(input_value) == str(rule_val) and rule_assignment == selected_band:
+                    for i, rule in enumerate(raw_rules):
+                        if _categorical_rule_matches(input_value, selected_band, rule):
                             rule_index = i
+                            matched_rule = dict(rule)
                             break
                 else:
                     # Continuous — evaluate each rule against input value
                     for i, rule in enumerate(rules):
                         if _match_continuous_rule(input_value, rule):
                             assignment = rule.get("assignment", "")
-                            if assignment == selected_band:
+                            if _values_equivalent(assignment, selected_band):
                                 rule_index = i
+                                matched_rule = dict(rule)
                                 break
 
-                if rule_index == -1 and default is not None and selected_band == str(default):
+                if (
+                    rule_index == -1
+                    and default is not None
+                    and _values_equivalent(
+                        selected_band,
+                        default,
+                    )
+                ):
                     is_default = True
 
-                factor_details.append(
-                    {
-                        "column": col,
-                        "output_column": out_col,
-                        "banding_type": banding_type,
-                        "input_value": input_value,
-                        "selected_band": selected_band,
-                        "rule_index": rule_index,
-                        "is_default": is_default,
-                    }
-                )
+                status = "default" if is_default else "matched" if rule_index >= 0 else "no_match"
+                factor_detail: dict[str, Any] = {
+                    "column": col,
+                    "input_column": col,
+                    "output_column": out_col,
+                    "banding_type": banding_type,
+                    "input_value": input_value,
+                    "selected_band": selected_band,
+                    "matched_band": selected_band,
+                    "rule_index": rule_index,
+                    "is_default": is_default,
+                    "status": status,
+                    "matched_rule": matched_rule,
+                }
+                if matched_rule is not None:
+                    if banding_type == "categorical":
+                        factor_detail["matched_value"] = matched_rule.get("value")
+                    else:
+                        factor_detail.update(_continuous_rule_bounds(matched_rule))
+                factor_details.append(factor_detail)
 
             result: dict[str, Any] = {
                 "detail_type": "banding",
                 "factors": factor_details,
             }
 
-            # Top-level convenience (first factor for simple cases)
-            if factor_details:
-                f = factor_details[0]
-                result["selected_band"] = f["selected_band"]
-                result["rule_index"] = f["rule_index"]
-                result["is_default"] = f["is_default"]
-                result["input_value"] = f["input_value"]
+            focused_factor = _focus_banding_factor(factor_details, traced_column)
+            if focused_factor:
+                _copy_banding_factor_summary(result, focused_factor)
 
             return result
 
@@ -417,10 +606,14 @@ def enrich_banding(
 
         return {
             "detail_type": "banding",
+            "input_column": input_column,
+            "output_column": output_column,
             "selected_band": selected_band,
+            "matched_band": selected_band,
             "rule_index": rule_index,
             "is_default": is_default,
             "input_value": input_value,
+            "column": input_column,
         }
     except Exception as exc:
         logger.warning(
@@ -773,7 +966,7 @@ def _build_input_sources(
     *,
     depth: int = 0,
     max_depth: int = 3,
-    visited: set[str] | None = None,
+    visited: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Recursively build input source derivations for referenced columns.
 
@@ -788,14 +981,26 @@ def _build_input_sources(
     if visited is None:
         visited = set()
     result: dict[str, Any] = {}
+    try:
+        current_step_index = all_steps.index(current_step)
+    except ValueError as exc:
+        raise ValueError(
+            f"current_step {current_step.node_id!r} is not present in all_steps"
+        ) from exc
+
     for ref_col in ref_cols:
-        if ref_col in visited:
+        visit_key = (current_step.node_id, ref_col)
+        if visit_key in visited:
             continue
-        visited.add(ref_col)
-        for other_step in all_steps:
+        visited.add(visit_key)
+        upstream_steps = all_steps[:current_step_index]
+        for other_step in reversed(upstream_steps):
             if other_step is current_step:
                 continue
-            if ref_col not in other_step.schema_diff.columns_added:
+            if (
+                ref_col not in other_step.schema_diff.columns_added
+                and ref_col not in other_step.schema_diff.columns_modified
+            ):
                 continue
             other_combined = {**other_step.input_values, **other_step.output_values}
             source_info: dict[str, Any] = {
@@ -808,9 +1013,27 @@ def _build_input_sources(
             parsed_refs: list[str] = []
             try:
                 other_code = ""
+                cfg: dict[str, Any] = {}
                 nd = node_map.get(other_step.node_id)
                 if nd is not None:
                     cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
+                    if other_step.node_type == "banding":
+                        banding_detail = trace_mod.enrich_banding(
+                            cfg,
+                            other_step.input_values,
+                            other_step.output_values,
+                            traced_column=ref_col,
+                        )
+                        banding_factor = _banding_factor_for_column(banding_detail, ref_col)
+                        if banding_factor is not None:
+                            banding_expression = _banding_expression_payload(banding_factor)
+                            banding_calculation = _banding_calculation_payload(banding_factor)
+                            source_info["expression_text"] = banding_expression["expression_text"]
+                            source_info["substituted_text"] = banding_calculation[
+                                "substituted_text"
+                            ]
+                            source_info["result_value"] = banding_calculation["result_value"]
+                            parsed_refs = list(banding_expression["referenced_columns"])
                     raw = cfg.get("code", "") or ""
 
                     # Instance resolution: if this node is an instance
@@ -828,15 +1051,32 @@ def _build_input_sources(
                     if parsed and parsed.expression_text:
                         source_info["expression_text"] = parsed.expression_text
                         parsed_refs = list(parsed.referenced_columns)
-                    ev = evaluate_expression(
-                        other_code,
-                        ref_col,
-                        other_combined,
-                        preamble_ns=preamble_ns,
+                    eval_values = {**other_step.input_values, **other_step.output_values}
+                    self_referential_modification = (
+                        ref_col in other_step.schema_diff.columns_modified
+                        and parsed
+                        and ref_col in parsed.referenced_columns
                     )
-                    if ev is not None:
-                        source_info["substituted_text"] = ev.substituted_text
-                        source_info["result_value"] = ev.result_value
+                    skip_evaluation = False
+                    if self_referential_modification:
+                        if ref_col in other_step.input_values:
+                            eval_values[ref_col] = other_step.input_values[ref_col]
+                        else:
+                            source_info["result_value"] = other_step.output_values.get(ref_col)
+                            source_info["substituted_text"] = (
+                                f"{ref_col} = {_quote_trace_value(source_info['result_value'])}"
+                            )
+                            skip_evaluation = True
+                    if not skip_evaluation:
+                        ev = evaluate_expression(
+                            other_code,
+                            ref_col,
+                            eval_values,
+                            preamble_ns=preamble_ns,
+                        )
+                        if ev is not None:
+                            source_info["substituted_text"] = ev.substituted_text
+                            source_info["result_value"] = ev.result_value
             except Exception as exc:
                 # Surface the derivation failure on the source entry so
                 # the caller can see why an input column's value/
@@ -877,6 +1117,43 @@ def _build_input_sources(
             result[ref_col] = source_info
             break
     return result
+
+
+def _attach_banding_lineage(
+    step: TraceStep,
+    detail: dict[str, Any],
+    column: str | None,
+    steps: list[TraceStep],
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+    eager_outputs: dict[str, pl.DataFrame],
+) -> None:
+    if not column:
+        return
+    factor = _banding_factor_for_column(detail, column)
+    if factor is None:
+        return
+
+    expression = _banding_expression_payload(factor)
+    calculation = _banding_calculation_payload(factor)
+    ref_cols = expression.get("referenced_columns", [])
+
+    if ref_cols:
+        input_sources = _build_input_sources(
+            list(ref_cols),
+            step,
+            steps,
+            node_map,
+            preamble_ns,
+            depth=0,
+            max_depth=3,
+        )
+        if input_sources:
+            calculation["input_sources"] = input_sources
+            _fix_upstream_values(input_sources, steps, eager_outputs)
+
+    step.expression = expression
+    step.calculation = calculation
 
 
 def _detect_rename(
@@ -1352,7 +1629,10 @@ def enrich_steps(
                         )
                     elif node_type == "banding":
                         detail = trace_mod.enrich_banding(
-                            cfg, step.input_values, step.output_values
+                            cfg,
+                            step.input_values,
+                            step.output_values,
+                            traced_column=column,
                         )
                     elif node_type == "modelScore":
                         detail = trace_mod.enrich_model_score(
@@ -1368,6 +1648,16 @@ def enrich_steps(
                         detail = trace_mod.enrich_live_switch(cfg, source)
                     if detail is not None:
                         step.node_detail = detail
+                        if node_type == "banding":
+                            _attach_banding_lineage(
+                                step,
+                                detail,
+                                column,
+                                steps,
+                                node_map,
+                                preamble_ns,
+                                eager_outputs,
+                            )
                 except Exception as exc:
                     logger.warning(
                         "node_enrichment_failed",

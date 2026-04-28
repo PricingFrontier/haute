@@ -301,20 +301,6 @@ def _path_matches(candidate: Path, changed_path: Path) -> bool:
     return False
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.resolve().relative_to(parent.resolve())
-    except ValueError:
-        return False
-    return True
-
-
-def _is_backend_or_test_python_path(path: Path) -> bool:
-    if path.suffix != ".py":
-        return False
-    return _is_relative_to(path, REPO_ROOT / "src") or _is_relative_to(path, REPO_ROOT / "tests")
-
-
 def _select_targets_for_changed_files(
     targets: list[MutationTarget],
     changed_files: list[str],
@@ -327,7 +313,6 @@ def _select_targets_for_changed_files(
         return targets
 
     global_gate_paths = {
-        (REPO_ROOT / "scripts" / "run_mutation_suite.py").resolve(),
         (REPO_ROOT / ".github" / "workflows" / "mutation.yml").resolve(),
         (REPO_ROOT / "mutation" / "README.md").resolve(),
         (REPO_ROOT / DEFAULT_TARGET_CONFIG).resolve(),
@@ -336,7 +321,6 @@ def _select_targets_for_changed_files(
         return targets
 
     selected: list[MutationTarget] = []
-    matched_changed_paths: set[Path] = set()
     for target in targets:
         owned_paths = [target.config_path, target.module_path, *target.test_paths]
         target_matches = False
@@ -344,15 +328,9 @@ def _select_targets_for_changed_files(
             for changed_path in normalized_changed:
                 if _path_matches(owned_path, changed_path):
                     target_matches = True
-                    matched_changed_paths.add(changed_path)
         if target_matches:
             selected.append(target)
 
-    if any(
-        _is_backend_or_test_python_path(path) and path not in matched_changed_paths
-        for path in normalized_changed
-    ):
-        return targets
     return selected
 
 

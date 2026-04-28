@@ -13,6 +13,7 @@ from haute._rating import (
     _banding_condition,
     _combine_rating_columns,
     _normalise_banding_factors,
+    apply_rating_step_from_config,
 )
 
 # ---------------------------------------------------------------------------
@@ -1707,3 +1708,82 @@ class TestRatingTableNullInFactorColumn:
         }
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, 1.0, 0.9]
+
+
+class TestApplyRatingStepCompactConfig:
+    def test_direct_compact_entries_config_applies_rating_tables(self) -> None:
+        lf = pl.DataFrame(
+            {
+                "vehicle_age_band": ["1-3", "1-3", "10+"],
+                "cover_type": ["comprehensive", "tpft", "comprehensive"],
+            }
+        ).lazy()
+        config: dict[str, Any] = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "outputColumn": "vehicle_factor",
+                    "defaultValue": "1.0",
+                    "entries": {
+                        "1-3": {
+                            "comprehensive": 0.9,
+                            "tpft": 1.1,
+                        },
+                        "10+": {
+                            "comprehensive": 1.4,
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = apply_rating_step_from_config(lf, config).collect()
+
+        assert result["vehicle_factor"].to_list() == [0.9, 1.1, 1.4]
+
+    def test_three_factor_compact_entries_follow_editor_axis_order(self) -> None:
+        lf = pl.DataFrame(
+            {
+                "vehicle_age_band": ["1-3", "4-5", "1-3", "10+"],
+                "cover_type": [
+                    "comprehensive",
+                    "comprehensive",
+                    "third_party_only",
+                    "comprehensive",
+                ],
+                "channel": [
+                    "confused",
+                    "confused",
+                    "compare_the_market",
+                    "confused",
+                ],
+            }
+        ).lazy()
+        config: dict[str, Any] = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type", "channel"],
+                    "outputColumn": "vehicle_factor",
+                    "defaultValue": "1.0",
+                    "entries": {
+                        "confused": {
+                            "comprehensive": {
+                                "1-3": 0.91,
+                                "4-5": 0.96,
+                            }
+                        },
+                        "compare_the_market": {
+                            "third_party_only": {
+                                "1-3": 1.08,
+                            }
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = apply_rating_step_from_config(lf, config).collect()
+
+        assert result["vehicle_factor"].to_list() == [0.91, 0.96, 1.08, 1.0]

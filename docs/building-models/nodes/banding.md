@@ -22,8 +22,8 @@ Each factor has:
 |---|---|
 | `column` | **Required.** Input column to band |
 | `outputColumn` | **Required.** Name of the new banded column |
-| `banding` | **Required.** `"continuous"` or `"categorical"` |
-| `rules` | **Required.** List of rules defining each band |
+| `banding` | **Required.** `"continuous"`, `"categorical"`, or `"breakpoints"` |
+| `rules` | **Required.** Rules defining each band. Continuous rules are a list; categorical and breakpoint sidecars use key/value maps |
 | `default` | Value assigned to rows that don't match any rule |
 
 Rules are evaluated top to bottom. The first match wins.
@@ -48,7 +48,8 @@ This example bands driver age into three groups:
 }
 ```
 
-**Categorical rules** map exact values to groups:
+**Categorical rules** map exact values to groups. In the JSON sidecar, the
+source value is the key and the assigned group is the value:
 
 ```json
 {
@@ -56,12 +57,32 @@ This example bands driver age into three groups:
     "banding": "categorical",
     "column": "fuel_type",
     "outputColumn": "fuel_band",
-    "rules": [
-      { "value": "Petrol",   "assignment": "Standard" },
-      { "value": "Diesel",   "assignment": "Standard" },
-      { "value": "Electric", "assignment": "Green" }
-    ],
+    "rules": {
+      "Petrol": "Standard",
+      "Diesel": "Standard",
+      "Electric": "Green"
+    },
     "default": "Other"
+  }]
+}
+```
+
+**Breakpoint rules** are a concise way to define ordered numeric bands. The
+boundary is the key and the assigned band is the value. Use an empty-string key
+for the open-ended final band:
+
+```json
+{
+  "factors": [{
+    "banding": "breakpoints",
+    "column": "driver_age",
+    "outputColumn": "age_band",
+    "rules": {
+      "25": "18-25",
+      "65": "26-65",
+      "": "65+"
+    },
+    "default": "Unknown"
   }]
 }
 ```

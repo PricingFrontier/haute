@@ -27,6 +27,9 @@ This means code in `rating/main.py` can reference columns produced by both the t
 
 ## Config Schema
 
+Inside the parser, frontend, executor, and trace code, table entries use the
+canonical row-array shape:
+
 ```json
 {
   "tables": [
@@ -52,12 +55,42 @@ This means code in `rating/main.py` can reference columns produced by both the t
 }
 ```
 
+JSON sidecars under `config/rating_step/` store the same entries as compact
+nested maps. One- and two-factor tables follow `factors` order. Three-factor
+tables follow the editor table axes: third factor as the slice/dropdown,
+second factor as columns, first factor as rows. The leaf is the rating value:
+
+```json
+{
+  "tables": [
+    {
+      "name": "vehicle_factor",
+      "factors": ["vehicle_age_band", "cover_type", "channel"],
+      "outputColumn": "vehicle_factor",
+      "defaultValue": "1.0",
+      "entries": {
+        "confused": {
+          "comprehensive": {
+            "1-3": 0.91,
+            "4-5": 0.96
+          },
+          "third_party_only": {
+            "1-3": 1.08
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
 Key points:
 
 - `tables` is the canonical table list.
 - `outputColumn` is also the display name for a table; a separate editable table name is not needed.
 - `factors` contains one to three column names.
-- `entries` stays flat: one key per factor plus `value`.
+- `entries` is flat in memory: one key per factor plus `value`.
+- Rating-step sidecars compact `entries` into nested factor-value maps and expand them on load. Three-factor sidecars use the editor order: dropdown, columns, rows.
 - `defaultValue` is used when a table lookup misses.
 - `combinedOutputs` is optional. An empty or missing list means no combined output.
 - `code` is optional and runs last.
@@ -133,13 +166,14 @@ The code should use `df` for the rated data. Since code runs after table and com
 
 For each table:
 
-1. Build a Polars lookup frame from `entries`.
-2. Cast `value` to `Float64`.
-3. Reject NaN/Inf values.
-4. Deduplicate lookup rows on the factor columns, keeping the last entry.
-5. Left join the lookup frame onto the input frame.
-6. Fill misses with `defaultValue` when a numeric default is configured.
-7. Emit the table's `outputColumn`.
+1. Expand sidecar entry maps to canonical rows, if the config came from JSON.
+2. Build a Polars lookup frame from `entries`.
+3. Cast `value` to `Float64`.
+4. Reject NaN/Inf values.
+5. Deduplicate lookup rows on the factor columns, keeping the last entry.
+6. Left join the lookup frame onto the input frame.
+7. Fill misses with `defaultValue` when a numeric default is configured.
+8. Emit the table's `outputColumn`.
 
 Combined outputs are then applied over the table output columns. Custom code is extracted/generated after `apply_rating_step_from_config(...)` so it observes the table and combined columns.
 
@@ -177,10 +211,13 @@ Rejected because a production rating structure can have many factors. Keeping re
 
 ### Store 2D/3D Arrays
 
-Rejected because flat entries are easier to diff, parse, generate, and execute uniformly.
+Rejected because rectangular arrays need separate row/column labels and special
+cases for sparse tables. Nested maps keep sidecars concise while expanding back
+to the existing flat row shape used by parsing, generation, execution, and
+trace.
 
 ## Open Questions
 
 - Very large two-way grids may eventually need virtualised rendering.
 - A visible toast for failed copy actions may be useful in addition to the current logged warning.
-- Malformed persisted table entries are currently normalised so the editor remains usable; a dedicated malformed-config banner would make that recovery path more explicit.
+- Malformed persisted sidecar entries raise a config load error; a dedicated editor banner for compact-map shape errors would make that recovery path more explicit.

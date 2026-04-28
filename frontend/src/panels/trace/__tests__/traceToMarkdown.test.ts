@@ -640,6 +640,91 @@ describe("traceToMarkdown", () => {
     expect(md).toContain("selected=null")
   })
 
+  it("summarizes banding detail without dumping raw trace metadata", () => {
+    const trace = makeTrace({
+      column: "age_band",
+      output_value: "adult",
+      steps: [
+        makeStep({ node_id: "n1", node_name: "Source", node_type: "source", column_relevant: false }),
+        makeStep({
+          node_id: "n2",
+          node_name: "Age Banding",
+          node_type: "banding",
+          schema_diff: {
+            columns_added: ["age_band"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: ["risk_age"],
+          },
+          expression: {
+            expression_text: "risk_age -> age_band",
+            expression_type: "banding",
+            referenced_columns: ["risk_age"],
+          },
+          calculation: {
+            substituted_text: '35 -> "adult"',
+            result_value: "adult",
+            input_values: { risk_age: 35 },
+          },
+          node_detail: {
+            detail_type: "banding",
+            input_column: "risk_age",
+            output_column: "age_band",
+            input_value: 35,
+            matched_band: "adult",
+            lower_bound: 25,
+            lower_inclusive: false,
+            upper_bound: 65,
+            upper_inclusive: true,
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[1])
+
+    expect(md).toContain("Banding: risk_age=35 -> adult (25, 65]")
+    expect(md.match(/Banding:/g)).toHaveLength(1)
+    expect(md).not.toContain("risk_age -> age_band")
+    expect(md).not.toContain("## Formula")
+    expect(md).not.toContain("Substituted:")
+    expect(md).not.toContain("Output: age_band")
+    expect(md).not.toContain("Matched band:")
+    expect(md).not.toContain("detail_type: banding")
+  })
+
+  it("does not invent a banding summary when traced column is not a banding output", () => {
+    const trace = makeTrace({
+      column: "driver_age",
+      output_value: 35,
+      steps: [
+        makeStep({
+          node_id: "n1",
+          node_name: "Age Banding",
+          node_type: "banding",
+          schema_diff: {
+            columns_added: ["age_band", "region_band"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: ["driver_age"],
+          },
+          node_detail: {
+            detail_type: "banding",
+            factors: [
+              { column: "driver_age", output_column: "age_band" },
+              { column: "region", output_column: "region_band" },
+            ],
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("Banding factors: driver_age -> age_band; region -> region_band")
+    expect(md).not.toContain("Banding: null -> null")
+  })
+
   it("empty steps array produces minimal output with header but no data flow", () => {
     const trace = makeTrace({ steps: [] })
     const md = traceToMarkdown(trace, null)

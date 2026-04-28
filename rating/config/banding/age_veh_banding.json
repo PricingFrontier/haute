@@ -4,132 +4,51 @@
       "banding": "breakpoints",
       "column": "proposer_age",
       "outputColumn": "proposer_age_band",
-      "rules": [
-        {
-          "boundary": "27",
-          "label": "20-27"
-        },
-        {
-          "boundary": "34",
-          "label": "28-34"
-        },
-        {
-          "boundary": "41",
-          "label": "35-41"
-        },
-        {
-          "boundary": "48",
-          "label": "42-48"
-        },
-        {
-          "boundary": "55",
-          "label": "49-55"
-        },
-        {
-          "boundary": "62",
-          "label": "56-62"
-        },
-        {
-          "boundary": "69",
-          "label": "63-69"
-        },
-        {
-          "boundary": "76",
-          "label": "70-76"
-        },
-        {
-          "boundary": "83",
-          "label": "77-83"
-        },
-        {
-          "boundary": "88",
-          "label": "84-88"
-        }
-      ],
+      "rules": {
+        "27": "20-27",
+        "34": "28-34",
+        "41": "35-41",
+        "48": "42-48",
+        "55": "49-55",
+        "62": "56-62",
+        "69": "63-69",
+        "76": "70-76",
+        "83": "77-83",
+        "88": "84-88"
+      },
       "default": null
     },
     {
       "banding": "breakpoints",
       "column": "vehicle_age",
       "outputColumn": "vehicle_age_band",
-      "rules": [
-        {
-          "boundary": "3",
-          "label": "1–3"
-        },
-        {
-          "boundary": "5",
-          "label": "4–5"
-        },
-        {
-          "boundary": "7",
-          "label": "6–7"
-        },
-        {
-          "boundary": "9",
-          "label": "8–9"
-        },
-        {
-          "boundary": "11",
-          "label": "10–11"
-        },
-        {
-          "boundary": "13",
-          "label": "12–13"
-        },
-        {
-          "boundary": "15",
-          "label": "14–15"
-        },
-        {
-          "boundary": "17",
-          "label": "16–17"
-        },
-        {
-          "boundary": "19",
-          "label": "18–19"
-        },
-        {
-          "boundary": "21",
-          "label": "20–21"
-        }
-      ],
+      "rules": {
+        "3": "1–3",
+        "5": "4–5",
+        "7": "6–7",
+        "9": "8–9",
+        "11": "10–11",
+        "13": "12–13",
+        "15": "14–15",
+        "17": "16–17",
+        "19": "18–19",
+        "21": "20–21"
+      },
       "default": null
     },
     {
       "banding": "categorical",
       "column": "channel",
       "outputColumn": "channel_band",
-      "rules": [
-        {
-          "value": "compare_the_market",
-          "assignment": "compare_the_market"
-        },
-        {
-          "value": "moneysupermarket",
-          "assignment": "moneysupermarket"
-        },
-        {
-          "value": "confused",
-          "assignment": "confused"
-        },
-        {
-          "value": "gocompare",
-          "assignment": "gocompare"
-        },
-        {
-          "value": "direct_web",
-          "assignment": "direct_web"
-        },
-        {
-          "value": "broker",
-          "assignment": "broker"
-        },
-        {
-          "value": "direct_phone",
-          "assignment": "direct_phone"
-        }
-      ],
+      "rules": {
+        "compare_the_market": "compare_the_market",
+        "moneysupermarket": "moneysupermarket",
+        "confused": "confused",
+        "gocompare": "gocompare",
+        "direct_web": "direct_web",
+        "broker": "broker",
+        "direct_phone": "direct_phone"
+      },
       "default": null
     }
   ],

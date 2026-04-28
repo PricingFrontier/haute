@@ -31,6 +31,7 @@ from haute._rating import (
     _normalise_banding_factors,
     _normalise_combined_outputs,
 )
+from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
     NODE_REGISTRY,
 )
@@ -559,7 +560,7 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
     if (config.get("code") or "").strip():
         return OPAQUE_CONTRACT
-    tables = config.get("tables") or []
+    tables = normalise_rating_tables(config)
     produced: set[str] = set()
     referenced: set[str] = set()
     for t in tables:
@@ -578,7 +579,7 @@ def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
 @_register(NodeType.RATING_STEP, columns=_rating_step_columns)
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    tables: list[dict[str, Any]] = config.get("tables", []) or []
+    tables = normalise_rating_tables(config)
     combined_outputs = _normalise_combined_outputs(config)
     first = ctx.source_names[0] if ctx.source_names else "df"
     code = _strip_generated_boilerplate_from_code(

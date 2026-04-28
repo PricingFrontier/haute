@@ -7,6 +7,14 @@ export interface TraceSchemaDiff {
   columns_passed: string[]
 }
 
+export interface TraceInputSource {
+  node_name: string
+  expression_text?: string
+  substituted_text?: string
+  result_value?: unknown
+  input_sources?: Record<string, TraceInputSource> | null
+}
+
 export interface TraceStep {
   node_id: string
   node_name: string
@@ -25,6 +33,13 @@ export interface TraceStep {
     substituted_text: string
     result_value: unknown
     input_values: Record<string, unknown>
+    expression_chain?: Array<{
+      expression_text: string
+      target_column: string
+      substituted_text?: string
+      result_value?: unknown
+    }> | null
+    input_sources?: Record<string, TraceInputSource> | null
   } | null
   node_detail?: TraceNodeDetail | null
   row_lineage_type?: string | null
@@ -78,6 +93,43 @@ export interface RatingStepNodeDetail {
   default_used?: boolean
   rate_value?: unknown
   matched?: boolean
+}
+
+export interface BandingFactorDetail {
+  column?: string
+  input_column?: string
+  output_column?: string
+  banding_type?: string
+  input_value?: unknown
+  selected_band?: unknown
+  matched_band?: unknown
+  rule_index?: number
+  is_default?: boolean
+  status?: "matched" | "default" | "no_match"
+  lower_bound?: unknown
+  upper_bound?: unknown
+  lower_inclusive?: boolean | null
+  upper_inclusive?: boolean | null
+  conditions?: Array<{ operator: string; value: unknown }>
+}
+
+export interface BandingNodeDetail {
+  detail_type: "banding"
+  factors?: BandingFactorDetail[]
+  column?: string
+  input_column?: string
+  output_column?: string
+  input_value?: unknown
+  selected_band?: unknown
+  matched_band?: unknown
+  rule_index?: number
+  is_default?: boolean
+  status?: "matched" | "default" | "no_match"
+  lower_bound?: unknown
+  upper_bound?: unknown
+  lower_inclusive?: boolean | null
+  upper_inclusive?: boolean | null
+  conditions?: Array<{ operator: string; value: unknown }>
 }
 
 export interface TraceNodeDetail {

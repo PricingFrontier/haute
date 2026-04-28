@@ -117,6 +117,179 @@ class TestSaveAndLoad:
         loaded = load_node_config("config/banding/band.json", base_dir=tmp_path)
         assert loaded == config
 
+    def test_banding_categorical_rules_saved_as_map_and_loaded_as_rows(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "fuel_type",
+                    "outputColumn": "fuel_band",
+                    "rules": [
+                        {"value": "Petrol", "assignment": "Standard"},
+                        {"value": "Diesel", "assignment": "Standard"},
+                        {"value": "Electric", "assignment": "Green"},
+                    ],
+                    "default": "Other",
+                },
+            ],
+        }
+
+        rel = save_node_config(NodeType.BANDING, "fuel_band", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+
+        assert saved["factors"][0]["rules"] == {
+            "Petrol": "Standard",
+            "Diesel": "Standard",
+            "Electric": "Green",
+        }
+        assert load_node_config(rel, base_dir=tmp_path) == config
+
+    def test_banding_breakpoint_rules_saved_as_map_and_loaded_as_rows(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "breakpoints",
+                    "column": "driver_age",
+                    "outputColumn": "age_band",
+                    "rules": [
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": "adult"},
+                        {"boundary": "", "label": "senior"},
+                    ],
+                    "rightClosed": True,
+                    "default": "unknown",
+                },
+            ],
+        }
+
+        rel = save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+
+        assert saved["factors"][0]["rules"] == {
+            "25": "young",
+            "65": "adult",
+            "": "senior",
+        }
+        assert load_node_config(rel, base_dir=tmp_path) == config
+
+    def test_banding_continuous_rules_stay_explicit_in_sidecar(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "continuous",
+                    "column": "driver_age",
+                    "outputColumn": "age_band",
+                    "rules": [
+                        {
+                            "op1": ">=",
+                            "val1": "18",
+                            "op2": "<=",
+                            "val2": "25",
+                            "assignment": "18-25",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        rel = save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+
+        assert saved["factors"][0]["rules"] == config["factors"][0]["rules"]
+
+    def test_banding_compact_save_rejects_duplicate_categorical_keys(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "fuel_type",
+                    "outputColumn": "fuel_band",
+                    "rules": [
+                        {"value": "Petrol", "assignment": "Standard"},
+                        {"value": "Petrol", "assignment": "Premium"},
+                    ],
+                },
+            ],
+        }
+
+        with pytest.raises(ValueError, match="duplicate categorical rule key"):
+            save_node_config(NodeType.BANDING, "fuel_band", config, tmp_path)
+
+    def test_banding_compact_save_rejects_duplicate_breakpoint_keys(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "breakpoints",
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "rules": [
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "25", "label": "adult"},
+                    ],
+                },
+            ],
+        }
+
+        with pytest.raises(ValueError, match="duplicate breakpoint rule key"):
+            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+
+    def test_banding_compact_save_rejects_json_key_collisions(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "breakpoints",
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "rules": {25: "young", "25": "adult"},
+                },
+            ],
+        }
+
+        with pytest.raises(ValueError, match="duplicate breakpoint rule key '25'"):
+            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+
+    def test_banding_compact_save_rejects_non_list_factors(self, tmp_path):
+        config = {"factors": "not_a_list"}
+
+        with pytest.raises(ValueError, match="banding factors must be a list"):
+            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+
+    def test_banding_compact_save_rejects_incomplete_categorical_rows(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "fuel_type",
+                    "outputColumn": "fuel_band",
+                    "rules": [
+                        {"value": "Petrol", "assignment": "Standard"},
+                        {"value": "", "assignment": "Draft"},
+                    ],
+                },
+            ],
+        }
+
+        with pytest.raises(ValueError, match="categorical rules\\[1\\] requires value"):
+            save_node_config(NodeType.BANDING, "fuel_band", config, tmp_path)
+
+    def test_banding_compact_save_rejects_unlabelled_breakpoint_rows(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "breakpoints",
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "rules": [
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": ""},
+                    ],
+                },
+            ],
+        }
+
+        with pytest.raises(ValueError, match="breakpoint rule '65' requires label"):
+            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+
 
 class TestRemoveConfigFile:
     def test_remove_existing_file(self, tmp_path):
@@ -292,6 +465,43 @@ class TestCollectNodeConfigs:
         for path in configs:
             assert "\\" not in path, f"Config path contains backslash: {path}"
             assert path.startswith("config/"), f"Config path should start with config/: {path}"
+
+    def test_banding_configs_are_collected_with_compact_categorical_rules(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "b",
+                        "data": {
+                            "label": "fuel_band",
+                            "nodeType": "banding",
+                            "config": {
+                                "factors": [
+                                    {
+                                        "banding": "categorical",
+                                        "column": "fuel_type",
+                                        "outputColumn": "fuel_band",
+                                        "rules": [
+                                            {"value": "Petrol", "assignment": "Standard"},
+                                            {"value": "Electric", "assignment": "Green"},
+                                        ],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+
+        configs = collect_node_configs(graph)
+        content = json.loads(configs["config/banding/fuel_band.json"])
+
+        assert content["factors"][0]["rules"] == {
+            "Petrol": "Standard",
+            "Electric": "Green",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +705,29 @@ class TestFindConfigByFuncName:
         assert config_dict == cfg
         assert node_type is NodeType.DATA_SOURCE
 
+    def test_recovers_banding_config_with_expanded_compact_rules(self, tmp_path):
+        compact_cfg = {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "fuel_type",
+                    "outputColumn": "fuel_band",
+                    "rules": {"Petrol": "Standard", "Electric": "Green"},
+                }
+            ]
+        }
+        self._write_config(tmp_path, "banding", "fuel_band", compact_cfg)
+
+        result = find_config_by_func_name("fuel_band", tmp_path)
+
+        assert result is not None
+        config_dict, node_type = result
+        assert node_type is NodeType.BANDING
+        assert config_dict["factors"][0]["rules"] == [
+            {"value": "Petrol", "assignment": "Standard"},
+            {"value": "Electric", "assignment": "Green"},
+        ]
+
     def test_returns_tuple_format(self, tmp_path):
         self._write_config(tmp_path, "banding", "age_band", {"factors": []})
         result = find_config_by_func_name("age_band", tmp_path)
@@ -588,6 +821,64 @@ class TestLoadNodeConfigEdgeCases:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"key": "value"}).encode("utf-8"))
         with pytest.raises(json.JSONDecodeError, match="BOM"):
+            load_node_config(str(p))
+
+    def test_banding_continuous_rule_map_raises(self, tmp_path):
+        p = tmp_path / "config" / "banding" / "bad.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(
+                {
+                    "factors": [
+                        {
+                            "banding": "continuous",
+                            "column": "age",
+                            "outputColumn": "age_band",
+                            "rules": {"25": "young"},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="continuous banding rules must be a list"):
+            load_node_config(str(p))
+
+    def test_banding_sidecar_with_non_list_factors_raises(self, tmp_path):
+        p = tmp_path / "config" / "banding" / "bad_factors.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps({"factors": "not_a_list"}),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="banding factors must be a list"):
+            load_node_config(str(p))
+
+    def test_banding_compact_duplicate_json_key_raises(self, tmp_path):
+        p = tmp_path / "config" / "banding" / "duplicate.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            """
+{
+  "factors": [
+    {
+      "banding": "categorical",
+      "column": "fuel_type",
+      "outputColumn": "fuel_band",
+      "rules": {
+        "Petrol": "Standard",
+        "Petrol": "Premium"
+      }
+    }
+  ]
+}
+""",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="duplicate JSON key 'Petrol'"):
             load_node_config(str(p))
 
 
@@ -788,3 +1079,476 @@ class TestRemoveConfigFileEdgeCases:
 
     def test_remove_transform_type_returns_false(self, tmp_path):
         assert remove_config_file(NodeType.POLARS, "t", tmp_path) is False
+
+
+class TestRatingStepCompactSidecars:
+    def test_save_writes_compact_entries_and_load_expands_to_rows(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "area_factor",
+                    "factors": ["area"],
+                    "outputColumn": "area_factor",
+                    "defaultValue": "1.0",
+                    "entries": [
+                        {"area": "London", "value": "1.25"},
+                        {"area": "Rural", "value": 0.85},
+                    ],
+                },
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "outputColumn": "vehicle_factor",
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "value": 0.9,
+                        },
+                        {"vehicle_age_band": "1-3", "cover_type": "tpft", "value": 1.1},
+                        {
+                            "vehicle_age_band": "10+",
+                            "cover_type": "comprehensive",
+                            "value": 1.4,
+                        },
+                    ],
+                },
+            ],
+            "combinedOutputs": [
+                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+            ],
+        }
+
+        rel = save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+
+        assert saved["tables"][0]["entries"] == {"London": "1.25", "Rural": 0.85}
+        assert saved["tables"][1]["entries"] == {
+            "1-3": {"comprehensive": 0.9, "tpft": 1.1},
+            "10+": {"comprehensive": 1.4},
+        }
+        assert saved["combinedOutputs"] == config["combinedOutputs"]
+        assert load_node_config(rel, base_dir=tmp_path) == config
+
+    def test_load_expands_three_factor_entries_from_nested_maps(self, tmp_path):
+        path = tmp_path / "config" / "rating_step" / "vehicle.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "tables": [
+                        {
+                            "name": "vehicle_factor",
+                            "factors": ["vehicle_age_band", "cover_type", "channel"],
+                            "outputColumn": "vehicle_factor",
+                            "entries": {
+                                "direct": {
+                                    "comprehensive": {
+                                        "1-3": 0.9,
+                                        "10+": 1.0,
+                                    }
+                                }
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = load_node_config(path)
+
+        assert loaded["tables"][0]["entries"] == [
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "channel": "direct",
+                "value": 0.9,
+            },
+            {
+                "vehicle_age_band": "10+",
+                "cover_type": "comprehensive",
+                "channel": "direct",
+                "value": 1.0,
+            },
+        ]
+
+    def test_save_writes_three_factor_entries_in_editor_axis_order(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type", "channel"],
+                    "outputColumn": "vehicle_factor",
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "channel": "confused",
+                            "value": 0.91,
+                        },
+                        {
+                            "vehicle_age_band": "4-5",
+                            "cover_type": "comprehensive",
+                            "channel": "confused",
+                            "value": 0.96,
+                        },
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "third_party_only",
+                            "channel": "compare_the_market",
+                            "value": 1.08,
+                        },
+                    ],
+                }
+            ]
+        }
+
+        rel = save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+
+        assert saved["tables"][0]["entries"] == {
+            "confused": {
+                "comprehensive": {
+                    "1-3": 0.91,
+                    "4-5": 0.96,
+                }
+            },
+            "compare_the_market": {
+                "third_party_only": {
+                    "1-3": 1.08,
+                }
+            },
+        }
+        assert load_node_config(rel, base_dir=tmp_path) == config
+
+    def test_save_keeps_sparse_three_factor_entries_sparse(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "sparse_factor",
+                    "factors": ["vehicle_age_band", "cover_type", "channel"],
+                    "outputColumn": "sparse_factor",
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "channel": "confused",
+                            "value": 0.91,
+                        },
+                        {
+                            "vehicle_age_band": "10+",
+                            "cover_type": "third_party_only",
+                            "channel": "broker",
+                            "value": 1.25,
+                        },
+                    ],
+                }
+            ]
+        }
+
+        rel = save_node_config(NodeType.RATING_STEP, "sparse", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+
+        assert saved["tables"][0]["entries"] == {
+            "confused": {"comprehensive": {"1-3": 0.91}},
+            "broker": {"third_party_only": {"10+": 1.25}},
+        }
+        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == [
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "channel": "confused",
+                "value": 0.91,
+            },
+            {
+                "vehicle_age_band": "10+",
+                "cover_type": "third_party_only",
+                "channel": "broker",
+                "value": 1.25,
+            },
+        ]
+
+    def test_collect_node_configs_writes_compact_rating_entries(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "r",
+                        "data": {
+                            "label": "adjustments",
+                            "nodeType": "ratingStep",
+                            "config": {
+                                "tables": [
+                                    {
+                                        "name": "vehicle_factor",
+                                        "factors": ["vehicle_age_band", "cover_type"],
+                                        "outputColumn": "vehicle_factor",
+                                        "entries": [
+                                            {
+                                                "vehicle_age_band": "1-3",
+                                                "cover_type": "comprehensive",
+                                                "value": 0.9,
+                                            }
+                                        ],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+
+        configs = collect_node_configs(graph)
+        content = json.loads(configs["config/rating_step/adjustments.json"])
+
+        assert content["tables"][0]["entries"] == {"1-3": {"comprehensive": 0.9}}
+
+    def test_collect_node_configs_writes_three_factor_entries_in_editor_axis_order(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "r",
+                        "data": {
+                            "label": "adjustments",
+                            "nodeType": "ratingStep",
+                            "config": {
+                                "tables": [
+                                    {
+                                        "name": "vehicle_factor",
+                                        "factors": [
+                                            "vehicle_age_band",
+                                            "cover_type",
+                                            "channel",
+                                        ],
+                                        "outputColumn": "vehicle_factor",
+                                        "entries": [
+                                            {
+                                                "vehicle_age_band": "1-3",
+                                                "cover_type": "comprehensive",
+                                                "channel": "confused",
+                                                "value": 0.9,
+                                            }
+                                        ],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                ],
+                "edges": [],
+            }
+        )
+
+        configs = collect_node_configs(graph)
+        content = json.loads(configs["config/rating_step/adjustments.json"])
+
+        assert content["tables"][0]["entries"] == {"confused": {"comprehensive": {"1-3": 0.9}}}
+
+    def test_find_config_by_func_name_expands_compact_rating_entries(self, tmp_path):
+        path = tmp_path / "config" / "rating_step" / "adjustments.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "tables": [
+                        {
+                            "name": "vehicle_factor",
+                            "factors": ["vehicle_age_band", "cover_type"],
+                            "outputColumn": "vehicle_factor",
+                            "entries": {"1-3": {"comprehensive": 0.9}},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = find_config_by_func_name("adjustments", tmp_path)
+
+        assert result is not None
+        config, node_type = result
+        assert node_type is NodeType.RATING_STEP
+        assert config["tables"][0]["entries"] == [
+            {
+                "vehicle_age_band": "1-3",
+                "cover_type": "comprehensive",
+                "value": 0.9,
+            }
+        ]
+
+    def test_save_rejects_duplicate_rating_factor_keys(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "area_factor",
+                    "factors": ["area"],
+                    "outputColumn": "area_factor",
+                    "entries": [
+                        {"area": 1, "value": 1.1},
+                        {"area": "1", "value": 1.2},
+                    ],
+                }
+            ]
+        }
+
+        with pytest.raises(ValueError, match="duplicate ratingStep tables\\[0\\].entries key"):
+            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+
+    def test_save_rejects_entries_missing_factor_values(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "outputColumn": "vehicle_factor",
+                    "entries": [{"vehicle_age_band": "1-3", "value": 0.9}],
+                }
+            ]
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="ratingStep tables\\[0\\].entries\\[0\\] requires factor 'cover_type'",
+        ):
+            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+
+    def test_save_rejects_blank_rating_values(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "area_factor",
+                    "factors": ["area"],
+                    "outputColumn": "area_factor",
+                    "entries": [{"area": "London", "value": ""}],
+                }
+            ]
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="ratingStep tables\\[0\\].entries key 'London' requires value",
+        ):
+            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+
+    def test_save_compacts_rows_that_use_output_column_as_value_key(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "area_factor",
+                    "factors": ["area"],
+                    "outputColumn": "area_factor",
+                    "entries": [
+                        {"area": "London", "area_factor": 1.25},
+                        {"area": "Rural", "area_factor": 0.85},
+                    ],
+                }
+            ]
+        }
+
+        rel = save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+
+        assert saved["tables"][0]["entries"] == {"London": 1.25, "Rural": 0.85}
+        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == [
+            {"area": "London", "value": 1.25},
+            {"area": "Rural", "value": 0.85},
+        ]
+
+    def test_save_rejects_rating_entries_with_unrepresentable_extra_keys(self, tmp_path):
+        config = {
+            "tables": [
+                {
+                    "name": "area_factor",
+                    "factors": ["area"],
+                    "outputColumn": "area_factor",
+                    "entries": [{"area": "London", "value": 1.25, "note": "legacy"}],
+                }
+            ]
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="ratingStep tables\\[0\\].entries\\[0\\] contains unsupported keys",
+        ):
+            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+
+    def test_load_rejects_non_list_rating_tables(self, tmp_path):
+        path = tmp_path / "config" / "rating_step" / "bad_tables.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"tables": "not_a_list"}), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="ratingStep tables must be a list"):
+            load_node_config(path)
+
+    def test_load_rejects_non_list_rating_factors(self, tmp_path):
+        path = tmp_path / "config" / "rating_step" / "bad_factors.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "tables": [
+                        {
+                            "name": "area_factor",
+                            "factors": "area",
+                            "outputColumn": "area_factor",
+                            "entries": {"London": 1.25},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="ratingStep tables\\[0\\].factors must be a list"):
+            load_node_config(path)
+
+    def test_load_rejects_shallow_rating_entries_map(self, tmp_path):
+        path = tmp_path / "config" / "rating_step" / "shallow.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "tables": [
+                        {
+                            "name": "vehicle_factor",
+                            "factors": ["vehicle_age_band", "cover_type"],
+                            "outputColumn": "vehicle_factor",
+                            "entries": {"1-3": 0.9},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="must be nested to match 2 factors"):
+            load_node_config(path)
+
+    def test_load_rejects_duplicate_rating_json_keys(self, tmp_path):
+        path = tmp_path / "config" / "rating_step" / "duplicate.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            """
+{
+  "tables": [
+    {
+      "name": "area_factor",
+      "factors": ["area"],
+      "outputColumn": "area_factor",
+      "entries": {
+        "London": 1.25,
+        "London": 1.1
+      }
+    }
+  ]
+}
+""",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="duplicate JSON key 'London'"):
+            load_node_config(path)

@@ -564,6 +564,77 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.getByText("Age Band")).toBeInTheDocument()
   })
 
+  it("shows a banding-created field's source value in the calculation view", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "band",
+          column: "age_band",
+          output_value: "adult",
+          steps: [
+            makeStep({
+              node_id: "source",
+              node_name: "Policies",
+              node_type: "dataSource",
+              schema_diff: {
+                columns_added: ["risk_age"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              output_values: { risk_age: 35 },
+              column_relevant: false,
+            }),
+            makeStep({
+              node_id: "band",
+              node_name: "Age Band",
+              node_type: "banding",
+              schema_diff: {
+                columns_added: ["age_band"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["risk_age"],
+              },
+              input_values: { risk_age: 35 },
+              output_values: { risk_age: 35, age_band: "adult" },
+              expression: {
+                target_column: "age_band",
+                expression_text: "risk_age -> age_band",
+                expression_type: "banding",
+                referenced_columns: ["risk_age"],
+                constants: [],
+              } as unknown as EnhancedExpression,
+              calculation: {
+                substituted_text: '35 -> "adult"',
+                result_value: "adult",
+                input_values: { risk_age: 35 },
+              },
+              node_detail: {
+                detail_type: "banding",
+                input_column: "risk_age",
+                output_column: "age_band",
+                input_value: 35,
+                matched_band: "adult",
+                lower_bound: 25,
+                upper_bound: 65,
+              },
+            }),
+          ] as TraceStep[],
+          nodes_in_trace: 2,
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("age_band")).toBeInTheDocument()
+    expect(screen.getAllByLabelText("Banding: risk_age=35 -> adult")).toHaveLength(1)
+    expect(screen.getByText("[25, 65]")).toBeInTheDocument()
+    expect(screen.queryByText("risk_age=35 -> adult")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Input:/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Matched band:/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
   it("renders model score detail with model type and features", () => {
     render(
       <TracePanel

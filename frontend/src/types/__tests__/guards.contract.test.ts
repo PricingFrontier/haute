@@ -149,6 +149,65 @@ describe("API response guards", () => {
     expect(combinedOutputs[0]?.input_values).toEqual({ vehicle_factor: 0.9 })
   })
 
+  it("preserves trace calculation input source lineage", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const steps = trace.steps as Array<Record<string, unknown>>
+    const sourceStep = steps[0] ?? {}
+
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        target_node_id: "age_band",
+        column: "age_band",
+        output_value: "young",
+        steps: [
+          {
+            ...sourceStep,
+            node_id: "age_band",
+            node_name: "Age banding",
+            node_type: "banding",
+            schema_diff: {
+              columns_added: ["age_band"],
+              columns_removed: [],
+              columns_modified: [],
+              columns_passed: ["driver_age"],
+            },
+            expression: {
+              expression_text: "driver_age -> age_band",
+              expression_type: "banding",
+              referenced_columns: ["driver_age"],
+            },
+            calculation: {
+              substituted_text: '22 -> "young"',
+              result_value: "young",
+              input_values: { driver_age: 22 },
+              input_sources: {
+                driver_age: {
+                  node_name: "Prepare",
+                  expression_text: "raw_age + 1",
+                  substituted_text: "21 + 1",
+                  result_value: 22,
+                  input_sources: {
+                    raw_age: {
+                      node_name: "Policies",
+                      result_value: 21,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    })
+
+    const source = parsed.trace?.steps[0]?.calculation?.input_sources?.driver_age
+    expect(source?.node_name).toBe("Prepare")
+    expect(source?.input_sources?.raw_age?.result_value).toBe(21)
+  })
+
   it("parses completed training responses with GLM diagnostics", () => {
     const parsed = parseTrainResponse(loadUiContractFixture("train_response"))
 

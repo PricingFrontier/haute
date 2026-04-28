@@ -1,4 +1,5 @@
 import type {
+  BandingNodeDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
   TraceNodeDetail,
@@ -76,6 +77,35 @@ function formatRatingStepDetail(detail: TraceNodeDetail): string[] {
   return parts
 }
 
+function formatBandingDetail(detail: TraceNodeDetail): string[] {
+  const banding = detail as BandingNodeDetail
+  const inputColumn = banding.input_column ?? banding.column
+  const matchedBand = banding.matched_band ?? banding.selected_band
+  if (banding.input_value === undefined && matchedBand === undefined) {
+    const factors = Array.isArray(banding.factors) ? banding.factors : []
+    if (factors.length === 0) return ["Banding"]
+    const factorSummaries = factors.map((factor, index) => {
+      const factorInput = factor.input_column ?? factor.column
+      const factorOutput = factor.output_column
+      if (factorInput && factorOutput) return `${factorInput} -> ${factorOutput}`
+      return factorOutput ?? factorInput ?? `factor ${index + 1}`
+    })
+    return [`Banding factors: ${factorSummaries.join("; ")}`]
+  }
+  const parts = [
+    `Banding: ${inputColumn ? `${inputColumn}=` : ""}${formatVal(banding.input_value)} -> ${formatVal(matchedBand)}`,
+  ]
+  if (banding.is_default) parts[0] += " (default)"
+  if (banding.lower_bound != null || banding.upper_bound != null) {
+    const lower = banding.lower_bound != null ? formatVal(banding.lower_bound) : ""
+    const upper = banding.upper_bound != null ? formatVal(banding.upper_bound) : ""
+    const lowerBracket = banding.lower_inclusive === false ? "(" : "["
+    const upperBracket = banding.upper_inclusive === false ? ")" : "]"
+    parts[0] += ` ${lowerBracket}${lower}, ${upper}${upperBracket}`
+  }
+  return parts
+}
+
 /**
  * Convert a trace result into a human-readable markdown document.
  */
@@ -106,7 +136,10 @@ export function traceToMarkdown(
   lines.push("")
 
   // ---- Formula section (only if targetStep has expression) ----
-  if (targetStep?.expression) {
+  const targetIsBanding = targetStep?.expression?.expression_type === "banding" ||
+    targetStep?.node_detail?.detail_type === "banding"
+
+  if (targetStep?.expression && !targetIsBanding) {
     lines.push("## Formula")
     lines.push("")
     lines.push(`\`${targetStep.expression.expression_text}\``)
@@ -144,7 +177,7 @@ export function traceToMarkdown(
       if (diff.columns_modified.length > 0) parts.push(`~${diff.columns_modified.join(",")}`)
       if (diff.columns_removed.length > 0) parts.push(`-${diff.columns_removed.join(",")}`)
 
-      if (step.expression) {
+      if (step.expression && step.node_detail?.detail_type !== "banding") {
         parts.push(step.expression.expression_text)
       }
 
@@ -155,6 +188,8 @@ export function traceToMarkdown(
           (Array.isArray(step.node_detail.tables) || Array.isArray(step.node_detail.combined_outputs))
         ) {
           parts.push(...formatRatingStepDetail(step.node_detail))
+        } else if (step.node_detail.detail_type === "banding") {
+          parts.push(...formatBandingDetail(step.node_detail))
         } else {
           for (const [key, val] of Object.entries(step.node_detail)) {
             parts.push(`${key}: ${formatVal(val)}`)

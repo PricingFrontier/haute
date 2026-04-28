@@ -1,8 +1,19 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { BandingRulesGrid } from "../BandingRulesGrid"
 import type { BandingFactor, ContinuousRule, CategoricalRule } from "../../../../types/banding"
 import { CHART_COLORS } from "../../../../theme/colors"
+import useToastStore from "../../../../stores/useToastStore"
+
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+
+function restoreClipboard(): void {
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor)
+    return
+  }
+  Reflect.deleteProperty(navigator, "clipboard")
+}
 
 function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
   return {
@@ -16,7 +27,11 @@ function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
 }
 
 describe("BandingRulesGrid", () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    restoreClipboard()
+  })
 
   it("renders empty state for continuous banding with no rules", () => {
     render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={vi.fn()} />)
@@ -240,6 +255,23 @@ describe("BandingRulesGrid", () => {
     expect(scrollContainer).toHaveClass("overflow-y-auto")
   })
 
+  it("keeps boxed inputs but tightens cell spacing and removes row divider lines", () => {
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "compact-1" },
+    ] as unknown as ContinuousRule[]
+    const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
+
+    const firstEditableCell = screen.getByLabelText("Rule 1 lower value").closest("td")
+    expect(firstEditableCell).toHaveClass("px-0.5")
+    expect(firstEditableCell).toHaveClass("py-0.5")
+    expect(screen.getByLabelText("Rule 1 lower value")).toHaveClass("rounded")
+    expect(screen.getByLabelText("Rule 1 lower value")).not.toHaveClass("rounded-none")
+    expect(screen.getByLabelText("Rule 1 lower value").style.border).toBe("1px solid var(--border)")
+
+    const dataRow = container.querySelector("tbody tr") as HTMLTableRowElement
+    expect(dataRow.style.borderBottom).toBe("")
+  })
+
   it("thead has position sticky", () => {
     const rules: ContinuousRule[] = [
       { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
@@ -350,6 +382,27 @@ describe("BandingRulesGrid", () => {
     expect(lastCall.rules[2].assignment).toBe("old")
   })
 
+  it("pastes TSV into a continuous range starting at the focused cell and creates missing rows", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { op1: "<", val1: "20", op2: "", val2: "", assignment: "young", _id: "range-c1" },
+      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "range-c2" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+
+    fireEvent.paste(screen.getByLabelText("Rule 2 upper value"), {
+      clipboardData: { getData: () => "75\told\n100\toldest" },
+    })
+
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+    const updated = onUpdate.mock.calls[0][0].rules
+    expect(updated).toHaveLength(3)
+    expect(updated[0]).toMatchObject({ op1: "<", val1: "20", op2: "", val2: "", assignment: "young" })
+    expect(updated[1]).toMatchObject({ op1: ">=", val1: "60", op2: "", val2: "75", assignment: "old" })
+    expect(updated[2]).toMatchObject({ op1: "", val1: "", op2: "", val2: "100", assignment: "oldest" })
+  })
+
   it("paste handler parses 5-column TSV for continuous", () => {
     const onUpdate = vi.fn()
     const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
@@ -368,6 +421,21 @@ describe("BandingRulesGrid", () => {
     expect(lastCall.rules[0].assignment).toBe("mid")
   })
 
+  it("round-trips copied continuous TSV with trailing blank cells through grid paste", () => {
+    const onUpdate = vi.fn()
+    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+
+    const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
+    fireEvent.paste(pasteTarget, {
+      clipboardData: { getData: () => "From\tValue\tTo\tValue\tLabel\n<\t25\t\t\t" },
+    })
+
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules).toHaveLength(1)
+    expect(lastCall.rules[0]).toMatchObject({ op1: "<", val1: "25", op2: "", val2: "", assignment: "" })
+  })
+
   it("paste handler parses 2-column TSV for categorical", () => {
     const onUpdate = vi.fn()
     const { container } = render(<BandingRulesGrid factor={makeFactor({ banding: "categorical" })} onUpdateFactor={onUpdate} />)
@@ -383,6 +451,111 @@ describe("BandingRulesGrid", () => {
     expect(lastCall.rules[0].assignment).toBe("South")
     expect(lastCall.rules[1].value).toBe("Manchester")
     expect(lastCall.rules[1].assignment).toBe("North")
+  })
+
+  it("round-trips copied categorical TSV with a blank final cell through grid paste", () => {
+    const onUpdate = vi.fn()
+    const { container } = render(<BandingRulesGrid factor={makeFactor({ banding: "categorical" })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+
+    const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
+    fireEvent.paste(pasteTarget, {
+      clipboardData: { getData: () => "Value\tMaps To\nLondon\t\nLeeds\tNorth" },
+    })
+
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules).toHaveLength(2)
+    expect(lastCall.rules[0]).toMatchObject({ value: "London", assignment: "" })
+    expect(lastCall.rules[1]).toMatchObject({ value: "Leeds", assignment: "North" })
+  })
+
+  it("pastes TSV into a categorical range and preserves internal blank cells", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { value: "Car", assignment: "Vehicle", _id: "range-cat-1" },
+      { value: "Bike", assignment: "Cycle", _id: "range-cat-2" },
+    ] as unknown as CategoricalRule[]
+    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={onUpdate} />)
+    onUpdate.mockClear()
+
+    fireEvent.paste(screen.getByLabelText("Rule 1 group name"), {
+      clipboardData: { getData: () => "Road\n\nMetro" },
+    })
+
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+    const updated = onUpdate.mock.calls[0][0].rules
+    expect(updated).toHaveLength(3)
+    expect(updated[0]).toMatchObject({ value: "Car", assignment: "Road" })
+    expect(updated[1]).toMatchObject({ value: "Bike", assignment: "" })
+    expect(updated[2]).toMatchObject({ value: "", assignment: "Metro" })
+  })
+
+  it("copies the whole continuous banding as TSV", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    })
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "copy-1" },
+      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "copy-2" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
+
+    expect(writeText).toHaveBeenCalledWith("From\tValue\tTo\tValue\tLabel\n<\t25\t\t\tyoung\n>=\t60\t\t\told")
+  })
+
+  it("copies the whole categorical banding as TSV", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    })
+    const rules = [
+      { value: "London", assignment: "South", _id: "copy-cat-1" },
+      { value: "Leeds", assignment: "North", _id: "copy-cat-2" },
+    ] as unknown as CategoricalRule[]
+    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
+
+    expect(writeText).toHaveBeenCalledWith("Value\tMaps To\nLondon\tSouth\nLeeds\tNorth")
+  })
+
+  it("shows a toast when the clipboard API is unavailable", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    })
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "copy-missing" },
+    ] as unknown as ContinuousRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          text: "Could not copy banding TSV: Clipboard API is not available",
+        }),
+      )
+    })
+  })
+
+  it("shows the copy banding action as an icon-only control below the grid", () => {
+    const rules = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "copy-ui-1" },
+    ] as unknown as ContinuousRule[]
+    const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
+
+    const button = screen.getByRole("button", { name: "Copy banding as TSV" })
+    expect(screen.queryByText("Copy TSV")).not.toBeInTheDocument()
+    expect(button).toHaveAttribute("title", "Copy banding as TSV")
+    expect(container.querySelector("[data-testid='banding-scroll-container'] + div button")).toBe(button)
   })
 
   // --- Keyboard: Enter to add row ---

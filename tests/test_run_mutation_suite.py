@@ -74,7 +74,37 @@ def test_changed_mutation_gate_file_selects_all_targets() -> None:
     assert selected == targets
 
 
-def test_unowned_backend_python_change_selects_all_targets() -> None:
+def test_changed_mutation_workflow_file_selects_all_targets() -> None:
+    targets = run_mutation_suite._load_targets(
+        [],
+        target_config=run_mutation_suite.REPO_ROOT / "mutation" / "targets.json",
+        fail_over_override=None,
+    )
+
+    selected = run_mutation_suite._select_targets_for_changed_files(
+        targets,
+        [".github/workflows/mutation.yml"],
+    )
+
+    assert selected == targets
+
+
+def test_changed_mutation_runner_script_selects_no_targets() -> None:
+    targets = run_mutation_suite._load_targets(
+        [],
+        target_config=run_mutation_suite.REPO_ROOT / "mutation" / "targets.json",
+        fail_over_override=None,
+    )
+
+    selected = run_mutation_suite._select_targets_for_changed_files(
+        targets,
+        ["scripts/run_mutation_suite.py"],
+    )
+
+    assert selected == []
+
+
+def test_unowned_backend_python_change_selects_no_targets() -> None:
     targets = run_mutation_suite._load_targets(
         [],
         target_config=run_mutation_suite.REPO_ROOT / "mutation" / "targets.json",
@@ -86,10 +116,10 @@ def test_unowned_backend_python_change_selects_all_targets() -> None:
         ["src/haute/parser.py"],
     )
 
-    assert selected == targets
+    assert selected == []
 
 
-def test_unowned_test_python_change_selects_all_targets() -> None:
+def test_unowned_test_python_change_selects_no_targets() -> None:
     targets = run_mutation_suite._load_targets(
         [],
         target_config=run_mutation_suite.REPO_ROOT / "mutation" / "targets.json",
@@ -98,13 +128,13 @@ def test_unowned_test_python_change_selects_all_targets() -> None:
 
     selected = run_mutation_suite._select_targets_for_changed_files(
         targets,
-        ["tests/test_api_contracts.py"],
+        ["tests/test_column_contracts_adoption.py"],
     )
 
-    assert selected == targets
+    assert selected == []
 
 
-def test_mixed_owned_and_unowned_backend_python_change_selects_all_targets() -> None:
+def test_mixed_owned_and_unowned_python_change_selects_owned_targets_only() -> None:
     targets = run_mutation_suite._load_targets(
         [],
         target_config=run_mutation_suite.REPO_ROOT / "mutation" / "targets.json",
@@ -113,10 +143,10 @@ def test_mixed_owned_and_unowned_backend_python_change_selects_all_targets() -> 
 
     selected = run_mutation_suite._select_targets_for_changed_files(
         targets,
-        ["src/haute/routes/_job_store.py", "src/haute/parser.py"],
+        ["src/haute/routes/_job_store.py", "tests/test_column_contracts_adoption.py"],
     )
 
-    assert selected == targets
+    assert [target.name for target in selected] == ["job-store"]
 
 
 def test_irrelevant_changed_files_select_no_targets() -> None:
@@ -232,7 +262,7 @@ def test_main_non_dry_run_skips_irrelevant_changed_files(
             "--run-id",
             "irrelevant-skip",
             "--changed-file",
-            "README.md",
+            "tests/test_column_contracts_adoption.py",
         ]
     )
 

@@ -69,8 +69,9 @@ test.describe("core browser flows", () => {
 
     await previewTable.getByRole("cell", { name: "22" }).first().click()
 
-    await expect(page.getByText(/Trace: value_doubled/i)).toBeVisible()
-    await expect(page.getByText(/raw_rows/i)).toBeVisible()
+    const nodeProperties = page.getByRole("complementary", { name: /node properties/i })
+    await expect(nodeProperties.getByText(/Trace: value_doubled/i)).toBeVisible()
+    await expect(nodeProperties.getByText(/\(raw_rows\)/i)).toBeVisible()
   })
 
   test("runs a real modelling training job and keeps results when switching panels", async ({ page }) => {

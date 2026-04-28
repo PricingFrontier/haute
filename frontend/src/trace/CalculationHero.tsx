@@ -142,6 +142,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   const isNullBoth = !expression && !calculation
   const isOpaque = expression?.expression_type === "opaque"
   const isConditional = expression?.expression_type === "conditional"
+  const isBanding = expression?.expression_type === "banding"
   const hasExpressionText =
     expression != null && expression.expression_text.length > 0
 
@@ -232,33 +233,12 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   // ---------------------------------------------------------------------------
   // Unified calculation box — all entries top-down in one well
   // ---------------------------------------------------------------------------
-  const renderUnifiedBox = (formulaText: string | null, subText: string) => {
-    // Reached the default render path with no calculation data. Surface the
-    // gap loudly so the user knows trace data is missing rather than seeing
-    // an empty pane.
-    if (!calculation) {
-      return (
-        <div
-          role="alert"
-          style={{
-            padding: "8px 12px",
-            border: "1px solid var(--warning-border)",
-            borderRadius: 4,
-            background: "var(--warning-soft)",
-            color: "var(--warning-strong)",
-            fontSize: 12,
-            marginTop: 4,
-          }}
-        >
-          Calculation data not available for this step.
-        </div>
-      )
-    }
-
+  const buildUnifiedEntries = () => {
     // Gather rows from both sources (intra-node chain first, then upstream
     // input-sources deduped by column). The row-builders live alongside
     // their respective render components so the orchestrator stays focused
     // on merge + sort + final-row composition.
+    if (!calculation) return []
     const chainEntries = buildChainEntries(
       calculation.expression_chain,
       column,
@@ -291,6 +271,33 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       const bHasFormula = b.formulaText ? 1 : 0
       return aHasFormula - bHasFormula
     })
+    return entries
+  }
+
+  const renderCalculationMissing = () => (
+    <div
+      role="alert"
+      style={{
+        padding: "8px 12px",
+        border: "1px solid var(--warning-border)",
+        borderRadius: 4,
+        background: "var(--warning-soft)",
+        color: "var(--warning-strong)",
+        fontSize: 12,
+        marginTop: 4,
+      }}
+    >
+      Calculation data not available for this step.
+    </div>
+  )
+
+  const renderUnifiedBox = (formulaText: string | null, subText: string) => {
+    // Reached the default render path with no calculation data. Surface the
+    // gap loudly so the user knows trace data is missing rather than seeing
+    // an empty pane.
+    if (!calculation) return renderCalculationMissing()
+
+    const entries = buildUnifiedEntries()
 
     const hasEntries = entries.length > 0
 
@@ -360,6 +367,79 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
               title={resultFormattedFull !== resultFormatted ? resultFormattedFull : undefined}
             >
               {resultFormatted}
+            </span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderBandingBox = () => {
+    if (!calculation) return renderCalculationMissing()
+
+    const entries = buildUnifiedEntries()
+    const [[inputColumn, inputValue] = ["", undefined]] = Object.entries(calculation.input_values)
+    const bandValue = calculation.result_value
+    const inputText = inputColumn
+      ? `${inputColumn}=${formatSmartValue(inputValue)}`
+      : formatSmartValue(inputValue)
+    const bandText = formatSmartValue(bandValue)
+    const summary = inputColumn ? `${inputText} -> ${bandText}` : bandText
+    const hasEntries = entries.length > 0
+
+    return (
+      <div style={{
+        background: "rgba(0,0,0,.12)",
+        borderRadius: 6,
+        padding: "10px 12px",
+        marginTop: 8,
+        border: "1px solid rgba(255,255,255,.03)",
+        fontFamily: "monospace",
+        fontSize: 12,
+      }}>
+        {entries.map((entry) => (
+          <ExpressionChainRow
+            key={entry.column}
+            column={entry.column}
+            formulaText={entry.formulaText}
+            substitutedText={entry.substitutedText}
+            value={entry.value}
+            source={entry.source}
+          >
+            {entry.subSources && Object.keys(entry.subSources).length > 0 && (
+              <InputSourceTree subSources={entry.subSources} />
+            )}
+          </ExpressionChainRow>
+        ))}
+
+        <div
+          aria-label={`Banding: ${summary}`}
+          style={{
+            position: "relative",
+            paddingLeft: 24,
+            ...(hasEntries ? { borderTop: "1px solid rgba(255,255,255,.06)", marginTop: 6, paddingTop: 8 } : {}),
+          }}
+        >
+          <div style={{
+            position: "absolute", left: 3, top: hasEntries ? 15 : 7, width: 7, height: 7,
+            borderRadius: "50%",
+            background: "var(--text-accent-strong)",
+            border: "1px solid var(--text-accent-heavy)",
+          }} />
+          <div style={{ color: "var(--text-primary)", fontWeight: 600, overflowWrap: "anywhere", ...tabularNums }}>
+            {inputColumn && (
+              <>
+                <span>{inputColumn}</span>
+                <span style={{ color: "var(--text-secondary)" }}>=</span>
+                <span title={formatResultValueFull(inputValue)}>{formatSmartValue(inputValue)}</span>
+                <span style={{ color: "var(--text-secondary)" }}> -&gt; </span>
+              </>
+            )}
+            <span
+              style={{ color: resultIsNull ? "var(--text-secondary)" : "var(--accent)" }}
+              title={resultFormattedFull !== resultFormatted ? resultFormattedFull : undefined}
+            >
+              {bandText}
             </span>
           </div>
         </div>
@@ -512,6 +592,14 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
             steps={waterfallSteps}
             resultValue={calculation.result_value}
           />
+        </div>
+      )
+    }
+
+    if (isBanding && calculation) {
+      return (
+        <div style={{ marginTop: 4 }}>
+          {renderBandingBox()}
         </div>
       )
     }

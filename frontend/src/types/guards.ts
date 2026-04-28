@@ -61,6 +61,7 @@ import type {
 } from "../api/types"
 import type { ColumnInfo } from "./node"
 import type {
+  TraceInputSource,
   TraceResult,
   TraceSchemaDiff,
   TraceStep,
@@ -497,20 +498,56 @@ function parseTraceCalculation(value: unknown, field: string): NonNullable<Trace
     substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
     result_value: obj.result_value,
     input_values: optionalNullableObject("parseTraceResponse", { input_values: obj.input_values }, "input_values") ?? {},
+    expression_chain: obj.expression_chain === undefined || obj.expression_chain === null
+      ? null
+      : parseExpressionChain(obj.expression_chain, `${field}.expression_chain`),
+    input_sources: obj.input_sources === undefined || obj.input_sources === null
+      ? null
+      : parseTraceInputSources(obj.input_sources, `${field}.input_sources`),
   }
 }
 
 function parseExpressionChain(
   value: unknown,
   field: string,
-): Array<{ expression_text: string; target_column: string }> {
+): Array<{ expression_text: string; target_column: string; substituted_text?: string; result_value?: unknown }> {
   return parseArray("parseTraceResponse", value, field, (item, itemField) => {
     const obj = expectPlainObject("parseTraceResponse", item, itemField)
     return {
       expression_text: expectString("parseTraceResponse", obj.expression_text, `${itemField}.expression_text`),
       target_column: expectString("parseTraceResponse", obj.target_column, `${itemField}.target_column`),
+      ...(obj.substituted_text === undefined ? {} : {
+        substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${itemField}.substituted_text`),
+      }),
+      ...(obj.result_value === undefined ? {} : { result_value: obj.result_value }),
     }
   })
+}
+
+function parseTraceInputSources(value: unknown, field: string): Record<string, TraceInputSource> {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  const result: Record<string, TraceInputSource> = {}
+  for (const [column, source] of Object.entries(obj)) {
+    result[column] = parseTraceInputSource(source, `${field}.${column}`)
+  }
+  return result
+}
+
+function parseTraceInputSource(value: unknown, field: string): TraceInputSource {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  return {
+    node_name: expectString("parseTraceResponse", obj.node_name, `${field}.node_name`),
+    ...(obj.expression_text === undefined ? {} : {
+      expression_text: expectString("parseTraceResponse", obj.expression_text, `${field}.expression_text`),
+    }),
+    ...(obj.substituted_text === undefined ? {} : {
+      substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
+    }),
+    ...(obj.result_value === undefined ? {} : { result_value: obj.result_value }),
+    input_sources: obj.input_sources === undefined || obj.input_sources === null
+      ? null
+      : parseTraceInputSources(obj.input_sources, `${field}.input_sources`),
+  }
 }
 
 function parseTraceRenameInfo(value: unknown, field: string): NonNullable<TraceStep["rename_info"]> {

@@ -32,6 +32,7 @@ from collections.abc import Callable
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._config_io import config_path_for_node
 from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
+from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
     CodegenFn,
 )
@@ -661,7 +662,7 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.RATING_STEP)
 def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    tables = config.get("tables", []) or []
+    tables = normalise_rating_tables(config)
     params = _build_params(source_names)
     first = _first_source(source_names)
     code = _strip_generated_boilerplate_from_code(

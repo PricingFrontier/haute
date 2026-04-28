@@ -2848,6 +2848,29 @@ class TestEnrichBandingRealConfig:
         assert result["is_default"] is True
         assert result["rule_index"] == -1
 
+    def test_categorical_banding_matches_runtime_string_key_semantics(self):
+        """Categorical enrichment mirrors runtime remap keys instead of Python equality."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "score",
+                    "outputColumn": "score_band",
+                    "banding": "categorical",
+                    "rules": [{"value": 1, "assignment": "one"}],
+                    "default": "one",
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"score": 1.0}, {"score_band": "one"})
+
+        assert result["selected_band"] == "one"
+        assert result["matched_band"] == "one"
+        assert result["is_default"] is True
+        assert result["rule_index"] == -1
+
     def test_continuous_banding_match(self):
         """Continuous banding matches a range rule."""
         from haute._trace_enrichment import enrich_banding
@@ -2872,8 +2895,158 @@ class TestEnrichBandingRealConfig:
 
         result = enrich_banding(config, input_row, output_row)
         assert result["selected_band"] == "adult"
+        assert result["matched_band"] == "adult"
+        assert result["input_column"] == "age"
+        assert result["output_column"] == "age_band"
+        assert result["lower_bound"] == 25.0
+        assert result["upper_bound"] == 65.0
         assert result["rule_index"] == 1
         assert result["is_default"] is False
+
+    def test_breakpoint_banding_match_reports_original_value_and_range(self):
+        """Breakpoint banding exposes the value before banding and matched interval."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "breakpoints",
+                    "rules": [
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": "adult"},
+                        {"boundary": "", "label": "senior"},
+                    ],
+                    "rightClosed": True,
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"age": 35}, {"age_band": "adult"})
+
+        assert result["input_column"] == "age"
+        assert result["output_column"] == "age_band"
+        assert result["input_value"] == 35
+        assert result["matched_band"] == "adult"
+        assert result["selected_band"] == "adult"
+        assert result["lower_bound"] == 25.0
+        assert result["lower_inclusive"] is False
+        assert result["upper_bound"] == 65.0
+        assert result["upper_inclusive"] is True
+
+    def test_compact_categorical_banding_trace_matches_rule(self):
+        """Trace enrichment accepts the compact sidecar rule map."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "fuel_type",
+                    "outputColumn": "fuel_band",
+                    "banding": "categorical",
+                    "rules": {"Petrol": "Standard", "Electric": "Green"},
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"fuel_type": "Petrol"}, {"fuel_band": "Standard"})
+
+        assert result["input_column"] == "fuel_type"
+        assert result["input_value"] == "Petrol"
+        assert result["selected_band"] == "Standard"
+        assert result["matched_value"] == "Petrol"
+        assert result["rule_index"] == 0
+
+    def test_compact_breakpoint_banding_trace_reports_range(self):
+        """Trace enrichment expands compact breakpoint maps before range matching."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "breakpoints",
+                    "rules": {"25": "young", "65": "adult", "": "senior"},
+                    "rightClosed": True,
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"age": 35}, {"age_band": "adult"})
+
+        assert result["input_value"] == 35
+        assert result["selected_band"] == "adult"
+        assert result["lower_bound"] == 25.0
+        assert result["upper_bound"] == 65.0
+
+    def test_multiple_factors_focuses_top_level_detail_on_traced_output(self):
+        """Multi-factor banding reports the traced output's source value at top level."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                },
+                {
+                    "column": "region",
+                    "outputColumn": "region_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "north", "assignment": "N"}],
+                },
+            ]
+        }
+
+        result = enrich_banding(
+            config,
+            {"age": 40, "region": "north"},
+            {"age_band": None, "region_band": "N"},
+            traced_column="region_band",
+        )
+
+        assert result["input_column"] == "region"
+        assert result["output_column"] == "region_band"
+        assert result["input_value"] == "north"
+        assert result["matched_band"] == "N"
+        assert result["selected_band"] == "N"
+
+    def test_multiple_factors_do_not_fallback_when_traced_output_is_unknown(self):
+        """Unknown traced outputs keep factor details without inventing a top-level match."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                },
+                {
+                    "column": "region",
+                    "outputColumn": "region_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "north", "assignment": "N"}],
+                },
+            ]
+        }
+
+        result = enrich_banding(
+            config,
+            {"age": 20, "region": "north"},
+            {"age_band": "young", "region_band": "N"},
+            traced_column="passed_through_column",
+        )
+
+        assert len(result["factors"]) == 2
+        assert "input_column" not in result
+        assert "output_column" not in result
+        assert "selected_band" not in result
 
     def test_continuous_banding_no_match_uses_default(self):
         """Continuous banding falls to default when no rule matches."""
@@ -3224,6 +3397,37 @@ class TestEnrichRatingStepRealConfig:
         assert result["tables"][0]["name"] == "region_factor"
         assert result["tables"][0]["factors"] == [{"column": "region", "value": "north"}]
         assert result["tables"][0]["selected_value"] == 1.1
+
+    def test_compact_table_entries_trace_like_canonical_rows(self):
+        from haute._trace_enrichment import enrich_rating_step
+
+        config = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "entries": {"1-3": {"comprehensive": 0.9}},
+                    "outputColumn": "vehicle_factor",
+                    "defaultValue": "1.0",
+                }
+            ]
+        }
+        result = enrich_rating_step(
+            config,
+            input_row={"vehicle_age_band": "1-3", "cover_type": "comprehensive"},
+            output_row={"vehicle_factor": 0.9},
+        )
+
+        assert result["matched_key"] == {
+            "vehicle_age_band": "1-3",
+            "cover_type": "comprehensive",
+        }
+        assert result["matched"] is True
+        assert result["tables"][0]["matched_entry"] == {
+            "vehicle_age_band": "1-3",
+            "cover_type": "comprehensive",
+            "value": 0.9,
+        }
 
     def test_multiple_tables_with_combined_column(self):
         from haute._trace_enrichment import enrich_rating_step
