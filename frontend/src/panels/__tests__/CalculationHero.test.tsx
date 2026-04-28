@@ -240,6 +240,36 @@ describe("CalculationHero \u2014 Formula Modes", () => {
     ).toBe(true)
   })
 
+  it("banding mode: uses one compact input-to-band line", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          column: "age_band",
+          expression: makeExpression({
+            expression_text: "driver_age -> age_band",
+            expression_type: "banding",
+            referenced_columns: ["driver_age"],
+          }),
+          calculation: makeCalculation({
+            substituted_text: '22 -> "young"',
+            result_value: "young",
+            input_values: { driver_age: 22 },
+            input_sources: {
+              driver_age: {
+                node_name: "Policies",
+                result_value: 22,
+              },
+            },
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByLabelText("Banding: driver_age=22 -> young")).toBeInTheDocument()
+    expect(screen.getByText(/Policies/)).toBeInTheDocument()
+    expect(screen.queryByText("driver_age -> age_band")).not.toBeInTheDocument()
+  })
+
   it("long formula (80+ chars): wraps or truncates with toggle", () => {
     const longFormula = Array.from({ length: 12 }, (_, i) => `factor_${i}`).join(" * ")
     render(

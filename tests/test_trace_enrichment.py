@@ -2848,6 +2848,29 @@ class TestEnrichBandingRealConfig:
         assert result["is_default"] is True
         assert result["rule_index"] == -1
 
+    def test_categorical_banding_matches_runtime_string_key_semantics(self):
+        """Categorical enrichment mirrors runtime remap keys instead of Python equality."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "score",
+                    "outputColumn": "score_band",
+                    "banding": "categorical",
+                    "rules": [{"value": 1, "assignment": "one"}],
+                    "default": "one",
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"score": 1.0}, {"score_band": "one"})
+
+        assert result["selected_band"] == "one"
+        assert result["matched_band"] == "one"
+        assert result["is_default"] is True
+        assert result["rule_index"] == -1
+
     def test_continuous_banding_match(self):
         """Continuous banding matches a range rule."""
         from haute._trace_enrichment import enrich_banding
@@ -2872,8 +2895,79 @@ class TestEnrichBandingRealConfig:
 
         result = enrich_banding(config, input_row, output_row)
         assert result["selected_band"] == "adult"
+        assert result["matched_band"] == "adult"
+        assert result["input_column"] == "age"
+        assert result["output_column"] == "age_band"
+        assert result["lower_bound"] == 25.0
+        assert result["upper_bound"] == 65.0
         assert result["rule_index"] == 1
         assert result["is_default"] is False
+
+    def test_breakpoint_banding_match_reports_original_value_and_range(self):
+        """Breakpoint banding exposes the value before banding and matched interval."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "breakpoints",
+                    "rules": [
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": "adult"},
+                        {"boundary": "", "label": "senior"},
+                    ],
+                    "rightClosed": True,
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"age": 35}, {"age_band": "adult"})
+
+        assert result["input_column"] == "age"
+        assert result["output_column"] == "age_band"
+        assert result["input_value"] == 35
+        assert result["matched_band"] == "adult"
+        assert result["selected_band"] == "adult"
+        assert result["lower_bound"] == 25.0
+        assert result["lower_inclusive"] is False
+        assert result["upper_bound"] == 65.0
+        assert result["upper_inclusive"] is True
+
+    def test_multiple_factors_focuses_top_level_detail_on_traced_output(self):
+        """Multi-factor banding reports the traced output's source value at top level."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                },
+                {
+                    "column": "region",
+                    "outputColumn": "region_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "north", "assignment": "N"}],
+                },
+            ]
+        }
+
+        result = enrich_banding(
+            config,
+            {"age": 40, "region": "north"},
+            {"age_band": None, "region_band": "N"},
+            traced_column="region_band",
+        )
+
+        assert result["input_column"] == "region"
+        assert result["output_column"] == "region_band"
+        assert result["input_value"] == "north"
+        assert result["matched_band"] == "N"
+        assert result["selected_band"] == "N"
 
     def test_continuous_banding_no_match_uses_default(self):
         """Continuous banding falls to default when no rule matches."""

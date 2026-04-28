@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from "react"
 import { X, ChevronDown, ChevronRight, Scan, Copy, Check } from "lucide-react"
 import type {
+  BandingNodeDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
   TraceNodeDetail,
@@ -25,6 +26,10 @@ function asRatingStepTables(detail: TraceNodeDetail): RatingStepTableDetail[] {
 
 function asRatingStepCombinedOutputs(detail: TraceNodeDetail): RatingStepCombinedOutputDetail[] {
   return Array.isArray(detail.combined_outputs) ? detail.combined_outputs as RatingStepCombinedOutputDetail[] : []
+}
+
+function asBandingDetail(detail: TraceNodeDetail): BandingNodeDetail {
+  return detail as BandingNodeDetail
 }
 
 function ratingTableStatus(table: RatingStepTableDetail): string | undefined {
@@ -57,8 +62,21 @@ function hasRichRatingStepDetail(step: TraceStep | null | undefined): boolean {
   )
 }
 
+function hasRichBandingDetail(step: TraceStep | null | undefined): boolean {
+  const detail = step?.node_detail
+  return detail?.detail_type === "banding"
+}
+
+function hasBandingSecondaryDetail(detail: TraceNodeDetail | null | undefined): boolean {
+  return detail?.detail_type === "banding" &&
+    (detail.lower_bound != null || detail.upper_bound != null || detail.is_default === true)
+}
+
 function isCalculationRoutineSparse(step: TraceStep | null | undefined): boolean {
-  return step != null && step.expression == null && step.calculation == null && hasRichRatingStepDetail(step)
+  return step != null &&
+    step.expression == null &&
+    step.calculation == null &&
+    (hasRichRatingStepDetail(step) || hasRichBandingDetail(step))
 }
 
 function initialTraceTab(trace: TraceResult): TraceTab {
@@ -70,7 +88,15 @@ function traceTabKey(trace: TraceResult): string {
   return `${trace.target_node_id}\u0000${trace.row_index}\u0000${trace.column ?? ""}`
 }
 
-function NodeDetailBlock({ detail, tracedColumn }: { detail: TraceNodeDetail; tracedColumn?: string | null }) {
+function NodeDetailBlock({
+  detail,
+  tracedColumn,
+  showBandingSummary = true,
+}: {
+  detail: TraceNodeDetail
+  tracedColumn?: string | null
+  showBandingSummary?: boolean
+}) {
   const detailType = detail.detail_type as string | undefined
 
   const labelStyle = { color: "var(--text-muted)", fontSize: "10px" }
@@ -218,13 +244,37 @@ function NodeDetailBlock({ detail, tracedColumn }: { detail: TraceNodeDetail; tr
   }
 
   if (detailType === "banding") {
+    const banding = asBandingDetail(detail)
+    const inputColumn = banding.input_column ?? banding.column
+    const matchedBand = banding.matched_band ?? banding.selected_band
+    const hasRange = banding.lower_bound != null || banding.upper_bound != null
+    const lower = banding.lower_bound != null ? formatValue(banding.lower_bound) : ""
+    const upper = banding.upper_bound != null ? formatValue(banding.upper_bound) : ""
+    const lowerBracket = banding.lower_inclusive === false ? "(" : "["
+    const upperBracket = banding.upper_inclusive === false ? ")" : "]"
+    const bandingSummary = `${inputColumn ? `${inputColumn}=` : ""}${formatValue(banding.input_value)} -> ${formatValue(matchedBand)}`
+    const rangeSummary = `${lowerBracket}${lower}, ${upper}${upperBracket}`
     return (
-      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-        <div style={labelStyle}>Banding</div>
-        <div style={valueStyle}>Input: {String(detail.input_value)}</div>
-        <div style={valueStyle}>Matched band: {String(detail.matched_band)}</div>
-        {detail.lower_bound != null && detail.upper_bound != null && (
-          <div style={valueStyle}>Range: [{String(detail.lower_bound)}, {String(detail.upper_bound)}]</div>
+      <div className="my-2 flex flex-wrap items-center gap-1.5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        {showBandingSummary && <span style={labelStyle}>Banding</span>}
+        {showBandingSummary && (
+          <span
+            aria-label={`Banding: ${bandingSummary}`}
+            className="px-1.5 py-0.5 rounded"
+            style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}
+          >
+            {bandingSummary}
+          </span>
+        )}
+        {hasRange && (
+          <span className="px-1.5 py-0.5 rounded" style={{ ...valueStyle, background: "rgba(255,255,255,.04)" }}>
+            {rangeSummary}
+          </span>
+        )}
+        {banding.is_default && (
+          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold" style={{ background: "var(--warning-bright-soft-strong)", color: "var(--warning)" }}>
+            default
+          </span>
         )}
       </div>
     )
@@ -692,9 +742,19 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                 nodeName={targetStep.node_name}
                 waterfall={trace.waterfall}
               />
-              {hasRichRatingStepDetail(targetStep) && targetStep.node_detail && (
+              {targetStep.node_detail && (
+                hasRichRatingStepDetail(targetStep) ||
+                (
+                  hasRichBandingDetail(targetStep) &&
+                  (targetStep.calculation == null || hasBandingSecondaryDetail(targetStep.node_detail))
+                )
+              ) && (
                 <div className="px-3 pb-3">
-                  <NodeDetailBlock detail={targetStep.node_detail} tracedColumn={trace.column} />
+                  <NodeDetailBlock
+                    detail={targetStep.node_detail}
+                    tracedColumn={trace.column}
+                    showBandingSummary={targetStep.calculation == null}
+                  />
                 </div>
               )}
             </>

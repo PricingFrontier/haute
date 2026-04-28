@@ -741,6 +741,83 @@ class TestBandingThenRating:
         assert "rates" in ids
 
 
+class TestBandingTraceLineage:
+    """Banding-created fields should trace back to the value that was banded."""
+
+    def test_banding_created_column_reports_input_value_and_continues_lineage(self, tmp_path):
+        p_data = tmp_path / "policies.parquet"
+        pl.DataFrame(
+            {
+                "driver_age": [30],
+                "age_offset": [5],
+            }
+        ).write_parquet(p_data)
+
+        banding_config = {
+            "factors": [
+                {
+                    "column": "risk_age",
+                    "outputColumn": "age_band",
+                    "banding": "continuous",
+                    "rules": [
+                        {"op1": "<", "val1": 25, "assignment": "young"},
+                        {
+                            "op1": ">=",
+                            "val1": 25,
+                            "op2": "<",
+                            "val2": 65,
+                            "assignment": "adult",
+                        },
+                    ],
+                    "default": "senior",
+                }
+            ]
+        }
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("policies", str(p_data)),
+                    _transform_node(
+                        "prep",
+                        "df = df.with_columns("
+                        "risk_age=pl.col('driver_age') + pl.col('age_offset'))",
+                    ),
+                    GraphNode(
+                        id="band",
+                        data=NodeData(
+                            label="age banding",
+                            nodeType=NodeType.BANDING,
+                            config=banding_config,
+                        ),
+                    ),
+                ],
+                "edges": [_edge("policies", "prep"), _edge("prep", "band")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="band", column="age_band")
+
+        assert _step_ids(result) == ["policies", "prep", "band"]
+        band_step = _step_by_id(result, "band")
+        detail = band_step.node_detail
+        assert detail is not None
+        assert detail["detail_type"] == "banding"
+        assert detail["input_column"] == "risk_age"
+        assert detail["output_column"] == "age_band"
+        assert detail["input_value"] == 35
+        assert detail["matched_band"] == "adult"
+
+        assert band_step.expression is not None
+        assert band_step.expression["expression_type"] == "banding"
+        assert band_step.expression["referenced_columns"] == ["risk_age"]
+        assert band_step.calculation is not None
+        assert band_step.calculation["input_values"] == {"risk_age": 35}
+        assert band_step.calculation["result_value"] == "adult"
+        assert band_step.calculation["input_sources"]["risk_age"]["node_name"] == "prep"
+        assert band_step.calculation["input_sources"]["risk_age"]["result_value"] == 35
+
+
 class TestFullPricingWaterfall:
     """C.4: data_source -> banding -> rating_step -> polars(apply discount) -> output
 

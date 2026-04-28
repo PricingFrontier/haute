@@ -211,6 +211,78 @@ describe("TracePanel", () => {
     expect(screen.getByText("7.3ms")).toBeInTheDocument()
   })
 
+  it("renders banding-created fields with the source value instead of computed", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "banding",
+          column: "age_band",
+          output_value: "young",
+          steps: [
+            makeStep({
+              node_id: "data",
+              node_name: "data",
+              node_type: "dataSource",
+              schema_diff: {
+                columns_added: ["driver_age"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              output_values: { driver_age: 22 },
+              column_relevant: false,
+            }),
+            makeStep({
+              node_id: "banding",
+              node_name: "Age banding",
+              node_type: "banding",
+              schema_diff: {
+                columns_added: ["age_band"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["driver_age"],
+              },
+              input_values: { driver_age: 22 },
+              output_values: { driver_age: 22, age_band: "young" },
+              expression: {
+                expression_text: "driver_age -> age_band",
+                expression_type: "banding",
+                referenced_columns: ["driver_age"],
+              },
+              calculation: {
+                substituted_text: '22 -> "young"',
+                result_value: "young",
+                input_values: { driver_age: 22 },
+                input_sources: {
+                  driver_age: {
+                    node_name: "data",
+                    result_value: 22,
+                  },
+                },
+              },
+              node_detail: {
+                detail_type: "banding",
+                input_column: "driver_age",
+                output_column: "age_band",
+                input_value: 22,
+                selected_band: "young",
+                matched_band: "young",
+                rule_index: 0,
+                is_default: false,
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText(/computed/i)).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Banding: driver_age=22 -> young")).toBeInTheDocument()
+    expect(screen.queryByText(/Matched band:/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Output:/i)).not.toBeInTheDocument()
+  })
+
   it("step card expands on click to show column details", () => {
     render(
       <TracePanel
