@@ -9,6 +9,8 @@
  */
 import { create } from "zustand"
 
+export type RatingStepEditorSection = "tables" | "combined" | "code"
+
 interface UIState {
   // Modals / panels
   paletteOpen: boolean
@@ -33,6 +35,10 @@ interface UIState {
   // Node panel width (persisted across selection changes)
   nodePanelWidth: number
   setNodePanelWidth: (width: number) => void
+
+  // Rating step editor section (remembered across node panel remounts)
+  ratingStepEditorSections: Record<string, RatingStepEditorSection>
+  setRatingStepEditorSection: (nodeId: string, section: RatingStepEditorSection) => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
@@ -73,6 +79,15 @@ const useUIStore = create<UIState>()((set) => ({
   // Node panel width (0 = use dynamic default: 50% of available space)
   nodePanelWidth: 0,
   setNodePanelWidth: (width) => set({ nodePanelWidth: width }),
+
+  // Rating step editor section
+  ratingStepEditorSections: {},
+  setRatingStepEditorSection: (nodeId, section) => set((state) => ({
+    ratingStepEditorSections: {
+      ...state.ratingStepEditorSections,
+      [nodeId]: section,
+    },
+  })),
 
   // Hover highlight
   hoveredNodeId: null,

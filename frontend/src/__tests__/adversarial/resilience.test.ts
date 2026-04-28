@@ -52,6 +52,7 @@ function resetStores() {
     renameDialog: null,
     syncBanner: null,
     nodePanelWidth: 0,
+    ratingStepEditorSections: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })

@@ -486,6 +486,34 @@ class TestRatingStepExecutor:
         with pytest.raises(ValueError, match="Unsupported rating combine operation"):
             _build_node_fn(node)
 
+    def test_legacy_combined_column_invalid_operation_raises(self):
+        """Legacy combinedColumn configs also fail loudly on misspelled operations."""
+        tables = [
+            {
+                "name": "T1",
+                "factors": ["band"],
+                "outputColumn": "f1",
+                "defaultValue": "1.0",
+                "entries": [{"band": "A", "value": 2.0}],
+            },
+            {
+                "name": "T2",
+                "factors": ["band"],
+                "outputColumn": "f2",
+                "defaultValue": "1.0",
+                "entries": [{"band": "A", "value": 3.0}],
+            },
+        ]
+        node = _rating_node(
+            "bad_legacy_operation",
+            tables,
+            operation="divide",
+            combined_column="premium",
+        )
+
+        with pytest.raises(ValueError, match="Unsupported rating combine operation"):
+            _build_node_fn(node)
+
     def test_combined_outputs_missing_base_value_raises(self):
         """New combined outputs require an explicit numeric base value."""
         node = _rating_node(

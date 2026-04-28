@@ -12,6 +12,7 @@ function reset() {
     renameDialog: null,
     syncBanner: null,
     nodePanelWidth: 0,
+    ratingStepEditorSections: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
@@ -160,6 +161,37 @@ describe("useUIStore", () => {
     it("setNodePanelWidth updates the width", () => {
       useUIStore.getState().setNodePanelWidth(600)
       expect(useUIStore.getState().nodePanelWidth).toBe(600)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Rating step editor section
+  // -----------------------------------------------------------------------
+
+  describe("ratingStepEditorSections", () => {
+    it("defaults to an empty lookup", () => {
+      expect(useUIStore.getState().ratingStepEditorSections).toEqual({})
+    })
+
+    it("stores the selected section by node id", () => {
+      useUIStore.getState().setRatingStepEditorSection("rating_1", "tables")
+      useUIStore.getState().setRatingStepEditorSection("rating_2", "code")
+
+      expect(useUIStore.getState().ratingStepEditorSections).toEqual({
+        rating_1: "tables",
+        rating_2: "code",
+      })
+    })
+
+    it("replaces only the selected node entry", () => {
+      useUIStore.getState().setRatingStepEditorSection("rating_1", "tables")
+      useUIStore.getState().setRatingStepEditorSection("rating_2", "code")
+      useUIStore.getState().setRatingStepEditorSection("rating_1", "combined")
+
+      expect(useUIStore.getState().ratingStepEditorSections).toEqual({
+        rating_1: "combined",
+        rating_2: "code",
+      })
     })
   })
 

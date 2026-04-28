@@ -248,11 +248,11 @@ class TestCombineRatingColumns:
         result = _combine_rating_columns(lf, ["a", "b", "c"], "add", "total").collect()
         assert result["total"].to_list() == [6.0]
 
-    def test_unknown_operation_defaults_to_multiply(self) -> None:
-        """An unrecognised operation string falls through to multiply."""
+    def test_unknown_operation_raises_value_error(self) -> None:
+        """An unrecognised operation string fails loudly."""
         lf = pl.DataFrame({"a": [2.0], "b": [3.0]}).lazy()
-        result = _combine_rating_columns(lf, ["a", "b"], "subtract", "out").collect()
-        assert result["out"].to_list() == [6.0]
+        with pytest.raises(ValueError, match="Unsupported rating combine operation"):
+            _combine_rating_columns(lf, ["a", "b"], "subtract", "out").collect()
 
     def test_all_four_operations_roundtrip(self) -> None:
         """B24: Verify the four documented operations (multiply, add, min, max)."""
@@ -1589,10 +1589,10 @@ class TestCombineRatingColumnsEdgeCases:
         assert "out" not in result.columns
         assert result.columns == ["x"]
 
-    def test_unknown_operation_defaults_to_multiply(self) -> None:
+    def test_unknown_operation_raises_value_error(self) -> None:
         lf = pl.DataFrame({"a": [2.0], "b": [5.0]}).lazy()
-        result = _combine_rating_columns(lf, ["a", "b"], "foobar", "out").collect()
-        assert result["out"].to_list() == [10.0]
+        with pytest.raises(ValueError, match="Unsupported rating combine operation"):
+            _combine_rating_columns(lf, ["a", "b"], "foobar", "out").collect()
 
 
 # ---------------------------------------------------------------------------

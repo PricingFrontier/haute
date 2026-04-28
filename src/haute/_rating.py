@@ -225,6 +225,17 @@ _LOOKUP_VAL = "__haute_lookup_val__"
 _SUPPORTED_COMBINE_OPERATIONS = frozenset({"multiply", "add", "min", "max"})
 
 
+def _normalise_combine_operation(operation: object) -> str:
+    """Return a validated rating combine operation."""
+    normalised = str(operation or "multiply")
+    if normalised not in _SUPPORTED_COMBINE_OPERATIONS:
+        raise ValueError(
+            f"Unsupported rating combine operation {normalised!r}; "
+            f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}"
+        )
+    return normalised
+
+
 def _apply_rating_table(
     lf: _Frame,
     table: dict[str, Any],
@@ -333,6 +344,7 @@ def _combine_rating_columns(
 
     Supported operations: multiply (default), add, min, max.
     """
+    operation = _normalise_combine_operation(operation)
     if not columns:
         return lf
     if len(columns) == 1:
@@ -368,10 +380,11 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     raw_outputs = config.get("combinedOutputs")
     combined_raw = config.get("combinedColumn")
     combined = str(combined_raw).strip() if combined_raw is not None else ""
+    operation = _normalise_combine_operation(config.get("operation", "multiply"))
     legacy_output = (
         {
             "outputColumn": str(combined),
-            "operation": str(config.get("operation", "multiply") or "multiply"),
+            "operation": operation,
             "baseValue": None,
             "_legacy": True,
         }
@@ -409,12 +422,7 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "duplicates another rating output column"
             )
         seen_output_cols.add(output_col)
-        operation = str(item.get("operation", "multiply") or "multiply")
-        if operation not in _SUPPORTED_COMBINE_OPERATIONS:
-            raise ValueError(
-                f"Unsupported rating combine operation {operation!r}; "
-                f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}"
-            )
+        operation = _normalise_combine_operation(item.get("operation", "multiply"))
 
         base_raw = item.get("baseValue")
         if (

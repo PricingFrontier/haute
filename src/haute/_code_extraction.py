@@ -361,10 +361,14 @@ class MatcherResult(NamedTuple):
     considered user code (everything before it is boilerplate to skip).
     ``return_vars`` are variables whose trailing ``return <var>`` should
     be stripped from the extracted tail.
+    ``generated_scaffold`` marks bodies where we stripped an explicit generated
+    setup block, so later references to the original input parameter stay
+    intentional user code.
     """
 
     start_idx: int
     return_vars: tuple[str, ...]
+    generated_scaffold: bool = False
 
 
 # A matcher inspects the *cleaned* (docstring-stripped) body lines plus
@@ -496,7 +500,7 @@ def _match_rating_step(cleaned: list[str], param_names: tuple[str, ...]) -> Matc
         while depth > 0 and j + 1 < len(cleaned):
             j += 1
             depth += cleaned[j].count("(") - cleaned[j].count(")")
-        return MatcherResult(start_idx=j + 1, return_vars=("df",))
+        return MatcherResult(start_idx=j + 1, return_vars=("df",), generated_scaffold=True)
 
     return _match_polars(cleaned, param_names)
 
@@ -693,7 +697,16 @@ def _finalise_model_score(code: str, param_names: tuple[str, ...]) -> str:
 
 def _finalise_rating_step(code: str, param_names: tuple[str, ...]) -> str:
     """RatingStep post-processing runs after the declarative tables create ``df``."""
-    return _finalise_polars(code, param_names)
+    finalised = _finalise_polars(code, param_names)
+    first_param = param_names[0] if param_names else ""
+    if not first_param or first_param == "df":
+        return finalised
+    return _rewrite_identifier_tokens(
+        finalised,
+        old=first_param,
+        new="df",
+        context="rating step user code",
+    )
 
 
 def _finalise_external(code: str, param_names: tuple[str, ...]) -> str:
@@ -803,7 +816,7 @@ def _strip_generated_boilerplate_from_code(
     if kind in {"polars", "transform"}:
         first = params[0] if params else ""
         first_line = stripped.splitlines()[0].strip().replace(" ", "")
-        if first and first_line in {f"df={first}", f"return{first}"}:
+        if len(params) == 1 and first and first_line in {f"df={first}", f"return{first}"}:
             return extract_user_code(stripped, kind="polars", param_names=params)
         return stripped
 
@@ -870,6 +883,8 @@ def extract_user_code(
         return ""
 
     code = "\n".join(code_lines).strip()
+    if kind in {"rating_step", "ratingStep"} and result.generated_scaffold:
+        return _finalise_polars(code, ())
     return finaliser(code, params)
 
 

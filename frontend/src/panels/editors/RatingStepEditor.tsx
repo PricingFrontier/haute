@@ -19,8 +19,9 @@ import {
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
 import { useGraph } from "../useGraph"
+import useUIStore, { type RatingStepEditorSection } from "../../stores/useUIStore"
 
-type RatingSection = "tables" | "combined" | "code"
+type RatingSection = RatingStepEditorSection
 type CombinedOperation = "multiply" | "add" | "min" | "max"
 
 type CombinedOutput = {
@@ -182,9 +183,13 @@ export default function RatingStepEditor({
   nodeId?: string
 }) {
   const { allNodes } = useGraph()
+  const rememberedSection = useUIStore((s) => nodeId ? s.ratingStepEditorSections[nodeId] : undefined)
+  const setRememberedSection = useUIStore((s) => s.setRatingStepEditorSection)
   const [activeTab, setActiveTab] = useState(0)
   const [sliceIdx, setSliceIdx] = useState(0)
-  const [activeSection, setActiveSection] = useState<RatingSection>(() => resolveInitialSection(config))
+  const [activeSection, setActiveSectionState] = useState<RatingSection>(() => (
+    rememberedSection ?? resolveInitialSection(config)
+  ))
   const [tableSearch, setTableSearch] = useState("")
   const [tableFilter, setTableFilter] = useState<"all" | "problems">("all")
   const tables = normaliseRatingTables(config)
@@ -198,6 +203,13 @@ export default function RatingStepEditor({
   const factorLevels = mergeFactorLevels(bandingLevels, rawFactorLevels)
   const combinedOutputs = normaliseCombinedOutputs(config)
   const [activeCombinedIdx, setActiveCombinedIdx] = useState(0)
+
+  const setActiveSection = (section: RatingSection) => {
+    setActiveSectionState(section)
+    if (nodeId) {
+      setRememberedSection(nodeId, section)
+    }
+  }
 
   const availableColumns = Object.keys(factorLevels)
   const safeIdx = Math.min(activeTab, tables.length - 1)
@@ -272,7 +284,7 @@ export default function RatingStepEditor({
   ]))
 
   useEffect(() => {
-    setActiveSection(resolveInitialSection(config))
+    setActiveSectionState(rememberedSection ?? resolveInitialSection(config))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the visible editor section only when switching rating nodes
   }, [nodeId])
 

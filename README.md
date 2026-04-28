@@ -68,7 +68,7 @@ Click any cell in your output table. Haute traces the path through every node th
 base rate → area factor → discount → loading → final price
 ```
 
-The graph highlights the path visually. Nodes that contributed glow. The rest fade. A sidebar shows what happened at each step - which values were used, what changed, and what the result was.
+The graph highlights the path visually. Nodes that contributed glow. The rest fade. A sidebar shows what happened at each step - which values were used, what changed, and what the result was. Rating steps show the table factors used, the selected value from each table, default usage, and combined-output inputs.
 
 The first click runs through the full pipeline and caches the result. Every click after that pulls from cache - the trace updates instantly. Click a different row, a different column, a different output. Each one is immediate.
 

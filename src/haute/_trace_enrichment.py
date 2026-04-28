@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from haute._logging import get_logger
+from haute._rating import _normalise_combined_outputs
 
 if TYPE_CHECKING:
     from haute.trace import TraceStep
@@ -102,6 +103,7 @@ def _enrich_single_table(
     output_row: dict[str, Any],
 ) -> dict[str, Any]:
     """Enrich a single rate table lookup within a rating step."""
+    table_name = str(table.get("name", "") or "")
     factors: list[str] = table.get("factors", []) or []
     entries: list[dict[str, Any]] = table.get("entries", []) or []
     output_col: str = table.get("outputColumn", "")
@@ -109,6 +111,7 @@ def _enrich_single_table(
 
     # Lookup key values from the input row
     lookup_keys = {f: input_row.get(f) for f in factors}
+    factor_details = [{"column": f, "value": input_row.get(f)} for f in factors]
 
     # The output value for this table
     rate_value = output_row.get(output_col)
@@ -126,7 +129,9 @@ def _enrich_single_table(
     matched_entry: dict[str, Any] | None = None
     if rate_value is not None:
         input_key_strs = {f: str(input_row.get(f, "")) for f in factors}
-        for entry in entries:
+        # Runtime rating lookup deduplicates with keep="last" before joining.
+        # Walk in reverse so the trace shows the same row that supplied the value.
+        for entry in reversed(entries):
             entry_key_strs = {f: str(entry.get(f, "")) for f in factors}
             if entry_key_strs == input_key_strs:
                 matched_entry = dict(entry)
@@ -140,13 +145,25 @@ def _enrich_single_table(
             default_used = float(rate_value) == default_val
         except (ValueError, TypeError):
             pass
+    if default_used:
+        status = "default"
+    elif matched_entry is not None and rate_value is not None:
+        status = "matched"
+    elif rate_value is None:
+        status = "no_match"
+    else:
+        status = "unmatched_value"
 
     return {
+        "name": table_name,
         "output_column": output_col,
+        "factors": factor_details,
         "lookup_keys": lookup_keys,
+        "selected_value": rate_value,
         "rate_value": rate_value,
         "matched": matched and not default_used,
         "default_used": default_used,
+        "status": status,
         "matched_entry": matched_entry,
         "default_value": default_val,
     }
@@ -162,81 +179,89 @@ def enrich_rating_step(
     Handles both real Haute config (with ``tables`` list) and simplified
     test config (with ``join_key`` and ``rate_column``).
     """
-    try:
-        tables: list[dict[str, Any]] = config.get("tables", []) or []
+    tables: list[dict[str, Any]] = config.get("tables", []) or []
+    combined_col = str(config.get("combinedColumn", "") or "").strip()
+    has_combined_outputs = "combinedOutputs" in config
 
-        if tables:
-            # Real Haute config — process each table
-            table_details = [_enrich_single_table(t, input_row, output_row) for t in tables]
+    if tables or combined_col or has_combined_outputs:
+        table_details = [_enrich_single_table(t, input_row, output_row) for t in tables]
+        table_output_columns = [t["output_column"] for t in table_details if t.get("output_column")]
 
-            # Combined column info
-            operation = config.get("operation", "multiply") or "multiply"
-            combined_col = config.get("combinedColumn", "") or ""
-            combined_value = output_row.get(combined_col) if combined_col else None
+        normalised_combined_outputs = _normalise_combined_outputs(config)
+        legacy_combined = next(
+            (combined for combined in normalised_combined_outputs if combined.get("_legacy")),
+            None,
+        )
+        combined_value = output_row.get(combined_col) if combined_col else None
 
-            result: dict[str, Any] = {
-                "detail_type": "rating_step",
-                "tables": table_details,
+        result: dict[str, Any] = {
+            "detail_type": "rating_step",
+            "tables": table_details,
+        }
+
+        if legacy_combined and len(table_details) >= 2:
+            result["combined"] = {
+                "column": combined_col,
+                "operation": legacy_combined["operation"],
+                "value": combined_value,
+                "input_values": [t["rate_value"] for t in table_details],
             }
 
-            if combined_col and len(table_details) >= 2:
-                result["combined"] = {
-                    "column": combined_col,
-                    "operation": operation,
-                    "value": combined_value,
-                    "input_values": [t["rate_value"] for t in table_details],
+        combined_outputs = []
+        for combined in normalised_combined_outputs:
+            if combined.get("_legacy") and len(table_output_columns) < 2:
+                continue
+            column = combined["outputColumn"]
+            combined_outputs.append(
+                {
+                    "column": column,
+                    "operation": combined["operation"],
+                    "base_value": combined["baseValue"],
+                    "input_values": {
+                        output_col: output_row.get(output_col)
+                        for output_col in table_output_columns
+                    },
+                    "value": output_row.get(column),
                 }
+            )
+        if combined_outputs:
+            result["combined_outputs"] = combined_outputs
 
-            # Top-level convenience fields (from first table for simple cases)
-            if len(table_details) == 1:
-                t = table_details[0]
-                result["matched_key"] = t["lookup_keys"]
-                result["rate_value"] = t["rate_value"]
-                result["matched"] = t["matched"]
-            else:
-                # Multiple tables — matched if any table matched
-                result["matched_key"] = {
-                    k: v for t in table_details for k, v in t["lookup_keys"].items()
-                }
-                result["rate_value"] = combined_value
-                result["matched"] = any(t["matched"] for t in table_details)
-
-            return result
-
-        # Fallback: simplified test config
-        join_key = config.get("join_key", "")
-        rate_column = config.get("rate_column", "")
-
-        if isinstance(join_key, list):
-            matched_key = {k: input_row.get(k) for k in join_key}
+        # Top-level convenience fields (from first table for simple cases)
+        if len(table_details) == 1:
+            t = table_details[0]
+            result["matched_key"] = t["lookup_keys"]
+            result["rate_value"] = t["rate_value"]
+            result["matched"] = t["matched"]
         else:
-            matched_key = {join_key: input_row.get(join_key)} if join_key else {}
+            # Multiple tables: matched if any table matched.
+            result["matched_key"] = {
+                k: v for t in table_details for k, v in t["lookup_keys"].items()
+            }
+            first_combined_value = combined_outputs[0]["value"] if combined_outputs else None
+            result["rate_value"] = combined_value if combined_col else first_combined_value
+            result["matched"] = any(t["matched"] for t in table_details)
 
-        rate_value = output_row.get(rate_column)
-        matched = rate_value is not None
+        return result
 
-        return {
-            "detail_type": "rating_step",
-            "matched_key": matched_key,
-            "rate_value": rate_value,
-            "matched": matched,
-        }
-    except Exception as exc:
-        logger.warning(
-            "enrichment_failed",
-            node_type="rating_step",
-            error=str(exc),
-            error_type=type(exc).__name__,
-            exc_info=True,
-        )
-        return {
-            "detail_type": "rating_step",
-            "error": f"rating step enrichment failed: {exc}",
-            "error_type": type(exc).__name__,
-            "matched_key": {},
-            "rate_value": None,
-            "matched": False,
-        }
+    # Fallback: simplified test config
+    join_key = config.get("join_key", "")
+    rate_column = config.get("rate_column", "")
+
+    if isinstance(join_key, list):
+        matched_key = {k: input_row.get(k) for k in join_key}
+    else:
+        matched_key = {join_key: input_row.get(join_key)} if join_key else {}
+
+    rate_value = output_row.get(rate_column)
+    matched = rate_value is not None
+
+    return {
+        "detail_type": "rating_step",
+        "matched_key": matched_key,
+        "rate_value": rate_value,
+        "matched": matched,
+    }
 
 
 # ---------------------------------------------------------------------------

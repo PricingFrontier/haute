@@ -18,6 +18,7 @@ import polars as pl
 import pytest
 
 from haute.executor import _preview_cache, execute_graph
+from haute.graph_utils import GraphNode, NodeData, NodeType
 from haute.trace import (
     TraceResult,
     TraceStep,
@@ -502,6 +503,111 @@ class TestRatingStepSingleTable:
         assert rated_step.output_values["rated_premium"] == (
             rated_step.output_values["base"] * rated_step.output_values["region_factor"]
         )
+
+    def test_real_rating_step_trace_includes_table_factors_and_combined_outputs(self, tmp_path):
+        """A real ratingStep node exposes table lookup details in trace node_detail."""
+        p_data = tmp_path / "policies.parquet"
+        pl.DataFrame(
+            {
+                "policy_id": [1],
+                "vehicle_age_band": ["1-3"],
+                "cover_type": ["comprehensive"],
+                "channel": ["direct"],
+            }
+        ).write_parquet(p_data)
+
+        rating_config = {
+            "tables": [
+                {
+                    "name": "vehicle_factor",
+                    "factors": ["vehicle_age_band", "cover_type"],
+                    "outputColumn": "vehicle_factor",
+                    "defaultValue": "1.0",
+                    "entries": [
+                        {
+                            "vehicle_age_band": "1-3",
+                            "cover_type": "comprehensive",
+                            "value": 0.9,
+                        }
+                    ],
+                },
+                {
+                    "name": "channel_factor",
+                    "factors": ["channel"],
+                    "outputColumn": "channel_factor",
+                    "defaultValue": "1.0",
+                    "entries": [
+                        {"channel": "broker", "value": 1.5},
+                        {"channel": "direct", "value": 1.2},
+                    ],
+                },
+            ],
+            "combinedOutputs": [
+                {
+                    "outputColumn": "technical_premium_factor",
+                    "operation": "multiply",
+                    "baseValue": "100",
+                }
+            ],
+            "code": "df = df.with_columns(test=pl.col('technical_premium_factor') * 2)",
+        }
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("policies", str(p_data)),
+                    GraphNode(
+                        id="rating",
+                        data=NodeData(
+                            label="adjustments",
+                            nodeType=NodeType.RATING_STEP,
+                            config=rating_config,
+                        ),
+                    ),
+                ],
+                "edges": [_edge("policies", "rating")],
+            }
+        )
+
+        result = execute_trace(
+            graph,
+            row_index=0,
+            target_node_id="rating",
+            column="technical_premium_factor",
+        )
+        rating_step = _step_by_id(result, "rating")
+        detail = rating_step.node_detail
+
+        assert detail is not None
+        assert detail["detail_type"] == "rating_step"
+        assert detail["tables"][0]["name"] == "vehicle_factor"
+        assert detail["tables"][0]["factors"] == [
+            {"column": "vehicle_age_band", "value": "1-3"},
+            {"column": "cover_type", "value": "comprehensive"},
+        ]
+        assert detail["tables"][0]["selected_value"] == 0.9
+        assert detail["tables"][0]["status"] == "matched"
+        assert detail["tables"][1]["name"] == "channel_factor"
+        assert detail["tables"][1]["factors"] == [{"column": "channel", "value": "direct"}]
+        assert detail["tables"][1]["selected_value"] == 1.2
+        assert detail["tables"][1]["status"] == "matched"
+        assert detail["combined_outputs"] == [
+            {
+                "column": "technical_premium_factor",
+                "operation": "multiply",
+                "base_value": 100.0,
+                "input_values": {"vehicle_factor": 0.9, "channel_factor": 1.2},
+                "value": 108.0,
+            }
+        ]
+
+        payload = trace_result_to_dict(result)
+        serialized_detail = payload["steps"][-1]["node_detail"]
+        assert serialized_detail["tables"][0]["factors"][0] == {
+            "column": "vehicle_age_band",
+            "value": "1-3",
+        }
+        assert serialized_detail["combined_outputs"][0]["value"] == 108.0
 
 
 class TestRatingStepMultiplyTables:

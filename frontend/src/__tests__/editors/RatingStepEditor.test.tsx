@@ -10,6 +10,7 @@ import { render as rtlRender, screen, fireEvent, cleanup, within } from "@testin
 import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import { GraphProvider } from "../../panels/GraphContext"
+import useUIStore from "../../stores/useUIStore"
 
 /**
  * Renders RatingStepEditor wrapped in a GraphProvider.  Accepts `allNodes` /
@@ -81,7 +82,10 @@ const BANDING_NODES: SimpleNode[] = [
   makeBandingNode("vehicle_type", ["car", "van", "truck"]),
 ]
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  useUIStore.setState({ ratingStepEditorSections: {} })
+})
 
 // Tests
 
@@ -355,6 +359,90 @@ describe("RatingStepEditor", () => {
     fireEvent.click(screen.getByRole("radio", { name: /Combined/ }))
     expect(screen.getByRole("radio", { name: /Combined/ })).toHaveAttribute("aria-checked", "true")
     expect(onUpdate).not.toHaveBeenCalledWith("mode", "combined")
+  })
+
+  it("restores the last selected rating section when reopening the same node", () => {
+    const config = {
+      code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
+      tables: [
+        { name: "Age Factor", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
+      ],
+    }
+
+    const { unmount } = render(
+      <RatingStepEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
+        accentColor="#14b8a6"
+        nodeId="rating_1"
+      />,
+      { allNodes: [] },
+    )
+
+    expect(screen.getByRole("radio", { name: /Code set/ })).toHaveAttribute("aria-checked", "true")
+
+    fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
+    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText(/Rating Tables/)).toBeTruthy()
+
+    unmount()
+
+    render(
+      <RatingStepEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
+        accentColor="#14b8a6"
+        nodeId="rating_1"
+      />,
+      { allNodes: [] },
+    )
+
+    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText(/Rating Tables/)).toBeTruthy()
+    expect(screen.queryByText("Polars Code")).toBeNull()
+  })
+
+  it("scopes the remembered rating section to the node id", () => {
+    const config = {
+      code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
+      tables: [
+        { name: "Age Factor", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
+      ],
+    }
+
+    const { unmount } = render(
+      <RatingStepEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
+        accentColor="#14b8a6"
+        nodeId="rating_1"
+      />,
+      { allNodes: [] },
+    )
+
+    fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
+    unmount()
+
+    render(
+      <RatingStepEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
+        accentColor="#14b8a6"
+        nodeId="rating_2"
+      />,
+      { allNodes: [] },
+    )
+
+    expect(screen.getByRole("radio", { name: /Code set/ })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText("Polars Code")).toBeTruthy()
   })
 
   it("keeps legacy blank combinedColumn configs in Tables mode", () => {
