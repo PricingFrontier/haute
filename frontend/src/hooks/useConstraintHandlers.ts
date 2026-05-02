@@ -3,7 +3,9 @@ import type { OnUpdateConfig } from "../panels/editors/_shared"
 
 /**
  * Pure constraint CRUD handlers for optimiser config.
- * Operates on a constraints dict: { columnName: { constraintType: number } }
+ * Operates on a constraints dict: { columnName: { constraintType: number } }.
+ * The UI supports one active absolute threshold per row, matching the
+ * optimiser's sum-constraint contract.
  */
 export function useConstraintHandlers(
   constraints: Record<string, Record<string, number>>,
@@ -15,7 +17,7 @@ export function useConstraintHandlers(
     const usedCols = new Set(Object.keys(constraints))
     const available = dataInputColumns.find(c => !usedCols.has(c.name) && c.name !== objective)
     const colName = available ? available.name : `constraint_${Object.keys(constraints).length + 1}`
-    const newConstraints = { ...constraints, [colName]: { min: 0.9 } }
+    const newConstraints = { ...constraints, [colName]: { min: 0 } }
     onUpdate("constraints", newConstraints)
   }, [constraints, dataInputColumns, objective, onUpdate])
 
@@ -35,7 +37,7 @@ export function useConstraintHandlers(
   }, [constraints, onUpdate])
 
   const handleConstraintValueChange = useCallback((name: string, type: string, value: number) => {
-    onUpdate("constraints", { ...constraints, [name]: { ...constraints[name], [type]: value } })
+    onUpdate("constraints", { ...constraints, [name]: { [type]: value } })
   }, [constraints, onUpdate])
 
   return {

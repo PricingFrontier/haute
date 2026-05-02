@@ -41,11 +41,26 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
         "heavy_objects_expires_at": time.time() + 3600,
         "frontier_data": {
             "status": "ok",
-            "points": [{"lambda_volume": 0.7, "total_objective": 200.0}],
+            "points": [
+                {
+                    "threshold_volume": 0.95,
+                    "total_volume": 0.95,
+                    "lambda_volume": 0.7,
+                    "total_objective": 200.0,
+                    "converged": True,
+                }
+            ],
             "n_points": 1,
             "constraint_names": ["volume"],
         },
-        "result": {"total_objective": 100.0, "lambdas": {"volume": 0.3}},
+        "result": {
+            "total_objective": 100.0,
+            "baseline_objective": 90.0,
+            "constraints": {"volume": 0.9},
+            "baseline_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.3},
+            "converged": True,
+        },
         "created_at": time.time(),
     }
     if artifact_handles is not None:
@@ -67,11 +82,20 @@ def test_estimate_returns_empty_response_when_metadata_lookup_fails(client):
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {"total_rows": None}
-    log_warning.assert_called_once()
-    assert log_warning.call_args.args == ("optimiser_estimate_failed",)
-    assert log_warning.call_args.kwargs["error"] == "metadata unavailable"
-    assert log_warning.call_args.kwargs["node_id"] == "opt"
+    assert resp.json() == {
+        "total_rows": None,
+        "quote_count": None,
+        "scenarios_per_quote_min": None,
+        "scenarios_per_quote_max": None,
+        "scenarios_per_quote_mean": None,
+        "expanded_row_count": None,
+    }
+    assert log_warning.call_count == 2
+    assert log_warning.call_args_list[0].args == ("optimiser_estimate_failed",)
+    assert log_warning.call_args_list[0].kwargs["error"] == "metadata unavailable"
+    assert log_warning.call_args_list[0].kwargs["node_id"] == "opt"
+    assert log_warning.call_args_list[1].args == ("optimiser_input_estimate_failed",)
+    assert log_warning.call_args_list[1].kwargs["node_id"] == "opt"
 
 
 def test_apply_rejects_non_mapping_artifact_handles(client, clean_job_store):
@@ -149,35 +173,46 @@ def test_frontier_fails_if_runtime_disappears_after_touch(client, clean_job_stor
     assert "re-run the solve" in resp.json()["detail"].lower()
 
 
-def test_frontier_select_fails_if_runtime_disappears_after_touch(client, clean_job_store):
+def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store):
     clean_job_store.jobs["select_runtime_race"] = {
         "status": "completed",
-        "solver": MagicMock(),
         "frontier_data": {
             "status": "ok",
-            "points": [{"lambda_volume": 0.7}],
+            "points": [
+                {
+                    "threshold_volume": 0.95,
+                    "total_volume": 0.95,
+                    "lambda_volume": 0.7,
+                    "total_objective": 200.0,
+                    "converged": True,
+                }
+            ],
             "n_points": 1,
+            "constraint_names": ["volume"],
+        },
+        "result": {
+            "baseline_objective": 90.0,
+            "baseline_constraints": {"volume": 0.85},
         },
         "created_at": time.time(),
     }
 
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={"job_id": "select_runtime_race", "point_index": 0},
-        )
+    resp = client.post(
+        "/api/optimiser/frontier/select",
+        json={"job_id": "select_runtime_race", "point_index": 0},
+    )
 
-    assert resp.status_code == 400
-    assert "select a frontier point" in resp.json()["detail"].lower()
+    assert resp.status_code == 200
+    assert resp.json()["constraints"] == {"volume": 0.95}
 
 
-def test_frontier_select_rejects_non_mapping_artifact_handles(client, clean_job_store):
+def test_frontier_apply_rejects_non_mapping_artifact_handles(client, clean_job_store):
     clean_job_store.jobs["select_bad_handles"] = _frontier_job(
         artifact_handles="not a mapping",
     )
 
     resp = client.post(
-        "/api/optimiser/frontier/select",
+        "/api/optimiser/apply",
         json={"job_id": "select_bad_handles", "point_index": 0},
     )
 
@@ -185,21 +220,21 @@ def test_frontier_select_rejects_non_mapping_artifact_handles(client, clean_job_
     assert resp.json()["detail"] == "Job artifact handles are invalid"
 
 
-def test_frontier_select_rejects_invalid_existing_apply_handle(client, clean_job_store):
+def test_frontier_apply_rejects_invalid_existing_apply_handle(client, clean_job_store):
     clean_job_store.jobs["select_bad_apply_handle"] = _frontier_job(
-        artifact_handles={"apply_result": "not a handle mapping"},
+        artifact_handles={"frontier_apply_result:0": "not a handle mapping"},
     )
 
     resp = client.post(
-        "/api/optimiser/frontier/select",
+        "/api/optimiser/apply",
         json={"job_id": "select_bad_apply_handle", "point_index": 0},
     )
 
     assert resp.status_code == 500
-    assert resp.json()["detail"] == "Job apply artifact handle is invalid"
+    assert resp.json()["detail"] == "Job frontier apply artifact handle is invalid"
 
 
-def test_frontier_select_cleans_new_artifact_after_unexpected_store_failure(
+def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     client,
     clean_job_store,
 ):
@@ -212,8 +247,12 @@ def test_frontier_select_cleans_new_artifact_after_unexpected_store_failure(
     orphan_path = Path(orphan_handle["path"])
     orphan_dir = Path(orphan_handle["directory"])
     clean_job_store.jobs["select_store_failure"] = _frontier_job(artifact_handles={})
+    apply_result = SimpleNamespace(
+        dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}),
+    )
 
     with (
+        patch("price_contour.apply_from_grid", return_value=apply_result),
         patch(
             "haute.routes.optimiser._persist_apply_result_artifact",
             return_value=orphan_handle,
@@ -226,7 +265,7 @@ def test_frontier_select_cleans_new_artifact_after_unexpected_store_failure(
         patch("haute.routes.optimiser.logger.error") as log_error,
     ):
         resp = client.post(
-            "/api/optimiser/frontier/select",
+            "/api/optimiser/apply",
             json={"job_id": "select_store_failure", "point_index": 0},
         )
 
@@ -234,7 +273,7 @@ def test_frontier_select_cleans_new_artifact_after_unexpected_store_failure(
     assert not orphan_path.exists()
     assert not orphan_dir.exists()
     log_error.assert_called_once()
-    assert log_error.call_args.args == ("frontier_select_failed",)
+    assert log_error.call_args.args == ("frontier_apply_materialise_failed",)
     assert log_error.call_args.kwargs["error"] == "store write failed"
     assert log_error.call_args.kwargs["job_id"] == "select_store_failure"
     assert log_error.call_args.kwargs["exc_info"] is True

@@ -1,3 +1,8 @@
 {
-  "total_rows": 10000
+  "total_rows": 10000,
+  "quote_count": 500,
+  "scenarios_per_quote_min": 20,
+  "scenarios_per_quote_max": 20,
+  "scenarios_per_quote_mean": 20.0,
+  "expanded_row_count": 10000
 }

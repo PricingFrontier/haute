@@ -635,58 +635,188 @@ class TestAppendClassificationProba:
 # ---------------------------------------------------------------------------
 
 
+def _patch_rustystats(mock_model):
+    """Return ``(mock_rs, sys.modules patch)`` for a rustystats GLMModel mock.
+
+    Reduces boilerplate across the rustystats loader tests: callers
+    configure ``mock_model.required_columns`` (or omit it to test the
+    missing-attribute path) and use the returned context manager to
+    install the mocked ``rustystats`` module.
+    """
+    mock_rs = MagicMock()
+    mock_rs.GLMModel.from_bytes.return_value = mock_model
+    return mock_rs, patch.dict(sys.modules, {"rustystats": mock_rs})
+
+
+def _write_rsglm(tmp_path, contents=b"fake_bytes"):
+    """Write a fake ``.rsglm`` file and return its path as a string."""
+    model_file = tmp_path / "model.rsglm"
+    model_file.write_bytes(contents)
+    return str(model_file)
+
+
 class TestLoadRustystatsModel:
-    """Tests for _load_rustystats_model using mocked rustystats module."""
-
-    def test_loads_and_wraps_model(self, tmp_path):
-        """Reads bytes from file and wraps in ScoringModel with flavor='rustystats'."""
-        model_file = tmp_path / "model.rsglm"
-        model_file.write_bytes(b"fake_bytes")
-
+    def test_wraps_model_with_required_columns(self, tmp_path):
+        """Happy path: feature_names mirror model.required_columns; flavor is set."""
+        model_path = _write_rsglm(tmp_path)
         mock_model = MagicMock()
-        mock_model.feature_names = ["ns(feat_a, 1/3)", "ns(feat_a, 2/3)", "feat_b"]
-        mock_model.terms_dict = {"feat_a": {"type": "ns"}, "feat_b": {"type": "linear"}}
-        mock_rs = MagicMock()
-        mock_rs.GLMModel.from_bytes.return_value = mock_model
+        mock_model.required_columns = ["feat_a", "feat_b"]
+        mock_rs, mods = _patch_rustystats(mock_model)
 
-        with patch.dict(sys.modules, {"rustystats": mock_rs}):
-            sm = _load_rustystats_model(str(model_file))
+        with mods:
+            sm = _load_rustystats_model(model_path)
 
         assert isinstance(sm, ScoringModel)
         assert sm.flavor == "rustystats"
-        # Uses raw input column names from terms_dict, not design matrix names
         assert sm.feature_names == ["feat_a", "feat_b"]
         assert sm.cat_feature_names == frozenset()
         assert sm.raw_model is mock_model
 
-    def test_model_without_feature_names(self, tmp_path):
-        """Model without feature_names attribute gets empty list."""
-        model_file = tmp_path / "model.rsglm"
-        model_file.write_bytes(b"fake_bytes")
+    def test_required_columns_order_is_preserved(self, tmp_path):
+        """Order matters: _validate_features compares relative position to
+        training, so the loader must not sort or otherwise reshuffle."""
+        mock_model = MagicMock()
+        mock_model.required_columns = ["zeta", "alpha", "mu"]
+        _, mods = _patch_rustystats(mock_model)
 
-        mock_model = MagicMock(spec=[])  # no feature_names
-        mock_rs = MagicMock()
-        mock_rs.GLMModel.from_bytes.return_value = mock_model
+        with mods:
+            sm = _load_rustystats_model(_write_rsglm(tmp_path))
 
-        with patch.dict(sys.modules, {"rustystats": mock_rs}):
-            sm = _load_rustystats_model(str(model_file))
+        assert sm.feature_names == ["zeta", "alpha", "mu"]
+
+    def test_empty_required_columns_yields_empty_feature_list(self, tmp_path):
+        """Intercept-only models (``glm(y ~ 1)``) declare no input columns —
+        the loader must accept this rather than treating empty as failure."""
+        mock_model = MagicMock()
+        mock_model.required_columns = []
+        _, mods = _patch_rustystats(mock_model)
+
+        with mods:
+            sm = _load_rustystats_model(_write_rsglm(tmp_path))
 
         assert sm.feature_names == []
+        assert sm.flavor == "rustystats"
+
+    def test_feature_names_is_a_copy_of_required_columns(self, tmp_path):
+        """Mutating ``ScoringModel.feature_names`` must not mutate the model.
+
+        ``_load_rustystats_model`` wraps with ``list(...)`` so callers cannot
+        clobber the underlying RustyStats artifact through the carrier.
+        """
+        original = ["a", "b", "c"]
+        mock_model = MagicMock()
+        mock_model.required_columns = original
+        _, mods = _patch_rustystats(mock_model)
+
+        with mods:
+            sm = _load_rustystats_model(_write_rsglm(tmp_path))
+
+        sm.feature_names.append("d")
+        assert original == ["a", "b", "c"], (
+            "ScoringModel.feature_names must be a defensive copy"
+        )
+
+    def test_accepts_iterable_required_columns(self, tmp_path):
+        """``list(...)`` materialises any iterable — tuple, generator, etc.
+
+        Pinning this contract prevents a regression where an upstream
+        change in RustyStats returns a tuple or numpy array and silently
+        breaks downstream code that assumes a list.
+        """
+        mock_model = MagicMock()
+        mock_model.required_columns = ("a", "b")  # tuple, not list
+        _, mods = _patch_rustystats(mock_model)
+
+        with mods:
+            sm = _load_rustystats_model(_write_rsglm(tmp_path))
+
+        assert sm.feature_names == ["a", "b"]
+        assert isinstance(sm.feature_names, list)
+
+    def test_missing_required_columns_raises_attribute_error(self, tmp_path):
+        """A model without ``required_columns`` must fail loudly.
+
+        Direct attribute access — no ``hasattr`` fallback — so a stale or
+        corrupt artifact surfaces immediately rather than being silently
+        wrapped with an empty feature list that would pass scoring with
+        zero columns.
+        """
+        mock_model = MagicMock(spec=[])  # no required_columns attribute
+        _, mods = _patch_rustystats(mock_model)
+
+        with mods:
+            with pytest.raises(AttributeError):
+                _load_rustystats_model(_write_rsglm(tmp_path))
 
     def test_reads_file_as_bytes(self, tmp_path):
-        """Verifies the file is read in binary mode."""
-        model_file = tmp_path / "test.rsglm"
-        model_file.write_bytes(b"fake_model_bytes")
-
+        """``from_bytes`` is invoked once with the full file content."""
+        payload = b"fake_model_bytes"
         mock_model = MagicMock()
-        mock_model.feature_names = ["x"]
+        mock_model.required_columns = ["x"]
+        mock_rs, mods = _patch_rustystats(mock_model)
+
+        with mods:
+            _load_rustystats_model(_write_rsglm(tmp_path, contents=payload))
+
+        mock_rs.GLMModel.from_bytes.assert_called_once_with(payload)
+
+    def test_from_bytes_failure_propagates(self, tmp_path):
+        """A corrupt artifact (``from_bytes`` raising) must propagate.
+
+        The bounded-retry path in ``load_mlflow_model`` relies on this
+        exception bubbling up so it can delete the cached file and retry —
+        a swallowed error would silently produce a malformed ScoringModel.
+        """
         mock_rs = MagicMock()
-        mock_rs.GLMModel.from_bytes.return_value = mock_model
+        mock_rs.GLMModel.from_bytes.side_effect = ValueError("corrupt artifact")
 
         with patch.dict(sys.modules, {"rustystats": mock_rs}):
-            _load_rustystats_model(str(model_file))
+            with pytest.raises(ValueError, match="corrupt artifact"):
+                _load_rustystats_model(_write_rsglm(tmp_path))
 
-        mock_rs.GLMModel.from_bytes.assert_called_once_with(b"fake_model_bytes")
+    def test_real_rustystats_model_exposes_required_columns(self, tmp_path):
+        """Contract test: an actual ``rustystats.GLMModel`` saved + reloaded
+        through this loader must produce a ScoringModel whose feature_names
+        match ``model.required_columns`` and contain raw (not design-matrix)
+        column names.
+
+        This pins the upstream API surface haute relies on, so a future
+        rustystats version that renames or removes ``required_columns``
+        breaks this test instead of silently failing in production.
+        """
+        import rustystats as rs
+
+        rng = np.random.default_rng(42)
+        train_df = pl.DataFrame(
+            {
+                "y": rng.standard_normal(64),
+                "age": rng.standard_normal(64),
+                "region": ["a", "b", "c", "a"] * 16,
+            }
+        )
+        model = rs.glm_dict(
+            response="y",
+            terms={
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            data=train_df,
+            family="gaussian",
+            intercept=True,
+        ).fit()
+
+        artifact = tmp_path / "real.rsglm"
+        artifact.write_bytes(model.to_bytes())
+
+        sm = _load_rustystats_model(str(artifact))
+
+        assert sm.flavor == "rustystats"
+        assert sm.cat_feature_names == frozenset()
+        # The loader must surface raw input columns — never the post-encoding
+        # design-matrix names like "region[T.b]" or "ns(age, 1/3)".
+        assert set(sm.feature_names) == {"age", "region"}
+        # And must match what RustyStats itself reports.
+        assert sm.feature_names == list(model.required_columns)
 
 
 # ---------------------------------------------------------------------------
@@ -712,22 +842,26 @@ class TestLoadLocalModel:
         assert sm.flavor == "catboost"
 
     def test_rsglm_dispatches_to_rustystats(self, tmp_path):
-        """'.rsglm' extension dispatches to RustyStats loader."""
-        model_file = tmp_path / "model.rsglm"
-        model_file.write_bytes(b"fake_bytes")
+        """'.rsglm' extension dispatches to RustyStats loader.
 
+        Asserts the full ScoringModel shape rather than just the flavor —
+        a wrong dispatch would still return a ScoringModel with the
+        flavor field set, so we also verify feature_names track
+        ``required_columns`` and ``cat_feature_names`` is empty
+        (rustystats handles cat encoding internally).
+        """
         mock_model = MagicMock()
-        mock_model.feature_names = ["ns(x, 1/3)", "ns(x, 2/3)", "y"]
-        mock_model.terms_dict = {"x": {"type": "ns"}, "y": {"type": "linear"}}
-        mock_rs = MagicMock()
-        mock_rs.GLMModel.from_bytes.return_value = mock_model
+        mock_model.required_columns = ["x", "y"]
+        _, mods = _patch_rustystats(mock_model)
 
-        with patch.dict(sys.modules, {"rustystats": mock_rs}):
-            sm = load_local_model(str(model_file))
+        with mods:
+            sm = load_local_model(_write_rsglm(tmp_path))
 
         assert isinstance(sm, ScoringModel)
         assert sm.flavor == "rustystats"
         assert sm.feature_names == ["x", "y"]
+        assert sm.cat_feature_names == frozenset()
+        assert sm.raw_model is mock_model
 
     def test_unsupported_extension_raises(self):
         """Unknown extension raises NotImplementedError."""
@@ -928,32 +1062,6 @@ class TestScoringModelDirect:
         raw = MagicMock(spec=[])  # no predict_proba
         sm = ScoringModel(raw, ["a"], frozenset(), "pyfunc")
         assert sm.predict_proba(np.array([[1]])) is None
-
-
-# ---------------------------------------------------------------------------
-# _load_rustystats_model — feature_names fallback (line 130)
-# ---------------------------------------------------------------------------
-
-
-class TestLoadRustystatsModelFeatureNamesFallback:
-    """Test the fallback to model.feature_names when terms_dict is absent."""
-
-    def test_fallback_to_feature_names(self, tmp_path):
-        """When terms_dict is empty/absent, falls back to feature_names."""
-        model_file = tmp_path / "model.rsglm"
-        model_file.write_bytes(b"fake_bytes")
-
-        mock_model = MagicMock()
-        mock_model.terms_dict = {}  # empty dict → falsy
-        mock_model.feature_names = ["ns(x, 1/3)", "ns(x, 2/3)", "y"]
-        mock_rs = MagicMock()
-        mock_rs.GLMModel.from_bytes.return_value = mock_model
-
-        with patch.dict(sys.modules, {"rustystats": mock_rs}):
-            sm = _load_rustystats_model(str(model_file))
-
-        # Falls back to feature_names (design matrix names)
-        assert sm.feature_names == ["ns(x, 1/3)", "ns(x, 2/3)", "y"]
 
 
 # ---------------------------------------------------------------------------

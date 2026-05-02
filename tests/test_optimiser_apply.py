@@ -7,6 +7,8 @@ artifact caching, and deploy bundling/scoring.
 import json
 import os
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -431,6 +433,25 @@ class TestApplyOnlineHelper:
         artifact = _make_online_artifact()
         result = _apply_online(_scored_df().lazy(), artifact, "", "__ver__").collect()
         assert "__ver__" not in result.columns
+
+    def test_apply_online_does_not_pass_chunk_size_to_price_contour_constructor(self):
+        artifact = _make_online_artifact()
+        result_df = pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "optimal_step": [1],
+                "optimal_scenario_value": [1.0],
+                "optimal_objective": [100.0],
+                "optimal_predicted_volume": [0.9],
+            }
+        )
+
+        with patch("price_contour.ApplyOptimiser") as mock_apply:
+            mock_apply.return_value.apply.return_value = SimpleNamespace(dataframe=result_df)
+            result = _apply_online(_scored_df().lazy(), artifact, "", "__ver__").collect()
+
+        assert len(result) == 1
+        assert "chunk_size" not in mock_apply.call_args.kwargs
 
 
 class TestApplyRatebookHelper:

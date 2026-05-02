@@ -31,6 +31,7 @@ const mockStoreUpdateAfterSelect = vi.fn()
 vi.mock("../../stores/useNodeResultsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
+      getOptimiserPreview: () => null,
       selectFrontierPoint: mockStoreSelectPoint,
       updateFrontierAfterSelect: mockStoreUpdateAfterSelect,
     }),
@@ -68,6 +69,7 @@ function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierDat
     total_objective: 1200000 + i * 10000,
     total_loss_ratio: 0.55 + i * 0.02,
     lambda_loss_ratio: 0.001 + i * 0.001,
+    converged: true,
   }))
   return {
     points,
@@ -180,7 +182,7 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Summary"))
       expect(screen.getByText("Objective")).toBeInTheDocument()
       expect(screen.getByText("Optimised")).toBeInTheDocument()
-      expect(screen.getByText("Baseline")).toBeInTheDocument()
+      expect(screen.queryByText("Baseline")).not.toBeInTheDocument()
     })
 
     it("renders formatted objective value", () => {
@@ -204,18 +206,17 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
-    it("renders uplift percentage when baseline is non-zero", () => {
+    it("does not render objective baseline comparisons", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.getByText("Uplift")).toBeInTheDocument()
-      // (1234567 / 1200000 - 1) * 100 = 2.88%
-      expect(screen.getByText("2.88%")).toBeInTheDocument()
+      expect(screen.queryByText("Uplift")).not.toBeInTheDocument()
+      expect(screen.queryByText("2.88%")).not.toBeInTheDocument()
     })
 
-    it("does not render uplift when baseline is zero", () => {
-      renderPreview({ data: makeData({ result: makeSolveResult({ baseline_objective: 0 }) }) })
+    it("does not render constraint baseline ratios", () => {
+      renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.queryByText("Uplift")).not.toBeInTheDocument()
+      expect(screen.queryByText(/108\.3%/)).not.toBeInTheDocument()
     })
 
     it("shows Summary tab button", () => {
@@ -285,6 +286,17 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText("Frontier")).not.toBeInTheDocument()
     })
 
+    it("keeps hook order stable if frontier data disappears while the tab is mounted", () => {
+      const { rerender } = renderPreview({ data: makeData({ frontier: makeFrontier() }) })
+      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+
+      rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" />)
+
+      expect(
+        screen.getByText("No frontier data available. Enable efficient frontier in the constraint settings and run the optimiser."),
+      ).toBeInTheDocument()
+    })
+
     it("shows detail card when a point is selected", () => {
       renderPreview({
         data: makeData({
@@ -315,7 +327,7 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("Log to MLflow")).toBeInTheDocument()
     })
 
-    it("Save calls selectFrontierPoint API then saveOptimiser", async () => {
+    it("Save passes the selected point index directly without selecting it first", async () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -326,15 +338,16 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Save Result"))
 
       await waitFor(() => {
-        expect(mockSelectFrontierPointAPI).toHaveBeenCalledWith({ job_id: "job_123", point_index: 0 })
         expect(mockSaveOptimiser).toHaveBeenCalledWith({
           job_id: "job_123",
           output_path: "output/optimiser_my_optimiser.json",
+          point_index: 0,
         })
       })
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("Log to MLflow calls selectFrontierPoint API then logOptimiserToMlflow", async () => {
+    it("Log to MLflow passes the selected point index directly without selecting it first", async () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -345,14 +358,15 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Log to MLflow"))
 
       await waitFor(() => {
-        expect(mockSelectFrontierPointAPI).toHaveBeenCalledWith({ job_id: "job_123", point_index: 0 })
         expect(mockLogOptimiserToMlflow).toHaveBeenCalledWith({
           job_id: "job_123",
+          point_index: 0,
         })
       })
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("clicking a scatter point calls store selectFrontierPoint", () => {
+    it("clicking a scatter point switches locally without a select API call", () => {
       renderPreview({
         data: makeData({ frontier: makeFrontier() }),
       })
@@ -361,6 +375,23 @@ describe("OptimiserPreview", () => {
       expect(circles.length).toBe(5)
       fireEvent.click(circles[2])
       expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 2)
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
+      expect(mockStoreUpdateAfterSelect).not.toHaveBeenCalled()
+    })
+
+    it("clicking the selected scatter point deselects locally without a select API call", () => {
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(),
+          selectedPointIndex: 2,
+        }),
+      })
+
+      const selectedPoint = screen.getByRole("button", { name: "Select frontier point 3" })
+      fireEvent.click(selectedPoint)
+
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", null)
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
     it("detail card shows constraint values with met/unmet indicators", () => {
@@ -374,6 +405,26 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("Constraints")).toBeInTheDocument()
     })
 
+    it("detail card does not show baseline comparisons for selected frontier points", () => {
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(1, {
+            points: [
+              {
+                total_objective: 1250000,
+                total_loss_ratio: 0.72,
+                lambda_loss_ratio: 0.012345,
+              },
+            ],
+          }),
+          selectedPointIndex: 0,
+        }),
+      })
+
+      expect(screen.queryByText(/vs baseline/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/120\.0%/)).not.toBeInTheDocument()
+    })
+
     it("detail card shows lambda values", () => {
       renderPreview({
         data: makeData({
@@ -382,6 +433,26 @@ describe("OptimiserPreview", () => {
         }),
       })
       expect(screen.getByText("Lambdas")).toBeInTheDocument()
+    })
+
+    it("detail card reads nested constraint and lambda maps from frontier rows", () => {
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(1, {
+            points: [
+              {
+                total_objective: 1250000,
+                constraints: { loss_ratio: 0.72 },
+                lambdas: { loss_ratio: 0.012345 },
+              },
+            ],
+          }),
+          selectedPointIndex: 0,
+        }),
+      })
+
+      expect(screen.getByText("0.7200")).toBeInTheDocument()
+      expect(screen.getByText("0.012345")).toBeInTheDocument()
     })
 
     it("constraint dropdown appears when multiple constraints exist", () => {
@@ -400,13 +471,13 @@ describe("OptimiserPreview", () => {
       renderPreview({
         data: makeData({
           frontier,
-          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 0.95 } },
+          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 95 } },
         }),
       })
       expect(screen.getByText("X axis:")).toBeInTheDocument()
     })
 
-    it("stepper buttons navigate between points", () => {
+    it("stepper buttons navigate between points locally without a select API call", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -414,6 +485,9 @@ describe("OptimiserPreview", () => {
         }),
       })
       expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next point" }))
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 3)
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
   })
 
@@ -538,10 +612,7 @@ describe("OptimiserPreview", () => {
       expect(screen.getByRole("button", { name: /Log to MLflow/i })).not.toBeDisabled()
     })
 
-    it("selects the current frontier point before loading result detail", async () => {
-      let resolveSelect: (value: unknown) => void = () => {}
-      mockSelectFrontierPointAPI.mockReturnValueOnce(new Promise((resolve) => { resolveSelect = resolve }))
-
+    it("loads result detail for the selected frontier point by passing point_index to apply", async () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -551,29 +622,13 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Export"))
       fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
 
-      expect(mockSelectFrontierPointAPI).toHaveBeenCalledWith(
-        { job_id: "job_123", point_index: 0 },
-        { signal: expect.any(AbortSignal) },
-      )
-      expect(mockApplyOptimiser).not.toHaveBeenCalled()
-
-      resolveSelect({
-        status: "ok",
-        total_objective: 1250000,
-        constraints: { loss_ratio: 0.66 },
-        baseline_objective: 1200000,
-        baseline_constraints: { loss_ratio: 0.60 },
-        lambdas: { loss_ratio: 0.006 },
-        converged: true,
-        error: null,
-      })
-
       await waitFor(() => {
         expect(mockApplyOptimiser).toHaveBeenCalledWith(
-          { job_id: "job_123" },
+          { job_id: "job_123", point_index: 0 },
           { signal: expect.any(AbortSignal) },
         )
       })
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
     it("aborts an in-flight result detail request when the job changes", async () => {
@@ -676,31 +731,6 @@ describe("OptimiserPreview", () => {
         fireEvent.click(collapseBtn)
         expect(screen.getByText("My Optimiser")).toBeInTheDocument()
       }
-    })
-  })
-
-  describe("frontier point click API failure", () => {
-    it("reverts selection when selectFrontierPointAPI rejects", async () => {
-      // Make the API call reject
-      mockSelectFrontierPointAPI.mockRejectedValueOnce(new Error("network error"))
-
-      renderPreview({
-        data: makeData({ frontier: makeFrontier() }),
-      })
-
-      // Click a frontier scatter point
-      const circles = document.querySelectorAll("circle[style*='cursor: pointer']")
-      expect(circles.length).toBe(5)
-      fireEvent.click(circles[2])
-
-      // First call: optimistic select with new index
-      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 2)
-
-      await waitFor(() => {
-        // Second call: revert to previous selection (null since none was selected)
-        expect(mockStoreSelectPoint).toHaveBeenCalledTimes(2)
-        expect(mockStoreSelectPoint).toHaveBeenLastCalledWith("opt_1", null)
-      })
     })
   })
 

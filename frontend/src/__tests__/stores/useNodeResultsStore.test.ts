@@ -810,32 +810,146 @@ describe("useNodeResultsStore", () => {
     it("selectFrontierPoint sets index", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
-      s.completeSolveJob("n1", makeSolveResult())
+      s.completeSolveJob("n1", makeSolveResult({
+        frontier: {
+          status: "ok",
+          points: [{ total_objective: 150, total_premium: 70, lambda_premium: 0.25, converged: true }],
+          n_points: 1,
+          points_returned: 1,
+          constraint_names: ["premium"],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      }))
 
-      s.selectFrontierPoint("n1", 3)
+      s.selectFrontierPoint("n1", 0)
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
-      expect(cached.selectedPointIndex).toBe(3)
+      expect(cached.selectedPointIndex).toBe(0)
+    })
+
+    it("selectFrontierPoint derives the selected result summary from a flattened frontier row immediately", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 150,
+            total_premium: 70,
+            total_loss: 33,
+            lambda_premium: 0.25,
+            lambda_loss: 0.4,
+            converged: true,
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium", "loss"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({
+        total_objective: 100,
+        constraints: { premium: 50, loss: 20 },
+        baseline_constraints: { premium: 45, loss: 18 },
+        lambdas: { premium: 0.1, loss: 0.2 },
+        frontier,
+      }))
+
+      s.selectFrontierPoint("n1", 0)
+
+      const cached = useNodeResultsStore.getState().solveResults["n1"]
+      expect(cached.selectedPointIndex).toBe(0)
+      expect(cached.result.total_objective).toBe(150)
+      expect(cached.result.constraints).toEqual({ premium: 70, loss: 33 })
+      expect(cached.result.lambdas).toEqual({ premium: 0.25, loss: 0.4 })
+      expect(cached.result.baseline_objective).toBe(80)
+      expect(cached.result.baseline_constraints).toEqual({ premium: 45, loss: 18 })
+    })
+
+    it("selectFrontierPoint accepts raw constraint columns from price-contour frontier rows", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 150,
+            premium: 70,
+            lambda_premium: 0.25,
+            converged: true,
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({
+        constraints: { premium: 50 },
+        frontier,
+      }))
+
+      s.selectFrontierPoint("n1", 0)
+
+      expect(useNodeResultsStore.getState().solveResults.n1.result.constraints).toEqual({
+        premium: 70,
+      })
+    })
+
+    it("selectFrontierPoint derives the selected result summary from nested frontier row maps", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 160,
+            constraints: { premium: 72, loss: 34 },
+            lambdas: { premium: 0.35, loss: 0.45 },
+            converged: true,
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium", "loss"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({
+        constraints: { premium: 50, loss: 20 },
+        lambdas: { premium: 0.1, loss: 0.2 },
+        frontier,
+      }))
+
+      s.selectFrontierPoint("n1", 0)
+
+      const cached = useNodeResultsStore.getState().solveResults["n1"]
+      expect(cached.result.total_objective).toBe(160)
+      expect(cached.result.constraints).toEqual({ premium: 72, loss: 34 })
+      expect(cached.result.lambdas).toEqual({ premium: 0.35, loss: 0.45 })
     })
 
     it("selectFrontierPoint null deselects and reverts result", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
-      const original = makeSolveResult({ total_objective: 100 })
+      const original = makeSolveResult({
+        total_objective: 100,
+        frontier: {
+          status: "ok",
+          points: [{ total_objective: 200, total_premium: 60, lambda_premium: 0.2, converged: true }],
+          n_points: 1,
+          points_returned: 1,
+          constraint_names: ["premium"],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      })
       s.completeSolveJob("n1", original)
 
-      // Simulate selecting a point and updating the result via updateFrontierAfterSelect
-      s.selectFrontierPoint("n1", 2)
-      s.updateFrontierAfterSelect("n1", 2, {
-        status: "ok",
-        total_objective: 200,
-        constraints: { premium: 60 },
-        baseline_objective: 80,
-        baseline_constraints: { premium: 45 },
-        lambdas: { premium: 0.2 },
-        converged: true,
-        error: null,
-      })
+      s.selectFrontierPoint("n1", 0)
 
       // The result should now reflect the frontier point
       expect(useNodeResultsStore.getState().solveResults["n1"].result.total_objective).toBe(200)
@@ -844,6 +958,9 @@ describe("useNodeResultsStore", () => {
       s.selectFrontierPoint("n1", null)
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached.selectedPointIndex).toBeNull()
+      expect(cached.result.total_objective).toBe(100)
+      expect(cached.result.constraints).toEqual(original.constraints)
+      expect(cached.result.lambdas).toEqual(original.lambdas)
       // The original result is preserved in originalResult for the caller to use
       expect(cached.originalResult.total_objective).toBe(100)
     })

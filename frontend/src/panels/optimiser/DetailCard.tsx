@@ -10,13 +10,78 @@
 import { ChevronLeft, ChevronRight, Loader2, Save, Upload } from "lucide-react"
 import { MODEL_COLORS } from "../../theme/colors"
 import { formatNumber } from "../../utils/formatValue"
-import type { SolveResult } from "../OptimiserPreview"
 import { isConstraintMet } from "./optimiserHelpers"
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function optionalPointNumber(value: unknown, field: string): number | null {
+  if (value === undefined || value === null) return null
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  throw new Error(`Invalid frontier point field ${field}: expected a finite number`)
+}
+
+function requiredPointNumber(value: unknown, field: string): number {
+  const parsed = optionalPointNumber(value, field)
+  if (parsed === null) {
+    throw new Error(`Invalid frontier point: missing numeric ${field}`)
+  }
+  return parsed
+}
+
+function nestedPointNumber(
+  point: Record<string, unknown>,
+  nestedKey: string,
+  name: string,
+): number | null {
+  const nested = point[nestedKey]
+  if (nested === undefined || nested === null) return null
+  if (!isRecord(nested)) {
+    throw new Error(`Invalid frontier point field ${nestedKey}: expected an object`)
+  }
+  return optionalPointNumber(nested[name], `${nestedKey}.${name}`)
+}
+
+function frontierPointNumber(
+  point: Record<string, unknown>,
+  flatKey: string,
+  nestedKey?: string,
+  nestedName?: string,
+  alternateFlatKey?: string,
+): number {
+  const flat = optionalPointNumber(point[flatKey], flatKey)
+  if (flat !== null) return flat
+  if (nestedKey && nestedName) {
+    const nested = nestedPointNumber(point, nestedKey, nestedName)
+    if (nested !== null) return nested
+  }
+  if (alternateFlatKey) {
+    const alternate = optionalPointNumber(point[alternateFlatKey], alternateFlatKey)
+    if (alternate !== null) return alternate
+  }
+  throw new Error(`Invalid frontier point: missing numeric ${flatKey}`)
+}
+
+function frontierLambdaEntries(point: Record<string, unknown>): Array<[string, number]> {
+  if (point.lambdas !== undefined && point.lambdas !== null) {
+    if (!isRecord(point.lambdas)) {
+      throw new Error("Invalid frontier point field lambdas: expected an object")
+    }
+    return Object.entries(point.lambdas).map(([name, value]) => [
+      name,
+      requiredPointNumber(value, `lambdas.${name}`),
+    ])
+  }
+
+  return Object.keys(point)
+    .filter(k => k.startsWith("lambda_"))
+    .map((key) => [key.replace(/^lambda_/, ""), frontierPointNumber(point, key)])
+}
 
 interface DetailCardProps {
   points: Record<string, unknown>[]
   selectedIdx: number
-  result: SolveResult
   constraints: Record<string, Record<string, number>>
   constraintNames: string[]
   onStepPoint: (delta: number) => void
@@ -32,7 +97,6 @@ interface DetailCardProps {
 export default function DetailCard({
   points,
   selectedIdx,
-  result,
   constraints,
   constraintNames,
   onStepPoint,
@@ -47,9 +111,7 @@ export default function DetailCard({
   const point = points[selectedIdx]
   if (!point) return null
 
-  const objValue = Number(point.total_objective ?? 0)
-  const baselineObj = result.baseline_objective
-  const objVsBaseline = baselineObj !== 0 ? ((objValue / baselineObj - 1) * 100) : null
+  const objValue = frontierPointNumber(point, "total_objective")
   const actionsDisabled = saving || logging || terminalActionsDisabled
 
   return (
@@ -86,9 +148,6 @@ export default function DetailCard({
         <label className="text-[10px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Objective</label>
         <div className="mt-0.5 flex items-baseline justify-between text-xs font-mono gap-2">
           <span style={{ color: "var(--text-primary)" }}>{formatNumber(objValue)}</span>
-          {objVsBaseline != null && (
-            <span style={{ color: "var(--warning-strong)" }}>{objVsBaseline >= 0 ? "+" : ""}{objVsBaseline.toFixed(2)}% vs baseline</span>
-          )}
         </div>
       </div>
 
@@ -99,13 +158,11 @@ export default function DetailCard({
           <div className="mt-0.5 space-y-0.5">
             {constraintNames.map(name => {
               const totalKey = `total_${name}`
-              const value = Number(point[totalKey] ?? 0)
-              const baseline = result.baseline_constraints[name]
-              const ratio = baseline ? value / baseline : 0
+              const value = frontierPointNumber(point, totalKey, "constraints", name, name)
               const spec = constraints[name] || {}
               const thresholdType = Object.keys(spec)[0]
               const thresholdVal = spec[thresholdType] ?? 0
-              const met = isConstraintMet(thresholdType, ratio, value, thresholdVal)
+              const met = isConstraintMet(thresholdType, 0, value, thresholdVal)
               return (
                 <div key={name} className="flex items-center justify-between text-xs font-mono gap-2">
                   <span className="flex items-center gap-1.5">
@@ -114,9 +171,6 @@ export default function DetailCard({
                   </span>
                   <span>
                     <span style={{ color: "var(--text-primary)" }}>{formatNumber(value)}</span>
-                    {baseline != null && baseline !== 0 && (
-                      <span style={{ color: "var(--text-muted)" }}> ({(ratio * 100).toFixed(1)}%)</span>
-                    )}
                   </span>
                 </div>
               )
@@ -127,19 +181,17 @@ export default function DetailCard({
 
       {/* Lambdas */}
       {(() => {
-        const lambdaKeys = Object.keys(point).filter(k => k.startsWith("lambda_"))
-        if (lambdaKeys.length === 0) return null
+        const lambdaEntries = frontierLambdaEntries(point)
+        if (lambdaEntries.length === 0) return null
         return (
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Lambdas</label>
             <div className="mt-0.5 space-y-0.5">
-              {lambdaKeys.map(k => {
-                const displayName = k.replace(/^lambda_/, "")
-                const v = point[k] as number
+              {lambdaEntries.map(([displayName, v]) => {
                 return (
-                  <div key={k} className="flex justify-between text-xs font-mono gap-2">
+                  <div key={displayName} className="flex justify-between text-xs font-mono gap-2">
                     <span style={{ color: "var(--text-secondary)" }}>{displayName}</span>
-                    <span style={{ color: "var(--text-primary)" }}>{typeof v === "number" ? v.toFixed(6) : String(v)}</span>
+                    <span style={{ color: "var(--text-primary)" }}>{v.toFixed(6)}</span>
                   </div>
                 )
               })}

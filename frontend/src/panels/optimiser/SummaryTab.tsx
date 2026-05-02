@@ -27,18 +27,6 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
               <span style={{ color: "var(--text-secondary)" }}>Optimised</span>
               <span style={{ color: "var(--text-primary)" }}>{formatNumber(result.total_objective)}</span>
             </div>
-            <div className="flex justify-between text-xs font-mono gap-4">
-              <span style={{ color: "var(--text-secondary)" }}>Baseline</span>
-              <span style={{ color: "var(--text-muted)" }}>{formatNumber(result.baseline_objective)}</span>
-            </div>
-            {result.baseline_objective !== 0 && (
-              <div className="flex justify-between text-xs font-mono gap-4">
-                <span style={{ color: "var(--text-secondary)" }}>Uplift</span>
-                <span style={{ color: "var(--warning-strong)" }}>
-                  {((result.total_objective / result.baseline_objective - 1) * 100).toFixed(2)}%
-                </span>
-              </div>
-            )}
           </div>
         </div>
 
@@ -48,12 +36,10 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Constraints</label>
             <div className="mt-1 space-y-0.5">
               {Object.entries(result.constraints).map(([name, value]) => {
-                const baseline = result.baseline_constraints[name]
-                const ratio = baseline ? value / baseline : 0
                 const spec = constraints[name] || {}
                 const thresholdType = Object.keys(spec)[0]
                 const thresholdVal = spec[thresholdType] ?? 0
-                const met = isConstraintMet(thresholdType, ratio, value, thresholdVal)
+                const met = isConstraintMet(thresholdType, 0, value, thresholdVal)
                 return (
                   <div key={name} className="flex items-center justify-between text-xs font-mono gap-4">
                     <span className="flex items-center gap-1.5">
@@ -62,9 +48,6 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
                     </span>
                     <span>
                       <span style={{ color: "var(--text-primary)" }}>{formatNumber(value)}</span>
-                      {baseline !== undefined && (
-                        <span style={{ color: "var(--text-muted)" }}> ({(ratio * 100).toFixed(1)}%)</span>
-                      )}
                     </span>
                   </div>
                 )

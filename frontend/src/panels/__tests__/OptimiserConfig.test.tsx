@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import OptimiserConfig from "../OptimiserConfig"
 import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
@@ -9,10 +9,12 @@ import type { SimpleNode, SimpleEdge } from "../editors"
 // ── Mock API client ──
 const mockSolveOptimiser = vi.fn()
 const mockEstimateOptimiserSolve = vi.fn()
+const mockEstimateOptimiserFrontierAutoRange = vi.fn()
 
 vi.mock("../../api/client", () => ({
   solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
   estimateOptimiserSolve: (...args: unknown[]) => mockEstimateOptimiserSolve(...args),
+  estimateOptimiserFrontierAutoRange: (...args: unknown[]) => mockEstimateOptimiserFrontierAutoRange(...args),
 }))
 
 // ── Mock buildGraph ──
@@ -139,6 +141,7 @@ beforeEach(() => {
   // Never-resolving promise so tests don't race with the estimate's async
   // settlement — mirrors the ModellingConfig.test.tsx pattern.
   mockEstimateOptimiserSolve.mockReset().mockReturnValue(new Promise(() => {}))
+  mockEstimateOptimiserFrontierAutoRange.mockReset()
   mockHandleAddConstraint.mockReset()
   mockHandleRemoveConstraint.mockReset()
   mockHandleConstraintColumnChange.mockReset()
@@ -313,11 +316,14 @@ describe("OptimiserConfig", () => {
       renderConfig(makeProps())
       expect(screen.getByText(/Constraints \(0\)/)).toBeInTheDocument()
       expect(screen.getByText("Add")).toBeInTheDocument()
+      expect(screen.queryByTestId("constraint-settings-card")).not.toBeInTheDocument()
     })
 
-    it("shows 'No constraints added' text when empty", () => {
+    it("does not render empty-state guidance when there are no constraints", () => {
       renderConfig(makeProps())
-      expect(screen.getByText(/No constraints added/)).toBeInTheDocument()
+      expect(screen.queryByText(/No constraints added/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/portfolio total bound/)).not.toBeInTheDocument()
+      expect(screen.queryByTestId("constraint-row")).not.toBeInTheDocument()
     })
 
     it("clicking Add calls handleAddConstraint", () => {
@@ -336,11 +342,13 @@ describe("OptimiserConfig", () => {
             },
           }))
       expect(screen.getByText(/Constraints \(1\)/)).toBeInTheDocument()
+      const settingsCard = screen.getByTestId("constraint-settings-card")
+      expect(within(settingsCard).getByTestId("constraint-row")).toBeInTheDocument()
       // Should not show "No constraints added"
       expect(screen.queryByText(/No constraints added/)).not.toBeInTheDocument()
     })
 
-    it("constraint type dropdown shows min/max/min_abs/max_abs options", () => {
+    it("constraint type dropdown only offers absolute sum-constraint keys", () => {
       renderConfig(makeProps({
             config: {
               _nodeId: "opt_1",
@@ -349,10 +357,12 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      expect(screen.getByText("Min (relative)")).toBeInTheDocument()
-      expect(screen.getByText("Max (relative)")).toBeInTheDocument()
-      expect(screen.getByText("Min (absolute)")).toBeInTheDocument()
-      expect(screen.getByText("Max (absolute)")).toBeInTheDocument()
+      expect(screen.getByText("Minimum")).toBeInTheDocument()
+      expect(screen.getByText("Maximum")).toBeInTheDocument()
+      expect(screen.queryByText("Min %")).not.toBeInTheDocument()
+      expect(screen.queryByText("Max %")).not.toBeInTheDocument()
+      expect(screen.queryByDisplayValue("min_abs")).not.toBeInTheDocument()
+      expect(screen.queryByDisplayValue("max_abs")).not.toBeInTheDocument()
     })
   })
 
@@ -558,7 +568,7 @@ describe("OptimiserConfig", () => {
           }))
       const selects = document.querySelectorAll("select")
       const typeSelect = Array.from(selects).find(s =>
-        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Max (relative)") &&
+        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Maximum") &&
         (s as HTMLSelectElement).value === "max",
       )!
       fireEvent.change(typeSelect, { target: { value: "min" } })
@@ -822,6 +832,29 @@ describe("OptimiserConfig", () => {
       expect(screen.getByText(/15 iterations/)).toBeInTheDocument()
     })
 
+    it("renders scenario-expanded input size separately from raw source rows", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValueOnce({
+        total_rows: 10000000,
+        quote_count: 100000,
+        scenarios_per_quote_min: 20,
+        scenarios_per_quote_max: 21,
+        expanded_row_count: 2050000,
+      })
+
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+      }))
+
+      expect(await screen.findByText("Quotes")).toBeInTheDocument()
+      expect(screen.getByText("100,000")).toBeInTheDocument()
+      expect(screen.getByText("Scenarios / quote")).toBeInTheDocument()
+      expect(screen.getByText("20-21")).toBeInTheDocument()
+      expect(screen.getByText("Total rows")).toBeInTheDocument()
+      expect(screen.getByText("2,050,000")).toBeInTheDocument()
+      expect(screen.queryByText("Source rows")).not.toBeInTheDocument()
+      expect(screen.queryByText("10,000,000")).not.toBeInTheDocument()
+    })
+
     it("shows non-convergence warning when solveResult.converged is false", () => {
       const nonConverged = {
         ...convergedResult,
@@ -936,16 +969,36 @@ describe("OptimiserConfig", () => {
   })
 
   // ═══════════════════════════════════════════════════════════════════
-  // Efficient Frontier
+  // Result type / Efficient Frontier
   // ═══════════════════════════════════════════════════════════════════
 
-  describe("Efficient Frontier", () => {
-    it("does not show frontier section when no constraints are configured", () => {
+  describe("Result type / Efficient Frontier", () => {
+    it("does not show result type selector when no constraints are configured", () => {
       renderConfig(makeProps())
-      expect(screen.queryByText("Efficient Frontier")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("constraint-settings-card")).not.toBeInTheDocument()
+      expect(screen.queryByText("Result type")).not.toBeInTheDocument()
+      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
     })
 
-    it("shows frontier section when constraints are configured", () => {
+    it("does not show orphan frontier settings when frontier is stale-enabled without constraints", () => {
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: {},
+          frontier_enabled: true,
+        },
+      }))
+      expect(screen.queryByTestId("constraint-settings-card")).not.toBeInTheDocument()
+      expect(screen.queryByText("Result type")).not.toBeInTheDocument()
+      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
+      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
+      expect(screen.queryByText("Max value")).not.toBeInTheDocument()
+      expect(screen.queryByText("Steps")).not.toBeInTheDocument()
+    })
+
+    it("shows point/frontier choice inside constraints when constraints are configured", () => {
       renderConfig(makeProps({
             config: {
               _nodeId: "opt_1",
@@ -954,24 +1007,126 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      expect(screen.getByText("Efficient Frontier")).toBeInTheDocument()
-      expect(screen.getByText("Min multiplier")).toBeInTheDocument()
-      expect(screen.getByText("Max multiplier")).toBeInTheDocument()
-      expect(screen.getByText("Steps")).toBeInTheDocument()
+      expect(screen.getAllByTestId("constraint-settings-card")).toHaveLength(1)
+      const settingsCard = screen.getByTestId("constraint-settings-card")
+      expect(within(settingsCard).getByTestId("constraint-row")).toBeInTheDocument()
+      expect(within(settingsCard).getByText("Result type")).toBeInTheDocument()
+      expect(within(settingsCard).getByRole("button", { name: "Individual point" })).toBeInTheDocument()
+      expect(within(settingsCard).getByRole("button", { name: "Efficient frontier" })).toBeInTheDocument()
+      const pointSettings = within(settingsCard).getByTestId("individual-point-settings")
+      expect(within(pointSettings).queryByText("Individual point settings")).not.toBeInTheDocument()
+      expect(within(pointSettings).queryByText("loss_ratio")).not.toBeInTheDocument()
+      expect(within(pointSettings).getByText("Maximum")).toBeInTheDocument()
+      expect(within(pointSettings).getByDisplayValue("1.05")).toBeInTheDocument()
+      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
+      expect(screen.queryByText("Max value")).not.toBeInTheDocument()
+      expect(screen.queryByText("Steps")).not.toBeInTheDocument()
     })
 
-    it("renders default frontier values (0.8, 1.1, 15)", () => {
+    it("shows point/frontier choice inside ratebook constraints", () => {
+      renderConfig(makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "ratebook",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+              factor_columns: [["age_band"]],
+            },
+          }))
+      const settingsCard = screen.getByTestId("constraint-settings-card")
+      expect(within(settingsCard).getByText("Result type")).toBeInTheDocument()
+      expect(within(settingsCard).getByRole("button", { name: "Individual point" })).toBeInTheDocument()
+      expect(within(settingsCard).getByRole("button", { name: "Efficient frontier" })).toBeInTheDocument()
+      const pointSettings = within(settingsCard).getByTestId("individual-point-settings")
+      expect(within(pointSettings).queryByText("Individual point settings")).not.toBeInTheDocument()
+      expect(within(pointSettings).queryByText("loss_ratio")).not.toBeInTheDocument()
+      expect(within(pointSettings).getByText("Maximum")).toBeInTheDocument()
+      expect(within(pointSettings).getByDisplayValue("1.05")).toBeInTheDocument()
+      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
+    })
+
+    it("shows frontier settings for ratebook efficient frontier", () => {
+      renderConfig(makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "ratebook",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+              factor_columns: [["age_band"]],
+              frontier_enabled: true,
+            },
+          }))
+      const settingsCard = screen.getByTestId("constraint-settings-card")
+      expect(within(settingsCard).queryByTestId("individual-point-settings")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByText("Maximum")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByDisplayValue("1.05")).not.toBeInTheDocument()
+      expect(within(settingsCard).getByText("Min value")).toBeInTheDocument()
+      expect(within(settingsCard).getByText("Max value")).toBeInTheDocument()
+      expect(within(settingsCard).queryByText("Min multiplier")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByText("Max multiplier")).not.toBeInTheDocument()
+      expect(within(settingsCard).getByText("Steps")).toBeInTheDocument()
+    })
+
+    it("selecting efficient frontier updates frontier_enabled", () => {
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1.05 } },
+        },
+      })
+      renderConfig(props)
+      fireEvent.click(screen.getByRole("button", { name: "Efficient frontier" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("frontier_enabled", true)
+    })
+
+    it("selecting individual point updates frontier_enabled", () => {
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1.05 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+      fireEvent.click(screen.getByRole("button", { name: "Individual point" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("frontier_enabled", false)
+    })
+
+    it("highlights missing frontier range values instead of rendering defaults", () => {
       renderConfig(makeProps({
             config: {
               _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
+              frontier_enabled: true,
             },
           }))
-      expect(screen.getByDisplayValue("0.8")).toBeInTheDocument()
-      expect(screen.getByDisplayValue("1.1")).toBeInTheDocument()
-      expect(screen.getByDisplayValue("15")).toBeInTheDocument()
+      expect(screen.getAllByTestId("constraint-settings-card")).toHaveLength(1)
+      const settingsCard = screen.getByTestId("constraint-settings-card")
+      expect(within(settingsCard).getByTestId("constraint-row")).toBeInTheDocument()
+      expect(within(settingsCard).getByText("Min value")).toBeInTheDocument()
+      expect(within(settingsCard).getByText("Max value")).toBeInTheDocument()
+      expect(within(settingsCard).queryByText("Min multiplier")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByText("Max multiplier")).not.toBeInTheDocument()
+      expect(within(settingsCard).getByText("Steps")).toBeInTheDocument()
+      const minInput = within(settingsCard).getByLabelText("loss_ratio min value") as HTMLInputElement
+      const maxInput = within(settingsCard).getByLabelText("loss_ratio max value") as HTMLInputElement
+      expect(minInput.value).toBe("")
+      expect(maxInput.value).toBe("")
+      expect(minInput).toHaveAttribute("aria-invalid", "true")
+      expect(maxInput).toHaveAttribute("aria-invalid", "true")
+      expect(within(settingsCard).queryByDisplayValue("0.8")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByDisplayValue("1.1")).not.toBeInTheDocument()
+      expect(within(settingsCard).getByDisplayValue("15")).toBeInTheDocument()
+      expect(within(settingsCard).queryByTestId("individual-point-settings")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByTestId("constraint-bound-settings")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByText("Maximum")).not.toBeInTheDocument()
+      expect(within(settingsCard).queryByDisplayValue("1.05")).not.toBeInTheDocument()
     })
 
     it("renders custom frontier values from config", () => {
@@ -981,6 +1136,7 @@ describe("OptimiserConfig", () => {
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
+              frontier_enabled: true,
               frontier_min: 0.70,
               frontier_max: 1.30,
               frontier_steps: 25,
@@ -991,34 +1147,90 @@ describe("OptimiserConfig", () => {
       expect(screen.getByDisplayValue("25")).toBeInTheDocument()
     })
 
-    it("changing frontier_min calls onUpdate", () => {
-      const props = makeProps({
-        config: {
-          _nodeId: "opt_1",
-          mode: "online",
-          objective: "premium",
-          constraints: { loss_ratio: { max: 1.05 } },
-        },
-      })
-      renderConfig(props)
-      const input = screen.getByDisplayValue("0.8")
-      fireEvent.change(input, { target: { value: "0.75" } })
-      expect(props.onUpdate).toHaveBeenCalledWith("frontier_min", 0.75)
+    it("renders per-constraint frontier range values from config", () => {
+      renderConfig(makeProps({
+            config: {
+              _nodeId: "opt_1",
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+              frontier_enabled: true,
+              frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
+            },
+          }))
+      expect(screen.getByDisplayValue("11")).toBeInTheDocument()
+      expect(screen.getByDisplayValue("39")).toBeInTheDocument()
     })
 
-    it("changing frontier_max calls onUpdate", () => {
+    it("auto range populates efficient-frontier values from scenario envelope", async () => {
+      mockEstimateOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "ok",
+        ranges: { loss_ratio: { min: 11, max: 39 } },
+        method: "scenario_envelope",
+        warning: null,
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+
+      await waitFor(() => {
+        expect(mockEstimateOptimiserFrontierAutoRange).toHaveBeenCalledWith({
+          graph: { nodes: [], edges: [], preamble: "" },
+          node_id: "opt_1",
+        })
+      })
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
+        frontier_min: 11,
+        frontier_max: 39,
+      })
+    })
+
+    it("changing frontier_min calls onUpdate without inventing missing max values", () => {
       const props = makeProps({
         config: {
           _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
+          frontier_enabled: true,
         },
       })
       renderConfig(props)
-      const input = screen.getByDisplayValue("1.1")
+      const input = screen.getByLabelText("loss_ratio min value")
+      fireEvent.change(input, { target: { value: "0.75" } })
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        frontier_ranges: { loss_ratio: { min: 0.75 } },
+        frontier_min: 0.75,
+      })
+    })
+
+    it("changing frontier_max calls onUpdate without inventing missing min values", () => {
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1.05 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+      const input = screen.getByLabelText("loss_ratio max value")
       fireEvent.change(input, { target: { value: "1.25" } })
-      expect(props.onUpdate).toHaveBeenCalledWith("frontier_max", 1.25)
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        frontier_ranges: { loss_ratio: { max: 1.25 } },
+        frontier_max: 1.25,
+      })
     })
 
     it("changing frontier_steps calls onUpdate", () => {
@@ -1028,6 +1240,7 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
+          frontier_enabled: true,
         },
       })
       renderConfig(props)

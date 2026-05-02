@@ -35,6 +35,11 @@ def limited_frontier_payload(
     is_truncated = total_points > FRONTIER_POINT_LIMIT
     visible_points_df = points_df.head(FRONTIER_POINT_LIMIT) if is_truncated else points_df
     points = visible_points_df.to_dicts()
+    for point in points:
+        for name in constraint_names:
+            total_key = f"total_{name}"
+            if total_key not in point and name in point:
+                point[total_key] = point[name]
 
     return {
         "status": "ok",

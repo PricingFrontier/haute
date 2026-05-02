@@ -1064,7 +1064,6 @@ def _apply_online(
         quote_id=qid_col,
         scenario_index=step_col,
         scenario_value=mult_col,
-        chunk_size=artifact.get("chunk_size", _DEFAULT_CHUNK_SIZE),
     )
     result = applier.apply(df_eager)
     result_df: pl.DataFrame = result.dataframe

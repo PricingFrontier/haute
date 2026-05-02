@@ -28,6 +28,7 @@ from haute._logging import get_logger
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
 _DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result", "quote_grid")
+_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df")
 _HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"
 
 logger = get_logger(component="server.job_store")
@@ -137,7 +138,7 @@ class JobStore:
         for job_id, job in list(self._jobs.items()):
             if job.get("status") != "completed":
                 continue
-            if not any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+            if not any(key in job for key in _HEAVY_OBJECT_KEYS):
                 continue
             expires_at = self._heavy_objects_expires_at(job)
             if expires_at > now:
@@ -158,7 +159,7 @@ class JobStore:
                 job = self._jobs.get(job_id)
                 if job is not None and job.get("status") == "completed":
                     expires_at = self._heavy_objects_expires_at(job)
-                    if expires_at <= now and any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+                    if expires_at <= now and any(key in job for key in _HEAVY_OBJECT_KEYS):
                         self._clear_heavy_objects_locked(job_id, job, now=now)
                 return
             self._clear_expired_heavy_objects_locked(now)
@@ -175,7 +176,7 @@ class JobStore:
         *,
         now: float,
     ) -> None:
-        cleaned = {k: v for k, v in job.items() if k not in _DEFAULT_HEAVY_OBJECT_KEYS}
+        cleaned = {k: v for k, v in job.items() if k not in _HEAVY_OBJECT_KEYS}
         cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
         cleaned["heavy_objects_cleared_at"] = now
         cleaned["heavy_objects_retention_seconds"] = self._heavy_object_ttl_seconds
@@ -201,7 +202,7 @@ class JobStore:
             return False
 
         job.setdefault("completed_at", now)
-        has_heavy_objects = any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS)
+        has_heavy_objects = any(key in job for key in _HEAVY_OBJECT_KEYS)
         if not has_heavy_objects:
             job.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
             return False
@@ -227,7 +228,7 @@ class JobStore:
         expires_at = merged.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
         self._jobs[job_id] = merged
         if merged.get("status") != "completed" or not any(
-            key in merged for key in _DEFAULT_HEAVY_OBJECT_KEYS
+            key in merged for key in _HEAVY_OBJECT_KEYS
         ):
             self._cancel_heavy_object_timer_locked(job_id)
         return merged, schedule_cleanup, expires_at
@@ -247,7 +248,7 @@ class JobStore:
             job = self._jobs.get(job_id)
             if job is None or job.get("status") != "completed":
                 return
-            if not any(key in job for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+            if not any(key in job for key in _HEAVY_OBJECT_KEYS):
                 self._cancel_heavy_object_timer_locked(job_id)
                 return
             if self._heavy_objects_expires_at(job) != expires_at:
@@ -438,6 +439,15 @@ class JobStore:
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         return job
 
+    def delete_job(self, job_id: str) -> None:
+        """Remove a job and clean up any owned artifacts."""
+        with self._write_lock:
+            job = self._jobs.pop(job_id, None)
+            if job is None:
+                return
+            self._cleanup_artifact_handles(job_id, job)
+            self._cancel_heavy_object_timer_locked(job_id)
+
     def require_completed_job(self, job_id: str) -> dict[str, Any]:
         """Return the job dict for *job_id*, raising if missing or not completed.
 
@@ -468,7 +478,7 @@ class JobStore:
     def clear_result_data(
         self,
         job_id: str,
-        keys: tuple[str, ...] = _DEFAULT_HEAVY_OBJECT_KEYS,
+        keys: tuple[str, ...] = _HEAVY_OBJECT_KEYS,
     ) -> None:
         """Remove heavy objects from a completed job to free memory.
 
@@ -485,7 +495,7 @@ class JobStore:
             if job is None:
                 return
             cleaned = {k: v for k, v in job.items() if k not in keys}
-            if not any(key in cleaned for key in _DEFAULT_HEAVY_OBJECT_KEYS):
+            if not any(key in cleaned for key in _HEAVY_OBJECT_KEYS):
                 cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
                 self._cancel_heavy_object_timer_locked(job_id)
             self._jobs[job_id] = cleaned

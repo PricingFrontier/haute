@@ -65,6 +65,7 @@
     "clamp_rate": null,
     "warning": null,
     "frontier_error": null,
+    "selected_frontier_point": null,
     "frontier": {
       "status": "ok",
       "points": [

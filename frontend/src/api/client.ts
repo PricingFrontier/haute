@@ -9,6 +9,7 @@
  */
 
 import type {
+  ApplyOptimiserRequest,
   ApplyOptimiserResponse,
   CacheStatusResponse,
   DatabricksCatalogsResponse,
@@ -19,6 +20,7 @@ import type {
   FetchProgressResponse,
   FetchTableResponse,
   FileListItem,
+  FrontierAutoRangeResponse,
   FrontierResponse,
   FrontierSelectResponse,
   GitArchiveResponse,
@@ -42,11 +44,13 @@ import type {
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
+  LogOptimiserToMlflowRequest,
   OptimiserEstimate,
   OptimiserSolveResponse,
   OptimiserStatusResponse,
   PipelineGraph,
   PreviewNodeResponse,
+  SaveOptimiserRequest,
   SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
@@ -72,6 +76,7 @@ import {
   parseDissolveSubmodelResponse,
   parseFetchProgressResponse,
   parseFetchTableResponse,
+  parseFrontierAutoRangeResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -550,7 +555,7 @@ export function getOptimiserStatus<T extends OptimiserStatusResponse = Optimiser
 }
 
 export function applyOptimiser(
-  payload: { job_id: string },
+  payload: ApplyOptimiserRequest,
   options?: { signal?: AbortSignal },
 ): Promise<ApplyOptimiserResponse> {
   return post<unknown>("/api/optimiser/apply", payload, { timeout: 120_000, ...options })
@@ -558,14 +563,14 @@ export function applyOptimiser(
 }
 
 export function saveOptimiser(
-  payload: { job_id: string; output_path: string },
+  payload: SaveOptimiserRequest,
   options?: { signal?: AbortSignal },
 ): Promise<SaveOptimiserResponse> {
   return post<unknown>("/api/optimiser/save", payload, options).then(parseSaveOptimiserResponse)
 }
 
 export function logOptimiserToMlflow(
-  payload: { job_id: string; experiment_name?: string | null; model_name?: string | null },
+  payload: LogOptimiserToMlflowRequest,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
   return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(parseMlflowLogResponse)
@@ -577,6 +582,14 @@ export function runFrontier(
 ): Promise<FrontierResponse> {
   return post<unknown>("/api/optimiser/frontier", payload, { timeout: 120_000, ...options })
     .then((data) => parseFrontierResponse(data))
+}
+
+export function estimateOptimiserFrontierAutoRange(
+  payload: { graph: GraphPayload; node_id: string },
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeResponse> {
+  return post<unknown>("/api/optimiser/frontier/auto-range", payload, { timeout: 300_000, ...options })
+    .then(parseFrontierAutoRangeResponse)
 }
 
 export function selectFrontierPoint(

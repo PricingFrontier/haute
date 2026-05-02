@@ -34,7 +34,12 @@ from haute.graph_utils import NodeType
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_store import JobStore, register_artifact_cleaner
 from haute.routes._optimiser_limits import limited_frontier_payload
-from haute.schemas import OptimiserSolveRequest, OptimiserSolveResponse
+from haute.schemas import (
+    OptimiserFrontierAutoRangeRequest,
+    OptimiserFrontierAutoRangeResponse,
+    OptimiserSolveRequest,
+    OptimiserSolveResponse,
+)
 
 logger = get_logger(component="server.optimiser.solve")
 
@@ -235,6 +240,165 @@ def _compute_scenario_value_stats(
     return stats, histogram
 
 
+def _compute_frontier(
+    solver: Any,
+    quote_grid: QuoteGrid,
+    *,
+    mode: str,
+    factors_df: pl.DataFrame | None,
+    threshold_ranges: dict[str, tuple[float, float]],
+    n_points_per_dim: int,
+    factor_columns: list[list[str]] | None = None,
+    initial_lambdas: dict[str, float] | None = None,
+) -> Any:
+    """Call the mode-specific frontier API."""
+    if mode == "ratebook":
+        if factors_df is None:
+            raise RuntimeError("Ratebook frontier requires a factors dataframe.")
+        frontier_kwargs: dict[str, Any] = {
+            "threshold_ranges": threshold_ranges,
+            "n_points_per_dim": n_points_per_dim,
+        }
+        if factor_columns is not None:
+            frontier_kwargs["factor_columns"] = factor_columns
+        if initial_lambdas is not None:
+            frontier_kwargs["initial_lambdas"] = initial_lambdas
+        return solver.frontier(
+            quote_grid,
+            factors_df,
+            **frontier_kwargs,
+        )
+    return solver.frontier(
+        quote_grid,
+        threshold_ranges=threshold_ranges,
+        n_points_per_dim=n_points_per_dim,
+        initial_lambdas=initial_lambdas,
+    )
+
+
+def _normalise_frontier_range(value: Any, *, field: str) -> tuple[float, float]:
+    if isinstance(value, dict):
+        raw_min = value.get("min")
+        raw_max = value.get("max")
+    elif isinstance(value, list | tuple) and len(value) == 2:
+        raw_min, raw_max = value
+    else:
+        raise ValueError(f"{field} must contain min and max values.")
+
+    if raw_min is None or raw_max is None:
+        raise ValueError(f"{field} must contain min and max values.")
+
+    min_value = float(raw_min)
+    max_value = float(raw_max)
+    if not np.isfinite(min_value) or not np.isfinite(max_value):
+        raise ValueError(f"{field} must contain finite min and max values.")
+    if min_value > max_value:
+        raise ValueError(f"{field} min must be less than or equal to max.")
+    return min_value, max_value
+
+
+def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """Build absolute frontier ranges from optimiser config.
+
+    Prefer per-constraint ``frontier_ranges``.  The legacy scalar
+    ``frontier_min`` / ``frontier_max`` pair remains a compatibility path for
+    existing single-range configs, but it is no longer treated as a multiplier
+    on baseline values.
+    """
+    constraints = config.get("constraints") or {}
+    if not constraints:
+        return {}
+
+    configured_ranges = config.get("frontier_ranges")
+    if configured_ranges is not None:
+        if not isinstance(configured_ranges, dict):
+            raise ValueError("frontier_ranges must be an object keyed by constraint name.")
+        ranges: dict[str, tuple[float, float]] = {}
+        for cname in constraints:
+            if cname not in configured_ranges:
+                raise ValueError(f"frontier_ranges is missing a range for constraint {cname!r}.")
+            ranges[str(cname)] = _normalise_frontier_range(
+                configured_ranges[cname],
+                field=f"frontier_ranges.{cname}",
+            )
+        return ranges
+
+    if "frontier_min" not in config or "frontier_max" not in config:
+        raise ValueError(
+            "frontier_ranges must provide min and max for each constraint. "
+            "Legacy frontier_min/frontier_max values are only used when both are explicitly configured."
+        )
+
+    frontier_min = float(config["frontier_min"])
+    frontier_max = float(config["frontier_max"])
+    if not np.isfinite(frontier_min) or not np.isfinite(frontier_max):
+        raise ValueError("frontier_min and frontier_max must be finite values.")
+    if frontier_min > frontier_max:
+        raise ValueError("frontier_min must be less than or equal to frontier_max.")
+
+    return {str(cname): (frontier_min, frontier_max) for cname in constraints}
+
+
+def _estimate_scenario_frontier_ranges(
+    scored_lf: Any,
+    *,
+    quote_id_col: str,
+    constraint_cols: list[str],
+) -> dict[str, dict[str, float]]:
+    """Return exact online achievable min/max totals from the scenario frame.
+
+    For each constraint, each quote can independently choose the scenario that
+    minimises or maximises that constraint total.  This avoids relying on
+    scenario ordering and only materialises two aggregate floats per
+    constraint.
+    """
+    import polars as pl
+
+    if not constraint_cols:
+        return {}
+
+    aggregate_exprs = []
+    total_exprs = []
+    aliases: dict[str, tuple[str, str]] = {}
+    for idx, cname in enumerate(constraint_cols):
+        min_alias = f"__haute_frontier_min_{idx}"
+        max_alias = f"__haute_frontier_max_{idx}"
+        aliases[cname] = (min_alias, max_alias)
+        aggregate_exprs.extend(
+            [
+                pl.col(cname).min().alias(min_alias),
+                pl.col(cname).max().alias(max_alias),
+            ]
+        )
+        total_exprs.extend(
+            [
+                pl.col(min_alias).sum().alias(min_alias),
+                pl.col(max_alias).sum().alias(max_alias),
+            ]
+        )
+
+    totals = (
+        scored_lf.group_by(quote_id_col)
+        .agg(aggregate_exprs)
+        .select(total_exprs)
+        .collect(engine="streaming")
+    )
+    if totals.height != 1:
+        raise ValueError("Unable to estimate frontier ranges from an empty scenario frame.")
+    row = totals.row(0, named=True)
+
+    ranges: dict[str, dict[str, float]] = {}
+    for cname, (min_alias, max_alias) in aliases.items():
+        min_value = float(row[min_alias])
+        max_value = float(row[max_alias])
+        if not np.isfinite(min_value) or not np.isfinite(max_value):
+            raise ValueError(f"Estimated frontier range for {cname!r} is not finite.")
+        if min_value > max_value:
+            raise ValueError(f"Estimated frontier range for {cname!r} is invalid.")
+        ranges[cname] = {"min": min_value, "max": max_value}
+    return ranges
+
+
 def _finalize_solve_result(
     solve_result: SolveResultLike,
     *,
@@ -245,6 +409,8 @@ def _finalize_solve_result(
     job_id: str,
     elapsed: float,
     extra_fields: dict[str, Any] | None = None,
+    factors_df: pl.DataFrame | None = None,
+    factor_columns: list[list[str]] | None = None,
 ) -> None:
     """Build the result dict and update the job with the solve outcome.
 
@@ -292,30 +458,27 @@ def _finalize_solve_result(
             "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
         )
 
-    # ── Compute efficient frontier (online mode only, non-fatal) ────
+    # ── Compute efficient frontier when explicitly requested (non-fatal) ────
     frontier_data = None
     frontier_error = None
     # M6: Use direct dict access to avoid _evict_stale() from background thread
     job_snapshot = store.jobs.get(job_id, {})
     config = job_snapshot.get("config", {})
     constraints = config.get("constraints")
-    if mode == "online" and constraints:
+    if constraints and config.get("frontier_enabled") is True:
         try:
-            frontier_min = config.get("frontier_min", 0.80)
-            frontier_max = config.get("frontier_max", 1.10)
             frontier_steps = config.get("frontier_steps", 15)
-
-            baseline_constraints = solve_result.baseline_constraints
-            ranges: dict[str, tuple[float, float]] = {}
-            for cname in constraints:
-                baseline = baseline_constraints.get(cname)
-                if baseline is not None and baseline != 0:
-                    ranges[cname] = (baseline * frontier_min, baseline * frontier_max)
+            ranges = _auto_frontier_ranges_from_config(config)
             if ranges:
-                frontier_result = solver.frontier(
+                frontier_result = _compute_frontier(
+                    solver,
                     quote_grid,
+                    mode=mode,
+                    factors_df=factors_df,
+                    factor_columns=factor_columns,
                     threshold_ranges=ranges,
                     n_points_per_dim=frontier_steps,
+                    initial_lambdas=solve_result.lambdas,
                 )
                 frontier_data = limited_frontier_payload(
                     frontier_result.points,
@@ -359,7 +522,10 @@ def _finalize_solve_result(
             "solver": solver,
             "solve_result": solve_result,
             "quote_grid": quote_grid,
+            "factors_df": factors_df,
+            "factor_columns_valid": factor_columns,
             "result": result_dict,
+            "base_result": dict(result_dict),
             "frontier_data": frontier_data,
             "artifact_handles": artifact_handles,
         },
@@ -403,7 +569,6 @@ def _solve_online(
         objective=config["objective"],
         constraints=config["constraints"] or None,
         max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
-        chunk_size=config.get("chunk_size", _DEFAULT_CHUNK_SIZE),
         tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
         record_history=config.get("record_history", False),
     )
@@ -421,6 +586,7 @@ def _solve_online(
         mode="online",
         solver=solver,
         quote_grid=solve_result.grid,
+        factors_df=None,
         store=store,
         job_id=job_id,
         elapsed=elapsed,
@@ -474,7 +640,6 @@ def _solve_ratebook(
         max_cd_iterations=config.get("max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS),
         cd_tolerance=config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE),
         tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
-        chunk_size=config.get("chunk_size", _DEFAULT_CHUNK_SIZE),
     )
 
     factor_cols_flat = [c for group in factor_columns_valid for c in group]
@@ -512,6 +677,8 @@ def _solve_ratebook(
         mode="ratebook",
         solver=solver,
         quote_grid=quote_grid,
+        factors_df=factors_df,
+        factor_columns=factor_columns_valid,
         store=store,
         job_id=job_id,
         elapsed=elapsed,
@@ -589,6 +756,96 @@ class OptimiserSolveService:
             shutil.rmtree(checkpoint_dir, ignore_errors=True)
         self._launch_background(job_id, body.node_id, config, mode, quote_grid, factors_df)
         return OptimiserSolveResponse(status="started", job_id=job_id)
+
+    def estimate_frontier_auto_range(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+    ) -> OptimiserFrontierAutoRangeResponse:
+        """Estimate absolute frontier ranges from the scenario dataframe.
+
+        The online optimiser can independently choose one scenario per quote,
+        so summing per-quote extrema gives the exact achievable envelope for
+        each constraint.  The calculation operates on the projected lazy frame
+        and returns only tiny metadata.
+        """
+        node = _find_optimiser_node(body.graph, body.node_id)
+        config = node.data.config
+        mode = self._validate_config(config)
+
+        job_id = self._store.create_job(
+            {
+                "status": "running",
+                "progress": 0.0,
+                "message": "Estimating frontier range",
+                "config": dict(config),
+                "node_label": node.data.label,
+            }
+        )
+        checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_frontier_range_"))
+        try:
+            lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
+            source_lf = self._resolve_data_source(lazy_outputs, config, body.node_id, job_id)
+            constraint_cols, scored_lf = self._validate_and_project(
+                source_lf,
+                config,
+                job_id,
+            )
+            ranges = _estimate_scenario_frontier_ranges(
+                scored_lf,
+                quote_id_col=str(config.get("quote_id", "quote_id")),
+                constraint_cols=constraint_cols,
+            )
+            warning = None
+            if mode == "ratebook":
+                warning = (
+                    "Auto range uses the scenario dataframe envelope. "
+                    "Ratebook factor-table coupling can make the exact achievable "
+                    "range narrower."
+                )
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "completed",
+                    "progress": 1.0,
+                    "message": "Completed",
+                    "result": {"ranges": ranges},
+                },
+            )
+            return OptimiserFrontierAutoRangeResponse(
+                status="ok",
+                ranges=ranges,
+                warning=warning,
+            )
+        except HTTPException as exc:
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": str(exc.detail),
+                },
+                expected_status="running",
+            )
+            raise
+        except Exception as exc:
+            logger.error(
+                "frontier_auto_range_failed",
+                error=str(exc),
+                node_id=body.node_id,
+                exc_info=True,
+            )
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Frontier auto range failed: {exc}",
+                },
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Frontier auto range failed. Check the server logs for details.",
+            ) from exc
+        finally:
+            shutil.rmtree(checkpoint_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------
     # Private orchestration steps
@@ -746,7 +1003,8 @@ class OptimiserSolveService:
         mult_col = str(config.get("scenario_value", "scenario_value"))
         step_col = str(config.get("scenario_index", "scenario_index"))
 
-        available_cols = set(source_lf.collect_schema().names())
+        schema = source_lf.collect_schema()
+        available_cols = set(schema.names())
         required_cols = {objective, qid_col, mult_col, step_col}
         for cname in constraints:
             required_cols.add(cname)
@@ -758,12 +1016,23 @@ class OptimiserSolveService:
             raise HTTPException(status_code=400, detail=detail)
 
         constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
+        qid_dtype = schema[qid_col]
+        if not (
+            qid_dtype == pl.String
+            or qid_dtype == pl.Categorical
+            or isinstance(qid_dtype, pl.Enum)
+        ):
+            detail = (
+                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
+                "Numeric, binary, and other dtypes are not supported as quote_id columns."
+            )
+            self._store.atomic_update(job_id, {"status": "error", "message": detail})
+            raise HTTPException(status_code=400, detail=detail)
 
         solver_cols = [qid_col, step_col, mult_col, objective] + [
             c for c in constraint_cols if c in available_cols
         ]
         cast_map: dict[str, pl.DataType] = {
-            qid_col: pl.Utf8(),
             step_col: pl.Int32(),
             mult_col: pl.Float32(),
             objective: pl.Float32(),
@@ -771,6 +1040,8 @@ class OptimiserSolveService:
         for c in constraint_cols:
             cast_map[c] = pl.Float32()
         cast_exprs = [pl.col(c).cast(t) for c, t in cast_map.items()]
+        if qid_dtype == pl.String:
+            cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
 
         scored_lf = (
             source_lf.select(solver_cols)
@@ -802,12 +1073,13 @@ class OptimiserSolveService:
         job_id: str,
     ) -> QuoteGrid:
         """Sink scored data to parquet and build the QuoteGrid."""
-        from price_contour import build_grid_from_parquet
+        from price_contour import build_grid_from_parquet, build_grid_from_parquet_chunked
 
         objective = config["objective"]
         qid_col = config.get("quote_id", "quote_id")
         mult_col = config.get("scenario_value", "scenario_value")
         step_col = config.get("scenario_index", "scenario_index")
+        raw_chunk_size = config.get("chunk_size")
 
         from haute._polars_utils import safe_sink
 
@@ -817,14 +1089,25 @@ class OptimiserSolveService:
             safe_sink(scored_lf, tmp_path)
             del scored_lf
 
-            quote_grid = build_grid_from_parquet(
-                tmp_path,
-                constraint_cols,
-                quote_id=qid_col,
-                scenario_index=step_col,
-                scenario_value_col=mult_col,
-                objective=objective,
-            )
+            build_kwargs = {
+                "quote_id": qid_col,
+                "scenario_index": step_col,
+                "scenario_value": mult_col,
+                "objective": objective,
+            }
+            if raw_chunk_size is None:
+                quote_grid = build_grid_from_parquet(
+                    tmp_path,
+                    constraint_cols,
+                    **build_kwargs,
+                )
+            else:
+                quote_grid = build_grid_from_parquet_chunked(
+                    tmp_path,
+                    constraint_cols,
+                    int(raw_chunk_size),
+                    **build_kwargs,
+                )
         except HTTPException:
             raise
         except Exception as exc:

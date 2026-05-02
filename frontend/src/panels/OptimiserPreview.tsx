@@ -13,7 +13,6 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { AlertCircle, ChevronDown, ChevronUp, Loader2, Target, Save, Table2, Upload } from "lucide-react"
 import {
   applyOptimiser,
-  selectFrontierPoint as selectFrontierPointAPI,
   saveOptimiser,
   logOptimiserToMlflow,
 } from "../api/client"
@@ -21,7 +20,6 @@ import { formatNumber } from "../utils/formatValue"
 import { useDragResize } from "../hooks/useDragResize"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useToastStore from "../stores/useToastStore"
 import { MODEL_COLORS } from "../theme/colors"
 import type { ApplyOptimiserResponse, FrontierData } from "../api/types"
 import FrontierChart from "./optimiser/FrontierChart"
@@ -97,15 +95,19 @@ type ResultDetailState =
   | { status: "loaded"; data: ApplyOptimiserResponse }
   | { status: "error"; error: string }
 
+const EMPTY_FRONTIER_POINTS: Record<string, unknown>[] = []
+
 export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps) {
-  const { result, jobId, constraints } = data
+  const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
+  const displayData = liveData ?? data
+  const { result, jobId, constraints } = displayData
 
   const [collapsed, setCollapsed] = useState(false)
   const { height, containerRef, onDragStart } = useDragResize({ initialHeight: 320, minHeight: 160, maxHeight: 600 })
 
   // Default tab: frontier when frontier data exists, otherwise summary
   const [tab, setTab] = useState<TabKey>(() =>
-    data.frontier && data.frontier.points.length > 0 ? "frontier" : "summary",
+    displayData.frontier && displayData.frontier.points.length > 0 ? "frontier" : "summary",
   )
 
   // X-axis constraint picker for multi-constraint frontiers
@@ -114,8 +116,6 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
   // Store actions
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
-  const storeUpdateAfterSelect = useNodeResultsStore((s) => s.updateFrontierAfterSelect)
-  const addToast = useToastStore((s) => s.addToast)
 
   // MLflow availability
   const mlflowAvailable = useSettingsStore((s) => s.mlflow.status === "connected")
@@ -129,8 +129,8 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   const terminalDetailBlocksActions = resultDetail.status === "loading" || resultDetail.status === "loaded"
 
   // ── Frontier point selection ──
-  const frontier = data.frontier
-  const selectedIdx = data.selectedPointIndex
+  const frontier = displayData.frontier
+  const selectedIdx = displayData.selectedPointIndex
 
   // Clear action feedback when the selected point changes (M8)
   useEffect(() => { setActionMsg(null) }, [selectedIdx])
@@ -145,24 +145,15 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   useEffect(() => abortResultDetailRequest, [abortResultDetailRequest])
 
   const handlePointClick = useCallback(
-    async (index: number) => {
+    (index: number) => {
       // Toggle off if clicking selected point
       if (index === selectedIdx) {
         storeSelectPoint(nodeId, null)
         return
       }
       storeSelectPoint(nodeId, index)
-      try {
-        const res = await selectFrontierPointAPI({ job_id: jobId, point_index: index })
-        storeUpdateAfterSelect(nodeId, index, res)
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : "unknown error"
-        addToast("error", `Failed to select frontier point: ${detail}`)
-        // Revert to the previous selection so the UI doesn't show stale data
-        storeSelectPoint(nodeId, selectedIdx)
-      }
     },
-    [selectedIdx, nodeId, jobId, storeSelectPoint, storeUpdateAfterSelect, addToast],
+    [selectedIdx, nodeId, storeSelectPoint],
   )
 
   const handleStepPoint = useCallback(
@@ -180,29 +171,28 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
     setSaving(true)
     setActionMsg(null)
     try {
-      // If a frontier point is selected, ensure it's applied on the backend first
-      if (selectedIdx != null && frontier) {
-        await selectFrontierPointAPI({ job_id: jobId, point_index: selectedIdx })
-      }
-      const outputPath = `output/optimiser_${data.nodeLabel.toLowerCase().replace(/ /g, "_")}.json`
-      const res = await saveOptimiser({ job_id: jobId, output_path: outputPath })
+      const outputPath = `output/optimiser_${displayData.nodeLabel.toLowerCase().replace(/ /g, "_")}.json`
+      const res = await saveOptimiser({
+        job_id: jobId,
+        output_path: outputPath,
+        ...(selectedIdx != null && frontier ? { point_index: selectedIdx } : {}),
+      })
       setActionMsg(res.message ?? `Saved to ${res.path ?? outputPath}`)
     } catch (e) {
       setActionMsg(`Save failed: ${e}`)
     } finally {
       setSaving(false)
     }
-  }, [selectedIdx, frontier, jobId, data.nodeLabel])
+  }, [selectedIdx, frontier, jobId, displayData.nodeLabel])
 
   const handleLogMlflow = useCallback(async () => {
     setLogging(true)
     setActionMsg(null)
     try {
-      // If a frontier point is selected, ensure it's applied on the backend first
-      if (selectedIdx != null && frontier) {
-        await selectFrontierPointAPI({ job_id: jobId, point_index: selectedIdx })
-      }
-      const res = await logOptimiserToMlflow({ job_id: jobId })
+      const res = await logOptimiserToMlflow({
+        job_id: jobId,
+        ...(selectedIdx != null && frontier ? { point_index: selectedIdx } : {}),
+      })
       const target = res.experiment_name ? ` to ${res.experiment_name}` : ""
       setActionMsg(res.run_url ? `Logged${target}: ${res.run_url}` : `Logged${target} (run ${res.run_id ?? "ok"})`)
     } catch (e) {
@@ -218,13 +208,13 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
     resultDetailAbortRef.current = controller
     setResultDetail({ status: "loading" })
     try {
-      if (selectedIdx != null && frontier) {
-        await selectFrontierPointAPI(
-          { job_id: jobId, point_index: selectedIdx },
-          { signal: controller.signal },
-        )
-      }
-      const res = await applyOptimiser({ job_id: jobId }, { signal: controller.signal })
+      const res = await applyOptimiser(
+        {
+          job_id: jobId,
+          ...(selectedIdx != null && frontier ? { point_index: selectedIdx } : {}),
+        },
+        { signal: controller.signal },
+      )
       if (resultDetailAbortRef.current !== controller) return
       setResultDetail({ status: "loaded", data: res })
     } catch (e) {
@@ -245,7 +235,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
         <button onClick={() => setCollapsed(false)} aria-label="Expand panel" className="flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
           <ChevronUp size={14} />
           <Target size={14} />
-          <span className="font-medium">{data.nodeLabel}</span>
+          <span className="font-medium">{displayData.nodeLabel}</span>
           <span style={{ color: "var(--text-muted)" }}>
             {result.converged ? "Converged" : "Not converged"}
             {" — "}Objective: {formatNumber(result.total_objective)}
@@ -280,7 +270,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
       {/* Header */}
       <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
         <Target size={14} style={{ color: "var(--warning-strong)" }} />
-        <span className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{data.nodeLabel}</span>
+        <span className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{displayData.nodeLabel}</span>
         <span className="text-[11px]" style={{ color: result.converged ? "var(--success)" : "var(--warning-strong)" }}>
           {result.converged ? "Converged" : "Not converged"}
           {result.mode === "ratebook"
@@ -402,6 +392,21 @@ interface FrontierTabProps {
   actionMsg: string | null
 }
 
+function finitePointNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function frontierConstraintPointValue(point: Record<string, unknown>, name: string): number | null {
+  const totalValue = finitePointNumber(point[`total_${name}`])
+  if (totalValue !== null) return totalValue
+  const nested = point.constraints
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const nestedValue = finitePointNumber((nested as Record<string, unknown>)[name])
+    if (nestedValue !== null) return nestedValue
+  }
+  return finitePointNumber(point[name])
+}
+
 function FrontierTab({
   frontier,
   result,
@@ -420,24 +425,33 @@ function FrontierTab({
   mlflowAvailable,
   actionMsg,
 }: FrontierTabProps) {
-  if (!frontier || frontier.points.length === 0) {
+  const points = frontier?.points ?? EMPTY_FRONTIER_POINTS
+  const xConstraintName = constraintNames[xConstraintIdx] ?? constraintNames[0]
+  const xKey = xConstraintName ? `total_${xConstraintName}` : null
+  const yKey = "total_objective"
+  const chartPoints = useMemo(() => {
+    if (!xKey || !xConstraintName) return points
+    return points.map((point) => {
+      if (finitePointNumber(point[xKey]) !== null) return point
+      const value = frontierConstraintPointValue(point, xConstraintName)
+      return value === null ? point : { ...point, [xKey]: value }
+    })
+  }, [points, xConstraintName, xKey])
+
+  if (!frontier || points.length === 0) {
     return (
       <div className="text-xs py-4" style={{ color: "var(--text-muted)" }}>
-        No frontier data available. Frontier is computed automatically during the solve.
+        No frontier data available. Enable efficient frontier in the constraint settings and run the optimiser.
       </div>
     )
   }
 
-  const points = frontier.points
   const shownPointCount = frontier.points_returned || points.length
   const totalPointCount = frontier.n_points || points.length
-  const xConstraintName = constraintNames[xConstraintIdx] ?? constraintNames[0]
-  const xKey = xConstraintName ? `total_${xConstraintName}` : null
-  const yKey = "total_objective"
 
   // Build scales
-  const xVals = xKey ? points.map(p => p[xKey] as number).filter(v => typeof v === "number" && Number.isFinite(v)) : []
-  const yVals = points.map(p => p[yKey] as number).filter(v => typeof v === "number" && Number.isFinite(v))
+  const xVals = xKey ? chartPoints.map(p => p[xKey] as number).filter(v => typeof v === "number" && Number.isFinite(v)) : []
+  const yVals = chartPoints.map(p => p[yKey] as number).filter(v => typeof v === "number" && Number.isFinite(v))
 
   const hasChartData = xKey && xVals.length >= 2 && yVals.length >= 2
 
@@ -471,7 +485,7 @@ function FrontierTab({
 
         {hasChartData ? (
           <FrontierChart
-            points={points}
+            points={chartPoints}
             xKey={xKey!}
             yKey={yKey}
             xLabel={xConstraintName ?? "constraint"}
@@ -506,7 +520,6 @@ function FrontierTab({
           <DetailCard
             points={points}
             selectedIdx={selectedIdx}
-            result={result}
             constraints={constraints}
             constraintNames={constraintNames}
             onStepPoint={onStepPoint}

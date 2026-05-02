@@ -216,6 +216,91 @@ function readOptimiserPreview(nodeId: string, cached: CachedSolveResult): Optimi
   return prev && prev.source === cached ? prev.result : buildOptimiserPreview(cached)
 }
 
+function numericFrontierValue(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Frontier point field '${field}' must be a finite number`)
+  }
+  return value
+}
+
+function recordValue(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Frontier point field '${field}' must be an object`)
+  }
+  return value as Record<string, unknown>
+}
+
+function frontierConstraintValue(row: Record<string, unknown>, name: string): [unknown, string] {
+  const totalKey = `total_${name}`
+  if (row[totalKey] !== undefined) return [row[totalKey], totalKey]
+  if (row.constraints !== undefined && row.constraints !== null) {
+    const nestedConstraints = recordValue(row.constraints, "constraints")
+    if (nestedConstraints[name] !== undefined) return [nestedConstraints[name], `constraints.${name}`]
+  }
+  if (row[name] !== undefined) return [row[name], name]
+  return [undefined, totalKey]
+}
+
+function deriveSolveResultForFrontierPoint(cached: CachedSolveResult, pointIndex: number): SolveResult {
+  const frontier = cached.frontier
+  if (!frontier) return cached.result
+  const point = frontier.points[pointIndex]
+  if (!point) throw new Error(`Frontier point index ${pointIndex} is out of range`)
+
+  const row = recordValue(point, "point")
+  const constraints = Object.fromEntries(
+    frontier.constraint_names.map((name) => {
+      const [raw, field] = frontierConstraintValue(row, name)
+      return [name, numericFrontierValue(raw, field)]
+    }),
+  )
+
+  const lambdas: Record<string, number> = {}
+  if (row.lambdas != null) {
+    const nestedLambdas = recordValue(row.lambdas, "lambdas")
+    for (const [name, value] of Object.entries(nestedLambdas)) {
+      lambdas[name] = numericFrontierValue(value, `lambdas.${name}`)
+    }
+  } else {
+    for (const [key, value] of Object.entries(row)) {
+      if (key.startsWith("lambda_")) {
+        lambdas[key.replace(/^lambda_/, "")] = numericFrontierValue(value, key)
+      }
+    }
+  }
+
+  let converged = cached.originalResult.converged
+  if (row.converged !== undefined) {
+    if (typeof row.converged !== "boolean") {
+      throw new Error("Frontier point field 'converged' must be a boolean")
+    }
+    converged = row.converged
+  }
+  const baselineConstraints = row.baseline_constraints == null
+    ? cached.originalResult.baseline_constraints
+    : Object.fromEntries(
+        Object.entries(recordValue(row.baseline_constraints, "baseline_constraints")).map(([name, value]) => [
+          name,
+          numericFrontierValue(value, `baseline_constraints.${name}`),
+        ]),
+      )
+
+  return {
+    ...cached.originalResult,
+    total_objective: numericFrontierValue(row.total_objective, "total_objective"),
+    constraints,
+    lambdas,
+    baseline_objective: row.baseline_objective === undefined
+      ? cached.originalResult.baseline_objective
+      : numericFrontierValue(row.baseline_objective, "baseline_objective"),
+    baseline_constraints: baselineConstraints,
+    converged,
+    iterations: typeof row.iterations === "number" ? row.iterations : cached.originalResult.iterations,
+    cd_iterations: typeof row.cd_iterations === "number" ? row.cd_iterations : cached.originalResult.cd_iterations,
+    clamp_rate: typeof row.clamp_rate === "number" ? row.clamp_rate : cached.originalResult.clamp_rate,
+  }
+}
+
 function modellingPreviewNodeLabel(job: ActiveTrainJob | undefined): string {
   return job?.nodeLabel ?? "Model"
 }
@@ -504,11 +589,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const cached = s.solveResults[nodeId]
       if (!cached) return s
       touchCachedResult(solveResultRecency, nodeId)
+      const result = pointIndex === null
+        ? cached.originalResult
+        : deriveSolveResultForFrontierPoint(cached, pointIndex)
       const nextCached = {
         ...cached,
         selectedPointIndex: pointIndex,
-        // Revert to original result when deselecting
-        ...(pointIndex === null ? { result: cached.originalResult } : {}),
+        result,
       }
       cacheOptimiserPreview(nodeId, nextCached)
       return {

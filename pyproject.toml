@@ -40,8 +40,8 @@ dependencies = [
     "catboost>=1.2.8",
     "structlog>=24.1.0",
     "orjson>=3.9.0",
-    "price-contour==0.2.7",
-    "rustystats>=0.6.1",
+    "price-contour==0.3.3",
+    "rustystats>=0.6.7",
     "xxhash>=3.0.0",
     "packaging>=24.0",
 ]

@@ -334,6 +334,7 @@ vi.mock("../../hooks/useDragResize", () => ({
 vi.mock("../../stores/useNodeResultsStore", () => {
   const state = {
     trainJobs: {},
+    getOptimiserPreview: vi.fn(() => null),
     selectFrontierPoint: vi.fn(),
     updateFrontierAfterSelect: vi.fn(),
   }

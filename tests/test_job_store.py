@@ -939,6 +939,7 @@ class TestHeavyObjectLifecyclePolicy:
                     "solver": object(),
                     "solve_result": object(),
                     "quote_grid": object(),
+                    "factors_df": object(),
                     "result": {"total_objective": 123.0},
                     "frontier_data": {"n_points": 0},
                 },
@@ -950,6 +951,7 @@ class TestHeavyObjectLifecyclePolicy:
         assert "solver" in job
         assert "solve_result" in job
         assert "quote_grid" in job
+        assert "factors_df" in job
 
         with patch("haute.routes._job_store.time.time", return_value=102.0):
             job = store.get_job(job_id)
@@ -958,6 +960,7 @@ class TestHeavyObjectLifecyclePolicy:
         assert "solver" not in job
         assert "solve_result" not in job
         assert "quote_grid" not in job
+        assert "factors_df" not in job
         assert job["status"] == "completed"
         assert job["config"] == {"objective": "loss"}
         assert job["result"] == {"total_objective": 123.0}
@@ -1583,11 +1586,12 @@ class TestClearResultDataManualCleanup:
                 "progress": 1.0,
                 "message": "Completed",
                 "config": {"objective": "income", "constraints": {"loss_ratio": 1.0}},
-                "solver": object(),  # heavy: OnlineOptimiser instance
+                "solver": object(),  # heavy: Optimiser instance
                 "solve_result": object(),  # heavy: solve result with full DataFrame
                 "quote_grid": object(),  # heavy: QuoteGrid
+                "factors_df": object(),  # heavy: ratebook aligned factor frame
                 "result": {
-                    "mode": "online",
+                    "mode": "ratebook",
                     "total_objective": 1.05,
                     "converged": True,
                     "frontier": None,
@@ -1602,6 +1606,7 @@ class TestClearResultDataManualCleanup:
         assert "solver" in job
         assert "solve_result" in job
         assert "quote_grid" in job
+        assert "factors_df" in job
 
         store.clear_result_data(job_id)
 
@@ -1610,6 +1615,7 @@ class TestClearResultDataManualCleanup:
         assert "solver" not in job
         assert "solve_result" not in job
         assert "quote_grid" not in job
+        assert "factors_df" not in job
         assert job["status"] == "completed"
         assert job["result"]["converged"] is True
         assert job["config"]["objective"] == "income"

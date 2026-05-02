@@ -17,6 +17,8 @@ import type {
   DissolveSubmodelResponse,
   FetchProgressResponse,
   FetchTableResponse,
+  FrontierAutoRangeResponse,
+  FrontierPoint,
   FrontierResponse,
   FrontierSelectResponse,
   GitBranchInfo,
@@ -925,6 +927,11 @@ export function parseOptimiserEstimateResponse(value: unknown): OptimiserEstimat
   const obj = expectPlainObject("parseOptimiserEstimateResponse", value)
   return {
     total_rows: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "total_rows"),
+    quote_count: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "quote_count"),
+    scenarios_per_quote_min: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_min"),
+    scenarios_per_quote_max: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_max"),
+    scenarios_per_quote_mean: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_mean"),
+    expanded_row_count: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "expanded_row_count"),
   }
 }
 
@@ -932,12 +939,52 @@ export function parseFrontierResponse(value: unknown, field = "object"): Frontie
   const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
   return {
     status: expectString("parseOptimiserStatusResponse", obj.status, `${field}.status`),
-    points: optionalPlainObjectArray("parseOptimiserStatusResponse", obj, "points"),
+    points: optionalArray("parseOptimiserStatusResponse", obj, "points", parseFrontierPoint),
     n_points: optionalNumber("parseOptimiserStatusResponse", obj, "n_points"),
     points_returned: optionalNumber("parseOptimiserStatusResponse", obj, "points_returned"),
     constraint_names: optionalStringArray("parseOptimiserStatusResponse", obj, "constraint_names"),
     points_limit: optionalNullableNumber("parseOptimiserStatusResponse", obj, "points_limit"),
     points_truncated: optionalBoolean("parseOptimiserStatusResponse", obj, "points_truncated"),
+  }
+}
+
+function parseFrontierPoint(value: unknown, field: string): FrontierPoint {
+  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
+  return {
+    ...obj,
+    index: obj.index === undefined ? undefined : expectNumber("parseOptimiserStatusResponse", obj.index, `${field}.index`),
+    total_objective: obj.total_objective === undefined
+      ? undefined
+      : expectNumber("parseOptimiserStatusResponse", obj.total_objective, `${field}.total_objective`),
+    constraints: obj.constraints === undefined
+      ? undefined
+      : parseNumberRecord("parseOptimiserStatusResponse", obj.constraints, `${field}.constraints`),
+    lambdas: obj.lambdas === undefined
+      ? undefined
+      : parseNumberRecord("parseOptimiserStatusResponse", obj.lambdas, `${field}.lambdas`),
+  }
+}
+
+export function parseFrontierAutoRangeResponse(value: unknown): FrontierAutoRangeResponse {
+  const obj = expectPlainObject("parseFrontierAutoRangeResponse", value)
+  const rawRanges = expectPlainObject("parseFrontierAutoRangeResponse", obj.ranges, "field `ranges`")
+  const ranges: FrontierAutoRangeResponse["ranges"] = {}
+  for (const [key, item] of Object.entries(rawRanges)) {
+    const range = expectPlainObject(
+      "parseFrontierAutoRangeResponse",
+      item,
+      `field \`ranges.${key}\``,
+    )
+    ranges[key] = {
+      min: expectNumber("parseFrontierAutoRangeResponse", range.min, `field \`ranges.${key}.min\``),
+      max: expectNumber("parseFrontierAutoRangeResponse", range.max, `field \`ranges.${key}.max\``),
+    }
+  }
+  return {
+    status: expectString("parseFrontierAutoRangeResponse", obj.status, "field `status`"),
+    ranges,
+    method: expectString("parseFrontierAutoRangeResponse", obj.method, "field `method`"),
+    warning: optionalNullableString("parseFrontierAutoRangeResponse", obj, "warning"),
   }
 }
 

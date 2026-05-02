@@ -662,11 +662,38 @@ class OptimiserEstimateResponse(BaseModel):
 
     total_rows: int | None = None
     """Max row count across ancestor data sources, if readable."""
+    quote_count: int | None = None
+    """Distinct quotes in the optimiser input after scenario expansion."""
+    scenarios_per_quote_min: int | None = None
+    """Minimum scenario rows per quote in the optimiser input."""
+    scenarios_per_quote_max: int | None = None
+    """Maximum scenario rows per quote in the optimiser input."""
+    scenarios_per_quote_mean: float | None = None
+    """Mean scenario rows per quote in the optimiser input."""
+    expanded_row_count: int | None = None
+    """Total rows in the optimiser input after scenario expansion."""
+
+
+class OptimiserFrontierAutoRangeRequest(BaseModel):
+    graph: Graph
+    node_id: str
+
+
+class OptimiserFrontierRange(BaseModel):
+    min: float
+    max: float
+
+
+class OptimiserFrontierAutoRangeResponse(BaseModel):
+    status: str = "ok"
+    ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
+    method: str = "scenario_envelope"
+    warning: str | None = None
 
 
 class OptimiserFrontierRequest(BaseModel):
     job_id: str
-    threshold_ranges: dict[str, list[float]]
+    threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
 
 
@@ -728,6 +755,7 @@ class OptimiserSolveResult(BaseModel):
     clamp_rate: float | None = None
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
+    selected_frontier_point: int | None = None
 
 
 class OptimiserStatusResponse(BaseModel):
@@ -741,6 +769,7 @@ class OptimiserStatusResponse(BaseModel):
 
 class OptimiserApplyRequest(BaseModel):
     job_id: str
+    point_index: int | None = Field(default=None, ge=0)
 
 
 class OptimiserApplyResponse(BaseModel):
@@ -758,11 +787,12 @@ class OptimiserApplyResponse(BaseModel):
 
 class OptimiserFrontierSelectRequest(BaseModel):
     job_id: str
-    point_index: int = Field(..., ge=0)
+    point_index: int | None = Field(..., ge=0)
 
 
 class OptimiserFrontierSelectResponse(BaseModel):
     status: str
+    point_index: int | None = None
     total_objective: float = 0.0
     constraints: dict[str, float] = Field(default_factory=dict)
     baseline_objective: float = 0.0
@@ -776,6 +806,7 @@ class OptimiserSaveRequest(BaseModel):
     job_id: str
     output_path: str
     version: str = ""  # optional user-specified version label; auto-generated if empty
+    point_index: int | None = Field(default=None, ge=0)
 
 
 class OptimiserSaveResponse(BaseModel):
@@ -786,6 +817,7 @@ class OptimiserSaveResponse(BaseModel):
 
 class OptimiserMlflowLogRequest(BaseModel):
     job_id: str
+    point_index: int | None = Field(default=None, ge=0)
     experiment_name: str | None = None
     model_name: str | None = None
 

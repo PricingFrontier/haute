@@ -3,6 +3,8 @@
 import polars as pl
 import haute
 
+from utility.features import clean_columns, to_date, years_between
+
 pipeline = haute.Pipeline("my_pipeline", description='')
 
 

@@ -250,9 +250,29 @@ describe("OptimiserDataPreview", () => {
       const circlesAfter = chartSvg.querySelectorAll("circle").length
       expect(circlesAfter).toBe(3) // 1 series × 3 points
     })
+
+    it("unchecking a series removes its axis from the chart", () => {
+      renderComponent()
+      expect(screen.getByTestId("axis-margin")).toBeInTheDocument()
+      expect(screen.getByTestId("axis-volume")).toBeInTheDocument()
+
+      const checkboxes = screen.getAllByRole("checkbox")
+      fireEvent.click(checkboxes[1])
+
+      expect(screen.getByTestId("axis-margin")).toBeInTheDocument()
+      expect(screen.queryByTestId("axis-volume")).not.toBeInTheDocument()
+    })
   })
 
   describe("Chart rendering", () => {
+    function yRangeFromPath(path: SVGPathElement): number {
+      const values = path
+        .getAttribute("d")!
+        .match(/,(-?\d+(?:\.\d+)?)/g)!
+        .map((match) => Number(match.slice(1)))
+      return Math.max(...values) - Math.min(...values)
+    }
+
     it("renders an SVG chart in combined mode by default", () => {
       const { container } = renderComponent()
       // There should be at least one non-icon SVG (the chart)
@@ -283,6 +303,22 @@ describe("OptimiserDataPreview", () => {
     it("shows 'scenario index' x-axis label", () => {
       renderComponent()
       expect(screen.getByText("scenario index")).toBeInTheDocument()
+    })
+
+    it("scales each visible series independently so small-range lines are not flattened", () => {
+      const preview = [
+        { quote_id: "Q001", scenario_index: 0, scenario_value: 0.9, margin: 1000, volume: 0.1 },
+        { quote_id: "Q001", scenario_index: 1, scenario_value: 1.0, margin: 2000, volume: 0.2 },
+        { quote_id: "Q001", scenario_index: 2, scenario_value: 1.1, margin: 3000, volume: 0.3 },
+      ]
+
+      const { container } = renderComponent({ preview, row_count: 3 })
+      const chartSvg = container.querySelector('svg[style*="background"]')!
+      const paths = chartSvg.querySelectorAll("path")
+
+      expect(paths.length).toBe(2)
+      expect(yRangeFromPath(paths[0])).toBeGreaterThan(100)
+      expect(yRangeFromPath(paths[1])).toBeGreaterThan(100)
     })
   })
 
