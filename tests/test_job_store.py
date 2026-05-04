@@ -1549,6 +1549,29 @@ class TestOptimiserConcurrencyGuard:
 
         assert store.has_job_with_status("running") is False
 
+    def test_has_job_matching_uses_predicate_under_lock(self) -> None:
+        """Route guards can match richer job metadata without raw store iteration."""
+        store = JobStore()
+        store.create_job({"status": "running", "job_type": "estimate"})
+        store.create_job({"status": "running", "job_type": "solve"})
+
+        assert store.has_job_matching(
+            lambda job: job.get("status") == "running" and job.get("job_type") == "solve"
+        )
+
+    def test_has_job_matching_ignores_expired_jobs(self) -> None:
+        """Predicate checks should share the normal stale-job eviction behaviour."""
+        store = JobStore(ttl_seconds=1)
+        store.create_job(
+            {
+                "status": "completed",
+                "job_type": "solve",
+                "created_at": time.time() - 10,
+            }
+        )
+
+        assert store.has_job_matching(lambda job: job.get("job_type") == "solve") is False
+
 
 # ---------------------------------------------------------------------------
 # Manual cleanup hook: clear_result_data can strip heavy runtime state

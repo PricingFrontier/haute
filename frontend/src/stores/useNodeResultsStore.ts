@@ -21,6 +21,7 @@ import type { ColumnInfo } from "../types/node"
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
 export const MAX_CACHED_TRAIN_RESULTS = 8
+const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
 // Result caches use entry-count LRU deliberately: preview payloads are already
 // bounded by backend row/column limits, and byte-accurate browser-side accounting
@@ -230,6 +231,130 @@ function recordValue(value: unknown, field: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+function optionalFrontierNumber(row: Record<string, unknown>, field: string): number | undefined {
+  return row[field] === undefined ? undefined : numericFrontierValue(row[field], field)
+}
+
+function optionalFrontierInteger(row: Record<string, unknown>, field: string): number | undefined {
+  const value = optionalFrontierNumber(row, field)
+  if (value === undefined) return undefined
+  if (!Number.isInteger(value)) {
+    throw new Error(`Frontier point field '${field}' must be an integer`)
+  }
+  return value
+}
+
+function optionalScenarioValueStats(row: Record<string, unknown>): SolveResult["scenario_value_stats"] | undefined {
+  if (row.scenario_value_stats != null) {
+    const stats = recordValue(row.scenario_value_stats, "scenario_value_stats")
+    return {
+      mean: numericFrontierValue(stats.mean, "scenario_value_stats.mean"),
+      std: numericFrontierValue(stats.std, "scenario_value_stats.std"),
+      min: numericFrontierValue(stats.min, "scenario_value_stats.min"),
+      max: numericFrontierValue(stats.max, "scenario_value_stats.max"),
+      p5: numericFrontierValue(stats.p5, "scenario_value_stats.p5"),
+      p25: numericFrontierValue(stats.p25, "scenario_value_stats.p25"),
+      p50: numericFrontierValue(stats.p50, "scenario_value_stats.p50"),
+      p75: numericFrontierValue(stats.p75, "scenario_value_stats.p75"),
+      p95: numericFrontierValue(stats.p95, "scenario_value_stats.p95"),
+      pct_increase: numericFrontierValue(stats.pct_increase, "scenario_value_stats.pct_increase"),
+      pct_decrease: numericFrontierValue(stats.pct_decrease, "scenario_value_stats.pct_decrease"),
+    }
+  }
+
+  const flatStats = {
+    mean: "sv_mean",
+    std: "sv_std",
+    min: "sv_min",
+    max: "sv_max",
+    p5: "sv_p5",
+    p25: "sv_p25",
+    p50: "sv_median",
+    p75: "sv_p75",
+    p95: "sv_p95",
+    pct_increase: "sv_pct_increase",
+    pct_decrease: "sv_pct_decrease",
+  } as const
+  if (!Object.values(flatStats).some((field) => row[field] !== undefined)) return undefined
+
+  return {
+    mean: numericFrontierValue(row[flatStats.mean], flatStats.mean),
+    std: numericFrontierValue(row[flatStats.std], flatStats.std),
+    min: numericFrontierValue(row[flatStats.min], flatStats.min),
+    max: numericFrontierValue(row[flatStats.max], flatStats.max),
+    p5: numericFrontierValue(row[flatStats.p5], flatStats.p5),
+    p25: numericFrontierValue(row[flatStats.p25], flatStats.p25),
+    p50: numericFrontierValue(row[flatStats.p50], flatStats.p50),
+    p75: numericFrontierValue(row[flatStats.p75], flatStats.p75),
+    p95: numericFrontierValue(row[flatStats.p95], flatStats.p95),
+    pct_increase: numericFrontierValue(row[flatStats.pct_increase], flatStats.pct_increase),
+    pct_decrease: numericFrontierValue(row[flatStats.pct_decrease], flatStats.pct_decrease),
+  }
+}
+
+function numericArrayValue(value: unknown, field: string): number[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Frontier point field '${field}' must be an array`)
+  }
+  return value.map((entry, index) => numericFrontierValue(entry, `${field}[${index}]`))
+}
+
+function optionalScenarioValueHistogram(row: Record<string, unknown>): SolveResult["scenario_value_histogram"] | undefined {
+  if (row.scenario_value_histogram == null) return undefined
+  const histogram = recordValue(row.scenario_value_histogram, "scenario_value_histogram")
+  return {
+    counts: numericArrayValue(histogram.counts, "scenario_value_histogram.counts"),
+    edges: numericArrayValue(histogram.edges, "scenario_value_histogram.edges"),
+  }
+}
+
+function optionalFactorTables(row: Record<string, unknown>): SolveResult["factor_tables"] | undefined {
+  if (row.factor_tables == null) return undefined
+  const tables = recordValue(row.factor_tables, "factor_tables")
+  return Object.fromEntries(
+    Object.entries(tables).map(([name, rows]) => {
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row))) {
+        throw new Error(`Frontier point field 'factor_tables.${name}' must be an array of objects`)
+      }
+      return [name, rows as Record<string, unknown>[]]
+    }),
+  )
+}
+
+function optionalHistory(row: Record<string, unknown>): SolveResult["history"] | null {
+  if (row.history === undefined || row.history === null) return null
+  if (!Array.isArray(row.history)) {
+    throw new Error("Frontier point field 'history' must be an array")
+  }
+  return row.history.map((entry, index) => {
+    const historyEntry = recordValue(entry, `history[${index}]`)
+    const parsed = {
+      iteration: numericFrontierValue(historyEntry.iteration, `history[${index}].iteration`),
+      total_objective: numericFrontierValue(historyEntry.total_objective, `history[${index}].total_objective`),
+      max_lambda_change: numericFrontierValue(historyEntry.max_lambda_change, `history[${index}].max_lambda_change`),
+    } as NonNullable<SolveResult["history"]>[number]
+    if (historyEntry.all_constraints_satisfied !== undefined) {
+      if (typeof historyEntry.all_constraints_satisfied !== "boolean") {
+        throw new Error(`Frontier point field 'history[${index}].all_constraints_satisfied' must be a boolean`)
+      }
+      parsed.all_constraints_satisfied = historyEntry.all_constraints_satisfied
+    }
+    if (historyEntry.lambdas !== undefined) {
+      const lambdas = recordValue(historyEntry.lambdas, `history[${index}].lambdas`)
+      parsed.lambdas = Object.fromEntries(
+        Object.entries(lambdas).map(([name, value]) => [name, numericFrontierValue(value, `history[${index}].lambdas.${name}`)]),
+      )
+    }
+    if (historyEntry.total_constraints !== undefined) {
+      const constraints = recordValue(historyEntry.total_constraints, `history[${index}].total_constraints`)
+      parsed.total_constraints = Object.fromEntries(
+        Object.entries(constraints).map(([name, value]) => [name, numericFrontierValue(value, `history[${index}].total_constraints.${name}`)]),
+      )
+    }
+    return parsed
+  })
+}
+
 function frontierConstraintValue(row: Record<string, unknown>, name: string): [unknown, string] {
   const totalKey = `total_${name}`
   if (row[totalKey] !== undefined) return [row[totalKey], totalKey]
@@ -295,9 +420,15 @@ function deriveSolveResultForFrontierPoint(cached: CachedSolveResult, pointIndex
       : numericFrontierValue(row.baseline_objective, "baseline_objective"),
     baseline_constraints: baselineConstraints,
     converged,
-    iterations: typeof row.iterations === "number" ? row.iterations : cached.originalResult.iterations,
-    cd_iterations: typeof row.cd_iterations === "number" ? row.cd_iterations : cached.originalResult.cd_iterations,
-    clamp_rate: typeof row.clamp_rate === "number" ? row.clamp_rate : cached.originalResult.clamp_rate,
+    iterations: optionalFrontierInteger(row, "iterations"),
+    cd_iterations: optionalFrontierInteger(row, "cd_iterations"),
+    clamp_rate: row.clamp_rate === null ? null : optionalFrontierNumber(row, "clamp_rate"),
+    history: optionalHistory(row),
+    scenario_value_stats: optionalScenarioValueStats(row),
+    scenario_value_histogram: optionalScenarioValueHistogram(row),
+    factor_tables: optionalFactorTables(row),
+    warning: converged ? undefined : NON_CONVERGED_WARNING,
+    frontier_error: undefined,
   }
 }
 
@@ -517,7 +648,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           }
         : null
       touchCachedResult(solveResultRecency, nodeId)
-      const nextCached: CachedSolveResult = {
+      let nextCached: CachedSolveResult = {
         result,
         originalResult: result,
         jobId: job.jobId,
@@ -525,7 +656,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         constraints: job.constraints,
         nodeLabel: job.nodeLabel,
         frontier,
-        selectedPointIndex: null,
+        selectedPointIndex: frontier ? 0 : null,
+      }
+      if (frontier) {
+        nextCached = {
+          ...nextCached,
+          result: deriveSolveResultForFrontierPoint(nextCached, 0),
+        }
       }
       const bounded = trimCacheByRecency(
         {
@@ -611,17 +748,31 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const cached = s.solveResults[nodeId]
       if (!cached) return s
       touchCachedResult(solveResultRecency, nodeId)
+      const pointResult = cached.frontier && cached.frontier.points[pointIndex]
+        ? deriveSolveResultForFrontierPoint(cached, pointIndex)
+        : {
+            ...cached.originalResult,
+            iterations: undefined,
+            cd_iterations: undefined,
+            clamp_rate: undefined,
+            history: null,
+            scenario_value_stats: undefined,
+            scenario_value_histogram: undefined,
+            factor_tables: undefined,
+            frontier_error: undefined,
+          }
       const nextCached = {
         ...cached,
         selectedPointIndex: pointIndex,
         result: {
-          ...cached.result,
+          ...pointResult,
           total_objective: selectResult.total_objective,
           constraints: selectResult.constraints,
           baseline_objective: selectResult.baseline_objective,
           baseline_constraints: selectResult.baseline_constraints,
           lambdas: selectResult.lambdas,
           converged: selectResult.converged,
+          warning: selectResult.converged ? undefined : NON_CONVERGED_WARNING,
         },
       }
       cacheOptimiserPreview(nodeId, nextCached)

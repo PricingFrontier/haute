@@ -475,6 +475,12 @@ class JobStore:
             self._evict_stale()
             return any(job.get("status") == status for job in self._jobs.values())
 
+    def has_job_matching(self, predicate: Callable[[dict[str, Any]], bool]) -> bool:
+        """Return ``True`` if any live job matches *predicate* under the store lock."""
+        with self._write_lock:
+            self._evict_stale()
+            return any(predicate(job) for job in self._jobs.values())
+
     def clear_result_data(
         self,
         job_id: str,

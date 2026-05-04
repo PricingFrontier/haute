@@ -648,17 +648,19 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
         _sc: str = _step_col,
     ) -> _Frame:
         lf = dfs[0] if dfs else pl.LazyFrame()
-        data: dict[str, pl.Series] = {
-            _sc: pl.Series(range(_st), dtype=pl.Int32),
-        }
+        scenario_exprs = [pl.lit(list(range(_st))).alias(_sc)]
+        explode_cols = [_sc]
         if _cn:
             import numpy as np
 
             vals = np.linspace(_mn, _mx, _st)
             # Float32 to match Rust QuoteGrid schema (price-contour ingests f32)
-            data[_cn] = pl.Series(vals.tolist(), dtype=pl.Float32)
-        scenarios = pl.DataFrame(data).lazy()
-        return lf.join(scenarios, how="cross")
+            scenario_exprs.append(pl.lit(vals.astype("float32").tolist()).alias(_cn))
+            explode_cols.append(_cn)
+        cast_exprs = [pl.col(_sc).cast(pl.Int32)]
+        if _cn:
+            cast_exprs.append(pl.col(_cn).cast(pl.Float32))
+        return lf.with_columns(scenario_exprs).explode(explode_cols).with_columns(cast_exprs)
 
     if not code:
         return ctx.func_name, scenario_expand_fn, False

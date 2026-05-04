@@ -365,7 +365,7 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
     assert "quote_grid" not in job
 
 
-def test_apply_explicit_ratebook_frontier_point_fails_loudly(
+def test_apply_explicit_ratebook_frontier_point_requires_runtime_state(
     client,
     clean_job_store,
 ):
@@ -383,5 +383,5 @@ def test_apply_explicit_ratebook_frontier_point_fails_loudly(
     )
 
     assert resp.status_code == 400
-    assert "ratebook frontier point materialisation" in resp.json()["detail"].lower()
+    assert "ratebook runtime state is not available" in resp.json()["detail"].lower()
     solver.solve.assert_not_called()

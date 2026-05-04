@@ -57,6 +57,26 @@ _ARTIFACT_HANDLE_VERSION = 1
 _APPLY_ARTIFACT_ROOT_NAME = "haute/optimiser_apply"
 _APPLY_ARTIFACT_DIR_PREFIX = "apply_"
 _APPLY_RESULT_FILENAME = "result.parquet"
+_JOB_TYPE_KEY = "job_type"
+_SOLVE_JOB_TYPE = "solve"
+_ESTIMATE_JOB_TYPE = "estimate"
+_FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
+_NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
+_NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
+    {
+        _ESTIMATE_JOB_TYPE,
+        _FRONTIER_AUTO_RANGE_JOB_TYPE,
+    }
+)
+
+
+def _chunk_size_from_config(config: dict[str, Any]) -> int:
+    raw_chunk_size = config.get("chunk_size", _DEFAULT_CHUNK_SIZE)
+    if isinstance(raw_chunk_size, bool) or not isinstance(raw_chunk_size, int):
+        raise ValueError("chunk_size must be a positive integer.")
+    if raw_chunk_size <= 0:
+        raise ValueError("chunk_size must be a positive integer.")
+    return raw_chunk_size
 
 
 def _apply_artifact_root() -> Path:
@@ -326,7 +346,8 @@ def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple
     if "frontier_min" not in config or "frontier_max" not in config:
         raise ValueError(
             "frontier_ranges must provide min and max for each constraint. "
-            "Legacy frontier_min/frontier_max values are only used when both are explicitly configured."
+            "Legacy frontier_min/frontier_max values are only used when both are "
+            "explicitly configured."
         )
 
     frontier_min = float(config["frontier_min"])
@@ -724,6 +745,7 @@ class OptimiserSolveService:
             job_id = self._store.create_job(
                 {
                     "status": "running",
+                    _JOB_TYPE_KEY: _SOLVE_JOB_TYPE,
                     "progress": 0.0,
                     "message": "Starting",
                     "config": dict(config),
@@ -775,6 +797,7 @@ class OptimiserSolveService:
         job_id = self._store.create_job(
             {
                 "status": "running",
+                _JOB_TYPE_KEY: _FRONTIER_AUTO_RANGE_JOB_TYPE,
                 "progress": 0.0,
                 "message": "Estimating frontier range",
                 "config": dict(config),
@@ -880,9 +903,19 @@ class OptimiserSolveService:
 
         return str(mode)
 
+    @staticmethod
+    def _is_blocking_solve_job(job: dict[str, Any]) -> bool:
+        """Return whether a job should reserve the real optimiser solve slot."""
+        if job.get("status") != "running":
+            return False
+        return job.get(_JOB_TYPE_KEY, _SOLVE_JOB_TYPE) not in _NON_BLOCKING_RUNNING_JOB_TYPES
+
+    def _has_running_solve_job(self) -> bool:
+        return self._store.has_job_matching(self._is_blocking_solve_job)
+
     def _check_no_concurrent_jobs(self) -> None:
-        """Reject if an optimisation job is already running."""
-        if self._store.has_job_with_status("running"):
+        """Reject if an optimisation solve job is already running."""
+        if self._has_running_solve_job():
             raise HTTPException(
                 status_code=409,
                 detail="An optimisation job is already running. Please wait for it to finish.",
@@ -1029,6 +1062,19 @@ class OptimiserSolveService:
             self._store.atomic_update(job_id, {"status": "error", "message": detail})
             raise HTTPException(status_code=400, detail=detail)
 
+        null_count = int(
+            source_lf.select(pl.col(qid_col).null_count().alias("n"))
+            .collect(engine="streaming")
+            .item()
+        )
+        if null_count > 0:
+            detail = (
+                f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
+                "Every row must have a non-null quote_id; check upstream filters and joins."
+            )
+            self._store.atomic_update(job_id, {"status": "error", "message": detail})
+            raise HTTPException(status_code=400, detail=detail)
+
         solver_cols = [qid_col, step_col, mult_col, objective] + [
             c for c in constraint_cols if c in available_cols
         ]
@@ -1046,7 +1092,6 @@ class OptimiserSolveService:
         scored_lf = (
             source_lf.select(solver_cols)
             .with_columns(cast_exprs)
-            .filter(pl.col(qid_col).is_not_null())
         )
         return constraint_cols, scored_lf
 
@@ -1073,13 +1118,18 @@ class OptimiserSolveService:
         job_id: str,
     ) -> QuoteGrid:
         """Sink scored data to parquet and build the QuoteGrid."""
-        from price_contour import build_grid_from_parquet, build_grid_from_parquet_chunked
+        from price_contour import build_grid_from_parquet_chunked
 
         objective = config["objective"]
         qid_col = config.get("quote_id", "quote_id")
         mult_col = config.get("scenario_value", "scenario_value")
         step_col = config.get("scenario_index", "scenario_index")
-        raw_chunk_size = config.get("chunk_size")
+        try:
+            chunk_size = _chunk_size_from_config(config)
+        except ValueError as exc:
+            detail = f"Grid construction failed: {exc}"
+            self._store.atomic_update(job_id, {"status": "error", "message": detail})
+            raise HTTPException(status_code=400, detail=detail) from exc
 
         from haute._polars_utils import safe_sink
 
@@ -1095,19 +1145,12 @@ class OptimiserSolveService:
                 "scenario_value": mult_col,
                 "objective": objective,
             }
-            if raw_chunk_size is None:
-                quote_grid = build_grid_from_parquet(
-                    tmp_path,
-                    constraint_cols,
-                    **build_kwargs,
-                )
-            else:
-                quote_grid = build_grid_from_parquet_chunked(
-                    tmp_path,
-                    constraint_cols,
-                    int(raw_chunk_size),
-                    **build_kwargs,
-                )
+            quote_grid = build_grid_from_parquet_chunked(
+                tmp_path,
+                constraint_cols,
+                chunk_size,
+                **build_kwargs,
+            )
         except HTTPException:
             raise
         except Exception as exc:

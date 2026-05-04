@@ -15,6 +15,8 @@ import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { SolveResult } from "../../panels/OptimiserPreview.tsx"
 import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
 
+const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 function resetStore() {
@@ -746,30 +748,42 @@ describe("useNodeResultsStore", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("Frontier actions", () => {
-    it("completeSolveJob extracts frontier from result", () => {
+    it("completeSolveJob selects and displays the first frontier point immediately", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Node 1", { vol: { min: 0.9 } }, "h1")
 
       const frontier = {
         status: "ok",
-        points: [{ total_objective: 100, total_vol: 0.95, lambda_vol: 0.01 }],
-        n_points: 1,
-        points_returned: 1,
+        points: [
+          { total_objective: 123, total_vol: 0.95, lambda_vol: 0.01, converged: true },
+          { total_objective: 135, total_vol: 1.05, lambda_vol: 0.03, converged: true },
+        ],
+        n_points: 2,
+        points_returned: 2,
         constraint_names: ["vol"],
         points_limit: 2000,
         points_truncated: false,
       }
-      const result = makeSolveResult({ frontier })
+      const result = makeSolveResult({
+        total_objective: 100,
+        constraints: { vol: 0.9 },
+        lambdas: { vol: 0 },
+        frontier,
+      })
       s.completeSolveJob("n1", result)
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached).toBeDefined()
       expect(cached.frontier).not.toBeNull()
-      expect(cached.frontier!.points).toHaveLength(1)
-      expect(cached.frontier!.n_points).toBe(1)
-      expect(cached.frontier!.points_returned).toBe(1)
+      expect(cached.frontier!.points).toHaveLength(2)
+      expect(cached.frontier!.n_points).toBe(2)
+      expect(cached.frontier!.points_returned).toBe(2)
       expect(cached.frontier!.constraint_names).toEqual(["vol"])
-      expect(cached.selectedPointIndex).toBeNull()
+      expect(cached.selectedPointIndex).toBe(0)
+      expect(cached.result.total_objective).toBe(123)
+      expect(cached.result.constraints).toEqual({ vol: 0.95 })
+      expect(cached.result.lambdas).toEqual({ vol: 0.01 })
+      expect(cached.originalResult.total_objective).toBe(100)
     })
 
     it("completeSolveJob sets null frontier when points empty", () => {
@@ -854,6 +868,27 @@ describe("useNodeResultsStore", () => {
         constraints: { premium: 50, loss: 20 },
         baseline_constraints: { premium: 45, loss: 18 },
         lambdas: { premium: 0.1, loss: 0.2 },
+        iterations: 42,
+        cd_iterations: 12,
+        clamp_rate: 0.03,
+        history: [
+          { iteration: 1, total_objective: 100, max_lambda_change: 0.1, all_constraints_satisfied: false },
+        ],
+        scenario_value_stats: {
+          mean: 1.01,
+          std: 0.02,
+          min: 0.9,
+          max: 1.1,
+          p5: 0.94,
+          p25: 0.98,
+          p50: 1,
+          p75: 1.04,
+          p95: 1.08,
+          pct_increase: 0.55,
+          pct_decrease: 0.45,
+        },
+        scenario_value_histogram: { counts: [1, 2, 3], edges: [0.9, 1, 1.1, 1.2] },
+        factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05 }] },
         frontier,
       }))
 
@@ -866,6 +901,172 @@ describe("useNodeResultsStore", () => {
       expect(cached.result.lambdas).toEqual({ premium: 0.25, loss: 0.4 })
       expect(cached.result.baseline_objective).toBe(80)
       expect(cached.result.baseline_constraints).toEqual({ premium: 45, loss: 18 })
+      expect(cached.result.iterations).toBeUndefined()
+      expect(cached.result.cd_iterations).toBeUndefined()
+      expect(cached.result.clamp_rate).toBeUndefined()
+      expect(cached.result.history).toBeNull()
+      expect(cached.result.scenario_value_stats).toBeUndefined()
+      expect(cached.result.scenario_value_histogram).toBeUndefined()
+      expect(cached.result.factor_tables).toBeUndefined()
+    })
+
+    it("selectFrontierPoint uses point diagnostics when the frontier row provides them", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const pointStats = {
+        mean: 1.08,
+        std: 0.03,
+        min: 0.95,
+        max: 1.2,
+        p5: 0.99,
+        p25: 1.03,
+        p50: 1.07,
+        p75: 1.12,
+        p95: 1.18,
+        pct_increase: 0.8,
+        pct_decrease: 0.2,
+      }
+      const pointHistory = [
+        {
+          iteration: 1,
+          total_objective: 140,
+          max_lambda_change: 0.2,
+          all_constraints_satisfied: false,
+          lambdas: { premium: 0.2 },
+          total_constraints: { premium: 65 },
+        },
+        {
+          iteration: 2,
+          total_objective: 150,
+          max_lambda_change: 0.01,
+          all_constraints_satisfied: true,
+          lambdas: { premium: 0.25 },
+          total_constraints: { premium: 70 },
+        },
+      ]
+      const pointFactorTables = {
+        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08 }],
+      }
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 150,
+            total_premium: 70,
+            lambda_premium: 0.25,
+            converged: true,
+            iterations: 19,
+            cd_iterations: 4,
+            clamp_rate: 0.01,
+            history: pointHistory,
+            scenario_value_stats: pointStats,
+            scenario_value_histogram: { counts: [4, 5], edges: [0.95, 1.05, 1.2] },
+            factor_tables: pointFactorTables,
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({
+        iterations: 42,
+        history: [
+          { iteration: 1, total_objective: 100, max_lambda_change: 0.1, all_constraints_satisfied: false },
+        ],
+        frontier,
+      }))
+
+      s.selectFrontierPoint("n1", 0)
+
+      const selected = useNodeResultsStore.getState().solveResults["n1"].result
+      expect(selected.iterations).toBe(19)
+      expect(selected.cd_iterations).toBe(4)
+      expect(selected.clamp_rate).toBe(0.01)
+      expect(selected.history).toEqual(pointHistory)
+      expect(selected.scenario_value_stats).toEqual(pointStats)
+      expect(selected.scenario_value_histogram).toEqual({ counts: [4, 5], edges: [0.95, 1.05, 1.2] })
+      expect(selected.factor_tables).toEqual(pointFactorTables)
+    })
+
+    it("selectFrontierPoint preserves flat scenario stats from price-contour frontier rows", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 150,
+            total_premium: 70,
+            lambda_premium: 0.25,
+            converged: true,
+            sv_mean: 1.08,
+            sv_std: 0.03,
+            sv_min: 0.95,
+            sv_max: 1.2,
+            sv_p5: 0.99,
+            sv_p25: 1.03,
+            sv_median: 1.07,
+            sv_p75: 1.12,
+            sv_p95: 1.18,
+            sv_pct_increase: 0.8,
+            sv_pct_decrease: 0.2,
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({ frontier }))
+
+      s.selectFrontierPoint("n1", 0)
+
+      expect(useNodeResultsStore.getState().solveResults.n1.result.scenario_value_stats).toEqual({
+        mean: 1.08,
+        std: 0.03,
+        min: 0.95,
+        max: 1.2,
+        p5: 0.99,
+        p25: 1.03,
+        p50: 1.07,
+        p75: 1.12,
+        p95: 1.18,
+        pct_increase: 0.8,
+        pct_decrease: 0.2,
+      })
+    })
+
+    it("selectFrontierPoint uses a point-specific warning for non-converged frontier rows", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 150,
+            total_premium: 70,
+            lambda_premium: 0.25,
+            converged: false,
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({
+        converged: true,
+        warning: "base warning should not leak",
+        frontier,
+      }))
+
+      s.selectFrontierPoint("n1", 0)
+
+      expect(useNodeResultsStore.getState().solveResults.n1.result.warning).toBe(NON_CONVERGED_WARNING)
     })
 
     it("selectFrontierPoint accepts raw constraint columns from price-contour frontier rows", () => {
@@ -1003,15 +1204,100 @@ describe("useNodeResultsStore", () => {
       expect(cached.result.converged).toBe(false)
     })
 
-    it("updateFrontierAfterSelect preserves other result fields", () => {
+    it("updateFrontierAfterSelect uses the backend non-convergence warning for select responses", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.completeSolveJob("n1", makeSolveResult({
+        converged: false,
+        warning: "Stale original warning",
+      }))
+
+      s.updateFrontierAfterSelect("n1", 2, {
+        status: "ok",
+        total_objective: 250,
+        constraints: { premium: 70 },
+        baseline_objective: 90,
+        baseline_constraints: { premium: 48 },
+        lambdas: { premium: 0.3 },
+        converged: false,
+        error: null,
+      })
+
+      expect(useNodeResultsStore.getState().solveResults.n1.result.warning).toBe(NON_CONVERGED_WARNING)
+    })
+
+    it("updateFrontierAfterSelect keeps diagnostics from the selected frontier row", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 240,
+            total_premium: 68,
+            lambda_premium: 0.28,
+            converged: true,
+            iterations: 17,
+            history: [
+              { iteration: 1, total_objective: 240, max_lambda_change: 0.02, all_constraints_satisfied: true },
+            ],
+            scenario_value_histogram: { counts: [2, 3], edges: [0.95, 1.05, 1.15] },
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({ frontier }))
+
+      s.updateFrontierAfterSelect("n1", 0, {
+        status: "ok",
+        total_objective: 250,
+        constraints: { premium: 70 },
+        baseline_objective: 90,
+        baseline_constraints: { premium: 48 },
+        lambdas: { premium: 0.3 },
+        converged: true,
+        error: null,
+      })
+
+      const selected = useNodeResultsStore.getState().solveResults["n1"].result
+      expect(selected.total_objective).toBe(250)
+      expect(selected.iterations).toBe(17)
+      expect(selected.history).toEqual([
+        { iteration: 1, total_objective: 240, max_lambda_change: 0.02, all_constraints_satisfied: true },
+      ])
+      expect(selected.scenario_value_histogram).toEqual({ counts: [2, 3], edges: [0.95, 1.05, 1.15] })
+    })
+
+    it("updateFrontierAfterSelect clears point diagnostics that are not in the selected point", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
       const original = makeSolveResult({
         iterations: 42,
+        cd_iterations: 9,
+        clamp_rate: 0.02,
         n_quotes: 5000,
         history: [
           { iteration: 1, total_objective: 100, max_lambda_change: 0.1, all_constraints_satisfied: false },
         ],
+        scenario_value_stats: {
+          mean: 1,
+          std: 0.02,
+          min: 0.9,
+          max: 1.1,
+          p5: 0.94,
+          p25: 0.98,
+          p50: 1,
+          p75: 1.04,
+          p95: 1.08,
+          pct_increase: 0.55,
+          pct_decrease: 0.45,
+        },
+        scenario_value_histogram: { counts: [1, 2], edges: [0.9, 1, 1.1] },
+        factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05 }] },
       })
       s.completeSolveJob("n1", original)
 
@@ -1027,12 +1313,15 @@ describe("useNodeResultsStore", () => {
       })
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
-      // These fields should be updated
       expect(cached.result.total_objective).toBe(999)
-      // These fields should be preserved from the original
-      expect(cached.result.iterations).toBe(42)
       expect(cached.result.n_quotes).toBe(5000)
-      expect(cached.result.history).toHaveLength(1)
+      expect(cached.result.iterations).toBeUndefined()
+      expect(cached.result.cd_iterations).toBeUndefined()
+      expect(cached.result.clamp_rate).toBeUndefined()
+      expect(cached.result.history).toBeNull()
+      expect(cached.result.scenario_value_stats).toBeUndefined()
+      expect(cached.result.scenario_value_histogram).toBeUndefined()
+      expect(cached.result.factor_tables).toBeUndefined()
     })
 
     // ────────────────────────────────────────────────────────────
