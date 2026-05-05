@@ -448,12 +448,21 @@ export interface OptimiserStatusResponse {
 
 export interface FrontierSelectResponse {
   status: string
+  point_index?: number | null
   total_objective: number
   constraints: Record<string, number>
   baseline_objective: number
   baseline_constraints: Record<string, number>
   lambdas: Record<string, number>
   converged: boolean
+  iterations?: number | null
+  cd_iterations?: number | null
+  factor_tables?: Record<string, Record<string, unknown>[]>
+  history?: OptimiserHistoryEntry[] | null
+  warning?: string | null
+  scenario_value_stats?: OptimiserScenarioValueStats
+  scenario_value_histogram?: OptimiserScenarioValueHistogram
+  clamp_rate?: number | null
   error: string | null
 }
 

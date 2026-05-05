@@ -570,6 +570,7 @@ def _execute_lazy(
     source: str = "live",
     checkpoint_dir: Path | None = None,
     enforce_contracts: bool = False,
+    preserve_node_ids: set[str] | frozenset[str] | None = None,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -589,6 +590,10 @@ def _execute_lazy(
             references.  This breaks both chained-join memory
             accumulation and plan duplication across branches
             (GitHub pola-rs/polars#24206).
+        preserve_node_ids: Non-source intermediate outputs that must remain
+            available to the caller after their final downstream consumer has
+            executed. Optimiser ratebook solves use this for the selected
+            banding source side input.
         enforce_contracts: When ``True`` (see ``executor.ENFORCE_CONTRACTS``
             for the default), assert declared column contracts at each
             node boundary via ``.collect_schema()``.  Polars computes
@@ -601,6 +606,7 @@ def _execute_lazy(
         (lazy_outputs, order, parents_of, id_to_name)
     """
     graph = _resolve_graph_paths(graph)
+    preserved_outputs = frozenset(preserve_node_ids or ())
     node_map, order, parents_of, id_to_name = _prepare_graph(
         graph,
         target_node_id,
@@ -785,7 +791,12 @@ def _execute_lazy(
             for pid in parents_of.get(nid, []):
                 remaining[pid] -= 1
                 _, pid_is_source = funcs.get(pid, (None, False))
-                if remaining[pid] <= 0 and pid in lazy_outputs and not pid_is_source:
+                if (
+                    remaining[pid] <= 0
+                    and pid in lazy_outputs
+                    and not pid_is_source
+                    and pid not in preserved_outputs
+                ):
                     del lazy_outputs[pid]
 
             checkpoints_since_gc += 1

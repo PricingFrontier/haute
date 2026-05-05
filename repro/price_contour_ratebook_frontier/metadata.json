@@ -1,0 +1,61 @@
+{
+  "source": "Generated from C:/Users/prici/haute/rating/main.py online_optimiser",
+  "generated_at": "2026-05-04 17:17:44",
+  "elapsed_seconds_to_generate": 4.59,
+  "price_contour_version_in_haute_env": "0.3.3",
+  "scored_parquet": "data/scored_optimiser_input.parquet",
+  "factors_parquet": "data/ratebook_factors_by_quote.parquet",
+  "scored_stats": {
+    "rows": 2100000,
+    "quote_count": 100000,
+    "scenario_count": 21,
+    "objective_min": -6095.15576171875,
+    "objective_max": 224.9648895263672,
+    "conversion_min": 0.0005264091887511313,
+    "conversion_max": 0.9991123080253601
+  },
+  "factor_null_counts": {
+    "channel_band": 0,
+    "proposer_age_band": 0,
+    "vehicle_age_band": 0
+  },
+  "config": {
+    "mode": "ratebook",
+    "objective": "expected_margin",
+    "constraints": {
+      "conversion_prediction": {
+        "min": 0
+      }
+    },
+    "quote_id": "quote_id",
+    "scenario_index": "scenario_index",
+    "scenario_value": "premium_multiplier",
+    "constraint_cols": [
+      "conversion_prediction"
+    ],
+    "factor_columns": [
+      [
+        "channel_band"
+      ],
+      [
+        "proposer_age_band"
+      ],
+      [
+        "vehicle_age_band"
+      ]
+    ],
+    "chunk_size": 500000,
+    "max_iter": 50,
+    "tolerance": 1e-06,
+    "max_cd_iterations": 10,
+    "cd_tolerance": 0.001,
+    "frontier_enabled": true,
+    "frontier_steps": 15,
+    "frontier_ranges": {
+      "conversion_prediction": {
+        "min": 189.03746032714844,
+        "max": 99695.75
+      }
+    }
+  }
+}

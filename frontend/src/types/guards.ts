@@ -263,6 +263,21 @@ function optionalPlainObjectArray(
   return value === undefined ? defaultValue : parsePlainObjectArray(parser, value, `field \`${key}\``)
 }
 
+function optionalFactorTables(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+): OptimiserSolveResult["factor_tables"] {
+  const rawFactorTables = optionalNullableObject(parser, obj, key)
+  if (rawFactorTables === null) return undefined
+
+  const factorTables: NonNullable<OptimiserSolveResult["factor_tables"]> = {}
+  for (const [factorName, rows] of Object.entries(rawFactorTables)) {
+    factorTables[factorName] = parsePlainObjectArray(parser, rows, `field \`${key}.${factorName}\``)
+  }
+  return factorTables
+}
+
 function parseNumberRecord(
   parser: string,
   value: unknown,
@@ -992,15 +1007,7 @@ function parseOptimiserSolveResult(value: unknown, field: string): OptimiserSolv
   const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
   const stats = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_stats")
   const histogram = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_histogram")
-  const rawFactorTables = optionalNullableObject("parseOptimiserStatusResponse", obj, "factor_tables")
-
-  let factorTables: OptimiserSolveResult["factor_tables"] = undefined
-  if (rawFactorTables !== null) {
-    factorTables = {}
-    for (const [key, item] of Object.entries(rawFactorTables)) {
-      factorTables[key] = parsePlainObjectArray("parseOptimiserStatusResponse", item, `field \`factor_tables.${key}\``)
-    }
-  }
+  const factorTables = optionalFactorTables("parseOptimiserStatusResponse", obj, "factor_tables")
 
   return {
     mode: obj.mode === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "mode"),
@@ -1062,14 +1069,44 @@ export function parseApplyOptimiserResponse(value: unknown): ApplyOptimiserRespo
 
 export function parseFrontierSelectResponse(value: unknown): FrontierSelectResponse {
   const obj = expectPlainObject("parseFrontierSelectResponse", value)
+  const stats = optionalNullableObject("parseFrontierSelectResponse", obj, "scenario_value_stats")
+  const histogram = optionalNullableObject("parseFrontierSelectResponse", obj, "scenario_value_histogram")
   return {
     status: expectString("parseFrontierSelectResponse", obj.status, "field `status`"),
+    point_index: obj.point_index === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "point_index"),
     total_objective: optionalNumber("parseFrontierSelectResponse", obj, "total_objective"),
     constraints: optionalNumberRecord("parseFrontierSelectResponse", obj, "constraints"),
     baseline_objective: optionalNumber("parseFrontierSelectResponse", obj, "baseline_objective"),
     baseline_constraints: optionalNumberRecord("parseFrontierSelectResponse", obj, "baseline_constraints"),
     lambdas: optionalNumberRecord("parseFrontierSelectResponse", obj, "lambdas"),
     converged: optionalBoolean("parseFrontierSelectResponse", obj, "converged", true),
+    iterations: obj.iterations === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "iterations"),
+    cd_iterations: obj.cd_iterations === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "cd_iterations"),
+    factor_tables: optionalFactorTables("parseFrontierSelectResponse", obj, "factor_tables"),
+    history: obj.history === undefined || obj.history === null ? null : parseArray("parseFrontierSelectResponse", obj.history, "field `history`", parseOptimiserHistoryEntry),
+    warning: obj.warning === undefined ? undefined : optionalNullableString("parseFrontierSelectResponse", obj, "warning"),
+    scenario_value_stats: stats === null
+      ? undefined
+      : {
+          mean: expectNumber("parseFrontierSelectResponse", stats.mean, "field `scenario_value_stats.mean`"),
+          std: expectNumber("parseFrontierSelectResponse", stats.std, "field `scenario_value_stats.std`"),
+          min: expectNumber("parseFrontierSelectResponse", stats.min, "field `scenario_value_stats.min`"),
+          max: expectNumber("parseFrontierSelectResponse", stats.max, "field `scenario_value_stats.max`"),
+          p5: expectNumber("parseFrontierSelectResponse", stats.p5, "field `scenario_value_stats.p5`"),
+          p25: expectNumber("parseFrontierSelectResponse", stats.p25, "field `scenario_value_stats.p25`"),
+          p50: expectNumber("parseFrontierSelectResponse", stats.p50, "field `scenario_value_stats.p50`"),
+          p75: expectNumber("parseFrontierSelectResponse", stats.p75, "field `scenario_value_stats.p75`"),
+          p95: expectNumber("parseFrontierSelectResponse", stats.p95, "field `scenario_value_stats.p95`"),
+          pct_increase: expectNumber("parseFrontierSelectResponse", stats.pct_increase, "field `scenario_value_stats.pct_increase`"),
+          pct_decrease: expectNumber("parseFrontierSelectResponse", stats.pct_decrease, "field `scenario_value_stats.pct_decrease`"),
+        },
+    scenario_value_histogram: histogram === null
+      ? undefined
+      : {
+          counts: histogram.counts === undefined ? [] : parseArray("parseFrontierSelectResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
+          edges: histogram.edges === undefined ? [] : parseArray("parseFrontierSelectResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
+        },
+    clamp_rate: obj.clamp_rate === undefined ? undefined : obj.clamp_rate === null ? null : expectNumber("parseFrontierSelectResponse", obj.clamp_rate, "field `clamp_rate`"),
     error: optionalNullableString("parseFrontierSelectResponse", obj, "error"),
   }
 }

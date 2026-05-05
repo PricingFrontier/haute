@@ -593,7 +593,7 @@ export function estimateOptimiserFrontierAutoRange(
 }
 
 export function selectFrontierPoint(
-  payload: { job_id: string; point_index: number },
+  payload: { job_id: string; point_index: number; include_ratebook_tables?: boolean },
   options?: { signal?: AbortSignal },
 ): Promise<FrontierSelectResponse> {
   return post<unknown>("/api/optimiser/frontier/select", payload, options).then(parseFrontierSelectResponse)

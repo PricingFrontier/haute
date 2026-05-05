@@ -2,19 +2,20 @@
  * Bottom-panel visualisations for the optimiser node.
  *
  * Renders in the same slot as DataPreview when an optimiser solve has
- * completed.  Three tabs: Frontier (default when data exists), Summary,
- * Convergence.
+ * completed.  Shows Frontier (default when data exists), Summary,
+ * Rates (ratebook mode), Convergence, and Export tabs as available.
  *
  * The Frontier tab shows an interactive scatter chart (left) and a
  * detail card (right) with metrics and Save/Log actions.
  */
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
-import { AlertCircle, ChevronDown, ChevronUp, Loader2, Target, Save, Table2, Upload } from "lucide-react"
+import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Loader2, Target, Save, Table2, Upload } from "lucide-react"
 import {
   applyOptimiser,
   saveOptimiser,
   logOptimiserToMlflow,
+  selectFrontierPoint as selectFrontierPointApi,
 } from "../api/client"
 import { formatNumber } from "../utils/formatValue"
 import { useDragResize } from "../hooks/useDragResize"
@@ -26,6 +27,8 @@ import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
 import DetailCard from "./optimiser/DetailCard"
+import RatebookRatesTab from "./optimiser/RatebookRatesTab"
+import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 
 // ─── Types (shared with OptimiserConfig) ─────────────────────────
 
@@ -88,14 +91,79 @@ interface OptimiserPreviewProps {
   nodeId: string
 }
 
-type TabKey = "frontier" | "summary" | "convergence" | "export"
+type TabKey = "frontier" | "summary" | "rates" | "convergence" | "export"
 type ResultDetailState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "loaded"; data: ApplyOptimiserResponse }
   | { status: "error"; error: string }
+type RatesDetailState =
+  | { status: "idle" }
+  | { status: "loading"; key: string }
+  | { status: "error"; key: string; error: string }
 
 const EMPTY_FRONTIER_POINTS: Record<string, unknown>[] = []
+
+function errorDetail(error: unknown): string {
+  if (error && typeof error === "object" && "detail" in error) {
+    const detail = (error as { detail?: unknown }).detail
+    if (typeof detail === "string" && detail.trim()) return detail
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+function HeaderPointStepper({
+  pointCount,
+  selectedIdx,
+  onStepPoint,
+}: {
+  pointCount: number
+  selectedIdx: number | null
+  onStepPoint: (delta: number) => void
+}) {
+  if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= pointCount) return null
+  const atStart = selectedIdx <= 0
+  const atEnd = selectedIdx >= pointCount - 1
+
+  return (
+    <div
+      className="flex items-center gap-1 rounded px-1.5 py-0.5"
+      style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+    >
+      <button
+        type="button"
+        onClick={() => onStepPoint(-1)}
+        disabled={atStart}
+        aria-label="Previous frontier point"
+        title="Previous frontier point"
+        className="w-5 h-5 inline-flex items-center justify-center rounded transition-colors"
+        style={{
+          color: atStart ? "var(--text-muted)" : "var(--text-secondary)",
+          opacity: atStart ? 0.4 : 1,
+        }}
+      >
+        <ChevronLeft size={13} />
+      </button>
+      <span className="text-[10px] font-medium tabular-nums" style={{ color: "var(--text-secondary)" }}>
+        Point {selectedIdx + 1} of {pointCount}
+      </span>
+      <button
+        type="button"
+        onClick={() => onStepPoint(1)}
+        disabled={atEnd}
+        aria-label="Next frontier point"
+        title="Next frontier point"
+        className="w-5 h-5 inline-flex items-center justify-center rounded transition-colors"
+        style={{
+          color: atEnd ? "var(--text-muted)" : "var(--text-secondary)",
+          opacity: atEnd ? 0.4 : 1,
+        }}
+      >
+        <ChevronRight size={13} />
+      </button>
+    </div>
+  )
+}
 
 export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps) {
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
@@ -116,6 +184,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
   // Store actions
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
+  const storeUpdateAfterSelect = useNodeResultsStore((s) => s.updateFrontierAfterSelect)
 
   // MLflow availability
   const mlflowAvailable = useSettingsStore((s) => s.mlflow.status === "connected")
@@ -125,7 +194,10 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   const [logging, setLogging] = useState(false)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [resultDetail, setResultDetail] = useState<ResultDetailState>({ status: "idle" })
+  const [ratesDetail, setRatesDetail] = useState<RatesDetailState>({ status: "idle" })
   const resultDetailAbortRef = useRef<AbortController | null>(null)
+  const requestedRatesRef = useRef<Map<string, number>>(new Map())
+  const ratesRequestSeqRef = useRef(0)
   const terminalDetailBlocksActions = resultDetail.status === "loading" || resultDetail.status === "loaded"
 
   // ── Frontier point selection ──
@@ -143,6 +215,65 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
     setResultDetail({ status: "idle" })
   }, [abortResultDetailRequest, jobId])
   useEffect(() => abortResultDetailRequest, [abortResultDetailRequest])
+
+  const selectedRatebookRatesMissing = (
+    result.mode === "ratebook"
+    && frontier != null
+    && selectedIdx != null
+    && !hasFactorTables(result.factor_tables)
+  )
+  const shouldMaterialiseSelectedRates = (
+    selectedRatebookRatesMissing
+    && (tab === "rates" || tab === "summary")
+  )
+  useEffect(() => {
+    if (!shouldMaterialiseSelectedRates || selectedIdx == null) return
+    const key = `${jobId}:${selectedIdx}`
+    const requestedRates = requestedRatesRef.current
+    if (requestedRates.has(key)) return
+    const requestId = ratesRequestSeqRef.current + 1
+    ratesRequestSeqRef.current = requestId
+    requestedRates.set(key, requestId)
+
+    const controller = new AbortController()
+    setRatesDetail({ status: "loading", key })
+    selectFrontierPointApi(
+      {
+        job_id: jobId,
+        point_index: selectedIdx,
+        include_ratebook_tables: true,
+      },
+      { signal: controller.signal },
+    )
+      .then((res) => {
+        if (requestedRates.get(key) !== requestId) return
+        requestedRates.delete(key)
+        storeUpdateAfterSelect(nodeId, selectedIdx, res)
+        setRatesDetail((current) => {
+          if (current.status !== "loading" || current.key !== key) return current
+          return hasFactorTables(res.factor_tables)
+            ? { status: "idle" }
+            : {
+                status: "error",
+                key,
+                error: "No rate tables were returned for this selected point.",
+              }
+        })
+      })
+      .catch((e) => {
+        if (requestedRates.get(key) !== requestId) return
+        requestedRates.delete(key)
+        if (controller.signal.aborted) return
+        setRatesDetail({ status: "error", key, error: errorDetail(e) })
+      })
+
+    return () => {
+      if (requestedRates.get(key) === requestId) {
+        requestedRates.delete(key)
+      }
+      controller.abort()
+    }
+  }, [shouldMaterialiseSelectedRates, selectedIdx, jobId, nodeId, storeUpdateAfterSelect])
 
   const handlePointClick = useCallback(
     (index: number) => {
@@ -247,13 +378,22 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
   // ── Tabs available ──
   const hasFrontier = frontier && frontier.points.length > 0
+  const ratebookFactorTables = result.mode === "ratebook" && hasFactorTables(result.factor_tables)
+    ? result.factor_tables
+    : null
+  const hasRates = ratebookFactorTables != null
+  const canMaterialiseSelectedRates = result.mode === "ratebook" && frontier != null && selectedIdx != null
+  const headerPointCount = frontier?.points.length ?? 0
   const availableTabs: TabKey[] = hasFrontier ? ["frontier", "summary"] : ["summary"]
+  if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
   if (result.history && result.history.length > 0) availableTabs.push("convergence")
   availableTabs.push("export")
+  const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]
 
   const TAB_LABELS: Record<TabKey, string> = {
     frontier: "Frontier",
     summary: "Summary",
+    rates: "Rates",
     convergence: "Convergence",
     export: "Export",
   }
@@ -271,6 +411,11 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
       <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
         <Target size={14} style={{ color: "var(--warning-strong)" }} />
         <span className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{displayData.nodeLabel}</span>
+        <HeaderPointStepper
+          pointCount={headerPointCount}
+          selectedIdx={selectedIdx}
+          onStepPoint={handleStepPoint}
+        />
         <span className="text-[11px]" style={{ color: result.converged ? "var(--success)" : "var(--warning-strong)" }}>
           {result.converged ? "Converged" : "Not converged"}
           {result.mode === "ratebook"
@@ -287,8 +432,8 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
               onClick={() => setTab(t)}
               className="px-2 py-0.5 rounded text-[10px] font-medium"
               style={{
-                background: tab === t ? "var(--accent-soft)" : "var(--chrome-hover)",
-                color: tab === t ? "var(--accent)" : "var(--text-muted)",
+                background: activeTab === t ? "var(--accent-soft)" : "var(--chrome-hover)",
+                color: activeTab === t ? "var(--accent)" : "var(--text-muted)",
               }}
             >
               {TAB_LABELS[t]}
@@ -320,7 +465,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
       {/* Content */}
       <div className="flex-1 overflow-auto px-4 py-3">
         {/* ── Frontier Tab ── */}
-        {tab === "frontier" && (
+        {activeTab === "frontier" && (
           <FrontierTab
             frontier={frontier}
             result={result}
@@ -330,7 +475,6 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
             xConstraintIdx={xConstraintIdx}
             onXConstraintChange={setXConstraintIdx}
             onPointClick={handlePointClick}
-            onStepPoint={handleStepPoint}
             onSave={handleSave}
             onLogMlflow={handleLogMlflow}
             saving={saving}
@@ -342,17 +486,30 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
         )}
 
         {/* ── Summary Tab ── */}
-        {tab === "summary" && (
-          <SummaryTab result={result} constraints={constraints} />
+        {activeTab === "summary" && (
+          <SummaryTab
+            result={result}
+            constraints={constraints}
+            canMaterialiseRatebookRates={selectedRatebookRatesMissing}
+            ratebookRatesDetail={ratesDetail}
+          />
+        )}
+
+        {activeTab === "rates" && (
+          ratebookFactorTables ? (
+            <RatebookRatesTab factorTables={ratebookFactorTables} />
+          ) : (
+            <RatebookRatesPending detail={ratesDetail} />
+          )
         )}
 
         {/* ── Convergence Tab ── */}
-        {tab === "convergence" && result.history && result.history.length > 0 && (
+        {activeTab === "convergence" && result.history && result.history.length > 0 && (
           <ConvergenceChart result={result} />
         )}
 
         {/* ── Export Tab ── */}
-        {tab === "export" && (
+        {activeTab === "export" && (
           <ExportTab
             result={result}
             onSave={handleSave}
@@ -382,7 +539,6 @@ interface FrontierTabProps {
   xConstraintIdx: number
   onXConstraintChange: (idx: number) => void
   onPointClick: (index: number) => void
-  onStepPoint: (delta: number) => void
   onSave: () => void
   onLogMlflow: () => void
   saving: boolean
@@ -416,7 +572,6 @@ function FrontierTab({
   xConstraintIdx,
   onXConstraintChange,
   onPointClick,
-  onStepPoint,
   onSave,
   onLogMlflow,
   saving,
@@ -522,7 +677,6 @@ function FrontierTab({
             selectedIdx={selectedIdx}
             constraints={constraints}
             constraintNames={constraintNames}
-            onStepPoint={onStepPoint}
             onSave={onSave}
             onLogMlflow={onLogMlflow}
             saving={saving}
@@ -538,6 +692,27 @@ function FrontierTab({
 }
 
 // ─── Export Tab ──────────────────────────────────────────────────
+
+function RatebookRatesPending({ detail }: { detail: RatesDetailState }) {
+  if (detail.status === "error") {
+    return (
+      <div
+        className="flex items-start gap-2 text-xs px-3 py-2 rounded"
+        style={{ background: "var(--danger-soft)", color: "var(--danger)" }}
+      >
+        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+        <span>Rate table load failed: {detail.error}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
+      <Loader2 size={14} className="animate-spin" />
+      Materialising selected point rates...
+    </div>
+  )
+}
 
 function ExportTab({
   result,

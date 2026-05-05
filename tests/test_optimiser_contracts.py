@@ -231,6 +231,116 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
     _assert_quote_scenario_blocks(projected, expected_steps=5)
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
+def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoint(
+    client,
+    tmp_path,
+    clean_job_store,
+) -> None:
+    """Ratebook side inputs must survive optimiser target checkpoint cleanup."""
+    scored_path = tmp_path / "scored.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q1", "q2", "q2"],
+            "scenario_index": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
+            "scenario_value": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
+            "expected_income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
+            "volume": pl.Series([1.0, 0.9, 1.1, 1.0], dtype=pl.Float32),
+        }
+    ).write_parquet(scored_path)
+    banding_path = tmp_path / "banding.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q2"],
+            "region": ["North", "South"],
+        }
+    ).write_parquet(banding_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "scored",
+                    "data": {
+                        "label": "scored",
+                        "nodeType": "dataSource",
+                        "config": {"path": str(scored_path)},
+                    },
+                },
+                {
+                    "id": "banding_source",
+                    "data": {
+                        "label": "banding source",
+                        "nodeType": "dataSource",
+                        "config": {"path": str(banding_path)},
+                    },
+                },
+                {
+                    "id": "banding_transform",
+                    "data": {
+                        "label": "banding transform",
+                        "nodeType": "polars",
+                        "config": {"code": ""},
+                    },
+                },
+                {
+                    "id": "opt",
+                    "data": {
+                        "label": "optimiser",
+                        "nodeType": "optimiser",
+                        "config": {
+                            "mode": "ratebook",
+                            "objective": "expected_income",
+                            "constraints": {"volume": {"min": 1.0}},
+                            "quote_id": "quote_id",
+                            "scenario_index": "scenario_index",
+                            "scenario_value": "scenario_value",
+                            "data_input": "scored",
+                            "banding_source": "banding_transform",
+                            "factor_columns": [["region"]],
+                            "chunk_size": 4,
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("scored", "opt").model_dump(),
+                make_edge("banding_source", "banding_transform").model_dump(),
+                make_edge("banding_transform", "opt").model_dump(),
+            ],
+        }
+    ).model_dump()
+    captured: dict[str, object] = {}
+
+    def capture_launch(job_id, node_id, config, mode, quote_grid, factors_df):
+        captured["job_id"] = job_id
+        captured["mode"] = mode
+        captured["factors_df"] = factors_df
+
+    from haute.routes import optimiser as optimiser_routes
+
+    with (
+        patch.object(optimiser_routes._solve_service, "_build_grid", return_value=MagicMock()),
+        patch.object(
+            optimiser_routes._solve_service,
+            "_launch_background",
+            side_effect=capture_launch,
+        ),
+    ):
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+    assert resp.status_code == 200
+    assert captured["mode"] == "ratebook"
+    factors_df = captured["factors_df"]
+    assert isinstance(factors_df, pl.DataFrame)
+    assert factors_df.select("quote_id", "region").to_dicts() == [
+        {"quote_id": "q1", "region": "North"},
+        {"quote_id": "q2", "region": "South"},
+    ]
+
+
 def test_validate_and_project_keeps_only_price_contour_columns() -> None:
     store = JobStore()
     service = OptimiserSolveService(store)

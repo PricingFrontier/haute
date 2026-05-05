@@ -7,7 +7,7 @@
  * god-component split.
  */
 
-import { ChevronLeft, ChevronRight, Loader2, Save, Upload } from "lucide-react"
+import { Loader2, Save, Upload } from "lucide-react"
 import { MODEL_COLORS } from "../../theme/colors"
 import { formatNumber } from "../../utils/formatValue"
 import { isConstraintMet } from "./optimiserHelpers"
@@ -84,7 +84,6 @@ interface DetailCardProps {
   selectedIdx: number
   constraints: Record<string, Record<string, number>>
   constraintNames: string[]
-  onStepPoint: (delta: number) => void
   onSave: () => void
   onLogMlflow: () => void
   saving: boolean
@@ -99,7 +98,6 @@ export default function DetailCard({
   selectedIdx,
   constraints,
   constraintNames,
-  onStepPoint,
   onSave,
   onLogMlflow,
   saving,
@@ -116,31 +114,11 @@ export default function DetailCard({
 
   return (
     <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
-      {/* Header with stepper */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>
-          Point {selectedIdx + 1} of {points.length}
+          Point details
         </span>
-        <div className="flex items-center gap-0.5">
-          <button
-            onClick={() => onStepPoint(-1)}
-            disabled={selectedIdx <= 0}
-            aria-label="Previous point"
-            className="p-0.5 rounded transition-colors"
-            style={{ color: selectedIdx <= 0 ? "var(--text-muted)" : "var(--text-secondary)", opacity: selectedIdx <= 0 ? 0.4 : 1 }}
-          >
-            <ChevronLeft size={14} />
-          </button>
-          <button
-            onClick={() => onStepPoint(1)}
-            disabled={selectedIdx >= points.length - 1}
-            aria-label="Next point"
-            className="p-0.5 rounded transition-colors"
-            style={{ color: selectedIdx >= points.length - 1 ? "var(--text-muted)" : "var(--text-secondary)", opacity: selectedIdx >= points.length - 1 ? 0.4 : 1 }}
-          >
-            <ChevronRight size={14} />
-          </button>
-        </div>
       </div>
 
       {/* Objective */}

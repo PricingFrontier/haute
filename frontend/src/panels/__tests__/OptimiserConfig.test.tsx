@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { useState } from "react"
 import OptimiserConfig from "../OptimiserConfig"
 import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
@@ -128,6 +129,41 @@ function renderConfig(made: ReturnType<typeof makeProps>) {
   )
 }
 
+function renderStatefulConfig(
+  made: ReturnType<typeof makeProps>,
+  onUpdateSpy = vi.fn(),
+) {
+  function StatefulConfig() {
+    const [config, setConfig] = useState(made.componentProps.config)
+    const handleUpdate = (keyOrUpdates: string | Record<string, unknown>, value?: unknown) => {
+      if (typeof keyOrUpdates === "string") {
+        onUpdateSpy(keyOrUpdates, value)
+        setConfig(prev => ({ ...prev, [keyOrUpdates]: value }))
+      } else {
+        onUpdateSpy(keyOrUpdates)
+        setConfig(prev => ({ ...prev, ...keyOrUpdates }))
+      }
+    }
+
+    return (
+      <GraphProvider
+        allNodes={made.graph.allNodes}
+        edges={made.graph.edges}
+        submodels={made.graph.submodels}
+        preamble={made.graph.preamble}
+      >
+        <OptimiserConfig
+          {...made.componentProps}
+          config={config}
+          onUpdate={handleUpdate}
+        />
+      </GraphProvider>
+    )
+  }
+
+  return render(<StatefulConfig />)
+}
+
 // ── Store reset ──
 beforeEach(() => {
   useNodeResultsStore.setState({
@@ -146,6 +182,8 @@ beforeEach(() => {
   mockHandleRemoveConstraint.mockReset()
   mockHandleConstraintColumnChange.mockReset()
   mockHandleConstraintValueChange.mockReset()
+  vi.mocked(extractBandingLevelsForNode).mockReset()
+  vi.mocked(extractBandingLevelsForNode).mockReturnValue({})
 })
 
 afterEach(() => {
@@ -279,6 +317,73 @@ describe("OptimiserConfig", () => {
       // "My Banding" appears in the select option; use getAllByText since
       // banding factor buttons may also render the label
       expect(screen.getAllByText("My Banding").length).toBeGreaterThanOrEqual(1)
+    })
+
+    it("auto-selects all banding factors for a loaded ratebook config with no factor_columns key", async () => {
+      vi.mocked(extractBandingLevelsForNode).mockReturnValue({
+        channel_band: ["direct", "broker"],
+        proposer_age_band: ["20-27"],
+        vehicle_age_band: ["1-3"],
+      })
+      const onUpdate = vi.fn()
+
+      renderStatefulConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "ratebook",
+          objective: "premium",
+          constraints: {},
+          banding_source: "banding_1",
+        },
+        allNodes: [
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataSource", config: {} } },
+          { id: "banding_1", data: { label: "Age Vehicle Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "banding_1", target: "opt_1" },
+        ],
+      }), onUpdate)
+
+      await waitFor(() => {
+        expect(onUpdate).toHaveBeenCalledWith("factor_columns", [
+          ["channel_band"],
+          ["proposer_age_band"],
+          ["vehicle_age_band"],
+        ])
+      })
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Optimise/ })).not.toBeDisabled()
+      })
+      expect(screen.getByText("Rating Factors (3 selected)")).toBeInTheDocument()
+    })
+
+    it("leaves an explicitly empty factor_columns list disabled", () => {
+      vi.mocked(extractBandingLevelsForNode).mockReturnValue({
+        channel_band: ["direct", "broker"],
+        proposer_age_band: ["20-27"],
+      })
+
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "ratebook",
+          objective: "premium",
+          constraints: {},
+          banding_source: "banding_1",
+          factor_columns: [],
+        },
+        allNodes: [
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataSource", config: {} } },
+          { id: "banding_1", data: { label: "Age Vehicle Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "banding_1", target: "opt_1" },
+        ],
+      }))
+
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
     })
   })
 
@@ -887,6 +992,24 @@ describe("OptimiserConfig", () => {
           }))
       expect(screen.getByText("Optimisation failed")).toBeInTheDocument()
       expect(screen.getByText("Solver exploded")).toBeInTheDocument()
+    })
+
+    it("shows cached background failure after polling removes the active job", () => {
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            ...convergedResult,
+            result: { ...convergedResult.result, converged: false },
+            error: "Data error: Ratebook factor columns contain null values",
+          },
+        },
+      })
+      renderConfig(makeProps({
+            config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+          }))
+      expect(screen.getByText("Optimisation failed")).toBeInTheDocument()
+      expect(screen.getByText("Data error: Ratebook factor columns contain null values")).toBeInTheDocument()
+      expect(screen.queryByText(/Did not converge/)).not.toBeInTheDocument()
     })
 
   })

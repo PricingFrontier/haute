@@ -81,6 +81,10 @@ function formatScenariosPerQuote(min?: number | null, max?: number | null, mean?
   return (min ?? max)?.toLocaleString() ?? ""
 }
 
+function singleFactorColumnsFromLevels(levels: Record<string, string[]>): string[][] {
+  return Object.keys(levels).sort().map(name => [name])
+}
+
 export default function OptimiserConfig({
   config,
   onUpdate,
@@ -103,8 +107,8 @@ export default function OptimiserConfig({
 
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
-  const solveError = solveJob?.error ?? null
-  const solveResult: SolveResult | null = cachedResult?.result ?? null
+  const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
+  const solveResult: SolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
   const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
@@ -112,6 +116,7 @@ export default function OptimiserConfig({
 
   const mode = configField(config, "mode", "online")
   const factorColumns = configField<string[][]>(config, "factor_columns", [])
+  const hasConfiguredFactorColumns = Object.prototype.hasOwnProperty.call(config, "factor_columns")
   const objective = configField(config, "objective", "")
   const constraints = configField<Record<string, Record<string, number>>>(config, "constraints", {})
   const quoteId = configField(config, "quote_id", "quote_id")
@@ -246,13 +251,35 @@ export default function OptimiserConfig({
     [allNodes, effectiveBandingSource],
   )
   const bandingFactorNames = useMemo(() => Object.keys(bandingLevels).sort(), [bandingLevels])
+  const inferredFactorColumns = useMemo(
+    () => singleFactorColumnsFromLevels(bandingLevels),
+    [bandingLevels],
+  )
+
+  useEffect(() => {
+    if (
+      mode === "ratebook" &&
+      effectiveBandingSource &&
+      !hasConfiguredFactorColumns &&
+      factorColumns.length === 0 &&
+      inferredFactorColumns.length > 0
+    ) {
+      onUpdate("factor_columns", inferredFactorColumns)
+    }
+  }, [
+    mode,
+    effectiveBandingSource,
+    hasConfiguredFactorColumns,
+    factorColumns.length,
+    inferredFactorColumns,
+    onUpdate,
+  ])
 
   // When banding source changes, auto-select all its factors
   const handleBandingSourceChange = useCallback((bandingNodeId: string) => {
     onUpdate("banding_source", bandingNodeId)
     const levels = extractBandingLevelsForNode(allNodes, bandingNodeId)
-    const allFactors = Object.keys(levels).map(name => [name])
-    onUpdate("factor_columns", allFactors)
+    onUpdate("factor_columns", singleFactorColumnsFromLevels(levels))
   }, [allNodes, onUpdate])
 
   const canSolve = !!objective &&

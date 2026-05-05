@@ -33,9 +33,12 @@ from haute.routes._optimiser_service import (
     _cleanup_apply_result_artifact,
     _compute_frontier,
     _find_optimiser_node,
+    _job_elapsed_seconds,
     _load_apply_result_artifact,
     _normalise_frontier_range,
     _persist_apply_result_artifact,
+    _ratebook_factor_level_counts,
+    _serialise_ratebook_factor_tables,
 )
 from haute.schemas import (
     OptimiserApplyRequest,
@@ -78,6 +81,7 @@ _FRONTIER_POINT_SPECIFIC_RESULT_KEYS = (
     "warning",
     "frontier_error",
 )
+_CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
 
 
 def _touch_heavy_objects_or_raise(
@@ -390,6 +394,48 @@ def _frontier_point_result_dict(job: dict[str, Any], point_index: int) -> dict[s
     return result_dict
 
 
+def _frontier_point_constraints_override(
+    job: dict[str, Any],
+    point_index: int,
+) -> dict[str, dict[str, Any]]:
+    point, frontier_data = _frontier_point_or_raise(job, point_index)
+    raw_constraints = job.get("config", {}).get("constraints")
+    if not isinstance(raw_constraints, dict):
+        raise HTTPException(status_code=500, detail="Job optimiser constraints are invalid")
+
+    overrides: dict[str, dict[str, Any]] = {}
+    for name, spec in raw_constraints.items():
+        if not isinstance(name, str) or not isinstance(spec, dict):
+            raise HTTPException(status_code=500, detail="Job optimiser constraints are invalid")
+        overrides[name] = dict(spec)
+
+    constraint_names = frontier_data.get("constraint_names", [])
+    if not isinstance(constraint_names, list):
+        raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
+
+    for name in constraint_names:
+        if not isinstance(name, str):
+            raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
+        spec = overrides.get(name)
+        if spec is None:
+            raise HTTPException(status_code=500, detail="Job frontier constraint is missing")
+        threshold_keys = [key for key in _CONSTRAINT_THRESHOLD_KEYS if key in spec]
+        if len(threshold_keys) != 1:
+            raise HTTPException(
+                status_code=500,
+                detail="Job optimiser constraint threshold is invalid",
+            )
+        threshold_field = f"threshold_{name}"
+        if threshold_field not in point:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Frontier point field {threshold_field!r} is missing",
+            )
+        spec[threshold_keys[0]] = _as_finite_float(point[threshold_field], field=threshold_field)
+
+    return overrides
+
+
 def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelectResponse:
     return OptimiserFrontierSelectResponse(
         status="ok",
@@ -400,6 +446,14 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         baseline_constraints=result.get("baseline_constraints", {}),
         lambdas=result.get("lambdas", {}),
         converged=result.get("converged", True),
+        iterations=result.get("iterations"),
+        cd_iterations=result.get("cd_iterations"),
+        factor_tables=result.get("factor_tables", {}),
+        history=result.get("history"),
+        warning=result.get("warning"),
+        scenario_value_stats=result.get("scenario_value_stats"),
+        scenario_value_histogram=result.get("scenario_value_histogram"),
+        clamp_rate=result.get("clamp_rate"),
     )
 
 
@@ -409,6 +463,16 @@ def _job_has_frontier_points(job: dict[str, Any]) -> bool:
         return False
     points = frontier_data.get("points")
     return isinstance(points, list) and len(points) > 0
+
+
+def _clear_result_data_after_user_action(job_id: str) -> None:
+    """Slim result data without ending an active frontier-analysis session."""
+
+    job = _store.get_job(job_id)
+    if isinstance(job, dict) and _job_has_frontier_points(job):
+        _store.clear_result_data(job_id, keys=("solve_result",))
+        return
+    _store.clear_result_data(job_id)
 
 
 def _cached_result_matches_frontier_selection(result: dict[str, Any], point_index: int) -> bool:
@@ -486,32 +550,10 @@ def _cached_materialised_ratebook_frontier_result(
     return None
 
 
-def _serialise_ratebook_factor_tables(
-    factor_tables: Any,
-) -> dict[str, list[dict[str, Any]]]:
-    if not isinstance(factor_tables, dict):
-        raise HTTPException(status_code=500, detail="Ratebook factor tables are invalid")
-
-    serialised: dict[str, list[dict[str, Any]]] = {}
-    for name, table in factor_tables.items():
-        if not isinstance(name, str) or not isinstance(table, dict):
-            raise HTTPException(status_code=500, detail="Ratebook factor tables are invalid")
-        serialised[name] = [
-            {
-                "__factor_group__": level,
-                "optimal_scenario_value": _as_finite_float(
-                    scenario_value,
-                    field=f"factor_tables.{name}",
-                ),
-            }
-            for level, scenario_value in table.items()
-        ]
-    return serialised
-
-
 def _materialised_ratebook_result_dict(
     result_dict: dict[str, Any],
     solve_result: SolveResultLike,
+    factor_level_counts: dict[str, dict[str, int]],
 ) -> dict[str, Any]:
     materialised = dict(result_dict)
     materialised.update(
@@ -525,7 +567,8 @@ def _materialised_ratebook_result_dict(
             "cd_iterations": getattr(solve_result, "cd_iterations", None),
             "clamp_rate": getattr(solve_result, "clamp_rate", None),
             "factor_tables": _serialise_ratebook_factor_tables(
-                getattr(solve_result, "factor_tables", None)
+                getattr(solve_result, "factor_tables", None),
+                factor_level_counts,
             ),
             "history": None,
         }
@@ -596,13 +639,22 @@ def _materialise_ratebook_frontier_point(
 
     job, solver, quote_grid, factors_df, factor_columns = _ratebook_runtime_state_or_raise(job_id)
     base_result = _base_result_for_frontier(job)
+    constraints_override = _frontier_point_constraints_override(job, point_index)
     solve_result = solver.solve(
         quote_grid,
         factors_df,
         factor_columns=factor_columns,
         lambdas=result_dict["lambdas"],
+        _constraints_override=constraints_override,
     )
-    materialised = _materialised_ratebook_result_dict(result_dict, solve_result)
+    factor_level_counts = job.get("factor_level_counts")
+    if not isinstance(factor_level_counts, dict):
+        factor_level_counts = _ratebook_factor_level_counts(factors_df, factor_columns)
+    materialised = _materialised_ratebook_result_dict(
+        result_dict,
+        solve_result,
+        factor_level_counts,
+    )
     updated_job = _store.atomic_update(
         job_id,
         {
@@ -935,12 +987,15 @@ async def solve_status(job_id: str) -> OptimiserStatusResponse:
         fd = job.get("frontier_data")
         if fd:
             frontier_resp = OptimiserFrontierResponse(**fd)
+    elapsed_seconds = job.get("elapsed_seconds", 0.0)
+    if job.get("status") == "running":
+        elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
 
     return OptimiserStatusResponse(
         status=job.get("status", "unknown"),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
-        elapsed_seconds=job.get("elapsed_seconds", 0.0),
+        elapsed_seconds=elapsed_seconds,
         result=job.get("result"),
         frontier=frontier_resp,
     )
@@ -966,7 +1021,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
                 from_artifact=from_artifact,
                 **limited_apply_preview_payload(df),
             )
-            _store.clear_result_data(body.job_id)
+            _clear_result_data_after_user_action(body.job_id)
             return response
 
         solve_result = job.get("solve_result")
@@ -1000,7 +1055,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
             from_artifact=from_artifact,
             **limited_apply_preview_payload(df),
         )
-        _store.clear_result_data(body.job_id)
+        _clear_result_data_after_user_action(body.job_id)
         return response
     except HTTPException:
         raise
@@ -1129,6 +1184,20 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
                 body.point_index,
             )
             selected_point = body.point_index
+            if (
+                body.include_ratebook_tables
+                and _result_mode({**job, "base_result": base_result}, result_dict)
+                == "ratebook"
+            ):
+                updated_job, materialised_result, _solve_result = (
+                    _materialise_ratebook_frontier_point(
+                        body.job_id,
+                        selected_point,
+                        result_dict,
+                    )
+                )
+                _store.clear_result_data(body.job_id, keys=("solve_result",))
+                return _frontier_select_response(materialised_result)
 
         updated_job = _store.atomic_update(
             body.job_id,
@@ -1274,7 +1343,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
             path=str(out),
             message=f"Saved optimisation result to {out}",
         )
-        _store.clear_result_data(body.job_id)
+        _clear_result_data_after_user_action(body.job_id)
         return response
     except HTTPException:
         raise
@@ -1428,7 +1497,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             run_url=run_url,
             tracking_uri=tracking_uri,
         )
-        _store.clear_result_data(body.job_id)
+        _clear_result_data_after_user_action(body.job_id)
         return response
     except Exception as exc:
         logger.error("mlflow_log_failed", error=str(exc), job_id=body.job_id, exc_info=True)

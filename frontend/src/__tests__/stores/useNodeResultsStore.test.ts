@@ -1272,6 +1272,57 @@ describe("useNodeResultsStore", () => {
       expect(selected.scenario_value_histogram).toEqual({ counts: [2, 3], edges: [0.95, 1.05, 1.15] })
     })
 
+    it("updateFrontierAfterSelect stores materialised ratebook factor tables on the selected point", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 240,
+            total_premium: 68,
+            lambda_premium: 0.25,
+            converged: true,
+          },
+        ],
+        n_points: 1,
+        points_returned: 1,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      const factorTables = {
+        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08 }],
+      }
+      s.completeSolveJob("n1", makeSolveResult({ mode: "ratebook", frontier }))
+
+      s.updateFrontierAfterSelect("n1", 0, {
+        status: "ok",
+        total_objective: 250,
+        constraints: { premium: 70 },
+        baseline_objective: 90,
+        baseline_constraints: { premium: 48 },
+        lambdas: { premium: 0.3 },
+        converged: true,
+        cd_iterations: 5,
+        clamp_rate: 0.04,
+        factor_tables: factorTables,
+        error: null,
+      })
+
+      let cached = useNodeResultsStore.getState().solveResults.n1
+      expect(cached.result.factor_tables).toEqual(factorTables)
+      expect(cached.result.cd_iterations).toBe(5)
+      expect(cached.result.clamp_rate).toBe(0.04)
+
+      s.selectFrontierPoint("n1", null)
+      s.selectFrontierPoint("n1", 0)
+      cached = useNodeResultsStore.getState().solveResults.n1
+      expect(cached.result.factor_tables).toEqual(factorTables)
+      expect(cached.result.cd_iterations).toBe(5)
+      expect(cached.result.clamp_rate).toBe(0.04)
+    })
+
     it("updateFrontierAfterSelect clears point diagnostics that are not in the selected point", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Node 1", {}, "h1")

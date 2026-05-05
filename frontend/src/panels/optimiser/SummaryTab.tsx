@@ -1,21 +1,42 @@
 /**
  * Summary tab for the optimiser preview.
  *
- * Renders objective, constraints, lambdas, scenario-value histogram,
- * and factor tables (ratebook mode).  Extracted from OptimiserPreview
+ * Renders objective, constraints, lambdas, and scenario-value histogram.
+ * Extracted from OptimiserPreview
  * as part of the god-component split.
  */
 
+import { Loader2 } from "lucide-react"
 import { formatNumber } from "../../utils/formatValue"
 import type { SolveResult } from "../OptimiserPreview"
 import { isConstraintMet } from "./optimiserHelpers"
+import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
+import { hasFactorTables } from "./ratebookFactorTables"
+
+type RatebookRatesLoadState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; error: string }
 
 interface SummaryTabProps {
   result: SolveResult
   constraints: Record<string, Record<string, number>>
+  canMaterialiseRatebookRates?: boolean
+  ratebookRatesDetail?: RatebookRatesLoadState
 }
 
-export default function SummaryTab({ result, constraints }: SummaryTabProps) {
+export default function SummaryTab({
+  result,
+  constraints,
+  canMaterialiseRatebookRates = false,
+  ratebookRatesDetail = { status: "idle" },
+}: SummaryTabProps) {
+  const showRatebookImpactStatus = (
+    result.mode === "ratebook"
+    && canMaterialiseRatebookRates
+    && !hasFactorTables(result.factor_tables)
+  )
+
   return (
     <div className="flex gap-6 flex-wrap">
       {/* Left column: objective + constraints */}
@@ -80,6 +101,13 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
 
       </div>
 
+      {result.mode === "ratebook" && (
+        <RatebookImpactBeeswarm factorTables={result.factor_tables} />
+      )}
+      {showRatebookImpactStatus && (
+        <RatebookImpactStatus detail={ratebookRatesDetail} />
+      )}
+
       {/* Middle column: histogram + stats */}
       {result.scenario_value_histogram && (() => {
         const { counts, edges } = result.scenario_value_histogram
@@ -127,29 +155,32 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
         )
       })()}
 
-      {/* Factor tables (ratebook) */}
-      {result.mode === "ratebook" && result.factor_tables && (
-        <div className="min-w-[180px]">
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Factor Tables</label>
-          {Object.entries(result.factor_tables).map(([factorName, rows]) => (
-            <div key={factorName} className="mt-1.5">
-              <div className="text-[11px] font-medium mb-1" style={{ color: "var(--text-secondary)" }}>{factorName}</div>
-              <div className="space-y-0.5">
-                {rows.map((row, i) => {
-                  const levelName = row.__factor_group__ as string ?? row[Object.keys(row)[0]] as string ?? `Level ${i}`
-                  const mult = row.optimal_scenario_value as number
-                  return (
-                    <div key={i} className="flex justify-between text-xs font-mono gap-4">
-                      <span style={{ color: "var(--text-secondary)" }}>{levelName}</span>
-                      <span style={{ color: "var(--text-primary)" }}>{typeof mult === "number" ? mult.toFixed(2) : "?"}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
+  )
+}
+
+function RatebookImpactStatus({ detail }: { detail: RatebookRatesLoadState }) {
+  const isError = detail.status === "error"
+  return (
+    <section
+      className="min-w-[280px] flex-1 rounded px-3 py-2 text-xs"
+      style={{
+        background: isError ? "var(--danger-soft)" : "var(--bg-input)",
+        border: `1px solid ${isError ? "var(--danger-border)" : "var(--border)"}`,
+        color: isError ? "var(--danger)" : "var(--text-muted)",
+      }}
+    >
+      <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.08em]">
+        Mechanical Price Effect
+      </div>
+      <div className="flex items-center gap-2">
+        {!isError && <Loader2 size={14} className="animate-spin shrink-0" />}
+        <span>
+          {isError
+            ? `Rate table load failed: ${detail.error}`
+            : "Materialising selected point rates..."}
+        </span>
+      </div>
+    </section>
   )
 }

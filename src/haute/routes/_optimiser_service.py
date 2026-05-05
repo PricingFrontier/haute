@@ -79,6 +79,27 @@ def _chunk_size_from_config(config: dict[str, Any]) -> int:
     return raw_chunk_size
 
 
+def _job_elapsed_seconds(job: dict[str, Any], fallback: float = 0.0) -> float:
+    """Return wall-clock elapsed seconds for a job when start_time is available."""
+    start_time = job.get("start_time")
+    fallback_elapsed = max(0.0, float(fallback))
+    if isinstance(start_time, bool) or not isinstance(start_time, int | float):
+        return fallback_elapsed
+    return max(fallback_elapsed, time.monotonic() - float(start_time), 0.0)
+
+
+def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[str]:
+    """Return optimiser side-input node ids the solver needs after graph execution."""
+    node = _find_optimiser_node(graph, node_id)
+    config = node.data.config
+    if config.get("mode", "online") != "ratebook":
+        return frozenset()
+    banding_source = config.get("banding_source")
+    if isinstance(banding_source, str) and banding_source:
+        return frozenset({banding_source})
+    return frozenset()
+
+
 def _apply_artifact_root() -> Path:
     return (Path(tempfile.gettempdir()) / _APPLY_ARTIFACT_ROOT_NAME).resolve()
 
@@ -420,6 +441,94 @@ def _estimate_scenario_frontier_ranges(
     return ranges
 
 
+_RATEBOOK_FACTOR_LEVEL_SEPARATOR = "\x1f"
+
+
+def _ratebook_factor_table_name(columns: list[str]) -> str:
+    return ":".join(columns)
+
+
+def _ratebook_factor_level_key(values: list[Any]) -> str:
+    if any(value is None for value in values):
+        raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
+    return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(str(value) for value in values)
+
+
+def _ratebook_factor_level_counts(
+    factors_df: pl.DataFrame | None,
+    factor_columns: list[list[str]] | None,
+) -> dict[str, dict[str, int]]:
+    """Count quote exposure for each ratebook factor level.
+
+    The table and level keys mirror price-contour's factor table output:
+    single-column groups use the column name, composite groups join column
+    names with ":" and level values with the unit separator.
+    """
+    import polars as pl
+
+    if factors_df is None:
+        return {}
+
+    counts: dict[str, dict[str, int]] = {}
+    for columns in factor_columns or []:
+        if not columns:
+            continue
+        missing = [column for column in columns if column not in factors_df.columns]
+        if missing:
+            raise ValueError(
+                "Ratebook factor count columns are missing from aligned factors dataframe: "
+                f"{missing}"
+            )
+        table_name = _ratebook_factor_table_name(columns)
+        count_rows = (
+            factors_df.group_by(columns)
+            .agg(pl.len().alias("quote_count"))
+            .to_dicts()
+        )
+        counts[table_name] = {
+            _ratebook_factor_level_key([row[column] for column in columns]): int(row["quote_count"])
+            for row in count_rows
+        }
+    return counts
+
+
+def _serialise_ratebook_factor_tables(
+    factor_tables: Any,
+    factor_level_counts: dict[str, dict[str, int]],
+) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(factor_tables, dict):
+        raise ValueError("Ratebook factor tables are invalid")
+
+    serialised: dict[str, list[dict[str, Any]]] = {}
+    for name, table in factor_tables.items():
+        if not isinstance(name, str) or not isinstance(table, dict):
+            raise ValueError("Ratebook factor tables are invalid")
+        level_counts = factor_level_counts.get(name)
+        if level_counts is None:
+            raise ValueError(f"Ratebook factor counts missing for factor table {name!r}.")
+        rows: list[dict[str, Any]] = []
+        for level, scenario_value in table.items():
+            level_key = str(level)
+            quote_count = level_counts.get(level_key)
+            if quote_count is None:
+                raise ValueError(
+                    "Ratebook factor counts missing for level "
+                    f"{level_key!r} in factor table {name!r}."
+                )
+            scenario_float = float(scenario_value)
+            if not np.isfinite(scenario_float):
+                raise ValueError(f"Ratebook factor table {name!r} contains a non-finite rate.")
+            rows.append(
+                {
+                    "__factor_group__": level,
+                    "optimal_scenario_value": scenario_float,
+                    "quote_count": int(quote_count),
+                }
+            )
+        serialised[name] = rows
+    return serialised
+
+
 def _finalize_solve_result(
     solve_result: SolveResultLike,
     *,
@@ -430,6 +539,7 @@ def _finalize_solve_result(
     job_id: str,
     elapsed: float,
     extra_fields: dict[str, Any] | None = None,
+    extra_job_fields: dict[str, Any] | None = None,
     factors_df: pl.DataFrame | None = None,
     factor_columns: list[list[str]] | None = None,
 ) -> None:
@@ -491,6 +601,23 @@ def _finalize_solve_result(
             frontier_steps = config.get("frontier_steps", 15)
             ranges = _auto_frontier_ranges_from_config(config)
             if ranges:
+                progress_job = store.atomic_update(
+                    job_id,
+                    {
+                        "message": "Computing efficient frontier",
+                        "progress": 0.8,
+                        "elapsed_seconds": _job_elapsed_seconds(job_snapshot, elapsed),
+                    },
+                    expected_status="running",
+                )
+                if progress_job is None:
+                    logger.info(
+                        "frontier_start_skipped",
+                        job_id=job_id,
+                        expected_status="running",
+                    )
+                    return
+                job_snapshot = progress_job
                 frontier_result = _compute_frontier(
                     solver,
                     quote_grid,
@@ -539,7 +666,10 @@ def _finalize_solve_result(
             "status": "completed",
             "progress": 1.0,
             "message": "Completed",
-            "elapsed_seconds": elapsed,
+            "elapsed_seconds": _job_elapsed_seconds(
+                store.jobs.get(job_id, job_snapshot),
+                elapsed,
+            ),
             "solver": solver,
             "solve_result": solve_result,
             "quote_grid": quote_grid,
@@ -549,6 +679,7 @@ def _finalize_solve_result(
             "base_result": dict(result_dict),
             "frontier_data": frontier_data,
             "artifact_handles": artifact_handles,
+            **(extra_job_fields or {}),
         },
         expected_status="running",
     )
@@ -653,6 +784,46 @@ def _solve_ratebook(
             f"Available columns: {sorted(available_cols)}"
         )
 
+    factor_cols_flat = list(dict.fromkeys(c for group in factor_columns_valid for c in group))
+    avail = factors_df.columns
+    if qid_col in avail:
+        keep = [qid_col] + [c for c in factor_cols_flat if c in avail]
+        factors_df = factors_df.select(keep)
+        if qid_col != "quote_id":
+            factors_df = factors_df.rename({qid_col: "quote_id"})
+    elif "quote_id" in avail:
+        keep = ["quote_id"] + [c for c in factor_cols_flat if c in avail]
+        factors_df = factors_df.select(keep)
+    else:
+        raise RuntimeError(
+            f"Ratebook banding source must include quote id column '{qid_col}' "
+            "or a 'quote_id' column."
+        )
+
+    factors_df = factors_df.with_columns(pl.col("quote_id").cast(pl.Utf8))
+    factors_df = factors_df.unique(subset=["quote_id"])
+
+    quote_order = pl.DataFrame({"quote_id": quote_grid.quote_ids})
+    quote_order = quote_order.unique(maintain_order=True)
+    factors_df = quote_order.join(factors_df, on="quote_id", how="left")
+    factors_df = factors_df.drop("quote_id")
+    null_counts = factors_df.select(
+        [pl.col(c).null_count().alias(c) for c in factor_cols_flat],
+    ).row(0, named=True)
+    null_factor_counts = {
+        name: count for name, count in null_counts.items() if int(count) > 0
+    }
+    if null_factor_counts:
+        formatted_counts = ", ".join(
+            f"{name} ({count} {'row' if count == 1 else 'rows'})"
+            for name, count in null_factor_counts.items()
+        )
+        raise ValueError(
+            "Ratebook factor columns contain null values after aligning to quote grid: "
+            f"{formatted_counts}. Configure non-null banding defaults, remove the "
+            "affected factor columns, or ensure every quote_id has banding values."
+        )
+
     solver = RatebookOptimiser(
         objective=config["objective"],
         constraints=constraints,
@@ -663,35 +834,16 @@ def _solve_ratebook(
         tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
     )
 
-    factor_cols_flat = [c for group in factor_columns_valid for c in group]
-    avail = factors_df.columns
-    if qid_col in avail:
-        keep = [qid_col] + [c for c in factor_cols_flat if c in avail]
-        factors_df = factors_df.select(keep)
-        if qid_col != "quote_id":
-            factors_df = factors_df.rename({qid_col: "quote_id"})
-    elif "quote_id" in avail:
-        keep = ["quote_id"] + [c for c in factor_cols_flat if c in avail]
-        factors_df = factors_df.select(keep)
-
-    factors_df = factors_df.with_columns(pl.col("quote_id").cast(pl.Utf8))
-    factors_df = factors_df.unique(subset=["quote_id"])
-
-    quote_order = pl.DataFrame({"quote_id": quote_grid.quote_ids})
-    quote_order = quote_order.unique(maintain_order=True)
-    factors_df = quote_order.join(factors_df, on="quote_id", how="left")
-    factors_df = factors_df.drop("quote_id")
-
     solve_result: RatebookSolveResultLike = solver.solve(quote_grid, factors_df)
     elapsed = time.monotonic() - start_time
     converged = solve_result.converged
     logger.info("solve_completed", mode="ratebook", elapsed=f"{elapsed:.2f}s", converged=converged)
 
-    factor_tables_serialised = {}
-    for name, table in solve_result.factor_tables.items():
-        factor_tables_serialised[name] = [
-            {"__factor_group__": level, "optimal_scenario_value": sv} for level, sv in table.items()
-        ]
+    factor_level_counts = _ratebook_factor_level_counts(factors_df, factor_columns_valid)
+    factor_tables_serialised = _serialise_ratebook_factor_tables(
+        solve_result.factor_tables,
+        factor_level_counts,
+    )
 
     _finalize_solve_result(
         solve_result,
@@ -709,6 +861,7 @@ def _solve_ratebook(
             "clamp_rate": getattr(solve_result, "clamp_rate", None),
             "history": None,
         },
+        extra_job_fields={"factor_level_counts": factor_level_counts},
     )
 
 
@@ -970,6 +1123,7 @@ class OptimiserSolveService:
                     source=scenario,
                     checkpoint_dir=checkpoint_dir,
                     enforce_contracts=ENFORCE_CONTRACTS,
+                    preserve_node_ids=_optimiser_side_input_ids(body.graph, body.node_id),
                 )
             finally:
                 # Restore previous streaming chunk size if one was explicitly set.

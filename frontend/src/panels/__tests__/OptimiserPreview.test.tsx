@@ -231,6 +231,295 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText("Frontier")).not.toBeInTheDocument()
     })
 
+    it("falls back to Summary when frontier data disappears while Frontier is active", () => {
+      const { rerender } = renderPreview({
+        data: makeData({ frontier: makeFrontier() }),
+      })
+      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+
+      rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" />)
+
+      expect(screen.queryByText("Frontier")).not.toBeInTheDocument()
+      expect(screen.queryByText(/No frontier data available/)).not.toBeInTheDocument()
+      expect(screen.getByText("Objective")).toBeInTheDocument()
+      expect(screen.getByText("Optimised")).toBeInTheDocument()
+    })
+
+    it("shows one selected ratebook factor at a time in the Rates tab", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.125 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+
+      expect(screen.getByText("age_band")).toBeInTheDocument()
+      expect(screen.getByText("17-24")).toBeInTheDocument()
+      expect(screen.getAllByText("0.8750").length).toBeGreaterThan(0)
+      expect(screen.getByText("25-39")).toBeInTheDocument()
+      expect(screen.getAllByText("1.1250").length).toBeGreaterThan(0)
+      expect(screen.queryByText("North")).not.toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText("Rate factor"), { target: { value: "region" } })
+
+      expect(screen.getByText("region")).toBeInTheDocument()
+      expect(screen.getByText("North")).toBeInTheDocument()
+      expect(screen.getAllByText("1.0500").length).toBeGreaterThan(0)
+      expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+    })
+
+    it("keeps factor tables out of Summary once the Rates tab exists", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Summary"))
+
+      expect(screen.queryByText("Factor Tables")).not.toBeInTheDocument()
+      expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+    })
+
+    it("shows a ratebook mechanical price effect beeswarm on Summary", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.40 },
+                { __factor_group__: "40-49", optimal_scenario_value: 1.41 },
+                { __factor_group__: "50-59", optimal_scenario_value: 1.42 },
+                { __factor_group__: "60-69", optimal_scenario_value: 1.43 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05 },
+                { __factor_group__: "South", optimal_scenario_value: 0.98 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Summary"))
+
+      expect(screen.getByText("Mechanical Price Effect")).toBeInTheDocument()
+      expect(screen.getByTestId("ratebook-impact-beeswarm")).toBeInTheDocument()
+      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
+      expect(factorLabels.map((label) => label.textContent)).toEqual(["age_band", "region"])
+      expect(screen.getByLabelText("age_band 17-24: -25.0%")).toBeInTheDocument()
+      expect(screen.getByLabelText("age_band 25-39: +40.0%")).toBeInTheDocument()
+      expect(screen.getByText("Log rate effect")).toBeInTheDocument()
+      expect(screen.getByText("Factor value")).toBeInTheDocument()
+      expect(screen.getByText("Low")).toBeInTheDocument()
+      expect(screen.getByText("High")).toBeInTheDocument()
+
+      const decreasingDot = screen.getByLabelText("age_band 17-24: -25.0%")
+      const increasingDots = [
+        screen.getByLabelText("age_band 25-39: +40.0%"),
+        screen.getByLabelText("age_band 40-49: +41.0%"),
+        screen.getByLabelText("age_band 50-59: +42.0%"),
+        screen.getByLabelText("age_band 60-69: +43.0%"),
+      ]
+      expect(decreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
+      expect(increasingDots[0]).toHaveAttribute("data-impact-direction", "increasing")
+      expect(decreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
+      expect(increasingDots[3]).toHaveAttribute("data-factor-value-position", "1.00")
+      expect(decreasingDot).toHaveAttribute(
+        "fill",
+        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
+      )
+      expect(increasingDots[3]).toHaveAttribute(
+        "fill",
+        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
+      )
+      expect(new Set(increasingDots.map((dot) => dot.getAttribute("cy"))).size).toBeGreaterThan(1)
+    })
+
+    it("orders mechanical price effect factors by quote-count weighted impact", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              sparse_extreme: [
+                { __factor_group__: "Rare", optimal_scenario_value: 2.50, quote_count: 1 },
+                { __factor_group__: "Common", optimal_scenario_value: 1.00, quote_count: 999 },
+              ],
+              common_moderate: [
+                { __factor_group__: "Low", optimal_scenario_value: 0.90, quote_count: 500 },
+                { __factor_group__: "High", optimal_scenario_value: 1.10, quote_count: 500 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Summary"))
+
+      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
+      expect(factorLabels.map((label) => label.textContent)).toEqual([
+        "common_moderate",
+        "sparse_extreme",
+      ])
+    })
+
+    it("colours dash-separated numeric bands across unicode dash variants", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "18–19", optimal_scenario_value: 0.95, quote_count: 10 },
+                { __factor_group__: "20—29", optimal_scenario_value: 1.00, quote_count: 10 },
+                { __factor_group__: "30 − 39", optimal_scenario_value: 1.05, quote_count: 10 },
+                { __factor_group__: "40 - 49", optimal_scenario_value: 1.10, quote_count: 10 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Summary"))
+
+      expect(screen.getByLabelText("age_band 18–19: -5.0%")).toHaveAttribute(
+        "data-factor-value-position",
+        "0.00",
+      )
+      expect(screen.getByLabelText("age_band 20—29: 0.0%")).not.toHaveAttribute(
+        "data-factor-value-position",
+        "unknown",
+      )
+      expect(screen.getByLabelText("age_band 30 − 39: +5.0%")).not.toHaveAttribute(
+        "data-factor-value-position",
+        "unknown",
+      )
+      expect(screen.getByLabelText("age_band 40 - 49: +10.0%")).toHaveAttribute(
+        "data-factor-value-position",
+        "1.00",
+      )
+    })
+
+    it("colours ratebook impact dots by factor value rather than impact direction", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              net_premium: [
+                {
+                  __factor_group__: "100",
+                  net_premium: 100,
+                  optimal_scenario_value: 1.25,
+                },
+                {
+                  __factor_group__: "500",
+                  net_premium: 500,
+                  optimal_scenario_value: 0.80,
+                },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Summary"))
+
+      const lowValueIncreasingDot = screen.getByLabelText("net_premium 100: +25.0%")
+      const highValueDecreasingDot = screen.getByLabelText("net_premium 500: -20.0%")
+      const unorderedCategoryDot = screen.getByLabelText("region North: +5.0%")
+
+      expect(lowValueIncreasingDot).toHaveAttribute("data-impact-direction", "increasing")
+      expect(lowValueIncreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
+      expect(lowValueIncreasingDot).toHaveAttribute(
+        "fill",
+        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
+      )
+      expect(highValueDecreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
+      expect(highValueDecreasingDot).toHaveAttribute("data-factor-value-position", "1.00")
+      expect(highValueDecreasingDot).toHaveAttribute(
+        "fill",
+        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
+      )
+      expect(unorderedCategoryDot).toHaveAttribute("data-factor-value-position", "unknown")
+      expect(unorderedCategoryDot).toHaveAttribute("fill", "var(--chart-impact-value-neutral)")
+    })
+
+    it("does not show the mechanical price effect chart for online results", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "online",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Summary"))
+
+      expect(screen.queryByText("Mechanical Price Effect")).not.toBeInTheDocument()
+    })
+
+    it("hides the Rates tab when a result has no ratebook rates", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "online",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      expect(screen.queryByText("Rates")).not.toBeInTheDocument()
+      expect(screen.queryByText("Mechanical Price Effect")).not.toBeInTheDocument()
+    })
+
+    it("hides the Rates tab for ratebook results without materialised factor tables", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: undefined,
+          }),
+        }),
+      })
+
+      expect(screen.queryByText("Rates")).not.toBeInTheDocument()
+    })
+
     it("switches to Convergence tab on click", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
@@ -246,6 +535,22 @@ describe("OptimiserPreview", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
       // Chart info text is visible by default
       expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+    })
+
+    it("keeps frontier point navigation available on the Summary tab", () => {
+      renderPreview({
+        data: makeData({
+          frontier: makeFrontier(),
+          selectedPointIndex: 2,
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Summary"))
+
+      expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 3)
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
   })
 
@@ -292,19 +597,19 @@ describe("OptimiserPreview", () => {
 
       rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" />)
 
-      expect(
-        screen.getByText("No frontier data available. Enable efficient frontier in the constraint settings and run the optimiser."),
-      ).toBeInTheDocument()
+      expect(screen.queryByText(/No frontier data available/)).not.toBeInTheDocument()
+      expect(screen.getByText("Objective")).toBeInTheDocument()
+      expect(screen.getByText("Optimised")).toBeInTheDocument()
     })
 
-    it("shows detail card when a point is selected", () => {
+    it("shows detail card content when a point is selected", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
           selectedPointIndex: 2,
         }),
       })
-      expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
+      expect(screen.getByText("Point details")).toBeInTheDocument()
     })
 
     it("detail card shows Save Result button", () => {
@@ -477,7 +782,7 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("X axis:")).toBeInTheDocument()
     })
 
-    it("stepper buttons navigate between points locally without a select API call", () => {
+    it("header stepper buttons navigate between points locally without a select API call", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -485,7 +790,7 @@ describe("OptimiserPreview", () => {
         }),
       })
       expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
-      fireEvent.click(screen.getByRole("button", { name: "Next point" }))
+      fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
       expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 3)
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
@@ -795,7 +1100,7 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("5.0%")).toBeInTheDocument()
     })
 
-    it("renders factor tables in ratebook mode", () => {
+    it("renders ratebook rates in the dedicated Rates tab", () => {
       renderPreview({
         data: makeData({
           result: makeSolveResult({
@@ -809,11 +1114,10 @@ describe("OptimiserPreview", () => {
           }),
         }),
       })
-      fireEvent.click(screen.getByText("Summary"))
-      expect(screen.getByText("Factor Tables")).toBeInTheDocument()
+      fireEvent.click(screen.getByText("Rates"))
       expect(screen.getByText("age_band")).toBeInTheDocument()
       expect(screen.getByText("18-25")).toBeInTheDocument()
-      expect(screen.getByText("1.15")).toBeInTheDocument()
+      expect(screen.getAllByText("1.1500").length).toBeGreaterThan(0)
     })
   })
 })

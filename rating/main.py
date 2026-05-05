@@ -217,7 +217,7 @@ def optimiser_input(conversion_scoring: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.optimiser(config="config/optimisation/online_optimiser.json", contract={"inputs": [], "outputs": []})
-def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
+def online_optimiser(optimiser_input: pl.LazyFrame, age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
     """online_optimiser node"""
     return optimiser_input
 
@@ -260,3 +260,4 @@ pipeline.connect("processing", "policies")
 pipeline.connect("optimiser_input", "apply_optimisation")
 pipeline.connect("policies", "age_veh_banding")
 pipeline.connect("age_veh_banding", "adjustments")
+pipeline.connect("age_veh_banding", "online_optimiser")

@@ -148,11 +148,12 @@ def _frontier_point_summary(
     lambda_volume: float,
     total_objective: float,
     total_volume: float = 0.9,
+    threshold_volume: float | None = None,
     converged: bool = True,
 ) -> dict[str, float | bool]:
     """Build the stored frontier-point summary shape emitted by price-contour."""
     return {
-        "threshold_volume": total_volume,
+        "threshold_volume": total_volume if threshold_volume is None else threshold_volume,
         "total_objective": total_objective,
         "total_volume": total_volume,
         "lambda_volume": lambda_volume,
@@ -863,6 +864,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
                     lambda_volume=0.7,
                     total_objective=220.0,
                     total_volume=0.97,
+                    threshold_volume=0.96,
                 )
             ],
             "constraint_names": ["volume"],
@@ -871,6 +873,27 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         "created_at": time.time(),
     }
     return mock_solver, mock_grid, factors_df
+
+
+def _expected_region_factor_tables(
+    *,
+    north: float = 1.08,
+    south: float = 0.92,
+) -> dict[str, list[dict[str, object]]]:
+    return {
+        "region": [
+            {
+                "__factor_group__": "North",
+                "optimal_scenario_value": north,
+                "quote_count": 1,
+            },
+            {
+                "__factor_group__": "South",
+                "optimal_scenario_value": south,
+                "quote_count": 1,
+            },
+        ]
+    }
 
 
 class TestRatebookSolve:
@@ -2996,6 +3019,60 @@ class TestFinalizeSolveResult:
             "volume": (0.8, 1.1)
         }
 
+    def test_frontier_progress_is_visible_while_finalize_computes_frontier(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "start_time": time.monotonic() - 5.0,
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_min": 0.8,
+                    "frontier_max": 1.1,
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+
+        def frontier_side_effect(*args, **kwargs):
+            job = store.require_job(job_id)
+            assert job["status"] == "running"
+            assert job["message"] == "Computing efficient frontier"
+            assert job["progress"] == pytest.approx(0.8)
+            assert job["elapsed_seconds"] >= 5.0
+            return SimpleNamespace(
+                points=pl.DataFrame(
+                    {
+                        "total_objective": [100.0],
+                        "volume": [0.9],
+                        "lambda_volume": [0.3],
+                    }
+                )
+            )
+
+        mock_solver.frontier.side_effect = frontier_side_effect
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=0.25,
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        assert job["message"] == "Completed"
+        assert job["elapsed_seconds"] >= 5.0
+
     def test_frontier_prefers_per_constraint_absolute_ranges(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import _finalize_solve_result
@@ -3621,18 +3698,15 @@ class TestApplyLambdasUnit:
         assert mock_solver.solve.call_args.kwargs == {
             "factor_columns": [["region"]],
             "lambdas": {"volume": 0.7},
+            "_constraints_override": {"volume": {"min": 0.96}},
         }
         job = clean_job_store.jobs["apply_rb_frontier"]
-        assert job["result"]["factor_tables"] == {
-            "region": [
-                {"__factor_group__": "North", "optimal_scenario_value": 1.08},
-                {"__factor_group__": "South", "optimal_scenario_value": 0.92},
-            ]
-        }
+        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
         assert "frontier_apply_result:0" in job["artifact_handles"]
-        assert "solver" not in job
-        assert "quote_grid" not in job
-        assert "factors_df" not in job
+        assert job["solver"] is mock_solver
+        assert job["quote_grid"] is mock_grid
+        assert job["factors_df"].equals(factors_df)
+        assert "solve_result" not in job
 
     def test_apply_ratebook_frontier_point_reuses_cached_artifact_and_summary(
         self,
@@ -3662,12 +3736,7 @@ class TestApplyLambdasUnit:
         assert data["constraints"] == {"volume": 0.97}
         mock_solver.solve.assert_not_called()
         job = clean_job_store.jobs["apply_rb_frontier_cached"]
-        assert job["result"]["factor_tables"] == {
-            "region": [
-                {"__factor_group__": "North", "optimal_scenario_value": 1.08},
-                {"__factor_group__": "South", "optimal_scenario_value": 0.92},
-            ]
-        }
+        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
 
     def test_save_ratebook_frontier_point_rebuilds_stale_cached_summary(
         self,
@@ -3716,12 +3785,7 @@ class TestApplyLambdasUnit:
         saved = json_mod.loads(Path(out_path).read_text())
         assert saved["total_objective"] == 222.0
         assert saved["total_constraints"] == {"volume": 0.97}
-        assert saved["factor_tables"] == {
-            "region": [
-                {"__factor_group__": "North", "optimal_scenario_value": 1.08},
-                {"__factor_group__": "South", "optimal_scenario_value": 0.92},
-            ]
-        }
+        assert saved["factor_tables"] == _expected_region_factor_tables()
 
 
 # ---------------------------------------------------------------------------
@@ -4257,12 +4321,7 @@ class TestSaveResultUnit:
         saved = json_mod.loads(Path(out_path).read_text())
         assert saved["total_objective"] == 222.0
         assert saved["total_constraints"] == {"volume": 0.97}
-        assert saved["factor_tables"] == {
-            "region": [
-                {"__factor_group__": "North", "optimal_scenario_value": 1.08},
-                {"__factor_group__": "South", "optimal_scenario_value": 0.92},
-            ]
-        }
+        assert saved["factor_tables"] == _expected_region_factor_tables()
         assert saved["frontier_selection"]["point_index"] == 0
         args = mock_solver.solve.call_args.args
         assert args[0] is mock_grid
@@ -4622,6 +4681,250 @@ class TestSelectFrontierPointResolve:
         assert "factor_tables" not in job["result"]
         assert "scenario_value_histogram" not in job["result"]
         mock_solver.solve.assert_not_called()
+
+    def test_select_ratebook_frontier_point_can_materialise_factor_tables(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Ratebook point selection can opt into selected-point factor tables."""
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "rb_select_rates",
+        )
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_select_rates",
+                "point_index": 0,
+                "include_ratebook_tables": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        expected_tables = _expected_region_factor_tables()
+        assert data["factor_tables"] == expected_tables
+        assert data["cd_iterations"] == 5
+        assert data["clamp_rate"] == 0.04
+        job = clean_job_store.jobs["rb_select_rates"]
+        assert job["result"]["factor_tables"] == expected_tables
+        mock_solver.solve.assert_called_once_with(
+            mock_grid,
+            factors_df,
+            factor_columns=[["region"]],
+            lambdas={"volume": 0.7},
+            _constraints_override={"volume": {"min": 0.96}},
+        )
+
+    def test_select_ratebook_frontier_point_can_switch_materialised_factor_tables(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Ratebook rates can be materialised for multiple selected frontier points."""
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "rb_select_rates_switch",
+        )
+        job = clean_job_store.jobs["rb_select_rates_switch"]
+        job["frontier_data"]["n_points"] = 2
+        job["frontier_data"]["points_returned"] = 2
+        job["frontier_data"]["points"].append(
+            _frontier_point_summary(
+                lambda_volume=0.9,
+                total_objective=240.0,
+                total_volume=1.03,
+                threshold_volume=1.02,
+            )
+        )
+        mock_solver.solve.side_effect = [
+            SimpleNamespace(
+                total_objective=222.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 0.97},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.7},
+                converged=True,
+                cd_iterations=5,
+                clamp_rate=0.04,
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.08, 0.92],
+                    }
+                ),
+            ),
+            SimpleNamespace(
+                total_objective=241.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 1.03},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.9},
+                converged=True,
+                cd_iterations=7,
+                clamp_rate=0.02,
+                factor_tables={"region": {"North": 1.12, "South": 0.98}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.12, 0.98],
+                    }
+                ),
+            ),
+        ]
+
+        first = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_select_rates_switch",
+                "point_index": 0,
+                "include_ratebook_tables": True,
+            },
+        )
+        second = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_select_rates_switch",
+                "point_index": 1,
+                "include_ratebook_tables": True,
+            },
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200, second.json()
+        assert second.json()["factor_tables"] == _expected_region_factor_tables(
+            north=1.12,
+            south=0.98,
+        )
+        assert mock_solver.solve.call_count == 2
+        assert mock_solver.solve.call_args_list[0].kwargs == {
+            "factor_columns": [["region"]],
+            "lambdas": {"volume": 0.7},
+            "_constraints_override": {"volume": {"min": 0.96}},
+        }
+        assert mock_solver.solve.call_args_list[1].kwargs == {
+            "factor_columns": [["region"]],
+            "lambdas": {"volume": 0.9},
+            "_constraints_override": {"volume": {"min": 1.02}},
+        }
+        assert mock_solver.solve.call_args_list[0].args == (mock_grid, factors_df)
+        assert mock_solver.solve.call_args_list[1].args == (mock_grid, factors_df)
+
+    def test_apply_ratebook_frontier_point_preserves_runtime_for_rate_table_switching(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Loading selected-point detail must not break later rate-table switching."""
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "rb_apply_then_switch_rates",
+        )
+        job = clean_job_store.jobs["rb_apply_then_switch_rates"]
+        job["frontier_data"]["n_points"] = 2
+        job["frontier_data"]["points_returned"] = 2
+        job["frontier_data"]["points"].append(
+            _frontier_point_summary(
+                lambda_volume=0.9,
+                total_objective=240.0,
+                total_volume=1.03,
+                threshold_volume=1.02,
+            )
+        )
+        mock_solver.solve.side_effect = [
+            SimpleNamespace(
+                total_objective=222.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 0.97},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.7},
+                converged=True,
+                cd_iterations=5,
+                clamp_rate=0.04,
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.08, 0.92],
+                    }
+                ),
+            ),
+            SimpleNamespace(
+                total_objective=223.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 0.97},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.7},
+                converged=True,
+                cd_iterations=5,
+                clamp_rate=0.04,
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.08, 0.92],
+                    }
+                ),
+            ),
+            SimpleNamespace(
+                total_objective=241.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 1.03},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.9},
+                converged=True,
+                cd_iterations=7,
+                clamp_rate=0.02,
+                factor_tables={"region": {"North": 1.12, "South": 0.98}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.12, 0.98],
+                    }
+                ),
+            ),
+        ]
+
+        first_rates = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_apply_then_switch_rates",
+                "point_index": 0,
+                "include_ratebook_tables": True,
+            },
+        )
+        apply_detail = client.post(
+            "/api/optimiser/apply",
+            json={
+                "job_id": "rb_apply_then_switch_rates",
+                "point_index": 0,
+            },
+        )
+        second_rates = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_apply_then_switch_rates",
+                "point_index": 1,
+                "include_ratebook_tables": True,
+            },
+        )
+
+        assert first_rates.status_code == 200
+        assert apply_detail.status_code == 200
+        assert second_rates.status_code == 200, second_rates.json()
+        assert second_rates.json()["factor_tables"] == _expected_region_factor_tables(
+            north=1.12,
+            south=0.98,
+        )
+        job = clean_job_store.jobs["rb_apply_then_switch_rates"]
+        assert job["solver"] is mock_solver
+        assert job["quote_grid"] is mock_grid
+        assert job["factors_df"].equals(factors_df)
+        assert "solve_result" not in job
+        assert mock_solver.solve.call_count == 3
 
     def test_resolve_records_frontier_provenance(self, client, clean_job_store):
         """After selection, the selected frontier point index is stored on the job."""
@@ -5052,9 +5355,9 @@ class TestMlflowLogExtended:
         mock_mlflow.set_tag.assert_any_call("frontier.n_points", "2")
         mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "1")
         job = clean_job_store.jobs["mlf_ok"]
-        assert "solver" not in job
+        assert "solver" in job
         assert "solve_result" not in job
-        assert "quote_grid" not in job
+        assert "quote_grid" in job
 
     def test_mlflow_log_ratebook_frontier_point_materialises_selected_factor_tables(
         self,
@@ -5104,12 +5407,7 @@ class TestMlflowLogExtended:
         assert resp.status_code == 200
         optimiser_result = logged_json["optimiser_result.json"]
         assert optimiser_result["total_objective"] == 222.0
-        assert optimiser_result["factor_tables"] == {
-            "region": [
-                {"__factor_group__": "North", "optimal_scenario_value": 1.08},
-                {"__factor_group__": "South", "optimal_scenario_value": 0.92},
-            ]
-        }
+        assert optimiser_result["factor_tables"] == _expected_region_factor_tables()
         assert logged_json["frontier_point_summary.json"]["factor_tables"] == (
             optimiser_result["factor_tables"]
         )
@@ -5265,11 +5563,12 @@ class TestSolveStatusTimeout:
 
     def test_running_job_not_timed_out(self, client, clean_job_store):
         """A running job with sufficient timeout remains running."""
+        start_time = time.monotonic() - 5.0
         clean_job_store.jobs["not_tout"] = {
             "status": "running",
             "progress": 0.5,
             "message": "Solving",
-            "start_time": time.monotonic(),
+            "start_time": start_time,
             "timeout": 9999,
             "elapsed_seconds": 0.5,
             "created_at": time.time(),
@@ -5277,6 +5576,7 @@ class TestSolveStatusTimeout:
         resp = client.get("/api/optimiser/solve/status/not_tout")
         data = resp.json()
         assert data["status"] == "running"
+        assert data["elapsed_seconds"] >= 5.0
 
     def test_completed_job_not_overwritten_by_timeout(self, client, clean_job_store):
         """Timeout checks should not regress a completed job back to error."""
@@ -5502,7 +5802,7 @@ class TestSolveRatebookUnit:
         factors_df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q2", "q3"],
-                "region": ["North", "South", "East"],
+                "region": ["North", "North", "East"],
             }
         )
 
@@ -5514,7 +5814,7 @@ class TestSolveRatebookUnit:
             lambdas={"volume": 0.5},
             converged=True,
             cd_iterations=3,
-            factor_tables={"region": {"North": 1.1, "South": 0.9, "East": 1.0}},
+            factor_tables={"region": {"North": 1.1, "East": 1.0}},
             dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1, 0.9]}),
         )
 
@@ -5534,8 +5834,69 @@ class TestSolveRatebookUnit:
         assert job["status"] == "completed"
         assert "factor_tables" in job["result"]
         assert "region" in job["result"]["factor_tables"]
+        assert job["result"]["factor_tables"]["region"] == [
+            {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": 2},
+            {"__factor_group__": "East", "optimal_scenario_value": 1.0, "quote_count": 1},
+        ]
         assert "factors_df" in job
         assert job["factors_df"].columns == ["region"]
+
+    def test_ratebook_factor_level_counts_support_composite_factor_groups(self):
+        """Counts use price-contour's table and level keys for composite groups."""
+        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+
+        factors_df = pl.DataFrame(
+            {
+                "region": ["North", "North", "South"],
+                "age_band": ["18-19", "20-29", "18-19"],
+            }
+        )
+
+        counts = _ratebook_factor_level_counts(
+            factors_df,
+            [["region"], ["region", "age_band"]],
+        )
+
+        assert counts["region"] == {"North": 2, "South": 1}
+        assert counts["region:age_band"] == {
+            "North\x1f18-19": 1,
+            "North\x1f20-29": 1,
+            "South\x1f18-19": 1,
+        }
+
+    def test_solve_ratebook_rejects_null_factor_values_before_solver(self):
+        """Null banding levels should fail loudly before price-contour runs."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2", "q3"]
+
+        factors_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q3"],
+                "region": ["North", None, "East"],
+                "age_band": [None, "30-39", "40-49"],
+            }
+        )
+        config = {
+            "objective": "income",
+            "constraints": {"volume": {"min": 0.9}},
+            "factor_columns": [["region"], ["age_band"]],
+            "quote_id": "quote_id",
+        }
+
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            with pytest.raises(ValueError) as exc_info:
+                _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+
+        detail = str(exc_info.value)
+        assert "Ratebook factor columns contain null values" in detail
+        assert "region (1 row)" in detail
+        assert "age_band (1 row)" in detail
+        mock_solver.assert_not_called()
 
     def test_solve_ratebook_frontier_passes_prepared_factors(self):
         """Ratebook frontier-in-solve passes the aligned factors dataframe."""

@@ -748,6 +748,24 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const cached = s.solveResults[nodeId]
       if (!cached) return s
       touchCachedResult(solveResultRecency, nodeId)
+      const enrichedFrontier = cached.frontier && cached.frontier.points[pointIndex]
+        ? {
+            ...cached.frontier,
+            points: cached.frontier.points.map((point, index) => {
+              if (index !== pointIndex) return point
+              return {
+                ...point,
+                ...(selectResult.iterations !== undefined ? { iterations: selectResult.iterations } : {}),
+                ...(selectResult.cd_iterations !== undefined ? { cd_iterations: selectResult.cd_iterations } : {}),
+                ...(selectResult.clamp_rate !== undefined ? { clamp_rate: selectResult.clamp_rate } : {}),
+                ...(selectResult.history !== undefined ? { history: selectResult.history } : {}),
+                ...(selectResult.scenario_value_stats !== undefined ? { scenario_value_stats: selectResult.scenario_value_stats } : {}),
+                ...(selectResult.scenario_value_histogram !== undefined ? { scenario_value_histogram: selectResult.scenario_value_histogram } : {}),
+                ...(selectResult.factor_tables !== undefined ? { factor_tables: selectResult.factor_tables } : {}),
+              }
+            }),
+          }
+        : cached.frontier
       const pointResult = cached.frontier && cached.frontier.points[pointIndex]
         ? deriveSolveResultForFrontierPoint(cached, pointIndex)
         : {
@@ -763,6 +781,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           }
       const nextCached = {
         ...cached,
+        frontier: enrichedFrontier,
         selectedPointIndex: pointIndex,
         result: {
           ...pointResult,
@@ -772,7 +791,14 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           baseline_constraints: selectResult.baseline_constraints,
           lambdas: selectResult.lambdas,
           converged: selectResult.converged,
-          warning: selectResult.converged ? undefined : NON_CONVERGED_WARNING,
+          iterations: selectResult.iterations ?? pointResult.iterations,
+          cd_iterations: selectResult.cd_iterations ?? pointResult.cd_iterations,
+          clamp_rate: selectResult.clamp_rate === undefined ? pointResult.clamp_rate : selectResult.clamp_rate,
+          history: selectResult.history === undefined ? pointResult.history : selectResult.history,
+          scenario_value_stats: selectResult.scenario_value_stats ?? pointResult.scenario_value_stats,
+          scenario_value_histogram: selectResult.scenario_value_histogram ?? pointResult.scenario_value_histogram,
+          factor_tables: selectResult.factor_tables ?? pointResult.factor_tables,
+          warning: selectResult.warning ?? (selectResult.converged ? undefined : NON_CONVERGED_WARNING),
         },
       }
       cacheOptimiserPreview(nodeId, nextCached)

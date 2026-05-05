@@ -788,6 +788,7 @@ class OptimiserApplyResponse(BaseModel):
 class OptimiserFrontierSelectRequest(BaseModel):
     job_id: str
     point_index: int | None = Field(..., ge=0)
+    include_ratebook_tables: bool = False
 
 
 class OptimiserFrontierSelectResponse(BaseModel):
@@ -799,6 +800,14 @@ class OptimiserFrontierSelectResponse(BaseModel):
     baseline_constraints: dict[str, float] = Field(default_factory=dict)
     lambdas: dict[str, float] = Field(default_factory=dict)
     converged: bool = True
+    iterations: int | None = None
+    cd_iterations: int | None = None
+    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    history: list[OptimiserHistoryEntry] | None = None
+    warning: str | None = None
+    scenario_value_stats: OptimiserScenarioValueStats | None = None
+    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    clamp_rate: float | None = None
     error: str | None = None
 
 
