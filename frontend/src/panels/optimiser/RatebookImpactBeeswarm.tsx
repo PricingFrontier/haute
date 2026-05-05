@@ -28,18 +28,25 @@ type FactorImpact = {
 
 type EffectDirection = "decreasing" | "neutral" | "increasing"
 
-const MAX_FACTORS = 8
+// ── Layout (pixels) ──────────────────────────────────────────────
 const WIDTH = 720
 const MARGIN_LEFT = 154
 const MARGIN_RIGHT = 92
 const MARGIN_TOP = 34
 const MARGIN_BOTTOM = 44
 const ROW_GAP = 38
+
+// ── Dot rendering & jitter ───────────────────────────────────────
 const DOT_RADIUS = 3.4
 const DOT_X_BUCKET = 10
 const STACK_STEP = 4.2
 const STACK_MAX_OFFSET = 16
 const STACK_PATTERN = [0, -1, 1, -2, 2, -3, 3, -4, 4]
+
+// ── Data caps ────────────────────────────────────────────────────
+const MAX_FACTORS = 8
+
+// ── Theme tokens (resolved from CSS variables) ───────────────────
 const VALUE_HIGH_COLOR = "var(--chart-impact-value-high)"
 const VALUE_LOW_COLOR = "var(--chart-impact-value-low)"
 const VALUE_NEUTRAL_COLOR = "var(--chart-impact-value-neutral)"
@@ -48,7 +55,11 @@ const LABEL_COLOR = "var(--chart-impact-label)"
 const MUTED_COLOR = "var(--chart-impact-muted)"
 const GRID_COLOR = "var(--chart-impact-grid)"
 const AXIS_COLOR = "var(--chart-impact-axis)"
+
+// ── DOM identifiers ──────────────────────────────────────────────
 const VALUE_GRADIENT_ID = "ratebook-impact-value-gradient"
+
+// ── Colour bar ───────────────────────────────────────────────────
 const COLOR_BAR_WIDTH = 8
 const COLOR_BAR_X = WIDTH - 40
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -18,6 +17,7 @@ from haute._types import SolveResultLike
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.routes._job_store import get_job_store
 from haute.routes._optimiser_limits import (
+    enforce_frontier_compute_budget,
     limited_apply_preview_payload,
     limited_frontier_payload,
 )
@@ -88,6 +88,21 @@ class _DataFrameResultLike(Protocol):
     def dataframe(self) -> Any: ...
 
 
+def _dataframe_or_raise(result: Any, *, context: str) -> Any:
+    """Read ``.dataframe`` from a solver/apply result, with a typed error.
+
+    The Protocol-cast at call sites is a pure type-checker hint and gives
+    no runtime guarantee.  Without this guard a missing attribute is masked
+    by the broad ``except Exception`` and surfaces as an opaque 500.
+    """
+    if not hasattr(result, "dataframe"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"{context} is missing a 'dataframe' attribute",
+        )
+    return cast(_DataFrameResultLike, result).dataframe
+
+
 def _touch_heavy_objects_or_raise(
     job_id: str,
     *,
@@ -140,46 +155,49 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
             "node_label": node.data.label,
         }
     )
-    checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_opt_estimate_"))
+    # ``TemporaryDirectory`` cleans up the checkpoint dir even if the
+    # process is interrupted between phases — ``mkdtemp`` + manual rmtree
+    # leaks on signal/crash, which adds up over long-running sessions.
     try:
-        lazy_outputs = _solve_service._execute_pipeline(body, job_id, checkpoint_dir)
-        source_lf = _solve_service._resolve_data_source(
-            lazy_outputs,
-            config,
-            body.node_id,
-            job_id,
-        )
-        _constraint_cols, scored_lf = _solve_service._validate_and_project(
-            source_lf,
-            config,
-            job_id,
-        )
-        quote_id_col = str(config.get("quote_id", "quote_id"))
-        scenario_counts = (
-            scored_lf.filter(pl.col(quote_id_col).is_not_null())
-            .group_by(quote_id_col)
-            .agg(pl.len().alias("scenario_count"))
-        )
-        row = (
-            scenario_counts.select(
-                pl.len().alias("quote_count"),
-                pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
-                pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
-                pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
-                pl.col("scenario_count").sum().alias("expanded_row_count"),
+        with tempfile.TemporaryDirectory(prefix="haute_opt_estimate_") as raw_dir:
+            checkpoint_dir = Path(raw_dir)
+            lazy_outputs = _solve_service._execute_pipeline(body, job_id, checkpoint_dir)
+            source_lf = _solve_service._resolve_data_source(
+                lazy_outputs,
+                config,
+                body.node_id,
+                job_id,
             )
-            .collect(engine="streaming")
-            .row(0, named=True)
-        )
-        return {
-            "quote_count": row["quote_count"],
-            "scenarios_per_quote_min": row["scenarios_per_quote_min"],
-            "scenarios_per_quote_max": row["scenarios_per_quote_max"],
-            "scenarios_per_quote_mean": row["scenarios_per_quote_mean"],
-            "expanded_row_count": row["expanded_row_count"],
-        }
+            _constraint_cols, scored_lf = _solve_service._validate_and_project(
+                source_lf,
+                config,
+                job_id,
+            )
+            quote_id_col = str(config.get("quote_id", "quote_id"))
+            scenario_counts = (
+                scored_lf.filter(pl.col(quote_id_col).is_not_null())
+                .group_by(quote_id_col)
+                .agg(pl.len().alias("scenario_count"))
+            )
+            row = (
+                scenario_counts.select(
+                    pl.len().alias("quote_count"),
+                    pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
+                    pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
+                    pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
+                    pl.col("scenario_count").sum().alias("expanded_row_count"),
+                )
+                .collect(engine="streaming")
+                .row(0, named=True)
+            )
+            return {
+                "quote_count": row["quote_count"],
+                "scenarios_per_quote_min": row["scenarios_per_quote_min"],
+                "scenarios_per_quote_max": row["scenarios_per_quote_max"],
+                "scenarios_per_quote_mean": row["scenarios_per_quote_mean"],
+                "expanded_row_count": row["expanded_row_count"],
+            }
     finally:
-        shutil.rmtree(checkpoint_dir, ignore_errors=True)
         _remove_estimate_job(job_id)
 
 
@@ -843,7 +861,7 @@ def _materialise_frontier_point_apply(
                 constraints=job.get("config", {}).get("constraints", {}),
             )
         new_handle = _persist_apply_result_artifact(apply_result)
-        df = cast(_DataFrameResultLike, apply_result).dataframe
+        df = _dataframe_or_raise(apply_result, context="Apply result")
         if new_handle is None:
             _store.atomic_update(
                 job_id,
@@ -1031,7 +1049,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
         from_artifact = False
         if solve_result is not None:
             typed_solve_result = cast(SolveResultLike, solve_result)
-            df = cast(_DataFrameResultLike, solve_result).dataframe
+            df = _dataframe_or_raise(solve_result, context="Job solve_result")
             total_objective = typed_solve_result.total_objective
             constraints = typed_solve_result.total_constraints
         else:
@@ -1108,6 +1126,13 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     try:
         base_result = _base_result_for_frontier_recompute(job)
         ranges = _frontier_ranges_for_request(body, job)
+        try:
+            enforce_frontier_compute_budget(
+                n_points_per_dim=body.n_points_per_dim,
+                n_constraints=len(ranges),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         frontier_result = _compute_frontier(
             solver,
             quote_grid,

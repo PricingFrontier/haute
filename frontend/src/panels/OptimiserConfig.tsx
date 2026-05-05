@@ -16,6 +16,7 @@ import { withAlpha } from "../utils/color"
 import { extractBandingLevelsForNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
 import { useGraph } from "./useGraph"
+import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 
 // ─── Banding factor extraction ───
 
@@ -109,6 +110,7 @@ export default function OptimiserConfig({
   const solveProgress = solveJob?.progress ?? null
   const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
   const solveResult: SolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
+  const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
   const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
@@ -945,9 +947,7 @@ export default function OptimiserConfig({
           <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "var(--success-soft)" : "var(--warning-soft-subtle)", border: `1px solid ${solveResult.converged ? "var(--success-border)" : "var(--warning-soft-selected)"}` }}>
             <div style={{ color: solveResult.converged ? "var(--success)" : "var(--warning-strong)" }}>
               {solveResult.converged ? "Converged" : "Did not converge"}
-              {solveResult.mode === "ratebook"
-                ? ` in ${solveResult.cd_iterations ?? "?"} CD iterations`
-                : ` in ${solveResult.iterations ?? "?"} iterations`}
+              {solveIterationSummary ? ` in ${solveIterationSummary.long}` : ""}
               {solveResult.n_quotes != null && solveResult.n_steps != null && (
                 <> ({solveResult.n_quotes.toLocaleString()} quotes, {solveResult.n_steps} steps)</>
               )}

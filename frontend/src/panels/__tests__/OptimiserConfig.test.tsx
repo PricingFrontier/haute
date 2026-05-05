@@ -937,6 +937,34 @@ describe("OptimiserConfig", () => {
       expect(screen.getByText(/15 iterations/)).toBeInTheDocument()
     })
 
+    it("shows solver iterations instead of unknown CD iterations when ratebook CD count is absent", () => {
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            ...convergedResult,
+            result: {
+              ...convergedResult.result,
+              mode: "ratebook",
+              iterations: 11,
+              cd_iterations: null,
+            },
+            originalResult: {
+              ...convergedResult.originalResult,
+              mode: "ratebook",
+              iterations: 11,
+              cd_iterations: null,
+            },
+          },
+        },
+      })
+      renderConfig(makeProps({
+            config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+          }))
+
+      expect(screen.getByText(/Converged in 11 iterations/)).toBeInTheDocument()
+      expect(screen.queryByText(/\? CD iterations/)).not.toBeInTheDocument()
+    })
+
     it("renders scenario-expanded input size separately from raw source rows", async () => {
       mockEstimateOptimiserSolve.mockResolvedValueOnce({
         total_rows: 10000000,

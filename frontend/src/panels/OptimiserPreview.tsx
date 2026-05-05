@@ -22,56 +22,21 @@ import { useDragResize } from "../hooks/useDragResize"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { MODEL_COLORS } from "../theme/colors"
-import type { ApplyOptimiserResponse, FrontierData } from "../api/types"
+import type { ApplyOptimiserResponse, FrontierData, OptimiserSolveResult } from "../api/types"
 import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
 import DetailCard from "./optimiser/DetailCard"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
+import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 
 // ─── Types (shared with OptimiserConfig) ─────────────────────────
+// ``SolveResult`` is an alias for the canonical API-boundary type so the
+// panel and the store agree on a single shape.  Add new fields to
+// ``OptimiserSolveResult`` in ``api/types.ts``, not here.
 
-export type SolveResult = {
-  mode?: string
-  total_objective: number
-  baseline_objective: number
-  constraints: Record<string, number>
-  baseline_constraints: Record<string, number>
-  lambdas: Record<string, number>
-  converged: boolean
-  iterations?: number
-  n_quotes?: number
-  n_steps?: number
-  cd_iterations?: number
-  factor_tables?: Record<string, Record<string, unknown>[]>
-  history?: {
-    iteration: number
-    total_objective: number
-    max_lambda_change: number
-    all_constraints_satisfied?: boolean
-    lambdas?: Record<string, number>
-    total_constraints?: Record<string, number>
-  }[] | null
-  warning?: string
-  frontier_error?: string | null
-  scenario_value_stats?: {
-    mean: number; std: number; min: number; max: number
-    p5: number; p25: number; p50: number; p75: number; p95: number
-    pct_increase: number; pct_decrease: number
-  }
-  scenario_value_histogram?: { counts: number[]; edges: number[] }
-  clamp_rate?: number | null
-  frontier?: {
-    status: string
-    points: Record<string, unknown>[]
-    n_points: number
-    points_returned: number
-    constraint_names: string[]
-    points_limit: number | null
-    points_truncated: boolean
-  } | null
-}
+export type SolveResult = OptimiserSolveResult
 
 export type { FrontierData }
 
@@ -215,6 +180,16 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
     setResultDetail({ status: "idle" })
   }, [abortResultDetailRequest, jobId])
   useEffect(() => abortResultDetailRequest, [abortResultDetailRequest])
+
+  // Per-effect cleanup at L271 already deletes the in-flight key when deps
+  // change or on unmount, but we additionally clear the entire map on jobId
+  // change so any orphan keys keyed under the previous job (defensive — the
+  // map's keys embed jobId, so a stale entry can never match a new request)
+  // do not accumulate across long-lived sessions.
+  useEffect(() => {
+    requestedRatesRef.current.clear()
+    setRatesDetail({ status: "idle" })
+  }, [jobId])
 
   const selectedRatebookRatesMissing = (
     result.mode === "ratebook"
@@ -384,6 +359,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   const hasRates = ratebookFactorTables != null
   const canMaterialiseSelectedRates = result.mode === "ratebook" && frontier != null && selectedIdx != null
   const headerPointCount = frontier?.points.length ?? 0
+  const iterationSummary = formatOptimiserIterationSummary(result)
   const availableTabs: TabKey[] = hasFrontier ? ["frontier", "summary"] : ["summary"]
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
   if (result.history && result.history.length > 0) availableTabs.push("convergence")
@@ -418,9 +394,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
         />
         <span className="text-[11px]" style={{ color: result.converged ? "var(--success)" : "var(--warning-strong)" }}>
           {result.converged ? "Converged" : "Not converged"}
-          {result.mode === "ratebook"
-            ? ` · ${result.cd_iterations ?? "?"} CD iters`
-            : ` · ${result.iterations ?? "?"} iters`}
+          {iterationSummary && ` · ${iterationSummary.compact}`}
           {result.n_quotes != null && <> · {result.n_quotes.toLocaleString()} quotes</>}
         </span>
 

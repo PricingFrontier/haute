@@ -753,7 +753,14 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  updateFrontierAfterSelect: (nodeId, pointIndex, selectResult) =>
+  updateFrontierAfterSelect: (nodeId, pointIndex, selectResult) => {
+    // Backend echoes ``point_index`` in every select response.  A mismatch is
+    // never a race — it is a contract violation, so fail loudly per CLAUDE.md.
+    if (selectResult.point_index != null && selectResult.point_index !== pointIndex) {
+      throw new Error(
+        `Frontier select response point_index (${selectResult.point_index}) does not match requested index (${pointIndex})`,
+      )
+    }
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (!cached) return s
@@ -776,6 +783,22 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
             }),
           }
         : cached.frontier
+      // Stale-response guard: if the user has already moved on to a different
+      // point, keep the enriched frontier (per-point data never goes stale)
+      // but do not regress the displayed result/selectedPointIndex back to the
+      // older request.  ``null`` means "no selection in flight" (e.g. the very
+      // first response after a fresh solve), which is not a stale case.
+      if (cached.selectedPointIndex !== null && cached.selectedPointIndex !== pointIndex) {
+        if (enrichedFrontier === cached.frontier) return s
+        const nextCached = { ...cached, frontier: enrichedFrontier }
+        cacheOptimiserPreview(nodeId, nextCached)
+        return {
+          solveResults: {
+            ...s.solveResults,
+            [nodeId]: nextCached,
+          },
+        }
+      }
       const pointResult = cached.frontier && cached.frontier.points[pointIndex]
         ? deriveSolveResultForFrontierPoint(cached, pointIndex)
         : {
@@ -818,7 +841,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           [nodeId]: nextCached,
         },
       }
-    }),
+    })
+  },
 
   // ── Training ──
 

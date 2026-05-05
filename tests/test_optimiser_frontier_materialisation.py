@@ -385,3 +385,135 @@ def test_apply_explicit_ratebook_frontier_point_requires_runtime_state(
     assert resp.status_code == 400
     assert "ratebook runtime state is not available" in resp.json()["detail"].lower()
     solver.solve.assert_not_called()
+
+
+def test_select_frontier_point_returns_distinct_data_for_each_index(
+    client,
+    clean_job_store,
+):
+    """A stricter version of the basic select test.
+
+    Uses three points with mutually-distinct field values so an off-by-one
+    bug in indexing (or any index → response wiring mistake) cannot pass by
+    coincidence.  Each index is exercised in turn and the full response is
+    checked for value-by-value match against the corresponding point.
+    """
+    distinct_points = [
+        _frontier_point(objective=100.0, volume=0.80, lambda_volume=0.10, converged=True),
+        _frontier_point(objective=500.0, volume=0.85, lambda_volume=0.55, converged=False),
+        _frontier_point(objective=900.0, volume=0.90, lambda_volume=0.99, converged=True),
+    ]
+    clean_job_store.jobs["select_distinct"] = _online_frontier_job(
+        frontier_data=_frontier_data(distinct_points),
+    )
+
+    for index, point in enumerate(distinct_points):
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "select_distinct", "point_index": index},
+        )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["point_index"] == index, (
+            f"backend echoed index {data['point_index']} for request index {index}"
+        )
+        assert data["total_objective"] == point["total_objective"]
+        assert data["constraints"] == {"volume": point["total_volume"]}
+        assert data["lambdas"] == {"volume": point["lambda_volume"]}
+        assert data["converged"] is point["converged"]
+        # The job's stored selected point must agree with the returned index.
+        assert clean_job_store.jobs["select_distinct"]["selected_frontier_point"] == index
+
+
+def test_apply_explicit_frontier_point_artifact_matches_response_preview(
+    client,
+    clean_job_store,
+):
+    """Round-trip the apply artifact: the rows persisted to disk must be the
+    exact rows surfaced in the response preview.
+
+    The previous test only confirmed ``apply_from_grid`` was *called* and the
+    response preview had a row.  It did not verify that the file we will read
+    back later contains the same dataframe as the response — a divergence
+    bug between persistence and response shaping could pass silently.
+    """
+    persisted_df = pl.DataFrame(
+        {
+            "quote_id": ["q1", "q2", "q3"],
+            "optimal_scenario_value": [1.04, 0.97, 1.21],
+            "expected_income": [42.0, 31.5, 88.7],
+        }
+    )
+    apply_result = SimpleNamespace(
+        total_objective=130.0,
+        baseline_objective=95.0,
+        total_constraints={"volume": 0.93},
+        baseline_constraints={"volume": 0.85},
+        lambdas={"volume": 0.55},
+        converged=False,
+        dataframe=persisted_df,
+    )
+    quote_grid = MagicMock()
+    clean_job_store.jobs["apply_round_trip"] = _online_frontier_job(quote_grid=quote_grid)
+
+    with patch("price_contour.apply_from_grid", return_value=apply_result):
+        resp = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": "apply_round_trip", "point_index": 1},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # 1) The response preview must mirror what was passed to persistence.
+    assert data["row_count"] == persisted_df.height
+    assert data["preview_row_count"] == persisted_df.height
+    response_preview = pl.DataFrame(data["preview"])
+    assert response_preview.equals(persisted_df), (
+        f"response preview diverges from the persisted dataframe:\n"
+        f"  preview: {response_preview}\n"
+        f"  persisted: {persisted_df}"
+    )
+
+    # 2) The artifact file must contain the exact same dataframe.
+    job = clean_job_store.jobs["apply_round_trip"]
+    handle = job["artifact_handles"]["frontier_apply_result:1"]
+    artifact_path = Path(handle["path"])
+    assert artifact_path.is_file()
+    on_disk = pl.read_parquet(artifact_path)
+    assert on_disk.equals(persisted_df), (
+        f"persisted artifact diverges from the apply_result dataframe:\n"
+        f"  on_disk: {on_disk}\n"
+        f"  expected: {persisted_df}"
+    )
+
+
+def test_select_frontier_point_normalises_when_config_name_differs_from_column(
+    client,
+    clean_job_store,
+):
+    """The select endpoint normalises by the *config* constraint name, not the
+    parquet column name.  Use a config name that differs from the point's
+    column key so a bug that returned the raw column key would surface.
+    """
+    point = _frontier_point(volume=0.88, lambda_volume=0.42)
+    # Backend may surface the constraint under either ``total_<name>`` or
+    # the bare config name; both must be looked up by the *config* key.
+    point["total_volume"] = point.pop("total_volume", 0.88)
+    job = _online_frontier_job(frontier_data=_frontier_data([point]))
+    job["config"]["constraints"] = {"volume": {"min": 0.9}}
+    clean_job_store.jobs["select_normalise"] = job
+
+    resp = client.post(
+        "/api/optimiser/frontier/select",
+        json={"job_id": "select_normalise", "point_index": 0},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Response constraints are keyed by the config name, not by the
+    # ``total_<name>`` parquet column.
+    assert "volume" in data["constraints"]
+    assert "total_volume" not in data["constraints"]
+    assert data["constraints"]["volume"] == point["total_volume"]

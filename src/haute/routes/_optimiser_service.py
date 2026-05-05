@@ -41,6 +41,7 @@ from haute.schemas import (
     OptimiserFrontierRange,
     OptimiserSolveRequest,
     OptimiserSolveResponse,
+    _normalise_frontier_range_pair,
 )
 
 logger = get_logger(component="server.optimiser.solve")
@@ -320,25 +321,10 @@ def _compute_frontier(
     return solver.frontier(quote_grid, **frontier_kwargs)
 
 
-def _normalise_frontier_range(value: Any, *, field: str) -> tuple[float, float]:
-    if isinstance(value, dict):
-        raw_min = value.get("min")
-        raw_max = value.get("max")
-    elif isinstance(value, list | tuple) and len(value) == 2:
-        raw_min, raw_max = value
-    else:
-        raise ValueError(f"{field} must contain min and max values.")
-
-    if raw_min is None or raw_max is None:
-        raise ValueError(f"{field} must contain min and max values.")
-
-    min_value = float(raw_min)
-    max_value = float(raw_max)
-    if not np.isfinite(min_value) or not np.isfinite(max_value):
-        raise ValueError(f"{field} must contain finite min and max values.")
-    if min_value > max_value:
-        raise ValueError(f"{field} min must be less than or equal to max.")
-    return min_value, max_value
+# Public alias preserved for existing in-tree imports; canonical
+# implementation lives in ``haute.schemas`` so request-body validators and
+# the config-side path share one source of truth.
+_normalise_frontier_range = _normalise_frontier_range_pair
 
 
 def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
@@ -904,53 +890,56 @@ class OptimiserSolveService:
             )
         logger.info("solve_started", node_id=body.node_id, mode=mode, job_id=job_id)
 
-        checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_opt_"))
-        try:
-            lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
-            source_lf = self._resolve_data_source(lazy_outputs, config, body.node_id, job_id)
-            constraint_cols, scored_lf = self._validate_and_project(
-                source_lf,
-                config,
-                job_id,
-            )
-            factors_df = self._extract_factors(lazy_outputs, config, mode)
-            del lazy_outputs
-            gc.collect()
+        # ``TemporaryDirectory`` removes the checkpoint dir even on signal/
+        # crash; an interrupted long solve will not leak GBs of staging data.
+        with tempfile.TemporaryDirectory(prefix="haute_opt_") as raw_dir:
+            checkpoint_dir = Path(raw_dir)
+            try:
+                lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
+                source_lf = self._resolve_data_source(
+                    lazy_outputs, config, body.node_id, job_id,
+                )
+                constraint_cols, scored_lf = self._validate_and_project(
+                    source_lf,
+                    config,
+                    job_id,
+                )
+                factors_df = self._extract_factors(lazy_outputs, config, mode)
+                del lazy_outputs
+                gc.collect()
 
-            quote_grid = self._build_grid(
-                scored_lf,
-                constraint_cols,
-                config,
-                body.node_id,
-                job_id,
-            )
-        except HTTPException as exc:
-            self._store.atomic_update(
-                job_id,
-                {"status": "error", "message": str(exc.detail)},
-                expected_status="running",
-            )
-            raise
-        except Exception as exc:
-            detail = f"Optimiser setup failed: {exc}"
-            logger.error(
-                "optimiser_setup_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                job_id=job_id,
-                exc_info=True,
-            )
-            self._store.atomic_update(
-                job_id,
-                {"status": "error", "message": detail},
-                expected_status="running",
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Optimiser setup failed. Check the server logs for details.",
-            ) from exc
-        finally:
-            shutil.rmtree(checkpoint_dir, ignore_errors=True)
+                quote_grid = self._build_grid(
+                    scored_lf,
+                    constraint_cols,
+                    config,
+                    body.node_id,
+                    job_id,
+                )
+            except HTTPException as exc:
+                self._store.atomic_update(
+                    job_id,
+                    {"status": "error", "message": str(exc.detail)},
+                    expected_status="running",
+                )
+                raise
+            except Exception as exc:
+                detail = f"Optimiser setup failed: {exc}"
+                logger.error(
+                    "optimiser_setup_failed",
+                    error=str(exc),
+                    node_id=body.node_id,
+                    job_id=job_id,
+                    exc_info=True,
+                )
+                self._store.atomic_update(
+                    job_id,
+                    {"status": "error", "message": detail},
+                    expected_status="running",
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Optimiser setup failed. Check the server logs for details.",
+                ) from exc
         self._launch_background(job_id, body.node_id, config, mode, quote_grid, factors_df)
         return OptimiserSolveResponse(status="started", job_id=job_id)
 
@@ -979,75 +968,82 @@ class OptimiserSolveService:
                 "node_label": node.data.label,
             }
         )
-        checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_frontier_range_"))
+        # ``TemporaryDirectory`` ensures the checkpoint dir is removed even
+        # on signal/abort, where ``mkdtemp`` + ``rmtree`` in finally would
+        # leak.  The store-level cleanup (``delete_job``) stays in an outer
+        # finally so the job entry never outlives this call.
         try:
-            lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
-            source_lf = self._resolve_data_source(lazy_outputs, config, body.node_id, job_id)
-            constraint_cols, scored_lf = self._validate_and_project(
-                source_lf,
-                config,
-                job_id,
-            )
-            ranges = _estimate_scenario_frontier_ranges(
-                scored_lf,
-                quote_id_col=str(config.get("quote_id", "quote_id")),
-                constraint_cols=constraint_cols,
-            )
-            warning = None
-            if mode == "ratebook":
-                warning = (
-                    "Auto range uses the scenario dataframe envelope. "
-                    "Ratebook factor-table coupling can make the exact achievable "
-                    "range narrower."
-                )
-            self._store.atomic_update(
-                job_id,
-                {
-                    "status": "completed",
-                    "progress": 1.0,
-                    "message": "Completed",
-                    "result": {"ranges": ranges},
-                },
-            )
-            response_ranges = {
-                name: OptimiserFrontierRange(min=value["min"], max=value["max"])
-                for name, value in ranges.items()
-            }
-            return OptimiserFrontierAutoRangeResponse(
-                status="ok",
-                ranges=response_ranges,
-                warning=warning,
-            )
-        except HTTPException as exc:
-            self._store.atomic_update(
-                job_id,
-                {
-                    "status": "error",
-                    "message": str(exc.detail),
-                },
-                expected_status="running",
-            )
-            raise
-        except Exception as exc:
-            logger.error(
-                "frontier_auto_range_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                exc_info=True,
-            )
-            self._store.atomic_update(
-                job_id,
-                {
-                    "status": "error",
-                    "message": f"Frontier auto range failed: {exc}",
-                },
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Frontier auto range failed. Check the server logs for details.",
-            ) from exc
+            with tempfile.TemporaryDirectory(prefix="haute_frontier_range_") as raw_dir:
+                checkpoint_dir = Path(raw_dir)
+                try:
+                    lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
+                    source_lf = self._resolve_data_source(
+                        lazy_outputs, config, body.node_id, job_id,
+                    )
+                    constraint_cols, scored_lf = self._validate_and_project(
+                        source_lf,
+                        config,
+                        job_id,
+                    )
+                    ranges = _estimate_scenario_frontier_ranges(
+                        scored_lf,
+                        quote_id_col=str(config.get("quote_id", "quote_id")),
+                        constraint_cols=constraint_cols,
+                    )
+                    warning = None
+                    if mode == "ratebook":
+                        warning = (
+                            "Auto range uses the scenario dataframe envelope. "
+                            "Ratebook factor-table coupling can make the exact achievable "
+                            "range narrower."
+                        )
+                    self._store.atomic_update(
+                        job_id,
+                        {
+                            "status": "completed",
+                            "progress": 1.0,
+                            "message": "Completed",
+                            "result": {"ranges": ranges},
+                        },
+                    )
+                    response_ranges = {
+                        name: OptimiserFrontierRange(min=value["min"], max=value["max"])
+                        for name, value in ranges.items()
+                    }
+                    return OptimiserFrontierAutoRangeResponse(
+                        status="ok",
+                        ranges=response_ranges,
+                        warning=warning,
+                    )
+                except HTTPException as exc:
+                    self._store.atomic_update(
+                        job_id,
+                        {
+                            "status": "error",
+                            "message": str(exc.detail),
+                        },
+                        expected_status="running",
+                    )
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        "frontier_auto_range_failed",
+                        error=str(exc),
+                        node_id=body.node_id,
+                        exc_info=True,
+                    )
+                    self._store.atomic_update(
+                        job_id,
+                        {
+                            "status": "error",
+                            "message": f"Frontier auto range failed: {exc}",
+                        },
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Frontier auto range failed. Check the server logs for details.",
+                    ) from exc
         finally:
-            shutil.rmtree(checkpoint_dir, ignore_errors=True)
             self._store.delete_job(job_id)
 
     # ------------------------------------------------------------------

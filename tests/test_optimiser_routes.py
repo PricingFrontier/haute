@@ -1496,6 +1496,125 @@ class TestFrontierRoute:
         assert resp.status_code == 400
         assert "no configured constraints" in resp.json()["detail"].lower()
 
+    def test_frontier_rejects_invalid_threshold_range_shape_at_schema_layer(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Schema-level validation must reject malformed ranges with the same
+        wording as the config-side path so error UX is coherent across both
+        request bodies and saved configs.
+
+        Previously the schema accepted ``list[float]`` of any length and only
+        the runtime function caught length=1 / inverted / non-finite cases.
+        """
+        mock_solver = MagicMock()
+        clean_job_store.jobs["frontier_bad_range"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "created_at": time.time(),
+        }
+
+        # length-1: should fail validation with the canonical wording.
+        resp_short = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_bad_range",
+                "threshold_ranges": {"volume": [0.85]},
+                "n_points_per_dim": 3,
+            },
+        )
+        # min > max: should also fail with the canonical wording.
+        resp_inverted = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_bad_range",
+                "threshold_ranges": {"volume": [0.95, 0.85]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        for resp, expected in (
+            (resp_short, "min and max"),
+            (resp_inverted, "min must be less than or equal to max"),
+        ):
+            # Pydantic validators surface as 422 in FastAPI.
+            assert resp.status_code == 422, resp.text
+            assert expected in resp.text
+        mock_solver.frontier.assert_not_called()
+
+    def test_frontier_rejects_unbounded_compute_grid(self, client, clean_job_store):
+        """``n_points_per_dim ** n_constraints`` must stay within the compute budget.
+
+        The response is truncated to ``FRONTIER_POINT_LIMIT`` but the solver still
+        evaluates every grid point.  A request that exceeds the compute budget
+        must be rejected before the solver is invoked, otherwise a single client
+        call can pin CPU/memory for a very long time.
+        """
+        mock_solver = MagicMock()
+        clean_job_store.jobs["frontier_compute_dos"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {f"c{i}": {"min": 0.0} for i in range(6)},
+            },
+            "created_at": time.time(),
+        }
+
+        # 100 ** 6 = 10**12 grid points — well past anything reasonable.
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_compute_dos",
+                "threshold_ranges": {f"c{i}": [0.0, 1.0] for i in range(6)},
+                "n_points_per_dim": 100,
+            },
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"].lower()
+        assert "frontier compute budget" in detail
+        mock_solver.frontier.assert_not_called()
+
+    def test_frontier_compute_limit_allows_within_budget(self, client, clean_job_store):
+        """Requests at or below the compute budget must still succeed."""
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [100.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.25],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_compute_ok"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}},
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_compute_ok",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 100,  # 100 ** 1 = 100 — well within budget.
+            },
+        )
+
+        assert resp.status_code == 200
+        mock_solver.frontier.assert_called_once()
+
     def test_frontier_missing_job(self, client):
         resp = client.post(
             "/api/optimiser/frontier",
@@ -3798,6 +3917,36 @@ class TestApplyLambdasUnit:
 
         assert resp.status_code == 500
         assert "artifact" in resp.json()["detail"].lower()
+
+    def test_apply_solve_result_without_dataframe_attribute_fails_loudly(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """A solve_result missing ``dataframe`` is a backend bug, not a 500.
+
+        Previously the ``cast(_DataFrameResultLike, ...).dataframe`` access
+        raised ``AttributeError`` which the broad ``except Exception``
+        funnelled into a generic 500 with no actionable detail.  Surface a
+        typed error instead so the cause is obvious in the response.
+        """
+        clean_job_store.jobs["apply_no_dataframe"] = {
+            "status": "completed",
+            "solve_result": SimpleNamespace(
+                # No ``dataframe`` attribute on purpose.
+                total_objective=42.0,
+                total_constraints={"volume": 1.0},
+            ),
+            "result": {"total_objective": 42.0, "constraints": {"volume": 1.0}},
+            "created_at": time.time(),
+        }
+
+        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_no_dataframe"})
+
+        assert resp.status_code == 500
+        detail = resp.json()["detail"].lower()
+        assert "dataframe" in detail
+        assert "solve_result" in detail or "solve result" in detail
 
     def test_apply_after_heavy_result_policy_expiry_without_handle_returns_400(
         self,

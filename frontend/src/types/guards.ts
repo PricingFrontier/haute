@@ -1043,8 +1043,8 @@ function parseOptimiserSolveResult(value: unknown, field: string): OptimiserSolv
     scenario_value_histogram: histogram === null
       ? undefined
       : {
-          counts: histogram.counts === undefined ? [] : parseArray("parseOptimiserStatusResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
-          edges: histogram.edges === undefined ? [] : parseArray("parseOptimiserStatusResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
+          counts: parseArray("parseOptimiserStatusResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
+          edges: parseArray("parseOptimiserStatusResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
         },
     clamp_rate: obj.clamp_rate === undefined ? undefined : obj.clamp_rate === null ? null : expectNumber("parseOptimiserStatusResponse", obj.clamp_rate, `${field}.clamp_rate`),
     frontier: obj.frontier === undefined || obj.frontier === null ? null : parseFrontierResponse(obj.frontier, `${field}.frontier`),
@@ -1103,8 +1103,8 @@ export function parseFrontierSelectResponse(value: unknown): FrontierSelectRespo
     scenario_value_histogram: histogram === null
       ? undefined
       : {
-          counts: histogram.counts === undefined ? [] : parseArray("parseFrontierSelectResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
-          edges: histogram.edges === undefined ? [] : parseArray("parseFrontierSelectResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
+          counts: parseArray("parseFrontierSelectResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
+          edges: parseArray("parseFrontierSelectResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
         },
     clamp_rate: obj.clamp_rate === undefined ? undefined : obj.clamp_rate === null ? null : expectNumber("parseFrontierSelectResponse", obj.clamp_rate, "field `clamp_rate`"),
     error: optionalNullableString("parseFrontierSelectResponse", obj, "error"),

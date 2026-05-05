@@ -360,6 +360,38 @@ describe("API response guards", () => {
     expect(deleted.branch).toContain("feat/")
   })
 
+  it("rejects scenario_value_histogram payloads missing counts or edges", () => {
+    // CLAUDE.md: do not silently fall back.  A present histogram object
+    // missing one of its required arrays is a contract violation; throw so
+    // we surface the bug instead of rendering with empty arrays.
+    expect(() =>
+      parseFrontierSelectResponse({
+        status: "ok",
+        point_index: 0,
+        total_objective: 1,
+        constraints: { loss: 1 },
+        baseline_objective: 1,
+        baseline_constraints: { loss: 1 },
+        lambdas: { loss: 0.1 },
+        converged: true,
+        scenario_value_histogram: { counts: [1, 2] },
+      }),
+    ).toThrow(/scenario_value_histogram\.edges/)
+    expect(() =>
+      parseFrontierSelectResponse({
+        status: "ok",
+        point_index: 0,
+        total_objective: 1,
+        constraints: { loss: 1 },
+        baseline_objective: 1,
+        baseline_constraints: { loss: 1 },
+        lambdas: { loss: 0.1 },
+        converged: true,
+        scenario_value_histogram: { edges: [0, 1, 2] },
+      }),
+    ).toThrow(/scenario_value_histogram\.counts/)
+  })
+
   it("rejects malformed optimiser lambda maps", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("optimiser_status_response")
     const result = fixture.result as Record<string, unknown>

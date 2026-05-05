@@ -257,7 +257,7 @@ class TestFinalizeFrontier:
     """T2: Frontier computation within _finalize_solve_result."""
 
     def test_computes_frontier_when_online_with_constraints(self) -> None:
-        """Online mode + constraints → frontier_data populated on the job."""
+        """Online mode + constraints + frontier_ranges → frontier_data populated."""
         from unittest.mock import MagicMock
 
         from haute.routes._optimiser_service import _finalize_solve_result
@@ -274,6 +274,10 @@ class TestFinalizeFrontier:
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
                     "frontier_enabled": True,
+                    # Per the absolute-range design, frontier_ranges is required;
+                    # the previous test relied on legacy auto-derivation that
+                    # was removed when ranges stopped being baseline multipliers.
+                    "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
                 },
             }
         )
@@ -460,6 +464,12 @@ class TestFinalizeFrontier:
                         "zero_cstr": {"max": 1.0},
                     },
                     "frontier_enabled": True,
+                    # Explicit absolute ranges — proves the result does not
+                    # depend on baseline values (zero_cstr's baseline is 0).
+                    "frontier_ranges": {
+                        "loss": {"min": 0.8, "max": 1.1},
+                        "zero_cstr": {"min": 0.8, "max": 1.1},
+                    },
                 },
             }
         )

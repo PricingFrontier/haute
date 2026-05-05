@@ -529,35 +529,33 @@ def test_build_grid_rejects_interleaved_quote_blocks_loudly() -> None:
         ({"volume": [0.9, float("inf")]}, "must contain finite min and max values"),
     ],
 )
-def test_explicit_frontier_ranges_are_validated_before_solver_call(
+def test_explicit_frontier_ranges_rejected_at_schema_layer(
     threshold_ranges,
     message,
 ) -> None:
-    from haute.routes.optimiser import _frontier_ranges_for_request
+    """Schema validator rejects malformed ranges with the same wording as the
+    config-side path, so request-body and saved-config UX agree."""
+    from pydantic import ValidationError
 
-    with pytest.raises(HTTPException) as exc_info:
-        _frontier_ranges_for_request(
-            OptimiserFrontierRequest(
-                job_id="job",
-                threshold_ranges=threshold_ranges,
-            ),
-            {
-                "status": "completed",
-                "solver": MagicMock(),
-                "quote_grid": MagicMock(),
-                "config": {"constraints": {"volume": {"min": 0.9}}},
-                "created_at": time.time(),
-            },
+    with pytest.raises(ValidationError) as exc_info:
+        OptimiserFrontierRequest(
+            job_id="job",
+            threshold_ranges=threshold_ranges,
         )
 
-    assert exc_info.value.status_code == 400
-    assert message in exc_info.value.detail
+    # Pydantic prefixes the field path; the underlying message is preserved.
+    assert message in str(exc_info.value)
 
 
 def test_explicit_frontier_route_rejects_bad_ranges_without_calling_solver(
     client,
     clean_job_store,
 ) -> None:
+    """End-to-end: the solver must never be invoked for malformed ranges.
+
+    FastAPI surfaces Pydantic validation as 422; the previous 400 came from
+    the duplicated runtime check that has now been removed.
+    """
     solver = MagicMock()
     clean_job_store.jobs["frontier_bad_ranges"] = {
         "status": "completed",
@@ -575,8 +573,8 @@ def test_explicit_frontier_route_rejects_bad_ranges_without_calling_solver(
         },
     )
 
-    assert resp.status_code == 400
-    assert "min must be less than or equal to max" in resp.json()["detail"]
+    assert resp.status_code == 422
+    assert "min must be less than or equal to max" in resp.text
     solver.frontier.assert_not_called()
 
 

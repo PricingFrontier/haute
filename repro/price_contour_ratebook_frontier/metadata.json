@@ -2,7 +2,7 @@
   "source": "Generated from C:/Users/prici/haute/rating/main.py online_optimiser",
   "generated_at": "2026-05-04 17:17:44",
   "elapsed_seconds_to_generate": 4.59,
-  "price_contour_version_in_haute_env": "0.3.3",
+  "price_contour_version_in_haute_env": "0.3.4",
   "scored_parquet": "data/scored_optimiser_input.parquet",
   "factors_parquet": "data/ratebook_factors_by_quote.parquet",
   "scored_stats": {

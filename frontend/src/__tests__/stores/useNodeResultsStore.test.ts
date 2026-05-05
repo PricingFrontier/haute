@@ -1518,6 +1518,109 @@ describe("useNodeResultsStore", () => {
       expect(cached.result.factor_tables).toEqual(factor_tables)
     })
 
+    it("updateFrontierAfterSelect drops a response when the user has moved to a different point", () => {
+      // Race: the user clicks point 0, the request fires, then they click
+      // point 1 (which lands first).  When point 0's response finally arrives,
+      // it must not overwrite the now-current point-1 state.  The stale
+      // response is still allowed to enrich point-0's per-point detail in the
+      // frontier so re-selecting point 0 later benefits from the data.
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          { total_objective: 240, total_premium: 68, lambda_premium: 0.28, converged: true },
+          { total_objective: 260, total_premium: 72, lambda_premium: 0.32, converged: true },
+        ],
+        n_points: 2,
+        points_returned: 2,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      s.completeSolveJob("n1", makeSolveResult({ frontier }))
+      // Mirror the OptimiserPreview flow: the click sets selectedPointIndex
+      // synchronously, then the fetch fires.  Click point 0 first…
+      s.selectFrontierPoint("n1", 0)
+      // …then the user clicks point 1 before point 0's response lands.
+      s.selectFrontierPoint("n1", 1)
+      s.updateFrontierAfterSelect("n1", 1, {
+        status: "ok",
+        point_index: 1,
+        total_objective: 260,
+        constraints: { premium: 72 },
+        baseline_objective: 90,
+        baseline_constraints: { premium: 48 },
+        lambdas: { premium: 0.32 },
+        converged: true,
+        error: null,
+      })
+
+      // The late response from point 0 arrives.  Frontend must not regress
+      // selectedPointIndex/result back to point 0.
+      s.updateFrontierAfterSelect("n1", 0, {
+        status: "ok",
+        point_index: 0,
+        total_objective: 240,
+        constraints: { premium: 68 },
+        baseline_objective: 90,
+        baseline_constraints: { premium: 48 },
+        lambdas: { premium: 0.28 },
+        converged: true,
+        iterations: 11,
+        history: [
+          { iteration: 1, total_objective: 240, max_lambda_change: 0.02, all_constraints_satisfied: true },
+        ],
+        error: null,
+      })
+
+      const cached = useNodeResultsStore.getState().solveResults["n1"]
+      expect(cached.selectedPointIndex).toBe(1)
+      expect(cached.result.total_objective).toBe(260)
+      expect(cached.result.constraints).toEqual({ premium: 72 })
+      // Point 0's per-point data is still merged into the frontier so a
+      // subsequent select reuses it.
+      expect(cached.frontier!.points[0]).toEqual(expect.objectContaining({ iterations: 11 }))
+      // Point 1's row stays untouched by the late response.
+      expect(cached.frontier!.points[1]).not.toHaveProperty("iterations")
+    })
+
+    it("updateFrontierAfterSelect rejects responses whose point_index does not match the requested index", () => {
+      // The backend response carries the canonical point_index.  If it ever
+      // disagrees with the index the store was asked to update, that is a
+      // contract violation — surface it loudly rather than mutating state.
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      s.completeSolveJob("n1", makeSolveResult({
+        frontier: {
+          status: "ok",
+          points: [
+            { total_objective: 240, total_premium: 68, lambda_premium: 0.28, converged: true },
+            { total_objective: 260, total_premium: 72, lambda_premium: 0.32, converged: true },
+          ],
+          n_points: 2,
+          points_returned: 2,
+          constraint_names: ["premium"],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      }))
+
+      expect(() =>
+        s.updateFrontierAfterSelect("n1", 0, {
+          status: "ok",
+          point_index: 1,
+          total_objective: 260,
+          constraints: { premium: 72 },
+          baseline_objective: 90,
+          baseline_constraints: { premium: 48 },
+          lambdas: { premium: 0.32 },
+          converged: true,
+          error: null,
+        }),
+      ).toThrow(/point_index/)
+    })
+
     it("updateFrontierAfterSelect clears point diagnostics that are not in the selected point", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Node 1", {}, "h1")

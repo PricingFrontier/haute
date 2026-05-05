@@ -7,9 +7,37 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, field_validator
+
+
+def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
+    """Validate one ``(min, max)`` frontier-range value.
+
+    Single source of truth for both the request-body schema layer and the
+    config-side path in ``_optimiser_service``.  Accepts either a dict
+    ``{"min": ..., "max": ...}`` or a 2-element list/tuple.
+    """
+    if isinstance(value, dict):
+        raw_min = value.get("min")
+        raw_max = value.get("max")
+    elif isinstance(value, list | tuple) and len(value) == 2:
+        raw_min, raw_max = value
+    else:
+        raise ValueError(f"{field} must contain min and max values.")
+
+    if raw_min is None or raw_max is None:
+        raise ValueError(f"{field} must contain min and max values.")
+
+    min_value = float(raw_min)
+    max_value = float(raw_max)
+    if not math.isfinite(min_value) or not math.isfinite(max_value):
+        raise ValueError(f"{field} must contain finite min and max values.")
+    if min_value > max_value:
+        raise ValueError(f"{field} min must be less than or equal to max.")
+    return min_value, max_value
 
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
@@ -695,6 +723,22 @@ class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
+
+    @field_validator("threshold_ranges", mode="after")
+    @classmethod
+    def _validate_threshold_ranges(
+        cls,
+        value: dict[str, list[float]],
+    ) -> dict[str, list[float]]:
+        for name, range_value in value.items():
+            # Re-use the canonical validator so request-body and config-side
+            # error messages match.  We discard the normalised tuple — the
+            # field type stays as ``list[float]`` for JSON-payload simplicity.
+            _normalise_frontier_range_pair(
+                range_value,
+                field=f"threshold_ranges.{name}",
+            )
+        return value
 
 
 class OptimiserFrontierResponse(BaseModel):

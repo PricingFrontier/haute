@@ -1083,6 +1083,17 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText(/8 CD iters/)).toBeInTheDocument()
     })
 
+    it("falls back to solver iterations when ratebook CD iterations are absent", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({ mode: "ratebook", cd_iterations: null, iterations: 11 }),
+        }),
+      })
+
+      expect(screen.getByText(/11 iters/)).toBeInTheDocument()
+      expect(screen.queryByText(/\? CD iters/)).not.toBeInTheDocument()
+    })
+
     it("hides Lambdas section in ratebook mode", () => {
       renderPreview({
         data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }),
