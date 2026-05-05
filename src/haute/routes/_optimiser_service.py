@@ -35,8 +35,10 @@ from haute.routes._helpers import find_typed_node
 from haute.routes._job_store import JobStore, register_artifact_cleaner
 from haute.routes._optimiser_limits import limited_frontier_payload
 from haute.schemas import (
+    OptimiserEstimateRequest,
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeResponse,
+    OptimiserFrontierRange,
     OptimiserSolveRequest,
     OptimiserSolveResponse,
 )
@@ -76,7 +78,7 @@ def _chunk_size_from_config(config: dict[str, Any]) -> int:
         raise ValueError("chunk_size must be a positive integer.")
     if raw_chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer.")
-    return raw_chunk_size
+    return int(raw_chunk_size)
 
 
 def _job_elapsed_seconds(job: dict[str, Any], fallback: float = 0.0) -> float:
@@ -309,12 +311,13 @@ def _compute_frontier(
             factors_df,
             **frontier_kwargs,
         )
-    return solver.frontier(
-        quote_grid,
-        threshold_ranges=threshold_ranges,
-        n_points_per_dim=n_points_per_dim,
-        initial_lambdas=initial_lambdas,
-    )
+    frontier_kwargs = {
+        "threshold_ranges": threshold_ranges,
+        "n_points_per_dim": n_points_per_dim,
+    }
+    if initial_lambdas is not None:
+        frontier_kwargs["initial_lambdas"] = initial_lambdas
+    return solver.frontier(quote_grid, **frontier_kwargs)
 
 
 def _normalise_frontier_range(value: Any, *, field: str) -> tuple[float, float]:
@@ -480,11 +483,7 @@ def _ratebook_factor_level_counts(
                 f"{missing}"
             )
         table_name = _ratebook_factor_table_name(columns)
-        count_rows = (
-            factors_df.group_by(columns)
-            .agg(pl.len().alias("quote_count"))
-            .to_dicts()
-        )
+        count_rows = factors_df.group_by(columns).agg(pl.len().alias("quote_count")).to_dicts()
         counts[table_name] = {
             _ratebook_factor_level_key([row[column] for column in columns]): int(row["quote_count"])
             for row in count_rows
@@ -810,9 +809,7 @@ def _solve_ratebook(
     null_counts = factors_df.select(
         [pl.col(c).null_count().alias(c) for c in factor_cols_flat],
     ).row(0, named=True)
-    null_factor_counts = {
-        name: count for name, count in null_counts.items() if int(count) > 0
-    }
+    null_factor_counts = {name: count for name, count in null_counts.items() if int(count) > 0}
     if null_factor_counts:
         formatted_counts = ", ".join(
             f"{name} ({count} {'row' if count == 1 else 'rows'})"
@@ -927,6 +924,31 @@ class OptimiserSolveService:
                 body.node_id,
                 job_id,
             )
+        except HTTPException as exc:
+            self._store.atomic_update(
+                job_id,
+                {"status": "error", "message": str(exc.detail)},
+                expected_status="running",
+            )
+            raise
+        except Exception as exc:
+            detail = f"Optimiser setup failed: {exc}"
+            logger.error(
+                "optimiser_setup_failed",
+                error=str(exc),
+                node_id=body.node_id,
+                job_id=job_id,
+                exc_info=True,
+            )
+            self._store.atomic_update(
+                job_id,
+                {"status": "error", "message": detail},
+                expected_status="running",
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Optimiser setup failed. Check the server logs for details.",
+            ) from exc
         finally:
             shutil.rmtree(checkpoint_dir, ignore_errors=True)
         self._launch_background(job_id, body.node_id, config, mode, quote_grid, factors_df)
@@ -987,9 +1009,13 @@ class OptimiserSolveService:
                     "result": {"ranges": ranges},
                 },
             )
+            response_ranges = {
+                name: OptimiserFrontierRange(min=value["min"], max=value["max"])
+                for name, value in ranges.items()
+            }
             return OptimiserFrontierAutoRangeResponse(
                 status="ok",
-                ranges=ranges,
+                ranges=response_ranges,
                 warning=warning,
             )
         except HTTPException as exc:
@@ -1022,6 +1048,7 @@ class OptimiserSolveService:
             ) from exc
         finally:
             shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            self._store.delete_job(job_id)
 
     # ------------------------------------------------------------------
     # Private orchestration steps
@@ -1076,7 +1103,7 @@ class OptimiserSolveService:
 
     def _execute_pipeline(
         self,
-        body: OptimiserSolveRequest,
+        body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
         job_id: str,
         checkpoint_dir: Path,
     ) -> dict[str, Any]:
@@ -1205,9 +1232,7 @@ class OptimiserSolveService:
         constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
         qid_dtype = schema[qid_col]
         if not (
-            qid_dtype == pl.String
-            or qid_dtype == pl.Categorical
-            or isinstance(qid_dtype, pl.Enum)
+            qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
         ):
             detail = (
                 f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
@@ -1243,10 +1268,7 @@ class OptimiserSolveService:
         if qid_dtype == pl.String:
             cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
 
-        scored_lf = (
-            source_lf.select(solver_cols)
-            .with_columns(cast_exprs)
-        )
+        scored_lf = source_lf.select(solver_cols).with_columns(cast_exprs)
         return constraint_cols, scored_lf
 
     @staticmethod

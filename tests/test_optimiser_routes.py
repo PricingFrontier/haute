@@ -409,6 +409,61 @@ class TestSolveRoute:
         assert started_job["job_type"] == "solve"
         launch_background.assert_called_once()
 
+    def test_solve_marks_job_error_when_factor_extraction_fails(
+        self,
+        client,
+        scored_data,
+        clean_job_store,
+    ):
+        """A synchronous ratebook setup failure must not leave the solve job running."""
+        from haute.routes.optimiser import _solve_service
+
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "mode": "ratebook",
+                "factor_columns": [["region"]],
+                "banding_source": "banding",
+            },
+        )
+        lazy_outputs = {
+            "opt": pl.LazyFrame(
+                {
+                    "quote_id": ["q1"],
+                    "scenario_index": [0],
+                    "scenario_value": [1.0],
+                    "expected_income": [100.0],
+                    "volume": [1.0],
+                }
+            )
+        }
+        before_job_ids = set(clean_job_store.jobs)
+
+        with (
+            patch.object(_solve_service, "_execute_pipeline", return_value=lazy_outputs),
+            patch.object(
+                _solve_service,
+                "_extract_factors",
+                side_effect=RuntimeError("factor collection failed"),
+            ),
+            patch.object(_solve_service, "_build_grid") as build_grid,
+            patch.object(_solve_service, "_launch_background") as launch_background,
+        ):
+            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 500
+        new_job_ids = set(clean_job_store.jobs) - before_job_ids
+        solve_jobs = [
+            clean_job_store.jobs[job_id]
+            for job_id in new_job_ids
+            if clean_job_store.jobs[job_id].get("job_type") == "solve"
+        ]
+        assert len(solve_jobs) == 1
+        assert solve_jobs[0]["status"] == "error"
+        assert "factor collection failed" in solve_jobs[0]["message"]
+        build_grid.assert_not_called()
+        launch_background.assert_not_called()
+
 
 class TestStatusRoute:
     def test_missing_job_returns_404(self, client):
@@ -574,20 +629,44 @@ class TestEstimateRoute:
         assert resp.status_code == 400
         assert "Null quote_id values found in optimiser input (2 rows)." in resp.json()["detail"]
 
-    def test_estimate_gracefully_handles_unknown_node(self, client, scored_data):
+    def test_estimate_rejects_unknown_node_loudly(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
-        # Unknown node id — the estimate engine can't find sources, so
-        # total_rows is None but the response is still shaped correctly.
         resp = client.post(
             "/api/optimiser/estimate",
             json={"graph": graph, "node_id": "nonexistent"},
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_rows"] is None
+        assert resp.status_code == 404
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_uses_per_quote_scenario_extrema(self, client, tmp_path):
+    def test_estimate_surfaces_projected_input_errors(self, client, tmp_path):
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "scenario_index": [0, 1],
+                "scenario_value": [0.9, 1.1],
+                "expected_income": [100.0, 110.0],
+            }
+        )
+        path = tmp_path / "missing_constraint.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "Missing columns in scored data" in resp.json()["detail"]
+        assert "volume" in resp.json()["detail"]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_uses_per_quote_scenario_extrema(
+        self,
+        client,
+        tmp_path,
+        clean_job_store,
+    ):
         """Auto range scans every scenario per quote, so middle extrema count."""
         from haute.routes.optimiser import _store
 
@@ -625,6 +704,9 @@ class TestEstimateRoute:
         assert any(
             call.args[0].get("job_type") == "frontier_auto_range"
             for call in create_job.call_args_list
+        )
+        assert not any(
+            job.get("job_type") == "frontier_auto_range" for job in clean_job_store.jobs.values()
         )
 
 
@@ -833,9 +915,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         "baseline_constraints": {"volume": 0.88},
         "lambdas": {"volume": 0.5},
         "converged": True,
-        "factor_tables": {
-            "region": [{"__factor_group__": "Old", "optimal_scenario_value": 1.0}]
-        },
+        "factor_tables": {"region": [{"__factor_group__": "Old", "optimal_scenario_value": 1.0}]},
         "scenario_value_histogram": {"counts": [1, 2], "edges": [0.9, 1.0, 1.1]},
     }
     clean_job_store.jobs[job_id] = {
@@ -1264,9 +1344,7 @@ class TestFrontierRoute:
         assert resp.json()["points"][0]["total_volume"] == pytest.approx(0.9)
         mock_solver.frontier.assert_called_once()
         assert mock_solver.frontier.call_args.args == (mock_grid, factors_df)
-        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
-            "volume": (0.85, 0.95)
-        }
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (0.85, 0.95)}
         assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
         assert mock_solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
 
@@ -1317,6 +1395,89 @@ class TestFrontierRoute:
             "loss": (10.0, 20.0),
         }
         assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
+
+    def test_frontier_omits_initial_lambdas_when_base_result_has_none(
+        self,
+        client,
+        clean_job_store,
+    ):
+        class SolverWithoutInitialLambdas:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def frontier(
+                self,
+                quote_grid: object,
+                *,
+                threshold_ranges: dict[str, tuple[float, float]],
+                n_points_per_dim: int,
+            ) -> SimpleNamespace:
+                self.calls.append(
+                    {
+                        "quote_grid": quote_grid,
+                        "threshold_ranges": threshold_ranges,
+                        "n_points_per_dim": n_points_per_dim,
+                    }
+                )
+                return SimpleNamespace(
+                    points=pl.DataFrame(
+                        {
+                            "total_objective": [100.0],
+                            "loss_ratio": [0.9],
+                            "lambda_loss_ratio": [0.25],
+                        }
+                    )
+                )
+
+        solver = SolverWithoutInitialLambdas()
+        quote_grid = object()
+        clean_job_store.jobs["frontier_no_initial_lambdas"] = {
+            "status": "completed",
+            "solver": solver,
+            "quote_grid": quote_grid,
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_no_initial_lambdas",
+                "threshold_ranges": {"loss_ratio": [0.8, 0.95]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert solver.calls == [
+            {
+                "quote_grid": quote_grid,
+                "threshold_ranges": {"loss_ratio": (0.8, 0.95)},
+                "n_points_per_dim": 3,
+            }
+        ]
+
+    def test_frontier_config_range_errors_are_client_errors(self, client, clean_job_store):
+        mock_solver = MagicMock()
+        clean_job_store.jobs["auto_frontier_invalid_ranges"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}},
+                "frontier_ranges": {"volume": {"min": 0.8}},
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={"job_id": "auto_frontier_invalid_ranges"},
+        )
+
+        assert resp.status_code == 400
+        assert "frontier_ranges.volume must contain min and max values" in resp.json()["detail"]
+        mock_solver.frontier.assert_not_called()
 
     def test_frontier_without_ranges_requires_config_constraints(self, client, clean_job_store):
         clean_job_store.jobs["auto_frontier_no_constraints"] = {
@@ -3015,9 +3176,7 @@ class TestFinalizeSolveResult:
         assert job["frontier_data"]["points_truncated"] is False
         assert "volume" in job["frontier_data"]["constraint_names"]
         mock_solver.frontier.assert_called_once()
-        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
-            "volume": (0.8, 1.1)
-        }
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (0.8, 1.1)}
 
     def test_frontier_progress_is_visible_while_finalize_computes_frontier(self):
         from haute.routes._job_store import JobStore
@@ -3107,9 +3266,7 @@ class TestFinalizeSolveResult:
             elapsed=1.0,
         )
 
-        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
-            "volume": (70.0, 95.0)
-        }
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (70.0, 95.0)}
 
     def test_auto_frontier_payload_is_capped_in_job_state(self):
         from haute.routes._job_store import JobStore
@@ -3761,9 +3918,7 @@ class TestApplyLambdasUnit:
                 "constraints": {"volume": 0.91},
                 "lambdas": {"volume": 0.1},
                 "factor_tables": {
-                    "region": [
-                        {"__factor_group__": "Stale", "optimal_scenario_value": 1.0}
-                    ]
+                    "region": [{"__factor_group__": "Stale", "optimal_scenario_value": 1.0}]
                 },
             }
         )
@@ -5408,8 +5563,9 @@ class TestMlflowLogExtended:
         optimiser_result = logged_json["optimiser_result.json"]
         assert optimiser_result["total_objective"] == 222.0
         assert optimiser_result["factor_tables"] == _expected_region_factor_tables()
-        assert logged_json["frontier_point_summary.json"]["factor_tables"] == (
-            optimiser_result["factor_tables"]
+        assert (
+            logged_json["frontier_point_summary.json"]["factor_tables"]
+            == (optimiser_result["factor_tables"])
         )
         args = mock_solver.solve.call_args.args
         assert args[0] is mock_grid

@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Protocol, cast
 
 from fastapi import APIRouter, HTTPException
 
@@ -27,7 +27,6 @@ from haute.routes._optimiser_service import (
     _DEFAULT_TIMEOUT,
     _ESTIMATE_JOB_TYPE,
     _JOB_TYPE_KEY,
-    _NULL_QUOTE_ID_DETAIL_PREFIX,
     OptimiserSolveService,
     _auto_frontier_ranges_from_config,
     _cleanup_apply_result_artifact,
@@ -82,6 +81,11 @@ _FRONTIER_POINT_SPECIFIC_RESULT_KEYS = (
     "frontier_error",
 )
 _CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
+
+
+class _DataFrameResultLike(Protocol):
+    @property
+    def dataframe(self) -> Any: ...
 
 
 def _touch_heavy_objects_or_raise(
@@ -156,13 +160,17 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
             .group_by(quote_id_col)
             .agg(pl.len().alias("scenario_count"))
         )
-        row = scenario_counts.select(
-            pl.len().alias("quote_count"),
-            pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
-            pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
-            pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
-            pl.col("scenario_count").sum().alias("expanded_row_count"),
-        ).collect(engine="streaming").row(0, named=True)
+        row = (
+            scenario_counts.select(
+                pl.len().alias("quote_count"),
+                pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
+                pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
+                pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
+                pl.col("scenario_count").sum().alias("expanded_row_count"),
+            )
+            .collect(engine="streaming")
+            .row(0, named=True)
+        )
         return {
             "quote_count": row["quote_count"],
             "scenarios_per_quote_min": row["scenarios_per_quote_min"],
@@ -192,7 +200,10 @@ def _frontier_ranges_for_request(
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    ranges = _auto_frontier_ranges_from_config(job.get("config", {}))
+    try:
+        ranges = _auto_frontier_ranges_from_config(job.get("config", {}))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ranges:
         raise HTTPException(
             status_code=400,
@@ -477,8 +488,10 @@ def _clear_result_data_after_user_action(job_id: str) -> None:
 
 def _cached_result_matches_frontier_selection(result: dict[str, Any], point_index: int) -> bool:
     selected_point = result.get("selected_frontier_point")
-    return isinstance(selected_point, int) and not isinstance(selected_point, bool) and (
-        selected_point == point_index
+    return (
+        isinstance(selected_point, int)
+        and not isinstance(selected_point, bool)
+        and (selected_point == point_index)
     )
 
 
@@ -610,12 +623,9 @@ def _ratebook_runtime_state_or_raise(
                 "solve to materialise this frontier point."
             ),
         )
-    if (
-        not isinstance(factor_columns, list)
-        or not all(
-            isinstance(group, list) and all(isinstance(col, str) for col in group)
-            for group in factor_columns
-        )
+    if not isinstance(factor_columns, list) or not all(
+        isinstance(group, list) and all(isinstance(col, str) for col in group)
+        for group in factor_columns
     ):
         raise HTTPException(status_code=500, detail="Ratebook factor column metadata is invalid")
     return job, solver, quote_grid, factors_df, factor_columns
@@ -833,7 +843,7 @@ def _materialise_frontier_point_apply(
                 constraints=job.get("config", {}).get("constraints", {}),
             )
         new_handle = _persist_apply_result_artifact(apply_result)
-        df = apply_result.dataframe
+        df = cast(_DataFrameResultLike, apply_result).dataframe
         if new_handle is None:
             _store.atomic_update(
                 job_id,
@@ -926,25 +936,15 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     except Exception as exc:
         logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
 
-    metrics: dict[str, int | float | None] = {}
-    try:
-        metrics = _optimiser_input_metrics(body)
-    except HTTPException as exc:
-        if isinstance(exc.detail, str) and exc.detail.startswith(_NULL_QUOTE_ID_DETAIL_PREFIX):
-            raise
-        logger.warning(
-            "optimiser_input_estimate_failed",
-            error=str(exc),
-            node_id=body.node_id,
-        )
-    except Exception as exc:
-        logger.warning(
-            "optimiser_input_estimate_failed",
-            error=str(exc),
-            node_id=body.node_id,
-        )
-
-    return OptimiserEstimateResponse(total_rows=total_rows, **metrics)
+    metrics = _optimiser_input_metrics(body)
+    return OptimiserEstimateResponse(
+        total_rows=total_rows,
+        quote_count=cast(int | None, metrics.get("quote_count")),
+        scenarios_per_quote_min=cast(int | None, metrics.get("scenarios_per_quote_min")),
+        scenarios_per_quote_max=cast(int | None, metrics.get("scenarios_per_quote_max")),
+        scenarios_per_quote_mean=cast(float | None, metrics.get("scenarios_per_quote_mean")),
+        expanded_row_count=cast(int | None, metrics.get("expanded_row_count")),
+    )
 
 
 @router.post("/frontier/auto-range", response_model=OptimiserFrontierAutoRangeResponse)
@@ -1021,15 +1021,19 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
                 from_artifact=from_artifact,
                 **limited_apply_preview_payload(df),
             )
-            _clear_result_data_after_user_action(body.job_id)
+            if _result_mode(job, result) == "ratebook":
+                _clear_result_data_after_user_action(body.job_id)
+            else:
+                _store.clear_result_data(body.job_id)
             return response
 
         solve_result = job.get("solve_result")
         from_artifact = False
         if solve_result is not None:
-            df = solve_result.dataframe
-            total_objective = solve_result.total_objective
-            constraints = solve_result.total_constraints
+            typed_solve_result = cast(SolveResultLike, solve_result)
+            df = cast(_DataFrameResultLike, solve_result).dataframe
+            total_objective = typed_solve_result.total_objective
+            constraints = typed_solve_result.total_constraints
         else:
             from_artifact = True
             artifact_handles = _artifact_handles_or_raise(job)
@@ -1040,13 +1044,18 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
                     detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
                 )
             df = _load_apply_result_artifact(apply_handle)
-            result = job.get("result")
-            if not isinstance(result, dict):
+            job_result: object = job.get("result")
+            if not isinstance(job_result, dict):
                 raise HTTPException(status_code=500, detail="Job summary is missing")
-            total_objective = result.get("total_objective")
-            constraints = result.get("constraints", {})
-            if not isinstance(total_objective, (int, float)) or not isinstance(constraints, dict):
+            raw_total_objective = job_result.get("total_objective")
+            raw_constraints = job_result.get("constraints", {})
+            if not isinstance(raw_total_objective, (int, float)) or not isinstance(
+                raw_constraints,
+                dict,
+            ):
                 raise HTTPException(status_code=500, detail="Job summary is incomplete")
+            total_objective = float(raw_total_objective)
+            constraints = cast(dict[str, float], raw_constraints)
 
         response = OptimiserApplyResponse(
             status="ok",
@@ -1069,9 +1078,13 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     """Compute efficient frontier for a completed optimisation job."""
     job = _store.require_completed_job(body.job_id)
     mode = job.get("config", {}).get("mode", job.get("result", {}).get("mode", "online"))
-    required_runtime = ("solver", "quote_grid", "factors_df") if mode == "ratebook" else (
-        "solver",
-        "quote_grid",
+    required_runtime = (
+        ("solver", "quote_grid", "factors_df")
+        if mode == "ratebook"
+        else (
+            "solver",
+            "quote_grid",
+        )
     )
 
     missing_runtime_detail = (
@@ -1171,8 +1184,10 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
             return _frontier_select_response(job["result"])
 
         existing_base_result = job.get("base_result")
-        base_result = existing_base_result if isinstance(existing_base_result, dict) else dict(
-            job.get("result", {})
+        base_result = (
+            existing_base_result
+            if isinstance(existing_base_result, dict)
+            else dict(job.get("result", {}))
         )
         if body.point_index is None:
             result_dict = dict(base_result)
@@ -1186,10 +1201,9 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
             selected_point = body.point_index
             if (
                 body.include_ratebook_tables
-                and _result_mode({**job, "base_result": base_result}, result_dict)
-                == "ratebook"
+                and _result_mode({**job, "base_result": base_result}, result_dict) == "ratebook"
             ):
-                updated_job, materialised_result, _solve_result = (
+                _materialised_job, materialised_result, _solve_result = (
                     _materialise_ratebook_frontier_point(
                         body.job_id,
                         selected_point,
@@ -1280,9 +1294,7 @@ def _build_artifact_payload(
         }
     if job_config.get("mode") == "ratebook":
         factor_tables = (
-            job["result"].get("factor_tables")
-            if isinstance(job.get("result"), dict)
-            else None
+            job["result"].get("factor_tables") if isinstance(job.get("result"), dict) else None
         )
         if factor_tables is None:
             factor_tables = getattr(solve_result, "factor_tables", None)
@@ -1297,6 +1309,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     job = _store.require_completed_job(body.job_id)
 
     selected_frontier_point = _selected_or_requested_frontier_point(job, body.point_index)
+    solve_result: SolveResultLike
     if selected_frontier_point is not None:
         job, _selected_result, solve_result = _solve_result_for_selected_frontier_point(
             body.job_id,
@@ -1310,9 +1323,10 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
             detail="Job has no solve result",
         )
         job = _store.require_completed_job(body.job_id)
-        solve_result = job.get("solve_result")
-        if solve_result is None:
+        maybe_solve_result = cast(SolveResultLike | None, job.get("solve_result"))
+        if maybe_solve_result is None:
             raise HTTPException(status_code=400, detail="Job has no solve result")
+        solve_result = maybe_solve_result
 
     from haute.routes._helpers import pipeline_dir
 
@@ -1365,13 +1379,14 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
 
     selected_frontier_point = _selected_or_requested_frontier_point(job, body.point_index)
     selected_result: dict[str, Any] | None = None
+    solve_result: SolveResultLike
+    solver: Any | None = None
     if selected_frontier_point is not None:
         job, selected_result, solve_result = _solve_result_for_selected_frontier_point(
             body.job_id,
             job,
             selected_frontier_point,
         )
-        solver = None
     else:
         _touch_heavy_objects_or_raise(
             body.job_id,
@@ -1382,15 +1397,15 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             body.job_id,
             required_keys=("solver", "solve_result"),
             detail=(
-                "Solver is not available for this job. "
-                "Re-run the solve to log results to MLflow."
+                "Solver is not available for this job. Re-run the solve to log results to MLflow."
             ),
         )
         job = _store.require_completed_job(body.job_id)
-        solve_result = job.get("solve_result")
+        maybe_solve_result = cast(SolveResultLike | None, job.get("solve_result"))
         solver = job.get("solver")
-        if solve_result is None:
+        if maybe_solve_result is None:
             raise HTTPException(status_code=400, detail="Job has no solve result")
+        solve_result = maybe_solve_result
         if solver is None:
             raise HTTPException(
                 status_code=400,
@@ -1420,8 +1435,18 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
         node_label = job.get("node_label", "optimiser")
         job_config = job.get("config", {})
         if selected_result is None:
+            if solver is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Solver is not available for this job. "
+                        "Re-run the solve to log results to MLflow."
+                    ),
+                )
             summary = solver.summary(solve_result)
         else:
+            if selected_frontier_point is None:
+                raise HTTPException(status_code=500, detail="Selected frontier point is missing")
             summary = _frontier_point_mlflow_summary(
                 job,
                 selected_result,

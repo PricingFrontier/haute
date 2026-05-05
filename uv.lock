@@ -988,7 +988,7 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.9.0" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "polars", specifier = ">=1.0.0" },
-    { name = "price-contour", specifier = "==0.3.4" },
+    { name = "price-contour", specifier = ">=0.3.4" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "python-multipart", specifier = ">=0.0.18" },

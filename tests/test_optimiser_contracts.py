@@ -666,9 +666,5 @@ def test_real_solve_apply_totals_match_selected_rows(
         how="inner",
     )
     assert selected_source.height == 2
-    assert applied["total_objective"] == pytest.approx(
-        selected_source["expected_income"].sum()
-    )
-    assert applied["constraints"]["volume"] == pytest.approx(
-        selected_source["volume"].sum()
-    )
+    assert applied["total_objective"] == pytest.approx(selected_source["expected_income"].sum())
+    assert applied["constraints"]["volume"] == pytest.approx(selected_source["volume"].sum())

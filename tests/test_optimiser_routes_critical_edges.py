@@ -68,7 +68,50 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
     return job
 
 
-def test_estimate_returns_empty_response_when_metadata_lookup_fails(client):
+def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
+    from tests.conftest import make_edge, make_graph
+
+    data_path = tmp_path / "scored.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q1", "q2", "q2"],
+            "scenario_index": [0, 1, 0, 1],
+            "scenario_value": [0.9, 1.1, 0.8, 1.0],
+            "expected_income": [100.0, 110.0, 90.0, 95.0],
+            "volume": [1.0, 0.9, 1.2, 1.1],
+        }
+    ).write_parquet(data_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": str(data_path)},
+                    },
+                },
+                {
+                    "id": "opt",
+                    "data": {
+                        "label": "optimiser",
+                        "nodeType": "optimiser",
+                        "config": {
+                            "mode": "online",
+                            "objective": "expected_income",
+                            "constraints": {"volume": {"min": 0.9}},
+                            "quote_id": "quote_id",
+                            "scenario_index": "scenario_index",
+                            "scenario_value": "scenario_value",
+                        },
+                    },
+                },
+            ],
+            "edges": [make_edge("source", "opt").model_dump()],
+        }
+    )
+
     with (
         patch(
             "haute._ram_estimate._ancestor_source_metadata",
@@ -78,24 +121,22 @@ def test_estimate_returns_empty_response_when_metadata_lookup_fails(client):
     ):
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": {"nodes": [], "edges": []}, "node_id": "opt"},
+            json={"graph": graph.model_dump(), "node_id": "opt"},
         )
 
     assert resp.status_code == 200
     assert resp.json() == {
         "total_rows": None,
-        "quote_count": None,
-        "scenarios_per_quote_min": None,
-        "scenarios_per_quote_max": None,
-        "scenarios_per_quote_mean": None,
-        "expanded_row_count": None,
+        "quote_count": 2,
+        "scenarios_per_quote_min": 2,
+        "scenarios_per_quote_max": 2,
+        "scenarios_per_quote_mean": 2.0,
+        "expanded_row_count": 4,
     }
-    assert log_warning.call_count == 2
+    assert log_warning.call_count == 1
     assert log_warning.call_args_list[0].args == ("optimiser_estimate_failed",)
     assert log_warning.call_args_list[0].kwargs["error"] == "metadata unavailable"
     assert log_warning.call_args_list[0].kwargs["node_id"] == "opt"
-    assert log_warning.call_args_list[1].args == ("optimiser_input_estimate_failed",)
-    assert log_warning.call_args_list[1].kwargs["node_id"] == "opt"
 
 
 def test_apply_rejects_non_mapping_artifact_handles(client, clean_job_store):

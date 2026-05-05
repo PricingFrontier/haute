@@ -712,9 +712,7 @@ class TestLoadRustystatsModel:
             sm = _load_rustystats_model(_write_rsglm(tmp_path))
 
         sm.feature_names.append("d")
-        assert original == ["a", "b", "c"], (
-            "ScoringModel.feature_names must be a defensive copy"
-        )
+        assert original == ["a", "b", "c"], "ScoringModel.feature_names must be a defensive copy"
 
     def test_accepts_iterable_required_columns(self, tmp_path):
         """``list(...)`` materialises any iterable — tuple, generator, etc.

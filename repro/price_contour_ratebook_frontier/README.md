@@ -2,10 +2,13 @@
 
 This folder is a standalone repro for the slow ratebook efficient frontier seen from Haute's `rating/main.py` `online_optimiser` node.
 
-It contains projected data only, so it does not depend on Haute:
+The committed repro contains the script and metadata only; parquet inputs under `data/` are generated artifacts and are ignored by Git. To run the repro, recreate or copy these projected data files into `data/` first:
 
 - `data/scored_optimiser_input.parquet`: long scenario dataframe used to build the `QuoteGrid`.
 - `data/ratebook_factors_by_quote.parquet`: one row per quote with the selected ratebook factor columns.
+
+The committed files are:
+
 - `metadata.json`: optimiser config, column names, frontier range, and data stats.
 - `reproduce_ratebook_frontier.py`: timing script using only `polars` and `price_contour`.
 

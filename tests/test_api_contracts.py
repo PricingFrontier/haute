@@ -302,9 +302,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     "/api/optimiser/frontier/auto-range": {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserFrontierAutoRangeRequest",
-            "success_schema": {
-                "$ref": "#/components/schemas/OptimiserFrontierAutoRangeResponse"
-            },
+            "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierAutoRangeResponse"},
         },
     },
     "/api/optimiser/frontier/select": {

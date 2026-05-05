@@ -366,6 +366,15 @@ function frontierConstraintValue(row: Record<string, unknown>, name: string): [u
   return [undefined, totalKey]
 }
 
+function frontierPointHasSelectableSummary(frontier: FrontierData, point: unknown): boolean {
+  const row = recordValue(point, "point")
+  if (row.total_objective === undefined) return false
+  return frontier.constraint_names.every((name) => {
+    const [raw] = frontierConstraintValue(row, name)
+    return raw !== undefined
+  })
+}
+
 function deriveSolveResultForFrontierPoint(cached: CachedSolveResult, pointIndex: number): SolveResult {
   const frontier = cached.frontier
   if (!frontier) return cached.result
@@ -647,6 +656,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
             points_truncated: rawFrontier.points_truncated,
           }
         : null
+      const initialPointIndex = frontier && frontierPointHasSelectableSummary(frontier, frontier.points[0]) ? 0 : null
       touchCachedResult(solveResultRecency, nodeId)
       let nextCached: CachedSolveResult = {
         result,
@@ -656,12 +666,12 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         constraints: job.constraints,
         nodeLabel: job.nodeLabel,
         frontier,
-        selectedPointIndex: frontier ? 0 : null,
+        selectedPointIndex: initialPointIndex,
       }
-      if (frontier) {
+      if (initialPointIndex !== null) {
         nextCached = {
           ...nextCached,
-          result: deriveSolveResultForFrontierPoint(nextCached, 0),
+          result: deriveSolveResultForFrontierPoint(nextCached, initialPointIndex),
         }
       }
       const bounded = trimCacheByRecency(

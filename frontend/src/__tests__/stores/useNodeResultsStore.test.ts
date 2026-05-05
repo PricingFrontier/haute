@@ -360,6 +360,13 @@ describe("useNodeResultsStore", () => {
       expect(hashConfig(base)).toBe(hashConfig(withInternals))
     })
 
+    it("normalizes nested objects inside arrays when hashing", () => {
+      const first = { constraints: [{ name: "premium", bounds: { min: 0, max: 100 } }] }
+      const second = { constraints: [{ bounds: { max: 100, min: 0 }, name: "premium" }] }
+
+      expect(hashConfig(first)).toBe(hashConfig(second))
+    })
+
     it("returns a non-empty string", () => {
       const hash = hashConfig({ a: 1 })
       expect(hash.length).toBeGreaterThan(0)
@@ -509,6 +516,15 @@ describe("useNodeResultsStore", () => {
       expect(useNodeResultsStore.getState().getPreview("n1")).toBeNull()
       expect(useNodeResultsStore.getState().getPreview("n2")).not.toBeNull()
     })
+
+    it("clears pinnedPreviewNodeId when clearing the pinned node", () => {
+      const s = useNodeResultsStore.getState()
+      s.setPinnedPreviewNodeId("n1")
+
+      s.clearNode("n1")
+
+      expect(useNodeResultsStore.getState().pinnedPreviewNodeId).toBeNull()
+    })
   })
 
   // ────────────────────────────────────────────────────────────────
@@ -585,20 +601,49 @@ describe("useNodeResultsStore", () => {
       expect(previews["p-new-2"]).toBeDefined()
     })
 
+    it("leaves the pin unchanged when setting the same pinned preview node", () => {
+      const s = useNodeResultsStore.getState()
+      s.setPinnedPreviewNodeId("p0")
+
+      s.setPinnedPreviewNodeId("p0")
+
+      expect(useNodeResultsStore.getState().pinnedPreviewNodeId).toBe("p0")
+    })
+
     it("evicts the oldest cached solve results without removing active solve jobs", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("active-solve", "active-job", "Still Running", {}, "active-hash")
 
-      for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS + 1; i += 1) {
+      for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
         s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
         s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
       }
+      expect(s.getOptimiserPreview("s0")).not.toBeNull()
+      s.startSolveJob(`s${MAX_CACHED_SOLVE_RESULTS}`, `job-${MAX_CACHED_SOLVE_RESULTS}`, "Solve new", {}, "hash-new")
+      s.completeSolveJob(`s${MAX_CACHED_SOLVE_RESULTS}`, makeSolveResult({ total_objective: MAX_CACHED_SOLVE_RESULTS }))
 
       const { solveJobs, solveResults } = useNodeResultsStore.getState()
       expect(solveJobs["active-solve"]).toBeDefined()
       expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
       expect(solveResults.s0).toBeUndefined()
       expect(solveResults[`s${MAX_CACHED_SOLVE_RESULTS}`]?.result.total_objective).toBe(MAX_CACHED_SOLVE_RESULTS)
+    })
+
+    it("evicts cached optimiser previews when failed solve results push out old entries", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_SOLVE_RESULTS; i += 1) {
+        s.startSolveJob(`s${i}`, `job-${i}`, `Solve ${i}`, {}, `hash-${i}`)
+        s.completeSolveJob(`s${i}`, makeSolveResult({ total_objective: i }))
+      }
+      expect(s.getOptimiserPreview("s0")).not.toBeNull()
+      s.startSolveJob("s-new", "job-new", "Solve new", {}, "hash-new")
+      s.failSolveJob("s-new", "Solver failed")
+
+      const { solveResults } = useNodeResultsStore.getState()
+      expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
+      expect(solveResults.s0).toBeUndefined()
+      expect(solveResults["s-new"].error).toBe("Solver failed")
     })
 
     it("keeps explicitly touched solve results when evicting", () => {
@@ -656,6 +701,23 @@ describe("useNodeResultsStore", () => {
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeUndefined()
       expect(trainResults[`t${MAX_CACHED_TRAIN_RESULTS}`]?.result.metrics.rmse).toBe(MAX_CACHED_TRAIN_RESULTS)
+    })
+
+    it("evicts cached modelling previews when failed train results push out old entries", () => {
+      const s = useNodeResultsStore.getState()
+
+      for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
+        s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`)
+        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+      }
+      expect(s.getModellingPreview("t0")).not.toBeNull()
+      s.startTrainJob("t-new", "job-new", "Train new", "hash-new")
+      s.failTrainJob("t-new", "Training failed")
+
+      const { trainResults } = useNodeResultsStore.getState()
+      expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
+      expect(trainResults.t0).toBeUndefined()
+      expect(trainResults["t-new"].result.status).toBe("error")
     })
 
     it("keeps explicitly touched train results when evicting", () => {
@@ -716,6 +778,21 @@ describe("useNodeResultsStore", () => {
       expect(previews["p-new-1"]).toBeDefined()
       expect(previews["p-new-2"]).toBeDefined()
     })
+
+    it("touch helpers tolerate missing and error cached results", () => {
+      const s = useNodeResultsStore.getState()
+
+      s.touchOptimiserPreview("missing-solve")
+      s.touchModellingPreview("missing-train")
+
+      s.startTrainJob("t-error", "job-error", "Train error", "hash-error")
+      s.failTrainJob("t-error", "Training failed")
+      s.touchModellingPreview("t-error")
+
+      expect(useNodeResultsStore.getState().solveResults["missing-solve"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().trainResults["missing-train"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().trainResults["t-error"].result.status).toBe("error")
+    })
   })
 
   // ────────────────────────────────────────────────────────────────
@@ -755,7 +832,13 @@ describe("useNodeResultsStore", () => {
       const frontier = {
         status: "ok",
         points: [
-          { total_objective: 123, total_vol: 0.95, lambda_vol: 0.01, converged: true },
+          {
+            total_objective: 123,
+            total_vol: 0.95,
+            baseline_constraints: { vol: 0.91 },
+            lambda_vol: 0.01,
+            converged: true,
+          },
           { total_objective: 135, total_vol: 1.05, lambda_vol: 0.03, converged: true },
         ],
         n_points: 2,
@@ -782,8 +865,37 @@ describe("useNodeResultsStore", () => {
       expect(cached.selectedPointIndex).toBe(0)
       expect(cached.result.total_objective).toBe(123)
       expect(cached.result.constraints).toEqual({ vol: 0.95 })
+      expect(cached.result.baseline_constraints).toEqual({ vol: 0.91 })
       expect(cached.result.lambdas).toEqual({ vol: 0.01 })
       expect(cached.originalResult.total_objective).toBe(100)
+    })
+
+    it("completeSolveJob caches an accepted partial frontier without auto-selecting it", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", { premium: { min: 0 } }, "h1")
+
+      const result = makeSolveResult({
+        total_objective: 100,
+        constraints: { premium: 50 },
+        lambdas: { premium: 0.1 },
+        frontier: {
+          status: "ok",
+          points: [{ index: 0 }],
+          n_points: 1,
+          points_returned: 1,
+          constraint_names: ["premium"],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      })
+
+      expect(() => s.completeSolveJob("n1", result)).not.toThrow()
+
+      const cached = useNodeResultsStore.getState().solveResults["n1"]
+      expect(cached.frontier).not.toBeNull()
+      expect(cached.frontier!.points).toEqual([{ index: 0 }])
+      expect(cached.selectedPointIndex).toBeNull()
+      expect(cached.result).toEqual(result)
     })
 
     it("completeSolveJob sets null frontier when points empty", () => {
@@ -1321,6 +1433,89 @@ describe("useNodeResultsStore", () => {
       expect(cached.result.factor_tables).toEqual(factorTables)
       expect(cached.result.cd_iterations).toBe(5)
       expect(cached.result.clamp_rate).toBe(0.04)
+    })
+
+    it("updateFrontierAfterSelect enriches only the selected frontier point with optional detail", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h1")
+      const frontier = {
+        status: "ok",
+        points: [
+          {
+            total_objective: 240,
+            total_premium: 68,
+            lambda_premium: 0.28,
+            converged: true,
+          },
+          {
+            total_objective: 260,
+            total_premium: 72,
+            lambda_premium: 0.32,
+            converged: true,
+          },
+        ],
+        n_points: 2,
+        points_returned: 2,
+        constraint_names: ["premium"],
+        points_limit: 2000,
+        points_truncated: false,
+      }
+      const history = [
+        { iteration: 1, total_objective: 250, max_lambda_change: 0.04, all_constraints_satisfied: true },
+      ]
+      const scenario_value_stats = {
+        mean: 1.08,
+        std: 0.03,
+        min: 0.95,
+        max: 1.2,
+        p5: 0.99,
+        p25: 1.03,
+        p50: 1.07,
+        p75: 1.12,
+        p95: 1.18,
+        pct_increase: 0.8,
+        pct_decrease: 0.2,
+      }
+      const scenario_value_histogram = { counts: [4, 5], edges: [0.95, 1.05, 1.2] }
+      const factor_tables = {
+        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08 }],
+      }
+      s.completeSolveJob("n1", makeSolveResult({ mode: "ratebook", frontier }))
+
+      s.updateFrontierAfterSelect("n1", 0, {
+        status: "ok",
+        total_objective: 250,
+        constraints: { premium: 70 },
+        baseline_objective: 90,
+        baseline_constraints: { premium: 48 },
+        lambdas: { premium: 0.3 },
+        converged: true,
+        iterations: 18,
+        cd_iterations: 5,
+        clamp_rate: 0.04,
+        history,
+        scenario_value_stats,
+        scenario_value_histogram,
+        factor_tables,
+        error: null,
+      })
+
+      const cached = useNodeResultsStore.getState().solveResults.n1
+      expect(cached.frontier!.points[0]).toEqual(expect.objectContaining({
+        iterations: 18,
+        cd_iterations: 5,
+        clamp_rate: 0.04,
+        history,
+        scenario_value_stats,
+        scenario_value_histogram,
+        factor_tables,
+      }))
+      expect(cached.frontier!.points[1]).not.toHaveProperty("factor_tables")
+      expect(cached.result.iterations).toBe(18)
+      expect(cached.result.history).toEqual(history)
+      expect(cached.result.scenario_value_stats).toEqual(scenario_value_stats)
+      expect(cached.result.scenario_value_histogram).toEqual(scenario_value_histogram)
+      expect(cached.result.factor_tables).toEqual(factor_tables)
     })
 
     it("updateFrontierAfterSelect clears point diagnostics that are not in the selected point", () => {

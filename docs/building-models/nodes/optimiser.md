@@ -50,15 +50,27 @@ This tells the optimiser: maximise the objective column, but keep premium at or 
     | `structure_mode` | `"explicit"` (you define the factor structure) or `"auto"` (inferred from the data) |
 
 ??? info "Efficient frontier"
-    The efficient frontier shows the best achievable tradeoff between your objective and your constraints. Enable it to see how the optimum changes as portfolio total bounds are tightened or relaxed.
+    The efficient frontier shows the best achievable tradeoff between your objective and your constraints. Enable it to see how the optimum changes as absolute portfolio total bounds are tightened or relaxed.
 
     Frontier is available in both online and ratebook modes. Ratebook frontiers can be significantly more expensive because each frontier point may require another factor-table optimisation.
+
+    Prefer `frontier_ranges` for new configs. Each range is keyed by constraint name and uses absolute portfolio totals, not multipliers:
+
+    ```json
+    {
+      "frontier_ranges": {
+        "premium": { "min": 900000, "max": 1200000 },
+        "claims": { "min": 450000, "max": 650000 }
+      }
+    }
+    ```
 
     | Config | Description |
     |---|---|
     | `frontier_enabled` | Whether to compute an efficient frontier after the individual-point solve |
-    | `frontier_min` | Lower multiplier applied to each baseline constraint total when building frontier ranges |
-    | `frontier_max` | Upper multiplier applied to each baseline constraint total when building frontier ranges |
+    | `frontier_ranges` | Preferred absolute `min`/`max` portfolio totals for each constraint |
+    | `frontier_min` | Legacy absolute lower bound used for every constraint when `frontier_ranges` is omitted |
+    | `frontier_max` | Legacy absolute upper bound used for every constraint when `frontier_ranges` is omitted |
     | `frontier_steps` | Number of points per constraint dimension on the frontier |
 
 **See also:**

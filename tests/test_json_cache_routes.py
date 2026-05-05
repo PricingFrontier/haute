@@ -763,9 +763,8 @@ class TestApiInputCacheEndToEnd:
         # Each test gets a fresh cwd so the LRU-cached pipeline_dir() and the
         # process-wide _CACHE_DIR don't leak between cases.
         monkeypatch.chdir(tmp_path)
-        from haute._json_flatten import _CACHE_DIR  # noqa: F401  -- ensure module imported
-
         import haute._json_flatten as jf
+        from haute._json_flatten import _CACHE_DIR  # noqa: F401  -- ensure module imported
 
         monkeypatch.setattr(jf, "_CACHE_DIR", str(tmp_path / ".haute_cache"))
 

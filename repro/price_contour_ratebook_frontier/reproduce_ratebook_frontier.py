@@ -19,7 +19,6 @@ from typing import Any
 import polars as pl
 from price_contour import RatebookOptimiser, build_grid_from_parquet_chunked
 
-
 HERE = Path(__file__).resolve().parent
 METADATA_PATH = HERE / "metadata.json"
 
@@ -118,12 +117,10 @@ def point_summary(points_df: pl.DataFrame) -> dict[str, Any]:
         "iterations": [row.get("iterations") for row in rows],
         "converged": [row.get("converged") for row in rows],
         "threshold_conversion_prediction": [
-            round(float(row.get("threshold_conversion_prediction", 0.0)), 3)
-            for row in rows
+            round(float(row.get("threshold_conversion_prediction", 0.0)), 3) for row in rows
         ],
         "total_conversion_prediction": [
-            round(float(row.get("total_conversion_prediction", 0.0)), 3)
-            for row in rows
+            round(float(row.get("total_conversion_prediction", 0.0)), 3) for row in rows
         ],
     }
 
@@ -189,7 +186,9 @@ def main() -> None:
             ),
             frontier_steps=steps,
         )
-        print(json.dumps({"frontier": {"steps": steps, **point_summary(frontier.points)}}), flush=True)
+        print(
+            json.dumps({"frontier": {"steps": steps, **point_summary(frontier.points)}}), flush=True
+        )
 
 
 if __name__ == "__main__":
