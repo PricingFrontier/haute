@@ -396,4 +396,148 @@ describe("OptimiserPreview store integration", () => {
     ).toBeInTheDocument()
     expect(screen.queryByText(/Rate table load failed: HTTP 400/)).not.toBeInTheDocument()
   })
+
+  it("drops a stale rate-materialisation response when a newer click has already won", async () => {
+    // Rapid-click race: a user clicks point 0, the rates request goes
+    // out, then they click point 1 before point 0's response arrives.
+    // Network jitter delivers point 1's response FIRST.  When point 0's
+    // response finally lands, the store must NOT regress to point 0 —
+    // the user is now looking at point 1.
+    //
+    // The previous coverage was a synchronous store-only test; this is
+    // the full async integration through the React component.
+    let resolvePoint0!: (value: unknown) => void
+    let resolvePoint1!: (value: unknown) => void
+    const point0Response = {
+      status: "ok",
+      point_index: 0,
+      total_objective: 100,
+      constraints: { volume: 0.9 },
+      baseline_objective: 80,
+      baseline_constraints: { volume: 0.8 },
+      lambdas: { volume: 0.05 },
+      converged: true,
+      cd_iterations: 3,
+      factor_tables: {
+        region: [{ __factor_group__: "PointZero", optimal_scenario_value: 1.0 }],
+      },
+      error: null,
+    }
+    const point1Response = {
+      status: "ok",
+      point_index: 1,
+      total_objective: 130,
+      constraints: { volume: 0.93 },
+      baseline_objective: 80,
+      baseline_constraints: { volume: 0.8 },
+      lambdas: { volume: 0.55 },
+      converged: true,
+      cd_iterations: 5,
+      factor_tables: {
+        region: [{ __factor_group__: "PointOne", optimal_scenario_value: 1.21 }],
+      },
+      error: null,
+    }
+    mockSelectFrontierPoint.mockImplementationOnce(
+      () => new Promise((resolve) => { resolvePoint0 = resolve }),
+    )
+    mockSelectFrontierPoint.mockImplementationOnce(
+      () => new Promise((resolve) => { resolvePoint1 = resolve }),
+    )
+
+    const store = useNodeResultsStore.getState()
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1")
+    store.completeSolveJob(
+      "opt_1",
+      makeSolveResult({
+        mode: "ratebook",
+        frontier: {
+          status: "ok",
+          points: [
+            {
+              total_objective: 100,
+              total_volume: 0.9,
+              lambda_volume: 0.05,
+              converged: true,
+            },
+            {
+              total_objective: 130,
+              total_volume: 0.93,
+              lambda_volume: 0.55,
+              converged: true,
+            },
+          ],
+          n_points: 2,
+          points_returned: 2,
+          constraint_names: ["volume"],
+          points_limit: 2000,
+          points_truncated: false,
+        },
+      }),
+    )
+
+    const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
+    expect(data).not.toBeNull()
+    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+
+    // ── Switch to Rates tab — materialise fires for the auto-selected
+    //    point 0; promise is held unresolved (network slow). ──
+    fireEvent.click(screen.getByText("Rates"))
+    await waitFor(() => {
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(1)
+    })
+    expect(mockSelectFrontierPoint.mock.calls[0][0]).toMatchObject({
+      job_id: "job_123",
+      point_index: 0,
+      include_ratebook_tables: true,
+    })
+    expect(useNodeResultsStore.getState().solveResults.opt_1.selectedPointIndex).toBe(0)
+
+    // ── User clicks "Next frontier point" before point 0 resolves. ──
+    //    The Rates effect cleanup aborts the in-flight request and
+    //    fires a new one for point 1.
+    fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
+    await waitFor(() => {
+      expect(useNodeResultsStore.getState().solveResults.opt_1.selectedPointIndex).toBe(1)
+    })
+    await waitFor(() => {
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+    })
+    expect(mockSelectFrontierPoint.mock.calls[1][0]).toMatchObject({
+      job_id: "job_123",
+      point_index: 1,
+      include_ratebook_tables: true,
+    })
+
+    // ── Resolve point 1 FIRST (the user's current selection). ──
+    resolvePoint1(point1Response)
+    await waitFor(() => {
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached.result.factor_tables).toEqual(point1Response.factor_tables)
+    })
+
+    // ── Resolve point 0 LATE — must NOT clobber the store. ──
+    resolvePoint0(point0Response)
+    // Allow microtasks to flush.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const final = useNodeResultsStore.getState().solveResults.opt_1
+    // The user's selection stays on point 1.
+    expect(final.selectedPointIndex).toBe(1)
+    // The visible result reflects point 1's response, not the late point 0.
+    expect(final.result.total_objective).toBe(130)
+    expect(final.result.factor_tables).toEqual(point1Response.factor_tables)
+    // Point 1's per-point row was enriched on the way in.
+    expect(final.frontier!.points[1]).toEqual(
+      expect.objectContaining({ factor_tables: point1Response.factor_tables }),
+    )
+    // Point 0's late response is COMPLETELY discarded — the
+    // OptimiserPreview rates effect cleanup aborts the stale fetch and
+    // its sequence-id guard bails the .then() handler before the store
+    // is ever touched.  Re-selecting point 0 will trigger a fresh
+    // request, not stale leftovers.  This is the safer contract: no
+    // partial enrichment from a request the user has already moved past.
+    expect(final.frontier!.points[0]).not.toHaveProperty("factor_tables")
+  })
 })

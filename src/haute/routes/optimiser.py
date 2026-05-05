@@ -34,7 +34,6 @@ from haute.routes._optimiser_service import (
     _find_optimiser_node,
     _job_elapsed_seconds,
     _load_apply_result_artifact,
-    _normalise_frontier_range,
     _persist_apply_result_artifact,
     _ratebook_factor_level_counts,
     _serialise_ratebook_factor_tables,
@@ -85,7 +84,7 @@ _CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
 
 class _DataFrameResultLike(Protocol):
     @property
-    def dataframe(self) -> Any: ...
+    def dataframe(self) -> Any: ...  # pragma: no cover  (typing-only stub)
 
 
 def _dataframe_or_raise(result: Any, *, context: str) -> Any:
@@ -1459,22 +1458,19 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
 
         node_label = job.get("node_label", "optimiser")
         job_config = job.get("config", {})
-        if selected_result is None:
-            if solver is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Solver is not available for this job. "
-                        "Re-run the solve to log results to MLflow."
-                    ),
-                )
-            summary = solver.summary(solve_result)
+        # Invariant from the setup at the top of this function:
+        #   ``selected_frontier_point is None`` IFF ``selected_result is None``
+        # When that's the case, ``solver`` is non-None — the ``else`` branch
+        # above validated it (lines 1421-1441).  mypy doesn't track the
+        # cross-branch invariant, so cast through ``Any`` rather than adding
+        # runtime "fail-loudly" guards that double-check what the surrounding
+        # code already enforces.
+        if selected_frontier_point is None:
+            summary = cast(Any, solver).summary(solve_result)
         else:
-            if selected_frontier_point is None:
-                raise HTTPException(status_code=500, detail="Selected frontier point is missing")
             summary = _frontier_point_mlflow_summary(
                 job,
-                selected_result,
+                cast(dict[str, Any], selected_result),
                 selected_frontier_point,
             )
 

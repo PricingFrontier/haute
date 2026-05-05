@@ -3,118 +3,23 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
-import pytest
 
+from tests.optimiser_fixtures import (
+    make_frontier_data as _frontier_data,
+)
+from tests.optimiser_fixtures import (
+    make_frontier_point as _frontier_point,
+)
+from tests.optimiser_fixtures import (
+    make_online_frontier_job as _online_frontier_job,
+)
 
-@pytest.fixture()
-def clean_job_store():
-    """Isolate direct optimiser job-store mutations in this focused module."""
-    from haute.routes.optimiser import _store
-
-    snapshot = dict(_store.jobs)
-    yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
-
-
-def _frontier_point(
-    *,
-    objective: float = 123.0,
-    volume: float = 0.91,
-    lambda_volume: float = 0.42,
-    converged: bool = True,
-) -> dict[str, object]:
-    return {
-        "threshold_volume": 0.9,
-        "total_objective": objective,
-        "total_volume": volume,
-        "lambda_volume": lambda_volume,
-        "iterations": 7,
-        "converged": converged,
-        "sv_mean": 1.02,
-        "sv_std": 0.03,
-        "sv_min": 0.95,
-        "sv_p5": 0.96,
-        "sv_p25": 1.0,
-        "sv_median": 1.02,
-        "sv_p75": 1.04,
-        "sv_p95": 1.08,
-        "sv_max": 1.1,
-        "sv_pct_increase": 0.7,
-        "sv_pct_decrease": 0.2,
-    }
-
-
-def _frontier_data(points: list[dict[str, object]] | None = None) -> dict[str, object]:
-    selected_points = points or [
-        _frontier_point(objective=123.0, volume=0.91, lambda_volume=0.42),
-        _frontier_point(objective=130.0, volume=0.93, lambda_volume=0.55, converged=False),
-    ]
-    return {
-        "status": "ok",
-        "points": selected_points,
-        "n_points": len(selected_points),
-        "points_returned": len(selected_points),
-        "points_limit": 2000,
-        "points_truncated": False,
-        "constraint_names": ["volume"],
-    }
-
-
-def _online_frontier_job(
-    *,
-    frontier_data: dict[str, object] | None = None,
-    solve_result: object | None = None,
-    solver: object | None = None,
-    quote_grid: object | None = None,
-    selected_frontier_point: int | None = None,
-) -> dict[str, object]:
-    result: dict[str, object] = {
-        "mode": "online",
-        "total_objective": 99.0,
-        "baseline_objective": 95.0,
-        "constraints": {"volume": 0.88},
-        "baseline_constraints": {"volume": 0.85},
-        "lambdas": {"volume": 0.1},
-        "converged": True,
-        "n_quotes": 10,
-        "n_steps": 3,
-        "frontier": frontier_data or _frontier_data(),
-    }
-    if selected_frontier_point is not None:
-        result["selected_frontier_point"] = selected_frontier_point
-
-    job: dict[str, object] = {
-        "status": "completed",
-        "config": {
-            "mode": "online",
-            "objective": "income",
-            "constraints": {"volume": {"min": 0.9}},
-            "quote_id": "quote_id",
-            "scenario_index": "scenario_index",
-            "scenario_value": "scenario_value",
-        },
-        "node_label": "frontier_opt",
-        "frontier_data": frontier_data or _frontier_data(),
-        "result": result,
-        "artifact_handles": {},
-        "created_at": time.time(),
-    }
-    if solve_result is not None:
-        job["solve_result"] = solve_result
-    if solver is not None:
-        job["solver"] = solver
-    if quote_grid is not None:
-        job["quote_grid"] = quote_grid
-    if selected_frontier_point is not None:
-        job["selected_frontier_point"] = selected_frontier_point
-    return job
+# ``clean_job_store`` lives in tests/conftest.py — single source of truth.
 
 
 def _mlflow_mock() -> MagicMock:

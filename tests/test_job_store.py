@@ -501,6 +501,166 @@ class TestJobStoreConcurrency:
             assert result is not None
             assert result["status"] == "fresh"
 
+    def test_atomic_update_if_heavy_present_serialises_against_ttl_eviction(self) -> None:
+        """The route handlers (``/apply``, ``/select``, ``/save``,
+        ``/mlflow/log``) call ``atomic_update_if_heavy_present`` to commit
+        a result while a timer thread may simultaneously be expiring the
+        same job's heavy state.  Both paths take the write lock — but the
+        guarantee we rely on is stronger than "no torn writes": the
+        observed end state must be self-consistent, i.e. either:
+
+        - The atomic update wins and the merged job has the heavy keys
+          AND the new fields, OR
+        - The eviction wins and the route sees ``None`` (because
+          ``required_keys`` are missing) so the user gets a clean 400.
+
+        A regression that re-orders the lock acquisition or splits the
+        check-and-write would let a reader observe a job that has the
+        new fields but has lost its heavy state — which would surface
+        downstream as an opaque ``None`` access.
+
+        We run real threads under a barrier and assert the end state is
+        valid in both possible orderings.
+        """
+        n_runs = 30  # Repeat to shake out scheduling-order variation.
+        for run in range(n_runs):
+            store = _job_store_without_cleanup_threads()
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "completed_at": time.time(),
+                    # Heavy objects the timer is about to clear.
+                    "solver": object(),
+                    "quote_grid": object(),
+                    # Force expiry: ``_clear_expired_heavy_objects`` will
+                    # consider this job's heavy state due now.
+                    "heavy_objects_expires_at": time.time() - 1.0,
+                },
+            )
+
+            barrier = threading.Barrier(2)
+            results: dict[str, object] = {}
+
+            def updater() -> None:
+                barrier.wait()
+                results["update"] = store.atomic_update_if_heavy_present(
+                    job_id,
+                    {"result": {"total_objective": 42.0}, "selected_frontier_point": 0},
+                    required_keys=("solver", "quote_grid"),
+                    expected_status="completed",
+                )
+
+            def evictor() -> None:
+                barrier.wait()
+                store._clear_expired_heavy_objects(job_id=None, timer=None)
+                results["evict"] = "done"
+
+            threads = [
+                threading.Thread(target=updater),
+                threading.Thread(target=evictor),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
+
+            update_outcome = results.get("update")
+            final = store.get_job(job_id)
+            assert final is not None, f"run {run}: job evicted entirely"
+
+            if update_outcome is None:
+                # The evictor won the race.  The route would respond 400.
+                # The job survived but heavy keys are gone — and crucially
+                # the new ``result`` field was NOT merged.
+                assert "solver" not in final, (
+                    f"run {run}: update reported failure but heavy state survived"
+                )
+                assert "quote_grid" not in final
+                assert "result" not in final, (
+                    f"run {run}: update reported failure but partial fields were "
+                    f"persisted: {final.get('result')!r}"
+                )
+            else:
+                # The updater won — heavy keys are still present AND the
+                # new fields are merged.
+                assert final["solver"] is not None
+                assert final["quote_grid"] is not None
+                assert final["result"] == {"total_objective": 42.0}
+                assert final["selected_frontier_point"] == 0
+                # The state returned to the caller matches the persisted state.
+                assert update_outcome["result"] == final["result"]
+                assert update_outcome["selected_frontier_point"] == 0
+
+    def test_atomic_update_with_expected_status_is_optimistic_lock(self) -> None:
+        """``atomic_update(expected_status=...)`` must behave as an optimistic
+        lock under real concurrency: when N threads simultaneously try to
+        transition the same job out of ``running``, exactly one wins and
+        the rest receive a None (signalling "your read was stale").
+
+        This is the exact race the route handlers rely on for /apply,
+        /select, /save and /mlflow/log.  A regression that drops the
+        compare-and-swap semantics — for example, a refactor that always
+        merges fields — would corrupt user state in production.  The
+        prior tests only stubbed atomic_update with ``return_value=None``;
+        this test runs real threads and verifies the lock invariant under
+        contention.
+        """
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "phase": "init"})
+
+        n_threads = 12
+        barrier = threading.Barrier(n_threads)
+        lock = threading.Lock()
+        winners: list[tuple[int, dict]] = []
+        losers: list[int] = []
+        errors: list[BaseException] = []
+
+        def race(idx: int) -> None:
+            try:
+                barrier.wait()
+                # Each thread tries to transition running → completed and
+                # stamps its identifier on the result so we can identify
+                # the winner unambiguously.
+                outcome = store.atomic_update(
+                    job_id,
+                    {"status": "completed", "winner": idx, "phase": f"done-{idx}"},
+                    expected_status="running",
+                )
+                with lock:
+                    if outcome is None:
+                        losers.append(idx)
+                    else:
+                        winners.append((idx, outcome))
+            except BaseException as exc:  # noqa: BLE001 — record any exception
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=race, args=(i,)) for i in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        # No thread crashed.
+        assert errors == [], f"Race threads raised: {errors}"
+        # Exactly one thread won the compare-and-swap.
+        assert len(winners) == 1, (
+            f"Expected exactly 1 winner, got {len(winners)}: {[w[0] for w in winners]}"
+        )
+        # Every other thread saw the conflict signal (None).
+        assert len(losers) == n_threads - 1, f"Expected {n_threads - 1} losers, got {len(losers)}"
+        # The winner's identity matches the persisted state.
+        winner_idx, winner_state = winners[0]
+        assert winner_state["winner"] == winner_idx
+        assert winner_state["phase"] == f"done-{winner_idx}"
+
+        # The store reflects the winner — no loser ever wrote.
+        final = store.get_job(job_id)
+        assert final is not None
+        assert final["status"] == "completed"
+        assert final["winner"] == winner_idx
+        assert final["phase"] == f"done-{winner_idx}"
+
 
 # ---------------------------------------------------------------------------
 # require_job
@@ -2037,3 +2197,247 @@ class TestAtomicUpdateExpectedStatus:
                 {"status": "error"},
                 expected_status="running",
             )
+
+
+# ---------------------------------------------------------------------------
+# register_artifact_cleaner contract
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterArtifactCleaner:
+    """API contract: cleaner registration prevents silent overwrites and
+    rejects empty kinds.  These guards exist because a registry collision
+    would mean artifact cleanup runs the wrong cleaner — silent data
+    corruption — so they need to fail loudly at registration time.
+    """
+
+    def test_empty_kind_rejected_loudly(self) -> None:
+        """Empty kind would key cleanup behaviour against ``""`` and silently
+        no-op for typed handles, masking artifact leaks."""
+        from haute.routes._job_store import _ARTIFACT_CLEANERS, register_artifact_cleaner
+
+        with pytest.raises(ValueError, match="non-empty"):
+            register_artifact_cleaner("", lambda handle: None)
+        # Registry is unchanged.
+        assert "" not in _ARTIFACT_CLEANERS
+
+    def test_double_registration_with_different_cleaner_rejected(self) -> None:
+        """Two cleaners for the same kind would race; the second registration
+        must fail rather than silently win."""
+        from haute.routes._job_store import _ARTIFACT_CLEANERS, register_artifact_cleaner
+
+        kind = f"test-double-reg-{id(object())}"
+
+        def first(handle: dict) -> None:
+            handle["cleaned_by"] = "first"
+
+        def second(handle: dict) -> None:
+            handle["cleaned_by"] = "second"
+
+        register_artifact_cleaner(kind, first)
+        try:
+            with pytest.raises(RuntimeError, match=f"already registered.*{kind!r}"):
+                register_artifact_cleaner(kind, second)
+            # The original cleaner stays registered (no silent overwrite).
+            assert _ARTIFACT_CLEANERS[kind] is first
+        finally:
+            _ARTIFACT_CLEANERS.pop(kind, None)
+
+    def test_idempotent_registration_with_same_cleaner_is_allowed(self) -> None:
+        """Re-registering the same callable is a harmless idempotent op —
+        common when modules are reloaded in dev — so it must succeed.
+        Without this branch, hot-reload workflows would crash."""
+        from haute.routes._job_store import _ARTIFACT_CLEANERS, register_artifact_cleaner
+
+        kind = f"test-idempotent-{id(object())}"
+
+        def cleaner(handle: dict) -> None:
+            handle["cleaned"] = True
+
+        register_artifact_cleaner(kind, cleaner)
+        # Same callable — idempotent, must not raise.
+        register_artifact_cleaner(kind, cleaner)
+        try:
+            assert _ARTIFACT_CLEANERS[kind] is cleaner
+        finally:
+            _ARTIFACT_CLEANERS.pop(kind, None)
+
+
+# ---------------------------------------------------------------------------
+# delete_job: missing job is a no-op
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteJobMissing:
+    """``delete_job`` for a non-existent ID must be a silent no-op.
+
+    Routes call this in ``finally`` blocks for ephemeral jobs (estimate,
+    auto-range) — if the job was already evicted by TTL, the cleanup
+    must not raise, otherwise the original error becomes hidden under
+    a secondary failure.
+    """
+
+    def test_delete_unknown_job_is_no_op(self) -> None:
+        store = _job_store_without_cleanup_threads()
+        # Pre-condition: store empty.
+        assert dict(store.jobs) == {}
+        # No-op — must not raise.
+        store.delete_job("never-existed")
+        # Post-condition: still empty, no spurious entry created.
+        assert dict(store.jobs) == {}
+
+    def test_delete_unknown_job_does_not_disturb_other_jobs(self) -> None:
+        store = _job_store_without_cleanup_threads()
+        keep_id = store.create_job({"status": "running"})
+        store.delete_job("never-existed")
+        # Existing job survives unchanged.
+        assert store.get_job(keep_id) is not None
+        assert store.get_job(keep_id)["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# _clear_expired_heavy_objects: full-sweep branch
+# ---------------------------------------------------------------------------
+
+
+class TestClearExpiredHeavyObjectsSweep:
+    """The timer-less sweep branch (``job_id=None``) drives the lazy backstop
+    that runs whenever a job is read.  It must walk every completed job and
+    only clear the ones whose heavy objects have actually expired.
+    """
+
+    def test_sweep_clears_only_expired_completed_jobs(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=0.01)
+        # An expired completed job with heavy objects.
+        expired_id = store.create_job(
+            {
+                "status": "completed",
+                "completed_at": time.time() - 1,
+                "solver": object(),
+                "quote_grid": object(),
+            }
+        )
+        # A still-fresh completed job with heavy objects.
+        fresh_id = store.create_job(
+            {
+                "status": "completed",
+                "completed_at": time.time(),
+                "heavy_objects_expires_at": time.time() + 1000,
+                "solver": object(),
+            }
+        )
+        # A running job (heavy fields preserved by status filter).
+        running_id = store.create_job({"status": "running", "solver": object()})
+
+        # Drive the full sweep (no job_id, no timer) — this is the path the
+        # lazy backstop takes from ``_evict_stale``.
+        store._clear_expired_heavy_objects(job_id=None, timer=None)
+
+        # Expired job has its heavy objects stripped, but the dict survives
+        # so status polling can still report "completed".
+        cleared = store.get_job(expired_id)
+        assert cleared is not None
+        assert cleared["status"] == "completed"
+        assert "solver" not in cleared
+        assert "quote_grid" not in cleared
+        assert "heavy_objects_cleared_at" in cleared
+
+        # Fresh job is untouched.
+        fresh = store.get_job(fresh_id)
+        assert fresh is not None
+        assert "solver" in fresh
+
+        # Running job is untouched (status filter).
+        running = store.get_job(running_id)
+        assert running is not None
+        assert "solver" in running
+
+
+# ---------------------------------------------------------------------------
+# _schedule_heavy_object_cleanup: race-condition guards
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleHeavyObjectCleanupRaces:
+    """Race-condition guards inside ``_schedule_heavy_object_cleanup``.
+
+    The scheduler is invoked from inside ``_store_merged_job_locked`` after
+    releasing partial work back to the lock; between the decision to
+    schedule and the actual scheduling, another thread can transition the
+    job out from under us.  These tests pin the three escape hatches.
+    """
+
+    def test_skips_scheduling_when_job_is_no_longer_completed(self) -> None:
+        """If the job transitioned away from 'completed' before the timer
+        was bound, drop the scheduling silently (the next status change will
+        re-schedule when appropriate)."""
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        # Pre-seed a non-completed job with heavy fields.
+        with store._write_lock:
+            store._jobs["job-running"] = {
+                "status": "running",
+                "solver": object(),
+                "created_at": time.time(),
+            }
+
+        # Call the scheduler directly — the public path always goes through
+        # ``_store_merged_job_locked`` which only invokes this for completed
+        # jobs, so we exercise the race guard via the private API.
+        store._schedule_heavy_object_cleanup("job-running", time.time() + 1.0)
+
+        # No timer was registered (race guard hit at line 250).
+        assert "job-running" not in store._heavy_object_timers
+        # The manually-created timer was constructed but never started in
+        # the registry — the guard short-circuited before ``timer.start()``.
+        # The factory does record creation, but ``start()`` is what fires it.
+        assert all(not getattr(t, "started", False) for t in timers)
+
+    def test_cancels_existing_timer_when_no_heavy_keys_remain(self) -> None:
+        """When the cleanup timer fires for a job that no longer has heavy
+        fields (e.g. another path slimmed them already), cancel any leftover
+        timer so it can't fire spuriously later."""
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        # Set up a completed job WITHOUT heavy keys, but WITH a registered timer
+        # (the race we're guarding: timer was scheduled, then keys were cleared).
+        prev_timer = type("T", (), {"cancel": lambda self: setattr(self, "cancelled", True)})()
+        with store._write_lock:
+            store._jobs["job-cleared"] = {
+                "status": "completed",
+                "created_at": time.time(),
+            }
+            store._heavy_object_timers["job-cleared"] = prev_timer
+
+        store._schedule_heavy_object_cleanup("job-cleared", time.time() + 1.0)
+
+        # The previous timer was cancelled, no new timer registered.
+        assert getattr(prev_timer, "cancelled", False) is True
+        assert "job-cleared" not in store._heavy_object_timers
+
+    def test_skips_scheduling_when_expires_at_was_rescheduled_by_another_thread(self) -> None:
+        """If another thread updated the job's expiry between the caller
+        deciding to schedule and the lock acquisition, the caller's
+        ``expires_at`` is stale — the other thread will (or has already)
+        scheduled the up-to-date timer."""
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        # Pre-seed a completed job with a DIFFERENT expires_at than what the
+        # caller has — simulating an in-flight reschedule.
+        actual_expires = time.time() + 60.0
+        with store._write_lock:
+            store._jobs["job-rescheduled"] = {
+                "status": "completed",
+                "solver": object(),
+                "created_at": time.time(),
+                "_haute_heavy_objects_expires_at": actual_expires,
+            }
+
+        stale_expires = actual_expires - 30.0  # caller has a stale value
+        store._schedule_heavy_object_cleanup("job-rescheduled", stale_expires)
+
+        # The race guard at line 254-255 fires: no timer is registered.
+        assert "job-rescheduled" not in store._heavy_object_timers

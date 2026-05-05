@@ -28,19 +28,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
 
-@pytest.fixture()
-def clean_job_store():
-    """Snapshot and restore the optimiser job store after each test.
-
-    Tests that inject fake jobs into _store.jobs no longer need
-    manual try/finally cleanup.
-    """
-    from haute.routes.optimiser import _store
-
-    snapshot = dict(_store.jobs)
-    yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+# ``clean_job_store`` lives in tests/conftest.py — single source of truth.
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +616,81 @@ class TestEstimateRoute:
 
         assert resp.status_code == 400
         assert "Null quote_id values found in optimiser input (2 rows)." in resp.json()["detail"]
+
+    @pytest.mark.parametrize(
+        ("bad_value", "label"),
+        [(float("nan"), "NaN"), (float("inf"), "Inf")],
+    )
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_solve_rejects_non_finite_scenario_value_synchronously(
+        self,
+        client,
+        tmp_path,
+        clean_job_store,
+        bad_value,
+        label,
+    ):
+        """``NaN`` and ``Inf`` in ``scenario_value`` would silently corrupt
+        the lambdas the optimiser produces — and through them, every
+        downstream price.
+
+        Pin the contract: bad values are caught in grid construction and
+        surface as a *synchronous* 400 with the offending column name.
+        No job is left behind in a "running" state, no lambdas are ever
+        produced from corrupt data, and the user gets an actionable
+        message naming the input that failed.
+        """
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2", "q2"],
+                "scenario_index": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
+                "scenario_value": pl.Series(
+                    [0.9, bad_value, 0.9, 1.1],
+                    dtype=pl.Float32,
+                ),
+                "expected_income": pl.Series(
+                    [100.0, 110.0, 80.0, 90.0],
+                    dtype=pl.Float32,
+                ),
+                "volume": pl.Series([0.9, 0.95, 1.0, 0.9], dtype=pl.Float32),
+            }
+        )
+        path = tmp_path / f"{label.lower()}_scenario.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        # ── User-visible contract ────────────────────────────────────
+        # 400 is the right status: bad input, not a server fault.
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        # The message must name the offending column AND the offending
+        # value.  Generic "grid construction failed" without specifics
+        # leaves the user guessing which row of which file is bad.
+        assert "scenario_value" in detail, (
+            f"Error detail does not name the offending column: {detail!r}"
+        )
+        # ``label.lower() in detail.lower()`` accommodates the
+        # price-contour error rendering ("inf"/"nan" in lowercase).
+        assert label.lower() in detail.lower(), (
+            f"Error detail does not name the offending value type ({label!r}): {detail!r}"
+        )
+
+        # ── Job-store hygiene ───────────────────────────────────────
+        # The synchronous failure must NOT leave a "running" job behind
+        # to confuse the next /solve attempt or the status poller.
+        # Either the job exists with status=error, or it was deleted —
+        # both are acceptable; a stuck "running" job is not.
+        running_jobs = [
+            (jid, j) for jid, j in clean_job_store.jobs.items() if j.get("status") == "running"
+        ]
+        assert running_jobs == [], (
+            f"Synchronous validation failure left running job(s) behind: {running_jobs}"
+        )
 
     def test_estimate_rejects_unknown_node_loudly(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
@@ -2457,25 +2520,86 @@ class TestFrontierInSolve:
         assert frontier["n_points"] > 0
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_solve_no_constraints_no_frontier(self, client, scored_data):
-        """A solve with empty constraints should have no frontier data."""
-        cfg = {
-            "objective": "expected_income",
-            "constraints": {},
-            "max_iter": 5,
-        }
-        graph = _make_optimiser_graph(scored_data, config=cfg)
+    def test_solve_with_empty_constraints_completes_without_frontier(
+        self,
+        client,
+        scored_data,
+    ):
+        """Pin the contract for the no-constraints case end-to-end.
+
+        Previously this test silently returned on any non-completed
+        outcome — meaning a regression that made /solve crash for empty
+        constraints would still pass.  Now we assert the full happy path:
+        the solve completes, no frontier is computed, and the result
+        contains the baseline objective with empty constraint maps.
+        """
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "objective": "expected_income",
+                "constraints": {},
+                "max_iter": 5,
+            },
+        )
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
-        # May succeed or fail depending on solver behavior with no constraints
-        if resp.status_code != 200:
-            return
+
+        assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
-        if status["status"] != "completed":
-            return
+
+        assert status["status"] == "completed", (
+            f"Empty-constraints solve failed: {status.get('message')!r}"
+        )
         result = status["result"]
-        # Frontier should be None when no constraints
+        assert result is not None
+        # No frontier should be computed when there are no constraints to vary.
         assert result.get("frontier") is None
+        # Result still contains the baseline objective and empty-but-defined
+        # constraint maps so the UI can render a coherent summary.
+        assert isinstance(result.get("baseline_objective"), (int, float))
+        assert result.get("constraints") == {}
+        assert result.get("baseline_constraints") == {}
+        # No lambdas because there's nothing to enforce.
+        assert result.get("lambdas") == {}
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_solve_with_empty_constraints_ignores_frontier_enabled(
+        self,
+        client,
+        scored_data,
+    ):
+        """When ``frontier_enabled=true`` but ``constraints={}``, the
+        frontier is silently skipped (no points to optimise over).
+
+        This is the contract behaviour that the rating UI relies on:
+        ``frontier_enabled`` is a hint, not a hard requirement; the
+        solver determines whether a frontier is meaningful.  A regression
+        that started erroring (or, worse, silently producing garbage
+        lambdas) on this combination would break every config that
+        toggles ``frontier_enabled`` on without first adding constraints.
+        """
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "objective": "expected_income",
+                "constraints": {},
+                "frontier_enabled": True,
+                "frontier_ranges": {},  # no constraints → no ranges
+                "max_iter": 5,
+            },
+        )
+        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
+        status = _poll_until_done(client, job_id)
+
+        assert status["status"] == "completed"
+        result = status["result"]
+        # frontier_enabled with no constraints is a no-op — no frontier
+        # data, no spurious frontier_error message.
+        assert result.get("frontier") is None
+        assert result.get("frontier_error") is None
 
 
 class TestFrontierSelect:
@@ -7648,15 +7772,21 @@ class TestOptimiserHelperValidators:
         from haute.routes.optimiser import _frontier_point_constraint_value
 
         # total_<name> wins.
-        assert _frontier_point_constraint_value(
-            {"total_volume": 0.9, "constraints": {"volume": 0.7}, "volume": 0.5},
-            "volume",
-        ) == 0.9
+        assert (
+            _frontier_point_constraint_value(
+                {"total_volume": 0.9, "constraints": {"volume": 0.7}, "volume": 0.5},
+                "volume",
+            )
+            == 0.9
+        )
         # No total_, falls back to constraints dict.
-        assert _frontier_point_constraint_value(
-            {"constraints": {"volume": 0.7}, "volume": 0.5},
-            "volume",
-        ) == 0.7
+        assert (
+            _frontier_point_constraint_value(
+                {"constraints": {"volume": 0.7}, "volume": 0.5},
+                "volume",
+            )
+            == 0.7
+        )
         # Falls back to bare key.
         assert _frontier_point_constraint_value({"volume": 0.5}, "volume") == 0.5
 
@@ -7717,7 +7847,9 @@ class TestOptimiserHelperValidators:
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
+                "points": [
+                    {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0},
+                ],
                 "n_points": 1,
                 "constraint_names": "not a list",
             },
@@ -7732,7 +7864,9 @@ class TestOptimiserHelperValidators:
 
         job = {
             "frontier_data": {
-                "points": [{"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
+                "points": [
+                    {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0},
+                ],
                 "n_points": 1,
                 "constraint_names": [42],
             },
@@ -7871,9 +8005,13 @@ class TestOptimiserHelperValidators:
         """``isinstance(True, int)`` is True, so we explicitly reject bools."""
         from haute.routes.optimiser import _selected_or_requested_frontier_point
 
-        assert _selected_or_requested_frontier_point(
-            {"selected_frontier_point": True}, None,
-        ) is None
+        assert (
+            _selected_or_requested_frontier_point(
+                {"selected_frontier_point": True},
+                None,
+            )
+            is None
+        )
 
     def test_job_has_frontier_points_handles_bad_shape(self) -> None:
         from haute.routes.optimiser import _job_has_frontier_points
@@ -8090,15 +8228,27 @@ class TestOptimiserHelperValidators:
         from haute.routes.optimiser import _cached_result_matches_frontier_selection
 
         # bool is technically int in Python — must be explicitly rejected.
-        assert _cached_result_matches_frontier_selection(
-            {"selected_frontier_point": True}, 1,
-        ) is False
-        assert _cached_result_matches_frontier_selection(
-            {"selected_frontier_point": 0}, 1,
-        ) is False
-        assert _cached_result_matches_frontier_selection(
-            {"selected_frontier_point": 1}, 1,
-        ) is True
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": True},
+                1,
+            )
+            is False
+        )
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": 0},
+                1,
+            )
+            is False
+        )
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": 1},
+                1,
+            )
+            is True
+        )
 
     def test_cleanup_orphan_apply_artifact_uses_unknown_for_missing_path(self) -> None:
         """Covers the ``"<unknown>"`` fallback in the warning log."""
@@ -8122,7 +8272,329 @@ class TestOptimiserHelperValidators:
         # NOT raise — this tests the boundary inclusivity of the budget.
         # If the constant is ever raised, this test still asserts the boundary.
         n = 1
-        while n ** 5 <= FRONTIER_COMPUTE_LIMIT:
+        while n**5 <= FRONTIER_COMPUTE_LIMIT:
             n += 1
         # n now exceeds budget; n-1 is the largest passing value.
         enforce_frontier_compute_budget(n_points_per_dim=n - 1, n_constraints=5)
+
+
+# ---------------------------------------------------------------------------
+# Mutation-readiness boundary tests.
+#
+# Each test below pins a specific constant or boundary that a subtle code
+# change (off-by-one, comparison flip, constant drift, dropped clause) could
+# silently invalidate.  These complement the behavioural tests above; their
+# job is to catch *implementation drift* that doesn't change observable
+# behaviour for the normal path.
+# ---------------------------------------------------------------------------
+
+
+class TestOptimiserMutationBoundaries:
+    """Pin constants, exact thresholds, and bool/int discriminations."""
+
+    def test_frontier_apply_handle_prefix_is_stable_string(self) -> None:
+        """``_FRONTIER_APPLY_HANDLE_PREFIX`` is a wire-format constant: it
+        keys into ``artifact_handles`` dicts that survive across job-store
+        round-trips and (potentially) across restarts.  A drift to a
+        different prefix would orphan every previously-saved handle.
+        """
+        from haute.routes.optimiser import (
+            _FRONTIER_APPLY_HANDLE_PREFIX,
+            _frontier_apply_handle_key,
+        )
+
+        # The literal value is part of the contract — pin it.
+        assert _FRONTIER_APPLY_HANDLE_PREFIX == "frontier_apply_result:"
+        # The key builder concatenates without modification.
+        assert _frontier_apply_handle_key(0) == "frontier_apply_result:0"
+        assert _frontier_apply_handle_key(7) == "frontier_apply_result:7"
+        # Negative indices are not pre-validated here — but the prefix is
+        # still the key shape.  This catches a mutation that introduced
+        # a separator change like ``"frontier_apply_result_"``.
+        assert _frontier_apply_handle_key(0).startswith("frontier_apply_result:")
+
+    def test_null_quote_id_error_mentions_count_and_remediation(
+        self,
+        client,
+        tmp_path,
+    ):
+        """The error string for null quote_ids is part of the user-facing
+        contract — the UI parses ``({n} rows)`` for a friendly diagnostic.
+        Pin the exact phrasing so a refactor to ``"{n} rows have null quote_id"``
+        doesn't silently break the UI message.
+        """
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", None, None],
+                "scenario_index": pl.Series([0, 0, 1], dtype=pl.Int32),
+                "scenario_value": pl.Series([0.9, 0.9, 1.0], dtype=pl.Float32),
+                "expected_income": pl.Series([100.0, 99.0, 101.0], dtype=pl.Float32),
+                "volume": pl.Series([1.0, 1.0, 1.0], dtype=pl.Float32),
+            }
+        )
+        path = tmp_path / "null_qid.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        from haute._sandbox import _get_project_root, set_project_root
+
+        original_root = _get_project_root()
+        try:
+            set_project_root(tmp_path)
+            resp = client.post(
+                "/api/optimiser/estimate",
+                json={"graph": graph, "node_id": "opt"},
+            )
+        finally:
+            set_project_root(original_root)
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        # Pin the exact surface a UI parser would key on.
+        assert "Null quote_id values found in optimiser input" in detail
+        # Specific count appears in parens for human readability.
+        assert "(2 rows)" in detail
+        # Remediation hint stays in the message.
+        assert "non-null quote_id" in detail
+
+    def test_cached_result_matches_frontier_selection_rejects_true_explicitly(
+        self,
+    ) -> None:
+        """``isinstance(True, int)`` is True in Python.  Without the
+        explicit ``not isinstance(selected_point, bool)`` guard, a job
+        with ``selected_frontier_point=True`` would silently match
+        ``point_index=1``, returning the wrong cached result.
+
+        Test both ``True`` and ``False`` to defend against a mutation
+        that drops only one of the bool checks.
+        """
+        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+
+        # True looks like 1 numerically — but must be rejected.
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": True},
+                1,
+            )
+            is False
+        )
+        # False looks like 0 numerically — must also be rejected.
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": False},
+                0,
+            )
+            is False
+        )
+        # Real ints work as expected.
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": 1},
+                1,
+            )
+            is True
+        )
+
+    def test_enforce_frontier_compute_budget_one_above_limit_rejected(self) -> None:
+        """Pin the strict-vs-inclusive comparison.  ``> FRONTIER_COMPUTE_LIMIT``
+        means the limit value itself is allowed; ``+1`` must reject.
+
+        A mutation to ``>=`` would tighten the gate by 1 grid point; a
+        mutation to ``<`` would let arbitrarily large workloads through.
+        Both are caught by combining this test with ``..._at_limit_passes``.
+        """
+        import math
+
+        from haute.routes._optimiser_limits import (
+            FRONTIER_COMPUTE_LIMIT,
+            enforce_frontier_compute_budget,
+        )
+
+        # Construct the smallest grid that exceeds the limit by exactly one.
+        # Use n_constraints=2 so the math is simple to inspect.
+        # We need n_points_per_dim ** 2 == FRONTIER_COMPUTE_LIMIT + delta.
+        # The simplest way: take ceil(sqrt(LIMIT)) + 1.
+        boundary = math.isqrt(FRONTIER_COMPUTE_LIMIT)
+        # boundary**2 <= LIMIT; (boundary+1)**2 > LIMIT (provided LIMIT isn't
+        # a perfect square — for 100_000 it isn't).
+        assert (boundary + 1) ** 2 > FRONTIER_COMPUTE_LIMIT
+
+        with pytest.raises(ValueError, match="Frontier compute budget exceeded"):
+            enforce_frontier_compute_budget(
+                n_points_per_dim=boundary + 1,
+                n_constraints=2,
+            )
+
+    def test_enforce_frontier_compute_budget_handles_negative_n_constraints(
+        self,
+    ) -> None:
+        """``n_constraints <= 0`` is the no-op branch; document it.
+
+        A mutation to ``< 0`` would cause ``n_constraints=0`` to fall
+        into the loop with ``range(0)`` (still no iterations) — same
+        outcome by accident.  But ``< 0`` would let a malicious caller
+        pass ``n_constraints=-1`` to skip the budget check entirely.
+        """
+        from haute.routes._optimiser_limits import enforce_frontier_compute_budget
+
+        # No raise — this is the early return.
+        enforce_frontier_compute_budget(n_points_per_dim=10**9, n_constraints=0)
+        enforce_frontier_compute_budget(n_points_per_dim=10**9, n_constraints=-1)
+
+    def test_frontier_with_n_points_per_dim_one_returns_a_single_point(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """``n_points_per_dim=1`` is a degenerate request: one grid point
+        per constraint.  It must produce a coherent (if uninteresting)
+        response, not crash with a divide-by-zero or empty-array error
+        deeper in the solver.
+
+        This pins the contract that the cap range still works at
+        the lower boundary.
+        """
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [42.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.0],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_singleton"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}},
+                "frontier_ranges": {"volume": {"min": 0.85, "max": 0.95}},
+            },
+            "result": {
+                "mode": "online",
+                "total_objective": 40.0,
+                "baseline_objective": 38.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 0.0},
+                "converged": True,
+            },
+            "artifact_handles": {},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_singleton",
+                "n_points_per_dim": 1,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # Exactly one point returned, with the constraint name preserved.
+        assert data["n_points"] == 1
+        assert data["points_returned"] == 1
+        assert data["points_truncated"] is False
+        assert data["constraint_names"] == ["volume"]
+        # Solver was called with n_points_per_dim=1 and the absolute range.
+        assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 1
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
+            "volume": (0.85, 0.95),
+        }
+
+    def test_frontier_with_min_equal_to_max_is_accepted_by_schema_layer(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """``min == max`` is a degenerate but valid range — the user is
+        pinning a single threshold value.  The schema validator must
+        accept it; the solver gets a one-element grid effectively.
+
+        Catches a mutation of ``min_value > max_value`` to ``>=`` which
+        would over-tighten validation.
+        """
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [42.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.0],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_pinned"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "created_at": time.time(),
+        }
+
+        # Equal min/max is the pin case — must be accepted.
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_pinned",
+                "threshold_ranges": {"volume": [0.9, 0.9]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        # Solver received the degenerate range as a tuple of the same value.
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
+            "volume": (0.9, 0.9),
+        }
+
+    def test_frontier_compute_request_with_lambda_zero_round_trips_through_response(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Boundary lambda value (``0.0``) must serialise correctly into
+        the frontier response.  A mutation that coerces ``int`` (e.g.
+        ``int(point["lambda_*"])`` — which would silently round 0.0 to 0
+        but truncate non-integer lambdas) is caught by also asserting a
+        non-zero lambda preserves precision.
+        """
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [50.0, 60.0],
+                    "volume": [0.8, 0.95],
+                    "lambda_volume": [0.0, 0.7128],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_lambda_zero"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_lambda_zero",
+                "threshold_ranges": {"volume": [0.8, 0.95]},
+                "n_points_per_dim": 2,
+            },
+        )
+
+        assert resp.status_code == 200
+        points = resp.json()["points"]
+        assert len(points) == 2
+        # Exact zero must serialise as 0 / 0.0, not be coerced to None or string.
+        assert points[0]["lambda_volume"] == 0.0
+        # Non-trivial precision is preserved (no integer truncation).
+        assert points[1]["lambda_volume"] == pytest.approx(0.7128, rel=1e-6)

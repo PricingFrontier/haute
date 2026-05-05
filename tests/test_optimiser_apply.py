@@ -434,11 +434,25 @@ class TestApplyOnlineHelper:
         result = _apply_online(_scored_df().lazy(), artifact, "", "__ver__").collect()
         assert "__ver__" not in result.columns
 
-    def test_apply_online_does_not_pass_chunk_size_to_price_contour_constructor(self):
+    def test_apply_online_passes_only_documented_kwargs_to_price_contour_constructor(self):
+        """ApplyOptimiser's signature is the price-contour ABI we depend on.
+
+        The wrapper must (a) NOT pass extra kwargs the upstream API doesn't
+        accept (chunk_size used to be silently swallowed; now it'd fail
+        loudly), and (b) pass exactly the documented six kwargs sourced from
+        the artifact, in the right shape.  Each of those is independently
+        regression-prone, so assert all of them — not just the absence of
+        chunk_size.
+
+        We also assert the wrapper still applies the version column to the
+        returned dataframe so a "function returns None / wrong shape"
+        mutation cannot pass this test.
+        """
         artifact = _make_online_artifact()
+        # Use a marker value so we can assert the wrapper fed it through.
         result_df = pl.DataFrame(
             {
-                "quote_id": ["q1"],
+                "quote_id": ["q-marker-123"],
                 "optimal_step": [1],
                 "optimal_scenario_value": [1.0],
                 "optimal_objective": [100.0],
@@ -448,10 +462,49 @@ class TestApplyOnlineHelper:
 
         with patch("price_contour.ApplyOptimiser") as mock_apply:
             mock_apply.return_value.apply.return_value = SimpleNamespace(dataframe=result_df)
-            result = _apply_online(_scored_df().lazy(), artifact, "", "__ver__").collect()
+            result = _apply_online(
+                _scored_df().lazy(),
+                artifact,
+                "v3.7.1",
+                "__ver__",
+            ).collect()
 
-        assert len(result) == 1
-        assert "chunk_size" not in mock_apply.call_args.kwargs
+        # ── (a) Constructor was called exactly once with the documented kwargs. ──
+        mock_apply.assert_called_once()
+        call_kwargs = mock_apply.call_args.kwargs
+        # Positive: every required kwarg present with the artifact's value.
+        assert call_kwargs == {
+            "lambdas": artifact["lambdas"],
+            "objective": artifact["objective"],
+            "constraints": artifact["constraints"],
+            "quote_id": artifact["quote_id"],
+            "scenario_index": artifact["scenario_index"],
+            "scenario_value": artifact["scenario_value"],
+        }
+        # No positional args slipped in.
+        assert mock_apply.call_args.args == ()
+        # Belt-and-braces explicit no-chunk_size assertion (the regression bug).
+        assert "chunk_size" not in call_kwargs
+
+        # ── (b) Wrapper threaded the result dataframe through correctly. ──
+        # Marker quote_id flows from the apply() return into the final result.
+        assert result["quote_id"].to_list() == ["q-marker-123"]
+        # Version column was appended with the exact value we passed in.
+        assert "__ver__" in result.columns
+        assert result["__ver__"].to_list() == ["v3.7.1"]
+
+        # ── (c) Apply was driven with the SAME projected dataframe shape. ──
+        # The wrapper casts qid/step/value/objective to the types
+        # price-contour expects.  Verify the dataframe handed to apply()
+        # has those casts (regression: someone removes the .cast pipeline).
+        applied_df = mock_apply.return_value.apply.call_args.args[0]
+        assert applied_df.schema["quote_id"] == pl.Utf8
+        assert applied_df.schema["scenario_index"] == pl.Int32
+        assert applied_df.schema["scenario_value"] == pl.Float32
+        assert applied_df.schema[artifact["objective"]] == pl.Float32
+        # Constraint columns are also cast to Float32 for the price-contour API.
+        for cname in artifact["constraints"]:
+            assert applied_df.schema[cname] == pl.Float32
 
 
 class TestApplyRatebookHelper:
