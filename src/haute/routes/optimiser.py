@@ -205,18 +205,18 @@ def _frontier_ranges_for_request(
     body: OptimiserFrontierRequest,
     job: dict[str, Any],
 ) -> dict[str, tuple[float, float]]:
-    """Resolve explicit or config-derived absolute frontier ranges."""
+    """Resolve explicit or config-derived absolute frontier ranges.
+
+    The request-body shape is already validated by ``OptimiserFrontierRequest``'s
+    Pydantic field validator, so explicit ranges only need to be tupled here.
+    Config-derived ranges still go through validation because configs are
+    arbitrary user JSON, not schema-validated bodies.
+    """
     if body.threshold_ranges:
-        try:
-            return {
-                str(name): _normalise_frontier_range(
-                    value,
-                    field=f"threshold_ranges.{name}",
-                )
-                for name, value in body.threshold_ranges.items()
-            }
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            str(name): (float(value[0]), float(value[1]))
+            for name, value in body.threshold_ranges.items()
+        }
 
     try:
         ranges = _auto_frontier_ranges_from_config(job.get("config", {}))

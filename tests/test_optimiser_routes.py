@@ -7530,3 +7530,504 @@ class TestIntegrationRealSolver:
         assert "optimal_scenario_value" in first_row
         # Objective value should be present in the response
         assert isinstance(data["total_objective"], (int, float))
+
+
+# ---------------------------------------------------------------------------
+# Helper-function unit tests (defensive validators).
+#
+# These exercise the small pure-Python helpers in ``haute.routes.optimiser``
+# that defend against malformed job state.  Covering them via end-to-end HTTP
+# tests is awkward (each scenario needs a synthetic broken job); unit tests
+# hit the same branches more directly.
+# ---------------------------------------------------------------------------
+
+
+class TestOptimiserHelperValidators:
+    """Direct tests for defensive validators in routes/optimiser.py."""
+
+    def test_as_finite_float_rejects_bool(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float(True, field="x")
+        assert exc.value.status_code == 500
+        assert "x" in exc.value.detail
+
+    def test_as_finite_float_rejects_non_numeric(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float("not a number", field="y")
+        assert exc.value.status_code == 500
+
+    def test_as_finite_float_rejects_nan(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float(float("nan"), field="z")
+        assert "not finite" in exc.value.detail
+
+    def test_as_finite_float_rejects_inf(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float(float("inf"), field="z")
+        assert "not finite" in exc.value.detail
+
+    def test_as_finite_float_accepts_valid_value(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        assert _as_finite_float(3.14, field="ok") == 3.14
+        assert _as_finite_float(7, field="ok") == 7.0
+
+    def test_frontier_points_or_raise_missing_data(self) -> None:
+        from haute.routes.optimiser import _frontier_points_or_raise
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_points_or_raise({"frontier_data": None})
+        assert exc.value.status_code == 400
+
+    def test_frontier_points_or_raise_invalid_points_type(self) -> None:
+        from haute.routes.optimiser import _frontier_points_or_raise
+
+        # ``"not a list"`` is truthy, so it bypasses the 400 (no points) branch
+        # and trips the 500 (invalid shape) branch — both are desired loud
+        # failures, just at different layers.
+        with pytest.raises(HTTPException) as exc:
+            _frontier_points_or_raise({"frontier_data": {"points": "not a list"}})
+        assert exc.value.status_code == 500
+
+    def test_frontier_points_or_raise_non_dict_point(self) -> None:
+        from haute.routes.optimiser import _frontier_points_or_raise
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_points_or_raise({"frontier_data": {"points": [{"ok": 1}, 42]}})
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_or_raise_out_of_range(self) -> None:
+        from haute.routes.optimiser import _frontier_point_or_raise
+
+        job = {"frontier_data": {"points": [{"a": 1}], "n_points": 5}}
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_or_raise(job, 10)
+        assert exc.value.status_code == 400
+        assert "out of range" in exc.value.detail
+
+    def test_frontier_point_or_raise_capped_payload(self) -> None:
+        from haute.routes.optimiser import _frontier_point_or_raise
+
+        # n_points (50) > len(points) (1) → capped payload branch.
+        job = {
+            "frontier_data": {
+                "points": [{"a": 1}],
+                "n_points": 50,
+                "points_returned": 1,
+                "points_limit": 1,
+            }
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_or_raise(job, 5)
+        assert "capped frontier payload" in exc.value.detail
+
+    def test_frontier_point_lambdas_no_lambda_keys(self) -> None:
+        from haute.routes.optimiser import _frontier_point_lambdas
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_lambdas({"total_objective": 1.0})
+        assert "no lambda" in exc.value.detail
+
+    def test_frontier_point_lambdas_skips_bool_values(self) -> None:
+        """``isinstance(True, int)`` is True; bool keys must not become lambdas."""
+        from haute.routes.optimiser import _frontier_point_lambdas
+
+        with pytest.raises(HTTPException):
+            _frontier_point_lambdas({"lambda_volume": True})
+
+    def test_frontier_point_constraint_value_falls_back_through_chain(self) -> None:
+        """The fallback chain: total_<name> → constraints[<name>] → bare <name>."""
+        from haute.routes.optimiser import _frontier_point_constraint_value
+
+        # total_<name> wins.
+        assert _frontier_point_constraint_value(
+            {"total_volume": 0.9, "constraints": {"volume": 0.7}, "volume": 0.5},
+            "volume",
+        ) == 0.9
+        # No total_, falls back to constraints dict.
+        assert _frontier_point_constraint_value(
+            {"constraints": {"volume": 0.7}, "volume": 0.5},
+            "volume",
+        ) == 0.7
+        # Falls back to bare key.
+        assert _frontier_point_constraint_value({"volume": 0.5}, "volume") == 0.5
+
+    def test_frontier_point_constraint_value_missing_raises(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraint_value
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraint_value({"other": 1}, "volume")
+        assert exc.value.status_code == 500
+
+    def test_scenario_stats_returns_none_when_absent(self) -> None:
+        from haute.routes.optimiser import _scenario_stats_from_frontier_point
+
+        assert _scenario_stats_from_frontier_point({"total_objective": 1.0}) is None
+
+    def test_base_result_for_frontier_uses_base_when_present(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier
+
+        job = {"base_result": {"a": 1}, "result": {"a": 2}}
+        assert _base_result_for_frontier(job)["a"] == 1
+
+    def test_base_result_for_frontier_falls_back_to_result(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier
+
+        assert _base_result_for_frontier({"result": {"b": 7}})["b"] == 7
+
+    def test_base_result_for_frontier_missing_raises(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier
+
+        with pytest.raises(HTTPException) as exc:
+            _base_result_for_frontier({})
+        assert exc.value.status_code == 500
+
+    def test_base_result_for_recompute_when_no_selection_returns_empty(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier_recompute
+
+        assert _base_result_for_frontier_recompute({}) == {}
+
+    def test_base_result_for_recompute_with_orphan_selection_raises(self) -> None:
+        """If the job is mid-selection but has lost its base_result, fail loud."""
+        from haute.routes.optimiser import _base_result_for_frontier_recompute
+
+        job = {"selected_frontier_point": 1}  # selection set, no base_result
+        with pytest.raises(HTTPException) as exc:
+            _base_result_for_frontier_recompute(job)
+        assert "Re-run the solve" in exc.value.detail
+
+    def test_base_result_for_recompute_strips_selected_point(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier_recompute
+
+        job = {"base_result": {"x": 1, "selected_frontier_point": 0}}
+        result = _base_result_for_frontier_recompute(job)
+        assert "selected_frontier_point" not in result
+        assert result["x"] == 1
+
+    def test_frontier_point_result_dict_invalid_constraint_names(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": "not a list",
+            },
+            "base_result": {},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_result_dict(job, 0)
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_result_dict_non_string_constraint_name(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": [42],
+            },
+            "base_result": {},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_result_dict(job, 0)
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_result_dict_missing_converged(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [{"lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_result_dict(job, 0)
+        assert "converged" in exc.value.detail
+
+    def test_frontier_point_constraints_override_invalid_config(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": "not a dict"},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_constraints_override_invalid_name(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": {42: {"min": 0}}},
+        }
+        with pytest.raises(HTTPException):
+            _frontier_point_constraints_override(job, 0)
+
+    def test_frontier_point_constraints_override_missing_threshold(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        # config defines "a" but with neither min/max/min_pct/max_pct.
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": {"a": {}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "threshold is invalid" in exc.value.detail
+
+    def test_frontier_point_constraints_override_missing_threshold_field(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True}],  # no threshold_a key
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "threshold_a" in exc.value.detail
+
+    def test_dataframe_or_raise_returns_dataframe_when_present(self) -> None:
+        from haute.routes.optimiser import _dataframe_or_raise
+
+        result = SimpleNamespace(dataframe=pl.DataFrame({"a": [1]}))
+        df = _dataframe_or_raise(result, context="ctx")
+        assert df.shape == (1, 1)
+
+    def test_artifact_handles_or_raise_invalid_type(self) -> None:
+        from haute.routes.optimiser import _artifact_handles_or_raise
+
+        with pytest.raises(HTTPException) as exc:
+            _artifact_handles_or_raise({"artifact_handles": "not a dict"})
+        assert exc.value.status_code == 500
+
+    def test_lambda_mappings_match_returns_false_for_mismatched_keys(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": 1.0}, {"b": 1.0}) is False
+
+    def test_lambda_mappings_match_returns_false_for_unequal_values(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": 1.0}, {"a": 2.0}) is False
+
+    def test_lambda_mappings_match_returns_false_for_non_numeric(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": "bad"}, {"a": 1.0}) is False
+
+    def test_lambda_mappings_match_returns_true_within_tolerance(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": 1.0}, {"a": 1.0 + 1e-10}) is True
+
+    def test_lambda_mappings_match_returns_false_for_non_dict(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match("not a dict", {"a": 1.0}) is False
+        assert _lambda_mappings_match({"a": 1.0}, "not a dict") is False
+
+    def test_selected_or_requested_uses_request_when_provided(self) -> None:
+        from haute.routes.optimiser import _selected_or_requested_frontier_point
+
+        assert _selected_or_requested_frontier_point({}, 7) == 7
+
+    def test_selected_or_requested_falls_back_to_job_state(self) -> None:
+        from haute.routes.optimiser import _selected_or_requested_frontier_point
+
+        assert _selected_or_requested_frontier_point({"selected_frontier_point": 3}, None) == 3
+
+    def test_selected_or_requested_returns_none_when_state_is_bool(self) -> None:
+        """``isinstance(True, int)`` is True, so we explicitly reject bools."""
+        from haute.routes.optimiser import _selected_or_requested_frontier_point
+
+        assert _selected_or_requested_frontier_point(
+            {"selected_frontier_point": True}, None,
+        ) is None
+
+    def test_job_has_frontier_points_handles_bad_shape(self) -> None:
+        from haute.routes.optimiser import _job_has_frontier_points
+
+        assert _job_has_frontier_points({"frontier_data": "bad"}) is False
+        assert _job_has_frontier_points({"frontier_data": {"points": []}}) is False
+        assert _job_has_frontier_points({"frontier_data": {"points": [{"a": 1}]}}) is True
+
+    def test_cleanup_orphan_apply_artifact_logs_and_swallows_cleanup_failures(self) -> None:
+        """The orphan-cleanup helper must not let secondary failures mask the
+        primary error path.  When ``_cleanup_apply_result_artifact`` raises,
+        log a warning and continue without re-raising.
+        """
+        from haute.routes import optimiser as optimiser_module
+        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+
+        with patch.object(
+            optimiser_module,
+            "_cleanup_apply_result_artifact",
+            side_effect=OSError("disk gone"),
+        ):
+            # Must not raise — the primary failure is what matters.
+            _cleanup_orphan_apply_artifact(
+                {"directory": "/tmp/some/path"},
+                job_id="test_job",
+            )
+
+    def test_cleanup_orphan_apply_artifact_uses_path_when_directory_missing(self) -> None:
+        from haute.routes import optimiser as optimiser_module
+        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+
+        with patch.object(
+            optimiser_module,
+            "_cleanup_apply_result_artifact",
+            side_effect=OSError("disk gone"),
+        ):
+            _cleanup_orphan_apply_artifact({"path": "/tmp/file"}, job_id="j1")
+            # No assertion: it must simply not raise.
+
+    def test_frontier_point_result_dict_includes_optional_diagnostics(self) -> None:
+        """Cover the optional iterations/cd_iterations/clamp_rate branches."""
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {
+                        "converged": True,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                        "iterations": 3.0,  # float that is actually an int
+                        "cd_iterations": 2.0,
+                        "clamp_rate": 0.05,
+                    }
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {"baseline_constraints": {"a": 0.85}},
+        }
+        result = _frontier_point_result_dict(job, 0)
+        assert result["iterations"] == 3
+        assert result["cd_iterations"] == 2
+        assert result["clamp_rate"] == 0.05
+
+    def test_frontier_point_result_dict_emits_non_converged_warning(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {
+                        "converged": False,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                    }
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {},
+        }
+        result = _frontier_point_result_dict(job, 0)
+        assert "did not converge" in result["warning"]
+
+    def test_frontier_point_result_dict_drops_warning_when_converged(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {
+                        "converged": True,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                    }
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {"warning": "stale warning"},
+        }
+        result = _frontier_point_result_dict(job, 0)
+        assert "warning" not in result
+
+    def test_frontier_point_constraints_override_uses_threshold_value(self) -> None:
+        """Happy path: walks through every step of constraints_override."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 0.95, "threshold_b": 1.05}],
+                "n_points": 1,
+                "constraint_names": ["a", "b"],
+            },
+            "config": {"constraints": {"a": {"min": 0.5}, "b": {"max": 1.0}}},
+        }
+        overrides = _frontier_point_constraints_override(job, 0)
+        assert overrides == {"a": {"min": 0.95}, "b": {"max": 1.05}}
+
+    def test_compute_frontier_ratebook_requires_factors_df(self) -> None:
+        from haute.routes._optimiser_service import _compute_frontier
+
+        with pytest.raises(RuntimeError) as exc:
+            _compute_frontier(
+                MagicMock(),
+                MagicMock(),
+                mode="ratebook",
+                factors_df=None,
+                threshold_ranges={"a": (0.5, 1.0)},
+                n_points_per_dim=3,
+            )
+        assert "factors dataframe" in str(exc.value)
+
+    def test_enforce_frontier_compute_budget_no_constraints_is_noop(self) -> None:
+        from haute.routes._optimiser_limits import enforce_frontier_compute_budget
+
+        # No constraints → no budget check applies.
+        enforce_frontier_compute_budget(n_points_per_dim=100, n_constraints=0)
+
+    def test_enforce_frontier_compute_budget_at_limit_passes(self) -> None:
+        from haute.routes._optimiser_limits import (
+            FRONTIER_COMPUTE_LIMIT,
+            enforce_frontier_compute_budget,
+        )
+
+        # 10 ** 5 == 100_000 == FRONTIER_COMPUTE_LIMIT (current value); should
+        # NOT raise — this tests the boundary inclusivity of the budget.
+        # If the constant is ever raised, this test still asserts the boundary.
+        n = 1
+        while n ** 5 <= FRONTIER_COMPUTE_LIMIT:
+            n += 1
+        # n now exceeds budget; n-1 is the largest passing value.
+        enforce_frontier_compute_budget(n_points_per_dim=n - 1, n_constraints=5)
