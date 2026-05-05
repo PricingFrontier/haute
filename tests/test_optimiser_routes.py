@@ -8017,6 +8017,101 @@ class TestOptimiserHelperValidators:
         # No constraints → no budget check applies.
         enforce_frontier_compute_budget(n_points_per_dim=100, n_constraints=0)
 
+    def test_frontier_point_constraints_override_invalid_constraint_names_list(self) -> None:
+        """Cover the branch where ``frontier_data.constraint_names`` is not a list."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": "not a list",
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "constraint names" in exc.value.detail.lower()
+
+    def test_frontier_point_constraints_override_non_string_in_names(self) -> None:
+        """Cover the branch where ``constraint_names`` contains a non-string entry."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": [42],  # non-string
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "constraint names" in exc.value.detail.lower()
+
+    def test_frontier_point_constraints_override_unknown_constraint(self) -> None:
+        """Cover the branch where a constraint_name has no matching config spec."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0, "threshold_unknown": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a", "unknown"],
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},  # 'unknown' missing
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "constraint is missing" in exc.value.detail
+
+    def test_summary_solve_result_round_trips_optional_fields(self) -> None:
+        from haute.routes.optimiser import _summary_solve_result
+
+        result = {
+            "lambdas": {"a": 0.1},
+            "total_objective": 100.0,
+            "constraints": {"a": 0.95},
+            "baseline_objective": 90.0,
+            "baseline_constraints": {"a": 0.9},
+            "converged": True,
+            "iterations": 5,
+            "cd_iterations": 2,
+            "clamp_rate": 0.01,
+            "factor_tables": {"region": [{"value": 1.0}]},
+        }
+        ns = _summary_solve_result(result)
+        assert ns.lambdas == {"a": 0.1}
+        assert ns.total_objective == 100.0
+        assert ns.iterations == 5
+        assert ns.factor_tables == {"region": [{"value": 1.0}]}
+
+    def test_cached_result_matches_frontier_selection_rejects_bools(self) -> None:
+        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+
+        # bool is technically int in Python — must be explicitly rejected.
+        assert _cached_result_matches_frontier_selection(
+            {"selected_frontier_point": True}, 1,
+        ) is False
+        assert _cached_result_matches_frontier_selection(
+            {"selected_frontier_point": 0}, 1,
+        ) is False
+        assert _cached_result_matches_frontier_selection(
+            {"selected_frontier_point": 1}, 1,
+        ) is True
+
+    def test_cleanup_orphan_apply_artifact_uses_unknown_for_missing_path(self) -> None:
+        """Covers the ``"<unknown>"`` fallback in the warning log."""
+        from haute.routes import optimiser as optimiser_module
+        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+
+        with patch.object(
+            optimiser_module,
+            "_cleanup_apply_result_artifact",
+            side_effect=OSError("vanished"),
+        ):
+            _cleanup_orphan_apply_artifact({}, job_id="j2")  # no directory, no path
+
     def test_enforce_frontier_compute_budget_at_limit_passes(self) -> None:
         from haute.routes._optimiser_limits import (
             FRONTIER_COMPUTE_LIMIT,
