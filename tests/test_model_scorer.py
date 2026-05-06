@@ -28,6 +28,7 @@ from haute._model_scorer import (
     FeatureMismatchError,
     ModelScorer,
     _batch_score_to_parquet,
+    _clear_feature_validation_cache,
     _format_feature_mismatch,
     _register_temp_cleanup,
     _run_score_pipeline,
@@ -638,6 +639,22 @@ class TestValidateFeatures:
         with pytest.raises(FeatureMismatchError) as exc_info:
             _validate_features(sm, schema)
         assert exc_info.value.context["missing"] == ["c"]
+
+    def test_cache_key_includes_model_feature_contract(self):
+        """A reused object id must not reuse another model's validation result."""
+        schema = pl.Schema({"a": pl.Float64, "b": pl.Float64})
+        sm_ok = _make_scoring_model(feature_names=["a", "b"])
+        sm_missing = _make_scoring_model(feature_names=["a", "b", "c"])
+
+        _clear_feature_validation_cache()
+        try:
+            with patch("haute._model_scorer.id", return_value=123, create=True):
+                assert _validate_features(sm_ok, schema) == (["a", "b"], [])
+                with pytest.raises(FeatureMismatchError) as exc_info:
+                    _validate_features(sm_missing, schema)
+            assert exc_info.value.context["missing"] == ["c"]
+        finally:
+            _clear_feature_validation_cache()
 
     def test_no_usable_features_raises(self):
         """Raises FeatureMismatchError when no features match at all."""
