@@ -99,8 +99,11 @@ export default function FrontierChart({
     const representatives = new Map<number, number>()
     const overlapCounts = new Map<number, number>()
     for (const bucket of buckets.values()) {
+      const defaultRepresentative = bucket.find(position => position.index > 0) ?? bucket[0]
       const representative =
-        selectedIdx == null ? bucket[0] : (bucket.find(position => position.index === selectedIdx) ?? bucket[0])
+        selectedIdx == null
+          ? defaultRepresentative
+          : (bucket.find(position => position.index === selectedIdx) ?? defaultRepresentative)
       bucket.forEach(position => {
         representatives.set(position.index, representative.index)
         overlapCounts.set(position.index, bucket.length)
