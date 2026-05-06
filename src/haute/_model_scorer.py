@@ -115,7 +115,10 @@ def _schema_validation_cache_key(schema: pl.Schema) -> _SchemaValidationKey:
 
 def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
     """Return the model-side contract that controls feature validation."""
-    return (tuple(scoring_model.feature_names), scoring_model.cat_feature_names)
+    return (
+        tuple(scoring_model.feature_names),
+        frozenset(scoring_model.cat_feature_names or ()),
+    )
 
 
 def _clear_feature_validation_cache() -> None:

@@ -656,6 +656,16 @@ class TestValidateFeatures:
         finally:
             _clear_feature_validation_cache()
 
+    def test_cache_key_accepts_list_cat_feature_names(self):
+        """Executor scaffolds may provide list categorical metadata."""
+
+        class ScoringModelLike:
+            feature_names = ["a"]
+            cat_feature_names = ["a"]
+
+        schema = pl.Schema({"a": pl.String})
+        assert _validate_features(ScoringModelLike(), schema) == (["a"], [])
+
     def test_no_usable_features_raises(self):
         """Raises FeatureMismatchError when no features match at all."""
         sm = _make_scoring_model(feature_names=["x", "y"])
