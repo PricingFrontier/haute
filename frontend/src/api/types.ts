@@ -305,8 +305,23 @@ export interface OptimiserSolveResponse {
 export type SolveOptimiserResponse = OptimiserSolveResponse
 
 export interface OptimiserEstimate {
-  /** Source row count from parquet metadata, or null when unreadable. */
+  /** Raw ancestor source row count from parquet metadata, or null when unreadable. */
   total_rows: number | null
+  /** Distinct quotes in the optimiser input after scenario expansion. */
+  quote_count?: number | null
+  /** Minimum scenario rows per quote in the optimiser input. */
+  scenarios_per_quote_min?: number | null
+  /** Maximum scenario rows per quote in the optimiser input. */
+  scenarios_per_quote_max?: number | null
+  /** Mean scenario rows per quote in the optimiser input. */
+  scenarios_per_quote_mean?: number | null
+  /** Total rows in the optimiser input after scenario expansion. */
+  expanded_row_count?: number | null
+}
+
+export interface ApplyOptimiserRequest {
+  job_id: string
+  point_index?: number
 }
 
 export interface ApplyOptimiserResponse {
@@ -322,15 +337,35 @@ export interface ApplyOptimiserResponse {
   error: string | null
 }
 
+export interface SaveOptimiserRequest {
+  job_id: string
+  output_path: string
+  point_index?: number
+}
+
 export interface SaveOptimiserResponse {
   status: string
   path: string | null
   message: string
 }
 
+export interface LogOptimiserToMlflowRequest {
+  job_id: string
+  experiment_name?: string | null
+  model_name?: string | null
+  point_index?: number
+}
+
+export type FrontierPoint = Record<string, unknown> & {
+  index?: number
+  total_objective?: number
+  constraints?: Record<string, number>
+  lambdas?: Record<string, number>
+}
+
 export interface FrontierResponse {
   status: string
-  points: Record<string, unknown>[]
+  points: FrontierPoint[]
   n_points: number
   points_returned: number
   constraint_names: string[]
@@ -339,6 +374,18 @@ export interface FrontierResponse {
 }
 
 export type FrontierData = Omit<FrontierResponse, 'status'>
+
+export interface FrontierRange {
+  min: number
+  max: number
+}
+
+export interface FrontierAutoRangeResponse {
+  status: string
+  ranges: Record<string, FrontierRange>
+  method: string
+  warning: string | null
+}
 
 export interface OptimiserHistoryEntry {
   iteration: number
@@ -401,12 +448,21 @@ export interface OptimiserStatusResponse {
 
 export interface FrontierSelectResponse {
   status: string
+  point_index?: number | null
   total_objective: number
   constraints: Record<string, number>
   baseline_objective: number
   baseline_constraints: Record<string, number>
   lambdas: Record<string, number>
   converged: boolean
+  iterations?: number | null
+  cd_iterations?: number | null
+  factor_tables?: Record<string, Record<string, unknown>[]>
+  history?: OptimiserHistoryEntry[] | null
+  warning?: string | null
+  scenario_value_stats?: OptimiserScenarioValueStats
+  scenario_value_histogram?: OptimiserScenarioValueHistogram
+  clamp_rate?: number | null
   error: string | null
 }
 

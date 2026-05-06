@@ -4,6 +4,7 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   parseApplyOptimiserResponse,
   parseDissolveSubmodelResponse,
+  parseFrontierAutoRangeResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -288,12 +289,17 @@ describe("API response guards", () => {
     const estimate = parseOptimiserEstimateResponse(loadUiContractFixture("optimiser_estimate_response"))
     const apply = parseApplyOptimiserResponse(loadUiContractFixture("optimiser_apply_response"))
     const frontier = parseFrontierResponse(loadUiContractFixture("optimiser_frontier_response"))
+    const frontierAutoRange = parseFrontierAutoRangeResponse(loadUiContractFixture("optimiser_frontier_auto_range_response"))
     const selected = parseFrontierSelectResponse(loadUiContractFixture("optimiser_frontier_select_response"))
     const saved = parseSaveOptimiserResponse(loadUiContractFixture("optimiser_save_response"))
 
-    expect(solve.job_id).toBe("opt-job-1")
-    expect(estimate.total_rows).toBe(10000)
-    expect(apply.from_artifact).toBe(false)
+      expect(solve.job_id).toBe("opt-job-1")
+      expect(estimate.total_rows).toBe(10000)
+      expect(estimate.quote_count).toBe(500)
+      expect(estimate.scenarios_per_quote_min).toBe(20)
+      expect(estimate.scenarios_per_quote_max).toBe(20)
+      expect(estimate.expanded_row_count).toBe(10000)
+      expect(apply.from_artifact).toBe(false)
     expect(apply.preview[0]?.scenario).toBe("A")
     const parsedApply = parseApplyOptimiserResponse({
       status: "ok",
@@ -306,6 +312,7 @@ describe("API response guards", () => {
     expect(parsedApply.preview_truncated).toBe(true)
     expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
+    expect(frontierAutoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
     expect(parseFrontierResponse({
       status: "ok",
       points: [{ total_objective: 1 }],
@@ -351,6 +358,38 @@ describe("API response guards", () => {
     expect(pulled.commits_pulled).toBe(2)
     expect(archived.archived_as).toContain("archive/")
     expect(deleted.branch).toContain("feat/")
+  })
+
+  it("rejects scenario_value_histogram payloads missing counts or edges", () => {
+    // CLAUDE.md: do not silently fall back.  A present histogram object
+    // missing one of its required arrays is a contract violation; throw so
+    // we surface the bug instead of rendering with empty arrays.
+    expect(() =>
+      parseFrontierSelectResponse({
+        status: "ok",
+        point_index: 0,
+        total_objective: 1,
+        constraints: { loss: 1 },
+        baseline_objective: 1,
+        baseline_constraints: { loss: 1 },
+        lambdas: { loss: 0.1 },
+        converged: true,
+        scenario_value_histogram: { counts: [1, 2] },
+      }),
+    ).toThrow(/scenario_value_histogram\.edges/)
+    expect(() =>
+      parseFrontierSelectResponse({
+        status: "ok",
+        point_index: 0,
+        total_objective: 1,
+        constraints: { loss: 1 },
+        baseline_objective: 1,
+        baseline_constraints: { loss: 1 },
+        lambdas: { loss: 0.1 },
+        converged: true,
+        scenario_value_histogram: { edges: [0, 1, 2] },
+      }),
+    ).toThrow(/scenario_value_histogram\.counts/)
   })
 
   it("rejects malformed optimiser lambda maps", () => {

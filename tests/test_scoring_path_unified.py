@@ -175,12 +175,10 @@ def _make_pyfunc_like_model(
 def _make_rustystats_like_model(
     feature_names: list[str],
     predictions: np.ndarray,
-    terms_dict: dict[str, Any] | None = None,
 ) -> MagicMock:
     """Build a MagicMock shaped like a RustyStats GLMModel."""
     model = MagicMock()
-    model.terms_dict = terms_dict or {f: {"type": "linear"} for f in feature_names}
-    model.feature_names = feature_names
+    model.required_columns = feature_names
     model.predict.return_value = predictions
     # GLMs don't have predict_proba
     del model.predict_proba

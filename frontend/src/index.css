@@ -119,6 +119,14 @@
   --chart-positive: #4caf50;
   --chart-negative: #f44336;
   --chart-neutral: #9e9e9e;
+  --chart-impact-value-high: #ff0051;
+  --chart-impact-value-low: #008bfb;
+  --chart-impact-value-neutral: #7c3aed;
+  --chart-impact-plot-bg: #ffffff;
+  --chart-impact-label: #303030;
+  --chart-impact-muted: #626262;
+  --chart-impact-grid: #d7d7d7;
+  --chart-impact-axis: #8a8a8a;
   --chart-series-1: var(--warning-strong);
   --chart-series-2: var(--accent);
   --chart-series-3: var(--success);

@@ -10,6 +10,7 @@ import {
   deleteUtilityFile,
   dissolveSubmodel,
   buildJsonCache,
+  estimateOptimiserFrontierAutoRange,
   estimateOptimiserSolve,
   estimateTrainingRam,
   fetchDatabricksData,
@@ -167,6 +168,15 @@ describe("client runtime contracts", () => {
     expect(frontier.points_limit).toBe(2000)
     expect(frontier.points_truncated).toBe(false)
 
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_frontier_auto_range_response")))
+
+    const autoRange = await estimateOptimiserFrontierAutoRange({
+      graph: dummyGraph,
+      node_id: "opt1",
+    })
+
+    expect(autoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
 
     const applyResult = await applyOptimiser({ job_id: "opt-job-1" })
@@ -175,6 +185,30 @@ describe("client runtime contracts", () => {
     expect(applyResult.preview_row_count).toBe(1)
     expect(applyResult.preview_row_limit).toBe(100)
     expect(applyResult.preview_truncated).toBe(false)
+  })
+
+  it("sends explicit frontier point indexes on terminal optimiser actions", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
+    await applyOptimiser({ job_id: "opt-job-1", point_index: 3 })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      job_id: "opt-job-1",
+      point_index: 3,
+    })
+
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_save_response")))
+    await saveOptimiser({ job_id: "opt-job-1", output_path: "output.py", point_index: 3 })
+    expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toMatchObject({
+      job_id: "opt-job-1",
+      output_path: "output.py",
+      point_index: 3,
+    })
+
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("mlflow_log_response")))
+    await logOptimiserToMlflow({ job_id: "opt-job-1", point_index: 3 })
+    expect(JSON.parse(String(mockFetch.mock.calls[2][1]?.body))).toMatchObject({
+      job_id: "opt-job-1",
+      point_index: 3,
+    })
   })
 
   it("getGitStatus rejects malformed git payloads", async () => {
@@ -290,6 +324,15 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_response"), constraint_names: "bad" },
       call: () => runFrontier({ job_id: "opt-job-1", threshold_ranges: { loss: [0.8, 1.0] } }),
       error: /constraint_names/i,
+    },
+    {
+      name: "estimateOptimiserFrontierAutoRange",
+      response: {
+        ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_auto_range_response"),
+        ranges: { expected_margin: { min: "bad", max: 39 } },
+      },
+      call: () => estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
+      error: /parseFrontierAutoRangeResponse/i,
     },
     {
       name: "selectFrontierPoint",

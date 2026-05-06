@@ -210,3 +210,30 @@ def client():
     from haute.server import app
 
     return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Optimiser job-store isolation — shared across all optimiser test files
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def clean_job_store():
+    """Snapshot and restore the optimiser job store around each test.
+
+    Tests that inject fake jobs into ``_store.jobs`` no longer need a
+    manual try/finally; the snapshot/restore here keeps test isolation
+    on the module-level job store without requiring per-file fixture
+    duplication.
+
+    Single source of truth for the optimiser job-store fixture; previously
+    each optimiser test file (``test_optimiser_routes.py``,
+    ``test_optimiser_routes_critical_edges.py``,
+    ``test_optimiser_frontier_materialisation.py``) defined its own copy.
+    """
+    from haute.routes.optimiser import _store
+
+    snapshot = dict(_store.jobs)
+    yield _store
+    _store.jobs.clear()
+    _store.jobs.update(snapshot)

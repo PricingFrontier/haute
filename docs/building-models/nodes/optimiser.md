@@ -1,6 +1,6 @@
 # Optimiser
 
-You've generated candidate prices with the Scenario Expander. Now you want to find the best price for each quote  - or the best set of rating factors  - subject to portfolio-level constraints like volume retention or loss ratio targets.
+You've generated candidate prices with the Scenario Expander. Now you want to find the best price for each quote  - or the best set of rating factors  - subject to portfolio-level constraints like premium floors or claims caps.
 
 !!! warning "Terminal node"
     This node saves results but does not pass data to downstream nodes. Results are saved as artifacts that can be loaded by [Optimiser Apply](optimiser-apply.md) in your production pipeline.
@@ -16,10 +16,10 @@ You've generated candidate prices with the Scenario Expander. Now you want to fi
 | `scenario_index` | **Required.** Column with the scenario step index (created by [Scenario Expander](scenario-expander.md)) |
 | `scenario_value` | **Required.** Column with the scenario value (created by [Scenario Expander](scenario-expander.md)) |
 | `objective` | **Required.** Column to maximise (e.g. `"predicted_income"`) |
-| `constraints` | **Required.** Named constraints with min/max bounds |
+| `constraints` | **Required.** Named sum constraints with absolute (`min`/`max`) bounds |
 | `max_iter` | Maximum solver iterations |
 | `tolerance` | How close to optimal the solution needs to be before stopping. Smaller values give more precise results but take longer. Typical values: 0.001 to 0.01. |
-| `chunk_size` | Number of quotes to optimise at once. Smaller values use less memory. Leave blank to process all quotes at once. |
+| `chunk_size` | Optional row slice size for chunked Parquet-to-grid ingestion. Use only when scored rows are already grouped by quote and ordered by scenario index. |
 | `record_history` | Whether to save iteration-by-iteration convergence history |
 | `mlflow_experiment` | MLflow experiment name for logging results |
 | `model_name` | Model registry name for saving artifacts |
@@ -30,13 +30,13 @@ A typical constraint configuration:
 {
   "objective": "predicted_income",
   "constraints": {
-    "volume":     { "min": 0.90 },
-    "loss_ratio": { "max": 0.65 }
+    "premium": { "min": 1000000 },
+    "claims": { "max": 650000 }
   }
 }
 ```
 
-This tells the optimiser: maximise the objective column, but keep volume at or above 90% of baseline and loss ratio at or below 65%.
+This tells the optimiser: maximise the objective column, but keep premium at or above 1,000,000 and claims at or below 650,000.
 
 ??? info "Ratebook-specific options"
     | Config | Description |
@@ -50,13 +50,28 @@ This tells the optimiser: maximise the objective column, but keep volume at or a
     | `structure_mode` | `"explicit"` (you define the factor structure) or `"auto"` (inferred from the data) |
 
 ??? info "Efficient frontier"
-    The efficient frontier shows the best achievable tradeoff between your objective (e.g. profit) and your constraints (e.g. volume retention). Enable it to see how much profit you give up for each additional percentage point of volume.
+    The efficient frontier shows the best achievable tradeoff between your objective and your constraints. Enable it to see how the optimum changes as absolute portfolio total bounds are tightened or relaxed.
+
+    Frontier is available in both online and ratebook modes. Ratebook frontiers can be significantly more expensive because each frontier point may require another factor-table optimisation.
+
+    Prefer `frontier_ranges` for new configs. Each range is keyed by constraint name and uses absolute portfolio totals, not multipliers:
+
+    ```json
+    {
+      "frontier_ranges": {
+        "premium": { "min": 900000, "max": 1200000 },
+        "claims": { "min": 450000, "max": 650000 }
+      }
+    }
+    ```
 
     | Config | Description |
     |---|---|
-    | `frontier_enabled` | Whether to compute the efficient frontier |
-    | `frontier_points_per_dim` | Number of points per dimension on the frontier |
-    | `frontier_threshold_ranges` | Constraint ranges to sweep for the frontier |
+    | `frontier_enabled` | Whether to compute an efficient frontier after the individual-point solve |
+    | `frontier_ranges` | Preferred absolute `min`/`max` portfolio totals for each constraint |
+    | `frontier_min` | Legacy absolute lower bound used for every constraint when `frontier_ranges` is omitted |
+    | `frontier_max` | Legacy absolute upper bound used for every constraint when `frontier_ranges` is omitted |
+    | `frontier_steps` | Number of points per constraint dimension on the frontier |
 
 **See also:**
 

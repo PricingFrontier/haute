@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from "react"
 import { Loader2, ChevronDown, ChevronRight, AlertTriangle, Plus, X, Target, Layers, RefreshCw } from "lucide-react"
 import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
-import { solveOptimiser, estimateOptimiserSolve } from "../api/client"
+import { solveOptimiser, estimateOptimiserSolve, estimateOptimiserFrontierAutoRange } from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
@@ -16,6 +16,7 @@ import { withAlpha } from "../utils/color"
 import { extractBandingLevelsForNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
 import { useGraph } from "./useGraph"
+import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 
 // ─── Banding factor extraction ───
 
@@ -55,11 +56,35 @@ type OptimiserConfigProps = {
 }
 
 const CONSTRAINT_TYPES = [
-  { value: "min", label: "Min (relative)" },
-  { value: "max", label: "Max (relative)" },
-  { value: "min_abs", label: "Min (absolute)" },
-  { value: "max_abs", label: "Max (absolute)" },
+  { value: "min", label: "Minimum" },
+  { value: "max", label: "Maximum" },
 ]
+
+type FrontierRangeConfig = { min?: number; max?: number }
+
+function optionalConfigNumber(config: Record<string, unknown>, key: string): number | undefined {
+  const value = config[key]
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function parseOptionalNumber(raw: string): number | undefined {
+  const trimmed = raw.trim()
+  if (trimmed === "") return undefined
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function formatScenariosPerQuote(min?: number | null, max?: number | null, mean?: number | null): string {
+  if (min == null && max == null) return mean == null ? "" : mean.toLocaleString(undefined, { maximumFractionDigits: 1 })
+  if (min != null && max != null) {
+    return min === max ? min.toLocaleString() : `${min.toLocaleString()}-${max.toLocaleString()}`
+  }
+  return (min ?? max)?.toLocaleString() ?? ""
+}
+
+function singleFactorColumnsFromLevels(levels: Record<string, string[]>): string[][] {
+  return Object.keys(levels).sort().map(name => [name])
+}
 
 export default function OptimiserConfig({
   config,
@@ -78,11 +103,14 @@ export default function OptimiserConfig({
 
   // ── Local UI state (cheap, ok to recreate) ──
   const [submitting, setSubmitting] = useState(false)
+  const [autoRangeLoading, setAutoRangeLoading] = useState(false)
+  const [autoRangeError, setAutoRangeError] = useState<string | null>(null)
 
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
-  const solveError = solveJob?.error ?? null
-  const solveResult: SolveResult | null = cachedResult?.result ?? null
+  const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
+  const solveResult: SolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
+  const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
   const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
@@ -90,6 +118,7 @@ export default function OptimiserConfig({
 
   const mode = configField(config, "mode", "online")
   const factorColumns = configField<string[][]>(config, "factor_columns", [])
+  const hasConfiguredFactorColumns = Object.prototype.hasOwnProperty.call(config, "factor_columns")
   const objective = configField(config, "objective", "")
   const constraints = configField<Record<string, Record<string, number>>>(config, "constraints", {})
   const quoteId = configField(config, "quote_id", "quote_id")
@@ -101,9 +130,11 @@ export default function OptimiserConfig({
   const recordHistory = configField(config, "record_history", false)
   const maxCdIterations = configField(config, "max_cd_iterations", 10)
   const cdTolerance = configField(config, "cd_tolerance", 1e-3)
-  const frontierMin = configField(config, "frontier_min", 0.80)
-  const frontierMax = configField(config, "frontier_max", 1.10)
+  const frontierMin = optionalConfigNumber(config, "frontier_min")
+  const frontierMax = optionalConfigNumber(config, "frontier_max")
   const frontierSteps = configField(config, "frontier_steps", 15)
+  const frontierEnabled = configField(config, "frontier_enabled", false)
+  const frontierRanges = configField<Record<string, FrontierRangeConfig>>(config, "frontier_ranges", {})
 
   // Input nodes connected to this optimiser
   const inputNodes = useMemo(
@@ -113,6 +144,8 @@ export default function OptimiserConfig({
 
   // Data input selection — which connected input provides objectives & constraints
   const dataInput = configField(config, "data_input", "")
+  const constraintEntries = Object.entries(constraints)
+  const constraintCount = constraintEntries.length
 
   // Columns from the selected data input node — cached in store
   // Prefer columns already collected for the optimiser panel so opening it
@@ -220,17 +253,141 @@ export default function OptimiserConfig({
     [allNodes, effectiveBandingSource],
   )
   const bandingFactorNames = useMemo(() => Object.keys(bandingLevels).sort(), [bandingLevels])
+  const inferredFactorColumns = useMemo(
+    () => singleFactorColumnsFromLevels(bandingLevels),
+    [bandingLevels],
+  )
+
+  useEffect(() => {
+    if (
+      mode === "ratebook" &&
+      effectiveBandingSource &&
+      !hasConfiguredFactorColumns &&
+      factorColumns.length === 0 &&
+      inferredFactorColumns.length > 0
+    ) {
+      onUpdate("factor_columns", inferredFactorColumns)
+    }
+  }, [
+    mode,
+    effectiveBandingSource,
+    hasConfiguredFactorColumns,
+    factorColumns.length,
+    inferredFactorColumns,
+    onUpdate,
+  ])
 
   // When banding source changes, auto-select all its factors
   const handleBandingSourceChange = useCallback((bandingNodeId: string) => {
     onUpdate("banding_source", bandingNodeId)
     const levels = extractBandingLevelsForNode(allNodes, bandingNodeId)
-    const allFactors = Object.keys(levels).map(name => [name])
-    onUpdate("factor_columns", allFactors)
+    onUpdate("factor_columns", singleFactorColumnsFromLevels(levels))
   }, [allNodes, onUpdate])
 
   const canSolve = !!objective &&
     (mode !== "ratebook" || factorColumns.length > 0)
+
+  const rangeForConstraint = useCallback(
+    (name: string): FrontierRangeConfig => {
+      const configured = frontierRanges[name]
+      return {
+        min: typeof configured?.min === "number" && Number.isFinite(configured.min) ? configured.min : frontierMin,
+        max: typeof configured?.max === "number" && Number.isFinite(configured.max) ? configured.max : frontierMax,
+      }
+    },
+    [frontierRanges, frontierMin, frontierMax],
+  )
+
+  const handleFrontierRangeChange = useCallback(
+    (name: string, key: keyof FrontierRangeConfig, value: number | undefined) => {
+      const nextRange: FrontierRangeConfig = { ...rangeForConstraint(name) }
+      if (value === undefined) {
+        delete nextRange[key]
+      } else {
+        nextRange[key] = value
+      }
+      const nextRanges = { ...frontierRanges }
+      if (nextRange.min === undefined && nextRange.max === undefined) {
+        delete nextRanges[name]
+      } else {
+        nextRanges[name] = nextRange
+      }
+      const updates: Record<string, unknown> = { frontier_ranges: nextRanges }
+      if (constraintCount === 1) {
+        updates[key === "min" ? "frontier_min" : "frontier_max"] = value
+      }
+      onUpdate(updates)
+    },
+    [constraintCount, frontierRanges, onUpdate, rangeForConstraint],
+  )
+
+  const handleAutoRange = useCallback(async () => {
+    setAutoRangeLoading(true)
+    setAutoRangeError(null)
+    try {
+      const response = await estimateOptimiserFrontierAutoRange({
+        graph: buildGraphCb(),
+        node_id: nodeId,
+      })
+      const nextRanges: Record<string, FrontierRangeConfig> = {}
+      const missingRanges: string[] = []
+      for (const [name] of constraintEntries) {
+        const range = response.ranges[name]
+        if (range) {
+          nextRanges[name] = range
+        } else {
+          missingRanges.push(name)
+        }
+      }
+      if (missingRanges.length > 0) {
+        throw new Error(`No ranges returned for: ${missingRanges.join(", ")}`)
+      }
+      if (Object.keys(nextRanges).length === 0) {
+        throw new Error("No ranges returned for the selected constraints")
+      }
+      const firstRange = nextRanges[constraintEntries[0]?.[0]]
+      onUpdate({
+        frontier_ranges: nextRanges,
+        ...(constraintCount === 1 && firstRange
+          ? { frontier_min: firstRange.min, frontier_max: firstRange.max }
+          : {}),
+      })
+      if (response.warning) setAutoRangeError(response.warning)
+    } catch (err) {
+      setAutoRangeError(err instanceof Error ? err.message : "Auto range failed")
+    } finally {
+      setAutoRangeLoading(false)
+    }
+  }, [buildGraphCb, constraintCount, constraintEntries, nodeId, onUpdate])
+
+  const renderConstraintBoundRows = () => (
+    <div className="space-y-1.5">
+      {constraintEntries.map(([name, spec]) => {
+        const constraintType = Object.keys(spec).find(key => key === "min" || key === "max") || "min"
+        const constraintValue = spec[constraintType] ?? 0
+        return (
+          <div key={name} data-testid="constraint-bound-row" className="grid grid-cols-[90px_64px] items-center gap-1.5">
+            <select
+              value={constraintType}
+              onChange={(e) => handleConstraintValueChange(name, e.target.value, constraintValue)}
+              className="px-1 py-1 rounded text-[10px]"
+              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+            >
+              {CONSTRAINT_TYPES.map(ct => <option key={ct.value} value={ct.value}>{ct.label}</option>)}
+            </select>
+            <input
+              type="number"
+              step="any"
+              value={constraintValue}
+              onChange={(e) => handleConstraintValueChange(name, constraintType, safeParseFloat(e.target.value, 0))}
+              className="w-full px-1.5 py-1 rounded text-[11px] font-mono text-right"
+              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+            />
+          </div>
+        )
+      })}
+    </div>
+  )
 
   return (
     <div className="px-4 py-3 space-y-4">
@@ -385,7 +542,7 @@ export default function OptimiserConfig({
       <div>
         <div className="flex items-center justify-between">
           <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Constraints ({Object.keys(constraints).length})
+            Constraints ({constraintCount})
           </label>
           <button
             onClick={handleAddConstraint}
@@ -395,101 +552,161 @@ export default function OptimiserConfig({
             <Plus size={10} /> Add
           </button>
         </div>
-        <div className="mt-1.5 space-y-2">
-          {Object.entries(constraints).map(([name, spec]) => {
-            const constraintType = Object.keys(spec)[0] || "min"
-            const constraintValue = spec[constraintType] ?? 0.9
-            return (
-              <div key={name} className="flex items-center gap-1.5 p-2 rounded-lg" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
-                <select
-                  value={name}
-                  onChange={(e) => handleConstraintColumnChange(name, e.target.value)}
-                  className="flex-1 min-w-0 px-1.5 py-1 rounded text-[11px] font-mono"
-                  style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                >
-                  <option value={name}>{name}</option>
-                  {dataInputColumns.filter(c => c.name !== name && c.name !== objective && !constraints[c.name]).map(c => (
-                    <option key={c.name} value={c.name}>{c.name}</option>
-                  ))}
-                </select>
-                <select
-                  value={constraintType}
-                  onChange={(e) => handleConstraintValueChange(name, e.target.value, constraintValue)}
-                  className="w-[90px] px-1 py-1 rounded text-[10px]"
-                  style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-                >
-                  {CONSTRAINT_TYPES.map(ct => <option key={ct.value} value={ct.value}>{ct.label}</option>)}
-                </select>
-                <input
-                  type="number"
-                  step={0.01}
-                  value={constraintValue}
-                  onChange={(e) => handleConstraintValueChange(name, constraintType, safeParseFloat(e.target.value, 0))}
-                  className="w-16 px-1.5 py-1 rounded text-[11px] font-mono text-right"
-                  style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                />
-                <button
-                  onClick={() => handleRemoveConstraint(name)}
-                  className="p-0.5 rounded transition-colors shrink-0"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  <X size={12} />
-                </button>
+        <div className="mt-1.5" data-testid="constraints-settings">
+          {constraintCount > 0 && (
+            <div
+              data-testid="constraint-settings-card"
+              className="p-2 rounded-lg space-y-2"
+              style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}
+            >
+              <div className="space-y-1.5">
+                {constraintEntries.map(([name]) => {
+                  return (
+                    <div key={name} data-testid="constraint-row" className="flex items-center gap-1.5">
+                      <select
+                        value={name}
+                        onChange={(e) => handleConstraintColumnChange(name, e.target.value)}
+                        className="flex-1 min-w-0 px-1.5 py-1 rounded text-[11px] font-mono"
+                        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                      >
+                        <option value={name}>{name}</option>
+                        {dataInputColumns.filter(c => c.name !== name && c.name !== objective && !constraints[c.name]).map(c => (
+                          <option key={c.name} value={c.name}>{c.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => handleRemoveConstraint(name)}
+                        className="p-0.5 rounded transition-colors shrink-0"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
-            )
-          })}
-          {Object.keys(constraints).length === 0 && (
-            <div className="text-[11px] py-2 text-center" style={{ color: "var(--text-muted)" }}>
-              No constraints added. Click "Add" to set volume or loss ratio bounds.
+
+              <div className="pt-2 space-y-2" style={{ borderTop: "1px solid var(--border)" }}>
+                <div>
+                  <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Result type</label>
+                  <div className="mt-1 flex gap-1">
+                    {[
+                      { enabled: false, label: "Individual point" },
+                      { enabled: true, label: "Efficient frontier" },
+                    ].map(option => (
+                      <button
+                        key={option.label}
+                        onClick={() => onUpdate("frontier_enabled", option.enabled)}
+                        className="flex-1 px-2 py-1 rounded text-[11px] font-medium transition-colors"
+                        style={{
+                          background: frontierEnabled === option.enabled ? withAlpha(accentColor, 0.15) : "var(--chrome-hover)",
+                          color: frontierEnabled === option.enabled ? accentColor : "var(--text-muted)",
+                          border: `1px solid ${frontierEnabled === option.enabled ? withAlpha(accentColor, 0.3) : "transparent"}`,
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {!frontierEnabled ? (
+                  <div data-testid="individual-point-settings" className="space-y-2">
+                    {renderConstraintBoundRows()}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={handleAutoRange}
+                        disabled={autoRangeLoading || constraintCount === 0 || !canSolve}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium disabled:opacity-50"
+                        style={{ background: withAlpha(accentColor, 0.12), color: accentColor }}
+                      >
+                        {autoRangeLoading ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                        Auto range
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      {constraintEntries.map(([name]) => {
+                        const range = rangeForConstraint(name)
+                        const minMissing = range.min === undefined
+                        const maxMissing = range.max === undefined
+                        return (
+                          <div
+                            key={name}
+                            data-testid="frontier-range-row"
+                            className={constraintCount > 1 ? "grid grid-cols-[minmax(0,1fr)_80px_80px] items-end gap-1.5" : "grid grid-cols-2 gap-2"}
+                          >
+                            {constraintCount > 1 && (
+                              <span className="min-w-0 truncate pb-1.5 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
+                                {name}
+                              </span>
+                            )}
+                            <div>
+                              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Min value</label>
+                              <input
+                                type="number"
+                                step="any"
+                                value={range.min ?? ""}
+                                aria-label={`${name} min value`}
+                                aria-invalid={minMissing || undefined}
+                                placeholder="Required"
+                                onChange={(e) => handleFrontierRangeChange(name, "min", parseOptionalNumber(e.target.value))}
+                                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
+                                style={{
+                                  background: minMissing ? "var(--warning-soft)" : "var(--bg-input)",
+                                  border: `1px solid ${minMissing ? "var(--warning-border-strong)" : "var(--border)"}`,
+                                  color: "var(--text-primary)",
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Max value</label>
+                              <input
+                                type="number"
+                                step="any"
+                                value={range.max ?? ""}
+                                aria-label={`${name} max value`}
+                                aria-invalid={maxMissing || undefined}
+                                placeholder="Required"
+                                onChange={(e) => handleFrontierRangeChange(name, "max", parseOptionalNumber(e.target.value))}
+                                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
+                                style={{
+                                  background: maxMissing ? "var(--warning-soft)" : "var(--bg-input)",
+                                  border: `1px solid ${maxMissing ? "var(--warning-border-strong)" : "var(--border)"}`,
+                                  color: "var(--text-primary)",
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div>
+                      <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Steps</label>
+                      <input
+                        type="number"
+                        min={2}
+                        step={1}
+                        value={frontierSteps}
+                        onChange={(e) => onUpdate("frontier_steps", safeParseInt(e.target.value, 15))}
+                        className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
+                        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                      />
+                    </div>
+                    {autoRangeError && (
+                      <div className="text-[11px]" style={{ color: "var(--warning)" }}>
+                        {autoRangeError}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
       </div>
-
-      {/* Efficient Frontier (only when constraints are configured) */}
-      {Object.keys(constraints).length > 0 && (
-        <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Efficient Frontier
-          </label>
-          <div className="mt-1.5 grid grid-cols-3 gap-2">
-            <div>
-              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Min multiplier</label>
-              <input
-                type="number"
-                step={0.01}
-                value={frontierMin}
-                onChange={(e) => onUpdate("frontier_min", safeParseFloat(e.target.value, 0.80))}
-                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-              />
-            </div>
-            <div>
-              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Max multiplier</label>
-              <input
-                type="number"
-                step={0.01}
-                value={frontierMax}
-                onChange={(e) => onUpdate("frontier_max", safeParseFloat(e.target.value, 1.10))}
-                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-              />
-            </div>
-            <div>
-              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Steps</label>
-              <input
-                type="number"
-                min={2}
-                step={1}
-                value={frontierSteps}
-                onChange={(e) => onUpdate("frontier_steps", safeParseInt(e.target.value, 15))}
-                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Solver Tuning */}
       <div>
@@ -626,12 +843,30 @@ export default function OptimiserConfig({
       )}
 
       {/* Source size preview (hidden when unreadable — metadata isn't available for live data) */}
-      {solveEstimate && solveEstimate.total_rows != null && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-[11px]" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
-          <span style={{ color: "var(--text-muted)" }}>Source rows</span>
-          <span className="font-mono ml-auto" style={{ color: "var(--text-primary)" }}>
-            {solveEstimate.total_rows.toLocaleString()}
-          </span>
+      {solveEstimate && solveEstimate.quote_count != null && solveEstimate.expanded_row_count != null && (
+        <div className="grid grid-cols-3 gap-2 px-3 py-2 rounded-lg text-[11px]" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
+          <div className="min-w-0">
+            <div style={{ color: "var(--text-muted)" }}>Quotes</div>
+            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
+              {solveEstimate.quote_count.toLocaleString()}
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div style={{ color: "var(--text-muted)" }}>Scenarios / quote</div>
+            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
+              {formatScenariosPerQuote(
+                solveEstimate.scenarios_per_quote_min,
+                solveEstimate.scenarios_per_quote_max,
+                solveEstimate.scenarios_per_quote_mean,
+              )}
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div style={{ color: "var(--text-muted)" }}>Total rows</div>
+            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
+              {solveEstimate.expanded_row_count.toLocaleString()}
+            </div>
+          </div>
         </div>
       )}
 
@@ -712,9 +947,7 @@ export default function OptimiserConfig({
           <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "var(--success-soft)" : "var(--warning-soft-subtle)", border: `1px solid ${solveResult.converged ? "var(--success-border)" : "var(--warning-soft-selected)"}` }}>
             <div style={{ color: solveResult.converged ? "var(--success)" : "var(--warning-strong)" }}>
               {solveResult.converged ? "Converged" : "Did not converge"}
-              {solveResult.mode === "ratebook"
-                ? ` in ${solveResult.cd_iterations ?? "?"} CD iterations`
-                : ` in ${solveResult.iterations ?? "?"} iterations`}
+              {solveIterationSummary ? ` in ${solveIterationSummary.long}` : ""}
               {solveResult.n_quotes != null && solveResult.n_steps != null && (
                 <> ({solveResult.n_quotes.toLocaleString()} quotes, {solveResult.n_steps} steps)</>
               )}

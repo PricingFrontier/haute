@@ -238,7 +238,6 @@ describe("Phase 2 Package 3D — console.* usage is disciplined (#83)", () => {
     // API surface, not the wording of any particular message, so future
     // copy edits don't flap the test.
     const mustToast: ReadonlyArray<{ file: string; anchor: string }> = [
-      { file: "panels/OptimiserPreview.tsx", anchor: "addToast" },
       { file: "panels/GitPanel.tsx", anchor: "addToast" },
       { file: "panels/UtilityPanel.tsx", anchor: "addToast" },
     ]
@@ -341,6 +340,7 @@ vi.mock("../../hooks/useDragResize", () => ({
 vi.mock("../../stores/useNodeResultsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
+      getOptimiserPreview: () => null,
       selectFrontierPoint: H.storeSelectPoint,
       updateFrontierAfterSelect: H.storeUpdateAfterSelect,
     }),
@@ -391,7 +391,7 @@ function resetToasts() {
 
 import OptimiserPreview, { type OptimiserPreviewData } from "../OptimiserPreview"
 
-describe("#83 behavioral: OptimiserPreview frontier-point failure surfaces a toast", () => {
+describe("OptimiserPreview frontier-point switching stays local", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetToasts()
@@ -430,11 +430,9 @@ describe("#83 behavioral: OptimiserPreview frontier-point failure surfaces a toa
     }
   }
 
-  it("clicking a frontier scatter point with a rejecting API raises an ERROR toast to the user", async () => {
-    // Failure mode this catches: the pre-migration code wrote
-    //   catch (err) { console.warn("frontier point select failed", err) }
-    // so a network failure was invisible in the UI.  Post-migration
-    // the catch also routes through useToastStore.addToast("error", …).
+  it("clicking a frontier scatter point does not call the select API or raise a network toast", () => {
+    // Frontier point switching is now local; a rejected select API mock
+    // should be irrelevant because the component must not call it.
     H.selectFrontierPointAPI.mockRejectedValueOnce(new Error("network error"))
 
     render(<OptimiserPreview data={makeData()} nodeId="opt_1" />)
@@ -443,18 +441,9 @@ describe("#83 behavioral: OptimiserPreview frontier-point failure surfaces a toa
     expect(circles.length).toBe(5)
     fireEvent.click(circles[2])
 
-    await waitFor(() => {
-      const toasts = useToastStore.getState().toasts
-      const errorToast = toasts.find((t) => t.type === "error")
-      expect(
-        errorToast,
-        `Expected an ERROR toast after a failed frontier-point API call. toasts=${JSON.stringify(toasts)}`,
-      ).toBeDefined()
-      // The text must mention frontier / optimiser / point context so
-      // the user knows what they clicked — a generic "Error" toast
-      // would be unhelpful noise.
-      expect(errorToast!.text.toLowerCase()).toMatch(/frontier|optimi[sz]er|point/)
-    })
+    expect(H.storeSelectPoint).toHaveBeenCalledWith("opt_1", 2)
+    expect(H.selectFrontierPointAPI).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.filter((t) => t.type === "error")).toHaveLength(0)
   })
 })
 

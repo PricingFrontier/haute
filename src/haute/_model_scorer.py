@@ -39,11 +39,12 @@ _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystat
 # same input schema thousands of times in a row — the answer never changes
 # but the O(n_features) walk + set construction still shows up in profiles.
 #
-# We memoise the ``(usable, missing)`` tuple keyed by model identity and a
-# schema-content key. ``id()`` is stable for the lifetime of the object, so a
-# reload (which produces a fresh ``ScoringModel`` instance) naturally misses;
-# an eviction cascade from ``_mlflow_io``'s ``_model_cache`` drops stale
-# entries so we never accumulate dead pins.
+# We memoise the ``(usable, missing)`` tuple keyed by model identity, the
+# model-side feature contract, and a schema-content key. ``id()`` is stable for
+# the lifetime of the object, while the feature contract protects us from
+# allocator-level id reuse between different ``ScoringModel`` instances; an
+# eviction cascade from ``_mlflow_io``'s ``_model_cache`` drops stale entries so
+# we never accumulate dead pins.
 #
 # The in-memory cache key intentionally uses Polars dtype objects directly
 # instead of serialising them to a digest on every score call. It is still
@@ -65,7 +66,8 @@ _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystat
 from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SIZE  # noqa: E402
 
 _SchemaValidationKey: TypeAlias = tuple[tuple[str, Hashable], ...]
-_FeatureValidationCacheKey: TypeAlias = tuple[int, _SchemaValidationKey]
+_ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str]]
+_FeatureValidationCacheKey: TypeAlias = tuple[int, _ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
 
@@ -109,6 +111,14 @@ def _schema_validation_cache_key(schema: pl.Schema) -> _SchemaValidationKey:
     serialisation.
     """
     return cast(_SchemaValidationKey, tuple(schema.items()))
+
+
+def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
+    """Return the model-side contract that controls feature validation."""
+    return (
+        tuple(scoring_model.feature_names),
+        frozenset(scoring_model.cat_feature_names or ()),
+    )
 
 
 def _clear_feature_validation_cache() -> None:
@@ -301,7 +311,11 @@ def _validate_features(
     silently swallow a later fix.
     """
     global _feature_validation_last_entry
-    key = (id(scoring_model), _schema_validation_cache_key(schema))
+    key = (
+        id(scoring_model),
+        _model_feature_contract_key(scoring_model),
+        _schema_validation_cache_key(schema),
+    )
     last_entry = _feature_validation_last_entry
     if last_entry is not None and last_entry[0] == key:
         return last_entry[1]

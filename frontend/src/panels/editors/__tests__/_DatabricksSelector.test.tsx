@@ -277,6 +277,20 @@ describe("CatalogTablePicker", () => {
       ).toBe(true)
     })
   }
+  async function waitForSchemaOption(value: string) {
+    await waitFor(() => {
+      expect(
+        Array.from(getSchemaSelect().options).some(option => option.value === value),
+      ).toBe(true)
+    })
+  }
+  async function waitForTableOption(value: string) {
+    await waitFor(() => {
+      expect(
+        Array.from(getTableSelect().options).some(option => option.value === value),
+      ).toBe(true)
+    })
+  }
 
   it("renders three dropdowns with correct default placeholders", () => {
     render(<CatalogTablePicker table="" onSelect={vi.fn()} />)
@@ -353,12 +367,15 @@ describe("CatalogTablePicker", () => {
     // Load catalogs and select one
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
+    await waitForCatalogOption("main")
     fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
     await waitFor(() => expect(mockGetSchemas).toHaveBeenCalledWith("main"))
+    await waitForSchemaOption("default")
 
     // Select schema to populate tables
     fireEvent.change(getSchemaSelect(), { target: { value: "default" } })
     await waitFor(() => expect(mockGetTables).toHaveBeenCalledWith("main", "default"))
+    await waitForTableOption("users")
 
     // Select table
     fireEvent.change(getTableSelect(), { target: { value: "users" } })
@@ -384,15 +401,19 @@ describe("CatalogTablePicker", () => {
     // Select catalog -> schema -> table
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
+    await waitForCatalogOption("main")
     fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
     await waitFor(() => expect(mockGetSchemas).toHaveBeenCalled())
+    await waitForSchemaOption("default")
     fireEvent.change(getSchemaSelect(), { target: { value: "default" } })
     await waitFor(() => expect(mockGetTables).toHaveBeenCalled())
+    await waitForTableOption("users")
     fireEvent.change(getTableSelect(), { target: { value: "users" } })
     expect(onSelect).toHaveBeenCalledWith("main.default.users")
 
     // Change schema: table select should reset
     mockGetTables.mockResolvedValue({ tables: [{ name: "orders", full_name: "main.analytics.orders", table_type: "TABLE", comment: "" }] })
+    await waitForSchemaOption("analytics")
     fireEvent.change(getSchemaSelect(), { target: { value: "analytics" } })
 
     expect(getTableSelect().value).toBe("")
@@ -409,10 +430,13 @@ describe("CatalogTablePicker", () => {
 
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
+    await waitForCatalogOption("main")
     fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
     await waitFor(() => expect(mockGetSchemas).toHaveBeenCalled())
+    await waitForSchemaOption("default")
     fireEvent.change(getSchemaSelect(), { target: { value: "default" } })
     await waitFor(() => expect(mockGetTables).toHaveBeenCalled())
+    await waitForTableOption("events")
     fireEvent.change(getTableSelect(), { target: { value: "events" } })
 
     expect(onSelect).toHaveBeenCalledWith("main.default.events")
@@ -428,10 +452,13 @@ describe("CatalogTablePicker", () => {
 
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
+    await waitForCatalogOption("main")
     fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
     await waitFor(() => expect(mockGetSchemas).toHaveBeenCalled())
+    await waitForSchemaOption("default")
     fireEvent.change(getSchemaSelect(), { target: { value: "default" } })
     await waitFor(() => expect(mockGetTables).toHaveBeenCalled())
+    await waitForTableOption("users")
 
     // Select then deselect table
     fireEvent.change(getTableSelect(), { target: { value: "users" } })
@@ -479,6 +506,7 @@ describe("CatalogTablePicker", () => {
 
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
+    await waitForCatalogOption("main")
     fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
 
     await waitFor(() => {
@@ -494,6 +522,7 @@ describe("CatalogTablePicker", () => {
     // Select a catalog first
     fireEvent.focus(getCatalogSelect())
     await waitFor(() => expect(mockGetCatalogs).toHaveBeenCalled())
+    await waitForCatalogOption("main")
     fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
     await waitFor(() => expect(mockGetSchemas).toHaveBeenCalledTimes(1))
 
@@ -525,8 +554,10 @@ describe("DatabricksFetchButton", () => {
     vi.useFakeTimers()
   })
   afterEach(() => {
-    vi.useRealTimers()
     cleanup()
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   const cachedStatus = {
@@ -1019,6 +1050,7 @@ describe("DatabricksFetchButton", () => {
 
     // clearInterval should have been called by the cleanup
     expect(clearIntervalSpy.mock.calls.length).toBeGreaterThan(callsBefore)
+    expect(vi.getTimerCount()).toBe(0)
 
     clearIntervalSpy.mockRestore()
   })

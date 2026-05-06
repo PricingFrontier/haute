@@ -28,19 +28,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
 
-@pytest.fixture()
-def clean_job_store():
-    """Snapshot and restore the optimiser job store after each test.
-
-    Tests that inject fake jobs into _store.jobs no longer need
-    manual try/finally cleanup.
-    """
-    from haute.routes.optimiser import _store
-
-    snapshot = dict(_store.jobs)
-    yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+# ``clean_job_store`` lives in tests/conftest.py — single source of truth.
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +129,36 @@ def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> di
             return data
         time.sleep(poll_interval)
     raise TimeoutError(f"Job {job_id} did not finish within {timeout}s")
+
+
+def _frontier_point_summary(
+    *,
+    lambda_volume: float,
+    total_objective: float,
+    total_volume: float = 0.9,
+    threshold_volume: float | None = None,
+    converged: bool = True,
+) -> dict[str, float | bool]:
+    """Build the stored frontier-point summary shape emitted by price-contour."""
+    return {
+        "threshold_volume": total_volume if threshold_volume is None else threshold_volume,
+        "total_objective": total_objective,
+        "total_volume": total_volume,
+        "lambda_volume": lambda_volume,
+        "iterations": 3,
+        "converged": converged,
+        "sv_mean": 1.0,
+        "sv_std": 0.1,
+        "sv_min": 0.8,
+        "sv_p5": 0.85,
+        "sv_p25": 0.95,
+        "sv_median": 1.0,
+        "sv_p75": 1.05,
+        "sv_p95": 1.15,
+        "sv_max": 1.2,
+        "sv_pct_increase": 0.5,
+        "sv_pct_decrease": 0.25,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +266,7 @@ class TestSolveRoute:
         data = resp.json()
         assert data["status"] == "started"
         assert isinstance(data["job_id"], str) and len(data["job_id"]) > 0
+        _poll_until_done(client, data["job_id"])
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_completes(self, client, scored_data):
@@ -284,7 +303,9 @@ class TestSolveRoute:
         graph = _make_optimiser_graph(scored_data, config=cfg)
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         assert resp.status_code == 200
-        assert resp.json()["status"] == "started"
+        data = resp.json()
+        assert data["status"] == "started"
+        _poll_until_done(client, data["job_id"])
 
     def test_solve_rejects_concurrent(self, client, scored_data, clean_job_store):
         """A second solve request while one is running returns 409."""
@@ -307,6 +328,129 @@ class TestSolveRoute:
 
         assert resp.status_code == 409
         assert "already running" in resp.json()["detail"]
+
+    def test_solve_rejects_concurrent_solve_job_type(self, client, scored_data, clean_job_store):
+        """A typed running solve still blocks another solve request."""
+        from haute.routes.optimiser import _solve_service
+
+        clean_job_store.jobs["fake_running_solve"] = {
+            "status": "running",
+            "job_type": "solve",
+            "progress": 0.5,
+            "message": "Solving...",
+            "created_at": time.time(),
+        }
+        graph = _make_optimiser_graph(scored_data)
+
+        with patch.object(
+            _solve_service,
+            "_execute_pipeline",
+            side_effect=AssertionError("concurrency guard should short-circuit before execution"),
+        ):
+            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 409
+        assert "already running" in resp.json()["detail"]
+
+    def test_solve_ignores_running_estimate_jobs(self, client, scored_data, clean_job_store):
+        """Estimate and auto-range jobs do not consume the real solve lock."""
+        from haute.routes.optimiser import _solve_service
+
+        clean_job_store.jobs["running_estimate"] = {
+            "status": "running",
+            "job_type": "estimate",
+            "progress": 0.0,
+            "message": "Estimating optimiser input",
+            "created_at": time.time(),
+        }
+        clean_job_store.jobs["running_frontier_auto_range"] = {
+            "status": "running",
+            "job_type": "frontier_auto_range",
+            "progress": 0.0,
+            "message": "Estimating frontier range",
+            "created_at": time.time(),
+        }
+        graph = _make_optimiser_graph(scored_data)
+        lazy_outputs = {
+            "opt": pl.LazyFrame(
+                {
+                    "quote_id": ["q1"],
+                    "scenario_index": [0],
+                    "scenario_value": [1.0],
+                    "expected_income": [100.0],
+                    "volume": [1.0],
+                }
+            )
+        }
+
+        with (
+            patch.object(_solve_service, "_execute_pipeline", return_value=lazy_outputs),
+            patch.object(_solve_service, "_build_grid", return_value=object()),
+            patch.object(_solve_service, "_launch_background") as launch_background,
+        ):
+            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "started"
+        started_job = clean_job_store.jobs[data["job_id"]]
+        assert started_job["job_type"] == "solve"
+        launch_background.assert_called_once()
+
+    def test_solve_marks_job_error_when_factor_extraction_fails(
+        self,
+        client,
+        scored_data,
+        clean_job_store,
+    ):
+        """A synchronous ratebook setup failure must not leave the solve job running."""
+        from haute.routes.optimiser import _solve_service
+
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "mode": "ratebook",
+                "factor_columns": [["region"]],
+                "banding_source": "banding",
+            },
+        )
+        lazy_outputs = {
+            "opt": pl.LazyFrame(
+                {
+                    "quote_id": ["q1"],
+                    "scenario_index": [0],
+                    "scenario_value": [1.0],
+                    "expected_income": [100.0],
+                    "volume": [1.0],
+                }
+            )
+        }
+        before_job_ids = set(clean_job_store.jobs)
+
+        with (
+            patch.object(_solve_service, "_execute_pipeline", return_value=lazy_outputs),
+            patch.object(
+                _solve_service,
+                "_extract_factors",
+                side_effect=RuntimeError("factor collection failed"),
+            ),
+            patch.object(_solve_service, "_build_grid") as build_grid,
+            patch.object(_solve_service, "_launch_background") as launch_background,
+        ):
+            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 500
+        new_job_ids = set(clean_job_store.jobs) - before_job_ids
+        solve_jobs = [
+            clean_job_store.jobs[job_id]
+            for job_id in new_job_ids
+            if clean_job_store.jobs[job_id].get("job_type") == "solve"
+        ]
+        assert len(solve_jobs) == 1
+        assert solve_jobs[0]["status"] == "error"
+        assert "factor collection failed" in solve_jobs[0]["message"]
+        build_grid.assert_not_called()
+        launch_background.assert_not_called()
 
 
 class TestStatusRoute:
@@ -399,11 +543,16 @@ class TestEstimateRoute:
     preview consumed by the frontend's shared ``useStaleConfigEstimate`` hook."""
 
     def test_estimate_returns_total_rows(self, client, scored_data):
+        from haute.routes.optimiser import _store
+
         graph = _make_optimiser_graph(scored_data)
-        resp = client.post(
-            "/api/optimiser/estimate",
-            json={"graph": graph, "node_id": "opt"},
-        )
+
+        with patch.object(_store, "create_job", wraps=_store.create_job) as create_job:
+            resp = client.post(
+                "/api/optimiser/estimate",
+                json={"graph": graph, "node_id": "opt"},
+            )
+
         assert resp.status_code == 200
         data = resp.json()
         # Source metadata may or may not resolve depending on the test
@@ -411,18 +560,217 @@ class TestEstimateRoute:
         # null) so the frontend's shared useStaleConfigEstimate hook has a
         # stable shape to render against.
         assert "total_rows" in data
+        assert any(call.args[0].get("job_type") == "estimate" for call in create_job.call_args_list)
 
-    def test_estimate_gracefully_handles_unknown_node(self, client, scored_data):
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_estimate_returns_scenario_expanded_input_counts(self, client, tmp_path):
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2", "q2", "q2"],
+                "scenario_index": [0, 1, 0, 1, 2],
+                "scenario_value": [0.9, 1.1, 0.8, 1.0, 1.2],
+                "expected_income": [100.0, 110.0, 90.0, 95.0, 98.0],
+                "volume": [1.0, 0.9, 1.2, 1.1, 1.0],
+            }
+        )
+        path = tmp_path / "ragged_scenarios.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_rows"] == 5
+        assert data["expanded_row_count"] == 5
+        assert data["quote_count"] == 2
+        assert data["scenarios_per_quote_min"] == 2
+        assert data["scenarios_per_quote_max"] == 3
+        assert data["scenarios_per_quote_mean"] == pytest.approx(2.5)
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_estimate_rejects_null_quote_id_loudly(self, client, tmp_path):
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", None, None, "q2", "q2"],
+                "scenario_index": pl.Series([0, 1, 0, 1, 0, 1], dtype=pl.Int32),
+                "scenario_value": pl.Series([0.9, 1.1, 0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
+                "expected_income": pl.Series(
+                    [100.0, 110.0, 999.0, 999.0, 200.0, 220.0],
+                    dtype=pl.Float32,
+                ),
+                "volume": pl.Series([0.9, 0.8, 0.1, 0.1, 0.95, 0.9], dtype=pl.Float32),
+            }
+        )
+        path = tmp_path / "null_quote_ids.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "Null quote_id values found in optimiser input (2 rows)." in resp.json()["detail"]
+
+    @pytest.mark.parametrize(
+        ("bad_value", "label"),
+        [(float("nan"), "NaN"), (float("inf"), "Inf")],
+    )
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_solve_rejects_non_finite_scenario_value_synchronously(
+        self,
+        client,
+        tmp_path,
+        clean_job_store,
+        bad_value,
+        label,
+    ):
+        """``NaN`` and ``Inf`` in ``scenario_value`` would silently corrupt
+        the lambdas the optimiser produces — and through them, every
+        downstream price.
+
+        Pin the contract: bad values are caught in grid construction and
+        surface as a *synchronous* 400 with the offending column name.
+        No job is left behind in a "running" state, no lambdas are ever
+        produced from corrupt data, and the user gets an actionable
+        message naming the input that failed.
+        """
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2", "q2"],
+                "scenario_index": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
+                "scenario_value": pl.Series(
+                    [0.9, bad_value, 0.9, 1.1],
+                    dtype=pl.Float32,
+                ),
+                "expected_income": pl.Series(
+                    [100.0, 110.0, 80.0, 90.0],
+                    dtype=pl.Float32,
+                ),
+                "volume": pl.Series([0.9, 0.95, 1.0, 0.9], dtype=pl.Float32),
+            }
+        )
+        path = tmp_path / f"{label.lower()}_scenario.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        # ── User-visible contract ────────────────────────────────────
+        # 400 is the right status: bad input, not a server fault.
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        # The message must name the offending column AND the offending
+        # value.  Generic "grid construction failed" without specifics
+        # leaves the user guessing which row of which file is bad.
+        assert "scenario_value" in detail, (
+            f"Error detail does not name the offending column: {detail!r}"
+        )
+        # ``label.lower() in detail.lower()`` accommodates the
+        # price-contour error rendering ("inf"/"nan" in lowercase).
+        assert label.lower() in detail.lower(), (
+            f"Error detail does not name the offending value type ({label!r}): {detail!r}"
+        )
+
+        # ── Job-store hygiene ───────────────────────────────────────
+        # The synchronous failure must NOT leave a "running" job behind
+        # to confuse the next /solve attempt or the status poller.
+        # Either the job exists with status=error, or it was deleted —
+        # both are acceptable; a stuck "running" job is not.
+        running_jobs = [
+            (jid, j) for jid, j in clean_job_store.jobs.items() if j.get("status") == "running"
+        ]
+        assert running_jobs == [], (
+            f"Synchronous validation failure left running job(s) behind: {running_jobs}"
+        )
+
+    def test_estimate_rejects_unknown_node_loudly(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
-        # Unknown node id — the estimate engine can't find sources, so
-        # total_rows is None but the response is still shaped correctly.
         resp = client.post(
             "/api/optimiser/estimate",
             json={"graph": graph, "node_id": "nonexistent"},
         )
+        assert resp.status_code == 404
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_estimate_surfaces_projected_input_errors(self, client, tmp_path):
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "scenario_index": [0, 1],
+                "scenario_value": [0.9, 1.1],
+                "expected_income": [100.0, 110.0],
+            }
+        )
+        path = tmp_path / "missing_constraint.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "Missing columns in scored data" in resp.json()["detail"]
+        assert "volume" in resp.json()["detail"]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_uses_per_quote_scenario_extrema(
+        self,
+        client,
+        tmp_path,
+        clean_job_store,
+    ):
+        """Auto range scans every scenario per quote, so middle extrema count."""
+        from haute.routes.optimiser import _store
+
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q1", "q2", "q2", "q2"],
+                "scenario_index": [0, 1, 2, 0, 1, 2],
+                "scenario_value": [0.8, 1.0, 1.2, 0.8, 1.0, 1.2],
+                "expected_income": [100.0, 120.0, 110.0, 90.0, 95.0, 98.0],
+                "expected_margin": [10.0, 30.0, 20.0, 5.0, 1.0, 9.0],
+            }
+        )
+        path = tmp_path / "scored.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(
+            str(path),
+            config={
+                "objective": "expected_income",
+                "constraints": {"expected_margin": {"max": 35.0}},
+            },
+        )
+
+        with patch.object(_store, "create_job", wraps=_store.create_job) as create_job:
+            resp = client.post(
+                "/api/optimiser/frontier/auto-range",
+                json={"graph": graph, "node_id": "opt"},
+            )
+
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total_rows"] is None
+        assert data["status"] == "ok"
+        assert data["method"] == "scenario_envelope"
+        assert data["ranges"]["expected_margin"]["min"] == pytest.approx(11.0)
+        assert data["ranges"]["expected_margin"]["max"] == pytest.approx(39.0)
+        assert any(
+            call.args[0].get("job_type") == "frontier_auto_range"
+            for call in create_job.call_args_list
+        )
+        assert not any(
+            job.get("job_type") == "frontier_auto_range" for job in clean_job_store.jobs.values()
+        )
 
 
 class TestApplyRoute:
@@ -599,6 +947,96 @@ def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
         }
     )
     return graph.model_dump()
+
+
+def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
+    factors_df = pl.DataFrame({"region": ["North", "South"]})
+    mock_grid = MagicMock()
+    mock_solver = MagicMock()
+    mock_solver.solve.return_value = SimpleNamespace(
+        total_objective=222.0,
+        baseline_objective=95.0,
+        total_constraints={"volume": 0.97},
+        baseline_constraints={"volume": 0.88},
+        lambdas={"volume": 0.7},
+        converged=True,
+        cd_iterations=5,
+        clamp_rate=0.04,
+        factor_tables={"region": {"North": 1.08, "South": 0.92}},
+        dataframe=pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "optimal_scenario_value": [1.08, 0.92],
+            }
+        ),
+    )
+    base_result = {
+        "mode": "ratebook",
+        "total_objective": 100.0,
+        "baseline_objective": 95.0,
+        "constraints": {"volume": 0.92},
+        "baseline_constraints": {"volume": 0.88},
+        "lambdas": {"volume": 0.5},
+        "converged": True,
+        "factor_tables": {"region": [{"__factor_group__": "Old", "optimal_scenario_value": 1.0}]},
+        "scenario_value_histogram": {"counts": [1, 2], "edges": [0.9, 1.0, 1.1]},
+    }
+    clean_job_store.jobs[job_id] = {
+        "status": "completed",
+        "config": {
+            "mode": "ratebook",
+            "objective": "expected_income",
+            "constraints": {"volume": {"min": 0.9}},
+            "factor_columns": [["region"]],
+        },
+        "node_label": "ratebook opt",
+        "solver": mock_solver,
+        "quote_grid": mock_grid,
+        "factors_df": factors_df,
+        "factor_columns_valid": [["region"]],
+        "base_result": base_result,
+        "result": dict(base_result),
+        "frontier_data": {
+            "status": "ok",
+            "n_points": 1,
+            "points_returned": 1,
+            "points_limit": FRONTIER_POINT_LIMIT,
+            "points_truncated": False,
+            "points": [
+                _frontier_point_summary(
+                    lambda_volume=0.7,
+                    total_objective=220.0,
+                    total_volume=0.97,
+                    threshold_volume=0.96,
+                )
+            ],
+            "constraint_names": ["volume"],
+        },
+        "artifact_handles": {},
+        "created_at": time.time(),
+    }
+    return mock_solver, mock_grid, factors_df
+
+
+def _expected_region_factor_tables(
+    *,
+    north: float = 1.08,
+    south: float = 0.92,
+) -> dict[str, list[dict[str, object]]]:
+    return {
+        "region": [
+            {
+                "__factor_group__": "North",
+                "optimal_scenario_value": north,
+                "quote_count": 1,
+            },
+            {
+                "__factor_group__": "South",
+                "optimal_scenario_value": south,
+                "quote_count": 1,
+            },
+        ]
+    }
 
 
 class TestRatebookSolve:
@@ -933,6 +1371,313 @@ class TestFrontierRoute:
         assert data["n_points"] > 0
         assert data["constraint_names"] == ["volume"]
 
+    def test_ratebook_frontier_uses_factors_dataframe(self, client, clean_job_store):
+        mock_solver = MagicMock()
+        mock_grid = MagicMock()
+        factors_df = pl.DataFrame({"region": ["North", "South"]})
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [100.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.25],
+                }
+            )
+        )
+        clean_job_store.jobs["ratebook_frontier"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": mock_grid,
+            "factors_df": factors_df,
+            "factor_columns_valid": [["region"]],
+            "config": {"mode": "ratebook"},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "ratebook_frontier",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["points"][0]["total_volume"] == pytest.approx(0.9)
+        mock_solver.frontier.assert_called_once()
+        assert mock_solver.frontier.call_args.args == (mock_grid, factors_df)
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (0.85, 0.95)}
+        assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
+        assert mock_solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
+
+    def test_frontier_without_ranges_uses_config_absolute_ranges(self, client, clean_job_store):
+        mock_solver = MagicMock()
+        mock_grid = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [100.0],
+                    "volume": [0.9],
+                    "loss": [12.0],
+                    "lambda_volume": [0.25],
+                }
+            )
+        )
+        clean_job_store.jobs["auto_frontier_ranges"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": mock_grid,
+            "result": {
+                "mode": "online",
+                "baseline_constraints": {"volume": 999.0, "loss": 0.0},
+            },
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}, "loss": {"max": 20.0}},
+                "frontier_min": 10.0,
+                "frontier_max": 20.0,
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "auto_frontier_ranges",
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["points"][0]["total_volume"] == pytest.approx(0.9)
+        assert resp.json()["points"][0]["total_loss"] == pytest.approx(12.0)
+        assert resp.json()["constraint_names"] == ["volume", "loss"]
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
+            "volume": (10.0, 20.0),
+            "loss": (10.0, 20.0),
+        }
+        assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
+
+    def test_frontier_omits_initial_lambdas_when_base_result_has_none(
+        self,
+        client,
+        clean_job_store,
+    ):
+        class SolverWithoutInitialLambdas:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def frontier(
+                self,
+                quote_grid: object,
+                *,
+                threshold_ranges: dict[str, tuple[float, float]],
+                n_points_per_dim: int,
+            ) -> SimpleNamespace:
+                self.calls.append(
+                    {
+                        "quote_grid": quote_grid,
+                        "threshold_ranges": threshold_ranges,
+                        "n_points_per_dim": n_points_per_dim,
+                    }
+                )
+                return SimpleNamespace(
+                    points=pl.DataFrame(
+                        {
+                            "total_objective": [100.0],
+                            "loss_ratio": [0.9],
+                            "lambda_loss_ratio": [0.25],
+                        }
+                    )
+                )
+
+        solver = SolverWithoutInitialLambdas()
+        quote_grid = object()
+        clean_job_store.jobs["frontier_no_initial_lambdas"] = {
+            "status": "completed",
+            "solver": solver,
+            "quote_grid": quote_grid,
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_no_initial_lambdas",
+                "threshold_ranges": {"loss_ratio": [0.8, 0.95]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert solver.calls == [
+            {
+                "quote_grid": quote_grid,
+                "threshold_ranges": {"loss_ratio": (0.8, 0.95)},
+                "n_points_per_dim": 3,
+            }
+        ]
+
+    def test_frontier_config_range_errors_are_client_errors(self, client, clean_job_store):
+        mock_solver = MagicMock()
+        clean_job_store.jobs["auto_frontier_invalid_ranges"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}},
+                "frontier_ranges": {"volume": {"min": 0.8}},
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={"job_id": "auto_frontier_invalid_ranges"},
+        )
+
+        assert resp.status_code == 400
+        assert "frontier_ranges.volume must contain min and max values" in resp.json()["detail"]
+        mock_solver.frontier.assert_not_called()
+
+    def test_frontier_without_ranges_requires_config_constraints(self, client, clean_job_store):
+        clean_job_store.jobs["auto_frontier_no_constraints"] = {
+            "status": "completed",
+            "solver": MagicMock(),
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {}},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={"job_id": "auto_frontier_no_constraints"},
+        )
+
+        assert resp.status_code == 400
+        assert "no configured constraints" in resp.json()["detail"].lower()
+
+    def test_frontier_rejects_invalid_threshold_range_shape_at_schema_layer(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Schema-level validation must reject malformed ranges with the same
+        wording as the config-side path so error UX is coherent across both
+        request bodies and saved configs.
+
+        Previously the schema accepted ``list[float]`` of any length and only
+        the runtime function caught length=1 / inverted / non-finite cases.
+        """
+        mock_solver = MagicMock()
+        clean_job_store.jobs["frontier_bad_range"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "created_at": time.time(),
+        }
+
+        # length-1: should fail validation with the canonical wording.
+        resp_short = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_bad_range",
+                "threshold_ranges": {"volume": [0.85]},
+                "n_points_per_dim": 3,
+            },
+        )
+        # min > max: should also fail with the canonical wording.
+        resp_inverted = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_bad_range",
+                "threshold_ranges": {"volume": [0.95, 0.85]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        for resp, expected in (
+            (resp_short, "min and max"),
+            (resp_inverted, "min must be less than or equal to max"),
+        ):
+            # Pydantic validators surface as 422 in FastAPI.
+            assert resp.status_code == 422, resp.text
+            assert expected in resp.text
+        mock_solver.frontier.assert_not_called()
+
+    def test_frontier_rejects_unbounded_compute_grid(self, client, clean_job_store):
+        """``n_points_per_dim ** n_constraints`` must stay within the compute budget.
+
+        The response is truncated to ``FRONTIER_POINT_LIMIT`` but the solver still
+        evaluates every grid point.  A request that exceeds the compute budget
+        must be rejected before the solver is invoked, otherwise a single client
+        call can pin CPU/memory for a very long time.
+        """
+        mock_solver = MagicMock()
+        clean_job_store.jobs["frontier_compute_dos"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {f"c{i}": {"min": 0.0} for i in range(6)},
+            },
+            "created_at": time.time(),
+        }
+
+        # 100 ** 6 = 10**12 grid points — well past anything reasonable.
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_compute_dos",
+                "threshold_ranges": {f"c{i}": [0.0, 1.0] for i in range(6)},
+                "n_points_per_dim": 100,
+            },
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"].lower()
+        assert "frontier compute budget" in detail
+        mock_solver.frontier.assert_not_called()
+
+    def test_frontier_compute_limit_allows_within_budget(self, client, clean_job_store):
+        """Requests at or below the compute budget must still succeed."""
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [100.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.25],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_compute_ok"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}},
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_compute_ok",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+                "n_points_per_dim": 100,  # 100 ** 1 = 100 — well within budget.
+            },
+        )
+
+        assert resp.status_code == 200
+        mock_solver.frontier.assert_called_once()
+
     def test_frontier_missing_job(self, client):
         resp = client.post(
             "/api/optimiser/frontier",
@@ -963,6 +1708,7 @@ class TestFrontierRoute:
         )
         # Either 400 (still running) or 200 (already done) is acceptable
         assert resp.status_code in (200, 400)
+        _poll_until_done(client, job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1581,6 +2327,7 @@ class TestBuildGridSinkFallback:
             "quote_id": "quote_id",
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
+            "chunk_size": 1_000,
         }
 
         def patched_safe_sink(lf, path, **kw):
@@ -1596,7 +2343,7 @@ class TestBuildGridSinkFallback:
                 side_effect=patched_safe_sink,
             ) as mock_sink,
             patch(
-                "price_contour.build_grid_from_parquet",
+                "price_contour.build_grid_from_parquet_chunked",
                 return_value=mock_grid,
             ) as mock_build,
         ):
@@ -1604,10 +2351,13 @@ class TestBuildGridSinkFallback:
 
         # safe_sink was called
         assert mock_sink.call_count == 1
-        # build_grid_from_parquet was called with correct column mappings
+        # build_grid_from_parquet_chunked was called with correct chunking and column mappings
         assert mock_build.call_count == 1
         build_kwargs = mock_build.call_args
+        assert build_kwargs.args[2] == 1_000
         assert build_kwargs.kwargs.get("objective") == "expected_income"
+        assert build_kwargs.kwargs.get("scenario_value") == "scenario_value"
+        assert "scenario_value_col" not in build_kwargs.kwargs
         assert result is mock_grid
 
 
@@ -1720,12 +2470,18 @@ class TestExecutePipelineCleanup:
 
 
 class TestFrontierInSolve:
-    """Verify that frontier data is computed automatically as part of the solve."""
+    """Verify that frontier data is computed as part of frontier-enabled solves."""
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_status_includes_frontier(self, client, scored_data):
         """After a successful solve with constraints, status includes frontier data."""
-        graph = _make_optimiser_graph(scored_data)
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "frontier_enabled": True,
+                "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
+            },
+        )
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         assert resp.status_code == 200
         job_id = resp.json()["job_id"]
@@ -1745,7 +2501,13 @@ class TestFrontierInSolve:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_status_frontier_response_field(self, client, scored_data):
         """The top-level 'frontier' field on the status response is populated."""
-        graph = _make_optimiser_graph(scored_data)
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "frontier_enabled": True,
+                "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
+            },
+        )
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -1758,25 +2520,86 @@ class TestFrontierInSolve:
         assert frontier["n_points"] > 0
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_solve_no_constraints_no_frontier(self, client, scored_data):
-        """A solve with empty constraints should have no frontier data."""
-        cfg = {
-            "objective": "expected_income",
-            "constraints": {},
-            "max_iter": 5,
-        }
-        graph = _make_optimiser_graph(scored_data, config=cfg)
+    def test_solve_with_empty_constraints_completes_without_frontier(
+        self,
+        client,
+        scored_data,
+    ):
+        """Pin the contract for the no-constraints case end-to-end.
+
+        Previously this test silently returned on any non-completed
+        outcome — meaning a regression that made /solve crash for empty
+        constraints would still pass.  Now we assert the full happy path:
+        the solve completes, no frontier is computed, and the result
+        contains the baseline objective with empty constraint maps.
+        """
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "objective": "expected_income",
+                "constraints": {},
+                "max_iter": 5,
+            },
+        )
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
-        # May succeed or fail depending on solver behavior with no constraints
-        if resp.status_code != 200:
-            return
+
+        assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
-        if status["status"] != "completed":
-            return
+
+        assert status["status"] == "completed", (
+            f"Empty-constraints solve failed: {status.get('message')!r}"
+        )
         result = status["result"]
-        # Frontier should be None when no constraints
+        assert result is not None
+        # No frontier should be computed when there are no constraints to vary.
         assert result.get("frontier") is None
+        # Result still contains the baseline objective and empty-but-defined
+        # constraint maps so the UI can render a coherent summary.
+        assert isinstance(result.get("baseline_objective"), (int, float))
+        assert result.get("constraints") == {}
+        assert result.get("baseline_constraints") == {}
+        # No lambdas because there's nothing to enforce.
+        assert result.get("lambdas") == {}
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_solve_with_empty_constraints_ignores_frontier_enabled(
+        self,
+        client,
+        scored_data,
+    ):
+        """When ``frontier_enabled=true`` but ``constraints={}``, the
+        frontier is silently skipped (no points to optimise over).
+
+        This is the contract behaviour that the rating UI relies on:
+        ``frontier_enabled`` is a hint, not a hard requirement; the
+        solver determines whether a frontier is meaningful.  A regression
+        that started erroring (or, worse, silently producing garbage
+        lambdas) on this combination would break every config that
+        toggles ``frontier_enabled`` on without first adding constraints.
+        """
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "objective": "expected_income",
+                "constraints": {},
+                "frontier_enabled": True,
+                "frontier_ranges": {},  # no constraints → no ranges
+                "max_iter": 5,
+            },
+        )
+        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
+        status = _poll_until_done(client, job_id)
+
+        assert status["status"] == "completed"
+        result = status["result"]
+        # frontier_enabled with no constraints is a no-op — no frontier
+        # data, no spurious frontier_error message.
+        assert result.get("frontier") is None
+        assert result.get("frontier_error") is None
 
 
 class TestFrontierSelect:
@@ -1785,7 +2608,13 @@ class TestFrontierSelect:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_select_frontier_point(self, client, scored_data):
         """A completed solve keeps runtime state so a frontier point can be selected."""
-        graph = _make_optimiser_graph(scored_data)
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "frontier_enabled": True,
+                "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
+            },
+        )
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -1812,7 +2641,13 @@ class TestFrontierSelect:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_select_last_frontier_point(self, client, scored_data):
         """Selecting the final frontier point after solve succeeds."""
-        graph = _make_optimiser_graph(scored_data)
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "frontier_enabled": True,
+                "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
+            },
+        )
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -1892,6 +2727,66 @@ class TestFrontierSelect:
         assert "1 of 3" in detail
         assert "limit 1" in detail
 
+    def test_select_ratebook_frontier_point_uses_factors(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Ratebook frontier selection uses stored summaries without re-solving."""
+        factors_df = pl.DataFrame({"region": ["North", "South"]})
+        mock_grid = MagicMock()
+        mock_solver = MagicMock()
+        mock_solver.solve.return_value = SimpleNamespace(
+            total_objective=120.0,
+            baseline_objective=95.0,
+            total_constraints={"volume": 0.97},
+            baseline_constraints={"volume": 0.88},
+            lambdas={"volume": 0.3},
+            converged=True,
+        )
+        clean_job_store.jobs["rb_select"] = {
+            "status": "completed",
+            "config": {"mode": "ratebook", "factor_columns": [["region"]]},
+            "solver": mock_solver,
+            "quote_grid": mock_grid,
+            "factors_df": factors_df,
+            "factor_columns_valid": [["region"]],
+            "artifact_handles": {},
+            "result": {
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.92},
+                "baseline_constraints": {"volume": 0.88},
+                "lambdas": {"volume": 0.5},
+                "converged": True,
+            },
+            "frontier_data": {
+                "status": "ok",
+                "n_points": 1,
+                "points_returned": 1,
+                "points_limit": FRONTIER_POINT_LIMIT,
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.3,
+                        total_objective=120.0,
+                        total_volume=0.97,
+                    )
+                ],
+                "constraint_names": ["volume"],
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "rb_select", "point_index": 0},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["constraints"] == {"volume": 0.97}
+        mock_solver.solve.assert_not_called()
+
     def test_select_negative_index(self, client, clean_job_store):
         """Negative point index returns 422 (Pydantic validation via Field(ge=0))."""
         resp = client.post(
@@ -1937,7 +2832,13 @@ class TestFrontierSelect:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_select_after_solve_persists_selected_point(self, client, scored_data):
         """Selecting after solve updates the completed job's active result."""
-        graph = _make_optimiser_graph(scored_data)
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "frontier_enabled": True,
+                "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
+            },
+        )
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
@@ -1957,20 +2858,12 @@ class TestFrontierSelect:
         assert job["selected_frontier_point"] == 0
         assert job["result"]["selected_frontier_point"] == 0
 
-    def test_select_touches_heavy_object_ttl_and_expires_without_followup(
+    def test_select_does_not_touch_heavy_object_ttl_and_survives_expiry(
         self,
         client,
         clean_job_store,
     ):
         solver = MagicMock()
-        solver.solve.return_value = SimpleNamespace(
-            total_objective=120.0,
-            baseline_objective=100.0,
-            total_constraints={"volume": 0.9},
-            baseline_constraints={"volume": 0.85},
-            lambdas={"volume": 0.4},
-            converged=True,
-        )
         clean_job_store.jobs["sel_touch_ttl"] = {
             "status": "completed",
             "created_at": 100.0,
@@ -1982,8 +2875,16 @@ class TestFrontierSelect:
             "frontier_data": {
                 "status": "ok",
                 "points": [
-                    {"total_objective": 120.0, "lambda_volume": 0.4},
-                    {"total_objective": 125.0, "lambda_volume": 0.5},
+                    _frontier_point_summary(
+                        lambda_volume=0.4,
+                        total_objective=120.0,
+                        total_volume=0.9,
+                    ),
+                    _frontier_point_summary(
+                        lambda_volume=0.5,
+                        total_objective=125.0,
+                        total_volume=0.95,
+                    ),
                 ],
                 "n_points": 2,
                 "constraint_names": ["volume"],
@@ -2006,8 +2907,9 @@ class TestFrontierSelect:
             )
         assert resp.status_code == 200
         assert clean_job_store.jobs["sel_touch_ttl"]["heavy_objects_expires_at"] == pytest.approx(
-            1840.0
+            1000.0
         )
+        solver.solve.assert_not_called()
 
         with patch("haute.routes._job_store.time.time", return_value=1780.0):
             resp = client.post(
@@ -2015,9 +2917,7 @@ class TestFrontierSelect:
                 json={"job_id": "sel_touch_ttl", "point_index": 0},
             )
         assert resp.status_code == 200
-        assert clean_job_store.jobs["sel_touch_ttl"]["heavy_objects_expires_at"] == pytest.approx(
-            2680.0
-        )
+        assert "heavy_objects_expires_at" not in clean_job_store.jobs["sel_touch_ttl"]
 
         with patch("haute.routes._job_store.time.time", return_value=2741.0):
             resp = client.post(
@@ -2025,37 +2925,20 @@ class TestFrontierSelect:
                 json={"job_id": "sel_touch_ttl", "point_index": 1},
             )
 
-        assert resp.status_code == 400
-        assert "re-run the solve" in resp.json()["detail"].lower()
+        assert resp.status_code == 200
         job = clean_job_store.jobs["sel_touch_ttl"]
         assert "solver" not in job
         assert "solve_result" not in job
         assert "quote_grid" not in job
+        assert job["result"]["total_objective"] == 125.0
 
-    def test_select_reserves_heavy_objects_before_solver_work(
+    def test_select_does_not_reserve_heavy_objects_or_run_solver(
         self,
         client,
         clean_job_store,
     ):
         current_time = {"value": 940.0}
         solver = MagicMock()
-
-        def solve_after_original_expiry(_quote_grid, *, lambdas):
-            assert lambdas == {"volume": 0.4}
-            assert clean_job_store.jobs["sel_touch_before_work"][
-                "heavy_objects_expires_at"
-            ] == pytest.approx(1840.0)
-            current_time["value"] = 1001.0
-            return SimpleNamespace(
-                total_objective=120.0,
-                baseline_objective=100.0,
-                total_constraints={"volume": 0.9},
-                baseline_constraints={"volume": 0.85},
-                lambdas={"volume": 0.4},
-                converged=True,
-            )
-
-        solver.solve.side_effect = solve_after_original_expiry
         clean_job_store.jobs["sel_touch_before_work"] = {
             "status": "completed",
             "created_at": 100.0,
@@ -2066,11 +2949,24 @@ class TestFrontierSelect:
             "quote_grid": MagicMock(),
             "frontier_data": {
                 "status": "ok",
-                "points": [{"total_objective": 120.0, "lambda_volume": 0.4}],
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.4,
+                        total_objective=120.0,
+                        total_volume=0.9,
+                    )
+                ],
                 "n_points": 1,
                 "constraint_names": ["volume"],
             },
-            "result": {"total_objective": 100.0, "lambdas": {"volume": 0.2}},
+            "result": {
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.8},
+                "lambdas": {"volume": 0.2},
+                "converged": True,
+            },
             "artifact_handles": {},
         }
 
@@ -2087,24 +2983,17 @@ class TestFrontierSelect:
         assert resp.status_code == 200
         assert job is not None
         assert "solver" in job
-        assert "solve_result" in job
+        assert "solve_result" not in job
         assert "quote_grid" in job
-        assert job["heavy_objects_expires_at"] == pytest.approx(1840.0)
+        assert job["heavy_objects_expires_at"] == pytest.approx(1000.0)
+        solver.solve.assert_not_called()
 
-    def test_select_orphan_artifact_cleanup_failure_preserves_primary_http_error(
+    def test_select_does_not_materialise_apply_artifacts(
         self,
         client,
         clean_job_store,
     ):
         solver = MagicMock()
-        solver.solve.return_value = SimpleNamespace(
-            total_objective=120.0,
-            baseline_objective=100.0,
-            total_constraints={"volume": 0.9},
-            baseline_constraints={"volume": 0.85},
-            lambdas={"volume": 0.4},
-            converged=True,
-        )
         clean_job_store.jobs["sel_cleanup_primary"] = {
             "status": "completed",
             "solver": solver,
@@ -2112,45 +3001,46 @@ class TestFrontierSelect:
             "quote_grid": MagicMock(),
             "frontier_data": {
                 "status": "ok",
-                "points": [{"total_objective": 120.0, "lambda_volume": 0.4}],
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.4,
+                        total_objective=120.0,
+                        total_volume=0.9,
+                    )
+                ],
                 "n_points": 1,
                 "constraint_names": ["volume"],
             },
-            "result": {"total_objective": 100.0, "lambdas": {"volume": 0.2}},
+            "result": {
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.8},
+                "lambdas": {"volume": 0.2},
+                "converged": True,
+            },
             "artifact_handles": {},
             "created_at": time.time(),
-        }
-        orphan_handle = {
-            "kind": "optimiser_apply_result",
-            "version": 1,
-            "format": "parquet",
-            "path": "orphan.parquet",
         }
 
         with (
             patch(
                 "haute.routes.optimiser._persist_apply_result_artifact",
-                return_value=orphan_handle,
+                side_effect=AssertionError("selection must not persist apply artifacts"),
             ),
-            patch.object(clean_job_store, "atomic_update_if_heavy_present", return_value=None),
-            patch(
-                "haute.routes.optimiser._cleanup_apply_result_artifact",
-                side_effect=OSError("cleanup failed"),
+            patch.object(
+                clean_job_store,
+                "atomic_update_if_heavy_present",
+                side_effect=AssertionError("selection must not reserve heavy state"),
             ),
-            patch("haute.routes.optimiser.logger.warning") as log_warning,
         ):
             resp = client.post(
                 "/api/optimiser/frontier/select",
                 json={"job_id": "sel_cleanup_primary", "point_index": 0},
             )
 
-        assert resp.status_code == 409
-        assert "runtime state changed" in resp.json()["detail"].lower()
-        log_warning.assert_called_once()
-        assert log_warning.call_args.args == (
-            "frontier_select_orphan_apply_artifact_cleanup_failed",
-        )
-        assert log_warning.call_args.kwargs["exc_info"] is True
+        assert resp.status_code == 200
+        solver.solve.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2382,6 +3272,107 @@ class TestFinalizeSolveResult:
         assert job["status"] == "completed"
         assert job["elapsed_seconds"] == 2.5
 
+    def test_frontier_not_computed_for_individual_point_mode(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        for frontier_enabled in (None, False):
+            config = {"constraints": {"volume": {"min": 0.9}}}
+            if frontier_enabled is not None:
+                config["frontier_enabled"] = frontier_enabled
+            job_id = store.create_job({"status": "running", "config": config})
+            solve_result = self._make_solve_result()
+            mock_solver = MagicMock()
+
+            _finalize_solve_result(
+                solve_result,
+                mode="online",
+                solver=mock_solver,
+                quote_grid=MagicMock(),
+                store=store,
+                job_id=job_id,
+                elapsed=1.0,
+            )
+
+            job = store.require_job(job_id)
+            assert job["frontier_data"] is None
+            assert job["result"]["frontier"] is None
+            mock_solver.frontier.assert_not_called()
+
+    def test_frontier_missing_ranges_surfaces_error_without_defaulting(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        assert job["frontier_data"] is None
+        assert job["result"]["frontier"] is None
+        assert "frontier_ranges must provide min and max" in job["result"]["frontier_error"]
+        mock_solver.frontier.assert_not_called()
+
+    def test_frontier_partial_range_surfaces_error_without_defaulting_missing_side(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_ranges": {"volume": {"min": 0.8}},
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.require_job(job_id)
+        assert job["frontier_data"] is None
+        assert job["result"]["frontier"] is None
+        assert (
+            "frontier_ranges.volume must contain min and max values"
+            in job["result"]["frontier_error"]
+        )
+        mock_solver.frontier.assert_not_called()
+
     def test_frontier_computed_for_online_mode(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import _finalize_solve_result
@@ -2392,6 +3383,7 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
                     "frontier_min": 0.8,
                     "frontier_max": 1.1,
                     "frontier_steps": 3,
@@ -2427,6 +3419,97 @@ class TestFinalizeSolveResult:
         assert job["frontier_data"]["points_truncated"] is False
         assert "volume" in job["frontier_data"]["constraint_names"]
         mock_solver.frontier.assert_called_once()
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (0.8, 1.1)}
+
+    def test_frontier_progress_is_visible_while_finalize_computes_frontier(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "start_time": time.monotonic() - 5.0,
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_min": 0.8,
+                    "frontier_max": 1.1,
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+
+        def frontier_side_effect(*args, **kwargs):
+            job = store.require_job(job_id)
+            assert job["status"] == "running"
+            assert job["message"] == "Computing efficient frontier"
+            assert job["progress"] == pytest.approx(0.8)
+            assert job["elapsed_seconds"] >= 5.0
+            return SimpleNamespace(
+                points=pl.DataFrame(
+                    {
+                        "total_objective": [100.0],
+                        "volume": [0.9],
+                        "lambda_volume": [0.3],
+                    }
+                )
+            )
+
+        mock_solver.frontier.side_effect = frontier_side_effect
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=0.25,
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        assert job["message"] == "Completed"
+        assert job["elapsed_seconds"] >= 5.0
+
+    def test_frontier_prefers_per_constraint_absolute_ranges(self):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_min": 0.8,
+                    "frontier_max": 1.1,
+                    "frontier_ranges": {"volume": {"min": 70.0, "max": 95.0}},
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        solve_result = self._make_solve_result()
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame({"total_objective": [100.0], "lambda_volume": [0.3]})
+        )
+
+        _finalize_solve_result(
+            solve_result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid=MagicMock(),
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {"volume": (70.0, 95.0)}
 
     def test_auto_frontier_payload_is_capped_in_job_state(self):
         from haute.routes._job_store import JobStore
@@ -2438,6 +3521,7 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
                     "frontier_min": 0.8,
                     "frontier_max": 1.1,
                     "frontier_steps": 3,
@@ -2497,6 +3581,8 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                 },
             }
         )
@@ -2531,6 +3617,7 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
                     "frontier_min": 0.8,
                     "frontier_max": 1.1,
                     "frontier_steps": 3,
@@ -2567,7 +3654,7 @@ class TestFinalizeSolveResult:
         assert data["result"]["frontier"] is None
         assert data["result"]["frontier_error"] == ("Frontier unavailable: frontier exploded")
 
-    def test_frontier_not_computed_for_ratebook_mode(self):
+    def test_frontier_computed_for_ratebook_mode_with_factors(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import _finalize_solve_result
 
@@ -2577,12 +3664,24 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_min": 0.8,
+                    "frontier_max": 1.1,
+                    "frontier_steps": 3,
                 },
             }
         )
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
+        frontier_points = MagicMock()
+        frontier_points.to_dicts.return_value = [
+            {"total_objective": 100, "lambda_volume": 0.3},
+            {"total_objective": 110, "lambda_volume": 0.5},
+        ]
+        frontier_points.__len__ = lambda self: 2
+        mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
         mock_grid = MagicMock()
+        factors_df = pl.DataFrame({"region": ["North", "South"]})
 
         _finalize_solve_result(
             solve_result,
@@ -2592,11 +3691,20 @@ class TestFinalizeSolveResult:
             store=store,
             job_id=job_id,
             elapsed=1.0,
+            factors_df=factors_df,
+            factor_columns=[["region"]],
         )
 
         job = store.require_job(job_id)
-        assert job["frontier_data"] is None
-        mock_solver.frontier.assert_not_called()
+        assert job["frontier_data"] is not None
+        assert job["frontier_data"]["n_points"] == 2
+        mock_solver.frontier.assert_called_once()
+        assert mock_solver.frontier.call_args.args == (mock_grid, factors_df)
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"]["volume"] == pytest.approx(
+            (0.8, 1.1)
+        )
+        assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
+        assert mock_solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
 
     def test_finalized_job_slims_heavy_runtime_state_after_policy_window(self):
         from unittest.mock import patch
@@ -2934,6 +4042,36 @@ class TestApplyLambdasUnit:
         assert resp.status_code == 500
         assert "artifact" in resp.json()["detail"].lower()
 
+    def test_apply_solve_result_without_dataframe_attribute_fails_loudly(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """A solve_result missing ``dataframe`` is a backend bug, not a 500.
+
+        Previously the ``cast(_DataFrameResultLike, ...).dataframe`` access
+        raised ``AttributeError`` which the broad ``except Exception``
+        funnelled into a generic 500 with no actionable detail.  Surface a
+        typed error instead so the cause is obvious in the response.
+        """
+        clean_job_store.jobs["apply_no_dataframe"] = {
+            "status": "completed",
+            "solve_result": SimpleNamespace(
+                # No ``dataframe`` attribute on purpose.
+                total_objective=42.0,
+                total_constraints={"volume": 1.0},
+            ),
+            "result": {"total_objective": 42.0, "constraints": {"volume": 1.0}},
+            "created_at": time.time(),
+        }
+
+        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_no_dataframe"})
+
+        assert resp.status_code == 500
+        detail = resp.json()["detail"].lower()
+        assert "dataframe" in detail
+        assert "solve_result" in detail or "solve result" in detail
+
     def test_apply_after_heavy_result_policy_expiry_without_handle_returns_400(
         self,
         client,
@@ -2960,6 +4098,122 @@ class TestApplyLambdasUnit:
         assert job["status"] == "completed"
         assert job["result"] == {"total_objective": 100.0}
         assert "solve_result" not in job
+
+    def test_apply_ratebook_frontier_point_materialises_factor_tables_and_artifact(
+        self,
+        client,
+        clean_job_store,
+    ):
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "apply_rb_frontier",
+        )
+
+        resp = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": "apply_rb_frontier", "point_index": 0},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_objective"] == 222.0
+        assert data["constraints"] == {"volume": 0.97}
+        assert data["preview"] == [
+            {"quote_id": "q1", "optimal_scenario_value": 1.08},
+            {"quote_id": "q2", "optimal_scenario_value": 0.92},
+        ]
+        args = mock_solver.solve.call_args.args
+        assert args[0] is mock_grid
+        assert args[1] is factors_df
+        assert mock_solver.solve.call_args.kwargs == {
+            "factor_columns": [["region"]],
+            "lambdas": {"volume": 0.7},
+            "_constraints_override": {"volume": {"min": 0.96}},
+        }
+        job = clean_job_store.jobs["apply_rb_frontier"]
+        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
+        assert "frontier_apply_result:0" in job["artifact_handles"]
+        assert job["solver"] is mock_solver
+        assert job["quote_grid"] is mock_grid
+        assert job["factors_df"].equals(factors_df)
+        assert "solve_result" not in job
+
+    def test_apply_ratebook_frontier_point_reuses_cached_artifact_and_summary(
+        self,
+        client,
+        clean_job_store,
+    ):
+        mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "apply_rb_frontier_cached",
+        )
+        first_resp = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
+        )
+        assert first_resp.status_code == 200
+        mock_solver.solve.reset_mock()
+
+        second_resp = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
+        )
+
+        assert second_resp.status_code == 200
+        data = second_resp.json()
+        assert data["from_artifact"] is True
+        assert data["total_objective"] == 222.0
+        assert data["constraints"] == {"volume": 0.97}
+        mock_solver.solve.assert_not_called()
+        job = clean_job_store.jobs["apply_rb_frontier_cached"]
+        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
+
+    def test_save_ratebook_frontier_point_rebuilds_stale_cached_summary(
+        self,
+        client,
+        clean_job_store,
+        tmp_path,
+    ):
+        import json as json_mod
+
+        from haute._sandbox import set_project_root
+
+        mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "save_rb_frontier_stale_cache",
+        )
+        job = clean_job_store.jobs["save_rb_frontier_stale_cache"]
+        job["selected_frontier_point"] = 0
+        job["result"].update(
+            {
+                "selected_frontier_point": 0,
+                "total_objective": 111.0,
+                "constraints": {"volume": 0.91},
+                "lambdas": {"volume": 0.1},
+                "factor_tables": {
+                    "region": [{"__factor_group__": "Stale", "optimal_scenario_value": 1.0}]
+                },
+            }
+        )
+        set_project_root(tmp_path)
+        out_path = str(tmp_path / "selected_ratebook.json")
+
+        resp = client.post(
+            "/api/optimiser/save",
+            json={
+                "job_id": "save_rb_frontier_stale_cache",
+                "output_path": out_path,
+                "point_index": 0,
+            },
+        )
+
+        assert resp.status_code == 200
+        mock_solver.solve.assert_called_once()
+        assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
+        saved = json_mod.loads(Path(out_path).read_text())
+        assert saved["total_objective"] == 222.0
+        assert saved["total_constraints"] == {"volume": 0.97}
+        assert saved["factor_tables"] == _expected_region_factor_tables()
 
 
 # ---------------------------------------------------------------------------
@@ -3002,6 +4256,285 @@ class TestRunFrontierUnit:
         assert data["constraint_names"] == ["volume"]
         assert data["points_limit"] == FRONTIER_POINT_LIMIT
         assert data["points_truncated"] is False
+
+    def test_frontier_recompute_resets_selected_result_to_base(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Recomputing a frontier clears stale selected-point state."""
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [300.0],
+                    "volume": [0.97],
+                    "lambda_volume": [0.8],
+                    "converged": [True],
+                }
+            )
+        )
+        base_result = {
+            "mode": "online",
+            "total_objective": 100.0,
+            "baseline_objective": 90.0,
+            "constraints": {"volume": 0.9},
+            "baseline_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.3},
+            "converged": True,
+        }
+        old_frontier = {
+            "status": "ok",
+            "points": [
+                _frontier_point_summary(
+                    lambda_volume=0.7,
+                    total_objective=200.0,
+                    total_volume=0.95,
+                )
+            ],
+            "n_points": 1,
+            "points_returned": 1,
+            "constraint_names": ["volume"],
+            "points_limit": FRONTIER_POINT_LIMIT,
+            "points_truncated": False,
+        }
+        clean_job_store.jobs["frontier_recompute_selected"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "base_result": {**base_result, "frontier": old_frontier},
+            "result": {
+                **base_result,
+                "total_objective": 200.0,
+                "constraints": {"volume": 0.95},
+                "lambdas": {"volume": 0.7},
+                "selected_frontier_point": 0,
+                "frontier": old_frontier,
+            },
+            "frontier_data": old_frontier,
+            "selected_frontier_point": 0,
+            "artifact_handles": {},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_recompute_selected",
+                "threshold_ranges": {"volume": [0.9, 1.0]},
+                "n_points_per_dim": 2,
+            },
+        )
+
+        assert resp.status_code == 200
+        job = clean_job_store.jobs["frontier_recompute_selected"]
+        assert job["selected_frontier_point"] is None
+        assert "selected_frontier_point" not in job["result"]
+        assert job["result"]["total_objective"] == 100.0
+        assert job["result"]["constraints"] == {"volume": 0.9}
+        assert job["result"]["lambdas"] == {"volume": 0.3}
+        assert job["result"]["frontier"]["points"][0]["total_objective"] == 300.0
+        assert job["base_result"] == job["result"]
+        assert mock_solver.frontier.call_args.kwargs["initial_lambdas"] == {"volume": 0.3}
+
+    def test_frontier_recompute_invalidates_point_apply_artifacts(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Old point-indexed apply artifacts must not be reused for a new frontier."""
+        from haute.routes._optimiser_service import _persist_apply_result_artifact
+
+        stale_frontier_handle = _persist_apply_result_artifact(
+            SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [9.9]}))
+        )
+        base_apply_handle = _persist_apply_result_artifact(
+            SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}))
+        )
+        assert stale_frontier_handle is not None
+        assert base_apply_handle is not None
+        stale_frontier_path = Path(stale_frontier_handle["path"])
+        base_apply_path = Path(base_apply_handle["path"])
+
+        mock_solver = MagicMock()
+        mock_grid = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [300.0],
+                    "volume": [0.97],
+                    "lambda_volume": [0.8],
+                    "converged": [True],
+                }
+            )
+        )
+        base_result = {
+            "mode": "online",
+            "total_objective": 100.0,
+            "baseline_objective": 90.0,
+            "constraints": {"volume": 0.9},
+            "baseline_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.3},
+            "converged": True,
+        }
+        clean_job_store.jobs["frontier_recompute_artifacts"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": mock_grid,
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "base_result": base_result,
+            "result": {**base_result, "selected_frontier_point": 0},
+            "frontier_data": {
+                "status": "ok",
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.7,
+                        total_objective=200.0,
+                        total_volume=0.95,
+                    )
+                ],
+                "n_points": 1,
+                "points_returned": 1,
+                "constraint_names": ["volume"],
+                "points_limit": FRONTIER_POINT_LIMIT,
+                "points_truncated": False,
+            },
+            "selected_frontier_point": 0,
+            "artifact_handles": {
+                "apply_result": base_apply_handle,
+                "frontier_apply_result:0": stale_frontier_handle,
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_recompute_artifacts",
+                "threshold_ranges": {"volume": [0.9, 1.0]},
+                "n_points_per_dim": 2,
+            },
+        )
+        assert resp.status_code == 200
+
+        job = clean_job_store.jobs["frontier_recompute_artifacts"]
+        assert job["artifact_handles"] == {"apply_result": base_apply_handle}
+        assert base_apply_path.is_file()
+        assert not stale_frontier_path.exists()
+
+        apply_result = SimpleNamespace(
+            dataframe=pl.DataFrame(
+                {
+                    "quote_id": ["q1"],
+                    "optimal_scenario_value": [1.2],
+                }
+            )
+        )
+        with patch("price_contour.apply_from_grid", return_value=apply_result) as mock_apply:
+            apply_resp = client.post(
+                "/api/optimiser/apply",
+                json={"job_id": "frontier_recompute_artifacts", "point_index": 0},
+            )
+
+        assert apply_resp.status_code == 200
+        assert apply_resp.json()["from_artifact"] is False
+        assert apply_resp.json()["preview"][0]["optimal_scenario_value"] == 1.2
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args.kwargs["lambdas"] == {"volume": 0.8}
+
+    def test_frontier_recompute_invalidates_point_artifacts_created_during_compute(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Point apply artifacts created during frontier compute cannot survive."""
+        from haute.routes._optimiser_service import _persist_apply_result_artifact
+
+        base_apply_handle = _persist_apply_result_artifact(
+            SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}))
+        )
+        concurrent_frontier_handle = _persist_apply_result_artifact(
+            SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [9.9]}))
+        )
+        assert base_apply_handle is not None
+        assert concurrent_frontier_handle is not None
+        base_apply_path = Path(base_apply_handle["path"])
+        concurrent_frontier_path = Path(concurrent_frontier_handle["path"])
+
+        base_result = {
+            "mode": "online",
+            "total_objective": 100.0,
+            "baseline_objective": 90.0,
+            "constraints": {"volume": 0.9},
+            "baseline_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.3},
+            "converged": True,
+        }
+        mock_solver = MagicMock()
+
+        def frontier_side_effect(*args, **kwargs):
+            existing_job = clean_job_store.jobs["frontier_recompute_concurrent"]
+            clean_job_store.jobs["frontier_recompute_concurrent"] = {
+                **existing_job,
+                "artifact_handles": {
+                    "apply_result": base_apply_handle,
+                    "frontier_apply_result:0": concurrent_frontier_handle,
+                },
+            }
+            return SimpleNamespace(
+                points=pl.DataFrame(
+                    {
+                        "total_objective": [300.0],
+                        "volume": [0.97],
+                        "lambda_volume": [0.8],
+                        "converged": [True],
+                    }
+                )
+            )
+
+        mock_solver.frontier.side_effect = frontier_side_effect
+        clean_job_store.jobs["frontier_recompute_concurrent"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "base_result": base_result,
+            "result": {**base_result, "selected_frontier_point": 0},
+            "frontier_data": {
+                "status": "ok",
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.7,
+                        total_objective=200.0,
+                        total_volume=0.95,
+                    )
+                ],
+                "n_points": 1,
+                "points_returned": 1,
+                "constraint_names": ["volume"],
+                "points_limit": FRONTIER_POINT_LIMIT,
+                "points_truncated": False,
+            },
+            "selected_frontier_point": 0,
+            "artifact_handles": {"apply_result": base_apply_handle},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_recompute_concurrent",
+                "threshold_ranges": {"volume": [0.9, 1.0]},
+                "n_points_per_dim": 2,
+            },
+        )
+
+        assert resp.status_code == 200
+        job = clean_job_store.jobs["frontier_recompute_concurrent"]
+        assert job["artifact_handles"] == {"apply_result": base_apply_handle}
+        assert base_apply_path.is_file()
+        assert not concurrent_frontier_path.exists()
 
     def test_frontier_payload_is_capped_with_total_point_metadata(
         self,
@@ -3186,6 +4719,43 @@ class TestSaveResultUnit:
         assert "solve_result" not in job
         assert "quote_grid" not in job
 
+    def test_save_ratebook_frontier_point_materialises_selected_factor_tables(
+        self,
+        client,
+        clean_job_store,
+        tmp_path,
+    ):
+        import json as json_mod
+
+        from haute._sandbox import set_project_root
+
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "save_rb_frontier",
+        )
+        set_project_root(tmp_path)
+        out_path = str(tmp_path / "selected_ratebook.json")
+
+        resp = client.post(
+            "/api/optimiser/save",
+            json={
+                "job_id": "save_rb_frontier",
+                "output_path": out_path,
+                "point_index": 0,
+            },
+        )
+
+        assert resp.status_code == 200
+        saved = json_mod.loads(Path(out_path).read_text())
+        assert saved["total_objective"] == 222.0
+        assert saved["total_constraints"] == {"volume": 0.97}
+        assert saved["factor_tables"] == _expected_region_factor_tables()
+        assert saved["frontier_selection"]["point_index"] == 0
+        args = mock_solver.solve.call_args.args
+        assert args[0] is mock_grid
+        assert args[1] is factors_df
+        assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
+
 
 # ---------------------------------------------------------------------------
 # Coverage expansion tests
@@ -3207,15 +4777,28 @@ class TestSelectFrontierPointIdempotent:
                 "baseline_constraints": {"volume": 0.87},
                 "lambdas": {"volume": 0.6},
                 "converged": True,
+                "selected_frontier_point": 2,
             },
             "solver": MagicMock(),
             "quote_grid": MagicMock(),
             "frontier_data": {
                 "status": "ok",
                 "points": [
-                    {"lambda_volume": 0.3},
-                    {"lambda_volume": 0.4},
-                    {"lambda_volume": 0.6},
+                    _frontier_point_summary(
+                        lambda_volume=0.3,
+                        total_objective=130.0,
+                        total_volume=0.9,
+                    ),
+                    _frontier_point_summary(
+                        lambda_volume=0.4,
+                        total_objective=140.0,
+                        total_volume=0.91,
+                    ),
+                    _frontier_point_summary(
+                        lambda_volume=0.6,
+                        total_objective=150.0,
+                        total_volume=0.93,
+                    ),
                 ],
                 "n_points": 3,
                 "constraint_names": ["volume"],
@@ -3229,6 +4812,7 @@ class TestSelectFrontierPointIdempotent:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+        assert data["point_index"] == 2
         assert data["total_objective"] == 150.0
         assert data["lambdas"] == {"volume": 0.6}
         assert data["converged"] is True
@@ -3251,6 +4835,7 @@ class TestSelectFrontierPointIdempotent:
                 "baseline_constraints": {"volume": 0.87},
                 "lambdas": {"volume": 0.6},
                 "converged": True,
+                "selected_frontier_point": 2,
             },
             "created_at": time.time(),
             "heavy_objects_cleared_at": time.time(),
@@ -3264,25 +4849,137 @@ class TestSelectFrontierPointIdempotent:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+        assert data["point_index"] == 2
         assert data["total_objective"] == 150.0
         assert data["lambdas"] == {"volume": 0.6}
 
+    def test_reselect_same_point_rebuilds_stale_cached_result(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """A stale selected job flag must not return an unrelated cached result."""
+        clean_job_store.jobs["idem_stale"] = {
+            "status": "completed",
+            "selected_frontier_point": 1,
+            "base_result": {
+                "total_objective": 100.0,
+                "constraints": {"volume": 0.9},
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 0.3},
+                "converged": True,
+            },
+            "result": {
+                "total_objective": 999.0,
+                "constraints": {"volume": 0.01},
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 9.0},
+                "converged": True,
+            },
+            "frontier_data": {
+                "status": "ok",
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.3,
+                        total_objective=100.0,
+                        total_volume=0.9,
+                    ),
+                    _frontier_point_summary(
+                        lambda_volume=0.7,
+                        total_objective=200.0,
+                        total_volume=0.95,
+                    ),
+                ],
+                "n_points": 2,
+                "constraint_names": ["volume"],
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "idem_stale", "point_index": 1},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["point_index"] == 1
+        assert data["total_objective"] == 200.0
+        assert data["constraints"] == {"volume": 0.95}
+        assert data["lambdas"] == {"volume": 0.7}
+        job = clean_job_store.jobs["idem_stale"]
+        assert job["result"]["selected_frontier_point"] == 1
+        assert job["result"]["total_objective"] == 200.0
+
+    def test_reselect_same_point_rebuilds_stale_cached_metrics(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Matching selected markers must not hide stale summary values."""
+        clean_job_store.jobs["idem_stale_metrics"] = {
+            "status": "completed",
+            "selected_frontier_point": 1,
+            "base_result": {
+                "total_objective": 100.0,
+                "constraints": {"volume": 0.9},
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 0.3},
+                "converged": True,
+            },
+            "result": {
+                "total_objective": 999.0,
+                "constraints": {"volume": 0.01},
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 9.0},
+                "converged": True,
+                "selected_frontier_point": 1,
+            },
+            "frontier_data": {
+                "status": "ok",
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.3,
+                        total_objective=100.0,
+                        total_volume=0.9,
+                    ),
+                    _frontier_point_summary(
+                        lambda_volume=0.7,
+                        total_objective=200.0,
+                        total_volume=0.95,
+                    ),
+                ],
+                "n_points": 2,
+                "constraint_names": ["volume"],
+            },
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "idem_stale_metrics", "point_index": 1},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["point_index"] == 1
+        assert data["total_objective"] == 200.0
+        assert data["constraints"] == {"volume": 0.95}
+        assert data["lambdas"] == {"volume": 0.7}
+        job = clean_job_store.jobs["idem_stale_metrics"]
+        assert job["result"]["selected_frontier_point"] == 1
+        assert job["result"]["total_objective"] == 200.0
+
 
 class TestSelectFrontierPointResolve:
-    """Test re-solving with new lambdas, convergence warning, and scenario stats."""
+    """Test summary-only frontier selection, convergence warning, and scenario stats."""
 
     def _make_frontier_job(self, clean_job_store, *, converged=True):
         mock_solver = MagicMock()
-        new_result = SimpleNamespace(
-            total_objective=200.0,
-            baseline_objective=190.0,
-            total_constraints={"volume": 0.95},
-            baseline_constraints={"volume": 0.90},
-            lambdas={"volume": 0.7},
-            converged=converged,
-            dataframe=pl.DataFrame({"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]}),
-        )
-        mock_solver.solve.return_value = new_result
         clean_job_store.jobs["fsel"] = {
             "status": "completed",
             "solver": mock_solver,
@@ -3290,19 +4987,36 @@ class TestSelectFrontierPointResolve:
             "frontier_data": {
                 "status": "ok",
                 "points": [
-                    {"lambda_volume": 0.3, "total_objective": 100.0},
-                    {"lambda_volume": 0.7, "total_objective": 200.0},
+                    _frontier_point_summary(
+                        lambda_volume=0.3,
+                        total_objective=100.0,
+                        total_volume=0.9,
+                    ),
+                    _frontier_point_summary(
+                        lambda_volume=0.7,
+                        total_objective=200.0,
+                        total_volume=0.95,
+                        converged=converged,
+                    ),
                 ],
                 "n_points": 2,
                 "constraint_names": ["volume"],
             },
-            "result": {"total_objective": 100.0, "lambdas": {"volume": 0.3}},
+            "result": {
+                "total_objective": 100.0,
+                "baseline_objective": 90.0,
+                "constraints": {"volume": 0.9},
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 0.3},
+                "converged": True,
+            },
+            "artifact_handles": {},
             "created_at": time.time(),
         }
         return mock_solver
 
     def test_resolve_with_new_lambdas(self, client, clean_job_store):
-        """Selecting a frontier point re-solves and returns updated metrics."""
+        """Selecting a frontier point returns stored summary metrics."""
         mock_solver = self._make_frontier_job(clean_job_store)
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -3313,28 +5027,22 @@ class TestSelectFrontierPointResolve:
         assert data["total_objective"] == 200.0
         assert data["lambdas"] == {"volume": 0.7}
         assert data["converged"] is True
-        mock_solver.solve.assert_called_once()
-        # Verify the lambdas were extracted from the frontier point
-        call_kwargs = mock_solver.solve.call_args
-        assert call_kwargs[1]["lambdas"] == {"volume": 0.7}
+        assert data["constraints"] == {"volume": 0.95}
+        mock_solver.solve.assert_not_called()
 
-    def test_resolve_internal_error_logs_stack_trace(self, client, clean_job_store):
-        """Unexpected frontier selection failures are logged with traceback context."""
+    def test_resolve_malformed_frontier_point_fails_loudly(self, client, clean_job_store):
+        """Malformed stored frontier point summaries fail loudly before selection."""
         mock_solver = self._make_frontier_job(clean_job_store)
-        mock_solver.solve.side_effect = RuntimeError("resolve boom")
+        clean_job_store.jobs["fsel"]["frontier_data"]["points"][1].pop("total_volume")
 
-        with patch("haute.routes.optimiser.logger.error") as log_error:
-            resp = client.post(
-                "/api/optimiser/frontier/select",
-                json={"job_id": "fsel", "point_index": 1},
-            )
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "fsel", "point_index": 1},
+        )
 
         assert resp.status_code == 500
-        log_error.assert_called_once()
-        assert log_error.call_args.args == ("frontier_select_failed",)
-        assert log_error.call_args.kwargs["error"] == "resolve boom"
-        assert log_error.call_args.kwargs["job_id"] == "fsel"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        assert "total_volume" in resp.json()["detail"]
+        mock_solver.solve.assert_not_called()
 
     def test_resolve_non_converged_adds_warning(self, client, clean_job_store):
         """When re-solve doesn't converge, the result includes a warning."""
@@ -3365,7 +5073,7 @@ class TestSelectFrontierPointResolve:
         assert "warning" not in job["result"]
 
     def test_resolve_records_scenario_stats(self, client, clean_job_store):
-        """After re-solve, scenario stats are recomputed and stored."""
+        """After selection, scenario stats are derived from stored frontier columns."""
         self._make_frontier_job(clean_job_store)
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -3374,12 +5082,280 @@ class TestSelectFrontierPointResolve:
         assert resp.status_code == 200
         job = clean_job_store.jobs["fsel"]
         assert "scenario_value_stats" in job["result"]
-        assert "scenario_value_histogram" in job["result"]
+        assert "scenario_value_histogram" not in job["result"]
         stats = job["result"]["scenario_value_stats"]
         assert "mean" in stats
 
+    def test_select_ratebook_frontier_point_does_not_reuse_base_factor_tables(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Fast point selection must not attach base ratebook diagnostics to another point."""
+        mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "rb_select_summary",
+        )
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": "rb_select_summary", "point_index": 0},
+        )
+
+        assert resp.status_code == 200
+        job = clean_job_store.jobs["rb_select_summary"]
+        assert job["result"]["selected_frontier_point"] == 0
+        assert job["result"]["total_objective"] == 220.0
+        assert "factor_tables" not in job["result"]
+        assert "scenario_value_histogram" not in job["result"]
+        mock_solver.solve.assert_not_called()
+
+    def test_select_ratebook_frontier_point_can_materialise_factor_tables(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Ratebook point selection can opt into selected-point factor tables."""
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "rb_select_rates",
+        )
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_select_rates",
+                "point_index": 0,
+                "include_ratebook_tables": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        expected_tables = _expected_region_factor_tables()
+        assert data["factor_tables"] == expected_tables
+        assert data["cd_iterations"] == 5
+        assert data["clamp_rate"] == 0.04
+        job = clean_job_store.jobs["rb_select_rates"]
+        assert job["result"]["factor_tables"] == expected_tables
+        mock_solver.solve.assert_called_once_with(
+            mock_grid,
+            factors_df,
+            factor_columns=[["region"]],
+            lambdas={"volume": 0.7},
+            _constraints_override={"volume": {"min": 0.96}},
+        )
+
+    def test_select_ratebook_frontier_point_can_switch_materialised_factor_tables(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Ratebook rates can be materialised for multiple selected frontier points."""
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "rb_select_rates_switch",
+        )
+        job = clean_job_store.jobs["rb_select_rates_switch"]
+        job["frontier_data"]["n_points"] = 2
+        job["frontier_data"]["points_returned"] = 2
+        job["frontier_data"]["points"].append(
+            _frontier_point_summary(
+                lambda_volume=0.9,
+                total_objective=240.0,
+                total_volume=1.03,
+                threshold_volume=1.02,
+            )
+        )
+        mock_solver.solve.side_effect = [
+            SimpleNamespace(
+                total_objective=222.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 0.97},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.7},
+                converged=True,
+                cd_iterations=5,
+                clamp_rate=0.04,
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.08, 0.92],
+                    }
+                ),
+            ),
+            SimpleNamespace(
+                total_objective=241.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 1.03},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.9},
+                converged=True,
+                cd_iterations=7,
+                clamp_rate=0.02,
+                factor_tables={"region": {"North": 1.12, "South": 0.98}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.12, 0.98],
+                    }
+                ),
+            ),
+        ]
+
+        first = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_select_rates_switch",
+                "point_index": 0,
+                "include_ratebook_tables": True,
+            },
+        )
+        second = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_select_rates_switch",
+                "point_index": 1,
+                "include_ratebook_tables": True,
+            },
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200, second.json()
+        assert second.json()["factor_tables"] == _expected_region_factor_tables(
+            north=1.12,
+            south=0.98,
+        )
+        assert mock_solver.solve.call_count == 2
+        assert mock_solver.solve.call_args_list[0].kwargs == {
+            "factor_columns": [["region"]],
+            "lambdas": {"volume": 0.7},
+            "_constraints_override": {"volume": {"min": 0.96}},
+        }
+        assert mock_solver.solve.call_args_list[1].kwargs == {
+            "factor_columns": [["region"]],
+            "lambdas": {"volume": 0.9},
+            "_constraints_override": {"volume": {"min": 1.02}},
+        }
+        assert mock_solver.solve.call_args_list[0].args == (mock_grid, factors_df)
+        assert mock_solver.solve.call_args_list[1].args == (mock_grid, factors_df)
+
+    def test_apply_ratebook_frontier_point_preserves_runtime_for_rate_table_switching(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Loading selected-point detail must not break later rate-table switching."""
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "rb_apply_then_switch_rates",
+        )
+        job = clean_job_store.jobs["rb_apply_then_switch_rates"]
+        job["frontier_data"]["n_points"] = 2
+        job["frontier_data"]["points_returned"] = 2
+        job["frontier_data"]["points"].append(
+            _frontier_point_summary(
+                lambda_volume=0.9,
+                total_objective=240.0,
+                total_volume=1.03,
+                threshold_volume=1.02,
+            )
+        )
+        mock_solver.solve.side_effect = [
+            SimpleNamespace(
+                total_objective=222.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 0.97},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.7},
+                converged=True,
+                cd_iterations=5,
+                clamp_rate=0.04,
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.08, 0.92],
+                    }
+                ),
+            ),
+            SimpleNamespace(
+                total_objective=223.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 0.97},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.7},
+                converged=True,
+                cd_iterations=5,
+                clamp_rate=0.04,
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.08, 0.92],
+                    }
+                ),
+            ),
+            SimpleNamespace(
+                total_objective=241.0,
+                baseline_objective=95.0,
+                total_constraints={"volume": 1.03},
+                baseline_constraints={"volume": 0.88},
+                lambdas={"volume": 0.9},
+                converged=True,
+                cd_iterations=7,
+                clamp_rate=0.02,
+                factor_tables={"region": {"North": 1.12, "South": 0.98}},
+                dataframe=pl.DataFrame(
+                    {
+                        "quote_id": ["q1", "q2"],
+                        "optimal_scenario_value": [1.12, 0.98],
+                    }
+                ),
+            ),
+        ]
+
+        first_rates = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_apply_then_switch_rates",
+                "point_index": 0,
+                "include_ratebook_tables": True,
+            },
+        )
+        apply_detail = client.post(
+            "/api/optimiser/apply",
+            json={
+                "job_id": "rb_apply_then_switch_rates",
+                "point_index": 0,
+            },
+        )
+        second_rates = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_apply_then_switch_rates",
+                "point_index": 1,
+                "include_ratebook_tables": True,
+            },
+        )
+
+        assert first_rates.status_code == 200
+        assert apply_detail.status_code == 200
+        assert second_rates.status_code == 200, second_rates.json()
+        assert second_rates.json()["factor_tables"] == _expected_region_factor_tables(
+            north=1.12,
+            south=0.98,
+        )
+        job = clean_job_store.jobs["rb_apply_then_switch_rates"]
+        assert job["solver"] is mock_solver
+        assert job["quote_grid"] is mock_grid
+        assert job["factors_df"].equals(factors_df)
+        assert "solve_result" not in job
+        assert mock_solver.solve.call_count == 3
+
     def test_resolve_records_frontier_provenance(self, client, clean_job_store):
-        """After re-solve, the selected frontier point index is stored on the job."""
+        """After selection, the selected frontier point index is stored on the job."""
         self._make_frontier_job(clean_job_store)
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -3390,36 +5366,29 @@ class TestSelectFrontierPointResolve:
         assert job["selected_frontier_point"] == 1
         assert job["result"]["selected_frontier_point"] == 1
 
-    def test_resolve_fails_loudly_if_runtime_state_is_cleared_during_solve(
+    def test_resolve_succeeds_after_runtime_state_is_cleared(
         self,
         client,
         clean_job_store,
     ):
-        """A re-solve must not merge partial runtime state after terminal cleanup."""
+        """Summary-only selection remains available after terminal cleanup."""
         mock_solver = self._make_frontier_job(clean_job_store)
-        new_result = mock_solver.solve.return_value
-
-        def solve_and_clear(_quote_grid, *, lambdas):
-            assert lambdas == {"volume": 0.7}
-            clean_job_store.clear_result_data("fsel")
-            return new_result
-
-        mock_solver.solve.side_effect = solve_and_clear
+        clean_job_store.clear_result_data("fsel")
 
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={"job_id": "fsel", "point_index": 1},
         )
 
-        assert resp.status_code == 409
-        assert "runtime state changed" in resp.json()["detail"].lower()
+        assert resp.status_code == 200
         job = clean_job_store.jobs["fsel"]
         assert "solver" not in job
         assert "quote_grid" not in job
         assert "solve_result" not in job
-        assert "selected_frontier_point" not in job
+        assert job["selected_frontier_point"] == 1
+        mock_solver.solve.assert_not_called()
 
-    def test_resolve_refreshes_apply_artifact_for_selected_result(
+    def test_resolve_does_not_replace_base_apply_artifact(
         self,
         client,
         clean_job_store,
@@ -3442,22 +5411,11 @@ class TestSelectFrontierPointResolve:
 
         assert resp.status_code == 200
         job = clean_job_store.jobs["fsel"]
-        new_handle = job["artifact_handles"]["apply_result"]
-        assert new_handle["path"] != str(old_artifact_path)
-        assert Path(new_handle["path"]).is_file()
-        assert not old_artifact_dir.exists()
+        assert job["artifact_handles"]["apply_result"] == old_handle
+        assert Path(old_artifact_path).is_file()
+        assert old_artifact_dir.exists()
 
-        clean_job_store.clear_result_data("fsel")
-        resp = client.post("/api/optimiser/apply", json={"job_id": "fsel"})
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_objective"] == 200.0
-        assert data["constraints"] == {"volume": 0.95}
-        assert data["from_artifact"] is True
-        assert data["preview"][0]["optimal_scenario_value"] == 0.9
-
-    def test_resolve_keeps_success_when_old_apply_artifact_cleanup_fails(
+    def test_resolve_keeps_success_when_old_apply_artifact_cleanup_would_fail(
         self,
         client,
         clean_job_store,
@@ -3470,7 +5428,6 @@ class TestSelectFrontierPointResolve:
         )
         assert old_handle is not None
         old_artifact_path = Path(old_handle["path"])
-        old_artifact_dir = Path(old_handle["directory"])
         clean_job_store.jobs["fsel"]["artifact_handles"] = {"apply_result": old_handle}
 
         cleanup_error = RuntimeError("cleanup denied")
@@ -3491,18 +5448,12 @@ class TestSelectFrontierPointResolve:
         assert data["total_objective"] == 200.0
         assert data["constraints"] == {"volume": 0.95}
         job = clean_job_store.jobs["fsel"]
-        new_handle = job["artifact_handles"]["apply_result"]
-        assert new_handle["path"] != str(old_artifact_path)
-        assert Path(new_handle["path"]).is_file()
+        assert job["artifact_handles"]["apply_result"]["path"] == str(old_artifact_path)
+        assert Path(old_artifact_path).is_file()
         assert job["selected_frontier_point"] == 1
         assert job["result"]["total_objective"] == 200.0
 
-        log_warning.assert_called_once()
-        assert log_warning.call_args.args == ("frontier_select_old_apply_artifact_cleanup_failed",)
-        assert log_warning.call_args.kwargs["job_id"] == "fsel"
-        assert log_warning.call_args.kwargs["path"] == str(old_artifact_dir)
-        assert log_warning.call_args.kwargs["error"] == "cleanup denied"
-        assert log_warning.call_args.kwargs["exc_info"] is True
+        log_warning.assert_not_called()
 
     def test_select_no_lambda_values(self, client, clean_job_store):
         """Frontier point with no lambda_ prefixed columns returns 400."""
@@ -3529,24 +5480,38 @@ class TestSelectFrontierPointResolve:
         assert "no lambda" in resp.json()["detail"].lower()
 
     def test_select_no_solver(self, client, clean_job_store):
-        """Select with no solver returns 400."""
+        """Select with no solver still works from stored frontier data."""
         clean_job_store.jobs["no_slv"] = {
             "status": "completed",
             "solver": None,
             "quote_grid": None,
-            "frontier_data": {"points": [{"lambda_v": 0.5}]},
-            "result": {},
+            "frontier_data": {
+                "status": "ok",
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.5,
+                        total_objective=100.0,
+                        total_volume=0.9,
+                    )
+                ],
+                "n_points": 1,
+                "constraint_names": ["volume"],
+            },
+            "result": {
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"volume": 0.85},
+            },
             "created_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={"job_id": "no_slv", "point_index": 0},
         )
-        assert resp.status_code == 400
-        assert "solver" in resp.json()["detail"].lower()
+        assert resp.status_code == 200
+        assert resp.json()["lambdas"] == {"volume": 0.5}
 
     def test_select_solver_exception_returns_500(self, client, clean_job_store):
-        """If solver.solve raises, endpoint returns 500."""
+        """Solver exceptions are irrelevant because selection does not solve."""
         mock_solver = MagicMock()
         mock_solver.solve.side_effect = RuntimeError("solver boom")
         clean_job_store.jobs["sel_err"] = {
@@ -3555,18 +5520,28 @@ class TestSelectFrontierPointResolve:
             "quote_grid": MagicMock(),
             "frontier_data": {
                 "status": "ok",
-                "points": [{"lambda_volume": 0.5}],
+                "points": [
+                    _frontier_point_summary(
+                        lambda_volume=0.5,
+                        total_objective=100.0,
+                        total_volume=0.9,
+                    )
+                ],
                 "n_points": 1,
                 "constraint_names": ["volume"],
             },
-            "result": {},
+            "result": {
+                "baseline_objective": 90.0,
+                "baseline_constraints": {"volume": 0.85},
+            },
             "created_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={"job_id": "sel_err", "point_index": 0},
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 200
+        mock_solver.solve.assert_not_called()
 
 
 class TestBuildArtifactPayloadExtended:
@@ -3718,7 +5693,20 @@ class TestMlflowLogExtended:
             "solver": mock_solver,
             "solve_result": mock_solve_result,
             "quote_grid": MagicMock(),
-            "config": {"mode": "online", "objective": "income", "constraints": {}},
+            "config": {
+                "mode": "online",
+                "objective": "income",
+                "constraints": {"volume": {"min": 0.9}},
+            },
+            "result": {
+                "mode": "online",
+                "total_objective": 100.0,
+                "baseline_objective": 95.0,
+                "constraints": {"volume": 0.92},
+                "baseline_constraints": {"volume": 0.88},
+                "lambdas": {"volume": 0.5},
+                "converged": True,
+            },
             "node_label": "my_opt",
             "created_at": time.time(),
         }
@@ -3744,8 +5732,16 @@ class TestMlflowLogExtended:
         frontier_data = {
             "status": "ok",
             "points": [
-                {"total_objective": 100.0, "lambda_volume": 0.3},
-                {"total_objective": 110.0, "lambda_volume": 0.5},
+                _frontier_point_summary(
+                    total_objective=100.0,
+                    lambda_volume=0.3,
+                    total_volume=0.9,
+                ),
+                _frontier_point_summary(
+                    total_objective=110.0,
+                    lambda_volume=0.5,
+                    total_volume=0.95,
+                ),
             ],
             "n_points": 2,
             "constraint_names": ["volume"],
@@ -3787,9 +5783,68 @@ class TestMlflowLogExtended:
         mock_mlflow.set_tag.assert_any_call("frontier.n_points", "2")
         mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "1")
         job = clean_job_store.jobs["mlf_ok"]
-        assert "solver" not in job
+        assert "solver" in job
         assert "solve_result" not in job
-        assert "quote_grid" not in job
+        assert "quote_grid" in job
+
+    def test_mlflow_log_ratebook_frontier_point_materialises_selected_factor_tables(
+        self,
+        client,
+        clean_job_store,
+    ):
+        import json as json_mod
+
+        mock_solver, mock_grid, factors_df = _make_ratebook_frontier_materialisation_job(
+            clean_job_store,
+            "mlf_rb_frontier",
+        )
+        mock_mlflow = self._make_mlflow_mock()
+        logged_json: dict[str, dict] = {}
+
+        def capture_artifact(path: str) -> None:
+            artifact_path = Path(path)
+            if artifact_path.suffix == ".json":
+                logged_json[artifact_path.name] = json_mod.loads(artifact_path.read_text())
+
+        mock_mlflow.log_artifact.side_effect = capture_artifact
+
+        with (
+            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
+            patch(
+                "haute.modelling._mlflow_log.configure_mlflow_tracking",
+                return_value=("http://localhost:5000", "local"),
+            ),
+            patch(
+                "haute.modelling._mlflow_log.resolve_experiment_name",
+                return_value="/ratebook_exp",
+            ),
+            patch(
+                "haute.modelling._mlflow_log.build_run_url",
+                return_value="http://localhost:5000/run-rb",
+            ),
+        ):
+            resp = client.post(
+                "/api/optimiser/mlflow/log",
+                json={
+                    "job_id": "mlf_rb_frontier",
+                    "experiment_name": "/ratebook_exp",
+                    "point_index": 0,
+                },
+            )
+
+        assert resp.status_code == 200
+        optimiser_result = logged_json["optimiser_result.json"]
+        assert optimiser_result["total_objective"] == 222.0
+        assert optimiser_result["factor_tables"] == _expected_region_factor_tables()
+        assert (
+            logged_json["frontier_point_summary.json"]["factor_tables"]
+            == (optimiser_result["factor_tables"])
+        )
+        args = mock_solver.solve.call_args.args
+        assert args[0] is mock_grid
+        assert args[1] is factors_df
+        assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
+        mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "0")
 
     def test_mlflow_log_no_frontier(self, client, clean_job_store):
         """MLflow log without frontier data still succeeds."""
@@ -3937,11 +5992,12 @@ class TestSolveStatusTimeout:
 
     def test_running_job_not_timed_out(self, client, clean_job_store):
         """A running job with sufficient timeout remains running."""
+        start_time = time.monotonic() - 5.0
         clean_job_store.jobs["not_tout"] = {
             "status": "running",
             "progress": 0.5,
             "message": "Solving",
-            "start_time": time.monotonic(),
+            "start_time": start_time,
             "timeout": 9999,
             "elapsed_seconds": 0.5,
             "created_at": time.time(),
@@ -3949,6 +6005,7 @@ class TestSolveStatusTimeout:
         resp = client.get("/api/optimiser/solve/status/not_tout")
         data = resp.json()
         assert data["status"] == "running"
+        assert data["elapsed_seconds"] >= 5.0
 
     def test_completed_job_not_overwritten_by_timeout(self, client, clean_job_store):
         """Timeout checks should not regress a completed job back to error."""
@@ -4070,7 +6127,6 @@ class TestSolveOnlineUnit:
             objective="expected_income",
             constraints={"volume": {"min": 0.9}},
             max_iter=20,
-            chunk_size=1000,
             tolerance=1e-4,
             record_history=True,
         )
@@ -4175,7 +6231,7 @@ class TestSolveRatebookUnit:
         factors_df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q2", "q3"],
-                "region": ["North", "South", "East"],
+                "region": ["North", "North", "East"],
             }
         )
 
@@ -4187,7 +6243,7 @@ class TestSolveRatebookUnit:
             lambdas={"volume": 0.5},
             converged=True,
             cd_iterations=3,
-            factor_tables={"region": {"North": 1.1, "South": 0.9, "East": 1.0}},
+            factor_tables={"region": {"North": 1.1, "East": 1.0}},
             dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1, 0.9]}),
         )
 
@@ -4202,10 +6258,148 @@ class TestSolveRatebookUnit:
             mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
 
+        assert "chunk_size" not in mock_solver.call_args.kwargs
         job = store.require_job(job_id)
         assert job["status"] == "completed"
         assert "factor_tables" in job["result"]
         assert "region" in job["result"]["factor_tables"]
+        assert job["result"]["factor_tables"]["region"] == [
+            {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": 2},
+            {"__factor_group__": "East", "optimal_scenario_value": 1.0, "quote_count": 1},
+        ]
+        assert "factors_df" in job
+        assert job["factors_df"].columns == ["region"]
+
+    def test_ratebook_factor_level_counts_support_composite_factor_groups(self):
+        """Counts use price-contour's table and level keys for composite groups."""
+        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+
+        factors_df = pl.DataFrame(
+            {
+                "region": ["North", "North", "South"],
+                "age_band": ["18-19", "20-29", "18-19"],
+            }
+        )
+
+        counts = _ratebook_factor_level_counts(
+            factors_df,
+            [["region"], ["region", "age_band"]],
+        )
+
+        assert counts["region"] == {"North": 2, "South": 1}
+        assert counts["region:age_band"] == {
+            "North\x1f18-19": 1,
+            "North\x1f20-29": 1,
+            "South\x1f18-19": 1,
+        }
+
+    def test_solve_ratebook_rejects_null_factor_values_before_solver(self):
+        """Null banding levels should fail loudly before price-contour runs."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2", "q3"]
+
+        factors_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q3"],
+                "region": ["North", None, "East"],
+                "age_band": [None, "30-39", "40-49"],
+            }
+        )
+        config = {
+            "objective": "income",
+            "constraints": {"volume": {"min": 0.9}},
+            "factor_columns": [["region"], ["age_band"]],
+            "quote_id": "quote_id",
+        }
+
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            with pytest.raises(ValueError) as exc_info:
+                _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+
+        detail = str(exc_info.value)
+        assert "Ratebook factor columns contain null values" in detail
+        assert "region (1 row)" in detail
+        assert "age_band (1 row)" in detail
+        mock_solver.assert_not_called()
+
+    def test_solve_ratebook_frontier_passes_prepared_factors(self):
+        """Ratebook frontier-in-solve passes the aligned factors dataframe."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "constraints": {"volume": {"min": 0.9}},
+                    "frontier_enabled": True,
+                    "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
+                    "frontier_steps": 3,
+                },
+            }
+        )
+
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2"]
+        factors_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["North", "South"],
+            }
+        )
+        mock_result = SimpleNamespace(
+            total_objective=100.0,
+            baseline_objective=90.0,
+            total_constraints={"volume": 0.92},
+            baseline_constraints={"volume": 0.88},
+            lambdas={"volume": 0.5},
+            converged=True,
+            cd_iterations=3,
+            factor_tables={},
+            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
+        )
+        frontier_points = pl.DataFrame(
+            {
+                "total_objective": [100.0],
+                "volume": [0.9],
+                "lambda_volume": [0.25],
+            }
+        )
+        config = {
+            "objective": "income",
+            "constraints": {"volume": {"min": 0.9}},
+            "factor_columns": [["region"], ["missing_factor"]],
+            "quote_id": "quote_id",
+            "frontier_enabled": True,
+            "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
+            "frontier_steps": 3,
+        }
+
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            solver = mock_solver.return_value
+            solver.solve.return_value = mock_result
+            solver.frontier.return_value = SimpleNamespace(points=frontier_points)
+            _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+
+        assert mock_solver.call_args.kwargs["factor_columns"] == [["region"]]
+        prepared_factors = solver.frontier.call_args.args[1]
+        assert solver.frontier.call_args.args[0] is mock_grid
+        assert prepared_factors.columns == ["region"]
+        assert prepared_factors.to_dicts() == [{"region": "North"}, {"region": "South"}]
+        assert solver.frontier.call_args.kwargs["threshold_ranges"]["volume"] == pytest.approx(
+            (0.8, 1.1)
+        )
+        assert solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
+        assert solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
+        job = store.require_job(job_id)
+        assert job["result"]["frontier"]["n_points"] == 1
+        assert job["factors_df"].to_dicts() == prepared_factors.to_dicts()
 
     def test_solve_ratebook_custom_quote_id(self):
         """Ratebook solve with custom quote_id column renames it."""
@@ -4397,8 +6591,8 @@ class TestValidateAndProject:
         assert exc_info.value.status_code == 400
         assert "volume" in exc_info.value.detail
 
-    def test_column_casting_and_null_filtering(self):
-        """Columns are cast and nulls in quote_id are filtered."""
+    def test_column_casting_rejects_null_quote_ids_loudly(self):
+        """Projection rejects invalid quote_id rows before grid construction."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
@@ -4425,14 +6619,51 @@ class TestValidateAndProject:
             "scenario_value": "scenario_value",
         }
 
-        constraint_cols, scored_lf = service._validate_and_project(source_lf, config, job_id)
-        assert constraint_cols == ["volume"]
-        # Collect and check null row is filtered
-        result_df = scored_lf.collect()
-        assert len(result_df) == 2  # null row filtered
-        assert result_df["scenario_index"].dtype == pl.Int32
-        assert result_df["scenario_value"].dtype == pl.Float32
-        assert result_df["expected_income"].dtype == pl.Float32
+        with pytest.raises(HTTPException) as exc_info:
+            service._validate_and_project(source_lf, config, job_id)
+
+        assert exc_info.value.status_code == 400
+        assert str(exc_info.value.detail).startswith(
+            "Null quote_id values found in optimiser input"
+        )
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert job["message"] == exc_info.value.detail
+
+    def test_numeric_quote_id_rejected(self):
+        """Numeric quote IDs fail loudly instead of being coerced to strings."""
+        from fastapi import HTTPException
+
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": [1, 2],
+                "scenario_index": [0, 1],
+                "scenario_value": [1.0, 1.1],
+                "expected_income": [100.0, 110.0],
+                "volume": [0.9, 0.95],
+            }
+        )
+        config = {
+            "objective": "expected_income",
+            "constraints": {"volume": {"min": 0.9}},
+            "quote_id": "quote_id",
+            "scenario_index": "scenario_index",
+            "scenario_value": "scenario_value",
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            service._validate_and_project(source_lf, config, job_id)
+
+        assert exc_info.value.status_code == 400
+        assert "quote_id must be Utf8" in exc_info.value.detail
+        assert store.require_job(job_id)["status"] == "error"
 
     def test_empty_constraints_returns_no_constraint_cols(self):
         """With empty constraints dict, constraint_cols is empty list."""
@@ -4478,26 +6709,30 @@ class TestBuildGrid:
 
         scored_lf = pl.LazyFrame(
             {
-                "quote_id": pl.Series(["q1", "q1", "q2", "q2"], dtype=pl.Utf8),
-                "scenario_index": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
-                "scenario_value": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
-                "expected_income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
-                "volume": pl.Series([0.9, 0.85, 0.95, 0.90], dtype=pl.Float32),
+                "quote_key": pl.Series(["q1", "q1", "q2", "q2"], dtype=pl.Utf8),
+                "scenario_step": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
+                "price_factor": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
+                "income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
+                "vol": pl.Series([0.9, 0.85, 0.95, 0.90], dtype=pl.Float32),
             }
         )
 
         config = {
-            "objective": "expected_income",
-            "constraints": {"volume": {"min": 0.9}},
-            "quote_id": "quote_id",
-            "scenario_index": "scenario_index",
-            "scenario_value": "scenario_value",
+            "objective": "income",
+            "constraints": {"vol": {"min": 0.9}},
+            "quote_id": "quote_key",
+            "scenario_index": "scenario_step",
+            "scenario_value": "price_factor",
+            "chunk_size": 1_024,
         }
 
         mock_grid = MagicMock()
         with (
             patch("haute._polars_utils.safe_sink") as mock_sink,
-            patch("price_contour.build_grid_from_parquet", return_value=mock_grid) as mock_build,
+            patch(
+                "price_contour.build_grid_from_parquet_chunked",
+                return_value=mock_grid,
+            ) as mock_build,
         ):
             # Make safe_sink actually write the file
             def do_sink(lf, path, **kw):
@@ -4505,16 +6740,146 @@ class TestBuildGrid:
 
             mock_sink.side_effect = do_sink
 
-            result = service._build_grid(scored_lf, ["volume"], config, "opt", job_id)
+            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
 
         assert result is mock_grid
         mock_build.assert_called_once()
+        assert mock_build.call_args.args[2] == 1_024
+        assert mock_build.call_args.kwargs["quote_id"] == "quote_key"
+        assert mock_build.call_args.kwargs["scenario_index"] == "scenario_step"
+        assert mock_build.call_args.kwargs["scenario_value"] == "price_factor"
+        assert mock_build.call_args.kwargs["objective"] == "income"
+        assert "scenario_value_col" not in mock_build.call_args.kwargs
         # Temp file should be cleaned up
         build_call_args = mock_build.call_args
         parquet_path = build_call_args[0][0]
         import os
 
         assert not os.path.exists(parquet_path)
+
+    def test_build_grid_without_chunk_size_uses_default_chunked_builder(self, tmp_path):
+        """Without explicit chunk_size, use chunked ingestion with the backend default."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _DEFAULT_CHUNK_SIZE, OptimiserSolveService
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+
+        scored_lf = pl.LazyFrame(
+            {
+                "quote_key": pl.Series(["q1", "q2", "q1", "q2"], dtype=pl.Utf8),
+                "scenario_step": pl.Series([0, 0, 1, 1], dtype=pl.Int32),
+                "price_factor": pl.Series([0.9, 0.9, 1.1, 1.1], dtype=pl.Float32),
+                "income": pl.Series([100.0, 200.0, 110.0, 220.0], dtype=pl.Float32),
+                "vol": pl.Series([0.9, 0.95, 0.85, 0.90], dtype=pl.Float32),
+            }
+        )
+
+        config = {
+            "objective": "income",
+            "constraints": {"vol": {"min": 0.9}},
+            "quote_id": "quote_key",
+            "scenario_index": "scenario_step",
+            "scenario_value": "price_factor",
+        }
+
+        mock_grid = MagicMock()
+        with (
+            patch("haute._polars_utils.safe_sink") as mock_sink,
+            patch(
+                "price_contour.build_grid_from_parquet_chunked",
+                return_value=mock_grid,
+            ) as mock_build,
+        ):
+            mock_sink.side_effect = lambda lf, path, **kw: lf.collect().write_parquet(path)
+
+            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
+
+        assert result is mock_grid
+        mock_build.assert_called_once()
+        assert mock_build.call_args.args[2] == _DEFAULT_CHUNK_SIZE
+        assert mock_build.call_args.kwargs["quote_id"] == "quote_key"
+        assert mock_build.call_args.kwargs["scenario_index"] == "scenario_step"
+        assert mock_build.call_args.kwargs["scenario_value"] == "price_factor"
+        assert mock_build.call_args.kwargs["objective"] == "income"
+        assert "scenario_value_col" not in mock_build.call_args.kwargs
+
+    @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
+    def test_build_grid_rejects_invalid_chunk_size(self, chunk_size):
+        """Invalid chunk sizes fail loudly instead of silently selecting another path."""
+        from fastapi import HTTPException
+
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        scored_lf = pl.LazyFrame(
+            {
+                "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
+                "scenario_index": pl.Series([0], dtype=pl.Int32),
+                "scenario_value": pl.Series([1.0], dtype=pl.Float32),
+                "expected_income": pl.Series([100.0], dtype=pl.Float32),
+            }
+        )
+        config = {
+            "objective": "expected_income",
+            "constraints": {},
+            "quote_id": "quote_id",
+            "scenario_index": "scenario_index",
+            "scenario_value": "scenario_value",
+            "chunk_size": chunk_size,
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            service._build_grid(scored_lf, [], config, "opt", job_id)
+
+        assert exc_info.value.status_code == 400
+        assert "chunk_size must be a positive integer" in exc_info.value.detail
+
+    @pytest.mark.parametrize("chunk_size", [None, 2])
+    def test_build_grid_accepts_categorical_quote_id_with_real_price_contour(
+        self,
+        chunk_size,
+    ):
+        """Real 0.3.2 grid builders accept categorical quote IDs."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        config = {
+            "objective": "income",
+            "constraints": {"vol": {"min": 0.9}},
+            "quote_id": "quote_key",
+            "scenario_index": "scenario_step",
+            "scenario_value": "price_factor",
+        }
+        if chunk_size is not None:
+            config["chunk_size"] = chunk_size
+
+        scored_lf = pl.LazyFrame(
+            {
+                "quote_key": pl.Series(
+                    ["q1", "q1", "q2", "q2"],
+                    dtype=pl.Categorical,
+                ),
+                "scenario_step": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
+                "price_factor": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
+                "income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
+                "vol": pl.Series([0.9, 0.85, 0.95, 0.90], dtype=pl.Float32),
+            }
+        )
+
+        grid = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
+
+        assert grid.quote_ids == ["q1", "q2"]
+        assert grid.n_quotes == 2
+        assert grid.n_steps == 2
+        assert grid.scenario_values == pytest.approx([0.9, 1.1])
 
     def test_build_grid_failure_updates_job_store(self, tmp_path):
         """Grid construction failure updates job store with error."""
@@ -4546,7 +6911,7 @@ class TestBuildGrid:
         with (
             patch("haute._polars_utils.safe_sink") as mock_sink,
             patch(
-                "price_contour.build_grid_from_parquet",
+                "price_contour.build_grid_from_parquet_chunked",
                 side_effect=RuntimeError("grid failed"),
             ),
         ):
@@ -5126,7 +7491,7 @@ class TestBuildGridHTTPExceptionPassthrough:
     """Test that HTTPException in _build_grid is re-raised."""
 
     def test_http_exception_passthrough(self, tmp_path):
-        """HTTPException from build_grid_from_parquet is re-raised."""
+        """HTTPException from build_grid_from_parquet_chunked is re-raised."""
         from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
@@ -5156,7 +7521,7 @@ class TestBuildGridHTTPExceptionPassthrough:
 
         with (
             patch("haute._polars_utils.safe_sink") as mock_sink,
-            patch("price_contour.build_grid_from_parquet", side_effect=original_exc),
+            patch("price_contour.build_grid_from_parquet_chunked", side_effect=original_exc),
         ):
             mock_sink.side_effect = lambda lf, path, **kw: lf.collect().write_parquet(path)
 
@@ -5217,12 +7582,14 @@ class TestIntegrationRealSolver:
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_integration_real_frontier_from_solve(self, client, tiny_scored_data):
-        """Verify auto-computed frontier in solve result on real data."""
+        """Verify frontier-enabled solve includes frontier data on real data."""
         graph = _make_optimiser_graph(
             tiny_scored_data,
             config={
                 "objective": "expected_income",
                 "constraints": {"volume": {"min": 0.90}},
+                "frontier_enabled": True,
+                "frontier_ranges": {"volume": {"min": 4.0, "max": 6.0}},
                 "max_iter": 20,
                 "tolerance": 1e-4,
             },
@@ -5237,10 +7604,10 @@ class TestIntegrationRealSolver:
         status = _poll_until_done(client, job_id, timeout=30)
         assert status["status"] == "completed", f"Solve failed: {status.get('message')}"
 
-        # Frontier is auto-computed during solve when constraints are present
+        # Frontier is computed during solve when explicitly enabled.
         result = status["result"]
         frontier = result.get("frontier")
-        assert frontier is not None, "Frontier should be auto-computed when constraints exist"
+        assert frontier is not None, "Frontier should be computed when enabled"
         assert frontier["n_points"] > 0
         assert isinstance(frontier["points"], list)
         assert len(frontier["points"]) == frontier["n_points"]
@@ -5287,3 +7654,947 @@ class TestIntegrationRealSolver:
         assert "optimal_scenario_value" in first_row
         # Objective value should be present in the response
         assert isinstance(data["total_objective"], (int, float))
+
+
+# ---------------------------------------------------------------------------
+# Helper-function unit tests (defensive validators).
+#
+# These exercise the small pure-Python helpers in ``haute.routes.optimiser``
+# that defend against malformed job state.  Covering them via end-to-end HTTP
+# tests is awkward (each scenario needs a synthetic broken job); unit tests
+# hit the same branches more directly.
+# ---------------------------------------------------------------------------
+
+
+class TestOptimiserHelperValidators:
+    """Direct tests for defensive validators in routes/optimiser.py."""
+
+    def test_as_finite_float_rejects_bool(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float(True, field="x")
+        assert exc.value.status_code == 500
+        assert "x" in exc.value.detail
+
+    def test_as_finite_float_rejects_non_numeric(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float("not a number", field="y")
+        assert exc.value.status_code == 500
+
+    def test_as_finite_float_rejects_nan(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float(float("nan"), field="z")
+        assert "not finite" in exc.value.detail
+
+    def test_as_finite_float_rejects_inf(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        with pytest.raises(HTTPException) as exc:
+            _as_finite_float(float("inf"), field="z")
+        assert "not finite" in exc.value.detail
+
+    def test_as_finite_float_accepts_valid_value(self) -> None:
+        from haute.routes.optimiser import _as_finite_float
+
+        assert _as_finite_float(3.14, field="ok") == 3.14
+        assert _as_finite_float(7, field="ok") == 7.0
+
+    def test_frontier_points_or_raise_missing_data(self) -> None:
+        from haute.routes.optimiser import _frontier_points_or_raise
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_points_or_raise({"frontier_data": None})
+        assert exc.value.status_code == 400
+
+    def test_frontier_points_or_raise_invalid_points_type(self) -> None:
+        from haute.routes.optimiser import _frontier_points_or_raise
+
+        # ``"not a list"`` is truthy, so it bypasses the 400 (no points) branch
+        # and trips the 500 (invalid shape) branch — both are desired loud
+        # failures, just at different layers.
+        with pytest.raises(HTTPException) as exc:
+            _frontier_points_or_raise({"frontier_data": {"points": "not a list"}})
+        assert exc.value.status_code == 500
+
+    def test_frontier_points_or_raise_non_dict_point(self) -> None:
+        from haute.routes.optimiser import _frontier_points_or_raise
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_points_or_raise({"frontier_data": {"points": [{"ok": 1}, 42]}})
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_or_raise_out_of_range(self) -> None:
+        from haute.routes.optimiser import _frontier_point_or_raise
+
+        job = {"frontier_data": {"points": [{"a": 1}], "n_points": 5}}
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_or_raise(job, 10)
+        assert exc.value.status_code == 400
+        assert "out of range" in exc.value.detail
+
+    def test_frontier_point_or_raise_capped_payload(self) -> None:
+        from haute.routes.optimiser import _frontier_point_or_raise
+
+        # n_points (50) > len(points) (1) → capped payload branch.
+        job = {
+            "frontier_data": {
+                "points": [{"a": 1}],
+                "n_points": 50,
+                "points_returned": 1,
+                "points_limit": 1,
+            }
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_or_raise(job, 5)
+        assert "capped frontier payload" in exc.value.detail
+
+    def test_frontier_point_lambdas_no_lambda_keys(self) -> None:
+        from haute.routes.optimiser import _frontier_point_lambdas
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_lambdas({"total_objective": 1.0})
+        assert "no lambda" in exc.value.detail
+
+    def test_frontier_point_lambdas_skips_bool_values(self) -> None:
+        """``isinstance(True, int)`` is True; bool keys must not become lambdas."""
+        from haute.routes.optimiser import _frontier_point_lambdas
+
+        with pytest.raises(HTTPException):
+            _frontier_point_lambdas({"lambda_volume": True})
+
+    def test_frontier_point_constraint_value_falls_back_through_chain(self) -> None:
+        """The fallback chain: total_<name> → constraints[<name>] → bare <name>."""
+        from haute.routes.optimiser import _frontier_point_constraint_value
+
+        # total_<name> wins.
+        assert (
+            _frontier_point_constraint_value(
+                {"total_volume": 0.9, "constraints": {"volume": 0.7}, "volume": 0.5},
+                "volume",
+            )
+            == 0.9
+        )
+        # No total_, falls back to constraints dict.
+        assert (
+            _frontier_point_constraint_value(
+                {"constraints": {"volume": 0.7}, "volume": 0.5},
+                "volume",
+            )
+            == 0.7
+        )
+        # Falls back to bare key.
+        assert _frontier_point_constraint_value({"volume": 0.5}, "volume") == 0.5
+
+    def test_frontier_point_constraint_value_missing_raises(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraint_value
+
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraint_value({"other": 1}, "volume")
+        assert exc.value.status_code == 500
+
+    def test_scenario_stats_returns_none_when_absent(self) -> None:
+        from haute.routes.optimiser import _scenario_stats_from_frontier_point
+
+        assert _scenario_stats_from_frontier_point({"total_objective": 1.0}) is None
+
+    def test_base_result_for_frontier_uses_base_when_present(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier
+
+        job = {"base_result": {"a": 1}, "result": {"a": 2}}
+        assert _base_result_for_frontier(job)["a"] == 1
+
+    def test_base_result_for_frontier_falls_back_to_result(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier
+
+        assert _base_result_for_frontier({"result": {"b": 7}})["b"] == 7
+
+    def test_base_result_for_frontier_missing_raises(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier
+
+        with pytest.raises(HTTPException) as exc:
+            _base_result_for_frontier({})
+        assert exc.value.status_code == 500
+
+    def test_base_result_for_recompute_when_no_selection_returns_empty(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier_recompute
+
+        assert _base_result_for_frontier_recompute({}) == {}
+
+    def test_base_result_for_recompute_with_orphan_selection_raises(self) -> None:
+        """If the job is mid-selection but has lost its base_result, fail loud."""
+        from haute.routes.optimiser import _base_result_for_frontier_recompute
+
+        job = {"selected_frontier_point": 1}  # selection set, no base_result
+        with pytest.raises(HTTPException) as exc:
+            _base_result_for_frontier_recompute(job)
+        assert "Re-run the solve" in exc.value.detail
+
+    def test_base_result_for_recompute_strips_selected_point(self) -> None:
+        from haute.routes.optimiser import _base_result_for_frontier_recompute
+
+        job = {"base_result": {"x": 1, "selected_frontier_point": 0}}
+        result = _base_result_for_frontier_recompute(job)
+        assert "selected_frontier_point" not in result
+        assert result["x"] == 1
+
+    def test_frontier_point_result_dict_invalid_constraint_names(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0},
+                ],
+                "n_points": 1,
+                "constraint_names": "not a list",
+            },
+            "base_result": {},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_result_dict(job, 0)
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_result_dict_non_string_constraint_name(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {"converged": True, "lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0},
+                ],
+                "n_points": 1,
+                "constraint_names": [42],
+            },
+            "base_result": {},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_result_dict(job, 0)
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_result_dict_missing_converged(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [{"lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_result_dict(job, 0)
+        assert "converged" in exc.value.detail
+
+    def test_frontier_point_constraints_override_invalid_config(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": "not a dict"},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert exc.value.status_code == 500
+
+    def test_frontier_point_constraints_override_invalid_name(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": {42: {"min": 0}}},
+        }
+        with pytest.raises(HTTPException):
+            _frontier_point_constraints_override(job, 0)
+
+    def test_frontier_point_constraints_override_missing_threshold(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        # config defines "a" but with neither min/max/min_pct/max_pct.
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": {"a": {}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "threshold is invalid" in exc.value.detail
+
+    def test_frontier_point_constraints_override_missing_threshold_field(self) -> None:
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True}],  # no threshold_a key
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "threshold_a" in exc.value.detail
+
+    def test_dataframe_or_raise_returns_dataframe_when_present(self) -> None:
+        from haute.routes.optimiser import _dataframe_or_raise
+
+        result = SimpleNamespace(dataframe=pl.DataFrame({"a": [1]}))
+        df = _dataframe_or_raise(result, context="ctx")
+        assert df.shape == (1, 1)
+
+    def test_artifact_handles_or_raise_invalid_type(self) -> None:
+        from haute.routes.optimiser import _artifact_handles_or_raise
+
+        with pytest.raises(HTTPException) as exc:
+            _artifact_handles_or_raise({"artifact_handles": "not a dict"})
+        assert exc.value.status_code == 500
+
+    def test_lambda_mappings_match_returns_false_for_mismatched_keys(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": 1.0}, {"b": 1.0}) is False
+
+    def test_lambda_mappings_match_returns_false_for_unequal_values(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": 1.0}, {"a": 2.0}) is False
+
+    def test_lambda_mappings_match_returns_false_for_non_numeric(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": "bad"}, {"a": 1.0}) is False
+
+    def test_lambda_mappings_match_returns_true_within_tolerance(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match({"a": 1.0}, {"a": 1.0 + 1e-10}) is True
+
+    def test_lambda_mappings_match_returns_false_for_non_dict(self) -> None:
+        from haute.routes.optimiser import _lambda_mappings_match
+
+        assert _lambda_mappings_match("not a dict", {"a": 1.0}) is False
+        assert _lambda_mappings_match({"a": 1.0}, "not a dict") is False
+
+    def test_selected_or_requested_uses_request_when_provided(self) -> None:
+        from haute.routes.optimiser import _selected_or_requested_frontier_point
+
+        assert _selected_or_requested_frontier_point({}, 7) == 7
+
+    def test_selected_or_requested_falls_back_to_job_state(self) -> None:
+        from haute.routes.optimiser import _selected_or_requested_frontier_point
+
+        assert _selected_or_requested_frontier_point({"selected_frontier_point": 3}, None) == 3
+
+    def test_selected_or_requested_returns_none_when_state_is_bool(self) -> None:
+        """``isinstance(True, int)`` is True, so we explicitly reject bools."""
+        from haute.routes.optimiser import _selected_or_requested_frontier_point
+
+        assert (
+            _selected_or_requested_frontier_point(
+                {"selected_frontier_point": True},
+                None,
+            )
+            is None
+        )
+
+    def test_job_has_frontier_points_handles_bad_shape(self) -> None:
+        from haute.routes.optimiser import _job_has_frontier_points
+
+        assert _job_has_frontier_points({"frontier_data": "bad"}) is False
+        assert _job_has_frontier_points({"frontier_data": {"points": []}}) is False
+        assert _job_has_frontier_points({"frontier_data": {"points": [{"a": 1}]}}) is True
+
+    def test_cleanup_orphan_apply_artifact_logs_and_swallows_cleanup_failures(self) -> None:
+        """The orphan-cleanup helper must not let secondary failures mask the
+        primary error path.  When ``_cleanup_apply_result_artifact`` raises,
+        log a warning and continue without re-raising.
+        """
+        from haute.routes import optimiser as optimiser_module
+        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+
+        with patch.object(
+            optimiser_module,
+            "_cleanup_apply_result_artifact",
+            side_effect=OSError("disk gone"),
+        ):
+            # Must not raise — the primary failure is what matters.
+            _cleanup_orphan_apply_artifact(
+                {"directory": "/tmp/some/path"},
+                job_id="test_job",
+            )
+
+    def test_cleanup_orphan_apply_artifact_uses_path_when_directory_missing(self) -> None:
+        from haute.routes import optimiser as optimiser_module
+        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+
+        with patch.object(
+            optimiser_module,
+            "_cleanup_apply_result_artifact",
+            side_effect=OSError("disk gone"),
+        ):
+            _cleanup_orphan_apply_artifact({"path": "/tmp/file"}, job_id="j1")
+            # No assertion: it must simply not raise.
+
+    def test_frontier_point_result_dict_includes_optional_diagnostics(self) -> None:
+        """Cover the optional iterations/cd_iterations/clamp_rate branches."""
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {
+                        "converged": True,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                        "iterations": 3.0,  # float that is actually an int
+                        "cd_iterations": 2.0,
+                        "clamp_rate": 0.05,
+                    }
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {"baseline_constraints": {"a": 0.85}},
+        }
+        result = _frontier_point_result_dict(job, 0)
+        assert result["iterations"] == 3
+        assert result["cd_iterations"] == 2
+        assert result["clamp_rate"] == 0.05
+
+    def test_frontier_point_result_dict_emits_non_converged_warning(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {
+                        "converged": False,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                    }
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {},
+        }
+        result = _frontier_point_result_dict(job, 0)
+        assert "did not converge" in result["warning"]
+
+    def test_frontier_point_result_dict_drops_warning_when_converged(self) -> None:
+        from haute.routes.optimiser import _frontier_point_result_dict
+
+        job = {
+            "frontier_data": {
+                "points": [
+                    {
+                        "converged": True,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                    }
+                ],
+                "n_points": 1,
+                "constraint_names": ["a"],
+            },
+            "base_result": {"warning": "stale warning"},
+        }
+        result = _frontier_point_result_dict(job, 0)
+        assert "warning" not in result
+
+    def test_frontier_point_constraints_override_uses_threshold_value(self) -> None:
+        """Happy path: walks through every step of constraints_override."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 0.95, "threshold_b": 1.05}],
+                "n_points": 1,
+                "constraint_names": ["a", "b"],
+            },
+            "config": {"constraints": {"a": {"min": 0.5}, "b": {"max": 1.0}}},
+        }
+        overrides = _frontier_point_constraints_override(job, 0)
+        assert overrides == {"a": {"min": 0.95}, "b": {"max": 1.05}}
+
+    def test_compute_frontier_ratebook_requires_factors_df(self) -> None:
+        from haute.routes._optimiser_service import _compute_frontier
+
+        with pytest.raises(RuntimeError) as exc:
+            _compute_frontier(
+                MagicMock(),
+                MagicMock(),
+                mode="ratebook",
+                factors_df=None,
+                threshold_ranges={"a": (0.5, 1.0)},
+                n_points_per_dim=3,
+            )
+        assert "factors dataframe" in str(exc.value)
+
+    def test_enforce_frontier_compute_budget_no_constraints_is_noop(self) -> None:
+        from haute.routes._optimiser_limits import enforce_frontier_compute_budget
+
+        # No constraints → no budget check applies.
+        enforce_frontier_compute_budget(n_points_per_dim=100, n_constraints=0)
+
+    def test_frontier_point_constraints_override_invalid_constraint_names_list(self) -> None:
+        """Cover the branch where ``frontier_data.constraint_names`` is not a list."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": "not a list",
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "constraint names" in exc.value.detail.lower()
+
+    def test_frontier_point_constraints_override_non_string_in_names(self) -> None:
+        """Cover the branch where ``constraint_names`` contains a non-string entry."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0}],
+                "n_points": 1,
+                "constraint_names": [42],  # non-string
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "constraint names" in exc.value.detail.lower()
+
+    def test_frontier_point_constraints_override_unknown_constraint(self) -> None:
+        """Cover the branch where a constraint_name has no matching config spec."""
+        from haute.routes.optimiser import _frontier_point_constraints_override
+
+        job = {
+            "frontier_data": {
+                "points": [{"converged": True, "threshold_a": 1.0, "threshold_unknown": 1.0}],
+                "n_points": 1,
+                "constraint_names": ["a", "unknown"],
+            },
+            "config": {"constraints": {"a": {"min": 0.5}}},  # 'unknown' missing
+        }
+        with pytest.raises(HTTPException) as exc:
+            _frontier_point_constraints_override(job, 0)
+        assert "constraint is missing" in exc.value.detail
+
+    def test_summary_solve_result_round_trips_optional_fields(self) -> None:
+        from haute.routes.optimiser import _summary_solve_result
+
+        result = {
+            "lambdas": {"a": 0.1},
+            "total_objective": 100.0,
+            "constraints": {"a": 0.95},
+            "baseline_objective": 90.0,
+            "baseline_constraints": {"a": 0.9},
+            "converged": True,
+            "iterations": 5,
+            "cd_iterations": 2,
+            "clamp_rate": 0.01,
+            "factor_tables": {"region": [{"value": 1.0}]},
+        }
+        ns = _summary_solve_result(result)
+        assert ns.lambdas == {"a": 0.1}
+        assert ns.total_objective == 100.0
+        assert ns.iterations == 5
+        assert ns.factor_tables == {"region": [{"value": 1.0}]}
+
+    def test_cached_result_matches_frontier_selection_rejects_bools(self) -> None:
+        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+
+        # bool is technically int in Python — must be explicitly rejected.
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": True},
+                1,
+            )
+            is False
+        )
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": 0},
+                1,
+            )
+            is False
+        )
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": 1},
+                1,
+            )
+            is True
+        )
+
+    def test_cleanup_orphan_apply_artifact_uses_unknown_for_missing_path(self) -> None:
+        """Covers the ``"<unknown>"`` fallback in the warning log."""
+        from haute.routes import optimiser as optimiser_module
+        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+
+        with patch.object(
+            optimiser_module,
+            "_cleanup_apply_result_artifact",
+            side_effect=OSError("vanished"),
+        ):
+            _cleanup_orphan_apply_artifact({}, job_id="j2")  # no directory, no path
+
+    def test_enforce_frontier_compute_budget_at_limit_passes(self) -> None:
+        from haute.routes._optimiser_limits import (
+            FRONTIER_COMPUTE_LIMIT,
+            enforce_frontier_compute_budget,
+        )
+
+        # 10 ** 5 == 100_000 == FRONTIER_COMPUTE_LIMIT (current value); should
+        # NOT raise — this tests the boundary inclusivity of the budget.
+        # If the constant is ever raised, this test still asserts the boundary.
+        n = 1
+        while n**5 <= FRONTIER_COMPUTE_LIMIT:
+            n += 1
+        # n now exceeds budget; n-1 is the largest passing value.
+        enforce_frontier_compute_budget(n_points_per_dim=n - 1, n_constraints=5)
+
+
+# ---------------------------------------------------------------------------
+# Mutation-readiness boundary tests.
+#
+# Each test below pins a specific constant or boundary that a subtle code
+# change (off-by-one, comparison flip, constant drift, dropped clause) could
+# silently invalidate.  These complement the behavioural tests above; their
+# job is to catch *implementation drift* that doesn't change observable
+# behaviour for the normal path.
+# ---------------------------------------------------------------------------
+
+
+class TestOptimiserMutationBoundaries:
+    """Pin constants, exact thresholds, and bool/int discriminations."""
+
+    def test_frontier_apply_handle_prefix_is_stable_string(self) -> None:
+        """``_FRONTIER_APPLY_HANDLE_PREFIX`` is a wire-format constant: it
+        keys into ``artifact_handles`` dicts that survive across job-store
+        round-trips and (potentially) across restarts.  A drift to a
+        different prefix would orphan every previously-saved handle.
+        """
+        from haute.routes.optimiser import (
+            _FRONTIER_APPLY_HANDLE_PREFIX,
+            _frontier_apply_handle_key,
+        )
+
+        # The literal value is part of the contract — pin it.
+        assert _FRONTIER_APPLY_HANDLE_PREFIX == "frontier_apply_result:"
+        # The key builder concatenates without modification.
+        assert _frontier_apply_handle_key(0) == "frontier_apply_result:0"
+        assert _frontier_apply_handle_key(7) == "frontier_apply_result:7"
+        # Negative indices are not pre-validated here — but the prefix is
+        # still the key shape.  This catches a mutation that introduced
+        # a separator change like ``"frontier_apply_result_"``.
+        assert _frontier_apply_handle_key(0).startswith("frontier_apply_result:")
+
+    def test_null_quote_id_error_mentions_count_and_remediation(
+        self,
+        client,
+        tmp_path,
+    ):
+        """The error string for null quote_ids is part of the user-facing
+        contract — the UI parses ``({n} rows)`` for a friendly diagnostic.
+        Pin the exact phrasing so a refactor to ``"{n} rows have null quote_id"``
+        doesn't silently break the UI message.
+        """
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", None, None],
+                "scenario_index": pl.Series([0, 0, 1], dtype=pl.Int32),
+                "scenario_value": pl.Series([0.9, 0.9, 1.0], dtype=pl.Float32),
+                "expected_income": pl.Series([100.0, 99.0, 101.0], dtype=pl.Float32),
+                "volume": pl.Series([1.0, 1.0, 1.0], dtype=pl.Float32),
+            }
+        )
+        path = tmp_path / "null_qid.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        from haute._sandbox import _get_project_root, set_project_root
+
+        original_root = _get_project_root()
+        try:
+            set_project_root(tmp_path)
+            resp = client.post(
+                "/api/optimiser/estimate",
+                json={"graph": graph, "node_id": "opt"},
+            )
+        finally:
+            set_project_root(original_root)
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        # Pin the exact surface a UI parser would key on.
+        assert "Null quote_id values found in optimiser input" in detail
+        # Specific count appears in parens for human readability.
+        assert "(2 rows)" in detail
+        # Remediation hint stays in the message.
+        assert "non-null quote_id" in detail
+
+    def test_cached_result_matches_frontier_selection_rejects_true_explicitly(
+        self,
+    ) -> None:
+        """``isinstance(True, int)`` is True in Python.  Without the
+        explicit ``not isinstance(selected_point, bool)`` guard, a job
+        with ``selected_frontier_point=True`` would silently match
+        ``point_index=1``, returning the wrong cached result.
+
+        Test both ``True`` and ``False`` to defend against a mutation
+        that drops only one of the bool checks.
+        """
+        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+
+        # True looks like 1 numerically — but must be rejected.
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": True},
+                1,
+            )
+            is False
+        )
+        # False looks like 0 numerically — must also be rejected.
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": False},
+                0,
+            )
+            is False
+        )
+        # Real ints work as expected.
+        assert (
+            _cached_result_matches_frontier_selection(
+                {"selected_frontier_point": 1},
+                1,
+            )
+            is True
+        )
+
+    def test_enforce_frontier_compute_budget_one_above_limit_rejected(self) -> None:
+        """Pin the strict-vs-inclusive comparison.  ``> FRONTIER_COMPUTE_LIMIT``
+        means the limit value itself is allowed; ``+1`` must reject.
+
+        A mutation to ``>=`` would tighten the gate by 1 grid point; a
+        mutation to ``<`` would let arbitrarily large workloads through.
+        Both are caught by combining this test with ``..._at_limit_passes``.
+        """
+        import math
+
+        from haute.routes._optimiser_limits import (
+            FRONTIER_COMPUTE_LIMIT,
+            enforce_frontier_compute_budget,
+        )
+
+        # Construct the smallest grid that exceeds the limit by exactly one.
+        # Use n_constraints=2 so the math is simple to inspect.
+        # We need n_points_per_dim ** 2 == FRONTIER_COMPUTE_LIMIT + delta.
+        # The simplest way: take ceil(sqrt(LIMIT)) + 1.
+        boundary = math.isqrt(FRONTIER_COMPUTE_LIMIT)
+        # boundary**2 <= LIMIT; (boundary+1)**2 > LIMIT (provided LIMIT isn't
+        # a perfect square — for 100_000 it isn't).
+        assert (boundary + 1) ** 2 > FRONTIER_COMPUTE_LIMIT
+
+        with pytest.raises(ValueError, match="Frontier compute budget exceeded"):
+            enforce_frontier_compute_budget(
+                n_points_per_dim=boundary + 1,
+                n_constraints=2,
+            )
+
+    def test_enforce_frontier_compute_budget_handles_negative_n_constraints(
+        self,
+    ) -> None:
+        """``n_constraints <= 0`` is the no-op branch; document it.
+
+        A mutation to ``< 0`` would cause ``n_constraints=0`` to fall
+        into the loop with ``range(0)`` (still no iterations) — same
+        outcome by accident.  But ``< 0`` would let a malicious caller
+        pass ``n_constraints=-1`` to skip the budget check entirely.
+        """
+        from haute.routes._optimiser_limits import enforce_frontier_compute_budget
+
+        # No raise — this is the early return.
+        enforce_frontier_compute_budget(n_points_per_dim=10**9, n_constraints=0)
+        enforce_frontier_compute_budget(n_points_per_dim=10**9, n_constraints=-1)
+
+    def test_frontier_with_n_points_per_dim_one_returns_a_single_point(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """``n_points_per_dim=1`` is a degenerate request: one grid point
+        per constraint.  It must produce a coherent (if uninteresting)
+        response, not crash with a divide-by-zero or empty-array error
+        deeper in the solver.
+
+        This pins the contract that the cap range still works at
+        the lower boundary.
+        """
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [42.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.0],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_singleton"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {
+                "mode": "online",
+                "constraints": {"volume": {"min": 0.9}},
+                "frontier_ranges": {"volume": {"min": 0.85, "max": 0.95}},
+            },
+            "result": {
+                "mode": "online",
+                "total_objective": 40.0,
+                "baseline_objective": 38.0,
+                "constraints": {"volume": 0.85},
+                "baseline_constraints": {"volume": 0.85},
+                "lambdas": {"volume": 0.0},
+                "converged": True,
+            },
+            "artifact_handles": {},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_singleton",
+                "n_points_per_dim": 1,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # Exactly one point returned, with the constraint name preserved.
+        assert data["n_points"] == 1
+        assert data["points_returned"] == 1
+        assert data["points_truncated"] is False
+        assert data["constraint_names"] == ["volume"]
+        # Solver was called with n_points_per_dim=1 and the absolute range.
+        assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 1
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
+            "volume": (0.85, 0.95),
+        }
+
+    def test_frontier_with_min_equal_to_max_is_accepted_by_schema_layer(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """``min == max`` is a degenerate but valid range — the user is
+        pinning a single threshold value.  The schema validator must
+        accept it; the solver gets a one-element grid effectively.
+
+        Catches a mutation of ``min_value > max_value`` to ``>=`` which
+        would over-tighten validation.
+        """
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [42.0],
+                    "volume": [0.9],
+                    "lambda_volume": [0.0],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_pinned"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "created_at": time.time(),
+        }
+
+        # Equal min/max is the pin case — must be accepted.
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_pinned",
+                "threshold_ranges": {"volume": [0.9, 0.9]},
+                "n_points_per_dim": 3,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        # Solver received the degenerate range as a tuple of the same value.
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"] == {
+            "volume": (0.9, 0.9),
+        }
+
+    def test_frontier_compute_request_with_lambda_zero_round_trips_through_response(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """Boundary lambda value (``0.0``) must serialise correctly into
+        the frontier response.  A mutation that coerces ``int`` (e.g.
+        ``int(point["lambda_*"])`` — which would silently round 0.0 to 0
+        but truncate non-integer lambdas) is caught by also asserting a
+        non-zero lambda preserves precision.
+        """
+        mock_solver = MagicMock()
+        mock_solver.frontier.return_value = SimpleNamespace(
+            points=pl.DataFrame(
+                {
+                    "total_objective": [50.0, 60.0],
+                    "volume": [0.8, 0.95],
+                    "lambda_volume": [0.0, 0.7128],
+                }
+            )
+        )
+        clean_job_store.jobs["frontier_lambda_zero"] = {
+            "status": "completed",
+            "solver": mock_solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "created_at": time.time(),
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "frontier_lambda_zero",
+                "threshold_ranges": {"volume": [0.8, 0.95]},
+                "n_points_per_dim": 2,
+            },
+        )
+
+        assert resp.status_code == 200
+        points = resp.json()["points"]
+        assert len(points) == 2
+        # Exact zero must serialise as 0 / 0.0, not be coerced to None or string.
+        assert points[0]["lambda_volume"] == 0.0
+        # Non-trivial precision is preserved (no integer truncation).
+        assert points[1]["lambda_volume"] == pytest.approx(0.7128, rel=1e-6)

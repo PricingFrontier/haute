@@ -249,7 +249,7 @@ class OptimiserConfig(TypedDict, total=False):
 
     # Constraints
     constraints: dict[str, dict[str, float]]
-    # e.g. {"volume": {"min": 0.90}, "loss_ratio": {"max": 1.05}}
+    # e.g. {"premium": {"min": 1_000_000}, "claims": {"max": 650_000}}
 
     # Solver tuning
     max_iter: int
@@ -259,8 +259,10 @@ class OptimiserConfig(TypedDict, total=False):
 
     # Frontier
     frontier_enabled: bool
-    frontier_points_per_dim: int
-    frontier_threshold_ranges: dict[str, list[float]]
+    frontier_min: float
+    frontier_max: float
+    frontier_ranges: dict[str, dict[str, float]]
+    frontier_steps: int
 
     # Ratebook
     factor_columns: list[list[str]]
@@ -431,8 +433,10 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "chunk_size",
     "record_history",
     "frontier_enabled",
-    "frontier_points_per_dim",
-    "frontier_threshold_ranges",
+    "frontier_min",
+    "frontier_max",
+    "frontier_ranges",
+    "frontier_steps",
     "factor_columns",
     "candidate_min",
     "candidate_max",

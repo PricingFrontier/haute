@@ -26,7 +26,7 @@ describe("useConstraintHandlers", () => {
       act(() => result.current.handleAddConstraint())
 
       expect(onUpdate).toHaveBeenCalledWith("constraints", {
-        volume: { min: 0.9 },
+        volume: { min: 0 },
       })
     })
 
@@ -40,13 +40,13 @@ describe("useConstraintHandlers", () => {
 
       // Should skip "volume" (objective) and pick "loss_ratio"
       expect(onUpdate).toHaveBeenCalledWith("constraints", {
-        loss_ratio: { min: 0.9 },
+        loss_ratio: { min: 0 },
       })
     })
 
     it("skips already-constrained columns", () => {
       const onUpdate = vi.fn()
-      const existing = { volume: { min: 0.9 } }
+      const existing = { volume: { min: 0 } }
       const { result } = renderHook(() =>
         useConstraintHandlers(existing, "premium", COLUMNS, onUpdate),
       )
@@ -54,15 +54,15 @@ describe("useConstraintHandlers", () => {
       act(() => result.current.handleAddConstraint())
 
       expect(onUpdate).toHaveBeenCalledWith("constraints", {
-        volume: { min: 0.9 },
-        loss_ratio: { min: 0.9 },
+        volume: { min: 0 },
+        loss_ratio: { min: 0 },
       })
     })
 
     it("generates synthetic name when all columns are used", () => {
       const onUpdate = vi.fn()
       const existing = {
-        volume: { min: 0.9 },
+        volume: { min: 0 },
         loss_ratio: { max: 1.1 },
       }
       const { result } = renderHook(() =>
@@ -83,7 +83,7 @@ describe("useConstraintHandlers", () => {
     it("removes the specified constraint", () => {
       const onUpdate = vi.fn()
       const existing = {
-        volume: { min: 0.9 },
+        volume: { min: 0 },
         loss_ratio: { max: 1.1 },
       }
       const { result } = renderHook(() =>
@@ -99,7 +99,7 @@ describe("useConstraintHandlers", () => {
 
     it("produces empty constraints when removing last one", () => {
       const onUpdate = vi.fn()
-      const existing = { volume: { min: 0.9 } }
+      const existing = { volume: { min: 0 } }
       const { result } = renderHook(() =>
         useConstraintHandlers(existing, "premium", COLUMNS, onUpdate),
       )
@@ -116,7 +116,7 @@ describe("useConstraintHandlers", () => {
     it("renames a constraint column", () => {
       const onUpdate = vi.fn()
       const existing = {
-        volume: { min: 0.9 },
+        volume: { min: 0 },
         loss_ratio: { max: 1.1 },
       }
       const { result } = renderHook(() =>
@@ -126,14 +126,14 @@ describe("useConstraintHandlers", () => {
       act(() => result.current.handleConstraintColumnChange("volume", "premium"))
 
       expect(onUpdate).toHaveBeenCalledWith("constraints", {
-        premium: { min: 0.9 },
+        premium: { min: 0 },
         loss_ratio: { max: 1.1 },
       })
     })
 
     it("does nothing when old and new names are the same", () => {
       const onUpdate = vi.fn()
-      const existing = { volume: { min: 0.9 } }
+      const existing = { volume: { min: 0 } }
       const { result } = renderHook(() =>
         useConstraintHandlers(existing, "premium", COLUMNS, onUpdate),
       )
@@ -164,7 +164,7 @@ describe("useConstraintHandlers", () => {
   // ─── handleConstraintValueChange ────────────────────────────────
 
   describe("handleConstraintValueChange", () => {
-    it("updates constraint type and value, preserving siblings", () => {
+    it("updates constraint type and value as the single active threshold", () => {
       const onUpdate = vi.fn()
       const existing = { volume: { min: 0.9 } }
       const { result } = renderHook(() =>
@@ -173,24 +173,36 @@ describe("useConstraintHandlers", () => {
 
       act(() => result.current.handleConstraintValueChange("volume", "max", 1.1))
 
-      // Both min and max are preserved
       expect(onUpdate).toHaveBeenCalledWith("constraints", {
-        volume: { min: 0.9, max: 1.1 },
+        volume: { max: 1.1 },
       })
     })
 
-    it("adds new constraint type without destroying existing ones", () => {
+    it("switches constraint type without preserving stale keys", () => {
       const onUpdate = vi.fn()
       const existing = { volume: { min: 0.9 } }
       const { result } = renderHook(() =>
         useConstraintHandlers(existing, "premium", COLUMNS, onUpdate),
       )
 
-      act(() => result.current.handleConstraintValueChange("volume", "max_abs", 500000))
+      act(() => result.current.handleConstraintValueChange("volume", "max", 500000))
 
-      // The old {min: 0.9} is preserved alongside the new max_abs
       expect(onUpdate).toHaveBeenCalledWith("constraints", {
-        volume: { min: 0.9, max_abs: 500000 },
+        volume: { max: 500000 },
+      })
+    })
+
+    it("replaces removed price-contour 0.2 absolute keys", () => {
+      const onUpdate = vi.fn()
+      const existing = { volume: { min_abs: 1000 } }
+      const { result } = renderHook(() =>
+        useConstraintHandlers(existing, "premium", COLUMNS, onUpdate),
+      )
+
+      act(() => result.current.handleConstraintValueChange("volume", "min", 1200))
+
+      expect(onUpdate).toHaveBeenCalledWith("constraints", {
+        volume: { min: 1200 },
       })
     })
   })

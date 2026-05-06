@@ -1,21 +1,42 @@
 /**
  * Summary tab for the optimiser preview.
  *
- * Renders objective, constraints, lambdas, scenario-value histogram,
- * and factor tables (ratebook mode).  Extracted from OptimiserPreview
+ * Renders objective, constraints, lambdas, and scenario-value histogram.
+ * Extracted from OptimiserPreview
  * as part of the god-component split.
  */
 
+import { Loader2 } from "lucide-react"
 import { formatNumber } from "../../utils/formatValue"
 import type { SolveResult } from "../OptimiserPreview"
 import { isConstraintMet } from "./optimiserHelpers"
+import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
+import { hasFactorTables } from "./ratebookFactorTables"
+
+type RatebookRatesLoadState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; error: string }
 
 interface SummaryTabProps {
   result: SolveResult
   constraints: Record<string, Record<string, number>>
+  canMaterialiseRatebookRates?: boolean
+  ratebookRatesDetail?: RatebookRatesLoadState
 }
 
-export default function SummaryTab({ result, constraints }: SummaryTabProps) {
+export default function SummaryTab({
+  result,
+  constraints,
+  canMaterialiseRatebookRates = false,
+  ratebookRatesDetail = { status: "idle" },
+}: SummaryTabProps) {
+  const showRatebookImpactStatus = (
+    result.mode === "ratebook"
+    && canMaterialiseRatebookRates
+    && !hasFactorTables(result.factor_tables)
+  )
+
   return (
     <div className="flex gap-6 flex-wrap">
       {/* Left column: objective + constraints */}
@@ -27,18 +48,6 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
               <span style={{ color: "var(--text-secondary)" }}>Optimised</span>
               <span style={{ color: "var(--text-primary)" }}>{formatNumber(result.total_objective)}</span>
             </div>
-            <div className="flex justify-between text-xs font-mono gap-4">
-              <span style={{ color: "var(--text-secondary)" }}>Baseline</span>
-              <span style={{ color: "var(--text-muted)" }}>{formatNumber(result.baseline_objective)}</span>
-            </div>
-            {result.baseline_objective !== 0 && (
-              <div className="flex justify-between text-xs font-mono gap-4">
-                <span style={{ color: "var(--text-secondary)" }}>Uplift</span>
-                <span style={{ color: "var(--warning-strong)" }}>
-                  {((result.total_objective / result.baseline_objective - 1) * 100).toFixed(2)}%
-                </span>
-              </div>
-            )}
           </div>
         </div>
 
@@ -48,12 +57,10 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Constraints</label>
             <div className="mt-1 space-y-0.5">
               {Object.entries(result.constraints).map(([name, value]) => {
-                const baseline = result.baseline_constraints[name]
-                const ratio = baseline ? value / baseline : 0
                 const spec = constraints[name] || {}
                 const thresholdType = Object.keys(spec)[0]
                 const thresholdVal = spec[thresholdType] ?? 0
-                const met = isConstraintMet(thresholdType, ratio, value, thresholdVal)
+                const met = isConstraintMet(thresholdType, 0, value, thresholdVal)
                 return (
                   <div key={name} className="flex items-center justify-between text-xs font-mono gap-4">
                     <span className="flex items-center gap-1.5">
@@ -62,9 +69,6 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
                     </span>
                     <span>
                       <span style={{ color: "var(--text-primary)" }}>{formatNumber(value)}</span>
-                      {baseline !== undefined && (
-                        <span style={{ color: "var(--text-muted)" }}> ({(ratio * 100).toFixed(1)}%)</span>
-                      )}
                     </span>
                   </div>
                 )
@@ -96,6 +100,13 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
         )}
 
       </div>
+
+      {result.mode === "ratebook" && (
+        <RatebookImpactBeeswarm factorTables={result.factor_tables} />
+      )}
+      {showRatebookImpactStatus && (
+        <RatebookImpactStatus detail={ratebookRatesDetail} />
+      )}
 
       {/* Middle column: histogram + stats */}
       {result.scenario_value_histogram && (() => {
@@ -144,29 +155,32 @@ export default function SummaryTab({ result, constraints }: SummaryTabProps) {
         )
       })()}
 
-      {/* Factor tables (ratebook) */}
-      {result.mode === "ratebook" && result.factor_tables && (
-        <div className="min-w-[180px]">
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Factor Tables</label>
-          {Object.entries(result.factor_tables).map(([factorName, rows]) => (
-            <div key={factorName} className="mt-1.5">
-              <div className="text-[11px] font-medium mb-1" style={{ color: "var(--text-secondary)" }}>{factorName}</div>
-              <div className="space-y-0.5">
-                {rows.map((row, i) => {
-                  const levelName = row.__factor_group__ as string ?? row[Object.keys(row)[0]] as string ?? `Level ${i}`
-                  const mult = row.optimal_scenario_value as number
-                  return (
-                    <div key={i} className="flex justify-between text-xs font-mono gap-4">
-                      <span style={{ color: "var(--text-secondary)" }}>{levelName}</span>
-                      <span style={{ color: "var(--text-primary)" }}>{typeof mult === "number" ? mult.toFixed(2) : "?"}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
+  )
+}
+
+function RatebookImpactStatus({ detail }: { detail: RatebookRatesLoadState }) {
+  const isError = detail.status === "error"
+  return (
+    <section
+      className="min-w-[280px] flex-1 rounded px-3 py-2 text-xs"
+      style={{
+        background: isError ? "var(--danger-soft)" : "var(--bg-input)",
+        border: `1px solid ${isError ? "var(--danger-border)" : "var(--border)"}`,
+        color: isError ? "var(--danger)" : "var(--text-muted)",
+      }}
+    >
+      <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.08em]">
+        Mechanical Price Effect
+      </div>
+      <div className="flex items-center gap-2">
+        {!isError && <Loader2 size={14} className="animate-spin shrink-0" />}
+        <span>
+          {isError
+            ? `Rate table load failed: ${detail.error}`
+            : "Materialising selected point rates..."}
+        </span>
+      </div>
+    </section>
   )
 }

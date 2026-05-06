@@ -63,34 +63,38 @@ const CHART_PX = 44 // left padding for Y axis labels
 const CHART_PX_RIGHT = 12
 const CHART_PY = 14
 const CHART_PY_BOTTOM = 22
+const RIGHT_AXIS_GAP = 52
+const MIN_CHART_W = 180
+
+interface SeriesScaleContext {
+  yScale: (v: number) => number
+  ticks: number[]
+}
 
 interface ScaleContext {
   xScale: (i: number) => number
-  yScale: (v: number) => number
-  ticks: number[]
+  seriesScales: Record<string, SeriesScaleContext>
   chartW: number
   w: number
   h: number
+  axisColumns: string[]
+  rightAxisGap: number
 }
 
-function buildScales(
+function buildSeriesScale(
   rows: QuoteRow[],
-  columns: string[],
-  w: number,
+  column: string,
   h: number,
   yPadFraction = 0,
-): ScaleContext {
-  const chartW = w - CHART_PX - CHART_PX_RIGHT
+): SeriesScaleContext {
   const chartH = h - CHART_PY - CHART_PY_BOTTOM
 
   let vMin = Infinity
   let vMax = -Infinity
-  for (const col of columns) {
-    for (const r of rows) {
-      const v = r.values[col] ?? 0
-      if (v < vMin) vMin = v
-      if (v > vMax) vMax = v
-    }
+  for (const r of rows) {
+    const v = r.values[column] ?? 0
+    if (v < vMin) vMin = v
+    if (v > vMax) vMax = v
   }
   if (!Number.isFinite(vMin)) vMin = 0
   if (!Number.isFinite(vMax)) vMax = 1
@@ -101,46 +105,134 @@ function buildScales(
   const adjMin = vMin - pad
   const adjRange = rawRange + pad * 2 || 1
 
+  return {
+    yScale: (v: number) => CHART_PY + chartH - ((v - adjMin) / adjRange) * chartH,
+    ticks,
+  }
+}
+
+function buildScales(
+  rows: QuoteRow[],
+  columns: string[],
+  w: number,
+  h: number,
+  yPadFraction = 0,
+): ScaleContext {
+  const rightAxisCount = Math.max(0, columns.length - 1)
+  const maxRightAxisSpace = Math.max(0, w - CHART_PX - CHART_PX_RIGHT - MIN_CHART_W)
+  const rightAxisGap = rightAxisCount > 0
+    ? Math.min(RIGHT_AXIS_GAP, Math.floor(maxRightAxisSpace / rightAxisCount))
+    : 0
+  const chartW = w - CHART_PX - CHART_PX_RIGHT - rightAxisGap * rightAxisCount
+
   const indices = rows.map((r) => r.scenarioIndex)
   const iMin = Math.min(...indices)
   const iMax = Math.max(...indices)
   const iRange = iMax - iMin || 1
+  const seriesScales = Object.fromEntries(
+    columns.map((col) => [col, buildSeriesScale(rows, col, h, yPadFraction)]),
+  )
 
   return {
     xScale: (i: number) => CHART_PX + ((i - iMin) / iRange) * chartW,
-    yScale: (v: number) => CHART_PY + chartH - ((v - adjMin) / adjRange) * chartH,
-    ticks,
+    seriesScales,
     chartW,
     w,
     h,
+    axisColumns: columns,
+    rightAxisGap,
   }
 }
 
-/** Shared Y-axis grid lines, tick labels, and X-axis label. */
-function ChartGrid({ ctx }: { ctx: ScaleContext }) {
+/** Shared X-axis with one colour-coded Y axis per visible series. */
+function ChartGrid({
+  ctx,
+  allSeries,
+}: {
+  ctx: ScaleContext
+  allSeries: string[]
+}) {
+  const primaryColumn = ctx.axisColumns[0]
+  const primaryScale = primaryColumn ? ctx.seriesScales[primaryColumn] : null
+  const plotRight = CHART_PX + ctx.chartW
   return (
     <>
-      {ctx.ticks.map((t) => (
-        <g key={t}>
+      {primaryScale?.ticks.map((t) => (
+        <g key={`${primaryColumn}-${t}`}>
           <line
             x1={CHART_PX}
-            y1={ctx.yScale(t)}
-            x2={CHART_PX + ctx.chartW}
-            y2={ctx.yScale(t)}
+            y1={primaryScale.yScale(t)}
+            x2={plotRight}
+            y2={primaryScale.yScale(t)}
             stroke="var(--border)"
             strokeWidth={0.5}
           />
           <text
             x={CHART_PX - 4}
-            y={ctx.yScale(t) + 3}
+            y={primaryScale.yScale(t) + 3}
             textAnchor="end"
             fontSize={9}
-            fill="var(--text-muted)"
+            fill={SERIES_COLORS[allSeries.indexOf(primaryColumn) % SERIES_COLORS.length]}
           >
             {formatAxisLabel(t)}
           </text>
         </g>
       ))}
+      {ctx.axisColumns.map((column, axisIndex) => {
+        const scale = ctx.seriesScales[column]
+        const color = SERIES_COLORS[allSeries.indexOf(column) % SERIES_COLORS.length]
+        if (!scale) return null
+        if (axisIndex === 0) {
+          return (
+            <line
+              key={`${column}-axis`}
+              data-testid={`axis-${column}`}
+              x1={CHART_PX}
+              y1={CHART_PY}
+              x2={CHART_PX}
+              y2={ctx.h - CHART_PY_BOTTOM}
+              stroke={color}
+              strokeWidth={0.8}
+              opacity={0.7}
+            />
+          )
+        }
+        const x = plotRight + 12 + (axisIndex - 1) * ctx.rightAxisGap
+        return (
+          <g key={`${column}-axis`} data-testid={`axis-${column}`}>
+            <line
+              x1={x}
+              y1={CHART_PY}
+              x2={x}
+              y2={ctx.h - CHART_PY_BOTTOM}
+              stroke={color}
+              strokeWidth={0.8}
+              opacity={0.7}
+            />
+            {scale.ticks.map((t) => (
+              <g key={`${column}-${t}`}>
+                <line
+                  x1={x - 3}
+                  y1={scale.yScale(t)}
+                  x2={x}
+                  y2={scale.yScale(t)}
+                  stroke={color}
+                  strokeWidth={0.7}
+                  opacity={0.7}
+                />
+                <text
+                  x={x + 4}
+                  y={scale.yScale(t) + 3}
+                  fontSize={9}
+                  fill={color}
+                >
+                  {formatAxisLabel(t)}
+                </text>
+              </g>
+            ))}
+          </g>
+        )
+      })}
       <text
         x={CHART_PX + ctx.chartW / 2}
         y={ctx.h - 3}
@@ -166,10 +258,12 @@ function SeriesLine({
   color: string
   ctx: ScaleContext
 }) {
+  const yScale = ctx.seriesScales[column]?.yScale
+  if (!yScale) return null
   const path = rows
     .map(
       (r, idx) =>
-        `${idx === 0 ? "M" : "L"}${ctx.xScale(r.scenarioIndex).toFixed(1)},${ctx.yScale(r.values[column] ?? 0).toFixed(1)}`,
+        `${idx === 0 ? "M" : "L"}${ctx.xScale(r.scenarioIndex).toFixed(1)},${yScale(r.values[column] ?? 0).toFixed(1)}`,
     )
     .join(" ")
   return (
@@ -179,7 +273,7 @@ function SeriesLine({
         <circle
           key={i}
           cx={ctx.xScale(r.scenarioIndex)}
-          cy={ctx.yScale(r.values[column] ?? 0)}
+          cy={yScale(r.values[column] ?? 0)}
           r={2.5}
           fill={color}
         />
@@ -216,7 +310,7 @@ const ChartArea = memo(function ChartArea({
         border: "1px solid var(--border)",
       }}
     >
-      <ChartGrid ctx={ctx} />
+      <ChartGrid ctx={ctx} allSeries={allSeries} />
       {visibleSeries.map((col) => (
         <SeriesLine
           key={col}

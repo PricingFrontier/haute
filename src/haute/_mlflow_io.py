@@ -286,22 +286,22 @@ def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringMode
 
 
 def _load_rustystats_model(path: str) -> ScoringModel:
-    """Load a RustyStats GLM from a ``.rsglm`` binary file."""
+    """Load a RustyStats GLM from a ``.rsglm`` binary file.
+
+    The required-feature list is read straight off the model via
+    ``required_columns`` — RustyStats ships the raw input column names
+    (including expression source columns, offsets, and complement
+    columns) on the model itself, mirroring CatBoost's ``feature_names_``
+    and removing the need for a manual terms-dict / feature-names
+    fallback chain.
+    """
     import rustystats as rs
 
     with open(path, "rb") as f:
         model = rs.GLMModel.from_bytes(f.read())
-    # Use raw input column names (terms_dict keys) rather than design matrix
-    # names (feature_names) -- the GLM handles spline/basis expansion internally.
-    if hasattr(model, "terms_dict") and model.terms_dict:
-        feature_names = list(model.terms_dict.keys())
-    elif hasattr(model, "feature_names"):
-        feature_names = list(model.feature_names)
-    else:
-        feature_names = []
     return ScoringModel(
         model=model,
-        feature_names=feature_names,
+        feature_names=list(model.required_columns),
         cat_feature_names=frozenset(),
         flavor="rustystats",
     )

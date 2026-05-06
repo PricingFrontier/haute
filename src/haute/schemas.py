@@ -7,14 +7,42 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, field_validator
 
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
 from haute._types import PipelineGraph as Graph  # noqa: F401
+
+
+def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
+    """Validate one ``(min, max)`` frontier-range value.
+
+    Single source of truth for both the request-body schema layer and the
+    config-side path in ``_optimiser_service``.  Accepts either a dict
+    ``{"min": ..., "max": ...}`` or a 2-element list/tuple.
+    """
+    if isinstance(value, dict):
+        raw_min = value.get("min")
+        raw_max = value.get("max")
+    elif isinstance(value, list | tuple) and len(value) == 2:
+        raw_min, raw_max = value
+    else:
+        raise ValueError(f"{field} must contain min and max values.")
+
+    if raw_min is None or raw_max is None:
+        raise ValueError(f"{field} must contain min and max values.")
+
+    min_value = float(raw_min)
+    max_value = float(raw_max)
+    if not math.isfinite(min_value) or not math.isfinite(max_value):
+        raise ValueError(f"{field} must contain finite min and max values.")
+    if min_value > max_value:
+        raise ValueError(f"{field} min must be less than or equal to max.")
+    return min_value, max_value
 
 
 class ColumnInfo(BaseModel):
@@ -662,12 +690,55 @@ class OptimiserEstimateResponse(BaseModel):
 
     total_rows: int | None = None
     """Max row count across ancestor data sources, if readable."""
+    quote_count: int | None = None
+    """Distinct quotes in the optimiser input after scenario expansion."""
+    scenarios_per_quote_min: int | None = None
+    """Minimum scenario rows per quote in the optimiser input."""
+    scenarios_per_quote_max: int | None = None
+    """Maximum scenario rows per quote in the optimiser input."""
+    scenarios_per_quote_mean: float | None = None
+    """Mean scenario rows per quote in the optimiser input."""
+    expanded_row_count: int | None = None
+    """Total rows in the optimiser input after scenario expansion."""
+
+
+class OptimiserFrontierAutoRangeRequest(BaseModel):
+    graph: Graph
+    node_id: str
+
+
+class OptimiserFrontierRange(BaseModel):
+    min: float
+    max: float
+
+
+class OptimiserFrontierAutoRangeResponse(BaseModel):
+    status: str = "ok"
+    ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
+    method: str = "scenario_envelope"
+    warning: str | None = None
 
 
 class OptimiserFrontierRequest(BaseModel):
     job_id: str
-    threshold_ranges: dict[str, list[float]]
+    threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
+
+    @field_validator("threshold_ranges", mode="after")
+    @classmethod
+    def _validate_threshold_ranges(
+        cls,
+        value: dict[str, list[float]],
+    ) -> dict[str, list[float]]:
+        for name, range_value in value.items():
+            # Re-use the canonical validator so request-body and config-side
+            # error messages match.  We discard the normalised tuple — the
+            # field type stays as ``list[float]`` for JSON-payload simplicity.
+            _normalise_frontier_range_pair(
+                range_value,
+                field=f"threshold_ranges.{name}",
+            )
+        return value
 
 
 class OptimiserFrontierResponse(BaseModel):
@@ -728,6 +799,7 @@ class OptimiserSolveResult(BaseModel):
     clamp_rate: float | None = None
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
+    selected_frontier_point: int | None = None
 
 
 class OptimiserStatusResponse(BaseModel):
@@ -741,6 +813,7 @@ class OptimiserStatusResponse(BaseModel):
 
 class OptimiserApplyRequest(BaseModel):
     job_id: str
+    point_index: int | None = Field(default=None, ge=0)
 
 
 class OptimiserApplyResponse(BaseModel):
@@ -758,17 +831,27 @@ class OptimiserApplyResponse(BaseModel):
 
 class OptimiserFrontierSelectRequest(BaseModel):
     job_id: str
-    point_index: int = Field(..., ge=0)
+    point_index: int | None = Field(..., ge=0)
+    include_ratebook_tables: bool = False
 
 
 class OptimiserFrontierSelectResponse(BaseModel):
     status: str
+    point_index: int | None = None
     total_objective: float = 0.0
     constraints: dict[str, float] = Field(default_factory=dict)
     baseline_objective: float = 0.0
     baseline_constraints: dict[str, float] = Field(default_factory=dict)
     lambdas: dict[str, float] = Field(default_factory=dict)
     converged: bool = True
+    iterations: int | None = None
+    cd_iterations: int | None = None
+    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    history: list[OptimiserHistoryEntry] | None = None
+    warning: str | None = None
+    scenario_value_stats: OptimiserScenarioValueStats | None = None
+    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    clamp_rate: float | None = None
     error: str | None = None
 
 
@@ -776,6 +859,7 @@ class OptimiserSaveRequest(BaseModel):
     job_id: str
     output_path: str
     version: str = ""  # optional user-specified version label; auto-generated if empty
+    point_index: int | None = Field(default=None, ge=0)
 
 
 class OptimiserSaveResponse(BaseModel):
@@ -786,6 +870,7 @@ class OptimiserSaveResponse(BaseModel):
 
 class OptimiserMlflowLogRequest(BaseModel):
     job_id: str
+    point_index: int | None = Field(default=None, ge=0)
     experiment_name: str | None = None
     model_name: str | None = None
 

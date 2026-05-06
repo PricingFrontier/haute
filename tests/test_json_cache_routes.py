@@ -10,6 +10,8 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
+import textwrap
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -653,3 +655,234 @@ class TestCancelJsonCache:
 
         assert resp.status_code == 499
         assert "cancelled" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: Cache as Parquet → click api_input node
+#
+# Regression coverage for the user-reported flow where:
+#   1. Pipeline lives in a subdirectory (e.g. ``rating/main.py``).
+#   2. The api_input config has ``flattenSchema`` and a relative ``path``
+#      that resolves into a data file at the project root.
+#   3. The user clicks "Cache as Parquet" → POST /api/json-cache/build.
+#   4. The user clicks the api_input node → POST /api/pipeline/preview.
+#
+# Step 4 raised "JSON data has not been cached yet, or the existing cache is
+# stale or schema-incompatible" even though step 3 succeeded.  Both endpoints
+# must compute the same cache hash and accept the same schema fingerprint, so
+# the parquet built by /build is the parquet looked up during preview.
+# ---------------------------------------------------------------------------
+
+
+def _write_user_project(root: Path) -> dict[str, str]:
+    """Lay out the minimal project mirroring the user's bug report."""
+    pipeline_dir_path = root / "rating"
+    pipeline_dir_path.mkdir(parents=True, exist_ok=True)
+    config_dir = pipeline_dir_path / "config" / "quote_input"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = root / "data" / "quotes"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    flatten_schema = {
+        "quote_id": "str",
+        "premium": "float",
+        "metadata": {"channel": "str"},
+    }
+
+    quotes_config = config_dir / "quotes.json"
+    quotes_config.write_text(
+        json.dumps(
+            {
+                "path": "data\\quotes\\sample_quote.json",
+                "flattenSchema": flatten_schema,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sample = data_dir / "sample_quote.json"
+    sample.write_text(
+        json.dumps({"quote_id": "q-1", "premium": 99.5, "metadata": {"channel": "web"}}),
+        encoding="utf-8",
+    )
+
+    pipeline_file = pipeline_dir_path / "main.py"
+    pipeline_file.write_text(
+        textwrap.dedent(
+            '''\
+            """Pipeline: regression"""
+
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("regression")
+
+
+            @pipeline.api_input(config="config/quote_input/quotes.json", contract="opaque")
+            def quotes() -> pl.LazyFrame:
+                """quotes node"""
+                from pathlib import Path
+                from haute._json_flatten import read_json_flat
+                return read_json_flat(
+                    Path(__file__).parent.parent / "data/quotes/sample_quote.json",
+                    config_path="config/quote_input/quotes.json",
+                )
+            '''
+        ),
+        encoding="utf-8",
+    )
+
+    haute_toml = root / "haute.toml"
+    haute_toml.write_text(
+        textwrap.dedent(
+            """\
+            [project]
+            name = "regression"
+            pipeline = "rating/main.py"
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    return {
+        "data_path": "data\\quotes\\sample_quote.json",
+        "pipeline_file": str(pipeline_file),
+        "data_file": str(sample),
+        "config_file": str(quotes_config),
+    }
+
+
+class TestApiInputCacheEndToEnd:
+    """The cache built via /api/json-cache/build is found by /api/pipeline/preview."""
+
+    def _make_isolated_client(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> TestClient:
+        # Each test gets a fresh cwd so the LRU-cached pipeline_dir() and the
+        # process-wide _CACHE_DIR don't leak between cases.
+        monkeypatch.chdir(tmp_path)
+        import haute._json_flatten as jf
+        from haute._json_flatten import _CACHE_DIR  # noqa: F401  -- ensure module imported
+
+        monkeypatch.setattr(jf, "_CACHE_DIR", str(tmp_path / ".haute_cache"))
+
+        from haute.routes._helpers import pipeline_dir as _pd
+
+        _pd.cache_clear()
+
+        from haute.server import app
+
+        return TestClient(app)
+
+    def test_cache_then_preview_succeeds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The user's exact flow: build cache via the GUI route, then preview the node.
+
+        If the executor's path resolution drifts from the cache-build route's
+        path resolution, the preview returns "JSON data has not been cached yet".
+        Both endpoints must agree on the canonical cache path AND the schema
+        fingerprint that gates the lookup.
+        """
+        info = _write_user_project(tmp_path)
+        client = self._make_isolated_client(tmp_path, monkeypatch)
+
+        # 1) Frontend pulls the parsed graph (mirrors GET /api/pipeline).
+        resp = client.get("/api/pipeline")
+        assert resp.status_code == 200
+        graph = resp.json()
+        quote_node = next(n for n in graph["nodes"] if n["data"]["label"] == "quotes")
+        flatten_schema = quote_node["data"]["config"]["flattenSchema"]
+
+        # 2) User clicks "Cache as Parquet" — frontend posts {path, flatten_schema}
+        #    matching JsonCacheButton in ApiInputEditor.tsx (no config_path).
+        resp = client.post(
+            "/api/json-cache/build",
+            json={"path": info["data_path"], "flatten_schema": flatten_schema},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["row_count"] == 1
+
+        # Cache status check used by the GUI button must agree the cache exists.
+        resp = client.post(
+            "/api/json-cache/status",
+            json={"path": info["data_path"], "flatten_schema": flatten_schema},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["cached"] is True
+
+        # 3) User clicks the api_input node — frontend posts the graph for preview.
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph,
+                "node_id": quote_node["id"],
+                "row_limit": 10,
+                "source": "live",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # The bug surfaces as status="error" with the cache message;
+        # spell out the assertion so the regression is unmistakable.
+        assert body["status"] == "ok", (
+            f"Preview failed after Cache-as-Parquet build. "
+            f"status={body.get('status')!r} error={body.get('error')!r}"
+        )
+        assert body["row_count"] == 1
+        assert any(c["name"] == "quote_id" for c in body["columns"])
+
+    def test_orphan_parquet_without_meta_surfaces_as_uncached(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A parquet without its ``.meta.json`` sidecar must report as uncached.
+
+        Older haute caches, interrupted builds, or copied artifacts can leave
+        an orphan parquet on disk.  When the api_input config sets a
+        ``flattenSchema``, the lookup cannot trust an unsidecared parquet and
+        must trigger a rebuild via the GUI button — not silently scan it.
+        """
+        from haute._json_flatten import _json_cache_path, build_json_cache
+
+        info = _write_user_project(tmp_path)
+        client = self._make_isolated_client(tmp_path, monkeypatch)
+
+        resp = client.get("/api/pipeline")
+        graph = resp.json()
+        quote_node = next(n for n in graph["nodes"] if n["data"]["label"] == "quotes")
+        flatten_schema = quote_node["data"]["config"]["flattenSchema"]
+
+        # Build the cache normally, then delete just the meta sidecar.
+        build_json_cache(info["data_file"], schema=flatten_schema)
+        cache_path = _json_cache_path(info["data_file"])
+        meta_path = Path(str(cache_path) + ".meta.json")
+        assert cache_path.exists()
+        meta_path.unlink()
+
+        # Status check must report uncached so the GUI re-prompts the user.
+        resp = client.post(
+            "/api/json-cache/status",
+            json={"path": info["data_path"], "flatten_schema": flatten_schema},
+        )
+        assert resp.json()["cached"] is False
+
+        # Preview must surface the cache-as-parquet hint, not crash with 500.
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph,
+                "node_id": quote_node["id"],
+                "row_limit": 10,
+                "source": "live",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "error"
+        assert "Cache as Parquet" in (body["error"] or "")
