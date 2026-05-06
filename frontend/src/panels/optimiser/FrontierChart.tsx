@@ -72,6 +72,54 @@ export default function FrontierChart({
     }
   }, [points, xKey, yKey, currentX, currentY])
 
+  const pointPositions = useMemo(() => {
+    const positions = points.map((p, i) => {
+      const x = p[xKey] as number
+      const y = p[yKey] as number
+      if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
+        return null
+      }
+      const cx = xScale(x)
+      const cy = yScale(y)
+      return { index: i, cx, cy }
+    })
+
+    const buckets = new Map<string, NonNullable<(typeof positions)[number]>[]>()
+    for (const position of positions) {
+      if (!position) continue
+      const key = `${position.cx.toFixed(3)}:${position.cy.toFixed(3)}`
+      const bucket = buckets.get(key)
+      if (bucket) {
+        bucket.push(position)
+      } else {
+        buckets.set(key, [position])
+      }
+    }
+
+    const offsets = new Map<number, { dx: number; dy: number }>()
+    for (const bucket of buckets.values()) {
+      if (bucket.length < 2) continue
+      const radius = bucket.length > 2 ? 8 : 7
+      bucket.forEach((position, order) => {
+        const angle = -Math.PI / 2 + (order * 2 * Math.PI) / bucket.length
+        offsets.set(position.index, {
+          dx: Math.cos(angle) * radius,
+          dy: Math.sin(angle) * radius,
+        })
+      })
+    }
+
+    return positions.map((position) => {
+      if (!position) return null
+      const offset = offsets.get(position.index)
+      return {
+        ...position,
+        cx: position.cx + (offset?.dx ?? 0),
+        cy: position.cy + (offset?.dy ?? 0),
+      }
+    })
+  }, [points, xKey, yKey, xScale, yScale])
+
   return (
     <svg width={CHART_W} height={CHART_H} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
       {/* Grid lines + Y axis labels */}
@@ -90,16 +138,14 @@ export default function FrontierChart({
       <text x={6} y={CHART_PY + INNER_H / 2} textAnchor="middle" fontSize={9} fill="var(--text-muted)" transform={`rotate(-90,6,${CHART_PY + INNER_H / 2})`}>objective</text>
 
       {/* Frontier points */}
-      {points.map((p, i) => {
-        const x = p[xKey] as number
-        const y = p[yKey] as number
-        if (typeof x !== "number" || typeof y !== "number") return null
+      {pointPositions.map((position, i) => {
+        if (!position) return null
         const isSel = selectedIdx === i
         return (
           <circle
             key={i}
-            cx={xScale(x)}
-            cy={yScale(y)}
+            cx={position.cx}
+            cy={position.cy}
             r={isSel ? 6 : 4}
             fill={isSel ? CHART_COLORS.objective : "var(--accent)"}
             stroke={isSel ? "var(--text-on-accent)" : "none"}
@@ -117,7 +163,7 @@ export default function FrontierChart({
 
       {/* Current solve result marker (diamond ring) */}
       {currentX != null && Number.isFinite(currentX) && Number.isFinite(currentY) && (
-        <g>
+        <g aria-hidden="true" pointerEvents="none" style={{ pointerEvents: "none" }}>
           <circle
             cx={xScale(currentX)}
             cy={yScale(currentY)}
@@ -125,12 +171,14 @@ export default function FrontierChart({
             fill="none"
             stroke={CHART_COLORS.objective}
             strokeWidth={2}
+            pointerEvents="none"
           />
           <circle
             cx={xScale(currentX)}
             cy={yScale(currentY)}
             r={2.5}
             fill={CHART_COLORS.objective}
+            pointerEvents="none"
           />
         </g>
       )}
