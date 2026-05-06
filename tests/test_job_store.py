@@ -157,6 +157,36 @@ class TestJobStoreTTL:
         _trigger = store.create_job({"status": "trigger"})
         assert store.get_job(job_id) is not None
 
+    def test_job_at_exact_ttl_boundary_is_still_live(self) -> None:
+        store = JobStore(ttl_seconds=10)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "fresh", "created_at": 90.0})
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job = store.get_job(job_id)
+
+        assert job is not None
+        assert job["status"] == "fresh"
+
+    def test_missing_created_at_uses_zero_for_ttl_eviction(self) -> None:
+        store = JobStore(ttl_seconds=10)
+        store.jobs["legacy"] = {"status": "completed"}
+
+        with patch("haute.routes._job_store.time.time", return_value=10.5):
+            store._evict_stale()
+
+        assert "legacy" not in store.jobs
+
+    def test_missing_created_at_zero_is_not_stale_before_ttl_window(self) -> None:
+        store = JobStore(ttl_seconds=10)
+        store.jobs["legacy"] = {"status": "completed"}
+
+        with patch("haute.routes._job_store.time.time", return_value=9.5):
+            store._evict_stale()
+
+        assert store.jobs["legacy"]["status"] == "completed"
+
     def test_mixed_stale_and_fresh(self) -> None:
         store = JobStore(ttl_seconds=5)
         stale_id = store.create_job({"status": "stale", "created_at": time.time() - 100})
@@ -201,6 +231,21 @@ class TestJobStoreTTL:
         assert store.get_job(job_id) is None
         assert cleaned == [str(artifact_path)]
         assert not artifact_dir.exists()
+
+    def test_distinct_equal_artifact_cleaners_are_rejected(self) -> None:
+        kind = "test_job_store_equal_cleaner_identity"
+
+        class EqualCleaner:
+            def __call__(self, _handle: dict) -> None:
+                return None
+
+            def __eq__(self, _other: object) -> bool:
+                return True
+
+        register_artifact_cleaner(kind, EqualCleaner())
+
+        with pytest.raises(RuntimeError, match="already registered"):
+            register_artifact_cleaner(kind, EqualCleaner())
 
     def test_stale_job_path_only_artifacts_are_not_deleted_without_registered_cleaner(
         self,
@@ -540,20 +585,30 @@ class TestJobStoreConcurrency:
 
             barrier = threading.Barrier(2)
             results: dict[str, object] = {}
+            errors: list[BaseException] = []
 
             def updater() -> None:
-                barrier.wait()
-                results["update"] = store.atomic_update_if_heavy_present(
-                    job_id,
-                    {"result": {"total_objective": 42.0}, "selected_frontier_point": 0},
-                    required_keys=("solver", "quote_grid"),
-                    expected_status="completed",
-                )
+                try:
+                    barrier.wait()
+                    results["update"] = store.atomic_update_if_heavy_present(
+                        job_id,
+                        {
+                            "result": {"total_objective": 42.0},
+                            "selected_frontier_point": 0,
+                        },
+                        required_keys=("solver", "quote_grid"),
+                        expected_status="completed",
+                    )
+                except BaseException as exc:  # noqa: BLE001 - report thread failures
+                    errors.append(exc)
 
             def evictor() -> None:
-                barrier.wait()
-                store._clear_expired_heavy_objects(job_id=None, timer=None)
-                results["evict"] = "done"
+                try:
+                    barrier.wait()
+                    store._clear_expired_heavy_objects(job_id=None, timer=None)
+                    results["evict"] = "done"
+                except BaseException as exc:  # noqa: BLE001 - report thread failures
+                    errors.append(exc)
 
             threads = [
                 threading.Thread(target=updater),
@@ -564,6 +619,10 @@ class TestJobStoreConcurrency:
             for t in threads:
                 t.join(timeout=5)
 
+            assert errors == [], f"Race threads raised: {errors}"
+            assert all(not t.is_alive() for t in threads), f"Race threads hung on run {run}"
+            assert results.get("evict") == "done"
+            assert "update" in results
             update_outcome = results.get("update")
             final = store.get_job(job_id)
             assert final is not None, f"run {run}: job evicted entirely"
@@ -1079,8 +1138,51 @@ class TestHeavyObjectLifecyclePolicy:
     def test_default_heavy_object_retention_is_shorter_than_job_ttl(self) -> None:
         store = JobStore()
 
+        assert _DEFAULT_HEAVY_OBJECT_TTL_SECONDS == 15 * 60
         assert _DEFAULT_HEAVY_OBJECT_TTL_SECONDS < _DEFAULT_TTL_SECONDS
         assert store._heavy_object_ttl_seconds == _DEFAULT_HEAVY_OBJECT_TTL_SECONDS
+
+    def test_zero_heavy_object_retention_is_valid_and_due_immediately(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=0)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        assert store.jobs[job_id]["heavy_objects_expires_at"] == pytest.approx(100.0)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job = store.get_job(job_id)
+
+        assert job is not None
+        assert "solver" not in job
+        assert "quote_grid" not in job
+        assert job["heavy_objects_retention_seconds"] == 0
+
+    def test_completed_status_checks_use_value_equality_for_heavy_policy(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            heavy_object_ttl_seconds=10,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+        completed_status = "".join(["com", "pleted"])
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": completed_status,
+                    "solver": object(),
+                }
+            )
+
+        assert store.jobs[job_id]["heavy_objects_expires_at"] == pytest.approx(110.0)
+        assert len(timers) == 1
+        assert timers[0].started is True
 
     def test_completed_job_heavy_objects_are_slimmed_after_policy_window(self) -> None:
         timers: list = []
@@ -1229,6 +1331,127 @@ class TestHeavyObjectLifecyclePolicy:
         assert job_id not in store._heavy_object_timers
         assert "heavy_objects_expires_at" not in store.jobs[job_id]
 
+    def test_existing_heavy_object_expiry_does_not_schedule_duplicate_cleanup(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            ttl_seconds=1000,
+            heavy_object_ttl_seconds=10,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "solver": object(),
+                    "result": {"step": 1},
+                }
+            )
+
+        assert len(timers) == 1
+        first_timer = timers[0]
+
+        with patch("haute.routes._job_store.time.time", return_value=105.0):
+            store.atomic_update(job_id, {"result": {"step": 2}})
+
+        assert len(timers) == 1
+        assert store._heavy_object_timers[job_id] is first_timer
+        assert first_timer.cancelled is False
+
+    def test_completed_at_is_stamped_only_on_first_completion_transition(self) -> None:
+        store = _job_store_without_cleanup_threads()
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "running"})
+
+        with patch("haute.routes._job_store.time.time", return_value=150.0):
+            first = store.atomic_update(job_id, {"status": "completed"})
+
+        assert first is not None
+        assert first["completed_at"] == 150.0
+
+        with patch("haute.routes._job_store.time.time", return_value=200.0):
+            second = store.atomic_update(job_id, {"result": {"ok": True}})
+
+        assert second is not None
+        assert second["completed_at"] == 150.0
+        assert store.jobs[job_id]["completed_at"] == 150.0
+
+    def test_completion_transition_from_lexically_lower_status_is_stamped(self) -> None:
+        store = _job_store_without_cleanup_threads()
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "archived"})
+
+        with patch("haute.routes._job_store.time.time", return_value=125.0):
+            updated = store.atomic_update(job_id, {"status": "completed"})
+
+        assert updated is not None
+        assert updated["completed_at"] == 125.0
+
+    def test_status_change_away_from_completed_cancels_heavy_cleanup_timer(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": object(),
+                "quote_grid": object(),
+            }
+        )
+        assert len(timers) == 1
+
+        store.atomic_update(job_id, {"status": "error", "message": "failed"})
+
+        assert timers[0].cancelled is True
+        assert job_id not in store._heavy_object_timers
+        assert store.jobs[job_id]["status"] == "error"
+
+    def test_dynamic_completed_status_preserves_existing_heavy_cleanup_timer(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": object(),
+                "quote_grid": object(),
+            }
+        )
+        assert len(timers) == 1
+        first_timer = timers[0]
+
+        dynamic_completed = "".join(["com", "pleted"])
+        store.atomic_update(job_id, {"status": dynamic_completed, "result": {"ok": True}})
+
+        assert first_timer.cancelled is False
+        assert store._heavy_object_timers[job_id] is first_timer
+
+    def test_lexically_lower_status_change_cancels_heavy_cleanup_timer(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": object(),
+                "quote_grid": object(),
+            }
+        )
+        assert len(timers) == 1
+
+        store.atomic_update(job_id, {"status": "archived"})
+
+        assert timers[0].cancelled is True
+        assert job_id not in store._heavy_object_timers
+        assert store.jobs[job_id]["status"] == "archived"
+
     def test_stale_job_eviction_cancels_pending_heavy_object_timer(self) -> None:
         timers: list = []
         store = JobStore(
@@ -1291,6 +1514,11 @@ class TestHeavyObjectLifecyclePolicy:
         with pytest.raises(RuntimeError, match="without an expiry"):
             store._schedule_heavy_object_cleanup_if_needed("job-id", True, None)
 
+    def test_heavy_object_expiry_falls_back_to_zero_timestamp(self) -> None:
+        store = JobStore(heavy_object_ttl_seconds=900)
+
+        assert store._heavy_objects_expires_at({"status": "completed"}) == pytest.approx(900.0)
+
     def test_touch_heavy_objects_returns_false_for_running_job(self) -> None:
         store = JobStore(ttl_seconds=3600, heavy_object_ttl_seconds=900)
         job_id = store.create_job(
@@ -1340,6 +1568,101 @@ class TestHeavyObjectLifecyclePolicy:
         assert "solver" not in job
         assert "solve_result" not in job
         assert "quote_grid" not in job
+
+    def test_touch_heavy_objects_keeps_current_window_when_already_fresh(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "created_at": 100.0,
+                    "heavy_objects_expires_at": 1000.0,
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        assert timers == []
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            assert store.touch_heavy_objects(job_id) is True
+
+        assert timers == []
+        assert store.jobs[job_id]["heavy_objects_expires_at"] == pytest.approx(1000.0)
+
+    def test_touch_heavy_objects_does_not_shrink_longer_current_window(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+            heavy_object_timer_factory=self._manual_timer_factory(timers),
+        )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "completed",
+                    "created_at": 100.0,
+                    "heavy_objects_expires_at": 2000.0,
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            assert store.touch_heavy_objects(job_id) is True
+
+        assert timers == []
+        assert store.jobs[job_id]["heavy_objects_expires_at"] == pytest.approx(2000.0)
+
+    def test_touch_heavy_objects_refuses_lexically_lower_non_completed_status(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+        )
+        job_id = store.create_job(
+            {
+                "status": "archived",
+                "solver": object(),
+                "solve_result": object(),
+                "quote_grid": object(),
+            }
+        )
+
+        assert store.touch_heavy_objects(job_id) is False
+        assert "heavy_objects_expires_at" not in store.jobs[job_id]
+
+    def test_touch_heavy_objects_uses_value_equality_for_completed_status(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+        )
+        completed_status = "".join(["com", "pleted"])
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": completed_status,
+                    "created_at": 100.0,
+                    "heavy_objects_expires_at": 500.0,
+                    "solver": object(),
+                    "solve_result": object(),
+                    "quote_grid": object(),
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=200.0):
+            assert store.touch_heavy_objects(job_id) is True
+
+        assert store.jobs[job_id]["heavy_objects_expires_at"] == pytest.approx(1100.0)
 
     def test_touch_heavy_objects_is_capped_by_job_metadata_ttl(self) -> None:
         store = _job_store_without_cleanup_threads(
@@ -1438,6 +1761,55 @@ class TestHeavyObjectLifecyclePolicy:
         assert updated is None
         assert store.jobs[job_id]["result"] == {"total_objective": 100.0}
 
+    def test_guarded_atomic_update_refuses_none_required_runtime_state(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+        )
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "solver": None,
+                "quote_grid": object(),
+                "result": {"total_objective": 100.0},
+            }
+        )
+
+        updated = store.atomic_update_if_heavy_present(
+            job_id,
+            {"result": {"total_objective": 200.0}},
+            required_keys=("solver", "quote_grid"),
+            expected_status="completed",
+        )
+
+        assert updated is None
+        assert store.jobs[job_id]["result"] == {"total_objective": 100.0}
+
+    def test_guarded_atomic_update_honours_custom_required_runtime_keys(self) -> None:
+        store = _job_store_without_cleanup_threads(
+            ttl_seconds=3600,
+            heavy_object_ttl_seconds=900,
+        )
+        factors_df = object()
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "factors_df": factors_df,
+                "result": {"rows": 10},
+            }
+        )
+
+        updated = store.atomic_update_if_heavy_present(
+            job_id,
+            {"result": {"rows": 20}},
+            required_keys=("factors_df",),
+            expected_status="completed",
+        )
+
+        assert updated is not None
+        assert updated["factors_df"] is factors_df
+        assert updated["result"] == {"rows": 20}
+
     def test_guarded_atomic_update_refuses_unexpected_status(self) -> None:
         store = JobStore(ttl_seconds=3600, heavy_object_ttl_seconds=900)
         job_id = store.create_job(
@@ -1460,6 +1832,77 @@ class TestHeavyObjectLifecyclePolicy:
         assert store.jobs[job_id]["status"] == "running"
         assert store.jobs[job_id]["result"] == {"total_objective": 100.0}
 
+    def test_guarded_atomic_update_refuses_lexically_higher_unexpected_status(
+        self,
+    ) -> None:
+        store = _job_store_without_cleanup_threads()
+        job_id = store.create_job(
+            {
+                "status": "zzz",
+                "solver": object(),
+                "quote_grid": object(),
+                "result": {"total_objective": 100.0},
+            }
+        )
+
+        updated = store.atomic_update_if_heavy_present(
+            job_id,
+            {"result": {"total_objective": 200.0}},
+            required_keys=("solver", "quote_grid"),
+            expected_status="running",
+        )
+
+        assert updated is None
+        assert store.jobs[job_id]["status"] == "zzz"
+        assert store.jobs[job_id]["result"] == {"total_objective": 100.0}
+
+    def test_guarded_atomic_update_refuses_lexically_lower_unexpected_status(
+        self,
+    ) -> None:
+        store = _job_store_without_cleanup_threads()
+        job_id = store.create_job(
+            {
+                "status": "archived",
+                "solver": object(),
+                "quote_grid": object(),
+                "result": {"total_objective": 100.0},
+            }
+        )
+
+        updated = store.atomic_update_if_heavy_present(
+            job_id,
+            {"result": {"total_objective": 200.0}},
+            required_keys=("solver", "quote_grid"),
+            expected_status="running",
+        )
+
+        assert updated is None
+        assert store.jobs[job_id]["status"] == "archived"
+        assert store.jobs[job_id]["result"] == {"total_objective": 100.0}
+
+    def test_guarded_atomic_update_expected_status_uses_value_equality(self) -> None:
+        store = _job_store_without_cleanup_threads()
+        running_status = "".join(["run", "ning"])
+        expected_status = "".join(["run", "ning"])
+        job_id = store.create_job(
+            {
+                "status": running_status,
+                "solver": object(),
+                "quote_grid": object(),
+                "result": {"total_objective": 100.0},
+            }
+        )
+
+        updated = store.atomic_update_if_heavy_present(
+            job_id,
+            {"result": {"total_objective": 200.0}},
+            required_keys=("solver", "quote_grid"),
+            expected_status=expected_status,
+        )
+
+        assert updated is not None
+        assert updated["result"] == {"total_objective": 200.0}
+
 
 # ---------------------------------------------------------------------------
 # Factory allow-list
@@ -1468,6 +1911,18 @@ class TestHeavyObjectLifecyclePolicy:
 
 class TestJobStoreFactoryAllowList:
     """Factory prefixes are deliberately closed to keep singleton storage bounded."""
+
+    def test_known_prefixes_return_cached_singletons(self) -> None:
+        get_job_store.cache_clear()
+        try:
+            first_training = get_job_store("training")
+            second_training = get_job_store("training")
+            optimiser = get_job_store("optimiser")
+
+            assert first_training is second_training
+            assert optimiser is not first_training
+        finally:
+            get_job_store.cache_clear()
 
     def test_unknown_prefix_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match="Unknown JobStore prefix 'pipeline'"):
@@ -1694,6 +2149,15 @@ class TestOptimiserConcurrencyGuard:
 
         assert store.has_job_with_status("running") is True
 
+    def test_has_job_with_status_uses_value_equality_not_identity(self) -> None:
+        store = JobStore()
+        stored_status = "".join(["run", "ning"])
+        requested_status = "".join(["run", "ning"])
+
+        store.create_job({"status": stored_status})
+
+        assert store.has_job_with_status(requested_status) is True
+
     def test_has_job_with_status_false_when_only_other_fresh_statuses_exist(self) -> None:
         """Fresh non-matching jobs should not satisfy the status guard."""
         store = JobStore(ttl_seconds=60)
@@ -1701,6 +2165,12 @@ class TestOptimiserConcurrencyGuard:
         store.create_job({"status": "error"})
 
         assert store.has_job_with_status("running") is False
+
+    def test_has_job_with_status_uses_exact_status_not_ordering(self) -> None:
+        store = JobStore(ttl_seconds=60)
+        store.create_job({"status": "error"})
+
+        assert store.has_job_with_status("completed") is False
 
     def test_has_job_with_status_ignores_stale_non_running_jobs(self) -> None:
         """Expired finished jobs should not trip the running-job guard."""
@@ -2165,6 +2635,22 @@ class TestAtomicUpdateExpectedStatus:
         assert job["progress"] == 1.0
         assert "message" not in job
 
+    def test_expected_status_guard_uses_equality_not_ordering(self) -> None:
+        store = JobStore()
+        job_id = store.create_job({"status": "zzz", "progress": 0.5})
+
+        result = store.atomic_update(
+            job_id,
+            {"status": "completed", "progress": 1.0},
+            expected_status="running",
+        )
+
+        assert result is None
+        job = store.get_job(job_id)
+        assert job is not None
+        assert job["status"] == "zzz"
+        assert job["progress"] == 0.5
+
     def test_expected_status_uses_value_equality_not_object_identity(self) -> None:
         store = JobStore()
         running_status = "".join(["run", "ning"])
@@ -2352,6 +2838,94 @@ class TestClearExpiredHeavyObjectsSweep:
         assert running is not None
         assert "solver" in running
 
+    def test_sweep_continues_past_non_completed_and_lightweight_jobs(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=1)
+        running_id = store.create_job({"status": "running", "solver": object()})
+        lightweight_id = store.create_job({"status": "completed", "result": {"ok": True}})
+        expired_id = store.create_job(
+            {
+                "status": "completed",
+                "completed_at": 100.0,
+                "heavy_objects_expires_at": 101.0,
+                "solver": object(),
+                "quote_grid": object(),
+            }
+        )
+
+        store._clear_expired_heavy_objects_locked(now=102.0)
+
+        assert "solver" in store.jobs[running_id]
+        assert store.jobs[lightweight_id]["result"] == {"ok": True}
+        assert "solver" not in store.jobs[expired_id]
+        assert "quote_grid" not in store.jobs[expired_id]
+
+    def test_sweep_continues_past_fresh_heavy_job_to_later_expired_job(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=1)
+        with patch("haute.routes._job_store.time.time", return_value=0.0):
+            fresh_id = store.create_job(
+                {
+                    "status": "completed",
+                    "heavy_objects_expires_at": 200.0,
+                    "solver": object(),
+                }
+            )
+            expired_id = store.create_job(
+                {
+                    "status": "completed",
+                    "heavy_objects_expires_at": 100.0,
+                    "solver": object(),
+                }
+            )
+
+        store._clear_expired_heavy_objects_locked(now=101.0)
+
+        assert "solver" in store.jobs[fresh_id]
+        assert "solver" not in store.jobs[expired_id]
+
+    def test_sweep_completed_status_uses_value_equality(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=1)
+        completed_status = "".join(["com", "pleted"])
+        job_id = store.create_job(
+            {
+                "status": completed_status,
+                "heavy_objects_expires_at": 100.0,
+                "solver": object(),
+            }
+        )
+
+        store._clear_expired_heavy_objects_locked(now=101.0)
+
+        assert "solver" not in store.jobs[job_id]
+
+    def test_sweep_ignores_lexically_lower_non_completed_status(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=1)
+        job_id = store.create_job(
+            {
+                "status": "archived",
+                "heavy_objects_expires_at": 100.0,
+                "solver": object(),
+            }
+        )
+
+        store._clear_expired_heavy_objects_locked(now=101.0)
+
+        assert "solver" in store.jobs[job_id]
+
+    def test_sweep_clears_heavy_objects_at_exact_expiry_boundary(self) -> None:
+        store = _job_store_without_cleanup_threads(heavy_object_ttl_seconds=1)
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "heavy_objects_expires_at": 250.0,
+                "solver": object(),
+            }
+        )
+
+        store._clear_expired_heavy_objects_locked(now=250.0)
+
+        assert "solver" not in store.jobs[job_id]
+        assert store.jobs[job_id]["heavy_objects_cleared_at"] == 250.0
+
 
 # ---------------------------------------------------------------------------
 # _schedule_heavy_object_cleanup: race-condition guards
@@ -2394,6 +2968,184 @@ class TestScheduleHeavyObjectCleanupRaces:
         # The factory does record creation, but ``start()`` is what fires it.
         assert all(not getattr(t, "started", False) for t in timers)
 
+    def test_skips_scheduling_when_job_disappeared(self) -> None:
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        store._schedule_heavy_object_cleanup("missing-job", time.time() + 1.0)
+
+        assert "missing-job" not in store._heavy_object_timers
+        assert all(not getattr(t, "started", False) for t in timers)
+
+    def test_due_or_overdue_cleanup_uses_zero_delay(self) -> None:
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        with store._write_lock:
+            store._jobs["job-due"] = {
+                "status": "completed",
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 90.0,
+            }
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store._schedule_heavy_object_cleanup("job-due", 90.0)
+
+        assert len(timers) == 1
+        assert timers[0].delay == 0.0
+        assert timers[0].started is True
+
+    def test_future_cleanup_delay_uses_subtraction(self) -> None:
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        with store._write_lock:
+            store._jobs["job-future"] = {
+                "status": "completed",
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 150.0,
+            }
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store._schedule_heavy_object_cleanup("job-future", 150.0)
+
+        assert len(timers) == 1
+        assert timers[0].delay == pytest.approx(50.0)
+        assert timers[0].started is True
+
+    @pytest.mark.parametrize("status", ["archived", "zzz"])
+    def test_skips_scheduling_for_non_completed_statuses_by_equality(
+        self,
+        status: str,
+    ) -> None:
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        with store._write_lock:
+            store._jobs[f"job-{status}"] = {
+                "status": status,
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 150.0,
+            }
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store._schedule_heavy_object_cleanup(f"job-{status}", 150.0)
+
+        assert f"job-{status}" not in store._heavy_object_timers
+        assert all(not getattr(t, "started", False) for t in timers)
+
+    def test_job_specific_cleanup_ignores_missing_job(self) -> None:
+        store = _job_store_without_cleanup_threads()
+
+        store._clear_expired_heavy_objects(job_id="missing-job", timer=object())
+
+        assert store.jobs == {}
+
+    def test_job_specific_cleanup_matches_timer_by_identity(self) -> None:
+        class EqualTimer:
+            cancelled = False
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+            def __eq__(self, _other: object) -> bool:
+                return True
+
+        stored_timer = EqualTimer()
+        callback_timer = EqualTimer()
+        store = _job_store_without_cleanup_threads()
+        with store._write_lock:
+            store._jobs["job-fresh"] = {
+                "status": "completed",
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 200.0,
+            }
+            store._heavy_object_timers["job-fresh"] = stored_timer
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store._clear_expired_heavy_objects(job_id="job-fresh", timer=callback_timer)
+
+        assert store._heavy_object_timers["job-fresh"] is stored_timer
+        assert stored_timer.cancelled is False
+
+    def test_job_specific_cleanup_clears_at_exact_expiry_boundary(self) -> None:
+        timer = type("T", (), {"cancel": lambda self: setattr(self, "cancelled", True)})()
+        store = _job_store_without_cleanup_threads()
+        with store._write_lock:
+            store._jobs["job-due"] = {
+                "status": "completed",
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 100.0,
+            }
+            store._heavy_object_timers["job-due"] = timer
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store._clear_expired_heavy_objects(job_id="job-due", timer=timer)
+
+        assert "solver" not in store.jobs["job-due"]
+        assert "job-due" not in store._heavy_object_timers
+
+    def test_job_specific_cleanup_completed_status_uses_value_equality(self) -> None:
+        timer = type("T", (), {"cancel": lambda self: setattr(self, "cancelled", True)})()
+        store = _job_store_without_cleanup_threads()
+        completed_status = "".join(["com", "pleted"])
+        with store._write_lock:
+            store._jobs["job-due"] = {
+                "status": completed_status,
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 100.0,
+            }
+            store._heavy_object_timers["job-due"] = timer
+
+        with patch("haute.routes._job_store.time.time", return_value=101.0):
+            store._clear_expired_heavy_objects(job_id="job-due", timer=timer)
+
+        assert "solver" not in store.jobs["job-due"]
+
+    def test_job_specific_cleanup_ignores_lexically_lower_non_completed_status(
+        self,
+    ) -> None:
+        timer = type("T", (), {"cancel": lambda self: setattr(self, "cancelled", True)})()
+        store = _job_store_without_cleanup_threads()
+        with store._write_lock:
+            store._jobs["job-archived"] = {
+                "status": "archived",
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 100.0,
+            }
+            store._heavy_object_timers["job-archived"] = timer
+
+        with patch("haute.routes._job_store.time.time", return_value=101.0):
+            store._clear_expired_heavy_objects(job_id="job-archived", timer=timer)
+
+        assert "solver" in store.jobs["job-archived"]
+
+    def test_job_specific_cleanup_ignores_lexically_higher_non_completed_status(
+        self,
+    ) -> None:
+        timer = type("T", (), {"cancel": lambda self: setattr(self, "cancelled", True)})()
+        store = _job_store_without_cleanup_threads()
+        with store._write_lock:
+            store._jobs["job-zzz"] = {
+                "status": "zzz",
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": 100.0,
+            }
+            store._heavy_object_timers["job-zzz"] = timer
+
+        with patch("haute.routes._job_store.time.time", return_value=101.0):
+            store._clear_expired_heavy_objects(job_id="job-zzz", timer=timer)
+
+        assert "solver" in store.jobs["job-zzz"]
+
     def test_cancels_existing_timer_when_no_heavy_keys_remain(self) -> None:
         """When the cleanup timer fires for a job that no longer has heavy
         fields (e.g. another path slimmed them already), cancel any leftover
@@ -2417,7 +3169,9 @@ class TestScheduleHeavyObjectCleanupRaces:
         assert getattr(prev_timer, "cancelled", False) is True
         assert "job-cleared" not in store._heavy_object_timers
 
-    def test_skips_scheduling_when_expires_at_was_rescheduled_by_another_thread(self) -> None:
+    def test_skips_scheduling_when_expires_at_was_rescheduled_later_by_another_thread(
+        self,
+    ) -> None:
         """If another thread updated the job's expiry between the caller
         deciding to schedule and the lock acquisition, the caller's
         ``expires_at`` is stale — the other thread will (or has already)
@@ -2433,11 +3187,53 @@ class TestScheduleHeavyObjectCleanupRaces:
                 "status": "completed",
                 "solver": object(),
                 "created_at": time.time(),
-                "_haute_heavy_objects_expires_at": actual_expires,
+                "heavy_objects_expires_at": actual_expires,
             }
 
-        stale_expires = actual_expires - 30.0  # caller has a stale value
+        stale_expires = actual_expires + 30.0  # caller has a stale value
         store._schedule_heavy_object_cleanup("job-rescheduled", stale_expires)
 
         # The race guard at line 254-255 fires: no timer is registered.
         assert "job-rescheduled" not in store._heavy_object_timers
+
+    def test_skips_scheduling_when_expires_at_was_rescheduled_earlier_by_another_thread(
+        self,
+    ) -> None:
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        actual_expires = time.time() + 60.0
+        with store._write_lock:
+            store._jobs["job-rescheduled-earlier"] = {
+                "status": "completed",
+                "solver": object(),
+                "created_at": time.time(),
+                "heavy_objects_expires_at": actual_expires,
+            }
+
+        stale_expires = actual_expires - 30.0
+        store._schedule_heavy_object_cleanup("job-rescheduled-earlier", stale_expires)
+
+        assert "job-rescheduled-earlier" not in store._heavy_object_timers
+
+    def test_scheduling_uses_expiry_value_equality_not_identity(self) -> None:
+        timers: list[object] = []
+        store = JobStore(heavy_object_timer_factory=_manual_timer_factory(timers))
+
+        stored_expires = float("123.5")
+        caller_expires = float("123.5")
+        assert stored_expires == caller_expires
+        assert stored_expires is not caller_expires
+        with store._write_lock:
+            store._jobs["job-equal-expiry"] = {
+                "status": "completed",
+                "solver": object(),
+                "created_at": 50.0,
+                "heavy_objects_expires_at": stored_expires,
+            }
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store._schedule_heavy_object_cleanup("job-equal-expiry", caller_expires)
+
+        assert len(timers) == 1
+        assert timers[0].started is True

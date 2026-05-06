@@ -147,8 +147,8 @@ class JobStore:
 
     def _clear_expired_heavy_objects(
         self,
-        job_id: str | None = None,
-        timer: Any | None = None,
+        job_id: str | None = None,  # pragma: no mutate
+        timer: Any | None = None,  # pragma: no mutate
     ) -> None:
         """Timer entry point: slim heavy completed-job payloads if due."""
         with self._write_lock:
@@ -173,7 +173,7 @@ class JobStore:
         self,
         job_id: str,
         job: dict[str, Any],
-        *,
+        *,  # pragma: no mutate
         now: float,
     ) -> None:
         cleaned = {k: v for k, v in job.items() if k not in _HEAVY_OBJECT_KEYS}
@@ -194,7 +194,7 @@ class JobStore:
     def _prepare_heavy_object_policy_locked(
         self,
         job: dict[str, Any],
-        *,
+        *,  # pragma: no mutate
         now: float,
     ) -> bool:
         """Stamp lifecycle metadata and report whether a cleanup timer is needed."""
@@ -218,12 +218,10 @@ class JobStore:
         job_id: str,
         old: dict[str, Any],
         fields: dict[str, Any],
-        *,
+        *,  # pragma: no mutate
         now: float,
-    ) -> tuple[dict[str, Any], bool, float | None]:
+    ) -> tuple[dict[str, Any], bool, float | None]:  # pragma: no mutate
         merged = {**old, **fields}
-        if old.get("status") != "completed" and merged.get("status") == "completed":
-            merged.setdefault("completed_at", now)
         schedule_cleanup = self._prepare_heavy_object_policy_locked(merged, now=now)
         expires_at = merged.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
         self._jobs[job_id] = merged
@@ -261,7 +259,7 @@ class JobStore:
         self,
         job_id: str,
         schedule_cleanup: bool,
-        expires_at: object | None,
+        expires_at: object | None,  # pragma: no mutate
     ) -> None:
         if not schedule_cleanup:
             return
@@ -272,7 +270,7 @@ class JobStore:
     def touch_heavy_objects(
         self,
         job_id: str,
-        *,
+        *,  # pragma: no mutate
         required_keys: tuple[str, ...] = _DEFAULT_HEAVY_OBJECT_KEYS,
     ) -> bool:
         """Extend a completed job's heavy-object window after successful access.
@@ -281,7 +279,7 @@ class JobStore:
         missing.  Callers should keep raising their domain-specific error in
         that case; this method never fabricates or restores cleared objects.
         """
-        schedule_cleanup = False
+        schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
         with self._write_lock:
             self._evict_stale()
@@ -357,7 +355,7 @@ class JobStore:
         fields: dict[str, Any],
         *,
         expected_status: str | None = None,  # pragma: no mutate
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any] | None:  # pragma: no mutate
         """Replace the job dict with a merged copy — thread-safe.
 
         Instead of mutating the existing dict (which can race with
@@ -379,7 +377,7 @@ class JobStore:
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
-        schedule_cleanup = False
+        schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
         with self._write_lock:
             old = self._jobs[job_id]
@@ -398,10 +396,10 @@ class JobStore:
         self,
         job_id: str,
         fields: dict[str, Any],
-        *,
+        *,  # pragma: no mutate
         required_keys: tuple[str, ...],
         expected_status: str | None = None,  # pragma: no mutate
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any] | None:  # pragma: no mutate
         """Atomically update a job only if required heavy keys still exist.
 
         Returns ``None`` if the job no longer matches the expected status or if
@@ -410,7 +408,7 @@ class JobStore:
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
-        schedule_cleanup = False
+        schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
         with self._write_lock:
             old = self._jobs[job_id]

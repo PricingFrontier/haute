@@ -12,6 +12,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, RootModel, field_validator
 
+from haute._types import GraphEdge as GraphEdge  # noqa: F401
+from haute._types import GraphNode as GraphNode  # noqa: F401
+from haute._types import NodeData as GraphNodeData  # noqa: F401
+from haute._types import PipelineGraph as Graph  # noqa: F401
+
 
 def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
     """Validate one ``(min, max)`` frontier-range value.
@@ -38,11 +43,6 @@ def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, fl
     if min_value > max_value:
         raise ValueError(f"{field} min must be less than or equal to max.")
     return min_value, max_value
-
-from haute._types import GraphEdge as GraphEdge  # noqa: F401
-from haute._types import GraphNode as GraphNode  # noqa: F401
-from haute._types import NodeData as GraphNodeData  # noqa: F401
-from haute._types import PipelineGraph as Graph  # noqa: F401
 
 
 class ColumnInfo(BaseModel):

@@ -897,7 +897,10 @@ class OptimiserSolveService:
             try:
                 lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
                 source_lf = self._resolve_data_source(
-                    lazy_outputs, config, body.node_id, job_id,
+                    lazy_outputs,
+                    config,
+                    body.node_id,
+                    job_id,
                 )
                 constraint_cols, scored_lf = self._validate_and_project(
                     source_lf,
@@ -978,7 +981,10 @@ class OptimiserSolveService:
                 try:
                     lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
                     source_lf = self._resolve_data_source(
-                        lazy_outputs, config, body.node_id, job_id,
+                        lazy_outputs,
+                        config,
+                        body.node_id,
+                        job_id,
                     )
                     constraint_cols, scored_lf = self._validate_and_project(
                         source_lf,
