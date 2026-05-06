@@ -11,6 +11,7 @@ function makeMlflow(overrides: Partial<MlflowBrowserState> = {}): MlflowBrowserS
     runs: [],
     models: [],
     modelVersions: [],
+    modelVersionsFor: "",
     loadingModels: false,
     loadingExperiments: false,
     loadingRuns: false,
@@ -66,6 +67,15 @@ describe("RegisteredModelPicker", () => {
     render(<RegisteredModelPicker config={{ registered_model: "my-model" }} onUpdate={vi.fn()} mlflow={makeMlflow()} />)
     expect(screen.getByText("Version")).toBeInTheDocument()
     expect(screen.getByText("latest")).toBeInTheDocument()
+  })
+
+  it("only shows versions loaded for the selected model", () => {
+    const mlflow = makeMlflow({
+      modelVersionsFor: "old-model",
+      modelVersions: [{ version: "4", run_id: "r4", status: "READY", description: "" }],
+    })
+    render(<RegisteredModelPicker config={{ registered_model: "new-model" }} onUpdate={vi.fn()} mlflow={mlflow} />)
+    expect(screen.queryByText(/v4/)).not.toBeInTheDocument()
   })
 
   it("does not show Version select when no model is selected", () => {

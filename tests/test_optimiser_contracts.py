@@ -311,7 +311,7 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
     ).model_dump()
     captured: dict[str, object] = {}
 
-    def capture_launch(job_id, node_id, config, mode, quote_grid, factors_df):
+    def capture_launch(job_id, node_id, config, mode, quote_grid, factors_df, **kwargs):
         captured["job_id"] = job_id
         captured["mode"] = mode
         captured["factors_df"] = factors_df

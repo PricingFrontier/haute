@@ -541,6 +541,7 @@ class TestParserSourceTypeMapping:
                 "source_type": "file",
                 "artifact_path": "opt.json",
                 "version_column": "__v__",
+                "optimised_value_column": "selected_price_factor",
                 "registered_model": "m",
                 "version": "2",
                 "experiment_id": "eid",
@@ -555,6 +556,7 @@ class TestParserSourceTypeMapping:
         assert bad == [], f"Unrecognized keys: {bad}"
         assert config["experiment_name"] == "exp"
         assert config["run_name"] == "rn"
+        assert config["optimised_value_column"] == "selected_price_factor"
 
     def test_optimiser_copies_data_input_and_banding_source(self):
         """data_input and banding_source should be copied when present."""

@@ -27,6 +27,7 @@ from haute.routes._optimiser_service import (
     _DEFAULT_TIMEOUT,
     _ESTIMATE_JOB_TYPE,
     _JOB_TYPE_KEY,
+    _RATEBOOK_FACTOR_LEVEL_ORDER_KEY,
     OptimiserSolveService,
     _auto_frontier_ranges_from_config,
     _cleanup_apply_result_artifact,
@@ -287,12 +288,38 @@ def _frontier_point_or_raise(
     return points[point_index], frontier_data
 
 
+def _add_frontier_point_lambda(
+    lambdas: dict[str, float],
+    name: Any,
+    value: Any,
+    *,
+    field: str,
+) -> None:
+    if not isinstance(name, str) or not name:
+        raise HTTPException(
+            status_code=500,
+            detail="Frontier point data is malformed: lambda names must be non-empty strings",
+        )
+    parsed_value = _as_finite_float(value, field=field)
+    existing_value = lambdas.get(name)
+    if existing_value is not None and abs(existing_value - parsed_value) > 1e-9:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Frontier point data is malformed: conflicting lambda for {name!r}",
+        )
+    lambdas[name] = parsed_value
+
+
 def _frontier_point_lambdas(point: dict[str, Any]) -> dict[str, float]:
-    lambdas = {
-        k.removeprefix("lambda_"): float(v)
-        for k, v in point.items()
-        if k.startswith("lambda_") and not isinstance(v, bool) and isinstance(v, int | float)
-    }
+    lambdas: dict[str, float] = {}
+    for key, value in point.items():
+        if key.startswith("lambda_"):
+            _add_frontier_point_lambda(
+                lambdas,
+                key.removeprefix("lambda_"),
+                value,
+                field=key,
+            )
     if not lambdas:
         raise HTTPException(status_code=400, detail="Frontier point has no lambda values")
     return lambdas
@@ -584,6 +611,7 @@ def _materialised_ratebook_result_dict(
     result_dict: dict[str, Any],
     solve_result: SolveResultLike,
     factor_level_counts: dict[str, dict[str, int]],
+    factor_level_order: dict[str, list[str]],
 ) -> dict[str, Any]:
     materialised = dict(result_dict)
     materialised.update(
@@ -599,6 +627,7 @@ def _materialised_ratebook_result_dict(
             "factor_tables": _serialise_ratebook_factor_tables(
                 getattr(solve_result, "factor_tables", None),
                 factor_level_counts,
+                factor_level_order,
             ),
             "history": None,
         }
@@ -677,10 +706,12 @@ def _materialise_ratebook_frontier_point(
     factor_level_counts = job.get("factor_level_counts")
     if not isinstance(factor_level_counts, dict):
         factor_level_counts = _ratebook_factor_level_counts(factors_df, factor_columns)
+    factor_level_order = job.get(_RATEBOOK_FACTOR_LEVEL_ORDER_KEY) or {}
     materialised = _materialised_ratebook_result_dict(
         result_dict,
         solve_result,
         factor_level_counts,
+        factor_level_order,
     )
     updated_job = _store.atomic_update(
         job_id,

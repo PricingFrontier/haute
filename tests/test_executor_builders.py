@@ -42,6 +42,7 @@ class TestNodeBuildContextProperties:
         return NodeBuildContext(
             node=node,
             source_names=[],
+            source_ids=[],
             row_limit=None,
             node_map=None,
             orig_source_names=None,

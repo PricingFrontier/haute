@@ -1,5 +1,5 @@
 {
-  "mode": "online",
+  "mode": "ratebook",
   "objective": "expected_margin",
   "constraints": {
     "conversion_prediction": {
@@ -24,5 +24,17 @@
     }
   },
   "frontier_min": 189.03746032714844,
-  "frontier_max": 99695.75
+  "frontier_max": 99695.75,
+  "banding_source": "age_veh_banding",
+  "factor_columns": [
+    [
+      "channel_band"
+    ],
+    [
+      "proposer_age_band"
+    ],
+    [
+      "vehicle_age_band"
+    ]
+  ]
 }

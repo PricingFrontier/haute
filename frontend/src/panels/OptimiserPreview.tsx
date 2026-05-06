@@ -22,7 +22,9 @@ import { useDragResize } from "../hooks/useDragResize"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { MODEL_COLORS } from "../theme/colors"
+import { bandingLevelOrderForOptimiser } from "../utils/banding"
 import type { ApplyOptimiserResponse, FrontierData, OptimiserSolveResult } from "../api/types"
+import type { SimpleEdge, SimpleNode } from "./editors"
 import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
@@ -54,6 +56,8 @@ export type OptimiserPreviewData = {
 interface OptimiserPreviewProps {
   data: OptimiserPreviewData
   nodeId: string
+  allNodes: SimpleNode[]
+  edges: SimpleEdge[]
 }
 
 type TabKey = "frontier" | "summary" | "rates" | "convergence" | "export"
@@ -130,7 +134,7 @@ function HeaderPointStepper({
   )
 }
 
-export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps) {
+export default function OptimiserPreview({ data, nodeId, allNodes, edges }: OptimiserPreviewProps) {
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
   const displayData = liveData ?? data
   const { result, jobId, constraints } = displayData
@@ -164,6 +168,10 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
   const requestedRatesRef = useRef<Map<string, number>>(new Map())
   const ratesRequestSeqRef = useRef(0)
   const terminalDetailBlocksActions = resultDetail.status === "loading" || resultDetail.status === "loaded"
+  const factorLevelOrder = useMemo(
+    () => bandingLevelOrderForOptimiser(nodeId, allNodes, edges),
+    [nodeId, allNodes, edges],
+  )
 
   // ── Frontier point selection ──
   const frontier = displayData.frontier
@@ -471,7 +479,7 @@ export default function OptimiserPreview({ data, nodeId }: OptimiserPreviewProps
 
         {activeTab === "rates" && (
           ratebookFactorTables ? (
-            <RatebookRatesTab factorTables={ratebookFactorTables} />
+            <RatebookRatesTab factorTables={ratebookFactorTables} factorLevelOrder={factorLevelOrder} />
           ) : (
             <RatebookRatesPending detail={ratesDetail} />
           )

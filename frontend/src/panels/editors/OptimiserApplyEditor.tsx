@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { InputSourcesBar, MlflowStatusBadge, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
+import { optimiserSelectionMode } from "../../utils/mlflowOptimiser"
 import { readJson } from "../../api/client"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 
@@ -15,6 +16,16 @@ type ArtifactMeta = {
   lambdas: Record<string, number>
   constraints: Record<string, Record<string, number>>
   factor_tables?: Record<string, unknown[]>
+}
+
+type LoadedArtifactMeta = {
+  artifactPath: string
+  data: ArtifactMeta
+}
+
+type ArtifactLoadError = {
+  artifactPath: string
+  message: string
 }
 
 export default function OptimiserApplyEditor({
@@ -33,27 +44,80 @@ export default function OptimiserApplyEditor({
   const sourceType = configField(config, "sourceType", "file")
   const artifactPath = configField(config, "artifact_path", "")
   const versionColumn = configField(config, "version_column", "__optimiser_version__")
+  const optimisedValueColumn = configField(config, "optimised_value_column", "")
+  const ratebookInput = configField(config, "ratebook_input", "")
+  const optimiserMode = configField(config, "optimiser_mode", "")
 
-  const [meta, setMeta] = useState<ArtifactMeta | null>(null)
-  const [loadError, setLoadError] = useState("")
+  const [meta, setMeta] = useState<LoadedArtifactMeta | null>(null)
+  const [loadError, setLoadError] = useState<ArtifactLoadError | null>(null)
 
   const mlflow = useMlflowBrowser({ runTag: "optimiser", initialExpId: configField(config, "experiment_id", "") })
+  const loadedMeta = sourceType === "file" && meta?.artifactPath === artifactPath ? meta.data : null
+  const activeLoadError = sourceType === "file" && artifactPath && loadError?.artifactPath === artifactPath
+    ? loadError.message
+    : ""
+  const selectedRunId = configField(config, "run_id", "")
+  const selectedRun = useMemo(
+    () => (sourceType === "run" ? mlflow.runs.find((run) => run.run_id === selectedRunId) : undefined),
+    [sourceType, mlflow.runs, selectedRunId],
+  )
+  const selectedRegisteredModel = configField(config, "registered_model", "")
+  const registeredModelVersions = useMemo(
+    () => (mlflow.modelVersionsFor === selectedRegisteredModel ? mlflow.modelVersions : []),
+    [mlflow.modelVersionsFor, mlflow.modelVersions, selectedRegisteredModel],
+  )
+  const selectedVersion = configField(config, "version", "latest")
+  const selectedRegisteredVersion = useMemo(() => {
+    if (sourceType !== "registered") return undefined
+    if (selectedVersion === "latest") return registeredModelVersions[0]
+    return registeredModelVersions.find((version) => version.version === selectedVersion)
+  }, [sourceType, selectedVersion, registeredModelVersions])
+  const resolvedOptimiserMode = useMemo(() => {
+    if (sourceType === "file" && loadedMeta) return loadedMeta.mode
+    if (sourceType === "run" && selectedRun !== undefined) return optimiserSelectionMode(selectedRun)
+    if (sourceType === "registered" && selectedRegisteredVersion !== undefined) {
+      return optimiserSelectionMode(selectedRegisteredVersion)
+    }
+    return ""
+  }, [sourceType, loadedMeta, selectedRun, selectedRegisteredVersion])
+  const isRatebookOptimiser = resolvedOptimiserMode === "ratebook"
+  const showRatebookInput = isRatebookOptimiser && (inputSources.length > 1 || Boolean(ratebookInput))
+  const ratebookInputSources = useMemo(
+    () => (showRatebookInput ? inputSources : []),
+    [showRatebookInput, inputSources],
+  )
+  const hasStaleRatebookInput = Boolean(ratebookInput)
+    && !ratebookInputSources.some((source) => source.sourceNodeId === ratebookInput)
+
+  // ``optimiser_mode`` is denormalised into config so codegen can wire up the
+  // ratebook input without re-reading the artifact (codegen has no MLflow
+  // access).  Mirror it from the resolved artifact metadata whenever it
+  // changes; the equality guards keep this from triggering a write loop.
+  useEffect(() => {
+    if (resolvedOptimiserMode !== "online" && resolvedOptimiserMode !== "ratebook") return
+    const updates: Record<string, unknown> = {}
+    if (optimiserMode !== resolvedOptimiserMode) {
+      updates.optimiser_mode = resolvedOptimiserMode
+    }
+    if (resolvedOptimiserMode === "online" && ratebookInput) {
+      updates.ratebook_input = ""
+    }
+    if (Object.keys(updates).length > 0) onUpdate(updates)
+  }, [optimiserMode, onUpdate, ratebookInput, resolvedOptimiserMode])
 
   // Load artifact metadata when file path changes
   useEffect(() => {
     if (sourceType !== "file" || !artifactPath) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- cleanup path: clear metadata when source type changes or path is empty
-      if (sourceType === "file") { setMeta(null); setLoadError("") }
       return
     }
     readJson<ArtifactMeta>(artifactPath)
       .then((data) => {
-        setMeta(data)
-        setLoadError("")
+        setMeta({ artifactPath, data })
+        setLoadError(null)
       })
       .catch((e: unknown) => {
         console.warn("Artifact load failed:", e)
-        setLoadError("Could not load artifact file")
+        setLoadError({ artifactPath, message: "Could not load artifact file" })
         setMeta(null)
       })
   }, [artifactPath, sourceType])
@@ -65,13 +129,42 @@ export default function OptimiserApplyEditor({
       {/* MLflow Status (shown when not in file mode) */}
       {sourceType !== "file" && <MlflowStatusBadge />}
 
+      {showRatebookInput && (
+        <div>
+          <label
+            htmlFor="optimiser-apply-ratebook-input"
+            className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Ratebook Input
+          </label>
+          <select
+            id="optimiser-apply-ratebook-input"
+            className="w-full px-2.5 py-1.5 rounded-lg text-[12px] focus:outline-none focus:ring-2"
+            style={INPUT_STYLE}
+            value={ratebookInput}
+            onChange={(e) => onUpdate("ratebook_input", e.target.value)}
+          >
+            <option value="">First connected input</option>
+            {hasStaleRatebookInput && (
+              <option value={ratebookInput}>Missing input ({ratebookInput})</option>
+            )}
+            {ratebookInputSources.map((source) => (
+              <option key={source.edgeId} value={source.sourceNodeId}>
+                {source.sourceLabel || source.varName}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {/* Source Type Toggle */}
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Artifact Source</label>
         <div className="mt-1">
           <ToggleButtonGroup
             value={sourceType}
-            onChange={(v) => onUpdate("sourceType", v)}
+            onChange={(v) => onUpdate({ sourceType: v, optimiser_mode: "" })}
             options={[
               { key: "file", label: "File Path" },
               { key: "registered", label: "Registered" },
@@ -114,7 +207,7 @@ export default function OptimiserApplyEditor({
           onUpdate={onUpdate}
           mlflow={mlflow}
           renderRunLabel={(run) => {
-            const mode = run.metrics.converged !== undefined ? (run.metrics.cd_iterations !== undefined ? "ratebook" : "online") : ""
+            const mode = optimiserSelectionMode(run)
             return `${run.run_name || run.run_id.slice(0, 8)}${mode ? ` [${mode}]` : ""}${run.metrics.total_objective !== undefined ? ` obj=${run.metrics.total_objective.toFixed(2)}` : ""}`
           }}
         />
@@ -138,14 +231,32 @@ export default function OptimiserApplyEditor({
         </p>
       </div>
 
+      {/* Optimised Value Column */}
+      <div>
+        <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>
+          Optimised Value Column
+        </label>
+        <input
+          type="text"
+          className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono focus:outline-none focus:ring-2"
+          style={INPUT_STYLE}
+          value={optimisedValueColumn}
+          onChange={(e) => onUpdate("optimised_value_column", e.target.value)}
+          placeholder="optimised_value"
+        />
+        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+          Column containing the selected optimiser value
+        </p>
+      </div>
+
       {/* Artifact metadata display (file mode) */}
-      {sourceType === "file" && loadError && (
+      {sourceType === "file" && activeLoadError && (
         <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-elevated)', border: `1px solid ${accentColor}` }}>
-          <div className="text-[11px]" style={{ color: accentColor }}>{loadError}</div>
+          <div className="text-[11px]" style={{ color: accentColor }}>{activeLoadError}</div>
         </div>
       )}
 
-      {sourceType === "file" && meta && <ArtifactMetaPanel meta={meta} accentColor={accentColor} />}
+      {sourceType === "file" && loadedMeta && <ArtifactMetaPanel meta={loadedMeta} accentColor={accentColor} />}
     </div>
   )
 }

@@ -602,6 +602,7 @@ export interface MlflowModelVersion {
   run_id: string
   status: string
   description: string
+  params?: Record<string, string>
   creation_timestamp?: number | null
 }
 

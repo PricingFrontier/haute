@@ -7,9 +7,22 @@ import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/re
 
 const mockMlflow = {
   experiments: [] as { experiment_id: string; name: string }[],
-  runs: [] as { run_id: string; run_name: string; metrics: Record<string, number>; artifacts: string[] }[],
+  runs: [] as {
+    run_id: string
+    run_name: string
+    metrics: Record<string, number>
+    params?: Record<string, string>
+    artifacts: string[]
+  }[],
   models: [] as { name: string; latest_versions: { version: string; status: string; run_id: string }[] }[],
-  modelVersions: [] as { version: string; run_id: string; status: string; description: string }[],
+  modelVersions: [] as {
+    version: string
+    run_id: string
+    status: string
+    description: string
+    params?: Record<string, string>
+  }[],
+  modelVersionsFor: "",
   loadingExperiments: false,
   loadingRuns: false,
   loadingModels: false,
@@ -70,7 +83,7 @@ import OptimiserApplyEditor from "../OptimiserApplyEditor"
 const defaultProps = () => ({
   config: {} as Record<string, unknown>,
   onUpdate: vi.fn(),
-  inputSources: [] as { varName: string; sourceLabel: string; edgeId: string }[],
+  inputSources: [] as { sourceNodeId: string; varName: string; sourceLabel: string; edgeId: string }[],
   accentColor: "var(--warning-strong)",
 })
 
@@ -79,6 +92,7 @@ function resetMlflow() {
   mockMlflow.runs = []
   mockMlflow.models = []
   mockMlflow.modelVersions = []
+  mockMlflow.modelVersionsFor = ""
   mockMlflow.loadingExperiments = false
   mockMlflow.loadingRuns = false
   mockMlflow.loadingModels = false
@@ -137,14 +151,14 @@ describe("OptimiserApplyEditor", () => {
     const props = defaultProps()
     render(<OptimiserApplyEditor {...props} />)
     fireEvent.click(screen.getByText("Registered"))
-    expect(props.onUpdate).toHaveBeenCalledWith("sourceType", "registered")
+    expect(props.onUpdate).toHaveBeenCalledWith({ sourceType: "registered", optimiser_mode: "" })
   })
 
   it("calls onUpdate when toggling source type to run", () => {
     const props = defaultProps()
     render(<OptimiserApplyEditor {...props} />)
     fireEvent.click(screen.getByText("Experiment Run"))
-    expect(props.onUpdate).toHaveBeenCalledWith("sourceType", "run")
+    expect(props.onUpdate).toHaveBeenCalledWith({ sourceType: "run", optimiser_mode: "" })
   })
 
   // 3. File mode: shows artifact_path text input
@@ -282,6 +296,7 @@ describe("OptimiserApplyEditor", () => {
 
   // 12. Registered mode: version dropdown appears when model selected
   it("shows version dropdown when model is selected in registered mode", () => {
+    mockMlflow.modelVersionsFor = "opt-model"
     mockMlflow.modelVersions = [
       { version: "2", run_id: "r2", status: "READY", description: "stable" },
     ]
@@ -329,6 +344,26 @@ describe("OptimiserApplyEditor", () => {
     const colInput = screen.getByDisplayValue("__optimiser_version__")
     fireEvent.change(colInput, { target: { value: "my_version" } })
     expect(props.onUpdate).toHaveBeenCalledWith("version_column", "my_version")
+  })
+
+  it("uses configured optimised value column and calls onUpdate", () => {
+    const props = defaultProps()
+    props.config = { optimised_value_column: "selected_price_factor" }
+    render(<OptimiserApplyEditor {...props} />)
+    expect(screen.getByText("Optimised Value Column")).toBeInTheDocument()
+    const input = screen.getByDisplayValue("selected_price_factor")
+    fireEvent.change(input, { target: { value: "final_price_factor" } })
+    expect(props.onUpdate).toHaveBeenCalledWith("optimised_value_column", "final_price_factor")
+  })
+
+  it("optimised value column input is present and calls onUpdate", () => {
+    const props = defaultProps()
+    render(<OptimiserApplyEditor {...props} />)
+    expect(screen.getByText("Optimised Value Column")).toBeInTheDocument()
+    const colInput = screen.getByPlaceholderText("optimised_value")
+    expect(colInput).toHaveValue("")
+    fireEvent.change(colInput, { target: { value: "selected_factor" } })
+    expect(props.onUpdate).toHaveBeenCalledWith("optimised_value_column", "selected_factor")
   })
 
   // 16. MlflowStatusBadge hidden in file mode
@@ -383,12 +418,188 @@ describe("OptimiserApplyEditor", () => {
   it("renders InputSourcesBar with input sources", () => {
     const props = defaultProps()
     props.inputSources = [
-      { varName: "df", sourceLabel: "scored_data", edgeId: "e1" },
+      { sourceNodeId: "scored-data", varName: "df", sourceLabel: "scored_data", edgeId: "e1" },
     ]
     render(<OptimiserApplyEditor {...props} />)
     const bar = screen.getByTestId("input-sources")
     expect(bar).toBeInTheDocument()
     expect(bar.textContent).toBe("1")
+  })
+
+  it("shows ratebook input selector for ratebook file artifacts", async () => {
+    const meta = {
+      version: "v3",
+      created_at: "2026-03-01T09:00:00Z",
+      mode: "ratebook",
+      objective: "premium_vol",
+      lambdas: {},
+      constraints: {},
+      factor_tables: {
+        age_table: [{ level: "young" }],
+      },
+    }
+    mockFetchResponse(meta)
+    const props = defaultProps()
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    props.config = { artifact_path: "ratebook.json", ratebook_input: "age-banding-node" }
+    render(<OptimiserApplyEditor {...props} />)
+
+    const select = await screen.findByLabelText("Ratebook Input")
+    expect(select).toHaveValue("age-banding-node")
+    fireEvent.change(select, { target: { value: "optimiser-input-node" } })
+    expect(props.onUpdate).toHaveBeenCalledWith("ratebook_input", "optimiser-input-node")
+  })
+
+  it("hides ratebook input selector for online file artifacts", async () => {
+    const meta = {
+      version: "v1",
+      created_at: "2026-02-01T12:00:00Z",
+      mode: "online",
+      objective: "combined_loss",
+      lambdas: { age_factor: 1.2345 },
+      constraints: {},
+    }
+    mockFetchResponse(meta)
+    const props = defaultProps()
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    props.config = { artifact_path: "online.json", ratebook_input: "age-banding-node" }
+    render(<OptimiserApplyEditor {...props} />)
+
+    await screen.findByText("Loaded Artifact")
+    expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
+  })
+
+  it("hides ratebook input selector while replacement file artifact metadata is loading", async () => {
+    const ratebookMeta = {
+      version: "v3",
+      created_at: "2026-03-01T09:00:00Z",
+      mode: "ratebook",
+      objective: "premium_vol",
+      lambdas: {},
+      constraints: {},
+      factor_tables: {
+        age_table: [{ level: "young" }],
+      },
+    }
+    mockFetchResponse(ratebookMeta)
+    const props = defaultProps()
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    props.config = { artifact_path: "ratebook.json", ratebook_input: "age-banding-node" }
+    const { rerender } = render(<OptimiserApplyEditor {...props} />)
+
+    expect(await screen.findByLabelText("Ratebook Input")).toBeInTheDocument()
+
+    // Use a deferred promise so we can resolve it explicitly during cleanup
+    // rather than leaving an unresolved Promise referenced by the component.
+    let resolvePending: (value: Response) => void = () => {}
+    const pending = new Promise<Response>((resolve) => {
+      resolvePending = resolve
+    })
+    ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
+    props.config = { artifact_path: "online.json", ratebook_input: "age-banding-node" }
+    rerender(<OptimiserApplyEditor {...props} />)
+
+    expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
+
+    resolvePending(new Response("{}", { status: 200 }))
+  })
+
+  it("shows stale ratebook input selection for ratebook file artifacts", async () => {
+    const ratebookMeta = {
+      version: "v3",
+      created_at: "2026-03-01T09:00:00Z",
+      mode: "ratebook",
+      objective: "premium_vol",
+      lambdas: {},
+      constraints: {},
+      factor_tables: {
+        age_table: [{ level: "young" }],
+      },
+    }
+    const props = defaultProps()
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+    ]
+    props.config = { artifact_path: "ratebook.json", ratebook_input: "deleted-banding-node" }
+    mockFetchResponse(ratebookMeta)
+    render(<OptimiserApplyEditor {...props} />)
+
+    const select = await screen.findByLabelText("Ratebook Input")
+    expect(select).toHaveValue("deleted-banding-node")
+    expect(screen.getByRole("option", { name: "Missing input (deleted-banding-node)" })).toBeInTheDocument()
+    fireEvent.change(select, { target: { value: "" } })
+    expect(props.onUpdate).toHaveBeenCalledWith("ratebook_input", "")
+  })
+
+  it("hides stale ratebook input selection for online file artifacts", async () => {
+    const onlineMeta = {
+      version: "v3",
+      created_at: "2026-03-01T09:00:00Z",
+      mode: "online",
+      objective: "premium_vol",
+      lambdas: {},
+      constraints: {},
+    }
+    mockFetchResponse(onlineMeta)
+    const props = defaultProps()
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+    ]
+    props.config = { artifact_path: "online.json", ratebook_input: "deleted-banding-node" }
+    render(<OptimiserApplyEditor {...props} />)
+
+    await screen.findByText("Loaded Artifact")
+    expect(screen.queryByRole("option", { name: "Missing input (deleted-banding-node)" })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
   })
 
   it("shows run dropdown when experiment is selected in run mode", () => {
@@ -406,6 +617,240 @@ describe("OptimiserApplyEditor", () => {
     expect(optionTexts.some((t) => t?.includes("opt-run"))).toBe(true)
   })
 
+  it("shows ratebook input selector for selected ratebook MLflow runs", () => {
+    mockMlflow.browseExpId = "exp-1"
+    mockMlflow.runs = [
+      {
+        run_id: "ratebook-run",
+        run_name: "ratebook opt",
+        metrics: { converged: 1, cd_iterations: 5, total_objective: 3.14 },
+        artifacts: [],
+      },
+    ]
+    const props = defaultProps()
+    props.config = { sourceType: "run", run_id: "ratebook-run" }
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    render(<OptimiserApplyEditor {...props} />)
+
+    expect(screen.getByRole("option", { name: /ratebook opt \[ratebook\]/ })).toBeInTheDocument()
+    expect(screen.getByLabelText("Ratebook Input")).toBeInTheDocument()
+  })
+
+  it("uses MLflow run mode params when deciding if selected runs are ratebook", () => {
+    mockMlflow.browseExpId = "exp-1"
+    mockMlflow.runs = [
+      {
+        run_id: "frontier-ratebook-run",
+        run_name: "frontier ratebook opt",
+        metrics: { converged: 1, total_objective: 3.14 },
+        params: { mode: "ratebook" },
+        artifacts: [],
+      },
+    ]
+    const props = defaultProps()
+    props.config = { sourceType: "run", run_id: "frontier-ratebook-run" }
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    render(<OptimiserApplyEditor {...props} />)
+
+    expect(screen.getByRole("option", { name: /frontier ratebook opt \[ratebook\]/ })).toBeInTheDocument()
+    expect(screen.getByLabelText("Ratebook Input")).toBeInTheDocument()
+  })
+
+  it("hides ratebook input selector for selected online MLflow runs", () => {
+    mockMlflow.browseExpId = "exp-1"
+    mockMlflow.runs = [
+      {
+        run_id: "online-run",
+        run_name: "online opt",
+        metrics: { converged: 1, total_objective: 3.14 },
+        artifacts: [],
+      },
+    ]
+    const props = defaultProps()
+    props.config = { sourceType: "run", run_id: "online-run", ratebook_input: "age-banding-node" }
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    render(<OptimiserApplyEditor {...props} />)
+
+    expect(screen.getByRole("option", { name: /online opt \[online\]/ })).toBeInTheDocument()
+    expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
+  })
+
+  it("clears stale ratebook input when the selected run is online", async () => {
+    mockMlflow.browseExpId = "exp-1"
+    mockMlflow.runs = [
+      {
+        run_id: "online-run",
+        run_name: "online opt",
+        metrics: { converged: 1, total_objective: 3.14 },
+        params: { mode: "online" },
+        artifacts: [],
+      },
+    ]
+    const props = defaultProps()
+    props.config = {
+      sourceType: "run",
+      run_id: "online-run",
+      optimiser_mode: "ratebook",
+      ratebook_input: "age-banding-node",
+    }
+    render(<OptimiserApplyEditor {...props} />)
+
+    await waitFor(() => {
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        optimiser_mode: "online",
+        ratebook_input: "",
+      })
+    })
+  })
+
+  it("shows ratebook input selector for selected ratebook registered model versions", () => {
+    mockMlflow.modelVersionsFor = "registered-opt"
+    mockMlflow.modelVersions = [
+      {
+        version: "2",
+        run_id: "registered-ratebook-run",
+        status: "READY",
+        description: "ratebook",
+        params: { mode: "ratebook" },
+      },
+    ]
+    const props = defaultProps()
+    props.config = { sourceType: "registered", registered_model: "registered-opt", version: "2" }
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    render(<OptimiserApplyEditor {...props} />)
+
+    expect(screen.getByRole("option", { name: /v2/ })).toBeInTheDocument()
+    expect(screen.getByLabelText("Ratebook Input")).toBeInTheDocument()
+  })
+
+  it("hides ratebook input selector for selected online registered model versions", () => {
+    mockMlflow.modelVersionsFor = "registered-opt"
+    mockMlflow.modelVersions = [
+      {
+        version: "3",
+        run_id: "registered-online-run",
+        status: "READY",
+        description: "online",
+        params: { mode: "online" },
+      },
+    ]
+    const props = defaultProps()
+    props.config = {
+      sourceType: "registered",
+      registered_model: "registered-opt",
+      version: "3",
+      ratebook_input: "age-banding-node",
+    }
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+    render(<OptimiserApplyEditor {...props} />)
+
+    expect(screen.getByRole("option", { name: /v3/ })).toBeInTheDocument()
+    expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
+  })
+
+  it("ignores registered model versions loaded for a different model", () => {
+    mockMlflow.modelVersionsFor = "old-ratebook-model"
+    mockMlflow.modelVersions = [
+      {
+        version: "2",
+        run_id: "old-ratebook-run",
+        status: "READY",
+        description: "ratebook",
+        params: { mode: "ratebook" },
+      },
+    ]
+    const props = defaultProps()
+    props.config = {
+      sourceType: "registered",
+      registered_model: "new-online-model",
+      version: "2",
+      ratebook_input: "age-banding-node",
+    }
+    props.inputSources = [
+      {
+        sourceNodeId: "optimiser-input-node",
+        varName: "optimiser_input",
+        sourceLabel: "optimiser_input",
+        edgeId: "e1",
+      },
+      {
+        sourceNodeId: "age-banding-node",
+        varName: "age_veh_banding",
+        sourceLabel: "Age banding",
+        edgeId: "e2",
+      },
+    ]
+
+    render(<OptimiserApplyEditor {...props} />)
+
+    expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
+  })
+
   it("persisted model shows as fallback option in registered mode", () => {
     const props = defaultProps()
     props.config = { sourceType: "registered", registered_model: "old-model" }
@@ -417,6 +862,7 @@ describe("OptimiserApplyEditor", () => {
   })
 
   it("version dropdown change calls onUpdate in registered mode", () => {
+    mockMlflow.modelVersionsFor = "my-opt"
     mockMlflow.modelVersions = [
       { version: "5", run_id: "r5", status: "READY", description: "" },
     ]
@@ -439,6 +885,13 @@ describe("OptimiserApplyEditor", () => {
     render(<OptimiserApplyEditor {...defaultProps()} />)
     expect(
       screen.getByText(/Column added to output for monitoring/),
+    ).toBeInTheDocument()
+  })
+
+  it("shows description text below optimised value column input", () => {
+    render(<OptimiserApplyEditor {...defaultProps()} />)
+    expect(
+      screen.getByText(/Column containing the selected optimiser value/),
     ).toBeInTheDocument()
   })
 })

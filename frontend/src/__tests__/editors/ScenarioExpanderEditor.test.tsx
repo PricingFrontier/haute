@@ -13,7 +13,7 @@ vi.mock("../../panels/editors/_shared", async () => {
   const actual = await vi.importActual("../../panels/editors/_shared")
   return {
     ...actual,
-    InputSourcesBar: ({ inputSources }: { inputSources: { varName: string; edgeId: string; sourceLabel: string }[] }) => (
+    InputSourcesBar: ({ inputSources }: { inputSources: { sourceNodeId: string; varName: string; edgeId: string; sourceLabel: string }[] }) => (
       <div data-testid="input-sources">{inputSources?.length ?? 0} inputs</div>
     ),
     INPUT_STYLE: {},
@@ -36,7 +36,7 @@ afterEach(cleanup)
 const DEFAULT_PROPS = {
   config: {},
   onUpdate: vi.fn(),
-  inputSources: [] as { varName: string; edgeId: string; sourceLabel: string }[],
+  inputSources: [] as { sourceNodeId: string; varName: string; edgeId: string; sourceLabel: string }[],
   upstreamColumns: [] as { name: string; dtype: string }[],
   accentColor: "#2dd4bf",
 }
@@ -152,7 +152,7 @@ describe("ScenarioExpanderEditor", () => {
 
   it("InputSourcesBar renders when inputSources provided", () => {
     const inputSources = [
-      { varName: "upstream_data", sourceLabel: "Upstream", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "upstream_data", sourceLabel: "Upstream", edgeId: "e1" },
     ]
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} inputSources={inputSources} />)
     expect(screen.getByTestId("input-sources")).toBeTruthy()

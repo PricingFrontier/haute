@@ -25,6 +25,7 @@ import {
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
+import type { HauteNodeData } from "../types/node"
 import PanelShell from "./PanelShell"
 import { useGraph } from "./useGraph"
 
@@ -246,6 +247,12 @@ function upstreamNodeTypeSignature(edges: SimpleEdge[], nodeMap: Record<string, 
     .join("\u0001")
 }
 
+function upstreamLabelSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
+  return edges
+    .map((edge) => `${edge.id}\u0002${edge.source}\u0003${nodeMap[edge.source]?.data?.label ?? ""}`)
+    .join("\u0001")
+}
+
 function UnknownNodeTypeDiagnostic({
   nodeType,
   config,
@@ -295,6 +302,27 @@ function UnknownNodeTypeDiagnostic({
   )
 }
 
+// Cached preview-result fields cleared on user config edits.  Listing the
+// keys explicitly (rather than stripping every leading-underscore field)
+// preserves selection/trace state — `_status`, `_traceActive`, etc. — which
+// are intentionally NOT invalidated by a config change.  Adding a new cached
+// field to ``HauteNodeData`` will not surface here automatically — the choice
+// to clear or preserve a new field must be made deliberately by extending
+// this list.
+const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
+  "_columns",
+  "_availableColumns",
+  "_schemaWarnings",
+]
+
+function clearCachedResultShape(data: HauteNodeData): HauteNodeData {
+  const next = { ...data }
+  for (const key of CACHED_PREVIEW_KEYS) {
+    delete next[key]
+  }
+  return next
+}
+
 // ─── NodePanel ────────────────────────────────────────────────────
 
 export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine, previewRows }: NodePanelProps) {
@@ -315,7 +343,7 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
     const newConfig = typeof keyOrUpdates === "string"
       ? { ...currentConfig, [keyOrUpdates]: value }
       : { ...currentConfig, ...keyOrUpdates }
-    onUpdateNode(currentNode.id, { ...currentNode.data, config: newConfig })
+    onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: newConfig }))
   }, [onUpdateNode])
 
   const configWithNodeId = useMemo(
@@ -330,15 +358,20 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
     () => selectedNodeId ? edges.filter((e) => e.target === selectedNodeId) : [],
     [edges, selectedNodeId],
   )
+  const upstreamSourceLabelSignature = upstreamLabelSignature(upstreamEdges, nodeMap)
   const inputSources: InputSource[] = useMemo(() => {
-    if (!node) return []
-    return upstreamEdges
-      .map((e) => ({
-        varName: sanitizeName(nodeMap[e.source]?.data.label || e.source),
-        sourceLabel: nodeMap[e.source]?.data.label || e.source,
-        edgeId: e.id,
-      }))
-  }, [node, nodeMap, upstreamEdges])
+    if (!selectedNodeId) return []
+    return upstreamEdges.map((e) => ({
+      sourceNodeId: e.source,
+      varName: sanitizeName(nodeMap[e.source]?.data.label || e.source),
+      sourceLabel: nodeMap[e.source]?.data.label || e.source,
+      edgeId: e.id,
+    }))
+    // Keyed by selected node + label signature so selected-node edits that
+    // rebuild nodeMap do not churn this array; only upstream label/edge changes
+    // do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNodeId, upstreamSourceLabelSignature])
   const upstreamSchemaSignature = upstreamColumnsSignature(upstreamEdges, nodeMap)
   const upstreamColumns = useMemo(() => {
     if (!selectedNodeId) return []

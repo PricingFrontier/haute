@@ -435,7 +435,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
     // should be irrelevant because the component must not call it.
     H.selectFrontierPointAPI.mockRejectedValueOnce(new Error("network error"))
 
-    render(<OptimiserPreview data={makeData()} nodeId="opt_1" />)
+    render(<OptimiserPreview data={makeData()} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     const circles = document.querySelectorAll("circle[style*='cursor: pointer']")
     expect(circles.length).toBe(5)

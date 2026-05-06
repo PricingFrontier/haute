@@ -144,6 +144,7 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
             "status": "READY",
             "creation_timestamp": 2_000,
             "description": "second",
+            "params": {},
         },
         {
             "version": "1",
@@ -151,6 +152,7 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
             "status": "READY",
             "creation_timestamp": 1_000,
             "description": "first",
+            "params": {},
         },
     ]
 

@@ -35,8 +35,8 @@ describe("LiveSwitchEditor", () => {
 
   it("renders input mapping section with count", () => {
     const inputs = [
-      { varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
-      { varName: "backtest_data", sourceLabel: "Backtest Data", edgeId: "e2" },
+      { sourceNodeId: "test-source", varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "backtest_data", sourceLabel: "Backtest Data", edgeId: "e2" },
     ]
     render(
       <LiveSwitchEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} accentColor="#34d399" />,
@@ -48,7 +48,7 @@ describe("LiveSwitchEditor", () => {
 
   it("renders source dropdowns for each input", () => {
     const inputs = [
-      { varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
     ]
     render(
       <LiveSwitchEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} accentColor="#34d399" />,
@@ -63,7 +63,7 @@ describe("LiveSwitchEditor", () => {
 
   it("shows active indicator when input is mapped to active source", () => {
     const inputs = [
-      { varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
     ]
     const config = {
       input_scenario_map: { live_data: "live" },
@@ -76,7 +76,7 @@ describe("LiveSwitchEditor", () => {
 
   it("does not show active indicator when mapped to non-active source", () => {
     const inputs = [
-      { varName: "backtest_data", sourceLabel: "Backtest Data", edgeId: "e2" },
+      { sourceNodeId: "test-source", varName: "backtest_data", sourceLabel: "Backtest Data", edgeId: "e2" },
     ]
     const config = {
       input_scenario_map: { backtest_data: "backtest" },
@@ -90,7 +90,7 @@ describe("LiveSwitchEditor", () => {
   it("calls onUpdate when selecting a source for an input", () => {
     const onUpdate = vi.fn()
     const inputs = [
-      { varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
     ]
     render(
       <LiveSwitchEditor config={{}} onUpdate={onUpdate} inputSources={inputs} accentColor="#34d399" />,

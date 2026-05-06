@@ -10,6 +10,7 @@ const mockMlflow = {
   runs: [] as { run_id: string; run_name: string; metrics: Record<string, number>; artifacts: string[] }[],
   models: [] as { name: string; latest_versions: { version: string; status: string; run_id: string }[] }[],
   modelVersions: [] as { version: string; run_id: string; status: string; description: string }[],
+  modelVersionsFor: "",
   loadingExperiments: false,
   loadingRuns: false,
   loadingModels: false,
@@ -73,7 +74,7 @@ import ModelScoreEditor from "../ModelScoreEditor"
 const defaultProps = () => ({
   config: {} as Record<string, unknown>,
   onUpdate: vi.fn(),
-  inputSources: [] as { varName: string; sourceLabel: string; edgeId: string }[],
+  inputSources: [] as { sourceNodeId: string; varName: string; sourceLabel: string; edgeId: string }[],
   accentColor: "#8b5cf6",
 })
 
@@ -82,6 +83,7 @@ function resetMlflow() {
   mockMlflow.runs = []
   mockMlflow.models = []
   mockMlflow.modelVersions = []
+  mockMlflow.modelVersionsFor = ""
   mockMlflow.loadingExperiments = false
   mockMlflow.loadingRuns = false
   mockMlflow.loadingModels = false
@@ -148,6 +150,7 @@ describe("ModelScoreEditor", () => {
   it("shows version dropdown when a model is selected", () => {
     const props = defaultProps()
     props.config = { registered_model: "my-model" }
+    mockMlflow.modelVersionsFor = "my-model"
     mockMlflow.modelVersions = [
       { version: "1", run_id: "r1", status: "READY", description: "first" },
       { version: "2", run_id: "r2", status: "READY", description: "" },
@@ -161,6 +164,7 @@ describe("ModelScoreEditor", () => {
 
   // 6. Registered mode: version change calls onUpdate
   it("version change calls onUpdate", () => {
+    mockMlflow.modelVersionsFor = "my-model"
     mockMlflow.modelVersions = [
       { version: "3", run_id: "r3", status: "READY", description: "" },
     ]
@@ -333,8 +337,8 @@ describe("ModelScoreEditor", () => {
   it("renders InputSourcesBar with input sources", () => {
     const props = defaultProps()
     props.inputSources = [
-      { varName: "df", sourceLabel: "data_source", edgeId: "e1" },
-      { varName: "df2", sourceLabel: "other_source", edgeId: "e2" },
+      { sourceNodeId: "test-source", varName: "df", sourceLabel: "data_source", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "df2", sourceLabel: "other_source", edgeId: "e2" },
     ]
     render(<ModelScoreEditor {...props} />)
     const bar = screen.getByTestId("input-sources")

@@ -1,6 +1,6 @@
 import { SELECT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
-import type { MlflowBrowserState } from "../../hooks/useMlflowBrowser"
+import type { MlflowBrowserState, Run } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 
 // ─── Registered Model Picker ─────────────────────────────────────
@@ -23,6 +23,7 @@ export function RegisteredModelPicker({
   const {
     models,
     modelVersions,
+    modelVersionsFor,
     loadingModels,
     errorModels,
     errorVersions,
@@ -31,6 +32,7 @@ export function RegisteredModelPicker({
   } = mlflow
 
   const selectedModel = configField(config, "registered_model", "")
+  const selectedModelVersions = modelVersionsFor === selectedModel ? modelVersions : []
 
   return (
     <div className="flex flex-col gap-2">
@@ -85,7 +87,7 @@ export function RegisteredModelPicker({
             onChange={(e) => onUpdate("version", e.target.value)}
           >
             <option value="latest">latest</option>
-            {modelVersions.map((v) => (
+            {selectedModelVersions.map((v) => (
               <option key={v.version} value={v.version}>
                 v{v.version} — {v.status}
                 {v.description ? ` (${v.description})` : ""}
@@ -113,19 +115,9 @@ export interface ExperimentRunPickerProps {
   onUpdate: OnUpdateConfig
   mlflow: MlflowBrowserState
   /** Custom render for run <option> labels. Defaults to run_name or truncated run_id. */
-  renderRunLabel?: (run: {
-    run_id: string
-    run_name: string
-    metrics: Record<string, number>
-    artifacts: string[]
-  }) => string
+  renderRunLabel?: (run: Run) => string
   /** Extra config keys merged into onUpdate when a run is selected (e.g. artifact_path). */
-  onRunSelected?: (run: {
-    run_id: string
-    run_name: string
-    metrics: Record<string, number>
-    artifacts: string[]
-  }) => Record<string, unknown>
+  onRunSelected?: (run: Run) => Record<string, unknown>
   /** Whether to show the "Artifact Path" text input (ModelScoreEditor uses it, OptimiserApplyEditor does not). */
   showArtifactPath?: boolean
 }
@@ -157,7 +149,7 @@ export function ExperimentRunPicker({
     refreshRuns,
   } = mlflow
 
-  const defaultRunLabel = (run: { run_id: string; run_name: string; metrics: Record<string, number> }) => {
+  const defaultRunLabel = (run: Run) => {
     const name = run.run_name || run.run_id.slice(0, 8)
     const metricStr = Object.entries(run.metrics)
       .slice(0, 2)

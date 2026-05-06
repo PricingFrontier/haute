@@ -191,7 +191,11 @@ def score_graph(
     input_lf = input_df.lazy()
     remap = artifact_paths or {}
 
-    def _intercept(node: GraphNode, source_names: list[str]) -> NodeFnResult | None:
+    def _intercept(
+        node: GraphNode,
+        source_names: list[str],
+        source_ids: list[str],
+    ) -> NodeFnResult | None:
         nid = node.id
         node_type = node.data.nodeType
         config = node.data.config
@@ -241,6 +245,10 @@ def score_graph(
         # Intercept: optimiserApply with remapped artifact path or MLflow source
         if node_type == NodeType.OPTIMISER_APPLY:
             _vcol = config.get("version_column", "__optimiser_version__")
+            _opt_col = config.get("optimised_value_column", "")
+            _ratebook_input = config.get("ratebook_input", "")
+            _src_names = list(source_names)
+            _src_ids = list(source_ids)
             _st = config.get("sourceType", "")
 
             # File-based with remap
@@ -253,13 +261,24 @@ def score_graph(
                         *dfs: _Frame,
                         _path: str = _opt_remapped,
                         _version_col: str = _vcol,
+                        _optimised_value_col: str = _opt_col,
+                        _rb_input: str = _ratebook_input,
+                        _src_names_arg: list[str] = _src_names,
+                        _src_ids_arg: list[str] = _src_ids,
                     ) -> _Frame:
+                        from haute._builders import _select_optimiser_apply_input
                         from haute._optimiser_io import load_optimiser_artifact
                         from haute.executor import _dispatch_apply
 
                         artifact = load_optimiser_artifact(_path)
-                        lf = dfs[0] if dfs else pl.LazyFrame()
-                        return _dispatch_apply(lf, artifact, _version_col)
+                        lf = _select_optimiser_apply_input(
+                            dfs,
+                            artifact,
+                            _rb_input,
+                            _src_names_arg,
+                            _src_ids_arg,
+                        )
+                        return _dispatch_apply(lf, artifact, _version_col, _optimised_value_col)
 
                     return func_name, optimiser_apply_fn, False
 
@@ -276,7 +295,12 @@ def score_graph(
                     _reg_model: str = _rm,
                     _opt_ver: str = _ver,
                     _version_col: str = _vcol,
+                    _optimised_value_col: str = _opt_col,
+                    _rb_input: str = _ratebook_input,
+                    _src_names_arg: list[str] = _src_names,
+                    _src_ids_arg: list[str] = _src_ids,
                 ) -> _Frame:
+                    from haute._builders import _select_optimiser_apply_input
                     from haute._optimiser_io import load_mlflow_optimiser_artifact
                     from haute.executor import _dispatch_apply
 
@@ -286,8 +310,14 @@ def score_graph(
                         registered_model=_reg_model,
                         version=_opt_ver,
                     )
-                    lf = dfs[0] if dfs else pl.LazyFrame()
-                    return _dispatch_apply(lf, artifact, _version_col)
+                    lf = _select_optimiser_apply_input(
+                        dfs,
+                        artifact,
+                        _rb_input,
+                        _src_names_arg,
+                        _src_ids_arg,
+                    )
+                    return _dispatch_apply(lf, artifact, _version_col, _optimised_value_col)
 
                 return func_name, optimiser_apply_mlflow_fn, False
 

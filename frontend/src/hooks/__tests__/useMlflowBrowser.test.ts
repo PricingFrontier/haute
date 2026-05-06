@@ -63,6 +63,7 @@ describe("useMlflowBrowser", () => {
     expect(result.current.runs).toEqual([])
     expect(result.current.models).toEqual([])
     expect(result.current.modelVersions).toEqual([])
+    expect(result.current.modelVersionsFor).toBe("")
     expect(result.current.loadingExperiments).toBe(false)
     expect(result.current.loadingRuns).toBe(false)
     expect(result.current.loadingModels).toBe(false)
@@ -310,6 +311,7 @@ describe("useMlflowBrowser", () => {
       expect(result.current.loadingVersions).toBe(false)
     })
     expect(result.current.modelVersions).toEqual(fakeVersions)
+    expect(result.current.modelVersionsFor).toBe("model-a")
     expect(mockGetModelVersions).toHaveBeenCalledWith("model-a")
   })
 
@@ -337,6 +339,8 @@ describe("useMlflowBrowser", () => {
     })
 
     act(() => { result.current.refreshVersions("model-b") })
+    expect(result.current.modelVersions).toEqual([])
+    expect(result.current.modelVersionsFor).toBe("model-b")
     await waitFor(() => {
       expect(result.current.loadingVersions).toBe(false)
     })

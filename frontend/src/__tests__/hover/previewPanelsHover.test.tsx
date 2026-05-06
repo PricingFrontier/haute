@@ -566,7 +566,7 @@ describe("OptimiserPreview hover chrome is class-driven", () => {
   it("mouseenter on the drag handle does not mutate .style.background imperatively", async () => {
     const OptimiserPreview = await loadOptimiserPreview()
     const { container } = render(
-      <OptimiserPreview data={makeOptimiserPreviewData()} nodeId="node-1" />,
+      <OptimiserPreview data={makeOptimiserPreviewData()} nodeId="node-1" allNodes={[]} edges={[]} />,
     )
     const handle = container.querySelector(".cursor-ns-resize") as HTMLElement | null
     expect(handle, "drag handle rendered").not.toBeNull()
@@ -582,7 +582,7 @@ describe("OptimiserPreview hover chrome is class-driven", () => {
   it("active-tab visual distinction is preserved via state-based styling (not hover)", async () => {
     const OptimiserPreview = await loadOptimiserPreview()
     const { container } = render(
-      <OptimiserPreview data={makeOptimiserPreviewData()} nodeId="node-1" />,
+      <OptimiserPreview data={makeOptimiserPreviewData()} nodeId="node-1" allNodes={[]} edges={[]} />,
     )
     // Tab buttons are inside `.flex.gap-1` and contain the tab labels.
     const buttons = Array.from(

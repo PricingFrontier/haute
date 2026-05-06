@@ -756,6 +756,205 @@ class TestGraphToCode:
         assert 'pipeline.connect("Read", "Clean")' in code
         assert 'pipeline.connect("Clean", "Out")' in code
 
+    def test_optimiser_apply_ratebook_input_returns_selected_source(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "scored-node",
+                        "data": {
+                            "label": "scored_quotes",
+                            "nodeType": "dataSource",
+                            "config": {"path": "scored.parquet"},
+                        },
+                    },
+                    {
+                        "id": "banding-node",
+                        "data": {
+                            "label": "age_veh_banding",
+                            "nodeType": "banding",
+                            "config": {"factors": []},
+                        },
+                    },
+                    {
+                        "id": "apply-node",
+                        "data": {
+                            "label": "apply_optimisation",
+                            "nodeType": "optimiserApply",
+                            "config": {
+                                "sourceType": "file",
+                                "artifact_path": "artifacts/ratebook.json",
+                                "ratebook_input": "banding-node",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "scored-node", "target": "apply-node"},
+                    {"id": "e2", "source": "banding-node", "target": "apply-node"},
+                ],
+            }
+        )
+
+        code = graph_to_code(graph)
+
+        assert (
+            "def apply_optimisation("
+            "scored_quotes: pl.LazyFrame, age_veh_banding: pl.LazyFrame"
+            ")" in code
+        )
+        assert "    return age_veh_banding" in code
+        compile(code, "<test>", "exec")
+
+    def test_optimiser_apply_online_mode_ignores_stale_ratebook_input_return(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "scored-node",
+                        "data": {
+                            "label": "scored_quotes",
+                            "nodeType": "dataSource",
+                            "config": {"path": "scored.parquet"},
+                        },
+                    },
+                    {
+                        "id": "banding-node",
+                        "data": {
+                            "label": "age_veh_banding",
+                            "nodeType": "banding",
+                            "config": {"factors": []},
+                        },
+                    },
+                    {
+                        "id": "apply-node",
+                        "data": {
+                            "label": "apply_optimisation",
+                            "nodeType": "optimiserApply",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "online-run",
+                                "optimiser_mode": "online",
+                                "ratebook_input": "banding-node",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "scored-node", "target": "apply-node"},
+                    {"id": "e2", "source": "banding-node", "target": "apply-node"},
+                ],
+            }
+        )
+
+        code = graph_to_code(graph)
+
+        assert "    return scored_quotes" in code
+        assert "    return age_veh_banding" not in code
+        compile(code, "<test>", "exec")
+
+    def test_optimiser_apply_mlflow_source_without_mode_ignores_ratebook_input_return(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "scored-node",
+                        "data": {
+                            "label": "scored_quotes",
+                            "nodeType": "dataSource",
+                            "config": {"path": "scored.parquet"},
+                        },
+                    },
+                    {
+                        "id": "banding-node",
+                        "data": {
+                            "label": "age_veh_banding",
+                            "nodeType": "banding",
+                            "config": {"factors": []},
+                        },
+                    },
+                    {
+                        "id": "apply-node",
+                        "data": {
+                            "label": "apply_optimisation",
+                            "nodeType": "optimiserApply",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "legacy-run",
+                                "ratebook_input": "banding-node",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "scored-node", "target": "apply-node"},
+                    {"id": "e2", "source": "banding-node", "target": "apply-node"},
+                ],
+            }
+        )
+
+        code = graph_to_code(graph)
+
+        assert "    return scored_quotes" in code
+        assert "    return age_veh_banding" not in code
+        compile(code, "<test>", "exec")
+
+    def test_optimiser_apply_ratebook_input_roundtrips_through_sidecar(self, tmp_path):
+        from haute._config_io import collect_node_configs
+        from haute.parser import parse_pipeline_source
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "scored-node",
+                        "data": {
+                            "label": "scored_quotes",
+                            "nodeType": "dataSource",
+                            "config": {"path": "scored.parquet"},
+                        },
+                    },
+                    {
+                        "id": "banding-node",
+                        "data": {
+                            "label": "age_veh_banding",
+                            "nodeType": "banding",
+                            "config": {"factors": []},
+                        },
+                    },
+                    {
+                        "id": "apply-node",
+                        "data": {
+                            "label": "apply_optimisation",
+                            "nodeType": "optimiserApply",
+                            "config": {
+                                "sourceType": "file",
+                                "artifact_path": "artifacts/ratebook.json",
+                                "ratebook_input": "banding-node",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "scored-node", "target": "apply-node"},
+                    {"id": "e2", "source": "banding-node", "target": "apply-node"},
+                ],
+            }
+        )
+        code = graph_to_code(graph)
+        for rel_path, content in collect_node_configs(graph).items():
+            cfg_file = tmp_path / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content)
+
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+
+        parsed_apply = next(n for n in parsed.nodes if n.id == "apply_optimisation")
+        assert parsed_apply.data.config["ratebook_input"] == "age_veh_banding"
+        assert any(
+            e.source == "age_veh_banding" and e.target == "apply_optimisation" for e in parsed.edges
+        )
+
 
 # ---------------------------------------------------------------------------
 # Live switch codegen

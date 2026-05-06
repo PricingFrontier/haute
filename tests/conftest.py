@@ -97,6 +97,22 @@ def _widen_sandbox_root():
     set_project_root(original)
 
 
+@pytest.fixture(autouse=True)
+def _restore_project_root():
+    """Restore the sandbox project root after every test.
+
+    Several tests call ``set_project_root(tmp_path)`` directly (for
+    quick path-validation overrides) without restoring the original
+    value, leaking the temp directory into subsequent tests that use
+    real fixtures under ``tests/fixtures/``.  Snapshotting and restoring
+    the root here makes the global state behave per-test without
+    requiring every call site to add its own try/finally.
+    """
+    original = _get_project_root()
+    yield
+    set_project_root(original)
+
+
 # ---------------------------------------------------------------------------
 # Graph builder helpers — used across test_executor, test_trace, etc.
 # ---------------------------------------------------------------------------

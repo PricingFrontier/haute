@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import time
+from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     import polars as pl
     from price_contour import QuoteGrid
 
+from haute._banding_config import normalise_banding_factors
 from haute._logging import get_logger
 from haute._types import (
     GraphNode,
@@ -431,6 +433,7 @@ def _estimate_scenario_frontier_ranges(
 
 
 _RATEBOOK_FACTOR_LEVEL_SEPARATOR = "\x1f"
+_RATEBOOK_FACTOR_LEVEL_ORDER_KEY = "factor_level_order"
 
 
 def _ratebook_factor_table_name(columns: list[str]) -> str:
@@ -441,6 +444,116 @@ def _ratebook_factor_level_key(values: list[Any]) -> str:
     if any(value is None for value in values):
         raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
     return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(str(value) for value in values)
+
+
+def _append_unique_factor_level(levels: list[str], seen: set[str], value: object) -> None:
+    if value is None or value == "":
+        return
+    level = str(value)
+    if level in seen:
+        return
+    seen.add(level)
+    levels.append(level)
+
+
+def _banding_rule_output_level(rule: dict[str, Any]) -> object:
+    """Return the rule's output level (``assignment`` or ``label``).
+
+    A banding rule emitted by the parser always carries one of these keys; the
+    ``None`` return is reserved for legacy fixtures with hand-written rules
+    that omit both, in which case the level is dropped from the order.
+    """
+    if "assignment" in rule:
+        return rule.get("assignment")
+    if "label" in rule:
+        return rule.get("label")
+    return None
+
+
+def _find_node_by_id(graph: PipelineGraph, node_id: str) -> GraphNode | None:
+    """Return the graph node with the given id, or ``None`` if absent."""
+    return next((node for node in graph.nodes if node.id == node_id), None)
+
+
+def _ratebook_factor_level_order(
+    graph: PipelineGraph,
+    config: dict[str, Any],
+) -> dict[str, list[str]]:
+    """Extract factor-level display order from the configured banding source."""
+    banding_source_id = config.get("banding_source")
+    if not isinstance(banding_source_id, str) or not banding_source_id:
+        return {}
+
+    banding_node = _find_node_by_id(graph, banding_source_id)
+    if banding_node is None or banding_node.data.nodeType != NodeType.BANDING:
+        return {}
+
+    order: dict[str, list[str]] = {}
+    for factor in normalise_banding_factors(banding_node.data.config):
+        output_column = factor.get("outputColumn")
+        if not isinstance(output_column, str) or not output_column:
+            continue
+
+        levels: list[str] = []
+        seen: set[str] = set()
+        rules = factor.get("rules")
+        if isinstance(rules, list):
+            for rule in rules:
+                if isinstance(rule, dict):
+                    _append_unique_factor_level(levels, seen, _banding_rule_output_level(rule))
+        _append_unique_factor_level(levels, seen, factor.get("default"))
+        if levels:
+            order[output_column] = levels
+    return order
+
+
+def _ratebook_factor_table_level_order(
+    table_name: str,
+    factor_level_order: dict[str, list[str]],
+) -> list[str]:
+    direct_order = factor_level_order.get(table_name)
+    if direct_order is not None:
+        return direct_order
+
+    columns = table_name.split(":")
+    if len(columns) <= 1:
+        return []
+
+    component_orders = [factor_level_order.get(column) for column in columns]
+    if any(order is None for order in component_orders):
+        return []
+    populated_orders = [order for order in component_orders if order is not None]
+    return [_RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(values) for values in product(*populated_orders)]
+
+
+def _ratebook_factor_table_position(
+    table_name: str,
+    factor_level_order: dict[str, list[str]],
+) -> tuple[int, ...] | None:
+    factor_positions = {name: index for index, name in enumerate(factor_level_order)}
+    direct_position = factor_positions.get(table_name)
+    if direct_position is not None:
+        return (direct_position,)
+
+    columns = table_name.split(":")
+    if len(columns) <= 1:
+        return None
+    positions = [factor_positions.get(column) for column in columns]
+    if any(position is None for position in positions):
+        return None
+    return tuple(position for position in positions if position is not None)
+
+
+def _ratebook_factor_table_sort_key(
+    index_and_item: tuple[int, tuple[Any, Any]],
+    factor_level_order: dict[str, list[str]],
+) -> tuple[int, tuple[int, ...]]:
+    original_index, (name, _table) = index_and_item
+    fallback = (1, (original_index,))
+    if not isinstance(name, str):
+        return fallback
+    position = _ratebook_factor_table_position(name, factor_level_order)
+    return (0, position) if position is not None else fallback
 
 
 def _ratebook_factor_level_counts(
@@ -477,41 +590,100 @@ def _ratebook_factor_level_counts(
     return counts
 
 
+def _sort_ratebook_factor_tables(
+    factor_tables: dict[Any, Any],
+    factor_level_order: dict[str, list[str]],
+) -> list[tuple[Any, Any]]:
+    """Order factor tables by the configured banding-rule order.
+
+    Tables not present in ``factor_level_order`` retain their original
+    insertion order behind the configured ones (fallback bucket ``1``).
+    """
+    return [
+        item
+        for _index, item in sorted(
+            enumerate(factor_tables.items()),
+            key=lambda item: _ratebook_factor_table_sort_key(item, factor_level_order),
+        )
+    ]
+
+
+def _serialise_ratebook_factor_table_rows(
+    name: str,
+    table: dict[Any, Any],
+    level_counts: dict[str, int],
+    factor_level_order: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    """Serialise one factor table's rows, ordered by configured level order.
+
+    Levels not present in the configured order fall through to insertion order
+    behind the ordered ones, matching the table-level ordering convention.
+    """
+    configured_level_order = _ratebook_factor_table_level_order(name, factor_level_order)
+    level_positions = {level: index for index, level in enumerate(configured_level_order)}
+    ordered_rows: list[tuple[tuple[int, int], dict[str, Any]]] = []
+    for original_index, (level, scenario_value) in enumerate(table.items()):
+        level_key = str(level)
+        quote_count = level_counts.get(level_key)
+        if quote_count is None:
+            raise ValueError(
+                f"Ratebook factor counts missing for level {level_key!r} in factor table {name!r}."
+            )
+        scenario_float = float(scenario_value)
+        if not np.isfinite(scenario_float):
+            raise ValueError(f"Ratebook factor table {name!r} contains a non-finite rate.")
+        sort_key = (
+            (0, level_positions[level_key]) if level_key in level_positions else (1, original_index)
+        )
+        ordered_rows.append(
+            (
+                sort_key,
+                {
+                    "__factor_group__": level,
+                    "optimal_scenario_value": scenario_float,
+                    "quote_count": int(quote_count),
+                },
+            )
+        )
+    return [row for _sort_key, row in sorted(ordered_rows, key=lambda item: item[0])]
+
+
 def _serialise_ratebook_factor_tables(
     factor_tables: Any,
     factor_level_counts: dict[str, dict[str, int]],
+    factor_level_order: dict[str, list[str]],
 ) -> dict[str, list[dict[str, Any]]]:
+    """Serialise ratebook factor tables for the API, ordered by banding rules."""
     if not isinstance(factor_tables, dict):
         raise ValueError("Ratebook factor tables are invalid")
 
     serialised: dict[str, list[dict[str, Any]]] = {}
-    for name, table in factor_tables.items():
+    for name, table in _sort_ratebook_factor_tables(factor_tables, factor_level_order):
         if not isinstance(name, str) or not isinstance(table, dict):
             raise ValueError("Ratebook factor tables are invalid")
         level_counts = factor_level_counts.get(name)
         if level_counts is None:
             raise ValueError(f"Ratebook factor counts missing for factor table {name!r}.")
-        rows: list[dict[str, Any]] = []
-        for level, scenario_value in table.items():
-            level_key = str(level)
-            quote_count = level_counts.get(level_key)
-            if quote_count is None:
-                raise ValueError(
-                    "Ratebook factor counts missing for level "
-                    f"{level_key!r} in factor table {name!r}."
-                )
-            scenario_float = float(scenario_value)
-            if not np.isfinite(scenario_float):
-                raise ValueError(f"Ratebook factor table {name!r} contains a non-finite rate.")
-            rows.append(
-                {
-                    "__factor_group__": level,
-                    "optimal_scenario_value": scenario_float,
-                    "quote_count": int(quote_count),
-                }
-            )
-        serialised[name] = rows
+        serialised[name] = _serialise_ratebook_factor_table_rows(
+            name, table, level_counts, factor_level_order
+        )
     return serialised
+
+
+def _compute_ratebook_factor_level_order(
+    graph: PipelineGraph,
+    config: dict[str, Any],
+    mode: str,
+) -> dict[str, list[str]]:
+    """Return the banding-rule level order for ratebook mode, ``{}`` otherwise.
+
+    Computed once at solve start from the graph and threaded through to the
+    background solver as an explicit parameter — never injected into the
+    user-facing config dict.
+    """
+    if mode != "ratebook":
+        return {}
+    return _ratebook_factor_level_order(graph, config)
 
 
 def _finalize_solve_result(
@@ -743,6 +915,8 @@ def _solve_ratebook(
     store: JobStore,
     job_id: str,
     start_time: float,
+    *,
+    factor_level_order: dict[str, list[str]] | None = None,
 ) -> None:
     """Run the ratebook optimiser solver on a pre-built QuoteGrid."""
     import polars as pl
@@ -823,9 +997,11 @@ def _solve_ratebook(
     logger.info("solve_completed", mode="ratebook", elapsed=f"{elapsed:.2f}s", converged=converged)
 
     factor_level_counts = _ratebook_factor_level_counts(factors_df, factor_columns_valid)
+    resolved_level_order = factor_level_order or {}
     factor_tables_serialised = _serialise_ratebook_factor_tables(
         solve_result.factor_tables,
         factor_level_counts,
+        resolved_level_order,
     )
 
     _finalize_solve_result(
@@ -844,7 +1020,10 @@ def _solve_ratebook(
             "clamp_rate": getattr(solve_result, "clamp_rate", None),
             "history": None,
         },
-        extra_job_fields={"factor_level_counts": factor_level_counts},
+        extra_job_fields={
+            "factor_level_counts": factor_level_counts,
+            _RATEBOOK_FACTOR_LEVEL_ORDER_KEY: resolved_level_order,
+        },
     )
 
 
@@ -872,9 +1051,10 @@ class OptimiserSolveService:
         Raises ``HTTPException`` on validation or pipeline failures.
         """
         node = _find_optimiser_node(body.graph, body.node_id)
-        config = node.data.config
+        config = dict(node.data.config)
 
         mode = self._validate_config(config)
+        factor_level_order = _compute_ratebook_factor_level_order(body.graph, config, mode)
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -943,7 +1123,15 @@ class OptimiserSolveService:
                     status_code=500,
                     detail="Optimiser setup failed. Check the server logs for details.",
                 ) from exc
-        self._launch_background(job_id, body.node_id, config, mode, quote_grid, factors_df)
+        self._launch_background(
+            job_id,
+            body.node_id,
+            config,
+            mode,
+            quote_grid,
+            factors_df,
+            factor_level_order=factor_level_order,
+        )
         return OptimiserSolveResponse(status="started", job_id=job_id)
 
     def estimate_frontier_auto_range(
@@ -1358,6 +1546,8 @@ class OptimiserSolveService:
         mode: str,
         quote_grid: QuoteGrid,
         factors_df: Any,
+        *,
+        factor_level_order: dict[str, list[str]] | None = None,
     ) -> None:
         """Start the solver in a background thread."""
         start_time = time.monotonic()
@@ -1394,6 +1584,7 @@ class OptimiserSolveService:
                         self._store,
                         job_id,
                         start_time,
+                        factor_level_order=factor_level_order,
                     )
                 else:
                     _solve_online(

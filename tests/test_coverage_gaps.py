@@ -259,7 +259,7 @@ class TestWrapBuilderAdditional:
 
         received = []
 
-        def capture(node, names):
+        def capture(node, names, source_ids):
             received.append(list(names))
             return None
 
@@ -283,7 +283,7 @@ class TestWrapBuilderAdditional:
             return ("base", lambda: None, False)
 
         override_fn = lambda df: df  # noqa: E731
-        hooks = NodeBuildHooks(before_build=lambda n, s: ("override", override_fn, True))
+        hooks = NodeBuildHooks(before_build=lambda n, s, ids: ("override", override_fn, True))
         wrapped = wrap_builder(base, hooks)
         node = make_node({"id": "t", "data": {"label": "t", "nodeType": "polars", "config": {}}})
         name, fn, is_source = wrapped(node, source_names=["a"])

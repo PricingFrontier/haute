@@ -4,7 +4,8 @@
   "version_column": "__optimiser_version__",
   "experiment_id": "4217275176082690",
   "experiment_name": "/Shared/haute/online_optimiser",
-  "run_id": "c79c61f8f8954bf6abdbf0095f72f524",
+  "run_id": "ea2f98549fa946c59a56537ea0686a39",
   "run_name": "online_optimiser",
-  "contract": "opaque"
+  "contract": "opaque",
+  "optimised_value_column": "optimised_premium"
 }

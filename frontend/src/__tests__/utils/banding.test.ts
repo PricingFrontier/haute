@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { extractBandingLevelsForNode, extractBandingLevels } from "../../utils/banding"
+import { extractBandingLevelOrderForNode, extractBandingLevelsForNode, extractBandingLevels } from "../../utils/banding"
 import { buildCartesianEntries } from "../../panels/editors/rating/ratingTableUtils"
 import type { SimpleNode } from "../../panels/editors/_shared"
 
@@ -198,6 +198,51 @@ describe("extractBandingLevelsForNode", () => {
 })
 
 // ─── Tests: extractBandingLevels ─────────────────────────────────
+
+describe("extractBandingLevelOrderForNode", () => {
+  it("preserves factor rule order and appends the default level last", () => {
+    const nodes: SimpleNode[] = [
+      makeBandingNode("b1", [
+        {
+          banding: "breakpoints",
+          column: "proposer_age",
+          outputColumn: "proposer_age_band",
+          rules: [
+            { boundary: "27", label: "20-27" },
+            { boundary: "34", label: "28-34" },
+          ],
+          default: "missing",
+        },
+        {
+          banding: "breakpoints",
+          column: "vehicle_age",
+          outputColumn: "vehicle_age_band",
+          rules: [
+            { boundary: "3", label: "1-3" },
+            { boundary: "5", label: "4-5" },
+            { boundary: "11", label: "10-11" },
+          ],
+          default: "missing",
+        },
+        {
+          banding: "categorical",
+          column: "channel",
+          outputColumn: "channel_band",
+          rules: [
+            { value: "direct_web", assignment: "direct_web" },
+            { value: "broker", assignment: "broker" },
+          ],
+        },
+      ]),
+    ]
+
+    expect(extractBandingLevelOrderForNode(nodes, "b1")).toEqual({
+      proposer_age_band: ["20-27", "28-34", "missing"],
+      vehicle_age_band: ["1-3", "4-5", "10-11", "missing"],
+      channel_band: ["direct_web", "broker"],
+    })
+  })
+})
 
 describe("extractBandingLevels", () => {
   it("returns empty object when no banding nodes exist", () => {

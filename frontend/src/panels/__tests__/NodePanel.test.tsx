@@ -129,6 +129,31 @@ describe("NodePanel", () => {
     expect(props.onUpdateNode).toHaveBeenCalledWith("node_1", expect.objectContaining({ label: "Renamed" }))
   })
 
+  it("clears cached result columns when config changes", () => {
+    const node = makeNode({
+      data: {
+        label: "Transform",
+        description: "",
+        nodeType: "polars",
+        config: { code: "old" },
+        _columns: [{ name: "old_output", dtype: "f64" }],
+        _availableColumns: [{ name: "old_output", dtype: "f64" }],
+        _schemaWarnings: [{ column: "old_output", status: "stale" }],
+      },
+    })
+    const onUpdateNode = vi.fn()
+    renderPanel({ node, onUpdateNode })
+    const onUpdate = transformEditorProps.at(-1)?.onUpdate as (key: string, value: unknown) => void
+
+    onUpdate("code", "new")
+
+    const updatedData = onUpdateNode.mock.calls.at(-1)?.[1] as Record<string, unknown>
+    expect(updatedData.config).toEqual({ code: "new" })
+    expect(updatedData._columns).toBeUndefined()
+    expect(updatedData._availableColumns).toBeUndefined()
+    expect(updatedData._schemaWarnings).toBeUndefined()
+  })
+
   it("renders TransformEditor for transform nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "T", description: "", nodeType: "polars", config: {} } }) })
     expect(screen.getByTestId("TransformEditor")).toBeInTheDocument()

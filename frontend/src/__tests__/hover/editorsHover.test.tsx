@@ -485,7 +485,7 @@ function renderInputSourcesBarWithDelete() {
   return render(
     <InputSourcesBar
       inputSources={[
-        { varName: "df", sourceLabel: "Source · df", edgeId: "e1" },
+        { sourceNodeId: "test-source", varName: "df", sourceLabel: "Source · df", edgeId: "e1" },
       ]}
       onDeleteInput={() => {}}
     />,
@@ -572,7 +572,7 @@ describe("_shared.tsx hover integration", () => {
     const onDelete = vi.fn()
     render(
       <InputSourcesBar
-        inputSources={[{ varName: "df", sourceLabel: "Source · df", edgeId: "e1" }]}
+        inputSources={[{ sourceNodeId: "test-source", varName: "df", sourceLabel: "Source · df", edgeId: "e1" }]}
         onDeleteInput={onDelete}
       />,
     )

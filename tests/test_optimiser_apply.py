@@ -15,7 +15,7 @@ import pytest
 
 from haute._parser_helpers import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
-from haute.codegen import _node_to_code
+from haute.codegen import _generate_node_code, _node_to_code
 from haute.executor import _apply_online, _apply_ratebook, _build_node_fn
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,7 @@ class TestBuildConfig:
                 "source_type": "file",
                 "artifact_path": "artifacts/opt_v1.json",
                 "version_column": "__opt_ver__",
+                "optimised_value_column": "selected_price_factor",
             },
             body="",
             param_names=["df"],
@@ -125,6 +126,7 @@ class TestBuildConfig:
         assert config["sourceType"] == "file"
         assert config["artifact_path"] == "artifacts/opt_v1.json"
         assert config["version_column"] == "__opt_ver__"
+        assert config["optimised_value_column"] == "selected_price_factor"
 
     def test_build_config_minimal(self):
         config = _build_node_config(
@@ -150,6 +152,20 @@ class TestBuildConfig:
         assert config["sourceType"] == "registered"
         assert config["registered_model"] == "my_opt_model"
         assert config["version"] == "3"
+
+    def test_build_config_ratebook_input(self):
+        config = _build_node_config(
+            node_type=NodeType.OPTIMISER_APPLY,
+            decorator_kwargs={
+                "optimiser_apply": True,
+                "source_type": "file",
+                "artifact_path": "artifacts/ratebook.json",
+                "ratebook_input": "banding-node",
+            },
+            body="",
+            param_names=["scored_quotes", "banded_quotes"],
+        )
+        assert config["ratebook_input"] == "banding-node"
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +216,28 @@ class TestCodegen:
         )
         code = _node_to_code(node, source_names=["df"])
         assert 'config="config/apply_optimisation/apply_opt.json"' in code
+
+    def test_codegen_optimised_value_column(self):
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": "a.json",
+                "optimised_value_column": "selected_price_factor",
+            },
+        )
+        code = _generate_node_code(node, source_names=["df"])
+        assert "optimised_value_column='selected_price_factor'" in code
+
+    def test_codegen_ratebook_input(self):
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": "a.json",
+                "ratebook_input": "banding-node",
+            },
+        )
+        code = _generate_node_code(node, source_names=["scored_quotes", "banded_quotes"])
+        assert "ratebook_input='banding-node'" in code
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +326,23 @@ class TestExecutorOnline:
             result = fn(_scored_df().lazy()).collect()
             assert "__v__" in result.columns
             assert "__optimiser_version__" not in result.columns
+        finally:
+            os.unlink(path)
+
+    def test_online_custom_optimised_value_column(self):
+        path = _write_artifact(_make_online_artifact())
+        try:
+            node = _make_node(
+                {
+                    "sourceType": "file",
+                    "artifact_path": path,
+                    "optimised_value_column": "selected_price_factor",
+                }
+            )
+            _, fn, _ = _build_node_fn(node, source_names=["scored"])
+            result = fn(_scored_df().lazy()).collect()
+            assert "selected_price_factor" in result.columns
+            assert "optimal_scenario_value" not in result.columns
         finally:
             os.unlink(path)
 
@@ -380,6 +435,31 @@ class TestExecutorRatebook:
         finally:
             os.unlink(path)
 
+    def test_ratebook_custom_optimised_value_column(self):
+        path = _write_artifact(_make_ratebook_artifact())
+        try:
+            df = pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["London", "Manchester"],
+                    "price": [100.0, 200.0],
+                }
+            )
+            node = _make_node(
+                {
+                    "sourceType": "file",
+                    "artifact_path": path,
+                    "optimised_value_column": "selected_price_factor",
+                }
+            )
+            _, fn, _ = _build_node_fn(node, source_names=["base"])
+            result = fn(df.lazy()).collect()
+            assert "selected_price_factor" in result.columns
+            assert "optimised_factor" not in result.columns
+            assert result["selected_price_factor"].to_list() == pytest.approx([1.05, 0.98])
+        finally:
+            os.unlink(path)
+
     def test_ratebook_missing_level_gets_default(self):
         path = _write_artifact(_make_ratebook_artifact())
         try:
@@ -411,6 +491,130 @@ class TestExecutorRatebook:
             # Should pass through with version column added
             assert len(result) == 2
             assert "__optimiser_version__" in result.columns
+        finally:
+            os.unlink(path)
+
+    def test_ratebook_apply_uses_configured_input_dataframe(self):
+        path = _write_artifact(_make_ratebook_artifact())
+        try:
+            scored_quotes = pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["London", "Manchester"],
+                    "price": [100.0, 200.0],
+                }
+            )
+            banded_quotes = pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["Manchester", "London"],
+                    "price": [100.0, 200.0],
+                }
+            )
+            node = _make_node(
+                {
+                    "sourceType": "file",
+                    "artifact_path": path,
+                    "ratebook_input": "banding-node",
+                }
+            )
+            _, fn, _ = _build_node_fn(
+                node,
+                source_names=["scored_quotes", "banded_quotes"],
+                source_ids=["scored-node", "banding-node"],
+            )
+            result = fn(scored_quotes.lazy(), banded_quotes.lazy()).collect()
+
+            assert result["region"].to_list() == ["Manchester", "London"]
+            assert result["region_optimised_factor"].to_list() == pytest.approx([0.98, 1.05])
+        finally:
+            os.unlink(path)
+
+    def test_ratebook_apply_rejects_stale_configured_input(self):
+        path = _write_artifact(_make_ratebook_artifact())
+        try:
+            node = _make_node(
+                {
+                    "sourceType": "file",
+                    "artifact_path": path,
+                    "ratebook_input": "deleted-banding-node",
+                }
+            )
+            _, fn, _ = _build_node_fn(
+                node,
+                source_names=["scored_quotes", "banded_quotes"],
+                source_ids=["scored-node", "banding-node"],
+            )
+
+            with pytest.raises(ValueError, match="deleted-banding-node"):
+                fn(
+                    pl.DataFrame({"region": ["London"]}).lazy(),
+                    pl.DataFrame({"region": ["Manchester"]}).lazy(),
+                ).collect()
+        finally:
+            os.unlink(path)
+
+    def test_ratebook_apply_requires_source_ids_for_configured_input(self):
+        path = _write_artifact(_make_ratebook_artifact())
+        try:
+            node = _make_node(
+                {
+                    "sourceType": "file",
+                    "artifact_path": path,
+                    "ratebook_input": "banded_quotes",
+                }
+            )
+            _, fn, _ = _build_node_fn(
+                node,
+                source_names=["scored_quotes", "banded_quotes"],
+            )
+
+            with pytest.raises(ValueError, match="source_ids"):
+                fn(
+                    pl.DataFrame({"region": ["London"]}).lazy(),
+                    pl.DataFrame({"region": ["Manchester"]}).lazy(),
+                ).collect()
+        finally:
+            os.unlink(path)
+
+    def test_online_apply_ignores_ratebook_input_and_uses_first_dataframe(self):
+        path = _write_artifact(_make_online_artifact(lambdas={"predicted_volume": 0.0}))
+        try:
+            unusable_ratebook_input = pl.DataFrame({"region": ["London"]})
+            node = _make_node(
+                {
+                    "sourceType": "file",
+                    "artifact_path": path,
+                    "ratebook_input": "unusable-ratebook-node",
+                }
+            )
+            _, fn, _ = _build_node_fn(
+                node,
+                source_names=["scored_quotes", "unusable_ratebook_input"],
+                source_ids=["scored-node", "unusable-ratebook-node"],
+            )
+            result = fn(_scored_df().lazy(), unusable_ratebook_input.lazy()).collect()
+
+            assert len(result) == 2
+            assert "optimal_scenario_value" in result.columns
+        finally:
+            os.unlink(path)
+
+    def test_online_apply_uses_configured_optimised_value_column(self):
+        path = _write_artifact(_make_online_artifact(lambdas={"predicted_volume": 0.0}))
+        try:
+            node = _make_node(
+                {
+                    "sourceType": "file",
+                    "artifact_path": path,
+                    "optimised_value_column": "selected_price_factor",
+                }
+            )
+            _, fn, _ = _build_node_fn(node, source_names=["scored_quotes"])
+            result = fn(_scored_df().lazy()).collect()
+
+            assert "selected_price_factor" in result.columns
+            assert "optimal_scenario_value" not in result.columns
         finally:
             os.unlink(path)
 
@@ -520,6 +724,27 @@ class TestApplyRatebookHelper:
         assert "region_optimised_factor" in result.columns
         assert "optimised_factor" in result.columns
         assert "__ver__" in result.columns
+
+    def test_apply_ratebook_uses_configured_optimised_value_column(self):
+        artifact = _make_ratebook_artifact()
+        df = pl.DataFrame(
+            {
+                "region": ["London", "Manchester"],
+                "price": [100.0, 200.0],
+            }
+        )
+        result = _apply_ratebook(
+            df.lazy(),
+            artifact,
+            "v1",
+            "__ver__",
+            "selected_price_factor",
+        ).collect()
+
+        assert "region_optimised_factor" in result.columns
+        assert "selected_price_factor" in result.columns
+        assert "optimised_factor" not in result.columns
+        assert result["selected_price_factor"].to_list() == pytest.approx([1.05, 0.98])
 
     def test_missing_factor_group_logs_warning(self):
         """Entries without __factor_group__ are skipped and a warning is logged."""

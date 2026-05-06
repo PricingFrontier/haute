@@ -450,6 +450,8 @@ function FlowEditor() {
                   <OptimiserPreview
                     data={optPreview}
                     nodeId={activeNodeId!}
+                    allNodes={panelGraph.allNodes}
+                    edges={panelGraph.edges}
                   />
                 )
               }
