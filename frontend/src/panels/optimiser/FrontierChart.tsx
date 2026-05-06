@@ -72,7 +72,7 @@ export default function FrontierChart({
     }
   }, [points, xKey, yKey, currentX, currentY])
 
-  const pointPositions = useMemo(() => {
+  const visiblePointPositions = useMemo(() => {
     const positions = points.map((p, i) => {
       const x = p[xKey] as number
       const y = p[yKey] as number
@@ -96,29 +96,21 @@ export default function FrontierChart({
       }
     }
 
-    const offsets = new Map<number, { dx: number; dy: number }>()
-    for (const bucket of buckets.values()) {
-      if (bucket.length < 2) continue
-      const radius = bucket.length > 2 ? 8 : 7
-      bucket.forEach((position, order) => {
-        const angle = -Math.PI / 2 + (order * 2 * Math.PI) / bucket.length
-        offsets.set(position.index, {
-          dx: Math.cos(angle) * radius,
-          dy: Math.sin(angle) * radius,
-        })
-      })
-    }
-
-    return positions.map((position) => {
-      if (!position) return null
-      const offset = offsets.get(position.index)
+    return Array.from(buckets.values()).map((bucket) => {
+      const selectedPosition =
+        selectedIdx == null ? undefined : bucket.find(position => position.index === selectedIdx)
+      const visiblePosition =
+        bucket.find(position => position.index === 1) ??
+        selectedPosition ??
+        bucket.find(position => position.index > 0) ??
+        bucket[0]
       return {
-        ...position,
-        cx: position.cx + (offset?.dx ?? 0),
-        cy: position.cy + (offset?.dy ?? 0),
+        ...visiblePosition,
+        isSelected: selectedPosition != null,
+        overlapCount: bucket.length,
       }
     })
-  }, [points, xKey, yKey, xScale, yScale])
+  }, [points, xKey, yKey, xScale, yScale, selectedIdx])
 
   return (
     <svg width={CHART_W} height={CHART_H} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
@@ -138,25 +130,25 @@ export default function FrontierChart({
       <text x={6} y={CHART_PY + INNER_H / 2} textAnchor="middle" fontSize={9} fill="var(--text-muted)" transform={`rotate(-90,6,${CHART_PY + INNER_H / 2})`}>objective</text>
 
       {/* Frontier points */}
-      {pointPositions.map((position, i) => {
-        if (!position) return null
-        const isSel = selectedIdx === i
+      {visiblePointPositions.map((position) => {
+        const overlapLabel = position.overlapCount > 1 ? ` (${position.overlapCount} overlapping frontier points)` : ""
         return (
           <circle
-            key={i}
+            key={position.index}
             cx={position.cx}
             cy={position.cy}
-            r={isSel ? 6 : 4}
-            fill={isSel ? CHART_COLORS.objective : "var(--accent)"}
-            stroke={isSel ? "var(--text-on-accent)" : "none"}
-            strokeWidth={isSel ? 2 : 0}
-            opacity={isSel ? 1 : 0.7}
+            r={position.isSelected ? 6 : 4}
+            fill={position.isSelected ? CHART_COLORS.objective : "var(--accent)"}
+            stroke={position.isSelected ? "var(--text-on-accent)" : "none"}
+            strokeWidth={position.isSelected ? 2 : 0}
+            opacity={position.isSelected ? 1 : 0.7}
             style={{ cursor: "pointer" }}
-            onClick={() => onPointClick(i)}
+            onClick={() => onPointClick(position.index)}
             tabIndex={0}
             role="button"
-            aria-label={`Select frontier point ${i + 1}`}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPointClick(i) } }}
+            aria-label={`Select frontier point ${position.index + 1}${overlapLabel}`}
+            data-overlap-count={position.overlapCount > 1 ? position.overlapCount : undefined}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPointClick(position.index) } }}
           />
         )
       })}
