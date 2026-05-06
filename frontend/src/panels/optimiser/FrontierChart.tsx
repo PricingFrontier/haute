@@ -72,7 +72,7 @@ export default function FrontierChart({
     }
   }, [points, xKey, yKey, currentX, currentY])
 
-  const pointPositions = useMemo(() => {
+  const visiblePointPositions = useMemo(() => {
     const positions = points.map((p, i) => {
       const x = p[xKey] as number
       const y = p[yKey] as number
@@ -96,26 +96,18 @@ export default function FrontierChart({
       }
     }
 
-    const representatives = new Map<number, number>()
-    const overlapCounts = new Map<number, number>()
-    for (const bucket of buckets.values()) {
-      const defaultRepresentative = bucket.find(position => position.index > 0) ?? bucket[0]
-      const representative =
-        selectedIdx == null
-          ? defaultRepresentative
-          : (bucket.find(position => position.index === selectedIdx) ?? defaultRepresentative)
-      bucket.forEach(position => {
-        representatives.set(position.index, representative.index)
-        overlapCounts.set(position.index, bucket.length)
-      })
-    }
-
-    return positions.map((position) => {
-      if (!position) return null
+    return Array.from(buckets.values()).map((bucket) => {
+      const selectedPosition =
+        selectedIdx == null ? undefined : bucket.find(position => position.index === selectedIdx)
+      const visiblePosition =
+        bucket.find(position => position.index === 1) ??
+        selectedPosition ??
+        bucket.find(position => position.index > 0) ??
+        bucket[0]
       return {
-        ...position,
-        overlapCount: overlapCounts.get(position.index) ?? 1,
-        isRepresentative: representatives.get(position.index) === position.index,
+        ...visiblePosition,
+        isSelected: selectedPosition != null,
+        overlapCount: bucket.length,
       }
     })
   }, [points, xKey, yKey, xScale, yScale, selectedIdx])
@@ -138,28 +130,24 @@ export default function FrontierChart({
       <text x={6} y={CHART_PY + INNER_H / 2} textAnchor="middle" fontSize={9} fill="var(--text-muted)" transform={`rotate(-90,6,${CHART_PY + INNER_H / 2})`}>objective</text>
 
       {/* Frontier points */}
-      {pointPositions.map((position) => {
-        if (!position) return null
-        const isSel = selectedIdx === position.index
-        const isVisible = position.isRepresentative
-        const overlapLabel = isVisible && position.overlapCount > 1 ? ` (${position.overlapCount} overlapping frontier points)` : ""
+      {visiblePointPositions.map((position) => {
+        const overlapLabel = position.overlapCount > 1 ? ` (${position.overlapCount} overlapping frontier points)` : ""
         return (
           <circle
             key={position.index}
             cx={position.cx}
             cy={position.cy}
-            r={isVisible ? (isSel ? 6 : 4) : 0}
-            fill={isVisible ? (isSel ? CHART_COLORS.objective : "var(--accent)") : "transparent"}
-            stroke={isVisible && isSel ? "var(--text-on-accent)" : "none"}
-            strokeWidth={isVisible && isSel ? 2 : 0}
-            opacity={isVisible ? (isSel ? 1 : 0.7) : 0}
-            pointerEvents={isVisible ? undefined : "none"}
-            style={isVisible ? { cursor: "pointer" } : undefined}
+            r={position.isSelected ? 6 : 4}
+            fill={position.isSelected ? CHART_COLORS.objective : "var(--accent)"}
+            stroke={position.isSelected ? "var(--text-on-accent)" : "none"}
+            strokeWidth={position.isSelected ? 2 : 0}
+            opacity={position.isSelected ? 1 : 0.7}
+            style={{ cursor: "pointer" }}
             onClick={() => onPointClick(position.index)}
             tabIndex={0}
             role="button"
             aria-label={`Select frontier point ${position.index + 1}${overlapLabel}`}
-            data-overlap-count={isVisible && position.overlapCount > 1 ? position.overlapCount : undefined}
+            data-overlap-count={position.overlapCount > 1 ? position.overlapCount : undefined}
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPointClick(position.index) } }}
           />
         )
