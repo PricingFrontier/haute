@@ -391,7 +391,7 @@ describe("BandingEditor", () => {
   })
 
   it("renders InputSourcesBar when inputs provided", () => {
-    const inputSources = [{ varName: "data", sourceLabel: "Data", edgeId: "e1" }]
+    const inputSources = [{ sourceNodeId: "test-source", varName: "data", sourceLabel: "Data", edgeId: "e1" }]
     render(
       <BandingEditor config={{}} onUpdate={vi.fn()} inputSources={inputSources} accentColor="#22d3ee" />,
     )

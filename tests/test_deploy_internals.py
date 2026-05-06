@@ -1181,6 +1181,7 @@ class TestScoreGraphOptimiserApplyRemap:
                                 "sourceType": "file",
                                 "artifact_path": "artifacts/opt_artifact.json",
                                 "version_column": "__opt_v__",
+                                "optimised_value_column": "selected_factor",
                             },
                         },
                     },
@@ -1204,11 +1205,16 @@ class TestScoreGraphOptimiserApplyRemap:
         remap = {"opt__opt_artifact.json": str(artifact_path)}
 
         mock_artifact = MagicMock()
-        mock_dispatch_result = pl.DataFrame({"x": [1.0], "__opt_v__": ["v1"]}).lazy()
+        mock_dispatch_result = pl.DataFrame(
+            {"x": [1.0], "selected_factor": [1.1], "__opt_v__": ["v1"]}
+        ).lazy()
 
         with (
             patch("haute._optimiser_io.load_optimiser_artifact", return_value=mock_artifact),
-            patch("haute.executor._dispatch_apply", return_value=mock_dispatch_result),
+            patch(
+                "haute.executor._dispatch_apply",
+                return_value=mock_dispatch_result,
+            ) as mock_dispatch,
         ):
             result = score_graph(
                 graph=graph,
@@ -1219,6 +1225,131 @@ class TestScoreGraphOptimiserApplyRemap:
             )
 
         assert isinstance(result, pl.DataFrame)
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.args[3] == "selected_factor"
+
+    def _ratebook_apply_remap_score(self, tmp_path):
+        """Score a deployed ratebook-apply graph and return the result frame."""
+        from haute.deploy._scorer import score_graph
+
+        artifact_path = tmp_path / "ratebook.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "version": "rb_v1",
+                    "mode": "ratebook",
+                    "factor_tables": {
+                        "region_band": [
+                            {
+                                "__factor_group__": "South",
+                                "optimal_scenario_value": 0.95,
+                            },
+                            {
+                                "__factor_group__": "North",
+                                "optimal_scenario_value": 1.10,
+                            },
+                        ]
+                    },
+                }
+            )
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "band",
+                        "data": {
+                            "label": "band",
+                            "nodeType": "banding",
+                            "config": {
+                                "factors": [
+                                    {
+                                        "banding": "categorical",
+                                        "column": "region",
+                                        "outputColumn": "region_band",
+                                        "rules": {
+                                            "London": "South",
+                                            "Manchester": "North",
+                                        },
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "opt",
+                            "nodeType": "optimiserApply",
+                            "config": {
+                                "sourceType": "file",
+                                "artifact_path": "artifacts/ratebook.json",
+                                "version_column": "__opt_v__",
+                                "optimised_value_column": "selected_factor",
+                                "ratebook_input": "band",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {
+                                "fields": [
+                                    "quote_id",
+                                    "region_band",
+                                    "selected_factor",
+                                    "__opt_v__",
+                                ]
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "opt"},
+                    {"id": "e2", "source": "src", "target": "band"},
+                    {"id": "e3", "source": "band", "target": "opt"},
+                    {"id": "e4", "source": "opt", "target": "out"},
+                ],
+            }
+        )
+
+        return score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["London", "Manchester"],
+                }
+            ),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"opt__ratebook.json": str(artifact_path)},
+        )
+
+    def test_ratebook_apply_file_remap_routes_through_configured_input(self, tmp_path):
+        """The configured ``ratebook_input`` is used for the factor-table lookup."""
+        result = self._ratebook_apply_remap_score(tmp_path)
+        assert result["region_band"].to_list() == ["South", "North"]
+
+    def test_ratebook_apply_file_remap_renames_to_configured_value_column(self, tmp_path):
+        """The optimised value lands in the user-configured column name."""
+        result = self._ratebook_apply_remap_score(tmp_path)
+        assert result["selected_factor"].to_list() == pytest.approx([0.95, 1.10])
+
+    def test_ratebook_apply_file_remap_emits_artifact_version_column(self, tmp_path):
+        """The configured version column carries the artifact version per quote."""
+        result = self._ratebook_apply_remap_score(tmp_path)
+        assert result["__opt_v__"].to_list() == ["rb_v1", "rb_v1"]
 
     def test_optimiser_apply_mlflow_source(self):
         """optimiserApply with MLflow source downloads at runtime."""
@@ -1244,6 +1375,7 @@ class TestScoreGraphOptimiserApplyRemap:
                                 "sourceType": "run",
                                 "run_id": "run_abc",
                                 "version_column": "__opt_v__",
+                                "optimised_value_column": "selected_factor",
                             },
                         },
                     },
@@ -1265,11 +1397,16 @@ class TestScoreGraphOptimiserApplyRemap:
 
         input_df = pl.DataFrame({"x": [1.0]})
         mock_artifact = MagicMock()
-        mock_dispatch_result = pl.DataFrame({"x": [1.0], "__opt_v__": ["v1"]}).lazy()
+        mock_dispatch_result = pl.DataFrame(
+            {"x": [1.0], "selected_factor": [1.1], "__opt_v__": ["v1"]}
+        ).lazy()
 
         with (
             patch("haute._optimiser_io.load_mlflow_optimiser_artifact", return_value=mock_artifact),
-            patch("haute.executor._dispatch_apply", return_value=mock_dispatch_result),
+            patch(
+                "haute.executor._dispatch_apply",
+                return_value=mock_dispatch_result,
+            ) as mock_dispatch,
         ):
             result = score_graph(
                 graph=graph,
@@ -1279,6 +1416,8 @@ class TestScoreGraphOptimiserApplyRemap:
             )
 
         assert isinstance(result, pl.DataFrame)
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.args[3] == "selected_factor"
 
 
 class TestScoreGraphModelScoreRemap:

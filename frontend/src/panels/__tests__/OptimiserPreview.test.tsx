@@ -98,6 +98,8 @@ function renderPreview(overrides: Partial<Parameters<typeof OptimiserPreview>[0]
   const props = {
     data: makeData(),
     nodeId: "opt_1",
+    allNodes: [],
+    edges: [],
     ...overrides,
   }
   return { ...render(<OptimiserPreview {...props} />), props }
@@ -237,7 +239,7 @@ describe("OptimiserPreview", () => {
       })
       expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
 
-      rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" />)
+      rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
       expect(screen.queryByText("Frontier")).not.toBeInTheDocument()
       expect(screen.queryByText(/No frontier data available/)).not.toBeInTheDocument()
@@ -278,6 +280,101 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("North")).toBeInTheDocument()
       expect(screen.getAllByText("1.0500").length).toBeGreaterThan(0)
       expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+    })
+
+    it("orders Rates tab factors and levels by the configured banding source", () => {
+      renderPreview({
+        allNodes: [
+          {
+            id: "banding_1",
+            data: {
+              label: "Age Vehicle Banding",
+              description: "",
+              nodeType: "banding",
+              config: {
+                factors: [
+                  {
+                    banding: "breakpoints",
+                    column: "proposer_age",
+                    outputColumn: "proposer_age_band",
+                    rules: [
+                      { boundary: "27", label: "20-27" },
+                      { boundary: "34", label: "28-34" },
+                    ],
+                    default: "missing",
+                  },
+                  {
+                    banding: "breakpoints",
+                    column: "vehicle_age",
+                    outputColumn: "vehicle_age_band",
+                    rules: [
+                      { boundary: "3", label: "1-3" },
+                      { boundary: "5", label: "4-5" },
+                      { boundary: "11", label: "10-11" },
+                    ],
+                    default: "missing",
+                  },
+                  {
+                    banding: "categorical",
+                    column: "channel",
+                    outputColumn: "channel_band",
+                    rules: [
+                      { value: "direct_web", assignment: "direct_web" },
+                      { value: "broker", assignment: "broker" },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+          {
+            id: "opt_1",
+            data: {
+              label: "My Optimiser",
+              description: "",
+              nodeType: "optimiser",
+              config: { banding_source: "banding_1" },
+            },
+          },
+        ],
+        edges: [{ id: "e1", source: "banding_1", target: "opt_1" }],
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              channel_band: [
+                { __factor_group__: "broker", optimal_scenario_value: 1.2 },
+                { __factor_group__: "direct_web", optimal_scenario_value: 1.1 },
+              ],
+              vehicle_age_band: [
+                { __factor_group__: "10-11", optimal_scenario_value: 0.9 },
+                { __factor_group__: "1-3", optimal_scenario_value: 1.0 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.8 },
+                { __factor_group__: "4-5", optimal_scenario_value: 1.05 },
+              ],
+              proposer_age_band: [
+                { __factor_group__: "28-34", optimal_scenario_value: 0.95 },
+                { __factor_group__: "20-27", optimal_scenario_value: 1.1 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.85 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+
+      const factorSelect = screen.getByLabelText("Rate factor") as HTMLSelectElement
+      expect(Array.from(factorSelect.options).map(option => option.value)).toEqual([
+        "proposer_age_band",
+        "vehicle_age_band",
+        "channel_band",
+      ])
+
+      fireEvent.change(factorSelect, { target: { value: "vehicle_age_band" } })
+      const levelCells = Array.from(document.querySelectorAll("tbody tr td:first-child"))
+        .map(cell => cell.textContent)
+      expect(levelCells).toEqual(["1-3", "4-5", "10-11", "missing"])
     })
 
     it("keeps factor tables out of Summary once the Rates tab exists", () => {
@@ -595,7 +692,7 @@ describe("OptimiserPreview", () => {
       const { rerender } = renderPreview({ data: makeData({ frontier: makeFrontier() }) })
       expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
 
-      rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" />)
+      rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
       expect(screen.queryByText(/No frontier data available/)).not.toBeInTheDocument()
       expect(screen.getByText("Objective")).toBeInTheDocument()
@@ -953,7 +1050,7 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
       const firstSignal = mockApplyOptimiser.mock.calls[0][1].signal as AbortSignal
 
-      rerender(<OptimiserPreview data={makeData({ jobId: "job_456" })} nodeId="opt_1" />)
+      rerender(<OptimiserPreview data={makeData({ jobId: "job_456" })} nodeId="opt_1" allNodes={[]} edges={[]} />)
       expect(firstSignal.aborted).toBe(true)
 
       await waitFor(() => {

@@ -840,7 +840,8 @@ def _build_funcs(
     """
     funcs: dict[str, tuple[Callable, bool]] = {}
     for nid in order:
-        src_names = [id_to_name[pid] for pid in parents_of.get(nid, []) if pid in id_to_name]
+        src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]
+        src_names = [id_to_name[pid] for pid in src_ids]
         orig_src_names = resolve_orig_source_names(
             node_map[nid],
             node_map,
@@ -850,6 +851,7 @@ def _build_funcs(
         _, fn, is_source = build_node_fn(
             node_map[nid],
             source_names=src_names,
+            source_ids=src_ids,
             row_limit=row_limit,
             node_map=node_map,
             orig_source_names=orig_src_names,

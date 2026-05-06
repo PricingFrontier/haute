@@ -452,6 +452,119 @@ class TestSolveRoute:
         build_grid.assert_not_called()
         launch_background.assert_not_called()
 
+    def test_solve_ratebook_captures_banding_rule_order_for_rates_tab(
+        self,
+        client,
+        scored_data,
+        clean_job_store,
+    ):
+        """The optimiser keeps the banding source's row order for rate tables."""
+        from haute.routes.optimiser import _solve_service
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": scored_data},
+                        },
+                    },
+                    {
+                        "id": "age_veh_banding",
+                        "data": {
+                            "label": "Age Veh Banding",
+                            "nodeType": "banding",
+                            "config": {
+                                "factors": [
+                                    {
+                                        "banding": "breakpoints",
+                                        "column": "proposer_age",
+                                        "outputColumn": "proposer_age_band",
+                                        "rules": {
+                                            "27": "20-27",
+                                            "34": "28-34",
+                                            "41": "35-41",
+                                        },
+                                        "default": "missing",
+                                    },
+                                    {
+                                        "banding": "categorical",
+                                        "column": "channel",
+                                        "outputColumn": "channel_band",
+                                        "rules": {
+                                            "compare_the_market": "compare_the_market",
+                                            "moneysupermarket": "moneysupermarket",
+                                            "confused": "confused",
+                                        },
+                                    },
+                                ]
+                            },
+                        },
+                    },
+                    {
+                        "id": "online_optimiser",
+                        "data": {
+                            "label": "online_optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "ratebook",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.90}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "factor_columns": [["channel_band"], ["proposer_age_band"]],
+                                "banding_source": "age_veh_banding",
+                                "data_input": "source",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "online_optimiser").model_dump(),
+                    make_edge("age_veh_banding", "online_optimiser").model_dump(),
+                ],
+            }
+        ).model_dump()
+
+        with (
+            patch.object(_solve_service, "_execute_pipeline", return_value={}),
+            patch.object(_solve_service, "_resolve_data_source", return_value=object()),
+            patch.object(
+                _solve_service,
+                "_validate_and_project",
+                return_value=(["volume"], object()),
+            ),
+            patch.object(
+                _solve_service,
+                "_extract_factors",
+                return_value=pl.DataFrame(
+                    {
+                        "quote_id": ["q1"],
+                        "channel_band": ["confused"],
+                        "proposer_age_band": ["28-34"],
+                    }
+                ),
+            ),
+            patch.object(_solve_service, "_build_grid", return_value=object()),
+            patch.object(_solve_service, "_launch_background") as launch_background,
+        ):
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "node_id": "online_optimiser"},
+            )
+
+        assert resp.status_code == 200
+        launched_config = launch_background.call_args.args[2]
+        assert "factor_level_order" not in launched_config
+        assert launch_background.call_args.kwargs["factor_level_order"] == {
+            "proposer_age_band": ["20-27", "28-34", "35-41", "missing"],
+            "channel_band": ["compare_the_market", "moneysupermarket", "confused"],
+        }
+
 
 class TestStatusRoute:
     def test_missing_job_returns_404(self, client):
@@ -2786,6 +2899,31 @@ class TestFrontierSelect:
         assert resp.json()["status"] == "ok"
         assert resp.json()["constraints"] == {"volume": 0.97}
         mock_solver.solve.assert_not_called()
+
+    def test_select_ratebook_frontier_point_materialises_tables_in_banding_order(
+        self,
+        client,
+        clean_job_store,
+    ):
+        """On-demand Rates tab materialisation keeps the stored band order."""
+        _make_ratebook_frontier_materialisation_job(clean_job_store, "rb_select_order")
+        clean_job_store.jobs["rb_select_order"]["factor_level_order"] = {
+            "region": ["South", "North"]
+        }
+
+        resp = client.post(
+            "/api/optimiser/frontier/select",
+            json={
+                "job_id": "rb_select_order",
+                "point_index": 0,
+                "include_ratebook_tables": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        rows = resp.json()["factor_tables"]["region"]
+        assert [row["__factor_group__"] for row in rows] == ["South", "North"]
+        assert [row["quote_count"] for row in rows] == [1, 1]
 
     def test_select_negative_index(self, client, clean_job_store):
         """Negative point index returns 422 (Pydantic validation via Field(ge=0))."""
@@ -6270,6 +6408,86 @@ class TestSolveRatebookUnit:
         assert "factors_df" in job
         assert job["factors_df"].columns == ["region"]
 
+    def test_solve_ratebook_orders_factor_tables_by_banding_rule_order(self):
+        """Ratebook rates are serialised in the source banding row order."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2", "q3", "q4", "q5"]
+
+        factors_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q3", "q4", "q5"],
+                "proposer_age_band": ["20-27", "28-34", "35-41", "missing", "solver_only"],
+                "channel_band": ["direct", "broker", "direct", "broker", "direct"],
+            }
+        )
+        mock_result = SimpleNamespace(
+            total_objective=100.0,
+            baseline_objective=90.0,
+            total_constraints={},
+            baseline_constraints={},
+            lambdas={},
+            converged=True,
+            cd_iterations=2,
+            factor_tables={
+                "channel_band": {
+                    "broker": 0.98,
+                    "direct": 1.04,
+                },
+                "proposer_age_band": {
+                    "35-41": 1.15,
+                    "20-27": 0.92,
+                    "solver_only": 1.30,
+                    "28-34": 1.03,
+                    "missing": 1.20,
+                },
+            },
+            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
+        )
+        config = {
+            "objective": "income",
+            "constraints": {},
+            "factor_columns": [["channel_band"], ["proposer_age_band"]],
+            "quote_id": "quote_id",
+        }
+        factor_level_order = {
+            "proposer_age_band": ["20-27", "28-34", "35-41", "missing"],
+            "channel_band": ["direct", "broker"],
+        }
+
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = mock_result
+            _solve_ratebook(
+                mock_grid,
+                config,
+                factors_df,
+                store,
+                job_id,
+                time.monotonic(),
+                factor_level_order=factor_level_order,
+            )
+
+        factor_tables = store.require_job(job_id)["result"]["factor_tables"]
+        assert list(factor_tables) == ["proposer_age_band", "channel_band"]
+        rows = factor_tables["proposer_age_band"]
+        assert [row["__factor_group__"] for row in rows] == [
+            "20-27",
+            "28-34",
+            "35-41",
+            "missing",
+            "solver_only",
+        ]
+        assert [row["quote_count"] for row in rows] == [1, 1, 1, 1, 1]
+        assert [row["__factor_group__"] for row in factor_tables["channel_band"]] == [
+            "direct",
+            "broker",
+        ]
+
     def test_ratebook_factor_level_counts_support_composite_factor_groups(self):
         """Counts use price-contour's table and level keys for composite groups."""
         from haute.routes._optimiser_service import _ratebook_factor_level_counts
@@ -7760,7 +7978,7 @@ class TestOptimiserHelperValidators:
             _frontier_point_lambdas({"total_objective": 1.0})
         assert "no lambda" in exc.value.detail
 
-    def test_frontier_point_lambdas_skips_bool_values(self) -> None:
+    def test_frontier_point_lambdas_rejects_bool_values(self) -> None:
         """``isinstance(True, int)`` is True; bool keys must not become lambdas."""
         from haute.routes.optimiser import _frontier_point_lambdas
 

@@ -50,6 +50,7 @@ from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
+from haute._types import NodeData
 from haute.graph_utils import (
     HauteError,
     NodeType,
@@ -514,6 +515,35 @@ def _preview_projection_columns(
     return projected
 
 
+_OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS = frozenset({"optimal_scenario_value", "optimised_factor"})
+
+
+def _normalise_requested_preview_columns(
+    node_data: NodeData,
+    df: pl.DataFrame,
+    requested_preview_columns: list[str] | None,
+) -> list[str] | None:
+    if requested_preview_columns is None:
+        return None
+    if node_data.nodeType != NodeType.OPTIMISER_APPLY:
+        return requested_preview_columns
+
+    configured_column = node_data.config.get("optimised_value_column", "")
+    if (
+        not configured_column
+        or configured_column in _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS
+        or configured_column not in df.columns
+    ):
+        return requested_preview_columns
+
+    return [
+        configured_column
+        if column in _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS and column not in df.columns
+        else column
+        for column in requested_preview_columns
+    ]
+
+
 _preview_cache = FingerprintCache(
     slots=(
         "eager_outputs",
@@ -840,7 +870,14 @@ def execute_graph(
                 node_warnings.extend(SchemaWarning(column=c, status="stale") for c in sorted(stale))
 
         if nid in preview_node_ids:
-            preview_columns = _preview_projection_columns(df, requested_preview_columns)
+            preview_columns = _preview_projection_columns(
+                df,
+                _normalise_requested_preview_columns(
+                    node_data,
+                    df,
+                    requested_preview_columns,
+                ),
+            )
             preview_row_limit = _preview_row_limit_for_width(max_preview_rows, len(preview_columns))
             preview = df.select(preview_columns).head(preview_row_limit).to_dicts()
         else:

@@ -19,15 +19,28 @@ import {
  */
 
 export type Experiment = { experiment_id: string; name: string }
-export type Run = { run_id: string; run_name: string; metrics: Record<string, number>; artifacts: string[] }
+export type Run = {
+  run_id: string
+  run_name: string
+  metrics: Record<string, number>
+  params?: Record<string, string>
+  artifacts: string[]
+}
 export type RegisteredModel = { name: string; latest_versions: { version: string; status: string; run_id: string }[] }
-export type ModelVersion = { version: string; run_id: string; status: string; description: string }
+export type ModelVersion = {
+  version: string
+  run_id: string
+  status: string
+  description: string
+  params?: Record<string, string>
+}
 
 export interface MlflowBrowserState {
   experiments: Experiment[]
   runs: Run[]
   models: RegisteredModel[]
   modelVersions: ModelVersion[]
+  modelVersionsFor: string
   loadingExperiments: boolean
   loadingRuns: boolean
   loadingModels: boolean
@@ -56,6 +69,7 @@ export function useMlflowBrowser(opts?: { runTag?: string; initialExpId?: string
   const [runs, setRuns] = useState<Run[]>([])
   const [models, setModels] = useState<RegisteredModel[]>([])
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([])
+  const [modelVersionsFor, setModelVersionsFor] = useState("")
 
   const [loadingExperiments, setLoadingExperiments] = useState(false)
   const [loadingRuns, setLoadingRuns] = useState(false)
@@ -120,6 +134,8 @@ export function useMlflowBrowser(opts?: { runTag?: string; initialExpId?: string
     if (!modelName) return
     if (fetchedVersionsFor.current === modelName) return
     fetchedVersionsFor.current = modelName
+    setModelVersions([])
+    setModelVersionsFor(modelName)
     setLoadingVersions(true)
     setErrorVersions("")
     getModelVersions(modelName)
@@ -136,6 +152,7 @@ export function useMlflowBrowser(opts?: { runTag?: string; initialExpId?: string
     runs,
     models,
     modelVersions,
+    modelVersionsFor,
     loadingExperiments,
     loadingRuns,
     loadingModels,

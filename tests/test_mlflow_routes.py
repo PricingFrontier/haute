@@ -447,6 +447,54 @@ class TestListModelVersions:
         assert data[0]["version"] == "2"
         assert data[1]["version"] == "1"
 
+    def test_list_model_versions_includes_backing_run_params(self, client):
+        """Model versions include run params so optimiser mode can be discovered."""
+        v = MagicMock(
+            version="1",
+            run_id="ratebook-run",
+            status="READY",
+            creation_timestamp=100,
+            description="ratebook optimiser",
+        )
+
+        mock_client = MagicMock()
+        mock_client.search_model_versions.return_value = [v]
+        mock_client.get_run.return_value = _make_run(
+            run_id="ratebook-run",
+            params={"mode": "ratebook"},
+        )
+
+        with _mock_tracking(client=mock_client):
+            resp = client.get("/api/mlflow/model-versions?model_name=my-model")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["params"] == {"mode": "ratebook"}
+        mock_client.get_run.assert_called_once_with("ratebook-run")
+
+    def test_list_model_versions_keeps_versions_when_run_params_unavailable(self, client):
+        """A params lookup failure should not hide registered model versions."""
+        v = MagicMock(
+            version="1",
+            run_id="orphaned-run",
+            status="READY",
+            creation_timestamp=100,
+            description="version with inaccessible run",
+        )
+
+        mock_client = MagicMock()
+        mock_client.search_model_versions.return_value = [v]
+        mock_client.get_run.side_effect = RuntimeError("run metadata unavailable")
+
+        with _mock_tracking(client=mock_client):
+            resp = client.get("/api/mlflow/model-versions?model_name=my-model")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["version"] == "1"
+        assert data[0]["params"] == {}
+        mock_client.get_run.assert_called_once_with("orphaned-run")
+
     def test_sorting_with_many_versions(self, client):
         """Versions 1, 3, 2, 10 should sort as 10, 3, 2, 1."""
         versions = [

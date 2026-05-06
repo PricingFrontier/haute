@@ -216,15 +216,27 @@ def optimiser_input(conversion_scoring: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
+@pipeline.optimiser(config="config/optimisation/ratebook_optimiser.json", contract={"inputs": [], "outputs": []})
+def ratebook_optimiser(optimiser_input: pl.LazyFrame, age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
+    """ratebook_optimiser node"""
+    return optimiser_input
+
+
+@pipeline.optimiser_apply(config="config/apply_optimisation/apply_ratebook.json", contract="opaque")
+def apply_ratebook(optimiser_input: pl.LazyFrame, age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
+    """apply_ratebook node"""
+    return optimiser_input
+
+
 @pipeline.optimiser(config="config/optimisation/online_optimiser.json", contract={"inputs": [], "outputs": []})
-def online_optimiser(optimiser_input: pl.LazyFrame, age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
+def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
     """online_optimiser node"""
     return optimiser_input
 
 
-@pipeline.optimiser_apply(config="config/apply_optimisation/apply_optimisation.json", contract="opaque")
-def apply_optimisation(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
-    """apply_optimisation node"""
+@pipeline.optimiser_apply(config="config/apply_optimisation/apply_online.json", contract="opaque")
+def apply_online(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
+    """apply_online node"""
     return optimiser_input
 
 
@@ -254,10 +266,13 @@ pipeline.connect("competitor_features", "conversion")
 pipeline.connect("premium", "competitor_features_scenarios")
 pipeline.connect("competitor_features_scenarios", "conversion_scoring")
 pipeline.connect("conversion_scoring", "optimiser_input")
-pipeline.connect("optimiser_input", "online_optimiser")
+pipeline.connect("optimiser_input", "ratebook_optimiser")
 pipeline.connect("quotes", "processing")
 pipeline.connect("processing", "policies")
-pipeline.connect("optimiser_input", "apply_optimisation")
+pipeline.connect("optimiser_input", "apply_ratebook")
 pipeline.connect("policies", "age_veh_banding")
 pipeline.connect("age_veh_banding", "adjustments")
-pipeline.connect("age_veh_banding", "online_optimiser")
+pipeline.connect("age_veh_banding", "ratebook_optimiser")
+pipeline.connect("age_veh_banding", "apply_ratebook")
+pipeline.connect("optimiser_input", "online_optimiser")
+pipeline.connect("optimiser_input", "apply_online")

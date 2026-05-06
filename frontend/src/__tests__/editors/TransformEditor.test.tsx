@@ -44,7 +44,7 @@ describe("TransformEditor", () => {
 
   it('shows "use input names" hint when input sources present', () => {
     const inputs = [
-      { varName: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
     ]
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
@@ -54,8 +54,8 @@ describe("TransformEditor", () => {
 
   it("renders input sources bar showing connected variable names", () => {
     const inputs = [
-      { varName: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
-      { varName: "policies", sourceLabel: "Policy Data", edgeId: "e2" },
+      { sourceNodeId: "test-source", varName: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "policies", sourceLabel: "Policy Data", edgeId: "e2" },
     ]
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
@@ -91,7 +91,7 @@ describe("TransformEditor", () => {
 
   it("does not synthesize input alias scaffold when inputs are connected", () => {
     const inputs = [
-      { varName: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
     ]
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
@@ -103,7 +103,7 @@ describe("TransformEditor", () => {
 
   it("shows single input source name with 'Input' singular label", () => {
     const inputs = [
-      { varName: "quotes", sourceLabel: "Quotes Data", edgeId: "e1" },
+      { sourceNodeId: "test-source", varName: "quotes", sourceLabel: "Quotes Data", edgeId: "e1" },
     ]
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,

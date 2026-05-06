@@ -291,6 +291,9 @@ class OptimiserApplyConfig(TypedDict, total=False):
 
     artifact_path: str  # path to saved optimiser artifact JSON
     version_column: str  # column name for version tracking (default "__optimiser_version__")
+    optimised_value_column: str  # optional output column for the selected optimiser value
+    optimiser_mode: str  # resolved optimiser artifact mode, when known
+    ratebook_input: str  # upstream node id used when applying ratebook artifacts
     # MLflow source fields
     sourceType: str  # "file" | "run" | "registered"
     registered_model: str  # registered model name (when sourceType="registered")
@@ -455,6 +458,9 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
 OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
     "artifact_path",
     "version_column",
+    "optimised_value_column",
+    "optimiser_mode",
+    "ratebook_input",
     "sourceType",
     "registered_model",
     "version",

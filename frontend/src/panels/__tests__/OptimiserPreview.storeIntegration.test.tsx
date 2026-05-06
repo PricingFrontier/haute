@@ -92,7 +92,7 @@ describe("OptimiserPreview store integration", () => {
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
     expect(data).not.toBeNull()
-    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+    render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     fireEvent.click(screen.getByRole("button", { name: "Select frontier point 3" }))
 
@@ -149,7 +149,7 @@ describe("OptimiserPreview store integration", () => {
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
     expect(data).not.toBeNull()
-    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+    render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     expect(screen.getByText("Rates")).toBeInTheDocument()
     fireEvent.click(screen.getByText("Rates"))
@@ -213,7 +213,7 @@ describe("OptimiserPreview store integration", () => {
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
     expect(data).not.toBeNull()
-    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+    render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     fireEvent.click(screen.getByText("Summary"))
 
@@ -289,7 +289,7 @@ describe("OptimiserPreview store integration", () => {
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
     expect(data).not.toBeNull()
-    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+    render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     fireEvent.click(screen.getByText("Rates"))
     expect(screen.getByText("Materialising selected point rates...")).toBeInTheDocument()
@@ -346,7 +346,7 @@ describe("OptimiserPreview store integration", () => {
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
     expect(data).not.toBeNull()
-    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+    render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     fireEvent.click(screen.getByText("Rates"))
 
@@ -387,7 +387,7 @@ describe("OptimiserPreview store integration", () => {
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
     expect(data).not.toBeNull()
-    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+    render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     fireEvent.click(screen.getByText("Rates"))
 
@@ -478,7 +478,7 @@ describe("OptimiserPreview store integration", () => {
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
     expect(data).not.toBeNull()
-    render(<OptimiserPreview data={data!} nodeId="opt_1" />)
+    render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
     // ── Switch to Rates tab — materialise fires for the auto-selected
     //    point 0; promise is held unresolved (network slow). ──

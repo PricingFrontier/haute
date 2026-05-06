@@ -31,6 +31,7 @@ from haute._types import (
     NODE_TYPE_TO_DECORATOR,
     GraphEdge,
     GraphNode,
+    NodeType,
     PipelineGraph,
 )
 from haute.errors import ConfigError, HauteError, ParseError
@@ -193,7 +194,75 @@ def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
     )
 
 
-def _node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str:
+def _optimiser_apply_ratebook_return_source(
+    node: GraphNode,
+    source_names: list[str],
+    source_ids: list[str],
+) -> str | None:
+    """Resolve the configured ratebook input node id to a Python parameter name."""
+    if node.data.nodeType != NodeType.OPTIMISER_APPLY:
+        return None
+
+    ratebook_input = node.data.config.get("ratebook_input")
+    if not ratebook_input or not source_ids:
+        return None
+    optimiser_mode = node.data.config.get("optimiser_mode")
+    if optimiser_mode == "online":
+        return None
+    if node.data.config.get("sourceType") in {"run", "registered"} and optimiser_mode != "ratebook":
+        # MLflow source whose artifact mode has not yet been resolved by the
+        # picker.  Skip wiring rather than emit code that may be wrong; the
+        # ``ratebook_input`` value is preserved in config so the next codegen
+        # pass picks it up once the picker resolves ``optimiser_mode``.
+        return None
+
+    if ratebook_input not in source_ids:
+        raise ParseError(
+            "optimiserApply ratebook_input does not match any connected input node id.",
+            node_id=node.id,
+            node_label=node.data.label,
+            ratebook_input=ratebook_input,
+            connected_input_node_ids=source_ids,
+        )
+
+    index = source_ids.index(ratebook_input)
+    if index >= len(source_names):
+        raise ParseError(
+            "optimiserApply ratebook_input resolved outside the generated source list.",
+            node_id=node.id,
+            node_label=node.data.label,
+            ratebook_input=ratebook_input,
+            source_index=index,
+            source_names=source_names,
+        )
+    return source_names[index]
+
+
+def _rewrite_single_return_source(code: str, source_name: str) -> str:
+    """Rewrite the single passthrough return line produced for optimiserApply."""
+    lines = code.splitlines()
+    return_lines = [
+        idx
+        for idx, line in enumerate(lines)
+        if line.startswith("    return ") and not line.startswith("    return pl.")
+    ]
+    if len(return_lines) != 1:
+        raise HauteError(
+            "optimiserApply codegen expected exactly one passthrough return line.",
+            return_line_count=len(return_lines),
+        )
+    lines[return_lines[0]] = f"    return {source_name}"
+    result = "\n".join(lines)
+    if code.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _node_to_code(
+    node: GraphNode,
+    source_names: list[str] | None = None,
+    source_ids: list[str] | None = None,
+) -> str:
     """Generate code for a single node.
 
     Delegates to :func:`_generate_node_code` for the type-specific body,
@@ -202,7 +271,19 @@ def _node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str
     the column contract as an additional decorator kwarg so reviewers
     and the parser can cross-check it without running the pipeline.
     """
+    if source_names is None:
+        source_names = []
+    if source_ids is None:
+        source_ids = []
+
     code = _generate_node_code(node, source_names)
+    ratebook_return_source = _optimiser_apply_ratebook_return_source(
+        node,
+        source_names,
+        source_ids,
+    )
+    if ratebook_return_source is not None:
+        code = _rewrite_single_return_source(code, ratebook_return_source)
 
     node_type = node.data.nodeType
     if has_config_folder(node_type):
@@ -382,6 +463,14 @@ def _build_node_sources(
     return sources
 
 
+def _build_node_source_ids(edges: list[GraphEdge]) -> dict[str, list[str]]:
+    """Map target node ID -> list of source node IDs in edge order."""
+    sources: dict[str, list[str]] = {}
+    for edge in edges:
+        sources.setdefault(edge.target, []).append(edge.source)
+    return sources
+
+
 def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
     """Map instance node ID -> original node ID for nodes with ``instanceOf``."""
     result: dict[str, str] = {}
@@ -393,7 +482,7 @@ def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
 
 
 #: Type alias for a function that generates code for a single node.
-_NodeCodeFn = Callable[[GraphNode, list[str] | None], str]
+_NodeCodeFn = Callable[[GraphNode, list[str] | None, list[str] | None], str]
 
 
 def _generate_pipeline_lines(
@@ -406,6 +495,7 @@ def _generate_pipeline_lines(
     id_to_func: dict[str, str],
     node_sources: dict[str, list[str]],
     connect_pairs: list[tuple[str, str]],
+    node_source_ids: dict[str, list[str]] | None = None,
     preserved_blocks: list[str] | None = None,
     submodel_imports: list[str] | None = None,
     node_to_code_fn: _NodeCodeFn = _node_to_code,
@@ -460,7 +550,8 @@ def _generate_pipeline_lines(
 
     for node in originals:
         srcs = node_sources.get(node.id, [])
-        lines.append(node_to_code_fn(node, srcs))
+        src_ids = (node_source_ids or {}).get(node.id, [])
+        lines.append(node_to_code_fn(node, srcs, src_ids))
         lines.append("")
 
     for node in instances:
@@ -532,13 +623,17 @@ def graph_to_code(
     return next(iter(files.values()))
 
 
-def _submodel_node_to_code(node: GraphNode, source_names: list[str] | None = None) -> str:
+def _submodel_node_to_code(
+    node: GraphNode,
+    source_names: list[str] | None = None,
+    source_ids: list[str] | None = None,
+) -> str:
     """Generate code for a single node inside a submodel file.
 
     Identical to ``_node_to_code`` but uses ``@submodel.<type>`` instead of
     ``@pipeline.<type>``.
     """
-    code = _node_to_code(node, source_names=source_names)
+    code = _node_to_code(node, source_names=source_names, source_ids=source_ids)
     return code.replace("@pipeline.", "@submodel.", 1)
 
 
@@ -584,6 +679,7 @@ def graph_to_code_multi(
 
         id_to_func = _build_id_to_func(sorted_nodes)
         node_sources = _build_node_sources(edges, id_to_func)
+        node_source_ids = _build_node_source_ids(edges)
 
         all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
 
@@ -601,6 +697,7 @@ def graph_to_code_multi(
             id_to_func=id_to_func,
             node_sources=node_sources,
             connect_pairs=connect_pairs,
+            node_source_ids=node_source_ids,
             preserved_blocks=all_preserved or None,
             node_to_code_fn=_node_to_code,
         )
@@ -645,6 +742,7 @@ def graph_to_code_multi(
         sorted_sm_nodes = _topo_sort(sm_nodes, sm_edges)
         sm_id_to_func = _build_id_to_func(sorted_sm_nodes)
         sm_node_sources = _build_node_sources(sm_edges, sm_id_to_func)
+        sm_node_source_ids = _build_node_source_ids(sm_edges)
 
         # Also include cross-boundary inputs from parent graph edges.
         # Every edge targeting the submodel placeholder must carry a valid
@@ -680,8 +778,10 @@ def graph_to_code_multi(
                 )
             src_name = root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
             existing = sm_node_sources.setdefault(child_id, [])
+            existing_ids = sm_node_source_ids.setdefault(child_id, [])
             if src_name not in existing:
                 existing.append(src_name)
+                existing_ids.append(edge.source)
         for edge in edges:
             if edge.source != sm_node_id:
                 continue
@@ -723,6 +823,7 @@ def graph_to_code_multi(
             id_to_func=sm_id_to_func,
             node_sources=sm_node_sources,
             connect_pairs=sm_connect_pairs,
+            node_source_ids=sm_node_source_ids,
             node_to_code_fn=_submodel_node_to_code,
             obj_name="submodel",
         )
@@ -785,6 +886,7 @@ def graph_to_code_multi(
     # Build source names per root node from root-level edges AND
     # cross-boundary edges (resolving submodel handles to child node names).
     root_node_sources: dict[str, list[str]] = {}
+    root_node_source_ids: dict[str, list[str]] = {}
     for edge in edges:
         src = edge.source
         tgt = edge.target
@@ -812,6 +914,7 @@ def graph_to_code_multi(
             continue
         src_name = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
         root_node_sources.setdefault(actual_tgt, []).append(src_name)
+        root_node_source_ids.setdefault(actual_tgt, []).append(edge.source)
 
     # Build connect pairs for ALL edges (cross-boundary use real node names)
     root_connect_pairs: list[tuple[str, str]] = []
@@ -858,6 +961,7 @@ def graph_to_code_multi(
         id_to_func=root_id_to_func,
         node_sources=root_node_sources,
         connect_pairs=root_connect_pairs,
+        node_source_ids=root_node_source_ids,
         preserved_blocks=all_preserved or None,
         submodel_imports=sm_imports,
         node_to_code_fn=_node_to_code,

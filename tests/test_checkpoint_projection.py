@@ -391,7 +391,7 @@ class TestGetColumnContract:
         # because the schema comes from a runtime artifact" (tested
         # below).
         produced, referenced = get_column_contract(NodeType.OPTIMISER_APPLY, {})
-        assert produced == {"__optimiser_version__"}
+        assert produced == set()
         assert referenced == set()
 
     def test_optimiser_apply_custom_version_column_unconfigured(self):
@@ -399,7 +399,15 @@ class TestGetColumnContract:
             NodeType.OPTIMISER_APPLY,
             {"version_column": "opt_ver"},
         )
-        assert produced == {"opt_ver"}
+        assert produced == set()
+        assert referenced == set()
+
+    def test_optimiser_apply_custom_optimised_value_column_unconfigured(self):
+        produced, referenced = get_column_contract(
+            NodeType.OPTIMISER_APPLY,
+            {"optimised_value_column": "selected_price_factor"},
+        )
+        assert produced == set()
         assert referenced == set()
 
     def test_optimiser_apply_with_artifact_source_is_opaque(self):
@@ -412,6 +420,18 @@ class TestGetColumnContract:
             {"artifact_path": "/tmp/opt.json", "sourceType": "file"},
         )
         assert produced == {"__optimiser_version__"}
+        assert referenced is None
+
+    def test_optimiser_apply_with_custom_optimised_value_column(self):
+        produced, referenced = get_column_contract(
+            NodeType.OPTIMISER_APPLY,
+            {
+                "artifact_path": "/tmp/opt.json",
+                "sourceType": "file",
+                "optimised_value_column": "selected_price_factor",
+            },
+        )
+        assert produced == {"__optimiser_version__", "selected_price_factor"}
         assert referenced is None
 
     # -- Passthrough types ----------------------------------------------

@@ -181,6 +181,28 @@ def list_models(
     ]
 
 
+def _model_version_run_params(client: MlflowClient, run_id: str) -> dict[str, str]:
+    """Fetch a registered model version's backing-run params.
+
+    A registered model version may reference a run that has been deleted or
+    is otherwise inaccessible — in that case the version itself is still
+    valid, so swallow the lookup error and return ``{}`` rather than failing
+    the whole ``/model-versions`` response. The exception is logged with a
+    stack trace so the underlying cause is diagnosable.
+    """
+    if not run_id:
+        return {}
+    try:
+        run = client.get_run(run_id)
+    except Exception:
+        logger.exception(
+            "mlflow_model_version_params_unavailable",
+            run_id=run_id,
+        )
+        return {}
+    return dict(run.data.params)
+
+
 @router.get("/model-versions", response_model=list[MlflowModelVersionSummary])
 def list_model_versions(
     model_name: str = Query(..., description="Registered model name"),
@@ -201,6 +223,7 @@ def list_model_versions(
             status=v.status,
             creation_timestamp=v.creation_timestamp,
             description=getattr(v, "description", ""),
+            params=_model_version_run_params(client, v.run_id or ""),
         )
         for v in sorted(versions, key=lambda v: int(v.version), reverse=True)
     ]

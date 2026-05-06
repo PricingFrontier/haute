@@ -92,6 +92,7 @@ class NodeBuildContext:
 
     node: GraphNode
     source_names: list[str]
+    source_ids: list[str]
     row_limit: int | None
     node_map: dict[str, GraphNode] | None
     orig_source_names: list[str] | None
@@ -698,15 +699,11 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 
 def _optimiser_apply_columns(config: dict[str, Any]) -> ColumnContract:
-    # Produced: version column is always added.
-    vcol = config.get("version_column", "__optimiser_version__")
-    produced = {vcol} if vcol else set()
-
     # Mirror the "do we have a source configured?" check in
     # _build_optimiser_apply: without an artifact path or a valid
     # MLflow source the builder returns _passthrough_fn, meaning the
-    # node reads nothing from its input.  Report that honestly.  Only
-    # once a source is configured do the referenced columns become
+    # node reads nothing from its input and produces no new columns.
+    # Only once a source is configured do the referenced columns become
     # artifact-driven and therefore opaque.
     source_type = config.get("sourceType", "")
     if config.get("artifact_path", "") and not source_type:
@@ -722,7 +719,15 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> ColumnContract:
         or (source_type == "registered" and config.get("registered_model"))
     )
     if not has_file and not has_mlflow:
-        return produced, set()
+        return set(), set()
+
+    # Produced: configured apply sources append a version column and can
+    # rename the final optimiser value column when requested.
+    vcol = config.get("version_column", "__optimiser_version__")
+    produced = {vcol} if vcol else set()
+    opt_value_col = config.get("optimised_value_column", "")
+    if opt_value_col:
+        produced.add(opt_value_col)
     return produced, None
 
 
@@ -731,6 +736,10 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _artifact_path = config.get("artifact_path", "")
     _version_col = config.get("version_column", "__optimiser_version__")
+    _optimised_value_col = config.get("optimised_value_column", "")
+    _ratebook_input = config.get("ratebook_input", "")
+    _source_names = list(ctx.source_names)
+    _source_ids = list(ctx.source_ids)
     _source_type = config.get("sourceType", "")
     _run_id = config.get("run_id", "")
     _registered_model = config.get("registered_model", "")
@@ -760,6 +769,10 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _rid: str = _run_id,
         _rm: str = _registered_model,
         _ver: str = _opt_version,
+        _opt_col: str = _optimised_value_col,
+        _rb_input: str = _ratebook_input,
+        _src_names: list[str] = _source_names,
+        _src_ids: list[str] = _source_ids,
     ) -> _Frame:
         if _st in ("run", "registered"):
             from haute._optimiser_io import load_mlflow_optimiser_artifact
@@ -775,7 +788,14 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
             artifact = load_optimiser_artifact(_path)
 
-        return _dispatch_apply(dfs[0] if dfs else pl.LazyFrame(), artifact, _vcol)
+        input_lf = _select_optimiser_apply_input(
+            dfs,
+            artifact,
+            _rb_input,
+            _src_names,
+            _src_ids,
+        )
+        return _dispatch_apply(input_lf, artifact, _vcol, _opt_col)
 
     return ctx.func_name, optimiser_apply_fn, False
 
@@ -963,6 +983,7 @@ def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 def _build_node_fn(
     node: GraphNode,
     source_names: list[str] | None = None,
+    source_ids: list[str] | None = None,
     row_limit: int | None = None,
     node_map: dict[str, GraphNode] | None = None,
     orig_source_names: list[str] | None = None,
@@ -985,10 +1006,13 @@ def _build_node_fn(
 
     if source_names is None:
         source_names = []
+    if source_ids is None:
+        source_ids = []
 
     ctx = NodeBuildContext(
         node=node,
         source_names=source_names,
+        source_ids=source_ids,
         row_limit=row_limit,
         node_map=node_map,
         orig_source_names=orig_source_names,
@@ -1016,17 +1040,61 @@ def _build_node_fn(
 # ---------------------------------------------------------------------------
 
 
+def _select_optimiser_apply_input(
+    dfs: tuple[_Frame, ...],
+    artifact: dict[str, Any],
+    ratebook_input: str,
+    source_names: list[str],
+    source_ids: list[str],
+) -> _Frame:
+    """Select the dataframe to apply without letting config override artifact mode."""
+    if artifact.get("mode", "online") != "ratebook":
+        return dfs[0] if dfs else pl.LazyFrame()
+
+    if not ratebook_input:
+        # Ratebook apply with no configured ``ratebook_input`` falls back to the
+        # first connected input.  Surface the unconfigured state so the user can
+        # set the picker explicitly when the graph has multiple ratebook inputs.
+        logger.warning(
+            "optimiser_apply_ratebook_input_unset",
+            source_ids=source_ids,
+            source_names=source_names,
+        )
+        return dfs[0] if dfs else pl.LazyFrame()
+
+    if not source_ids:
+        raise ValueError(
+            "optimiserApply ratebook_input requires connected input source_ids; "
+            f"got ratebook_input={ratebook_input!r} with source_names={source_names!r}",
+        )
+
+    if ratebook_input not in source_ids:
+        raise ValueError(
+            "optimiserApply ratebook_input "
+            f"{ratebook_input!r} is not one of the connected input node ids: {source_ids!r}",
+        )
+
+    index = source_ids.index(ratebook_input)
+    if index >= len(dfs):
+        raise ValueError(
+            "optimiserApply expected ratebook_input "
+            f"{ratebook_input!r} at index {index}, but received {len(dfs)} input(s)",
+        )
+    return dfs[index]
+
+
 def _dispatch_apply(
     lf: _Frame,
     artifact: dict[str, Any],
     version_col: str,
+    optimised_value_col: str = "",
 ) -> _Frame:
     """Route to the correct apply function based on artifact mode."""
     mode = artifact.get("mode", "online")
     version = artifact.get("version", "")
     if mode == "ratebook":
-        return _apply_ratebook(lf, artifact, version, version_col)
-    return _apply_online(lf, artifact, version, version_col)
+        return _apply_ratebook(lf, artifact, version, version_col, optimised_value_col)
+    return _apply_online(lf, artifact, version, version_col, optimised_value_col)
 
 
 def _apply_online(
@@ -1034,6 +1102,7 @@ def _apply_online(
     artifact: dict[str, Any],
     version: str,
     version_col: str,
+    optimised_value_col: str = "",
 ) -> _Frame:
     """Apply online optimisation: Lagrangian argmax with stored lambdas."""
     from price_contour import ApplyOptimiser
@@ -1069,6 +1138,11 @@ def _apply_online(
     )
     result = applier.apply(df_eager)
     result_df: pl.DataFrame = result.dataframe
+    result_df = _rename_column_if_configured(
+        result_df,
+        "optimal_scenario_value",
+        optimised_value_col,
+    )
 
     if version:
         result_df = result_df.with_columns(pl.lit(version).alias(version_col))
@@ -1081,6 +1155,7 @@ def _apply_ratebook(
     artifact: dict[str, Any],
     version: str,
     version_col: str,
+    optimised_value_col: str = "",
 ) -> _Frame:
     """Apply ratebook optimisation: factor table lookups with stored tables.
 
@@ -1138,7 +1213,31 @@ def _apply_ratebook(
                 pl.col(factor_cols[0]).alias("optimised_factor"),
             )
 
+    if optimised_value_col and optimised_value_col != "optimised_factor":
+        existing = result_lf.collect_schema().names()
+        if "optimised_factor" not in existing:
+            raise ValueError(
+                "optimiserApply configured optimised_value_column but ratebook apply "
+                "did not produce optimised_factor",
+            )
+        result_lf = result_lf.rename({"optimised_factor": optimised_value_col})
+
     if version:
         result_lf = result_lf.with_columns(pl.lit(version).alias(version_col))
 
     return result_lf
+
+
+def _rename_column_if_configured(
+    df: pl.DataFrame,
+    source_column: str,
+    configured_column: str,
+) -> pl.DataFrame:
+    if not configured_column or configured_column == source_column:
+        return df
+    if source_column not in df.columns:
+        raise ValueError(
+            "optimiserApply configured optimised_value_column but online apply "
+            f"did not produce {source_column!r}",
+        )
+    return df.rename({source_column: configured_column})

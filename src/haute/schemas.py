@@ -653,6 +653,7 @@ class MlflowModelVersionSummary(BaseModel):
     status: str
     creation_timestamp: int | None = None
     description: str = ""
+    params: dict[str, str] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

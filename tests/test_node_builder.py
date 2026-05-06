@@ -62,9 +62,9 @@ class TestWrapBuilder:
         hooks = NodeBuildHooks(before_build=hook)
         wrapped = wrap_builder(_dummy_base, hooks)
         node = _make_node("test")
-        name, fn, is_source = wrapped(node, source_names=["src"])
+        name, fn, is_source = wrapped(node, source_names=["src"], source_ids=["src-node"])
         assert name == "test"
-        hook.assert_called_once_with(node, ["src"])
+        hook.assert_called_once_with(node, ["src"], ["src-node"])
 
     def test_hook_overrides_base(self) -> None:
         sentinel_fn = lambda df: df  # noqa: E731
@@ -90,7 +90,7 @@ class TestWrapBuilder:
         """When source_names is None, the hook receives an empty list."""
         received_names = []
 
-        def capture_hook(node, names):
+        def capture_hook(node, names, source_ids):
             received_names.append(names)
             return None
 
@@ -100,13 +100,27 @@ class TestWrapBuilder:
         wrapped(node, source_names=None)
         assert received_names == [[]]
 
+    def test_source_ids_default_to_empty_list(self) -> None:
+        """When source_ids is absent, the hook receives an empty list."""
+        received_ids = []
+
+        def capture_hook(node, names, source_ids):
+            received_ids.append(source_ids)
+            return None
+
+        hooks = NodeBuildHooks(before_build=capture_hook)
+        wrapped = wrap_builder(_dummy_base, hooks)
+        node = _make_node("test")
+        wrapped(node, source_names=["src"])
+        assert received_ids == [[]]
+
     def test_kwargs_forwarded_to_base(self) -> None:
         base = MagicMock(return_value=("b", lambda: None, False))
         hooks = NodeBuildHooks()
         wrapped = wrap_builder(base, hooks)
         node = _make_node("test")
         wrapped(node, source_names=["s"], extra_kwarg="val")
-        base.assert_called_once_with(node, source_names=["s"], extra_kwarg="val")
+        base.assert_called_once_with(node, source_names=["s"], source_ids=None, extra_kwarg="val")
 
 
 # ---------------------------------------------------------------------------

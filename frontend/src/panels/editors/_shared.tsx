@@ -26,6 +26,7 @@ export type FileItem = {
 }
 
 export type InputSource = {
+  sourceNodeId: string
   varName: string
   sourceLabel: string
   edgeId: string

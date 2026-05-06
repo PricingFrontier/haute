@@ -2,13 +2,16 @@ import { useMemo, useState } from "react"
 import {
   formatFactorLevel,
   numericRate,
+  orderedFactorTableEntries,
   RATE_COLUMN,
+  type FactorLevelOrder,
   type FactorTableRow,
   type FactorTables,
 } from "./ratebookFactorTables"
 
 interface RatebookRatesTabProps {
   factorTables: FactorTables
+  factorLevelOrder?: FactorLevelOrder
 }
 
 const EMPTY_FACTOR_ROWS: FactorTableRow[] = []
@@ -29,10 +32,10 @@ function rateSummary(rows: FactorTableRow[]): { min: number | null; max: number 
   return { min, max }
 }
 
-export default function RatebookRatesTab({ factorTables }: RatebookRatesTabProps) {
+export default function RatebookRatesTab({ factorTables, factorLevelOrder }: RatebookRatesTabProps) {
   const entries = useMemo(
-    () => Object.entries(factorTables).filter(([, rows]) => Array.isArray(rows) && rows.length > 0),
-    [factorTables],
+    () => orderedFactorTableEntries(factorTables, factorLevelOrder),
+    [factorTables, factorLevelOrder],
   )
   const [selectedFactor, setSelectedFactor] = useState(entries[0]?.[0] ?? "")
   const selectedFactorName = entries.some(([name]) => name === selectedFactor)
