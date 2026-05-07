@@ -142,26 +142,37 @@ export interface ModelScoreIdentityDetail {
 
 export interface ModelScoreContributionDetail {
   feature: string
+  term?: string
+  term_type?: string
   feature_value?: unknown
   shap_value: number
   abs_shap_value?: number
+  contribution?: number
+  contribution_value?: number
+  abs_contribution?: number
+  abs_contribution_value?: number
   rank?: number
   is_categorical?: boolean
 }
 
 export interface ModelScoreExplanationDetail {
-  type?: "catboost_shap" | string
-  method?: "catboost_shap" | string
+  type?: "catboost_shap" | "rustystats_glm_contributions" | string
+  method?: "catboost_shap" | "rustystats_glm_contributions" | string
   status?: "ok" | "error" | string
-  output_space?: "prediction" | "raw_formula_val" | string
+  output_space?: "prediction" | "raw_formula_val" | "linear_predictor" | string
   prediction_space?: string
   base_value?: number
   sum_contributions?: number
   contribution_sum?: number
   prediction_from_shap?: number
+  prediction_from_contributions?: number
   model_output_value?: number
+  model_prediction_value?: number
   prediction_value?: number | null
   output_difference?: number | null
+  family?: string
+  link?: string
+  link_function?: string
   feature_count?: number
   feature_values?: Record<string, unknown>
   contributions?: ModelScoreContributionDetail[]
@@ -181,6 +192,71 @@ export interface ModelScoreNodeDetail {
   explanation?: ModelScoreExplanationDetail
 }
 
+export interface OptimiserApplyOnlineCandidateDetail {
+  scenario_index: number
+  scenario_value: unknown
+  objective: number
+  decision_score: number
+  selected: boolean
+  is_baseline: boolean
+  constraints?: Record<string, unknown>
+  linearised_constraints?: Record<string, unknown>
+  lambda_terms?: Record<string, unknown>
+}
+
+export interface OptimiserApplyRatebookFactorDetail {
+  name: string
+  input_value: unknown
+  factor?: string
+  factor_value: number
+  running_total: number
+  status: string
+  default_used?: boolean
+}
+
+export interface OptimiserApplyOnlineNodeDetail {
+  detail_type: "optimiser_apply"
+  mode: "online"
+  status?: "ok"
+  output_column: string
+  output_value: unknown
+  quote_id_column?: string
+  quote_id_value?: unknown
+  scenario_index_column?: string
+  scenario_value_column?: string
+  objective_column?: string
+  constraints?: Record<string, unknown>
+  lambdas?: Record<string, unknown>
+  candidates: OptimiserApplyOnlineCandidateDetail[]
+  selected?: OptimiserApplyOnlineCandidateDetail | null
+  baseline?: OptimiserApplyOnlineCandidateDetail | null
+}
+
+export interface OptimiserApplyRatebookNodeDetail {
+  detail_type: "optimiser_apply"
+  mode: "ratebook"
+  status?: "ok"
+  output_column: string
+  output_value: unknown
+  base_value: number
+  factors: OptimiserApplyRatebookFactorDetail[]
+  final_value: unknown
+  message?: string
+}
+
+export interface OptimiserApplyErrorNodeDetail {
+  detail_type: "optimiser_apply"
+  mode: string
+  status: "error"
+  error: string
+  error_type?: string
+}
+
+export type OptimiserApplyNodeDetail =
+  | OptimiserApplyOnlineNodeDetail
+  | OptimiserApplyRatebookNodeDetail
+  | OptimiserApplyErrorNodeDetail
+
 export interface GenericTraceNodeDetail {
   detail_type?: string
   [key: string]: unknown
@@ -190,6 +266,7 @@ export type TraceNodeDetail = (
   | RatingStepNodeDetail
   | BandingNodeDetail
   | ModelScoreNodeDetail
+  | OptimiserApplyNodeDetail
   | GenericTraceNodeDetail
 ) & Record<string, unknown>
 

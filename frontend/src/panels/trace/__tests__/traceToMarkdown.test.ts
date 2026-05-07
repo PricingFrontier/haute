@@ -190,6 +190,89 @@ describe("traceToMarkdown", () => {
     expect(md).not.toContain("## Formula")
   })
 
+  it("names source-origin target columns instead of exporting computed placeholders", () => {
+    const trace = makeTrace({
+      target_node_id: "policies",
+      column: "premium",
+      output_value: 123.45,
+      steps: [
+        makeStep({
+          node_id: "policies",
+          node_name: "Policy Source",
+          node_type: "dataSource",
+          schema_diff: {
+            columns_added: ["premium"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: [],
+          },
+          input_values: {},
+          output_values: { premium: 123.45 },
+          expression: {
+            expression_text: "",
+            expression_type: "opaque",
+            referenced_columns: [],
+          },
+          calculation: {
+            substituted_text: "computed",
+            result_value: 123.45,
+            input_values: {},
+          },
+        }),
+      ],
+    })
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("## Source")
+    expect(md).toContain("Source node: Policy Source")
+    expect(md).not.toContain("## Formula")
+    expect(md).not.toContain("computed")
+  })
+
+  it("names expander-created target columns instead of exporting computed placeholders", () => {
+    const trace = makeTrace({
+      target_node_id: "expand",
+      column: "premium_multiplier",
+      output_value: 0.92,
+      steps: [
+        makeStep({
+          node_id: "expand",
+          node_name: "Premium Expander",
+          node_type: "scenarioExpander",
+          schema_diff: {
+            columns_added: ["scenario_index", "premium_multiplier"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: ["quote_id", "premium"],
+          },
+          input_values: { quote_id: "Q001", premium: 500 },
+          output_values: {
+            quote_id: "Q001",
+            premium: 500,
+            scenario_index: 3,
+            premium_multiplier: 0.92,
+          },
+          expression: {
+            expression_text: "",
+            expression_type: "opaque",
+            referenced_columns: [],
+          },
+          calculation: {
+            substituted_text: "computed",
+            result_value: 0.92,
+            input_values: {},
+          },
+        }),
+      ],
+    })
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("## Source")
+    expect(md).toContain("Source node: Premium Expander")
+    expect(md).not.toContain("## Formula")
+    expect(md).not.toContain("computed")
+  })
+
   it("handles null calculation (no substituted values)", () => {
     const trace = makeTrace({
       steps: [
@@ -709,6 +792,189 @@ describe("traceToMarkdown", () => {
     expect(md).not.toContain("Output: age_band")
     expect(md).not.toContain("Matched band:")
     expect(md).not.toContain("detail_type: banding")
+  })
+
+  it("summarizes optimiser apply online selected candidate without baseline noise", () => {
+    const selected = {
+      scenario_index: 1,
+      scenario_value: 0.15,
+      objective: 95,
+      decision_score: 91,
+      selected: true,
+      is_baseline: false,
+      constraints: { expected_loss: 20 },
+      linearised_constraints: { expected_loss: 20 },
+      lambda_terms: { expected_loss: -4 },
+    }
+    const baseline = {
+      scenario_index: 0,
+      scenario_value: 0,
+      objective: 80,
+      decision_score: 80,
+      selected: false,
+      is_baseline: true,
+      constraints: { expected_loss: 80 },
+      linearised_constraints: { expected_loss: 80 },
+      lambda_terms: { expected_loss: 0 },
+    }
+    const penalised = {
+      scenario_index: 2,
+      scenario_value: 0.3,
+      objective: 100,
+      decision_score: 80,
+      selected: false,
+      is_baseline: false,
+      constraints: { expected_loss: 100 },
+      linearised_constraints: { expected_loss: 100 },
+      lambda_terms: { expected_loss: -20 },
+    }
+    const trace = makeTrace({
+      column: "retention_offer",
+      output_value: 0.15,
+      steps: [
+        makeStep({
+          node_id: "optimiser",
+          node_name: "Offer Optimiser",
+          node_type: "optimiserApply",
+          schema_diff: { columns_added: ["retention_offer"], columns_removed: [], columns_modified: [], columns_passed: ["quote_id"] },
+          node_detail: {
+            detail_type: "optimiser_apply",
+            mode: "online",
+            output_column: "retention_offer",
+            output_value: 0.15,
+            quote_id_column: "quote_id",
+            quote_id_value: "Q42",
+            scenario_index_column: "scenario_index",
+            scenario_value_column: "offer",
+            objective_column: "expected_margin",
+            constraints: {
+              expected_loss: {
+                spec: { max: 30 },
+                lambda: 0.2,
+              },
+            },
+            lambdas: { expected_loss: 0.2 },
+            candidates: [baseline, selected, penalised],
+            selected,
+            baseline,
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("Optimiser apply: online")
+    expect(md).toContain("retention_offer=0.15")
+    expect(md).toContain("quote_id=Q42")
+    expect(md).toContain("selected scenario 1")
+    expect(md).toContain("offer=0.15")
+    expect(md).toContain("objective=95")
+    expect(md).toContain("score=91")
+    expect(md).toContain("next_best_gap=11")
+    expect(md).toContain("Score calculation: score = expected_margin + lambda terms")
+    expect(md).toContain("Constraint settings: expected_loss (max=30, lambda=0.2)")
+    expect(md).toContain("lambda_terms: expected_loss=-4")
+    expect(md).toContain("Lambdas: expected_loss=0.2")
+    expect(md).toContain("candidate 2")
+    expect(md).toContain("expected_loss=-20")
+    expect(md).not.toContain("baseline scenario")
+    expect(md).toContain("3 candidates")
+  })
+
+  it("summarizes optimiser apply ratebook base, factors, and final value", () => {
+    const trace = makeTrace({
+      column: "technical_premium",
+      output_value: 132,
+      steps: [
+        makeStep({
+          node_id: "ratebook",
+          node_name: "Ratebook Apply",
+          node_type: "optimiserApply",
+          schema_diff: { columns_added: ["technical_premium"], columns_removed: [], columns_modified: [], columns_passed: ["driver_age", "channel"] },
+          node_detail: {
+            detail_type: "optimiser_apply",
+            mode: "ratebook",
+            output_column: "technical_premium",
+            output_value: 132,
+            base_value: 100,
+            final_value: 132,
+            factors: [
+              { name: "age_factor", input_value: 42, factor: "age_factor", factor_value: 1.2, running_total: 120, status: "matched" },
+              { name: "channel_factor", input_value: "direct", factor: "channel_factor", factor_value: 1.1, running_total: 132, status: "default", default_used: true },
+            ],
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("Optimiser apply: ratebook")
+    expect(md).toContain("technical_premium=132")
+    expect(md).toContain("base=100")
+    expect(md).toContain("age_factor (input=42; factor=1.2; total=120; status=matched)")
+    expect(md).toContain("channel_factor (input=direct; factor=1.1; total=132; status=default; default used)")
+    expect(md).toContain("final=132")
+  })
+
+  it("summarizes optimiser apply trace errors", () => {
+    const trace = makeTrace({
+      column: "technical_premium",
+      output_value: "computed",
+      steps: [
+        makeStep({
+          node_id: "ratebook",
+          node_name: "Ratebook Apply",
+          node_type: "optimiserApply",
+          schema_diff: { columns_added: ["technical_premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+          node_detail: {
+            detail_type: "optimiser_apply",
+            mode: "ratebook",
+            status: "error",
+            error: "could not reconcile clicked ratebook output row",
+            error_type: "OptimiserApplyTraceError",
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("Optimiser apply: ratebook trace failed")
+    expect(md).toContain("Error: could not reconcile clicked ratebook output row")
+    expect(md).toContain("Error type: OptimiserApplyTraceError")
+  })
+
+  it("summarizes optimiser apply ratebook messages when no ladder is available", () => {
+    const trace = makeTrace({
+      column: "technical_premium",
+      output_value: null,
+      steps: [
+        makeStep({
+          node_id: "ratebook",
+          node_name: "Ratebook Apply",
+          node_type: "optimiserApply",
+          schema_diff: { columns_added: ["technical_premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+          node_detail: {
+            detail_type: "optimiser_apply",
+            mode: "ratebook",
+            output_column: "technical_premium",
+            output_value: null,
+            base_value: 1,
+            final_value: null,
+            factors: [],
+            message: "No ratebook factor tables were available in the optimiser artifact.",
+          },
+        }),
+      ],
+    })
+
+    const md = traceToMarkdown(trace, trace.steps[0])
+
+    expect(md).toContain("Optimiser apply: ratebook technical_premium=null")
+    expect(md).toContain("Message: No ratebook factor tables were available in the optimiser artifact.")
+    expect(md).not.toContain("factors:")
   })
 
   it("does not invent a banding summary when traced column is not a banding output", () => {

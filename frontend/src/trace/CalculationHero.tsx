@@ -20,6 +20,7 @@ import {
   formatDisplayExpression,
   tabularNums,
 } from "./traceFormatting"
+import { SOURCE_ONLY_TYPES } from "../utils/nodeTypes"
 
 // Re-export the entry types so existing importers of CalculationHero keep working.
 export type { ExpressionChainEntry, InputSourceEntry, WaterfallEntryProp }
@@ -41,10 +42,20 @@ export interface CalculationHeroProps {
   executionMs?: number
   stepCount?: number
   nodeName?: string
+  nodeType?: string
+  isSourceOrigin?: boolean
   // Backend emits either a successful entries list or a structured error
   // (e.g. "row had 2+ passes — waterfall not well-defined").  Pass both
   // through and let resolveWaterfallProp split them into steps vs error.
   waterfall?: WaterfallEntryProp[] | WaterfallErrorProp | null
+}
+
+function isSourceOnlyNodeType(nodeType: string | undefined): boolean {
+  return Boolean(nodeType && SOURCE_ONLY_TYPES.has(nodeType))
+}
+
+function isComputedPlaceholder(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === "computed"
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +104,7 @@ function parseBranches(text: string): Branch[] {
 // ---------------------------------------------------------------------------
 
 const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
-  const { column, expression, calculation, nodeName } = props
+  const { column, expression, calculation, nodeName, nodeType, isSourceOrigin } = props
   const [copied, setCopied] = useState(false)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -143,8 +154,10 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   const isOpaque = expression?.expression_type === "opaque"
   const isConditional = expression?.expression_type === "conditional"
   const isBanding = expression?.expression_type === "banding"
+  const isOriginNode = Boolean(isSourceOrigin || isSourceOnlyNodeType(nodeType))
   const hasExpressionText =
     expression != null && expression.expression_text.length > 0
+  const calculationIsComputedPlaceholder = isComputedPlaceholder(calculation?.substituted_text)
 
   // Waterfall: prefer backend-computed waterfall data, fallback to
   // frontend parsing for arithmetic with 3+ multiplicative factors.
@@ -288,6 +301,32 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       }}
     >
       Calculation data not available for this step.
+    </div>
+  )
+
+  const renderSourceOrigin = () => (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: 6,
+        fontSize: 11,
+        color: "var(--text-secondary)",
+        marginTop: 4,
+      }}
+    >
+      <span>Source node</span>
+      {nodeName && (
+        <span
+          style={{
+            color: "var(--text-primary)",
+            fontFamily: "monospace",
+            fontWeight: 600,
+          }}
+        >
+          {nodeName}
+        </span>
+      )}
     </div>
   )
 
@@ -451,6 +490,13 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   // Body rendering
   // ---------------------------------------------------------------------------
   const renderBody = () => {
+    if (
+      isOriginNode &&
+      (isNullBoth || isOpaque || calculationIsComputedPlaceholder || (expression != null && !hasExpressionText))
+    ) {
+      return renderSourceOrigin()
+    }
+
     // Both null: source data
     if (isNullBoth) {
       return (

@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from haute._banding_config import normalise_banding_factors
+from haute._graph_utils import _sanitize_func_name
 from haute._logging import get_logger
 from haute._rating import _breakpoints_to_rules, _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
@@ -699,9 +700,10 @@ def enrich_model_score(
                 prediction_value=prediction_value,
             )
         except _model_explainability.ModelExplanationError as exc:
+            error_metadata = _model_explainability.explanation_error_metadata_for_config(config)
             explanation = {
-                "type": "catboost_shap",
-                "method": "catboost_shap",
+                "type": error_metadata["type"],
+                "method": error_metadata["method"],
                 "status": "error",
                 "error": str(exc),
                 "error_type": type(exc).__name__,
@@ -819,6 +821,35 @@ def enrich_live_switch(
             "active_scenario": "",
             "pruned_branches": [],
         }
+
+
+# ---------------------------------------------------------------------------
+# Optimiser apply enrichment
+# ---------------------------------------------------------------------------
+
+
+def enrich_optimiser_apply(
+    config: dict[str, Any],
+    input_row: dict[str, Any],
+    output_row: dict[str, Any],
+    *,
+    input_frames: list[pl.DataFrame | pl.LazyFrame]
+    | tuple[pl.DataFrame | pl.LazyFrame, ...]
+    | None = None,
+    source_names: list[str] | None = None,
+    source_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Enrich an optimiserApply node trace."""
+    from haute._optimiser_apply_explainability import explain_optimiser_apply_from_config
+
+    return explain_optimiser_apply_from_config(
+        config,
+        input_row,
+        output_row,
+        input_frames=input_frames or [],
+        source_names=source_names,
+        source_ids=source_ids,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1679,6 +1710,26 @@ def enrich_steps(
                         )
                     elif node_type == "liveSwitch":
                         detail = trace_mod.enrich_live_switch(cfg, source)
+                    elif node_type == "optimiserApply":
+                        parent_ids = parents_of.get(step.node_id, [])
+                        input_frames = [
+                            eager_outputs[pid]
+                            for pid in parent_ids
+                            if pid in eager_outputs and eager_outputs[pid] is not None
+                        ]
+                        source_names = [
+                            _sanitize_func_name(node_map[pid].data.label)
+                            for pid in parent_ids
+                            if pid in node_map
+                        ]
+                        detail = trace_mod.enrich_optimiser_apply(
+                            cfg,
+                            step.input_values,
+                            step.output_values,
+                            input_frames=input_frames,
+                            source_names=source_names,
+                            source_ids=[pid for pid in parent_ids if pid in node_map],
+                        )
                     if detail is not None:
                         step.node_detail = detail
                         if node_type == "banding":

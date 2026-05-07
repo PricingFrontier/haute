@@ -19,6 +19,19 @@ import useJobPolling from "./useJobPolling"
 
 const VISIBLE_PROGRESS_INTERVAL_MS = 1_000
 
+function getMissingJobPollErrorMessage(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined
+  const { status, detail, message } = error as {
+    status?: unknown
+    detail?: unknown
+    message?: unknown
+  }
+  if (status !== 404) return undefined
+  if (typeof detail === "string" && detail.trim()) return detail
+  if (typeof message === "string" && message.trim()) return message
+  return "Job not found"
+}
+
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
 
@@ -54,6 +67,7 @@ export default function useBackgroundJobs() {
     isError: (s) => s.status === "error",
     getResult: (s) => (s.result ? s : undefined),
     getErrorMessage: (s) => s.message || "Unknown error",
+    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
     addToast,
     successLabel: "Optimisation complete",
     failLabel: "Optimisation failed",
@@ -91,6 +105,7 @@ export default function useBackgroundJobs() {
     isError: (s) => s.status === "error",
     getResult: (s) => (s.result ? s : undefined),
     getErrorMessage: (s) => s.message || "Unknown error",
+    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",

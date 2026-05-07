@@ -283,6 +283,394 @@ describe("TracePanel", () => {
     expect(screen.queryByText(/Output:/i)).not.toBeInTheDocument()
   })
 
+  it("renders source-origin columns with the source node instead of computed", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "policies",
+          column: "premium",
+          output_value: 123.45,
+          steps: [
+            makeStep({
+              node_id: "policies",
+              node_name: "Policy Source",
+              node_type: "dataSource",
+              schema_diff: {
+                columns_added: ["premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              input_values: {},
+              output_values: { premium: 123.45 },
+              expression: {
+                expression_text: "",
+                expression_type: "opaque",
+                referenced_columns: [],
+              },
+              calculation: {
+                substituted_text: "computed",
+                result_value: 123.45,
+                input_values: {},
+              },
+              row_lineage_type: "created",
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Policy Source").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("Nodes"))
+    const sourceButton = screen.getAllByText("Policy Source")
+      .find((element) => element.closest("button"))
+      ?.closest("button") as HTMLElement | undefined
+    expect(sourceButton).toBeTruthy()
+    fireEvent.click(sourceButton!)
+
+    expect(screen.getAllByText("Source node").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("renders expander-created columns with the expander node instead of computed", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "expand",
+          column: "premium_multiplier",
+          output_value: 0.92,
+          steps: [
+            makeStep({
+              node_id: "expand",
+              node_name: "Premium Expander",
+              node_type: "scenarioExpander",
+              schema_diff: {
+                columns_added: ["scenario_index", "premium_multiplier"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["quote_id", "premium"],
+              },
+              input_values: { quote_id: "Q001", premium: 500 },
+              output_values: {
+                quote_id: "Q001",
+                premium: 500,
+                scenario_index: 3,
+                premium_multiplier: 0.92,
+              },
+              expression: {
+                expression_text: "",
+                expression_type: "opaque",
+                referenced_columns: [],
+              },
+              calculation: {
+                substituted_text: "computed",
+                result_value: 0.92,
+                input_values: {},
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Premium Expander").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("Nodes"))
+    const expanderButton = screen.getAllByText("Premium Expander")
+      .find((element) => element.closest("button"))
+      ?.closest("button") as HTMLElement | undefined
+    expect(expanderButton).toBeTruthy()
+    fireEvent.click(expanderButton!)
+
+    expect(screen.getAllByText("Source node").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("renders optimiser apply online candidates with a selected marker and no baseline marker", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "optimiser",
+          column: "retention_offer",
+          output_value: 0.15,
+          steps: [
+            makeStep({
+              node_id: "optimiser",
+              node_name: "Offer optimiser",
+              node_type: "optimiserApply",
+              schema_diff: {
+                columns_added: ["retention_offer"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["quote_id"],
+              },
+              input_values: { quote_id: "Q42" },
+              output_values: { quote_id: "Q42", retention_offer: 0.15 },
+              expression: null,
+              calculation: null,
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "online",
+                output_column: "retention_offer",
+                output_value: 0.15,
+                quote_id_column: "quote_id",
+                quote_id_value: "Q42",
+                scenario_index_column: "scenario_index",
+                scenario_value_column: "offer",
+                objective_column: "expected_margin",
+                candidates: [
+                  {
+                    scenario_index: 0,
+                    scenario_value: 0,
+                    objective: 80,
+                    decision_score: 80,
+                    selected: false,
+                    is_baseline: true,
+                    constraints: { expected_loss: 80 },
+                    linearised_constraints: { expected_loss: 80 },
+                    lambda_terms: { expected_loss: 0 },
+                  },
+                  {
+                    scenario_index: 1,
+                    scenario_value: 0.15,
+                    objective: 95,
+                    decision_score: 91,
+                    selected: true,
+                    is_baseline: false,
+                    constraints: { expected_loss: 20 },
+                    linearised_constraints: { expected_loss: 20 },
+                    lambda_terms: { expected_loss: -4 },
+                  },
+                  {
+                    scenario_index: 2,
+                    scenario_value: 0.3,
+                    objective: 100,
+                    decision_score: 80,
+                    selected: false,
+                    is_baseline: false,
+                    constraints: { expected_loss: 100 },
+                    linearised_constraints: { expected_loss: 100 },
+                    lambda_terms: { expected_loss: -20 },
+                  },
+                ],
+                lambdas: { expected_loss: 0.2 },
+                constraints: {
+                  expected_loss: {
+                    spec: { max: 30 },
+                    lambda: 0.2,
+                    linearised_column: "linearised_expected_loss",
+                    lambda_term_column: "lambda_term_expected_loss",
+                  },
+                },
+                selected: {
+                  scenario_index: 1,
+                  scenario_value: 0.15,
+                  objective: 95,
+                  decision_score: 91,
+                  selected: true,
+                  is_baseline: false,
+                  constraints: { expected_loss: 20 },
+                  linearised_constraints: { expected_loss: 20 },
+                  lambda_terms: { expected_loss: -4 },
+                },
+                baseline: {
+                  scenario_index: 0,
+                  scenario_value: 0,
+                  objective: 80,
+                  decision_score: 80,
+                  selected: false,
+                  is_baseline: true,
+                  constraints: { expected_loss: 80 },
+                  linearised_constraints: { expected_loss: 80 },
+                  lambda_terms: { expected_loss: 0 },
+                },
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Optimiser Apply")).toBeInTheDocument()
+    expect(screen.getByLabelText("Optimiser candidate curve")).toBeInTheDocument()
+    expect(screen.getByText("Selected scenario")).toBeInTheDocument()
+    expect(screen.getByText(/retention_offer.*0.15/)).toBeInTheDocument()
+    expect(screen.getByText(/quote_id.*Q42/)).toBeInTheDocument()
+    expect(screen.getAllByText("selected").length).toBeGreaterThan(0)
+    expect(screen.queryByText("baseline")).not.toBeInTheDocument()
+    expect(screen.getByText(/gap.*\+11/)).toBeInTheDocument()
+    expect(screen.queryByText("Score calculation")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Optimiser score calculation")).toHaveTextContent(
+      /expected_margin\s*95\s*\+\s*lambda expected_loss\s*-4\s*=\s*score\s*91/,
+    )
+    expect(screen.getAllByText("expected_loss").length).toBeGreaterThan(0)
+    expect(screen.getByText("-20")).toBeInTheDocument()
+    expect(screen.queryByText(/constraint settings/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/constraint values/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/lambda terms/i)).not.toBeInTheDocument()
+    expect(screen.getByText("Lambda Term")).toBeInTheDocument()
+    expect(screen.getByText("score")).toBeInTheDocument()
+  })
+
+  it("renders optimiser apply ratebook factors as a running total ladder", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "ratebook",
+          column: "technical_premium",
+          output_value: 132,
+          steps: [
+            makeStep({
+              node_id: "ratebook",
+              node_name: "Ratebook apply",
+              node_type: "optimiserApply",
+              schema_diff: {
+                columns_added: ["technical_premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["driver_age", "channel"],
+              },
+              output_values: { driver_age: 42, channel: "direct", technical_premium: 132 },
+              expression: null,
+              calculation: null,
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "ratebook",
+                output_column: "technical_premium",
+                output_value: 132,
+                base_value: 100,
+                final_value: 132,
+                factors: [
+                  {
+                    name: "age_factor",
+                    input_value: 42,
+                    factor: "age_factor",
+                    factor_value: 1.2,
+                    running_total: 120,
+                    status: "matched",
+                  },
+                  {
+                    name: "channel_factor",
+                    input_value: "direct",
+                    factor: "channel_factor",
+                    factor_value: 1.1,
+                    running_total: 132,
+                    status: "default",
+                    default_used: true,
+                  },
+                ],
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Optimiser Apply")).toBeInTheDocument()
+    expect(screen.getByText("Selected ratebook")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Optimiser ratebook calculation")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Optimiser ratebook ladder")).toBeInTheDocument()
+    expect(screen.getByText("Value")).toBeInTheDocument()
+    expect(screen.getAllByText("age_factor").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("1.2").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("channel_factor").length).toBeGreaterThan(0)
+    expect(screen.getByText("default used")).toBeInTheDocument()
+    expect(screen.queryByText("Base value")).not.toBeInTheDocument()
+  })
+
+  it("renders optimiser apply trace errors instead of an empty optimiser view", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "optimiser",
+          column: "technical_premium",
+          output_value: "computed",
+          steps: [
+            makeStep({
+              node_id: "optimiser",
+              node_name: "Apply optimiser",
+              node_type: "optimiserApply",
+              schema_diff: {
+                columns_added: ["technical_premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              expression: null,
+              calculation: null,
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "ratebook",
+                status: "error",
+                error: "ratebook input row is missing factor column 'region'",
+                error_type: "OptimiserApplyTraceError",
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Trace failed: ratebook input row is missing factor column 'region'/,
+    )
+    expect(screen.queryByText("Selected ratebook")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Optimiser ratebook ladder")).not.toBeInTheDocument()
+  })
+
+  it("renders ratebook trace messages without an empty ladder", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "ratebook",
+          column: "technical_premium",
+          output_value: null,
+          steps: [
+            makeStep({
+              node_id: "ratebook",
+              node_name: "Ratebook apply",
+              node_type: "optimiserApply",
+              schema_diff: {
+                columns_added: ["technical_premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              expression: null,
+              calculation: null,
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "ratebook",
+                status: "ok",
+                output_column: "technical_premium",
+                output_value: null,
+                base_value: 1,
+                factors: [],
+                final_value: null,
+                message: "No ratebook factor tables were available in the optimiser artifact.",
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Selected ratebook")).toBeInTheDocument()
+    expect(screen.getByText("No ratebook factor tables were available in the optimiser artifact.")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Optimiser ratebook ladder")).not.toBeInTheDocument()
+  })
+
   it("step card expands on click to show column details", () => {
     render(
       <TracePanel

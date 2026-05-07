@@ -83,7 +83,7 @@ describe("useBackgroundJobs", () => {
   beforeEach(() => {
     vi.useFakeTimers()
     resetStores()
-    vi.clearAllMocks()
+    vi.resetAllMocks()
   })
 
   afterEach(() => {
@@ -164,6 +164,37 @@ describe("useBackgroundJobs", () => {
       const job = useNodeResultsStore.getState().solveJobs["n1"]
       expect(job?.progress?.progress).toBe(0.7)
       expect(job?.progress?.message).toBe("Iterating")
+    })
+
+    it("treats a missing optimiser job as terminal and stops polling", async () => {
+      const mockGetStatus = vi.mocked(getOptimiserStatus)
+      mockGetStatus.mockRejectedValue({
+        name: "ApiError",
+        status: 404,
+        detail: "Job 'sj-missing' not found",
+        message: "HTTP 404",
+      })
+
+      act(() => {
+        useNodeResultsStore.getState().startSolveJob("n1", "sj-missing", "Solve Node", {}, "sh")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+      expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe("Job 'sj-missing' not found")
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          text: "Optimisation failed: Solve Node — Job 'sj-missing' not found",
+        }),
+      )
+
+      await advance(20_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
     })
 
     it("throttles repeated running progress before writing solve job state", async () => {
@@ -247,6 +278,67 @@ describe("useBackgroundJobs", () => {
 
       await advance(500)
       expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.3)
+    })
+
+    it("treats a missing training job as terminal and stops polling", async () => {
+      const mockGetStatus = vi.mocked(getTrainStatus)
+      mockGetStatus.mockRejectedValue({
+        name: "ApiError",
+        status: 404,
+        detail: "Job 'tj-missing' not found",
+        message: "HTTP 404",
+      })
+
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-missing", "Train Node", "th")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+      expect(useNodeResultsStore.getState().trainJobs["t1"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().trainResults["t1"]?.result).toMatchObject({
+        status: "error",
+        error: "Job 'tj-missing' not found",
+      })
+      expect(useToastStore.getState().toasts).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          text: "Training failed: Train Node — Job 'tj-missing' not found",
+        }),
+      )
+
+      await advance(20_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps retrying transient training status errors", async () => {
+      const mockGetStatus = vi.mocked(getTrainStatus)
+      mockGetStatus
+        .mockRejectedValueOnce({
+          name: "ApiError",
+          status: 503,
+          detail: "Service unavailable",
+          message: "HTTP 503",
+        })
+        .mockResolvedValueOnce(makeTrainProgress({ status: "running", progress: 0.4 }))
+
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-retry", "Train Node", "th")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+      expect(useNodeResultsStore.getState().trainJobs["t1"]).toBeDefined()
+      expect(useNodeResultsStore.getState().trainResults["t1"]).toBeUndefined()
+
+      await advance(1_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(2)
+      expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.4)
     })
   })
 

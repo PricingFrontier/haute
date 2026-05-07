@@ -1,17 +1,25 @@
-import { useState, useMemo, useRef, useEffect } from "react"
+import { useState, useMemo, useRef, useEffect, type CSSProperties } from "react"
 import { X, ChevronDown, ChevronRight, Scan, Copy, Check } from "lucide-react"
 import type {
   BandingNodeDetail,
   ModelScoreContributionDetail,
   ModelScoreExplanationDetail,
   ModelScoreNodeDetail,
+  OptimiserApplyNodeDetail,
+  OptimiserApplyOnlineCandidateDetail,
+  OptimiserApplyRatebookFactorDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
   TraceNodeDetail,
   TraceResult,
   TraceStep,
 } from "../types/trace"
-import { nodeTypeLabels, nodeTypeColors } from "../utils/nodeTypes"
+import {
+  GENERATED_COLUMN_ORIGIN_TYPES,
+  SOURCE_ONLY_TYPES,
+  nodeTypeLabels,
+  nodeTypeColors,
+} from "../utils/nodeTypes"
 import { formatValue as _formatValue } from "../utils/formatValue"
 import { formatExpression } from "../utils/formatTrace"
 import PanelShell from "./PanelShell"
@@ -37,6 +45,10 @@ function asBandingDetail(detail: TraceNodeDetail): BandingNodeDetail {
 
 function asModelScoreDetail(detail: TraceNodeDetail): ModelScoreNodeDetail {
   return detail as ModelScoreNodeDetail
+}
+
+function asOptimiserApplyDetail(detail: TraceNodeDetail): OptimiserApplyNodeDetail {
+  return detail as OptimiserApplyNodeDetail
 }
 
 function ratingTableStatus(table: RatingStepTableDetail): string | undefined {
@@ -87,6 +99,23 @@ function hasRichModelScoreDetail(step: TraceStep | null | undefined): boolean {
   )
 }
 
+function hasRichOptimiserApplyDetail(step: TraceStep | null | undefined): boolean {
+  const detail = step?.node_detail as OptimiserApplyNodeDetail | null | undefined
+  return Boolean(
+    detail?.detail_type === "optimiser_apply" &&
+    (
+      detail.mode === "online" ||
+      detail.mode === "ratebook"
+    ),
+  )
+}
+
+function isOptimiserApplyErrorDetail(
+  detail: OptimiserApplyNodeDetail,
+): detail is Extract<OptimiserApplyNodeDetail, { status: "error" }> {
+  return detail.status === "error"
+}
+
 function hasBandingSecondaryDetail(detail: TraceNodeDetail | null | undefined): boolean {
   return detail?.detail_type === "banding" &&
     (detail.lower_bound != null || detail.upper_bound != null || detail.is_default === true)
@@ -96,8 +125,21 @@ function isComputedPlaceholder(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === "computed"
 }
 
+function isSourceOnlyNodeType(nodeType: string | undefined): boolean {
+  return Boolean(nodeType && SOURCE_ONLY_TYPES.has(nodeType))
+}
+
+function isTraceOriginStep(step: TraceStep, tracedColumn: string | null | undefined): boolean {
+  if (isSourceOnlyNodeType(step.node_type)) return true
+  return Boolean(
+    tracedColumn &&
+    GENERATED_COLUMN_ORIGIN_TYPES.has(step.node_type) &&
+    step.schema_diff.columns_added.includes(tracedColumn),
+  )
+}
+
 function isCalculationRoutineSparse(step: TraceStep | null | undefined): boolean {
-  if (hasRichModelScoreDetail(step)) return true
+  if (hasRichModelScoreDetail(step) || hasRichOptimiserApplyDetail(step)) return true
   return step != null &&
     step.expression == null &&
     step.calculation == null &&
@@ -164,6 +206,433 @@ function resolveContributionFeatureValue(
     return { hasValue: true, value: detail.feature_values[contribution.feature] }
   }
   return { hasValue: false, value: undefined }
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+function optimiserDisplayCandidates(
+  candidates: OptimiserApplyOnlineCandidateDetail[],
+  selected: OptimiserApplyOnlineCandidateDetail | undefined,
+): OptimiserApplyOnlineCandidateDetail[] {
+  return candidates.filter((candidate) =>
+    !candidate.is_baseline || selected?.scenario_index === candidate.scenario_index
+  )
+}
+
+function finiteRecordEntries(values: Record<string, unknown> | undefined): Array<[string, number]> {
+  if (!values) return []
+  return Object.entries(values).filter((entry): entry is [string, number] => isFiniteNumber(entry[1]))
+}
+
+function optimiserConstraintNames(
+  candidates: OptimiserApplyOnlineCandidateDetail[],
+  selected: OptimiserApplyOnlineCandidateDetail | undefined,
+  configuredConstraints: Record<string, unknown> | undefined,
+): string[] {
+  const names = new Set<string>()
+  for (const name of Object.keys(configuredConstraints ?? {})) names.add(name)
+  for (const name of Object.keys(selected?.constraints ?? {})) names.add(name)
+  for (const candidate of candidates) {
+    for (const name of Object.keys(candidate.constraints ?? {})) names.add(name)
+    for (const name of Object.keys(candidate.lambda_terms ?? {})) names.add(name)
+  }
+  return [...names]
+}
+
+function formatOptimiserRecordCell(
+  values: Record<string, unknown> | undefined,
+  names: string[],
+  options: { signed?: boolean } = {},
+): string {
+  if (names.length === 0) return ""
+  if (names.length === 1) {
+    const value = values?.[names[0]]
+    return options.signed && isFiniteNumber(value) ? formatSignedValue(value) : formatValue(value)
+  }
+  return names
+    .map((name) => {
+      const value = values?.[name]
+      const formatted = options.signed && isFiniteNumber(value) ? formatSignedValue(value) : formatValue(value)
+      return `${name}: ${formatted}`
+    })
+    .join(", ")
+}
+
+function optimiserScoreFormulaText(
+  candidate: OptimiserApplyOnlineCandidateDetail,
+  objectiveLabel: string,
+): string {
+  const lambdaTerms = finiteRecordEntries(candidate.lambda_terms)
+  if (lambdaTerms.length === 0) {
+    return `score = ${objectiveLabel}`
+  }
+  const terms = lambdaTerms
+    .map(([, value]) => formatSignedValue(value))
+    .join(" ")
+  return `score = ${objectiveLabel} ${terms}`
+}
+
+function optimiserSelectedCandidate(
+  candidates: OptimiserApplyOnlineCandidateDetail[],
+  selected: OptimiserApplyOnlineCandidateDetail | null | undefined,
+): OptimiserApplyOnlineCandidateDetail | undefined {
+  return selected ?? candidates.find((candidate) => candidate.selected)
+}
+
+function optimiserCandidateIsSelected(
+  candidate: OptimiserApplyOnlineCandidateDetail,
+  selected: OptimiserApplyOnlineCandidateDetail | undefined,
+): boolean {
+  return candidate.selected || selected?.scenario_index === candidate.scenario_index
+}
+
+function optimiserScoreComparison(
+  candidates: OptimiserApplyOnlineCandidateDetail[],
+  selected: OptimiserApplyOnlineCandidateDetail | undefined,
+): { rank: number; gapToNextBest?: number } | undefined {
+  if (!selected || !isFiniteNumber(selected.decision_score)) return undefined
+  const ranked = candidates
+    .filter((candidate) => isFiniteNumber(candidate.decision_score))
+    .sort((a, b) => {
+      const scoreDiff = b.decision_score - a.decision_score
+      return scoreDiff !== 0 ? scoreDiff : a.scenario_index - b.scenario_index
+    })
+  const rankIndex = ranked.findIndex((candidate) => candidate.scenario_index === selected.scenario_index)
+  if (rankIndex < 0) return undefined
+  const nextBest = ranked.find((candidate) => candidate.scenario_index !== selected.scenario_index)
+  return {
+    rank: rankIndex + 1,
+    gapToNextBest: nextBest ? selected.decision_score - nextBest.decision_score : undefined,
+  }
+}
+
+function optimiserCandidateXValue(candidate: OptimiserApplyOnlineCandidateDetail): number {
+  return isFiniteNumber(candidate.scenario_value) ? candidate.scenario_value : candidate.scenario_index
+}
+
+type OptimiserChartCandidatePoint = {
+  candidate: OptimiserApplyOnlineCandidateDetail
+  xValue: number
+  objectiveValue?: number
+  scoreValue?: number
+}
+
+function optimiserChartPath(candidates: OptimiserApplyOnlineCandidateDetail[]): {
+  points: Array<{ candidate: OptimiserApplyOnlineCandidateDetail; x: number; y: number }>
+  objectivePath: string
+  scorePath: string
+} {
+  const numericCandidates: OptimiserChartCandidatePoint[] = candidates
+    .filter((candidate) => isFiniteNumber(candidate.objective) || isFiniteNumber(candidate.decision_score))
+    .map((candidate) => ({
+      candidate,
+      xValue: optimiserCandidateXValue(candidate),
+      objectiveValue: isFiniteNumber(candidate.objective) ? candidate.objective : undefined,
+      scoreValue: isFiniteNumber(candidate.decision_score) ? candidate.decision_score : undefined,
+    }))
+    .sort((a, b) => a.xValue - b.xValue)
+
+  if (numericCandidates.length === 0) return { points: [], objectivePath: "", scorePath: "" }
+
+  const width = 280
+  const height = 104
+  const padX = 18
+  const padY = 14
+  const xValues = numericCandidates.map((point) => point.xValue)
+  const yValues = numericCandidates.flatMap((point) => [point.objectiveValue, point.scoreValue])
+    .filter(isFiniteNumber)
+  const minX = Math.min(...xValues)
+  const maxX = Math.max(...xValues)
+  const minY = Math.min(...yValues)
+  const maxY = Math.max(...yValues)
+  const xSpan = maxX - minX || 1
+  const ySpan = maxY - minY || 1
+  const xFor = (xValue: number) => padX + ((xValue - minX) / xSpan) * (width - padX * 2)
+  const yFor = (yValue: number) => height - padY - ((yValue - minY) / ySpan) * (height - padY * 2)
+  const scoreCandidates = numericCandidates.filter((point): point is OptimiserChartCandidatePoint & { scoreValue: number } =>
+    isFiniteNumber(point.scoreValue)
+  )
+  const objectiveCandidates = numericCandidates.filter((point): point is OptimiserChartCandidatePoint & { objectiveValue: number } =>
+    isFiniteNumber(point.objectiveValue)
+  )
+  const points = scoreCandidates.map(({ candidate, xValue, scoreValue }) => ({
+    candidate,
+    x: xFor(xValue),
+    y: yFor(scoreValue),
+  }))
+  const objectivePath = objectiveCandidates
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(point.xValue).toFixed(1)} ${yFor(point.objectiveValue).toFixed(1)}`)
+    .join(" ")
+  const scorePath = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+    .join(" ")
+  return { points, objectivePath, scorePath }
+}
+
+function OptimiserOnlineDetail({ detail, labelStyle, valueStyle }: {
+  detail: Extract<OptimiserApplyNodeDetail, { mode: "online" }>
+  labelStyle: CSSProperties
+  valueStyle: CSSProperties
+}) {
+  const candidates = Array.isArray(detail.candidates) ? detail.candidates : []
+  const selected = optimiserSelectedCandidate(candidates, detail.selected)
+  const displayCandidates = optimiserDisplayCandidates(candidates, selected)
+  const scoreComparison = optimiserScoreComparison(candidates, selected)
+  const { points, objectivePath, scorePath } = optimiserChartPath(displayCandidates)
+  const selectedLambdaEntries = finiteRecordEntries(selected?.lambda_terms)
+  const constraintNames = optimiserConstraintNames(displayCandidates, selected, detail.constraints)
+  const hasConstraintColumns = constraintNames.length > 0
+  const candidateGridClass = hasConstraintColumns
+    ? "grid grid-cols-[3rem_minmax(8rem,10rem)_minmax(7rem,8.5rem)_minmax(8rem,11rem)_minmax(7rem,8.5rem)_minmax(5rem,6rem)] gap-1.5"
+    : "grid grid-cols-[3rem_minmax(8rem,10rem)_minmax(7rem,8.5rem)_minmax(5rem,6rem)] gap-1.5"
+  const scenarioLabel = detail.scenario_value_column ?? "scenario"
+  const objectiveLabel = detail.objective_column ?? "objective"
+  const constraintHeader = constraintNames.length === 1 ? constraintNames[0] : "constraints"
+
+  return (
+    <div className="my-2 space-y-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span style={labelStyle}>Optimiser Apply</span>
+        <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}>
+          {detail.output_column} = {formatValue(detail.output_value)}
+        </span>
+        {detail.quote_id_column && (
+          <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.04)" }}>
+            {detail.quote_id_column}: {formatValue(detail.quote_id_value)}
+          </span>
+        )}
+      </div>
+
+      {selected && (
+        <div className="rounded px-2 py-1.5" style={{ background: "var(--accent-soft)" }}>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-semibold" style={{ color: "var(--accent)" }}>Selected scenario</span>
+            <span className="rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ color: "var(--text-secondary)", background: "rgba(255,255,255,.045)" }}>
+              {scenarioLabel}: {formatValue(selected.scenario_value)}
+            </span>
+            <span className="rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ color: "var(--text-secondary)", background: "rgba(255,255,255,.035)" }}>
+              index: {formatValue(selected.scenario_index)}
+            </span>
+            {scoreComparison && isFiniteNumber(scoreComparison.gapToNextBest) && (
+              <span className="rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.03)" }}>
+                gap: {formatSignedValue(scoreComparison.gapToNextBest)}
+              </span>
+            )}
+          </div>
+          <div
+            className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[10px]"
+            style={{ color: "var(--text-secondary)" }}
+            aria-label="Optimiser score calculation"
+          >
+            <span style={{ color: "var(--text-muted)" }}>{objectiveLabel}</span>
+            <span className="font-semibold">{formatValue(selected.objective)}</span>
+            {selectedLambdaEntries.map(([name, value]) => (
+              <span key={name} className="inline-flex min-w-0 items-center gap-1">
+                <span style={{ color: "var(--text-muted)" }}>+</span>
+                <span style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>lambda {name}</span>
+                <span style={{ color: value >= 0 ? "var(--color-added, var(--success-hover))" : "var(--danger-text)" }}>
+                  {formatSignedValue(value)}
+                </span>
+              </span>
+            ))}
+            <span style={{ color: "var(--text-muted)" }}>=</span>
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>score {formatValue(selected.decision_score)}</span>
+          </div>
+        </div>
+      )}
+
+      {points.length > 0 && (
+        <div className="rounded px-2 py-2" style={{ background: "rgba(255,255,255,.035)", border: "1px solid var(--border)" }}>
+          <svg
+            aria-label="Optimiser candidate curve"
+            viewBox="0 0 280 104"
+            role="img"
+            className="w-full"
+            style={{ display: "block", maxHeight: 136 }}
+          >
+            <line x1="18" y1="90" x2="262" y2="90" stroke="var(--border)" />
+            <line x1="18" y1="14" x2="18" y2="90" stroke="var(--border)" />
+            {objectivePath && (
+              <path d={objectivePath} fill="none" stroke={CHART_COLORS.neutral} strokeWidth="1.5" strokeDasharray="4 3" strokeLinecap="round" strokeLinejoin="round" />
+            )}
+            {scorePath && (
+              <path d={scorePath} fill="none" stroke={CHART_COLORS.objective} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            )}
+            {points.map(({ candidate, x, y }) => {
+              const isSelected = optimiserCandidateIsSelected(candidate, selected)
+              const radius = isSelected ? 4.5 : 2.5
+              const fill = isSelected ? "var(--accent)" : "var(--bg-panel)"
+              return (
+                <g key={candidate.scenario_index}>
+                  <circle cx={x} cy={y} r={radius} fill={fill} stroke={CHART_COLORS.objective} strokeWidth={isSelected ? 2 : 1.5} />
+                  {isSelected && <title>selected scenario {candidate.scenario_index}</title>}
+                </g>
+              )
+            })}
+          </svg>
+          <div className="mt-1 flex items-center gap-3 text-[10px]">
+            <span className="inline-flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
+              <span className="inline-block size-2 rounded-full" style={{ background: CHART_COLORS.objective }} />score
+            </span>
+            <span className="inline-flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
+              <span className="inline-block h-0 w-3 border-t border-dashed" style={{ borderColor: CHART_COLORS.neutral }} />{objectiveLabel}
+            </span>
+            <span className="inline-flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
+              <span className="inline-block size-2 rounded-full" style={{ background: "var(--accent)" }} />selected
+            </span>
+            <span className="ml-auto font-mono" style={{ color: "var(--text-muted)" }}>
+              {displayCandidates.length} candidate{displayCandidates.length === 1 ? "" : "s"}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {displayCandidates.length > 0 && (
+        <div className="space-y-1 overflow-x-auto" aria-label="Optimiser candidates">
+          <div className={`${candidateGridClass} tabular-nums text-[10px] font-semibold uppercase`} style={labelStyle}>
+            <span>Index</span>
+            <span>{scenarioLabel}</span>
+            <span className="text-center">{objectiveLabel}</span>
+            {hasConstraintColumns && (
+              <>
+                <span className="text-center" style={{ overflowWrap: "anywhere" }}>{constraintHeader}</span>
+                <span className="text-center">Lambda Term</span>
+              </>
+            )}
+            <span className="text-center">Score</span>
+          </div>
+          {displayCandidates.map((candidate) => {
+            const isSelected = optimiserCandidateIsSelected(candidate, selected)
+            const candidateConstraints = formatOptimiserRecordCell(candidate.constraints, constraintNames)
+            const candidateLambdaTerms = formatOptimiserRecordCell(candidate.lambda_terms, constraintNames, { signed: true })
+            return (
+              <div
+                key={candidate.scenario_index}
+                className={`${candidateGridClass} rounded border-l-2 px-1 py-0.5 font-mono text-[10px] tabular-nums`}
+                style={{
+                  background: isSelected ? "var(--accent-soft)" : "transparent",
+                  borderColor: isSelected ? "var(--accent)" : "transparent",
+                  color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
+                }}
+              >
+                <span>{candidate.scenario_index}</span>
+                <span className="inline-flex min-w-0 items-center gap-1" style={{ overflowWrap: "anywhere" }}>
+                  <span className="min-w-0">{formatValue(candidate.scenario_value)}</span>
+                  {isSelected && (
+                    <span className="shrink-0 rounded px-1 font-sans text-[9px] font-semibold" style={{ color: "var(--accent)", background: "rgba(255,255,255,.06)" }}>
+                      selected
+                    </span>
+                  )}
+                </span>
+                <span className="text-center">{formatValue(candidate.objective)}</span>
+                {hasConstraintColumns && (
+                  <>
+                    <span className="text-center" style={{ overflowWrap: "anywhere" }}>{candidateConstraints}</span>
+                    <span className="text-center" style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+                      {candidateLambdaTerms}
+                    </span>
+                  </>
+                )}
+                <span className="text-center" title={optimiserScoreFormulaText(candidate, objectiveLabel)}>
+                  {formatValue(candidate.decision_score)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OptimiserRatebookDetail({ detail, labelStyle, valueStyle }: {
+  detail: Extract<OptimiserApplyNodeDetail, { mode: "ratebook" }>
+  labelStyle: CSSProperties
+  valueStyle: CSSProperties
+}) {
+  const factors = Array.isArray(detail.factors) ? detail.factors : []
+  const ratebookGridClass = "grid grid-cols-[minmax(9rem,12rem)_minmax(7rem,9rem)_minmax(5rem,6rem)_minmax(5rem,6rem)] gap-1.5"
+
+  return (
+    <div className="my-2 space-y-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span style={labelStyle}>Optimiser Apply</span>
+        <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}>
+          {detail.output_column} = {formatValue(detail.output_value)}
+        </span>
+      </div>
+
+      <div className="rounded px-2 py-1.5" style={{ background: "var(--accent-soft)" }}>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="font-semibold" style={{ color: "var(--accent)" }}>Selected ratebook</span>
+          <span className="rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ color: "var(--text-secondary)", background: "rgba(255,255,255,.045)" }}>
+            base: {formatValue(detail.base_value)}
+          </span>
+          <span className="rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ color: "var(--text-secondary)", background: "rgba(255,255,255,.035)" }}>
+            final: {formatValue(detail.final_value)}
+          </span>
+          <span className="rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.03)" }}>
+            {factors.length} factor{factors.length === 1 ? "" : "s"}
+          </span>
+        </div>
+      </div>
+
+      {detail.message && (
+        <div className="rounded px-2 py-1 font-mono text-[10px]" style={{ background: "rgba(255,255,255,.035)", color: "var(--text-muted)" }}>
+          {detail.message}
+        </div>
+      )}
+
+      {factors.length > 0 && (
+      <div className="space-y-1 overflow-x-auto" aria-label="Optimiser ratebook ladder">
+        <div className={`${ratebookGridClass} tabular-nums text-[10px] font-semibold uppercase`} style={labelStyle}>
+          <span>Factor</span>
+          <span className="text-center">Input</span>
+          <span className="text-center">Value</span>
+          <span className="text-center">Total</span>
+        </div>
+        {factors.map((factor: OptimiserApplyRatebookFactorDetail) => (
+          <div key={factor.name} className={`${ratebookGridClass} rounded border-l-2 px-1 py-0.5 font-mono text-[10px] tabular-nums`} style={{ borderColor: "transparent" }}>
+            <span style={{ overflowWrap: "anywhere", color: "var(--text-secondary)" }}>
+              {factor.name}
+              {factor.default_used && (
+                <span className="ml-1 px-1 py-0.5 rounded font-sans text-[9px] font-bold" style={{ background: "var(--warning-bright-soft-strong)", color: "var(--warning)" }}>
+                  default used
+                </span>
+              )}
+            </span>
+            <span className="text-center" style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>{formatValue(factor.input_value)}</span>
+            <span className="text-center" style={{ color: "var(--accent)" }}>{formatValue(factor.factor_value)}</span>
+            <span className="text-center" style={{ color: "var(--text-primary)" }}>{formatValue(factor.running_total)}</span>
+          </div>
+        ))}
+      </div>
+      )}
+    </div>
+  )
+}
+
+function OptimiserApplyErrorDetail({ detail, labelStyle, valueStyle }: {
+  detail: Extract<OptimiserApplyNodeDetail, { status: "error" }>
+  labelStyle: CSSProperties
+  valueStyle: CSSProperties
+}) {
+  return (
+    <div className="my-2 space-y-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span style={labelStyle}>Optimiser Apply</span>
+        <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}>
+          {detail.mode}
+        </span>
+      </div>
+      <div role="alert" className="rounded px-2 py-1" style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}>
+        Trace failed: {detail.error}
+        {detail.error_type ? ` (${detail.error_type})` : ""}
+      </div>
+    </div>
+  )
 }
 
 function NodeDetailBlock({
@@ -365,6 +834,37 @@ function NodeDetailBlock({
     )
   }
 
+  if (detailType === "optimiser_apply") {
+    const optimiserDetail = asOptimiserApplyDetail(detail)
+    if (isOptimiserApplyErrorDetail(optimiserDetail)) {
+      return (
+        <OptimiserApplyErrorDetail
+          detail={optimiserDetail}
+          labelStyle={labelStyle}
+          valueStyle={valueStyle}
+        />
+      )
+    }
+    if (optimiserDetail.mode === "online") {
+      return (
+        <OptimiserOnlineDetail
+          detail={optimiserDetail}
+          labelStyle={labelStyle}
+          valueStyle={valueStyle}
+        />
+      )
+    }
+    if (optimiserDetail.mode === "ratebook") {
+      return (
+        <OptimiserRatebookDetail
+          detail={optimiserDetail}
+          labelStyle={labelStyle}
+          valueStyle={valueStyle}
+        />
+      )
+    }
+  }
+
   if (detailType === "model_score") {
     const modelDetail = asModelScoreDetail(detail)
     const prediction = modelScorePrediction(modelDetail)
@@ -381,7 +881,7 @@ function NodeDetailBlock({
       if (!showContributionLadder || explanation?.base_value === undefined) return []
       let total = explanation.base_value
       return contributions.map((contribution, index) => {
-        const value = contribution.shap_value
+        const value = contribution.contribution ?? contribution.contribution_value ?? contribution.shap_value
         total = nextRunningTotal(total, value)
         return {
           contribution,
@@ -589,10 +1089,20 @@ function StepCard({ step, index, tracedColumn, isTargetStep, defaultExpanded = f
   // All output columns for expanded view
   const allOutputCols = Object.keys(step.output_values)
   const richModelDetail = hasRichModelScoreDetail(step)
-  const showOpaqueComputed = step.expression?.expression_type === "opaque" && !richModelDetail
-  const calculationBlockText = step.calculation != null &&
-    !(richModelDetail && isComputedPlaceholder(step.calculation.substituted_text))
+  const richOptimiserDetail = hasRichOptimiserApplyDetail(step)
+  const richNodeDetail = richModelDetail || richOptimiserDetail
+  const isOriginStep = isTraceOriginStep(step, tracedColumn)
+  const sourceCalculationIsPlaceholder = isComputedPlaceholder(step.calculation?.substituted_text)
+  const showSourceOrigin = isOriginStep &&
+    (step.expression?.expression_type === "opaque" || sourceCalculationIsPlaceholder)
+  const showOpaqueComputed = step.expression?.expression_type === "opaque" && !richNodeDetail && !isOriginStep
+  const rawCalculationBlockText = step.calculation != null &&
+    !(richNodeDetail && isComputedPlaceholder(step.calculation.substituted_text)) &&
+    !(isOriginStep && sourceCalculationIsPlaceholder)
     ? step.calculation.substituted_text
+    : null
+  const calculationBlockText = rawCalculationBlockText != null && rawCalculationBlockText.trim().length > 0
+    ? rawCalculationBlockText
     : null
 
   return (
@@ -698,6 +1208,14 @@ function StepCard({ step, index, tracedColumn, isTargetStep, defaultExpanded = f
           {showOpaqueComputed && (
             <div className="my-2 text-[11px]" style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
               computed
+            </div>
+          )}
+          {showSourceOrigin && (
+            <div className="my-2 flex items-baseline gap-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              <span>Source node</span>
+              <span className="font-mono font-semibold" style={{ color: "var(--text-secondary)" }}>
+                {step.node_name}
+              </span>
             </div>
           )}
 
@@ -881,7 +1399,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     }
   }
 
-  const targetHasRichModelDetail = hasRichModelScoreDetail(targetStep)
+  const targetHasRichPrimaryDetail = hasRichModelScoreDetail(targetStep) || hasRichOptimiserApplyDetail(targetStep)
 
   return (
     <PanelShell>
@@ -956,7 +1474,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           background: "linear-gradient(180deg, var(--accent-soft-faint) 0%, var(--accent-soft-whisper) 100%)",
         }}>
           {targetStep && trace.column ? (
-            targetHasRichModelDetail && targetStep.node_detail ? (
+            targetHasRichPrimaryDetail && targetStep.node_detail ? (
               <div className="px-3 py-3">
                 <NodeDetailBlock detail={targetStep.node_detail} tracedColumn={trace.column} />
               </div>
@@ -969,6 +1487,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                   executionMs={trace.execution_ms}
                   stepCount={trace.steps.length}
                   nodeName={targetStep.node_name}
+                  nodeType={targetStep.node_type}
+                  isSourceOrigin={isTraceOriginStep(targetStep, trace.column)}
                   waterfall={trace.waterfall}
                 />
                 {targetStep.node_detail && (

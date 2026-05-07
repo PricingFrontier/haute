@@ -65,6 +65,7 @@ from haute._trace_enrichment import (
     enrich_banding,
     enrich_live_switch,
     enrich_model_score,
+    enrich_optimiser_apply,
     enrich_rating_step,
     enrich_scenario_expansion,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "enrich_banding",
     "enrich_live_switch",
     "enrich_model_score",
+    "enrich_optimiser_apply",
     "enrich_rating_step",
     "enrich_scenario_expansion",
     "evaluate_expression",

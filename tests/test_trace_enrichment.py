@@ -3774,6 +3774,86 @@ class TestEnrichModelScoreRealConfig:
         assert result["explanation"]["method"] == "catboost_shap"
         assert result["explanation"]["contributions"][0]["feature"] == "feat_a"
 
+    def test_rustystats_explanation_attached_for_mlflow_rsglm_config(self, monkeypatch):
+        """RustyStats GLM MLflow configs should attach native contribution detail."""
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(config, input_row, output_row, prediction_column, prediction_value):
+            assert config["artifact_path"] == "conversion.rsglm"
+            assert input_row["difference_to_market"] == -10.0
+            assert output_row["conversion_prediction"] == 0.42
+            assert prediction_column == "conversion_prediction"
+            assert prediction_value == 0.42
+            return {
+                "type": "rustystats_glm_contributions",
+                "method": "rustystats_glm_contributions",
+                "status": "ok",
+                "output_space": "linear_predictor",
+                "prediction_space": "response",
+                "base_value": 0.1,
+                "prediction_from_contributions": 0.2,
+                "prediction_value": 0.42,
+                "contributions": [
+                    {
+                        "feature": "difference_to_market",
+                        "feature_value": -10.0,
+                        "contribution": 0.1,
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        config = {
+            "output_column": "conversion_prediction",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "conversion.rsglm",
+            "contract": {"inputs": ["difference_to_market"]},
+        }
+
+        result = enrich_model_score(
+            config,
+            {"difference_to_market": -10.0},
+            {"difference_to_market": -10.0, "conversion_prediction": 0.42},
+        )
+
+        assert result["explanation"]["method"] == "rustystats_glm_contributions"
+        assert result["explanation"]["contributions"][0]["feature"] == "difference_to_market"
+
+    def test_rustystats_explanation_error_is_not_mislabeled_as_catboost(self, monkeypatch):
+        """RustyStats GLM explanation failures keep GLM method metadata."""
+        from haute._model_explainability import ModelExplanationError
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(*args, **kwargs):
+            raise ModelExplanationError("broken GLM explanation")
+
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        config = {
+            "output_column": "conversion_prediction",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "conversion.rsglm",
+            "contract": {"inputs": ["difference_to_market"]},
+        }
+
+        result = enrich_model_score(
+            config,
+            {"difference_to_market": -10.0},
+            {"difference_to_market": -10.0, "conversion_prediction": 0.42},
+        )
+
+        assert result["explanation"]["type"] == "rustystats_glm_contributions"
+        assert result["explanation"]["method"] == "rustystats_glm_contributions"
+        assert result["explanation"]["status"] == "error"
+        assert result["explanation"]["error"] == "broken GLM explanation"
+
 
 class TestEnrichScenarioExpansionRealConfig:
     """Tests for enrich_scenario_expansion with real config."""

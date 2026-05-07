@@ -1,12 +1,16 @@
 import type {
   BandingNodeDetail,
   ModelScoreNodeDetail,
+  OptimiserApplyNodeDetail,
+  OptimiserApplyOnlineCandidateDetail,
+  OptimiserApplyRatebookFactorDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
   TraceNodeDetail,
   TraceResult,
   TraceStep,
 } from "../../types/trace"
+import { GENERATED_COLUMN_ORIGIN_TYPES, SOURCE_ONLY_TYPES } from "../../utils/nodeTypes"
 
 function formatVal(v: unknown): string {
   if (v === null || v === undefined) return "null"
@@ -23,6 +27,24 @@ function formatVal(v: unknown): string {
 /** Escape pipe characters so they don't break markdown tables. */
 function escPipe(s: string): string {
   return s.replace(/\|/g, "\\|")
+}
+
+function isSourceOnlyNodeType(nodeType: string | undefined): boolean {
+  return Boolean(nodeType && SOURCE_ONLY_TYPES.has(nodeType))
+}
+
+function isTraceOriginStep(step: TraceStep | null | undefined, tracedColumn: string | null | undefined): step is TraceStep {
+  if (!step) return false
+  if (isSourceOnlyNodeType(step.node_type)) return true
+  return Boolean(
+    tracedColumn &&
+    GENERATED_COLUMN_ORIGIN_TYPES.has(step.node_type) &&
+    step.schema_diff.columns_added.includes(tracedColumn),
+  )
+}
+
+function isComputedPlaceholder(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === "computed"
 }
 
 function ratingStepTables(detail: TraceNodeDetail): RatingStepTableDetail[] {
@@ -138,22 +160,233 @@ function formatModelScoreDetail(detail: TraceNodeDetail): string[] {
     if (explanation.prediction_from_shap !== undefined) {
       const outputSpace = explanation.output_space ? ` ${explanation.output_space}` : ""
       parts.push(`Base + contributions=${formatVal(explanation.prediction_from_shap)}${outputSpace}`)
+    } else if (explanation.prediction_from_contributions !== undefined) {
+      const outputSpace = explanation.output_space ? ` ${explanation.output_space}` : ""
+      parts.push(`Base + contributions=${formatVal(explanation.prediction_from_contributions)}${outputSpace}`)
     }
     if (explanation.contributions && explanation.contributions.length > 0) {
       const contributionSummary = explanation.contributions
         .map((contribution) => {
-          const shap = contribution.shap_value
-          const sign = shap >= 0 ? "+" : ""
+          const value = contribution.contribution ?? contribution.contribution_value ?? contribution.shap_value
+          const sign = value >= 0 ? "+" : ""
           const featureValue = contribution.feature_value !== undefined
             ? ` (${formatVal(contribution.feature_value)})`
             : ""
-          return `${contribution.feature}${featureValue} ${sign}${formatVal(shap)}`
+          return `${contribution.feature}${featureValue} ${sign}${formatVal(value)}`
         })
         .join(", ")
       parts.push(`Contributions: ${contributionSummary}`)
     }
   }
   return parts
+}
+
+function formatRecordEntries(values: Record<string, unknown> | undefined): string {
+  if (!values || Object.keys(values).length === 0) return ""
+  return Object.entries(values)
+    .map(([key, value]) => `${key}=${formatVal(value)}`)
+    .join(", ")
+}
+
+function formatOptimiserConstraintSettings(values: Record<string, unknown> | undefined): string {
+  if (!values || Object.keys(values).length === 0) return ""
+  return Object.entries(values)
+    .map(([name, raw]) => {
+      if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+        return `${name}=${formatVal(raw)}`
+      }
+      const config = raw as Record<string, unknown>
+      const spec = config.spec != null && typeof config.spec === "object" && !Array.isArray(config.spec)
+        ? config.spec as Record<string, unknown>
+        : config
+      const parts = Object.entries(spec)
+        .filter(([key]) => !["lambda", "linearised_column", "lambda_term_column", "spec"].includes(key))
+        .map(([key, value]) => `${key}=${formatVal(value)}`)
+      if (config.lambda !== undefined) {
+        parts.push(`lambda=${formatVal(config.lambda)}`)
+      }
+      return `${name} (${parts.join(", ")})`
+    })
+    .join(", ")
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+function isOptimiserApplyErrorDetail(
+  detail: OptimiserApplyNodeDetail,
+): detail is Extract<OptimiserApplyNodeDetail, { status: "error" }> {
+  return detail.status === "error"
+}
+
+function optimiserSelectedCandidate(
+  candidates: OptimiserApplyOnlineCandidateDetail[],
+  selected: OptimiserApplyOnlineCandidateDetail | null | undefined,
+): OptimiserApplyOnlineCandidateDetail | undefined {
+  return selected ?? candidates.find((candidate) => candidate.selected)
+}
+
+function optimiserDisplayCandidates(
+  candidates: OptimiserApplyOnlineCandidateDetail[],
+  selected: OptimiserApplyOnlineCandidateDetail | undefined,
+): OptimiserApplyOnlineCandidateDetail[] {
+  return candidates.filter((candidate) =>
+    !candidate.is_baseline || selected?.scenario_index === candidate.scenario_index
+  )
+}
+
+function optimiserGapToNextBestScore(
+  candidates: OptimiserApplyOnlineCandidateDetail[],
+  selected: OptimiserApplyOnlineCandidateDetail | undefined,
+): number | undefined {
+  if (!selected || !isFiniteNumber(selected.decision_score)) return undefined
+  const ranked = candidates
+    .filter((candidate) => isFiniteNumber(candidate.decision_score))
+    .sort((a, b) => {
+      const scoreDiff = b.decision_score - a.decision_score
+      return scoreDiff !== 0 ? scoreDiff : a.scenario_index - b.scenario_index
+    })
+  const nextBest = ranked.find((candidate) => candidate.scenario_index !== selected.scenario_index)
+  return nextBest ? selected.decision_score - nextBest.decision_score : undefined
+}
+
+function formatOptimiserOnlineCandidate(
+  label: string,
+  candidate: OptimiserApplyOnlineCandidateDetail | undefined,
+  scenarioValueColumn: string,
+  objectiveColumn: string,
+  gapToNextBestScore?: number,
+): string | undefined {
+  if (!candidate) return undefined
+  const fields = [
+    `${scenarioValueColumn}=${formatVal(candidate.scenario_value)}`,
+    `objective=${formatVal(candidate.objective)}`,
+    `${objectiveColumn}=${formatVal(candidate.objective)}`,
+    `score=${formatVal(candidate.decision_score)}`,
+  ]
+  if (isFiniteNumber(gapToNextBestScore)) {
+    fields.push(`next_best_gap=${formatVal(gapToNextBestScore)}`)
+  }
+  const constraints = formatRecordEntries(candidate.constraints)
+  if (constraints) fields.push(`constraints: ${constraints}`)
+  const linearisedConstraints = formatRecordEntries(candidate.linearised_constraints)
+  if (linearisedConstraints) fields.push(`linearised_constraints: ${linearisedConstraints}`)
+  const lambdaTerms = formatRecordEntries(candidate.lambda_terms)
+  if (lambdaTerms) fields.push(`lambda_terms: ${lambdaTerms}`)
+  return `${label} scenario ${formatVal(candidate.scenario_index)} (${fields.join("; ")})`
+}
+
+function formatOptimiserScoreExplanation(
+  candidate: OptimiserApplyOnlineCandidateDetail | undefined,
+  objectiveColumn: string,
+): string | undefined {
+  if (!candidate) return undefined
+  const lambdaTerms = formatRecordEntries(candidate.lambda_terms)
+  const formula = lambdaTerms
+    ? `score = ${objectiveColumn} + lambda terms`
+    : `score = ${objectiveColumn}`
+  const parts = [
+    formula,
+    `${objectiveColumn}=${formatVal(candidate.objective)}`,
+  ]
+  if (lambdaTerms) parts.push(`lambda_terms: ${lambdaTerms}`)
+  parts.push(`decision_score=${formatVal(candidate.decision_score)}`)
+  return `Score calculation: ${parts.join("; ")}`
+}
+
+function formatOptimiserCandidateScore(
+  candidate: OptimiserApplyOnlineCandidateDetail,
+  objectiveColumn: string,
+  scenarioValueColumn: string,
+): string {
+  const lambdaTerms = formatRecordEntries(candidate.lambda_terms)
+  const scoreFormula = lambdaTerms
+    ? `${objectiveColumn}=${formatVal(candidate.objective)} + lambda_terms(${lambdaTerms}) = ${formatVal(candidate.decision_score)}`
+    : `${objectiveColumn}=${formatVal(candidate.objective)} = ${formatVal(candidate.decision_score)}`
+  const parts = [
+    `candidate ${formatVal(candidate.scenario_index)}`,
+    `${scenarioValueColumn}=${formatVal(candidate.scenario_value)}`,
+    `score: ${scoreFormula}`,
+  ]
+  const constraints = formatRecordEntries(candidate.constraints)
+  if (constraints) parts.push(`constraints: ${constraints}`)
+  const linearisedConstraints = formatRecordEntries(candidate.linearised_constraints)
+  if (linearisedConstraints) parts.push(`linearised_constraints: ${linearisedConstraints}`)
+  return `${parts[0]} (${parts.slice(1).join("; ")})`
+}
+
+function formatOptimiserRatebookFactor(factor: OptimiserApplyRatebookFactorDetail): string {
+  const fields = [
+    `input=${formatVal(factor.input_value)}`,
+    `factor=${formatVal(factor.factor_value)}`,
+    `total=${formatVal(factor.running_total)}`,
+    `status=${formatVal(factor.status)}`,
+  ]
+  if (factor.default_used) fields.push("default used")
+  return `${factor.name} (${fields.join("; ")})`
+}
+
+function formatOptimiserApplyDetail(detail: TraceNodeDetail): string[] {
+  const optimiser = detail as OptimiserApplyNodeDetail
+  if (isOptimiserApplyErrorDetail(optimiser)) {
+    const parts = [
+      `Optimiser apply: ${optimiser.mode} trace failed`,
+      `Error: ${optimiser.error}`,
+    ]
+    if (optimiser.error_type) parts.push(`Error type: ${optimiser.error_type}`)
+    return parts
+  }
+
+  if (optimiser.mode === "online") {
+    const candidates = Array.isArray(optimiser.candidates) ? optimiser.candidates : []
+    const selectedCandidate = optimiserSelectedCandidate(candidates, optimiser.selected)
+    const scenarioValueColumn = optimiser.scenario_value_column ?? "scenario"
+    const objectiveColumn = optimiser.objective_column ?? "objective"
+    const parts = [
+      `Optimiser apply: online ${optimiser.output_column}=${formatVal(optimiser.output_value)}`,
+    ]
+    if (optimiser.quote_id_column) {
+      parts.push(`${optimiser.quote_id_column}=${formatVal(optimiser.quote_id_value)}`)
+    }
+    const selected = formatOptimiserOnlineCandidate(
+      "selected",
+      selectedCandidate,
+      scenarioValueColumn,
+      objectiveColumn,
+      optimiserGapToNextBestScore(candidates, selectedCandidate),
+    )
+    if (selected) parts.push(selected)
+    const scoreExplanation = formatOptimiserScoreExplanation(selectedCandidate, objectiveColumn)
+    if (scoreExplanation) parts.push(scoreExplanation)
+    const constraintSettings = formatOptimiserConstraintSettings(optimiser.constraints)
+    if (constraintSettings) parts.push(`Constraint settings: ${constraintSettings}`)
+    const displayCandidateScores = optimiserDisplayCandidates(candidates, selectedCandidate)
+      .map((candidate) => formatOptimiserCandidateScore(candidate, objectiveColumn, scenarioValueColumn))
+    if (displayCandidateScores.length > 0) {
+      parts.push(`Candidate scores: ${displayCandidateScores.join("; ")}`)
+    }
+    const optimiserLambdas = formatRecordEntries(optimiser.lambdas)
+    if (optimiserLambdas) parts.push(`Lambdas: ${optimiserLambdas}`)
+    parts.push(`${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`)
+    return parts
+  }
+
+  if (optimiser.mode === "ratebook") {
+    const factors = Array.isArray(optimiser.factors) ? optimiser.factors : []
+    const parts = [
+      `Optimiser apply: ratebook ${optimiser.output_column}=${formatVal(optimiser.output_value)}`,
+      `base=${formatVal(optimiser.base_value)}`,
+    ]
+    if (factors.length > 0) {
+      parts.push(`factors: ${factors.map(formatOptimiserRatebookFactor).join(", ")}`)
+    }
+    if (optimiser.message) parts.push(`Message: ${optimiser.message}`)
+    parts.push(`final=${formatVal(optimiser.final_value)}`)
+    return parts
+  }
+
+  return ["Optimiser apply"]
 }
 
 /**
@@ -188,8 +421,23 @@ export function traceToMarkdown(
   // ---- Formula section (only if targetStep has expression) ----
   const targetIsBanding = targetStep?.expression?.expression_type === "banding" ||
     targetStep?.node_detail?.detail_type === "banding"
+  const targetIsTraceOrigin = isTraceOriginStep(targetStep, trace.column)
+  const targetCalculationIsComputed = isComputedPlaceholder(targetStep?.calculation?.substituted_text)
 
-  if (targetStep?.expression && !targetIsBanding) {
+  if (
+    targetStep &&
+    targetIsTraceOrigin &&
+    (
+      targetStep.expression == null ||
+      targetStep.expression.expression_type === "opaque" ||
+      targetCalculationIsComputed
+    )
+  ) {
+    lines.push("## Source")
+    lines.push("")
+    lines.push(`Source node: ${targetStep.node_name}`)
+    lines.push("")
+  } else if (targetStep?.expression && !targetIsBanding) {
     lines.push("## Formula")
     lines.push("")
     lines.push(`\`${targetStep.expression.expression_text}\``)
@@ -227,7 +475,15 @@ export function traceToMarkdown(
       if (diff.columns_modified.length > 0) parts.push(`~${diff.columns_modified.join(",")}`)
       if (diff.columns_removed.length > 0) parts.push(`-${diff.columns_removed.join(",")}`)
 
-      if (step.expression && step.node_detail?.detail_type !== "banding") {
+      const stepIsTraceOrigin = isTraceOriginStep(step, trace.column)
+      const stepCalculationIsComputed = isComputedPlaceholder(step.calculation?.substituted_text)
+      if (stepIsTraceOrigin && (
+        step.expression == null ||
+        step.expression.expression_type === "opaque" ||
+        stepCalculationIsComputed
+      )) {
+        parts.push(`Source node: ${step.node_name}`)
+      } else if (step.expression && step.node_detail?.detail_type !== "banding") {
         parts.push(step.expression.expression_text)
       }
 
@@ -242,6 +498,8 @@ export function traceToMarkdown(
           parts.push(...formatBandingDetail(step.node_detail))
         } else if (step.node_detail.detail_type === "model_score") {
           parts.push(...formatModelScoreDetail(step.node_detail))
+        } else if (step.node_detail.detail_type === "optimiser_apply") {
+          parts.push(...formatOptimiserApplyDetail(step.node_detail))
         } else {
           for (const [key, val] of Object.entries(step.node_detail)) {
             parts.push(`${key}: ${formatVal(val)}`)

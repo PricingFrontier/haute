@@ -240,6 +240,78 @@ describe("CalculationHero \u2014 Formula Modes", () => {
     ).toBe(true)
   })
 
+  it("source-only opaque mode names the source node instead of computed", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          nodeName: "Policy Source",
+          nodeType: "dataSource",
+          expression: makeExpression({
+            expression_text: "",
+            expression_type: "opaque",
+            referenced_columns: [],
+          }),
+          calculation: makeCalculation({
+            substituted_text: "computed",
+            result_value: 42.5,
+            input_values: {},
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Policy Source").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("source-only placeholder calculations name the source node when expression is absent", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          nodeName: "Quote Input",
+          nodeType: "apiInput",
+          expression: null,
+          calculation: makeCalculation({
+            substituted_text: "computed",
+            result_value: "Q123",
+            input_values: {},
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Quote Input").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("generated-column origins can name the generating node instead of computed", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          nodeName: "Premium Expander",
+          nodeType: "scenarioExpander",
+          isSourceOrigin: true,
+          expression: makeExpression({
+            expression_text: "",
+            expression_type: "opaque",
+            referenced_columns: [],
+          }),
+          calculation: makeCalculation({
+            substituted_text: "computed",
+            result_value: 1.2,
+            input_values: {},
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Premium Expander").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
   it("banding mode: uses one compact input-to-band line", () => {
     render(
       <CalculationHero
