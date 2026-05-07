@@ -20,7 +20,7 @@ import {
   formatDisplayExpression,
   tabularNums,
 } from "./traceFormatting"
-import { SOURCE_ONLY_TYPES } from "../utils/nodeTypes"
+import { isTraceSourceNodeType } from "./traceOrigins"
 
 // Re-export the entry types so existing importers of CalculationHero keep working.
 export type { ExpressionChainEntry, InputSourceEntry, WaterfallEntryProp }
@@ -48,10 +48,6 @@ export interface CalculationHeroProps {
   // (e.g. "row had 2+ passes — waterfall not well-defined").  Pass both
   // through and let resolveWaterfallProp split them into steps vs error.
   waterfall?: WaterfallEntryProp[] | WaterfallErrorProp | null
-}
-
-function isSourceOnlyNodeType(nodeType: string | undefined): boolean {
-  return Boolean(nodeType && SOURCE_ONLY_TYPES.has(nodeType))
 }
 
 function isComputedPlaceholder(value: string | undefined): boolean {
@@ -114,14 +110,27 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     }
   }, [])
 
+  const isNullBoth = !expression && !calculation
+  const isOpaque = expression?.expression_type === "opaque"
+  const isConditional = expression?.expression_type === "conditional"
+  const isBanding = expression?.expression_type === "banding"
+  const isOriginNode = Boolean(isSourceOrigin || isTraceSourceNodeType(nodeType))
+  const hasExpressionText =
+    expression != null && expression.expression_text.length > 0
+  const calculationIsComputedPlaceholder = isComputedPlaceholder(calculation?.substituted_text)
+
   const handleCopy = useCallback(async () => {
     const parts: string[] = []
     parts.push(`Column: ${column}`)
-    if (expression?.expression_text) {
+    if (isOriginNode) {
+      if (nodeName) {
+        parts.push(`Source node: ${nodeName}`)
+      }
+    } else if (expression?.expression_text) {
       parts.push(`Formula: ${expression.expression_text}`)
     }
     if (calculation) {
-      if (calculation.substituted_text) {
+      if (!isOriginNode && calculation.substituted_text) {
         parts.push(`Substituted: ${calculation.substituted_text}`)
       }
       parts.push(`Result: ${formatResultValueFull(calculation.result_value)}`)
@@ -148,16 +157,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
     setCopied(true)
     copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
-  }, [column, expression, calculation])
-
-  const isNullBoth = !expression && !calculation
-  const isOpaque = expression?.expression_type === "opaque"
-  const isConditional = expression?.expression_type === "conditional"
-  const isBanding = expression?.expression_type === "banding"
-  const isOriginNode = Boolean(isSourceOrigin || isSourceOnlyNodeType(nodeType))
-  const hasExpressionText =
-    expression != null && expression.expression_text.length > 0
-  const calculationIsComputedPlaceholder = isComputedPlaceholder(calculation?.substituted_text)
+  }, [column, expression, calculation, isOriginNode, nodeName])
 
   // Waterfall: prefer backend-computed waterfall data, fallback to
   // frontend parsing for arithmetic with 3+ multiplicative factors.

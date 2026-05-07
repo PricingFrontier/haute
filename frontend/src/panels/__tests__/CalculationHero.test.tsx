@@ -936,6 +936,37 @@ describe("CalculationHero \u2014 Copy Functionality", () => {
     const copiedText = writeTextMock.mock.calls[0][0] as string
     expect(copiedText).toContain("42.5")
   })
+
+  it("copy for source-origin columns includes the source node and omits computed placeholders", async () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          nodeName: "Premium Expander",
+          nodeType: "scenarioExpander",
+          isSourceOrigin: true,
+          expression: makeExpression({
+            expression_text: "",
+            expression_type: "opaque",
+            referenced_columns: [],
+          }),
+          calculation: makeCalculation({
+            substituted_text: "computed",
+            result_value: 0.92,
+            input_values: {},
+          }),
+        })}
+      />,
+    )
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /copy/i }))
+    })
+
+    const copiedText = writeTextMock.mock.calls[0][0] as string
+    expect(copiedText).toContain("Source node: Premium Expander")
+    expect(copiedText).toContain("Result: 0.92")
+    expect(copiedText).not.toContain("computed")
+  })
 })
 
 // ---------------------------------------------------------------------------

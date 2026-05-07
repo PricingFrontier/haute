@@ -257,6 +257,37 @@ export type OptimiserApplyNodeDetail =
   | OptimiserApplyRatebookNodeDetail
   | OptimiserApplyErrorNodeDetail
 
+export interface ScenarioExpanderNodeDetail {
+  detail_type: "scenario_expander"
+  scenario_value?: unknown
+  scenario_column?: string
+  scenario_index?: unknown
+  parameters?: {
+    min_value?: unknown
+    max_value?: unknown
+    steps?: unknown
+  }
+  step?: unknown
+  multiplier?: unknown
+  range?: {
+    min?: unknown
+    max?: unknown
+  }
+  error?: string
+  error_type?: string
+}
+
+export interface LiveSwitchNodeDetail {
+  detail_type: "live_switch"
+  active_branch?: string
+  active_scenario?: string
+  pruned_branches?: string[]
+  selected_branch?: string
+  available_branches?: string[]
+  error?: string
+  error_type?: string
+}
+
 export interface GenericTraceNodeDetail {
   detail_type?: string
   [key: string]: unknown
@@ -267,6 +298,8 @@ export type TraceNodeDetail = (
   | BandingNodeDetail
   | ModelScoreNodeDetail
   | OptimiserApplyNodeDetail
+  | ScenarioExpanderNodeDetail
+  | LiveSwitchNodeDetail
   | GenericTraceNodeDetail
 ) & Record<string, unknown>
 

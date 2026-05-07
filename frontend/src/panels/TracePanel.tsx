@@ -10,13 +10,13 @@ import type {
   OptimiserApplyRatebookFactorDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
+  ScenarioExpanderNodeDetail,
+  LiveSwitchNodeDetail,
   TraceNodeDetail,
   TraceResult,
   TraceStep,
 } from "../types/trace"
 import {
-  GENERATED_COLUMN_ORIGIN_TYPES,
-  SOURCE_ONLY_TYPES,
   nodeTypeLabels,
   nodeTypeColors,
 } from "../utils/nodeTypes"
@@ -24,6 +24,7 @@ import { formatValue as _formatValue } from "../utils/formatValue"
 import { formatExpression } from "../utils/formatTrace"
 import PanelShell from "./PanelShell"
 import CalculationHero from "../trace/CalculationHero"
+import { isTraceOriginStep } from "../trace/traceOrigins"
 import { CHART_COLORS } from "../theme/colors"
 import { findTargetStep, collapsePassthroughs } from "./trace/traceGrouping"
 import { traceToMarkdown } from "./trace/traceToMarkdown"
@@ -49,6 +50,14 @@ function asModelScoreDetail(detail: TraceNodeDetail): ModelScoreNodeDetail {
 
 function asOptimiserApplyDetail(detail: TraceNodeDetail): OptimiserApplyNodeDetail {
   return detail as OptimiserApplyNodeDetail
+}
+
+function asScenarioExpanderDetail(detail: TraceNodeDetail): ScenarioExpanderNodeDetail {
+  return detail as ScenarioExpanderNodeDetail
+}
+
+function asLiveSwitchDetail(detail: TraceNodeDetail): LiveSwitchNodeDetail {
+  return detail as LiveSwitchNodeDetail
 }
 
 function ratingTableStatus(table: RatingStepTableDetail): string | undefined {
@@ -123,19 +132,6 @@ function hasBandingSecondaryDetail(detail: TraceNodeDetail | null | undefined): 
 
 function isComputedPlaceholder(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === "computed"
-}
-
-function isSourceOnlyNodeType(nodeType: string | undefined): boolean {
-  return Boolean(nodeType && SOURCE_ONLY_TYPES.has(nodeType))
-}
-
-function isTraceOriginStep(step: TraceStep, tracedColumn: string | null | undefined): boolean {
-  if (isSourceOnlyNodeType(step.node_type)) return true
-  return Boolean(
-    tracedColumn &&
-    GENERATED_COLUMN_ORIGIN_TYPES.has(step.node_type) &&
-    step.schema_diff.columns_added.includes(tracedColumn),
-  )
 }
 
 function isCalculationRoutineSparse(step: TraceStep | null | undefined): boolean {
@@ -1028,20 +1024,90 @@ function NodeDetailBlock({
   }
 
   if (detailType === "scenario_expander") {
+    const expander = asScenarioExpanderDetail(detail)
+    const scenarioColumn = expander.scenario_column ??
+      (typeof expander.step === "string" && expander.step.length > 0 ? expander.step : "scenario")
+    const scenarioValue = expander.scenario_value ?? expander.multiplier
+    const scenarioIndex = expander.scenario_index
+    const minValue = expander.parameters?.min_value ?? expander.range?.min
+    const maxValue = expander.parameters?.max_value ?? expander.range?.max
+    const stepCount = expander.parameters?.steps
+    const hasGridSettings = minValue !== undefined || maxValue !== undefined || stepCount !== undefined
     return (
-      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-        <div style={labelStyle}>Scenario Expander</div>
-        <div style={valueStyle}>Step: {String(detail.step)}</div>
-        <div style={valueStyle}>Multiplier: {String(detail.multiplier)}</div>
+      <div className="my-2 space-y-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span style={labelStyle}>Scenario Expander</span>
+          {scenarioValue !== undefined && (
+            <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}>
+              {scenarioColumn}: {formatValue(scenarioValue)}
+            </span>
+          )}
+          {scenarioIndex !== undefined && (
+            <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.04)" }}>
+              index: {formatValue(scenarioIndex)}
+            </span>
+          )}
+        </div>
+        {hasGridSettings && (
+          <div className="flex flex-wrap gap-1">
+            {minValue !== undefined && (
+              <span className="px-1 py-0.5 rounded font-mono" style={{ background: "rgba(255,255,255,.04)" }}>
+                min: {formatValue(minValue)}
+              </span>
+            )}
+            {maxValue !== undefined && (
+              <span className="px-1 py-0.5 rounded font-mono" style={{ background: "rgba(255,255,255,.04)" }}>
+                max: {formatValue(maxValue)}
+              </span>
+            )}
+            {stepCount !== undefined && (
+              <span className="px-1 py-0.5 rounded font-mono" style={{ background: "rgba(255,255,255,.04)" }}>
+                steps: {formatValue(stepCount)}
+              </span>
+            )}
+          </div>
+        )}
+        {expander.error && (
+          <div role="alert" className="rounded px-2 py-1" style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}>
+            Trace detail failed: {expander.error}
+          </div>
+        )}
       </div>
     )
   }
 
   if (detailType === "live_switch") {
+    const liveSwitch = asLiveSwitchDetail(detail)
+    const activeBranch = liveSwitch.active_branch ?? liveSwitch.selected_branch
+    const activeScenario = liveSwitch.active_scenario
+    const prunedBranches = Array.isArray(liveSwitch.pruned_branches) ? liveSwitch.pruned_branches : []
+    const availableBranches = Array.isArray(liveSwitch.available_branches) ? liveSwitch.available_branches : []
     return (
-      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-        <div style={labelStyle}>Branch Selection</div>
-        <div style={valueStyle}>Selected: {String(detail.selected_branch)}</div>
+      <div className="my-2 space-y-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span style={labelStyle}>Live Switch</span>
+          {activeBranch && (
+            <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.06)" }}>
+              active branch: {activeBranch}
+            </span>
+          )}
+          {activeScenario && (
+            <span className="px-1.5 py-0.5 rounded font-mono" style={{ ...valueStyle, background: "rgba(255,255,255,.04)" }}>
+              scenario: {activeScenario}
+            </span>
+          )}
+        </div>
+        {prunedBranches.length > 0 && (
+          <div style={valueStyle}>Pruned branches: {prunedBranches.join(", ")}</div>
+        )}
+        {availableBranches.length > 0 && prunedBranches.length === 0 && (
+          <div style={valueStyle}>Available branches: {availableBranches.join(", ")}</div>
+        )}
+        {liveSwitch.error && (
+          <div role="alert" className="rounded px-2 py-1" style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}>
+            Trace detail failed: {liveSwitch.error}
+          </div>
+        )}
       </div>
     )
   }

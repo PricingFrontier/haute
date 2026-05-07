@@ -870,7 +870,7 @@ describe("TracePanel — Node Detail", () => {
     expect(rows[4]).toHaveTextContent("1.5")
   })
 
-  it("renders scenario expander detail with multiplier info", () => {
+  it("renders scenario expander detail with scenario value and grid settings", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -881,9 +881,10 @@ describe("TracePanel — Node Detail", () => {
               node_type: "scenario_expander",
               node_detail: {
                 detail_type: "scenario_expander",
-                step: "inflation",
-                multiplier: 1.05,
-                range: { min: 0.95, max: 1.15 },
+                scenario_column: "premium_multiplier",
+                scenario_value: 1.05,
+                scenario_index: 3,
+                parameters: { min_value: 0.95, max_value: 1.15, steps: 9 },
               },
             }),
           ] as TraceStep[],
@@ -896,10 +897,15 @@ describe("TracePanel — Node Detail", () => {
     fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Scenario Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
-    expect(screen.getByText("Scenario Step")).toBeInTheDocument()
+    expect(screen.getByText("Scenario Expander")).toBeInTheDocument()
+    expect(screen.getByText(/premium_multiplier.*1.05/)).toBeInTheDocument()
+    expect(screen.getByText(/index.*3/)).toBeInTheDocument()
+    expect(screen.getByText(/min.*0.95/)).toBeInTheDocument()
+    expect(screen.getByText(/max.*1.15/)).toBeInTheDocument()
+    expect(screen.getByText(/steps.*9/)).toBeInTheDocument()
   })
 
-  it("renders live switch detail with branch selection", () => {
+  it("renders live switch detail with active and pruned branches", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -910,8 +916,9 @@ describe("TracePanel — Node Detail", () => {
               node_type: "live_switch",
               node_detail: {
                 detail_type: "live_switch",
-                selected_branch: "branch_B",
-                available_branches: ["branch_A", "branch_B", "branch_C"],
+                active_branch: "branch_B",
+                active_scenario: "renewal",
+                pruned_branches: ["branch_A", "branch_C"],
               },
             }),
           ] as TraceStep[],
@@ -924,7 +931,10 @@ describe("TracePanel — Node Detail", () => {
     fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Live Switch").closest("button") as HTMLElement
     fireEvent.click(stepButton)
-    expect(screen.getByText("Live Switch")).toBeInTheDocument()
+    expect(screen.getAllByText("Live Switch").length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/active branch.*branch_B/)).toBeInTheDocument()
+    expect(screen.getByText(/scenario.*renewal/)).toBeInTheDocument()
+    expect(screen.getByText(/Pruned branches.*branch_A, branch_C/)).toBeInTheDocument()
   })
 
 

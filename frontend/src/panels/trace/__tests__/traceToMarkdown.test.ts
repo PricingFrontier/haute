@@ -273,6 +273,51 @@ describe("traceToMarkdown", () => {
     expect(md).not.toContain("computed")
   })
 
+  it("formats scenario expander and live switch details as readable summaries", () => {
+    const trace = makeTrace({
+      steps: [
+        makeStep({
+          node_id: "switch",
+          node_name: "Live Switch",
+          node_type: "liveSwitch",
+          node_detail: {
+            detail_type: "live_switch",
+            active_branch: "batch",
+            active_scenario: "renewal",
+            pruned_branches: ["live"],
+          },
+        }),
+        makeStep({
+          node_id: "expand",
+          node_name: "Premium Expander",
+          node_type: "scenarioExpander",
+          schema_diff: {
+            columns_added: ["premium_multiplier"],
+            columns_removed: [],
+            columns_modified: [],
+            columns_passed: ["premium"],
+          },
+          node_detail: {
+            detail_type: "scenario_expander",
+            scenario_column: "premium_multiplier",
+            scenario_value: 1.05,
+            scenario_index: 2,
+            parameters: { min_value: 0.8, max_value: 1.2, steps: 9 },
+          },
+        }),
+      ],
+    })
+    const md = traceToMarkdown(trace, trace.steps[1])
+
+    expect(md).toContain("Active branch=batch")
+    expect(md).toContain("Scenario=renewal")
+    expect(md).toContain("Pruned branches: live")
+    expect(md).toContain("Scenario: premium_multiplier=1.05")
+    expect(md).toContain("Index=2")
+    expect(md).toContain("Grid: min=0.8, max=1.2, steps=9")
+    expect(md).not.toContain("detail_type: scenario_expander")
+  })
+
   it("handles null calculation (no substituted values)", () => {
     const trace = makeTrace({
       steps: [

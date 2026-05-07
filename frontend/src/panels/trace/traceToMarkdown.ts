@@ -6,11 +6,13 @@ import type {
   OptimiserApplyRatebookFactorDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
+  ScenarioExpanderNodeDetail,
+  LiveSwitchNodeDetail,
   TraceNodeDetail,
   TraceResult,
   TraceStep,
 } from "../../types/trace"
-import { GENERATED_COLUMN_ORIGIN_TYPES, SOURCE_ONLY_TYPES } from "../../utils/nodeTypes"
+import { isTraceOriginStep } from "../../trace/traceOrigins"
 
 function formatVal(v: unknown): string {
   if (v === null || v === undefined) return "null"
@@ -27,20 +29,6 @@ function formatVal(v: unknown): string {
 /** Escape pipe characters so they don't break markdown tables. */
 function escPipe(s: string): string {
   return s.replace(/\|/g, "\\|")
-}
-
-function isSourceOnlyNodeType(nodeType: string | undefined): boolean {
-  return Boolean(nodeType && SOURCE_ONLY_TYPES.has(nodeType))
-}
-
-function isTraceOriginStep(step: TraceStep | null | undefined, tracedColumn: string | null | undefined): step is TraceStep {
-  if (!step) return false
-  if (isSourceOnlyNodeType(step.node_type)) return true
-  return Boolean(
-    tracedColumn &&
-    GENERATED_COLUMN_ORIGIN_TYPES.has(step.node_type) &&
-    step.schema_diff.columns_added.includes(tracedColumn),
-  )
 }
 
 function isComputedPlaceholder(value: string | undefined): boolean {
@@ -127,6 +115,45 @@ function formatBandingDetail(detail: TraceNodeDetail): string[] {
     parts[0] += ` ${lowerBracket}${lower}, ${upper}${upperBracket}`
   }
   return parts
+}
+
+function formatScenarioExpanderDetail(detail: TraceNodeDetail): string[] {
+  const expander = detail as ScenarioExpanderNodeDetail
+  const scenarioColumn = expander.scenario_column ??
+    (typeof expander.step === "string" && expander.step.length > 0 ? expander.step : "scenario")
+  const scenarioValue = expander.scenario_value ?? expander.multiplier
+  const parts: string[] = []
+  if (scenarioValue !== undefined) {
+    parts.push(`Scenario: ${scenarioColumn}=${formatVal(scenarioValue)}`)
+  }
+  if (expander.scenario_index !== undefined) {
+    parts.push(`Index=${formatVal(expander.scenario_index)}`)
+  }
+  const minValue = expander.parameters?.min_value ?? expander.range?.min
+  const maxValue = expander.parameters?.max_value ?? expander.range?.max
+  const stepCount = expander.parameters?.steps
+  const gridParts: string[] = []
+  if (minValue !== undefined) gridParts.push(`min=${formatVal(minValue)}`)
+  if (maxValue !== undefined) gridParts.push(`max=${formatVal(maxValue)}`)
+  if (stepCount !== undefined) gridParts.push(`steps=${formatVal(stepCount)}`)
+  if (gridParts.length > 0) parts.push(`Grid: ${gridParts.join(", ")}`)
+  if (expander.error) parts.push(`Trace detail error: ${expander.error}`)
+  return parts.length > 0 ? parts : ["Scenario Expander"]
+}
+
+function formatLiveSwitchDetail(detail: TraceNodeDetail): string[] {
+  const liveSwitch = detail as LiveSwitchNodeDetail
+  const activeBranch = liveSwitch.active_branch ?? liveSwitch.selected_branch
+  const parts: string[] = []
+  if (activeBranch) parts.push(`Active branch=${activeBranch}`)
+  if (liveSwitch.active_scenario) parts.push(`Scenario=${liveSwitch.active_scenario}`)
+  if (liveSwitch.pruned_branches && liveSwitch.pruned_branches.length > 0) {
+    parts.push(`Pruned branches: ${liveSwitch.pruned_branches.join(", ")}`)
+  } else if (liveSwitch.available_branches && liveSwitch.available_branches.length > 0) {
+    parts.push(`Available branches: ${liveSwitch.available_branches.join(", ")}`)
+  }
+  if (liveSwitch.error) parts.push(`Trace detail error: ${liveSwitch.error}`)
+  return parts.length > 0 ? parts : ["Live Switch"]
 }
 
 function formatModelScoreDetail(detail: TraceNodeDetail): string[] {
@@ -500,6 +527,10 @@ export function traceToMarkdown(
           parts.push(...formatModelScoreDetail(step.node_detail))
         } else if (step.node_detail.detail_type === "optimiser_apply") {
           parts.push(...formatOptimiserApplyDetail(step.node_detail))
+        } else if (step.node_detail.detail_type === "scenario_expander") {
+          parts.push(...formatScenarioExpanderDetail(step.node_detail))
+        } else if (step.node_detail.detail_type === "live_switch") {
+          parts.push(...formatLiveSwitchDetail(step.node_detail))
         } else {
           for (const [key, val] of Object.entries(step.node_detail)) {
             parts.push(`${key}: ${formatVal(val)}`)
