@@ -13,6 +13,7 @@ from haute.routes._job_store import get_job_store
 from haute.routes._train_service import (
     _DEFAULT_TIMEOUT,
     TrainService,
+    _assert_json_finite,
     _check_gpu_vram,
     _clamp_row_limit,
     _find_modelling_node,
@@ -71,6 +72,24 @@ async def train_status(job_id: str) -> TrainStatusResponse:
                     "elapsed_seconds": time.monotonic() - start,
                 },
                 expected_status="running",
+            )
+            job = _store.require_job(job_id)
+
+    result = job.get("result")
+    if result is not None:
+        try:
+            _assert_json_finite(result)
+        except ValueError as exc:
+            message = f"Training result cannot be published: {exc}"
+            logger.error("training_result_not_json_finite", error=str(exc), job_id=job_id)
+            _store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": message,
+                    "result": None,
+                },
+                expected_status="completed",
             )
             job = _store.require_job(job_id)
 

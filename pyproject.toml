@@ -41,7 +41,7 @@ dependencies = [
     "structlog>=24.1.0",
     "orjson>=3.9.0",
     "price-contour>=0.3.4",
-    "rustystats>=0.6.7",
+    "rustystats>=0.7.0",
     "xxhash>=3.0.0",
     "packaging>=24.0",
 ]

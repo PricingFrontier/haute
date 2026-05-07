@@ -1,5 +1,6 @@
 import type {
   BandingNodeDetail,
+  ModelScoreNodeDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
   TraceNodeDetail,
@@ -106,6 +107,55 @@ function formatBandingDetail(detail: TraceNodeDetail): string[] {
   return parts
 }
 
+function formatModelScoreDetail(detail: TraceNodeDetail): string[] {
+  const model = detail as ModelScoreNodeDetail
+  const parts: string[] = []
+  if (model.prediction_column || model.prediction_value !== undefined) {
+    const label = model.prediction_column ? `Prediction ${model.prediction_column}` : "Prediction"
+    parts.push(`${label}=${formatVal(model.prediction_value)}`)
+  }
+  if (model.model_identity?.registered_model) {
+    const version = model.model_identity.version ? ` v${model.model_identity.version}` : ""
+    parts.push(`Model=${model.model_identity.registered_model}${version}`)
+  } else if (model.model_identity?.run_id) {
+    parts.push(`Run=${model.model_identity.run_id}`)
+  }
+  if (model.feature_columns && model.feature_columns.length > 0) {
+    const featureValues = model.feature_values ?? {}
+    parts.push(
+      `Features: ${model.feature_columns
+        .map((feature) => `${feature}=${formatVal(featureValues[feature])}`)
+        .join(", ")}`
+    )
+  }
+  const explanation = model.explanation
+  if (explanation?.status === "error") {
+    parts.push(`Explanation error: ${explanation.error ?? "unknown error"}`)
+  } else if (explanation) {
+    if (explanation.base_value !== undefined) {
+      parts.push(`Base=${formatVal(explanation.base_value)}`)
+    }
+    if (explanation.prediction_from_shap !== undefined) {
+      const outputSpace = explanation.output_space ? ` ${explanation.output_space}` : ""
+      parts.push(`Base + contributions=${formatVal(explanation.prediction_from_shap)}${outputSpace}`)
+    }
+    if (explanation.contributions && explanation.contributions.length > 0) {
+      const contributionSummary = explanation.contributions
+        .map((contribution) => {
+          const shap = contribution.shap_value
+          const sign = shap >= 0 ? "+" : ""
+          const featureValue = contribution.feature_value !== undefined
+            ? ` (${formatVal(contribution.feature_value)})`
+            : ""
+          return `${contribution.feature}${featureValue} ${sign}${formatVal(shap)}`
+        })
+        .join(", ")
+      parts.push(`Contributions: ${contributionSummary}`)
+    }
+  }
+  return parts
+}
+
 /**
  * Convert a trace result into a human-readable markdown document.
  */
@@ -190,6 +240,8 @@ export function traceToMarkdown(
           parts.push(...formatRatingStepDetail(step.node_detail))
         } else if (step.node_detail.detail_type === "banding") {
           parts.push(...formatBandingDetail(step.node_detail))
+        } else if (step.node_detail.detail_type === "model_score") {
+          parts.push(...formatModelScoreDetail(step.node_detail))
         } else {
           for (const [key, val] of Object.entries(step.node_detail)) {
             parts.push(`${key}: ${formatVal(val)}`)

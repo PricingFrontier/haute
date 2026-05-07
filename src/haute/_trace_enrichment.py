@@ -663,13 +663,23 @@ def enrich_model_score(
             "task": config.get("task", "regression"),
         }
 
-        # Feature columns
+        # Feature columns. Prefer explicit config, then the node contract,
+        # then inference from the row. The contract keeps technical columns
+        # such as quote IDs out of the model explanation.
         feature_columns = config.get("feature_columns", None)
+        if feature_columns is None:
+            contract = config.get("contract")
+            contract_inputs = (
+                contract.get("inputs")
+                if isinstance(contract, dict) and isinstance(contract.get("inputs"), list)
+                else None
+            )
+            feature_columns = contract_inputs
         if feature_columns is None:
             # Infer: input columns minus the prediction column
             feature_columns = [k for k in input_row if k != prediction_column]
 
-        return {
+        detail = {
             "detail_type": "model_score",
             "prediction_value": prediction_value,
             "prediction_column": prediction_column,
@@ -677,6 +687,29 @@ def enrich_model_score(
             "feature_values": {f: input_row.get(f) for f in feature_columns},
             "model_identity": model_identity,
         }
+
+        from haute import _model_explainability
+
+        try:
+            explanation = _model_explainability.explain_model_score_from_config(
+                config,
+                input_row,
+                output_row,
+                prediction_column=prediction_column,
+                prediction_value=prediction_value,
+            )
+        except _model_explainability.ModelExplanationError as exc:
+            explanation = {
+                "type": "catboost_shap",
+                "method": "catboost_shap",
+                "status": "error",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        if explanation is not None:
+            detail["explanation"] = explanation
+
+        return detail
     except Exception as exc:
         logger.warning(
             "enrichment_failed",

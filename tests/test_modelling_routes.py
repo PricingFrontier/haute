@@ -355,6 +355,66 @@ class TestTrainBackgroundLaunchFailures:
         assert job.get("result") is None
         assert not tmp_parquet.exists()
 
+    def test_non_finite_training_result_marks_job_error(self, tmp_path: Path) -> None:
+        """Worker completion must fail loudly before storing invalid JSON."""
+        from haute.modelling._training_job import TrainResult
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        service = TrainService(store)
+        job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+        tmp_parquet = tmp_path / "train_data.parquet"
+        tmp_parquet.write_bytes(b"train")
+
+        deferred_threads: list[object] = []
+
+        class DeferredThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+                deferred_threads.append(self)
+
+            def start(self) -> None:
+                return None
+
+        class FakeTrainingJob:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run(self, progress, on_iteration):
+                return TrainResult(
+                    metrics={"auc": float("nan")},
+                    feature_importance=[],
+                    model_path="outputs/bad.rsglm",
+                    train_rows=10,
+                    test_rows=0,
+                    features=["x"],
+                    cat_features=[],
+                )
+
+        with (
+            patch("haute.modelling.TrainingJob", FakeTrainingJob),
+            patch("haute.routes._train_service.threading.Thread", DeferredThread),
+        ):
+            service._launch_background(
+                job_id,
+                "train",
+                {"target": "y"},
+                {},
+                str(tmp_parquet),
+                None,
+                None,
+            )
+
+        deferred_threads[0].target()
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert "non-finite numeric value" in job["message"]
+        assert "metrics.auc" in job["message"]
+        assert job.get("result") is None
+        assert not tmp_parquet.exists()
+
 
 class TestTrainStatusTimeout:
     def test_timeout_sets_error_with_elapsed(self, client):
@@ -433,6 +493,36 @@ class TestTrainStatusEndpoint:
     def test_missing_job_returns_404(self, client):
         resp = client.get("/api/modelling/train/status/nonexistent")
         assert resp.status_code == 404
+
+    def test_non_finite_completed_result_becomes_job_error(self, client):
+        """A bad completed payload must not make status polling 500 forever."""
+        from haute.routes._job_store import get_job_store
+        from haute.schemas import TrainResponse
+
+        store = get_job_store("training")
+        bad_result = TrainResponse.model_construct(
+            status="completed",
+            job_id="bad_result",
+            metrics={"auc": float("nan")},
+        )
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "progress": 1.0,
+                "message": "Done",
+                "result": bad_result,
+            }
+        )
+        try:
+            resp = client.get(f"/api/modelling/train/status/{job_id}")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "error"
+            assert "non-finite numeric value" in data["message"]
+            assert "metrics.auc" in data["message"]
+            assert data["result"] is None
+        finally:
+            store.jobs.pop(job_id, None)
 
 
 class TestMlflowCheckEndpoint:

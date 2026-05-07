@@ -130,6 +130,12 @@ describe("PipelineNode", () => {
     expect(targetHandle).not.toBeNull()
   })
 
+  it("modelling nodes stay canvas sink-only while still previewable from click handlers", () => {
+    const { container } = renderNode({ label: "Conversion", nodeType: NODE_TYPES.MODELLING })
+    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
+    expect(container.querySelector(".react-flow__handle-left")).not.toBeNull()
+  })
+
   it("transform nodes render both source and target handles", () => {
     const { container } = renderNode({ label: "Transform", nodeType: NODE_TYPES.POLARS })
     expect(container.querySelector(".react-flow__handle-left")).not.toBeNull()

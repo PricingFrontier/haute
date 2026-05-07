@@ -132,10 +132,66 @@ export interface BandingNodeDetail {
   conditions?: Array<{ operator: string; value: unknown }>
 }
 
-export interface TraceNodeDetail {
+export interface ModelScoreIdentityDetail {
+  source_type?: string
+  run_id?: string
+  registered_model?: string
+  version?: string
+  task?: string
+}
+
+export interface ModelScoreContributionDetail {
+  feature: string
+  feature_value?: unknown
+  shap_value: number
+  abs_shap_value?: number
+  rank?: number
+  is_categorical?: boolean
+}
+
+export interface ModelScoreExplanationDetail {
+  type?: "catboost_shap" | string
+  method?: "catboost_shap" | string
+  status?: "ok" | "error" | string
+  output_space?: "prediction" | "raw_formula_val" | string
+  prediction_space?: string
+  base_value?: number
+  sum_contributions?: number
+  contribution_sum?: number
+  prediction_from_shap?: number
+  model_output_value?: number
+  prediction_value?: number | null
+  output_difference?: number | null
+  feature_count?: number
+  feature_values?: Record<string, unknown>
+  contributions?: ModelScoreContributionDetail[]
+  truncated?: boolean
+  omitted_count?: number
+  error?: string
+  error_type?: string
+}
+
+export interface ModelScoreNodeDetail {
+  detail_type: "model_score"
+  prediction_value?: unknown
+  prediction_column?: string
+  feature_columns?: string[]
+  feature_values?: Record<string, unknown>
+  model_identity?: ModelScoreIdentityDetail
+  explanation?: ModelScoreExplanationDetail
+}
+
+export interface GenericTraceNodeDetail {
   detail_type?: string
   [key: string]: unknown
 }
+
+export type TraceNodeDetail = (
+  | RatingStepNodeDetail
+  | BandingNodeDetail
+  | ModelScoreNodeDetail
+  | GenericTraceNodeDetail
+) & Record<string, unknown>
 
 export interface WaterfallEntry {
   label: string

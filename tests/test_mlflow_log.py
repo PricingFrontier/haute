@@ -291,6 +291,132 @@ class TestLogExperiment:
             assert m_artifact.call_count == 1
             assert m_artifact.call_args[0][1] == "model_card"
 
+    def test_rustystats_model_file_logged_as_native_artifact(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Pyfunc-logged flavors must upload the native file at run root.
+
+        Run discovery (``_find_rsglm_artifact``) only sees artifacts that are
+        physically present in the run, and ``mlflow.pyfunc.log_model`` does
+        not upload the native model file — so without an explicit
+        ``log_artifact`` the ``.rsglm`` is missing and downstream scoring
+        falls all the way through to the pyfunc fallback (which has nothing
+        to load).
+        """
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+
+        mock_run = MagicMock()
+        mock_run.info.run_id = "glm-artifact"
+        model_file = tmp_path / "conversion.rsglm"
+        model_file.write_bytes(b"fake-rsglm")
+        signature = object()
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_experiment"),
+            patch("mlflow.start_run") as m_run,
+            patch("mlflow.log_params"),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.log_artifact") as m_artifact,
+            patch("mlflow.register_model"),
+            patch("mlflow.pyfunc.log_model") as m_pyfunc_log_model,
+            patch(
+                "haute.modelling._mlflow_log._build_signature_for_log",
+                return_value=signature,
+            ),
+        ):
+            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+            m_run.return_value.__exit__ = MagicMock(return_value=False)
+
+            from haute.modelling._mlflow_log import log_experiment
+
+            log_experiment(
+                experiment_name="/test/glm",
+                run_name="conversion",
+                metrics={"auc": 0.7},
+                params={"algorithm": "glm"},
+                model_path=str(model_file),
+                metadata=ModelCardMetadata(
+                    algorithm="glm",
+                    task="regression",
+                    features=["difference_to_market"],
+                ),
+            )
+
+        m_pyfunc_log_model.assert_called_once()
+        assert m_pyfunc_log_model.call_args.kwargs["signature"] is signature
+        native_model_calls = [
+            call
+            for call in m_artifact.call_args_list
+            if call.args and Path(call.args[0]).name == "conversion.rsglm"
+        ]
+        assert len(native_model_calls) == 1
+        assert native_model_calls[0].args == (str(model_file),)
+        assert native_model_calls[0].kwargs == {}
+
+    def test_catboost_model_file_not_re_logged_as_native_artifact(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """``mlflow.catboost.log_model`` already bundles the .cbm; don't dup it.
+
+        Adding a top-level ``mlflow.log_artifact(<.cbm>)`` would re-upload
+        the binary on every run with no functional benefit (run discovery
+        already finds the .cbm inside the catboost model directory).
+        """
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+
+        mock_run = MagicMock()
+        mock_run.info.run_id = "cbm-artifact"
+        model_file = tmp_path / "model.cbm"
+        model_file.write_bytes(b"fake-cbm")
+        signature = object()
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_experiment"),
+            patch("mlflow.start_run") as m_run,
+            patch("mlflow.log_params"),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.log_artifact") as m_artifact,
+            patch("mlflow.register_model"),
+            patch("mlflow.catboost.log_model") as m_catboost_log_model,
+            patch(
+                "haute.modelling._mlflow_log._build_signature_for_log",
+                return_value=signature,
+            ),
+        ):
+            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+            m_run.return_value.__exit__ = MagicMock(return_value=False)
+
+            from haute.modelling._mlflow_log import log_experiment
+
+            log_experiment(
+                experiment_name="/test/cbm",
+                run_name="freq",
+                metrics={"rmse": 0.5},
+                params={"algorithm": "catboost"},
+                model_path=str(model_file),
+                metadata=ModelCardMetadata(
+                    algorithm="catboost",
+                    task="regression",
+                    features=["age"],
+                ),
+            )
+
+        m_catboost_log_model.assert_called_once()
+        native_model_calls = [
+            call
+            for call in m_artifact.call_args_list
+            if call.args and Path(call.args[0]).name == "model.cbm"
+        ]
+        assert native_model_calls == []
+
     def test_with_artifacts(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """SHAP, importance, and CV results are all logged as artifacts."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
@@ -813,6 +939,59 @@ class TestLogExperiment:
 
             logged_params = m_params.call_args[0][0]
             assert len(logged_params["long_param"]) == 500
+
+    def test_rustystats_run_yields_native_artifact_discoverable_end_to_end(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """End-to-end: ``log_experiment`` for an .rsglm produces a run where
+        ``_find_model_artifact`` returns the native ``.rsglm``.
+
+        The unit-level test mocks ``mlflow.log_artifact`` and asserts the
+        call site.  This test exercises the real MLflow file-store so the
+        contract that ``_find_rsglm_artifact`` actually depends on — the
+        native file being present in the run's top-level artifact list —
+        is locked in against future refactors of the logging path.
+        """
+        pytest.importorskip("mlflow")
+        import mlflow
+
+        from haute._mlflow_io import _find_model_artifact
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        model_file = tmp_path / "conversion.rsglm"
+        model_file.write_bytes(b"fake-rsglm-bytes")
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        result = log_experiment(
+            experiment_name="rustystats_e2e",
+            run_name="conversion",
+            metrics={"auc": 0.7},
+            params={"algorithm": "glm"},
+            model_path=str(model_file),
+            metadata=ModelCardMetadata(
+                algorithm="glm",
+                task="regression",
+                features=["difference_to_market"],
+                feature_types={"difference_to_market": "Float64"},
+            ),
+        )
+
+        from mlflow.tracking import MlflowClient
+
+        client = MlflowClient(tracking_uri=result.tracking_uri)
+        artifact_path, flavor = _find_model_artifact(client, result.run_id)
+
+        assert flavor == "rustystats"
+        assert Path(artifact_path).name == "conversion.rsglm"
+        # Reset any tracking URI mlflow set during the run so other tests
+        # in the same process don't inherit our temp file-store URI.
+        mlflow.set_tracking_uri("")
 
 
 class TestBuildRunUrlExtra:

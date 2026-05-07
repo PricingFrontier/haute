@@ -2,6 +2,9 @@ import { useState, useMemo, useRef, useEffect } from "react"
 import { X, ChevronDown, ChevronRight, Scan, Copy, Check } from "lucide-react"
 import type {
   BandingNodeDetail,
+  ModelScoreContributionDetail,
+  ModelScoreExplanationDetail,
+  ModelScoreNodeDetail,
   RatingStepCombinedOutputDetail,
   RatingStepTableDetail,
   TraceNodeDetail,
@@ -30,6 +33,10 @@ function asRatingStepCombinedOutputs(detail: TraceNodeDetail): RatingStepCombine
 
 function asBandingDetail(detail: TraceNodeDetail): BandingNodeDetail {
   return detail as BandingNodeDetail
+}
+
+function asModelScoreDetail(detail: TraceNodeDetail): ModelScoreNodeDetail {
+  return detail as ModelScoreNodeDetail
 }
 
 function ratingTableStatus(table: RatingStepTableDetail): string | undefined {
@@ -67,12 +74,30 @@ function hasRichBandingDetail(step: TraceStep | null | undefined): boolean {
   return detail?.detail_type === "banding"
 }
 
+function hasRichModelScoreDetail(step: TraceStep | null | undefined): boolean {
+  const detail = step?.node_detail as ModelScoreNodeDetail | null | undefined
+  return Boolean(
+    detail?.detail_type === "model_score" &&
+    (
+      "prediction_value" in detail ||
+      Array.isArray(detail.feature_columns) ||
+      detail.feature_values != null ||
+      detail.explanation != null
+    ),
+  )
+}
+
 function hasBandingSecondaryDetail(detail: TraceNodeDetail | null | undefined): boolean {
   return detail?.detail_type === "banding" &&
     (detail.lower_bound != null || detail.upper_bound != null || detail.is_default === true)
 }
 
+function isComputedPlaceholder(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === "computed"
+}
+
 function isCalculationRoutineSparse(step: TraceStep | null | undefined): boolean {
+  if (hasRichModelScoreDetail(step)) return true
   return step != null &&
     step.expression == null &&
     step.calculation == null &&
@@ -86,6 +111,59 @@ function initialTraceTab(trace: TraceResult): TraceTab {
 
 function traceTabKey(trace: TraceResult): string {
   return `${trace.target_node_id}\u0000${trace.row_index}\u0000${trace.column ?? ""}`
+}
+
+function modelScoreTitle(detail: ModelScoreNodeDetail): string {
+  const identity = detail.model_identity
+  if (!identity) return "Model Score"
+  if (identity.registered_model) {
+    return identity.version
+      ? `Model: ${identity.registered_model} v${identity.version}`
+      : `Model: ${identity.registered_model}`
+  }
+  if (identity.run_id) return `Model run: ${identity.run_id}`
+  return identity.source_type ? `Model source: ${identity.source_type}` : "Model Score"
+}
+
+function modelScorePrediction(detail: ModelScoreNodeDetail): { hasPrediction: boolean; value: unknown } {
+  if ("prediction_value" in detail) return { hasPrediction: true, value: detail.prediction_value }
+  return { hasPrediction: false, value: undefined }
+}
+
+function modelScoreFeatureColumns(detail: ModelScoreNodeDetail): string[] {
+  if (Array.isArray(detail.feature_columns) && detail.feature_columns.length > 0) return detail.feature_columns
+  return []
+}
+
+function formatSignedValue(value: number): string {
+  return `${value >= 0 ? "+" : ""}${formatValue(value)}`
+}
+
+function nextRunningTotal(total: number, contribution: number): number {
+  return Number((total + contribution).toPrecision(12))
+}
+
+function resolveContributionFeatureValue(
+  detail: ModelScoreNodeDetail,
+  explanation: ModelScoreExplanationDetail | undefined,
+  contribution: ModelScoreContributionDetail,
+): { hasValue: boolean; value: unknown } {
+  if (Object.prototype.hasOwnProperty.call(contribution, "feature_value")) {
+    return { hasValue: true, value: contribution.feature_value }
+  }
+  if (
+    explanation?.feature_values &&
+    Object.prototype.hasOwnProperty.call(explanation.feature_values, contribution.feature)
+  ) {
+    return { hasValue: true, value: explanation.feature_values[contribution.feature] }
+  }
+  if (
+    detail.feature_values &&
+    Object.prototype.hasOwnProperty.call(detail.feature_values, contribution.feature)
+  ) {
+    return { hasValue: true, value: detail.feature_values[contribution.feature] }
+  }
+  return { hasValue: false, value: undefined }
 }
 
 function NodeDetailBlock({
@@ -288,30 +366,161 @@ function NodeDetailBlock({
   }
 
   if (detailType === "model_score") {
-    const features = detail.features_used as string[] | undefined
-    const shapValues = detail.shap_values as Array<{ feature: string; value: number }> | undefined
+    const modelDetail = asModelScoreDetail(detail)
+    const prediction = modelScorePrediction(modelDetail)
+    const featureColumns = modelScoreFeatureColumns(modelDetail)
+    const featureValues = modelDetail.feature_values ?? {}
+    const explanation = modelDetail.explanation
+    const contributions = explanation?.contributions ?? []
+    const predictionColumn = modelDetail.prediction_column
+    const outputSpace = explanation?.output_space ?? explanation?.prediction_space
+    const showContributionLadder = explanation?.status !== "error" &&
+      explanation?.base_value !== undefined &&
+      contributions.length > 0
+    const contributionLadderRows = (() => {
+      if (!showContributionLadder || explanation?.base_value === undefined) return []
+      let total = explanation.base_value
+      return contributions.map((contribution, index) => {
+        const value = contribution.shap_value
+        total = nextRunningTotal(total, value)
+        return {
+          contribution,
+          featureValue: resolveContributionFeatureValue(modelDetail, explanation, contribution),
+          index,
+          runningTotal: total,
+          value,
+        }
+      })
+    })()
+    const predictionFromLadder = explanation?.prediction_from_shap ?? prediction.value
+    const omittedContributionCount = explanation?.truncated ? explanation.omitted_count ?? 0 : 0
     return (
-      <div className="my-2 space-y-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-        <div style={labelStyle}>Model: {String(detail.model_type)}</div>
-        <div style={valueStyle}>Prediction: {String(detail.prediction)}</div>
-        {features && features.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {features.map((f) => (
-              <span key={f} className="px-1 py-0.5 rounded font-mono text-[10px]" style={{ background: "rgba(255,255,255,.06)" }}>
-                {f}
-              </span>
-            ))}
+      <div className="my-2 space-y-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+        <div style={labelStyle}>{modelScoreTitle(modelDetail)}</div>
+        {prediction.hasPrediction && !showContributionLadder && (
+          <div style={valueStyle}>
+            Prediction{predictionColumn ? `: ${predictionColumn}` : ""} = {formatValue(prediction.value)}
           </div>
         )}
-        {shapValues && shapValues.length > 0 && (
-          <div className="mt-1 space-y-0.5">
-            <div style={labelStyle}>SHAP values</div>
-            {shapValues.map((s) => (
-              <div key={s.feature} className="flex gap-2 font-mono text-[10px]">
-                <span>{s.feature}</span>
-                <span style={{ color: s.value >= 0 ? "var(--success-hover)" : "var(--danger-text)" }}>{s.value >= 0 ? "+" : ""}{s.value}</span>
+        {featureColumns.length > 0 && !showContributionLadder && (
+          <div className="grid gap-1" aria-label="Model feature values">
+            {featureColumns.map((feature) => {
+              const hasFeatureValue = Object.prototype.hasOwnProperty.call(featureValues, feature)
+              return (
+                <div key={feature} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 font-mono text-[10px]">
+                  <span style={{ overflowWrap: "anywhere", color: "var(--text-secondary)" }}>{feature}</span>
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {hasFeatureValue ? formatValue(featureValues[feature]) : ""}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {explanation?.status === "error" && (
+          <div role="alert" className="rounded px-2 py-1" style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}>
+            Explanation failed: {String(explanation.error || "unknown error")}
+          </div>
+        )}
+        {explanation?.status !== "error" && explanation?.base_value !== undefined && !showContributionLadder && (
+          <div className="space-y-1">
+            <div style={valueStyle}>Base value: {formatValue(explanation.base_value)}</div>
+            {explanation.prediction_from_shap !== undefined && (
+              <div style={labelStyle}>
+                base + contributions = {formatValue(explanation.prediction_from_shap)}
+                {outputSpace ? ` (${outputSpace})` : ""}
               </div>
-            ))}
+            )}
+          </div>
+        )}
+        {showContributionLadder && (
+          <div className="mt-1 space-y-1" aria-label="Model score contribution ladder">
+            <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 text-[10px] font-semibold uppercase" style={labelStyle}>
+              <span>Factor</span>
+              <span>Value</span>
+              <span className="text-right">Contribution</span>
+              <span className="text-right">Total</span>
+            </div>
+            <div
+              className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 font-mono text-[10px]"
+              data-testid="model-score-ladder-row"
+            >
+              <span style={{ color: "var(--text-secondary)" }}>Base</span>
+              <span />
+              <span />
+              <span className="text-right" style={{ color: "var(--text-primary)" }}>
+                {formatValue(explanation.base_value)}
+              </span>
+            </div>
+            {contributionLadderRows.map(({ contribution, featureValue, index, runningTotal, value }) => {
+              return (
+                <div
+                  key={`${contribution.feature}-${index}`}
+                  className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 font-mono text-[10px]"
+                  data-testid="model-score-ladder-row"
+                >
+                  <span style={{ overflowWrap: "anywhere", color: "var(--text-secondary)" }}>
+                    {contribution.rank ? `${contribution.rank}. ` : ""}{contribution.feature}
+                  </span>
+                  <span style={{ overflowWrap: "anywhere", color: "var(--text-muted)" }}>
+                    {featureValue.hasValue ? formatValue(featureValue.value) : "not provided"}
+                  </span>
+                  <span className="text-right" style={{ color: value >= 0 ? "var(--success-hover)" : "var(--danger-text)" }}>
+                    {formatSignedValue(value)}
+                  </span>
+                  <span className="text-right" style={{ color: "var(--text-primary)" }}>
+                    {formatValue(runningTotal)}
+                  </span>
+                </div>
+              )
+            })}
+            {explanation?.truncated && (
+              <div style={labelStyle}>
+                Prediction includes {omittedContributionCount} omitted contribution{omittedContributionCount === 1 ? "" : "s"}.
+              </div>
+            )}
+            <div
+              className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 border-t pt-1 font-mono text-[10px] font-semibold"
+              style={{ borderColor: "var(--border)" }}
+              data-testid="model-score-ladder-row"
+            >
+              <span style={{ color: "var(--text-primary)" }}>Prediction</span>
+              <span style={{ overflowWrap: "anywhere", color: "var(--text-muted)" }}>
+                {predictionColumn ?? ""}
+              </span>
+              <span className="text-right" style={{ color: "var(--text-muted)" }}>
+                {outputSpace ? `(${outputSpace})` : ""}
+              </span>
+              <span className="text-right" style={{ color: "var(--accent)" }}>{formatValue(predictionFromLadder)}</span>
+            </div>
+          </div>
+        )}
+        {!showContributionLadder && contributions.length > 0 && (
+          <div className="mt-1 space-y-1" aria-label="Model feature contributions">
+            <div style={labelStyle}>Contributions</div>
+            {contributions.map((contribution, index) => {
+              const value = contribution.shap_value
+              const signedValue = `${value >= 0 ? "+" : ""}${formatValue(value)}`
+              return (
+                <div
+                  key={`${contribution.feature}-${index}`}
+                  className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2 font-mono text-[10px]"
+                >
+                  <span style={{ overflowWrap: "anywhere", color: "var(--text-secondary)" }}>
+                    {contribution.rank ? `${contribution.rank}. ` : ""}{contribution.feature}
+                  </span>
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {contribution.feature_value !== undefined ? formatValue(contribution.feature_value) : ""}
+                  </span>
+                  <span style={{ color: value == null || value >= 0 ? "var(--success-hover)" : "var(--danger-text)" }}>
+                    {signedValue}
+                  </span>
+                </div>
+              )
+            })}
+            {explanation?.truncated && (
+              <div style={labelStyle}>{explanation.omitted_count ?? 0} contribution(s) omitted</div>
+            )}
           </div>
         )}
       </div>
@@ -379,6 +588,12 @@ function StepCard({ step, index, tracedColumn, isTargetStep, defaultExpanded = f
 
   // All output columns for expanded view
   const allOutputCols = Object.keys(step.output_values)
+  const richModelDetail = hasRichModelScoreDetail(step)
+  const showOpaqueComputed = step.expression?.expression_type === "opaque" && !richModelDetail
+  const calculationBlockText = step.calculation != null &&
+    !(richModelDetail && isComputedPlaceholder(step.calculation.substituted_text))
+    ? step.calculation.substituted_text
+    : null
 
   return (
     <div
@@ -457,12 +672,12 @@ function StepCard({ step, index, tracedColumn, isTargetStep, defaultExpanded = f
               </span>
             )
           })}
-          {step.calculation && !isTargetStep && (
+          {calculationBlockText != null && !isTargetStep && (
             <span
               className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono"
               style={{ background: "rgba(255,255,255,.06)", color: "var(--text-secondary)" }}
             >
-              {step.calculation.substituted_text}
+              {calculationBlockText}
             </span>
           )}
         </div>
@@ -480,19 +695,19 @@ function StepCard({ step, index, tracedColumn, isTargetStep, defaultExpanded = f
               {formatExpression(step.expression.expression_text, 200)}
             </div>
           )}
-          {step.expression && step.expression.expression_type === "opaque" && (
+          {showOpaqueComputed && (
             <div className="my-2 text-[11px]" style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
               computed
             </div>
           )}
 
           {/* Calculation block */}
-          {step.calculation && (
+          {calculationBlockText != null && (
             <div
               className="my-2 px-2 py-1.5 rounded text-[12px] font-mono font-semibold"
               style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
             >
-              {step.calculation.substituted_text}
+              {calculationBlockText}
             </div>
           )}
 
@@ -666,6 +881,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     }
   }
 
+  const targetHasRichModelDetail = hasRichModelScoreDetail(targetStep)
+
   return (
     <PanelShell>
       {/* Header */}
@@ -739,32 +956,38 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
           background: "linear-gradient(180deg, var(--accent-soft-faint) 0%, var(--accent-soft-whisper) 100%)",
         }}>
           {targetStep && trace.column ? (
-            <>
-              <CalculationHero
-                column={trace.column}
-                expression={targetStep.expression ?? null}
-                calculation={targetStep.calculation ?? null}
-                executionMs={trace.execution_ms}
-                stepCount={trace.steps.length}
-                nodeName={targetStep.node_name}
-                waterfall={trace.waterfall}
-              />
-              {targetStep.node_detail && (
-                hasRichRatingStepDetail(targetStep) ||
-                (
-                  hasRichBandingDetail(targetStep) &&
-                  (targetStep.calculation == null || hasBandingSecondaryDetail(targetStep.node_detail))
-                )
-              ) && (
-                <div className="px-3 pb-3">
-                  <NodeDetailBlock
-                    detail={targetStep.node_detail}
-                    tracedColumn={trace.column}
-                    showBandingSummary={targetStep.calculation == null}
-                  />
-                </div>
-              )}
-            </>
+            targetHasRichModelDetail && targetStep.node_detail ? (
+              <div className="px-3 py-3">
+                <NodeDetailBlock detail={targetStep.node_detail} tracedColumn={trace.column} />
+              </div>
+            ) : (
+              <>
+                <CalculationHero
+                  column={trace.column}
+                  expression={targetStep.expression ?? null}
+                  calculation={targetStep.calculation ?? null}
+                  executionMs={trace.execution_ms}
+                  stepCount={trace.steps.length}
+                  nodeName={targetStep.node_name}
+                  waterfall={trace.waterfall}
+                />
+                {targetStep.node_detail && (
+                  hasRichRatingStepDetail(targetStep) ||
+                  (
+                    hasRichBandingDetail(targetStep) &&
+                    (targetStep.calculation == null || hasBandingSecondaryDetail(targetStep.node_detail))
+                  )
+                ) && (
+                  <div className="px-3 pb-3">
+                    <NodeDetailBlock
+                      detail={targetStep.node_detail}
+                      tracedColumn={trace.column}
+                      showBandingSummary={targetStep.calculation == null}
+                    />
+                  </div>
+                )}
+              </>
+            )
           ) : (
             <div className="px-4 py-4">
               <div className="flex items-center gap-2">

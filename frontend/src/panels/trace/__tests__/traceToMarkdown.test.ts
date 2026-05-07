@@ -380,14 +380,14 @@ describe("traceToMarkdown", () => {
     expect(md).toContain("25-30")
   })
 
-  it("node detail (model score): includes prediction value", () => {
+  it("node detail (model score): includes backend prediction and SHAP contributions", () => {
     const trace = makeTrace({
       steps: [
         makeStep({ node_id: "n1", node_name: "Source", node_type: "source" }),
         makeStep({
           node_id: "n2",
-          node_name: "GLM Score",
-          node_type: "model_score",
+          node_name: "CatBoost Score",
+          node_type: "modelScore",
           schema_diff: {
             columns_added: ["premium"],
             columns_removed: [],
@@ -395,8 +395,22 @@ describe("traceToMarkdown", () => {
             columns_passed: ["age"],
           },
           node_detail: {
-            model_name: "frequency_glm",
-            prediction: 0.0342,
+            detail_type: "model_score",
+            prediction_column: "premium",
+            prediction_value: 455.72,
+            feature_columns: ["age", "vehicle_group"],
+            feature_values: { age: 42, vehicle_group: "A" },
+            model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
+            explanation: {
+              status: "ok",
+              output_space: "prediction",
+              base_value: 423.17,
+              prediction_from_shap: 455.72,
+              contributions: [
+                { feature: "age", feature_value: 42, shap_value: -12.5, rank: 1 },
+                { feature: "vehicle_group", feature_value: "A", shap_value: 45.05, rank: 2 },
+              ],
+            },
           },
         }),
       ],
@@ -404,8 +418,12 @@ describe("traceToMarkdown", () => {
     const target = trace.steps[1]
     const md = traceToMarkdown(trace, target)
 
-    expect(md).toContain("frequency_glm")
-    expect(md).toContain("0.0342")
+    expect(md).toContain("Prediction premium=455.72")
+    expect(md).toContain("Run=abc123")
+    expect(md).toContain("Features: age=42, vehicle_group=A")
+    expect(md).toContain("Base=423.17")
+    expect(md).toContain("age (42) -12.5")
+    expect(md).toContain("vehicle_group (A) +45.05")
   })
 
   it("no targetStep (null): produces minimal trace with just data flow", () => {

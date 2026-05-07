@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
 
@@ -635,7 +635,7 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
   })
 
-  it("renders model score detail with model type and features", () => {
+  it("renders model score detail with backend prediction and features", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -643,12 +643,14 @@ describe("TracePanel — Node Detail", () => {
             makeStep({
               node_id: "n1",
               node_name: "GLM Score",
-              node_type: "model_score",
+              node_type: "modelScore",
               node_detail: {
                 detail_type: "model_score",
-                model_type: "GLM",
-                features_used: ["age", "region", "vehicle_group"],
-                prediction: 0.85,
+                prediction_column: "score",
+                prediction_value: 0.85,
+                feature_columns: ["age", "region", "vehicle_group"],
+                feature_values: { age: 35, region: "north", vehicle_group: "A" },
+                model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
               },
             }),
           ] as TraceStep[],
@@ -662,9 +664,95 @@ describe("TracePanel — Node Detail", () => {
     const stepButton = screen.getByText("GLM Score").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("GLM Score")).toBeInTheDocument()
+    expect(screen.getByText(/Prediction: score = 0.85/)).toBeInTheDocument()
+    expect(screen.getByText("vehicle_group")).toBeInTheDocument()
   })
 
-  it("renders SHAP values as a list in model score detail", () => {
+  it("renders backend model score detail as a single contribution ladder and hides computed placeholders", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "score_model",
+          column: "risk_score",
+          output_value: 0.73,
+          steps: [
+            makeStep({
+              node_id: "score_model",
+              node_name: "Risk Score",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["risk_score"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age", "vehicle_group"],
+              },
+              input_values: { age: 42, vehicle_group: "A" },
+              output_values: { age: 42, vehicle_group: "A", risk_score: 0.73 },
+              expression: {
+                expression_text: "",
+                expression_type: "opaque",
+                referenced_columns: [],
+              },
+              calculation: {
+                substituted_text: "computed",
+                result_value: 0.73,
+                input_values: { age: 42, vehicle_group: "A" },
+              },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 0.73,
+                prediction_column: "risk_score",
+                feature_columns: ["age", "vehicle_group"],
+                feature_values: { age: 42, vehicle_group: "A" },
+                model_identity: {
+                  source_type: "run",
+                  run_id: "abc123",
+                  task: "regression",
+                },
+                explanation: {
+                  status: "ok",
+                  output_space: "prediction",
+                  base_value: 0.5,
+                  prediction_from_shap: 0.73,
+                  contributions: [
+                    { feature: "age", feature_value: 42, shap_value: 0.2, rank: 1 },
+                    { feature: "vehicle_group", feature_value: "A", shap_value: 0.03, rank: 2 },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("Risk Score")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Model feature values")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prediction: risk_score = 0.73/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Base value:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/base \+ contributions/)).not.toBeInTheDocument()
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toHaveTextContent("Base")
+    expect(rows[0]).toHaveTextContent("0.5")
+    expect(rows[1]).toHaveTextContent("1. age")
+    expect(rows[1]).toHaveTextContent("42")
+    expect(rows[1]).toHaveTextContent("+0.2")
+    expect(rows[1]).toHaveTextContent("0.7")
+    expect(rows[2]).toHaveTextContent("2. vehicle_group")
+    expect(rows[2]).toHaveTextContent("A")
+    expect(rows[2]).toHaveTextContent("+0.03")
+    expect(rows[2]).toHaveTextContent("0.73")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("risk_score")
+    expect(rows[3]).toHaveTextContent("0.73")
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("renders CatBoost SHAP contributions as a running score ladder", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -672,16 +760,24 @@ describe("TracePanel — Node Detail", () => {
             makeStep({
               node_id: "n1",
               node_name: "SHAP Model",
-              node_type: "model_score",
+              node_type: "modelScore",
               node_detail: {
                 detail_type: "model_score",
-                model_type: "GBM",
-                features_used: ["age", "income"],
-                prediction: 0.72,
-                shap_values: [
-                  { feature: "age", value: 0.15 },
-                  { feature: "income", value: -0.08 },
-                ],
+                prediction_column: "score",
+                prediction_value: 0.72,
+                feature_columns: ["age", "income"],
+                feature_values: { age: 50, income: 25_000 },
+                model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
+                explanation: {
+                  status: "ok",
+                  output_space: "prediction",
+                  base_value: 0.65,
+                  prediction_from_shap: 0.72,
+                  contributions: [
+                    { feature: "age", feature_value: 50, shap_value: 0.15, rank: 1 },
+                    { feature: "income", feature_value: 25_000, shap_value: -0.08, rank: 2 },
+                  ],
+                },
               },
             }),
           ] as TraceStep[],
@@ -695,6 +791,83 @@ describe("TracePanel — Node Detail", () => {
     const stepButton = screen.getByText("SHAP Model").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("SHAP Model")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Model feature values")).not.toBeInTheDocument()
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toHaveTextContent("Base")
+    expect(rows[0]).toHaveTextContent("0.65")
+    expect(rows[1]).toHaveTextContent("1. age")
+    expect(rows[1]).toHaveTextContent("50")
+    expect(rows[1]).toHaveTextContent("+0.15")
+    expect(rows[1]).toHaveTextContent("0.8")
+    expect(rows[2]).toHaveTextContent("2. income")
+    expect(rows[2]).toHaveTextContent("25,000")
+    expect(rows[2]).toHaveTextContent("-0.08")
+    expect(rows[2]).toHaveTextContent("0.72")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("0.72")
+  })
+
+  it("uses fallback feature values and calls out truncated contribution ladders", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "SHAP Model",
+              node_type: "modelScore",
+              node_detail: {
+                detail_type: "model_score",
+                prediction_column: "score",
+                prediction_value: 1.5,
+                feature_values: { income: 25_000 },
+                explanation: {
+                  status: "ok",
+                  output_space: "prediction",
+                  base_value: 1,
+                  prediction_from_shap: 1.5,
+                  feature_values: { age: 50 },
+                  truncated: true,
+                  omitted_count: 2,
+                  contributions: [
+                    { feature: "age", shap_value: 0.25, rank: 1 },
+                    { feature: "income", shap_value: -0.05, rank: 2 },
+                    { feature: "postcode", shap_value: 0, rank: 3 },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const nodesTab = screen.getByText("Nodes")
+    fireEvent.click(nodesTab)
+    const stepButton = screen.getByText("SHAP Model").closest("button") as HTMLElement
+    fireEvent.click(stepButton)
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(5)
+    expect(rows[1]).toHaveTextContent("1. age")
+    expect(rows[1]).toHaveTextContent("50")
+    expect(rows[1]).toHaveTextContent("+0.25")
+    expect(rows[1]).toHaveTextContent("1.25")
+    expect(rows[2]).toHaveTextContent("2. income")
+    expect(rows[2]).toHaveTextContent("25,000")
+    expect(rows[2]).toHaveTextContent("-0.05")
+    expect(rows[2]).toHaveTextContent("1.2")
+    expect(rows[3]).toHaveTextContent("3. postcode")
+    expect(rows[3]).toHaveTextContent("not provided")
+    expect(rows[3]).toHaveTextContent("+0")
+    expect(rows[3]).toHaveTextContent("1.2")
+    expect(within(ladder).getByText("Prediction includes 2 omitted contributions.")).toBeInTheDocument()
+    expect(rows[4]).toHaveTextContent("Prediction")
+    expect(rows[4]).toHaveTextContent("1.5")
   })
 
   it("renders scenario expander detail with multiplier info", () => {
@@ -1086,12 +1259,14 @@ describe("TracePanel — Node Detail", () => {
             makeStep({
               node_id: "n1",
               node_name: "Big Model",
-              node_type: "model_score",
+              node_type: "modelScore",
               node_detail: {
                 detail_type: "model_score",
-                model_type: "XGBoost",
-                features_used: features,
-                prediction: 0.42,
+                prediction_column: "prediction",
+                prediction_value: 0.42,
+                feature_columns: features,
+                feature_values: Object.fromEntries(features.map((feature, index) => [feature, index])),
+                model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
               },
             }),
           ] as TraceStep[],

@@ -3719,6 +3719,61 @@ class TestEnrichModelScoreRealConfig:
         result = enrich_model_score(config, input_row, output_row)
         assert result["feature_columns"] == ["feat_a"]
 
+    def test_feature_columns_use_contract_inputs_before_inference(self):
+        """Model-score detail should prefer the node contract over all input columns."""
+        from haute._trace_enrichment import enrich_model_score
+
+        config = {
+            "output_column": "pred",
+            "contract": {"inputs": ["feat_b", "feat_a"]},
+        }
+        input_row = {"feat_a": 1, "feat_b": 2, "technical_id": "Q1"}
+        output_row = {"feat_a": 1, "feat_b": 2, "technical_id": "Q1", "pred": 0.9}
+
+        result = enrich_model_score(config, input_row, output_row)
+        assert result["feature_columns"] == ["feat_b", "feat_a"]
+        assert result["feature_values"] == {"feat_b": 2, "feat_a": 1}
+
+    def test_catboost_explanation_attached_for_mlflow_cbm_config(self, monkeypatch):
+        """CatBoost MLflow configs should attach structured per-row explanation detail."""
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(config, input_row, output_row, prediction_column, prediction_value):
+            assert config["artifact_path"] == "model.cbm"
+            assert input_row["feat_a"] == 1
+            assert output_row["pred"] == 0.9
+            assert prediction_column == "pred"
+            assert prediction_value == 0.9
+            return {
+                "type": "catboost_shap",
+                "method": "catboost_shap",
+                "status": "ok",
+                "output_space": "prediction",
+                "base_value": 0.3,
+                "prediction_from_shap": 0.9,
+                "output_difference": 0.0,
+                "contributions": [
+                    {"feature": "feat_a", "feature_value": 1, "shap_value": 0.6},
+                ],
+            }
+
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        config = {
+            "output_column": "pred",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "model.cbm",
+            "contract": {"inputs": ["feat_a"]},
+        }
+
+        result = enrich_model_score(config, {"feat_a": 1}, {"feat_a": 1, "pred": 0.9})
+
+        assert result["explanation"]["method"] == "catboost_shap"
+        assert result["explanation"]["contributions"][0]["feature"] == "feat_a"
+
 
 class TestEnrichScenarioExpansionRealConfig:
     """Tests for enrich_scenario_expansion with real config."""

@@ -15,11 +15,15 @@ import {
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
 import { nodeData } from "../types/node"
-import { NODE_TYPES, NODE_TYPE_META, SINK_ONLY_TYPES, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import useToastStore from "../stores/useToastStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
 
 const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
+const NON_PREVIEWABLE_CLICK_TYPES = new Set<string>([
+  NODE_TYPES.DATA_SINK,
+  NODE_TYPES.OUTPUT,
+])
 
 /** Check whether the target node has reached its maxInputs limit. */
 function wouldExceedMaxInputs(
@@ -42,7 +46,7 @@ function previewOptionsForClick(node: Node): FetchPreviewOptions | null {
       debounceMs: OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS,
     }
   }
-  if (SINK_ONLY_TYPES.has(nodeType)) return null
+  if (NON_PREVIEWABLE_CLICK_TYPES.has(nodeType)) return null
   return {}
 }
 

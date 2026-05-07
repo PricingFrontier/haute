@@ -239,11 +239,31 @@ describe("useEdgeHandlers", () => {
     })
   })
 
+  it("onNodeClick fetches preview for modelling nodes so training field data loads", () => {
+    const params = makeParams()
+    const node = {
+      id: "modelling1",
+      position: { x: 0, y: 0 },
+      data: { label: "Conversion", nodeType: NODE_TYPES.MODELLING },
+    } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
+  })
+
   it.each([
-    NODE_TYPES.MODELLING,
     NODE_TYPES.DATA_SINK,
     NODE_TYPES.OUTPUT,
-  ])("onNodeClick skips automatic preview for sink-only node type %s", (nodeType) => {
+  ])("onNodeClick skips automatic preview for non-previewable sink node type %s", (nodeType) => {
     const params = makeParams()
     const node = {
       id: "sink1",

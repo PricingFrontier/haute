@@ -945,6 +945,18 @@ class TestFindModelArtifact:
         assert path == "model.rsglm"
         assert flavor == "rustystats"
 
+    def test_prefers_rsglm_over_pyfunc_model_directory(self):
+        """Runs with both native .rsglm and MLflow model/ load via RustyStats."""
+        client = MagicMock()
+        rsglm_art = MagicMock(path="conversion.rsglm", is_dir=False)
+        pyfunc_dir = MagicMock(path="model", is_dir=True)
+        client.list_artifacts.return_value = [pyfunc_dir, rsglm_art]
+
+        path, flavor = _find_model_artifact(client, "run1")
+
+        assert path == "conversion.rsglm"
+        assert flavor == "rustystats"
+
     def test_finds_pyfunc_when_no_native(self):
         """Falls back to pyfunc 'model' directory."""
         client = MagicMock()
