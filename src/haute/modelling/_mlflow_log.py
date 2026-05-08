@@ -199,10 +199,10 @@ def log_experiment(
 
         # Log the trained model with a ModelSignature so downstream
         # scorers can detect train-vs-score feature drift from the MLflow
-        # artifact alone.  Falls back to a plain artifact upload if we
-        # lack contract metadata — the signature is the
-        # whole point of this branch, so losing it silently would defeat
-        # the deploy-time contract check.
+        # artifact alone. Native flavors that wrap the model file (e.g.
+        # CatBoost) keep the artifact inside the MLflow model dir; flavors
+        # logged via pyfunc upload the native file separately so run
+        # discovery (_find_rsglm_artifact, etc.) can still locate it.
         if model_path and Path(model_path).exists():
             _log_model_with_signature(
                 mlflow,
@@ -445,12 +445,18 @@ def _log_model_with_signature(
         return
 
     # Non-CatBoost flavors (RustyStats .rsglm, generic): log via pyfunc so
-    # the signature is still attached to the MLflow artifact.
+    # the signature is still attached to the MLflow artifact.  pyfunc only
+    # registers the loader module — it doesn't upload the native model
+    # file — so log it as a plain artifact at the run root too.  Run
+    # discovery (_find_rsglm_artifact / _find_model_artifact) walks the
+    # top-level artifact list before falling back to the pyfunc model
+    # directory, so the file has to be there for scoring to find it.
     mlflow.pyfunc.log_model(
         artifact_path="model",
         loader_module="haute._mlflow_io",
         signature=signature,
     )
+    mlflow.log_artifact(str(model_file))
 
 
 def _build_signature_for_log(

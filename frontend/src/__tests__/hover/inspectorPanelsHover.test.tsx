@@ -16,11 +16,9 @@
  *     L479  onMouseEnter  — tab button background (state-gated on activeTab !== tab)
  *     L480  onMouseLeave  — tab button background reset (state-gated)
  *
- *   panels/TracePanel.tsx         — 8 `currentTarget.style` sites
+ *   panels/TracePanel.tsx         — 6 `currentTarget.style` sites
  *     L166  StepCard expand-button hover bg
  *     L167  StepCard expand-button hover bg reset
- *     L437  header Copy button hover bg
- *     L438  header Copy button hover bg reset
  *     L446  header Close button hover bg
  *     L447  header Close button hover bg reset
  *     L554  "N pass-through nodes hidden" button hover bg  (NON-TRANSPARENT rest colour)
@@ -492,7 +490,7 @@ describe("NodePanel standalone hover/focus sites", () => {
 //  TracePanel: per-row hover independence
 // ─────────────────────────────────────────────────────────────────────
 //  We render a trace with three steps (a polars transform, a banding,
-//  and a model-score) so the Nodes tab shows a 3-row list.  Hovering
+//  and a model-score) so the trace story can show a 3-row list. Hovering
 //  row 2 must not mutate the DOM of row 1 or row 3 — i.e. each row's
 //  hover state is its own responsibility.
 // ─────────────────────────────────────────────────────────────────────
@@ -536,15 +534,12 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
   }
 }
 
-function openNodesTabAndGetRowButtons(): HTMLElement[] {
-  const nodesTab = screen.getByText("Nodes")
-  fireEvent.click(nodesTab)
-  // The default "Sources" detail level collapses pass-through rows, which
-  // would hide rows 1 and 2 of a 3-row fixture whose traced column is only
-  // created at row 3.  Switch to "All" so every row is visible and the
-  // hover-independence assertions have real siblings to compare.
-  const allBtn = screen.getByText("All")
-  fireEvent.click(allBtn)
+function getTraceStoryRowButtons(): HTMLElement[] {
+  expect(screen.getByTestId("trace-story")).toBeInTheDocument()
+  const showFullTrace = screen.queryByTestId("trace-show-full")
+  if (showFullTrace?.textContent?.includes("show full trace")) {
+    fireEvent.click(showFullTrace)
+  }
   // The row expand-button is the enclosing <button> that wraps the
   // node_name span.  Rows appear in the order supplied to `steps`.
   const rowNames = ["Row One", "Row Two", "Row Three"]
@@ -559,15 +554,15 @@ function openNodesTabAndGetRowButtons(): HTMLElement[] {
 }
 
 describe("TracePanel row hover independence", () => {
-  it("renders three step rows in the Nodes tab", () => {
+  it("renders three step rows in the trace story", () => {
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
-    const rows = openNodesTabAndGetRowButtons()
+    const rows = getTraceStoryRowButtons()
     expect(rows).toHaveLength(3)
   })
 
   it("hovering row 2 does not rewrite inline styles on rows 1 or 3", () => {
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
-    const [row1, row2, row3] = openNodesTabAndGetRowButtons()
+    const [row1, row2, row3] = getTraceStoryRowButtons()
     const row1Before = row1.style.background
     const row3Before = row3.style.background
     fireEvent.mouseEnter(row2)
@@ -583,7 +578,7 @@ describe("TracePanel row hover independence", () => {
     // With the migration in place, the hover background comes from CSS,
     // so the inline `.style.background` should not change on mouseEnter.
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
-    const [, row2] = openNodesTabAndGetRowButtons()
+    const [, row2] = getTraceStoryRowButtons()
     const before = row2.style.background
     fireEvent.mouseEnter(row2)
     expect(row2.style.background).toBe(before)
@@ -596,28 +591,14 @@ describe("TracePanel row hover independence", () => {
     // migration must leave that logic alone — only the mouseEnter /
     // mouseLeave style writes should be removed.
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
-    const [row1] = openNodesTabAndGetRowButtons()
+    const [row1] = getTraceStoryRowButtons()
     fireEvent.click(row1)
-    // "1 added" appears in the expanded schema-diff summary.
-    expect(screen.getByText(/1 added/)).toBeInTheDocument()
-  })
-
-  it("header Copy button hover does not rewrite inline .style.background", () => {
-    render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
-    const copyBtn = screen.getByTitle("Copy trace as markdown")
-    const before = copyBtn.style.background
-    fireEvent.mouseEnter(copyBtn)
-    expect(copyBtn.style.background).toBe(before)
-    fireEvent.mouseLeave(copyBtn)
-    expect(copyBtn.style.background).toBe(before)
+    expect(screen.getByTestId("trace-step-body-n1")).toBeInTheDocument()
   })
 
   it("header Close button hover does not rewrite inline .style.background", () => {
     render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
-    // The Close button is the Copy button's next sibling (see the
-    // existing TracePanel.test.tsx close-button test).
-    const copyBtn = screen.getByTitle("Copy trace as markdown")
-    const closeBtn = copyBtn.nextElementSibling as HTMLElement
+    const closeBtn = screen.getByLabelText("Close trace")
     const before = closeBtn.style.background
     fireEvent.mouseEnter(closeBtn)
     expect(closeBtn.style.background).toBe(before)
@@ -627,20 +608,17 @@ describe("TracePanel row hover independence", () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────
-//  TracePanel: "N pass-through nodes hidden" toggle
+//  TracePanel: focused/full trace toggle
 // ─────────────────────────────────────────────────────────────────────
-//  The pre-migration pattern is unusual: mouseLeave resets to
-//  `rgba(255,255,255,.03)` (a subtle dashed-chip rest state), NOT
-//  transparent.  A naive Tailwind `hover:bg-[var(--bg-hover)]` migration
-//  would be fine (the rest state stays in the base class); we pin the
-//  behaviour here to catch a dev who accidentally drops the non-
-//  transparent rest colour.
+//  Hidden pass-through rows now stay out of the main story body. The compact
+//  header action must still reveal the full trace without reintroducing inline
+//  hover style mutation.
 // ─────────────────────────────────────────────────────────────────────
 
-describe("TracePanel 'hidden pass-throughs' toggle", () => {
+describe("TracePanel focused/full trace toggle", () => {
   it("renders when there are collapsible pass-through rows", () => {
     // Build a trace where row 2 is an irrelevant pass-through so
-    // `collapsePassthroughs` hides it at the "sources" detail level.
+    // `collapsePassthroughs` hides it in the default trace story view.
     // The passed-through column must be the traced column (`premium`)
     // for the collapse logic to fire.
     render(
@@ -689,22 +667,17 @@ describe("TracePanel 'hidden pass-throughs' toggle", () => {
         onClose={vi.fn()}
       />,
     )
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
-    // The "Sources" detail level is the default and triggers collapse.
-    const hiddenToggle = screen.queryByText(/pass-through node.*hidden/i)
-    // If the toggle is present, it's the site we care about.  If the
-    // shape of the trace somehow doesn't trigger collapsing, the test
-    // still passes but downstream hover assertions will no-op — that's
-    // acceptable since this pin is defensive against the rarer UX path.
-    if (hiddenToggle) {
-      const button = hiddenToggle.closest("button") as HTMLElement
-      const before = button.style.background
-      fireEvent.mouseEnter(button)
-      expect(button.style.background).toBe(before)
-      fireEvent.mouseLeave(button)
-      expect(button.style.background).toBe(before)
-    }
+    expect(screen.queryByTestId("trace-hidden-toggle")).not.toBeInTheDocument()
+    const button = screen.getByTestId("trace-show-full")
+    expect(button).toHaveTextContent(/show full trace/i)
+    const before = button.style.background
+    fireEvent.mouseEnter(button)
+    expect(button.style.background).toBe(before)
+    fireEvent.mouseLeave(button)
+    expect(button.style.background).toBe(before)
+    fireEvent.click(button)
+    expect(screen.getByText("Pass Through")).toBeInTheDocument()
+    expect(button).toHaveTextContent(/show focused trace/i)
   })
 })
 

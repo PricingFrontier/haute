@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
 
@@ -56,7 +56,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     column: "premium",
     output_value: 42.5,
     steps: [
-      makeStep({ node_id: "n1", node_name: "Source" }),
+      makeStep({ node_id: "n1", node_name: "Source", node_type: "dataSource" }),
       makeStep({
         node_id: "n2",
         node_name: "Calc",
@@ -104,9 +104,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Rating").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/base_premium/)).toBeInTheDocument()
@@ -132,9 +129,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Condition").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/when/i)).toBeInTheDocument()
@@ -160,9 +154,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Opaque Node").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Opaque expressions should show a "computed" indicator rather than a formula
@@ -194,9 +185,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Multi-ref").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Referenced columns should appear somewhere in the expanded step
@@ -225,9 +213,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Long Expr").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Should render without crashing; may truncate or wrap
@@ -253,9 +238,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Single Ref").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/loss_amount/)).toBeInTheDocument()
@@ -280,9 +262,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Const Expr").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Const Expr")).toBeInTheDocument()
@@ -313,9 +292,6 @@ describe("TracePanel — Expression Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     expect(screen.getByText("No Diff")).toBeInTheDocument()
   })
 })
@@ -346,9 +322,6 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Calc Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // The substituted calculation text should be visible
@@ -375,9 +348,6 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Null Calc").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Null Calc")).toBeInTheDocument()
@@ -403,9 +373,6 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Multi Input Calc").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Multi Input Calc")).toBeInTheDocument()
@@ -430,9 +397,6 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Zero Result").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Zero Result")).toBeInTheDocument()
@@ -457,9 +421,6 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("String Result").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("String Result")).toBeInTheDocument()
@@ -489,9 +450,6 @@ describe("TracePanel — Calculation Display", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Full Detail").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Full Detail")).toBeInTheDocument()
@@ -526,9 +484,6 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Rate Lookup").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Rate Lookup")).toBeInTheDocument()
@@ -556,15 +511,12 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Age Band").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Age Band")).toBeInTheDocument()
   })
 
-  it("shows a banding-created field's source value in the calculation view", () => {
+  it("shows a banding-created field's source value in the story card", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -626,16 +578,18 @@ describe("TracePanel — Node Detail", () => {
       />,
     )
 
-    expect(screen.getByText("age_band")).toBeInTheDocument()
-    expect(screen.getAllByLabelText("Banding: risk_age=35 -> adult")).toHaveLength(1)
-    expect(screen.getByText("[25, 65]")).toBeInTheDocument()
-    expect(screen.queryByText("risk_age=35 -> adult")).not.toBeInTheDocument()
+    const bandingCard = screen.getByTestId("trace-step-card-band")
+    expect(bandingCard).toHaveAttribute("data-target-step", "true")
+    expect(within(bandingCard).getByText(/age_band/)).toBeInTheDocument()
+    const bandingDetail = within(bandingCard).getByLabelText("Trace detail: Banding")
+    expect(within(bandingDetail).getByText("risk_age=35 -> adult")).toBeInTheDocument()
+    expect(within(bandingDetail).getByText("[25, 65]")).toBeInTheDocument()
     expect(screen.queryByText(/Input:/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/Matched band:/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
   })
 
-  it("renders model score detail with model type and features", () => {
+  it("renders model score detail with backend prediction and features", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -643,12 +597,14 @@ describe("TracePanel — Node Detail", () => {
             makeStep({
               node_id: "n1",
               node_name: "GLM Score",
-              node_type: "model_score",
+              node_type: "modelScore",
               node_detail: {
                 detail_type: "model_score",
-                model_type: "GLM",
-                features_used: ["age", "region", "vehicle_group"],
-                prediction: 0.85,
+                prediction_column: "score",
+                prediction_value: 0.85,
+                feature_columns: ["age", "region", "vehicle_group"],
+                feature_values: { age: 35, region: "north", vehicle_group: "A" },
+                model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
               },
             }),
           ] as TraceStep[],
@@ -656,15 +612,177 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("GLM Score").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("GLM Score")).toBeInTheDocument()
+    expect(screen.getByText(/Prediction: score = 0.85/)).toBeInTheDocument()
+    expect(screen.getByText("vehicle_group")).toBeInTheDocument()
   })
 
-  it("renders SHAP values as a list in model score detail", () => {
+  it("renders backend model score detail as a single contribution ladder and hides computed placeholders", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "score_model",
+          column: "risk_score",
+          output_value: 0.73,
+          steps: [
+            makeStep({
+              node_id: "score_model",
+              node_name: "Risk Score",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["risk_score"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age", "vehicle_group"],
+              },
+              input_values: { age: 42, vehicle_group: "A" },
+              output_values: { age: 42, vehicle_group: "A", risk_score: 0.73 },
+              expression: {
+                expression_text: "",
+                expression_type: "opaque",
+                referenced_columns: [],
+              },
+              calculation: {
+                substituted_text: "computed",
+                result_value: 0.73,
+                input_values: { age: 42, vehicle_group: "A" },
+              },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 0.73,
+                prediction_column: "risk_score",
+                feature_columns: ["age", "vehicle_group"],
+                feature_values: { age: 42, vehicle_group: "A" },
+                model_identity: {
+                  source_type: "run",
+                  run_id: "abc123",
+                  task: "regression",
+                },
+                explanation: {
+                  status: "ok",
+                  output_space: "prediction",
+                  base_value: 0.5,
+                  prediction_from_shap: 0.73,
+                  contributions: [
+                    { feature: "age", feature_value: 42, shap_value: 0.2, rank: 1 },
+                    { feature: "vehicle_group", feature_value: "A", shap_value: 0.03, rank: 2 },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const scoreCard = screen.getByTestId("trace-step-card-score_model")
+    expect(scoreCard).toHaveAttribute("data-target-step", "true")
+    expect(within(scoreCard).getByText("Risk Score")).toBeInTheDocument()
+    expect(within(scoreCard).getAllByText(/risk_score/).length).toBeGreaterThan(0)
+    expect(within(scoreCard).getAllByText("0.73").length).toBeGreaterThan(0)
+    expect(screen.queryByTestId("trace-calculation-frame")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("trace-calculation-tab")).not.toBeInTheDocument()
+    expect(screen.queryByText("Sources")).not.toBeInTheDocument()
+    expect(screen.getAllByText("Risk Score").length).toBeGreaterThan(0)
+    expect(screen.queryByLabelText("Model feature values")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prediction: risk_score = 0.73/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Base value:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/base \+ contributions/)).not.toBeInTheDocument()
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toHaveTextContent("Base")
+    expect(rows[0]).toHaveTextContent("0.5")
+    expect(rows[1]).toHaveTextContent("1. age")
+    expect(rows[1]).toHaveTextContent("42")
+    expect(rows[1]).toHaveTextContent("+0.2")
+    expect(rows[1]).toHaveTextContent("0.7")
+    expect(rows[2]).toHaveTextContent("2. vehicle_group")
+    expect(rows[2]).toHaveTextContent("A")
+    expect(rows[2]).toHaveTextContent("+0.03")
+    expect(rows[2]).toHaveTextContent("0.73")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("risk_score")
+    expect(rows[3]).toHaveTextContent("0.73")
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("uses RustyStats contribution totals rather than response predictions in ladders", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "conversion_score",
+          column: "conversion_prediction",
+          output_value: 0.57,
+          steps: [
+            makeStep({
+              node_id: "conversion_score",
+              node_name: "Conversion GLM",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["conversion_prediction"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["difference_to_market"],
+              },
+              input_values: { difference_to_market: 0.31 },
+              output_values: { difference_to_market: 0.31, conversion_prediction: 0.57 },
+              expression: {
+                expression_text: "",
+                expression_type: "opaque",
+                referenced_columns: ["difference_to_market"],
+              },
+              calculation: {
+                substituted_text: "computed",
+                result_value: 0.57,
+                input_values: { difference_to_market: 0.31 },
+              },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 0.57,
+                prediction_column: "conversion_prediction",
+                feature_columns: ["difference_to_market"],
+                feature_values: { difference_to_market: 0.31 },
+                model_identity: { source_type: "run", run_id: "glm123", task: "classification" },
+                explanation: {
+                  method: "rustystats_glm_contributions",
+                  status: "ok",
+                  output_space: "linear_predictor",
+                  prediction_space: "response",
+                  base_value: 0.1,
+                  sum_contributions: 0.2,
+                  prediction_from_contributions: 0.3,
+                  prediction_value: 0.57,
+                  contributions: [
+                    {
+                      feature: "difference_to_market",
+                      feature_value: 0.31,
+                      contribution: 0.2,
+                      rank: 1,
+                    },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(3)
+    expect(rows[2]).toHaveTextContent("Prediction")
+    expect(rows[2]).toHaveTextContent("0.3")
+    expect(rows[2]).not.toHaveTextContent("0.57")
+  })
+
+  it("renders CatBoost SHAP contributions as a running score ladder", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -672,16 +790,24 @@ describe("TracePanel — Node Detail", () => {
             makeStep({
               node_id: "n1",
               node_name: "SHAP Model",
-              node_type: "model_score",
+              node_type: "modelScore",
               node_detail: {
                 detail_type: "model_score",
-                model_type: "GBM",
-                features_used: ["age", "income"],
-                prediction: 0.72,
-                shap_values: [
-                  { feature: "age", value: 0.15 },
-                  { feature: "income", value: -0.08 },
-                ],
+                prediction_column: "score",
+                prediction_value: 0.72,
+                feature_columns: ["age", "income"],
+                feature_values: { age: 50, income: 25_000 },
+                model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
+                explanation: {
+                  status: "ok",
+                  output_space: "prediction",
+                  base_value: 0.65,
+                  prediction_from_shap: 0.72,
+                  contributions: [
+                    { feature: "age", feature_value: 50, shap_value: 0.15, rank: 1 },
+                    { feature: "income", feature_value: 25_000, shap_value: -0.08, rank: 2 },
+                  ],
+                },
               },
             }),
           ] as TraceStep[],
@@ -689,15 +815,86 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("SHAP Model").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("SHAP Model")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Model feature values")).not.toBeInTheDocument()
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toHaveTextContent("Base")
+    expect(rows[0]).toHaveTextContent("0.65")
+    expect(rows[1]).toHaveTextContent("1. age")
+    expect(rows[1]).toHaveTextContent("50")
+    expect(rows[1]).toHaveTextContent("+0.15")
+    expect(rows[1]).toHaveTextContent("0.8")
+    expect(rows[2]).toHaveTextContent("2. income")
+    expect(rows[2]).toHaveTextContent("25,000")
+    expect(rows[2]).toHaveTextContent("-0.08")
+    expect(rows[2]).toHaveTextContent("0.72")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("0.72")
   })
 
-  it("renders scenario expander detail with multiplier info", () => {
+  it("uses fallback feature values and calls out truncated contribution ladders", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "SHAP Model",
+              node_type: "modelScore",
+              node_detail: {
+                detail_type: "model_score",
+                prediction_column: "score",
+                prediction_value: 1.5,
+                feature_values: { income: 25_000 },
+                explanation: {
+                  status: "ok",
+                  output_space: "prediction",
+                  base_value: 1,
+                  prediction_from_shap: 1.5,
+                  feature_values: { age: 50 },
+                  truncated: true,
+                  omitted_count: 2,
+                  contributions: [
+                    { feature: "age", shap_value: 0.25, rank: 1 },
+                    { feature: "income", shap_value: -0.05, rank: 2 },
+                    { feature: "postcode", shap_value: 0, rank: 3 },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    const stepButton = screen.getByText("SHAP Model").closest("button") as HTMLElement
+    fireEvent.click(stepButton)
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(5)
+    expect(rows[1]).toHaveTextContent("1. age")
+    expect(rows[1]).toHaveTextContent("50")
+    expect(rows[1]).toHaveTextContent("+0.25")
+    expect(rows[1]).toHaveTextContent("1.25")
+    expect(rows[2]).toHaveTextContent("2. income")
+    expect(rows[2]).toHaveTextContent("25,000")
+    expect(rows[2]).toHaveTextContent("-0.05")
+    expect(rows[2]).toHaveTextContent("1.2")
+    expect(rows[3]).toHaveTextContent("3. postcode")
+    expect(rows[3]).toHaveTextContent("not provided")
+    expect(rows[3]).toHaveTextContent("+0")
+    expect(rows[3]).toHaveTextContent("1.2")
+    expect(within(ladder).getByText("Prediction includes 2 omitted contributions.")).toBeInTheDocument()
+    expect(rows[4]).toHaveTextContent("Prediction")
+    expect(rows[4]).toHaveTextContent("1.5")
+  })
+
+  it("renders scenario expander detail with scenario value and grid settings", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -708,9 +905,10 @@ describe("TracePanel — Node Detail", () => {
               node_type: "scenario_expander",
               node_detail: {
                 detail_type: "scenario_expander",
-                step: "inflation",
-                multiplier: 1.05,
-                range: { min: 0.95, max: 1.15 },
+                scenario_column: "premium_multiplier",
+                scenario_value: 1.05,
+                scenario_index: 3,
+                parameters: { min_value: 0.95, max_value: 1.15, steps: 9 },
               },
             }),
           ] as TraceStep[],
@@ -718,15 +916,17 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Scenario Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
-    expect(screen.getByText("Scenario Step")).toBeInTheDocument()
+    expect(screen.getByText("Scenario Expander")).toBeInTheDocument()
+    expect(screen.getByText(/premium_multiplier.*1.05/)).toBeInTheDocument()
+    expect(screen.getByText(/index.*3/)).toBeInTheDocument()
+    expect(screen.getByText(/min.*0.95/)).toBeInTheDocument()
+    expect(screen.getByText(/max.*1.15/)).toBeInTheDocument()
+    expect(screen.getByText(/steps.*9/)).toBeInTheDocument()
   })
 
-  it("renders live switch detail with branch selection", () => {
+  it("renders live switch detail with active and pruned branches", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -737,8 +937,9 @@ describe("TracePanel — Node Detail", () => {
               node_type: "live_switch",
               node_detail: {
                 detail_type: "live_switch",
-                selected_branch: "branch_B",
-                available_branches: ["branch_A", "branch_B", "branch_C"],
+                active_branch: "branch_B",
+                active_scenario: "renewal",
+                pruned_branches: ["branch_A", "branch_C"],
               },
             }),
           ] as TraceStep[],
@@ -746,12 +947,87 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Live Switch").closest("button") as HTMLElement
     fireEvent.click(stepButton)
-    expect(screen.getByText("Live Switch")).toBeInTheDocument()
+    expect(screen.getAllByText("Live Switch").length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/active branch.*branch_B/)).toBeInTheDocument()
+    expect(screen.getByText(/scenario.*renewal/)).toBeInTheDocument()
+    expect(screen.getByText(/Pruned branches.*branch_A, branch_C/)).toBeInTheDocument()
+  })
+
+  it("renders different rich node details with the shared trace detail surface", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "apply",
+          column: "optimised_premium",
+          output_value: 0.65,
+          steps: [
+            makeStep({
+              node_id: "score",
+              node_name: "GLM Score",
+              node_type: "modelScore",
+              node_detail: {
+                detail_type: "model_score",
+                prediction_column: "score",
+                prediction_value: 0.85,
+                feature_columns: ["age"],
+                feature_values: { age: 35 },
+                model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
+              },
+            }),
+            makeStep({
+              node_id: "expand",
+              node_name: "Premium Expander",
+              node_type: "scenarioExpander",
+              schema_diff: {
+                columns_added: ["premium_multiplier"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["score"],
+              },
+              node_detail: {
+                detail_type: "scenario_expander",
+                scenario_column: "premium_multiplier",
+                scenario_value: 1.05,
+                scenario_index: 2,
+              },
+            }),
+            makeStep({
+              node_id: "apply",
+              node_name: "Apply Ratebook",
+              node_type: "optimiserApply",
+              schema_diff: {
+                columns_added: ["optimised_premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["premium_multiplier"],
+              },
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "ratebook",
+                output_column: "optimised_premium",
+                output_value: 0.65,
+                base_value: 1,
+                final_value: 0.65,
+                factors: [
+                  { name: "channel_band", input_value: "market", factor_value: 0.65, running_total: 0.65, status: "matched" },
+                ],
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("trace-show-full"))
+    fireEvent.click(screen.getByText("GLM Score").closest("button") as HTMLElement)
+    fireEvent.click(screen.getByText("Premium Expander").closest("button") as HTMLElement)
+
+    expect(screen.getByLabelText("Trace detail: Model run: abc123")).toBeInTheDocument()
+    expect(screen.getByLabelText("Trace detail: Scenario Expander")).toBeInTheDocument()
+    expect(screen.getByLabelText("Trace detail: Optimiser Apply")).toBeInTheDocument()
+    expect(screen.getAllByTestId("trace-detail-panel")).toHaveLength(3)
   })
 
 
@@ -774,9 +1050,6 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Unknown Detail").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Unknown Detail")).toBeInTheDocument()
@@ -803,9 +1076,6 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Default Rate").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Default Rate")).toBeInTheDocument()
@@ -861,8 +1131,6 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-
-    fireEvent.click(screen.getByText("Nodes"))
     fireEvent.click(screen.getByText("Adjustments").closest("button") as HTMLElement)
 
     expect(screen.getByText("Rating Tables")).toBeInTheDocument()
@@ -879,7 +1147,7 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.getByText(/base.*100/)).toBeInTheDocument()
   })
 
-  it("shows opaque rating_step table details directly on the Calculation tab", () => {
+  it("shows opaque rating_step table details directly in the target story card", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -932,13 +1200,17 @@ describe("TracePanel — Node Detail", () => {
       />,
     )
 
-    expect(screen.getByText("Calculation")).toBeInTheDocument()
-    expect(screen.getByText("Rating Tables")).toBeInTheDocument()
-    expect(screen.getAllByText("veh_age_adj").length).toBeGreaterThan(0)
-    expect(screen.getByText("traced column")).toBeInTheDocument()
-    expect(screen.getByText(/veh_age:.*2/)).toBeInTheDocument()
-    expect(screen.getByText(/cover:.*comp/)).toBeInTheDocument()
-    expect(screen.getByText(/selected.*0.11/)).toBeInTheDocument()
+    expect(screen.queryByText("Calculation")).not.toBeInTheDocument()
+    expect(screen.queryByText("Nodes")).not.toBeInTheDocument()
+    const targetCard = screen.getByTestId("trace-step-card-adjustments")
+    expect(targetCard).toHaveAttribute("data-target-step", "true")
+    expect(within(targetCard).getByText("Rating Tables")).toBeInTheDocument()
+    expect(within(targetCard).getAllByText("veh_age_adj").length).toBeGreaterThan(0)
+    expect(within(targetCard).getByText("traced column")).toBeInTheDocument()
+    expect(within(targetCard).getByText(/veh_age:.*2/)).toBeInTheDocument()
+    expect(within(targetCard).getByText(/cover:.*comp/)).toBeInTheDocument()
+    expect(within(targetCard).getByText(/selected.*0.11/)).toBeInTheDocument()
+    expect(within(targetCard).queryByText(/^computed$/i)).not.toBeInTheDocument()
   })
 
   it("opens target rating_step table details by default when no formula is available", () => {
@@ -1069,9 +1341,6 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Edge Band").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Edge Band")).toBeInTheDocument()
@@ -1086,12 +1355,14 @@ describe("TracePanel — Node Detail", () => {
             makeStep({
               node_id: "n1",
               node_name: "Big Model",
-              node_type: "model_score",
+              node_type: "modelScore",
               node_detail: {
                 detail_type: "model_score",
-                model_type: "XGBoost",
-                features_used: features,
-                prediction: 0.42,
+                prediction_column: "prediction",
+                prediction_value: 0.42,
+                feature_columns: features,
+                feature_values: Object.fromEntries(features.map((feature, index) => [feature, index])),
+                model_identity: { source_type: "run", run_id: "abc123", task: "regression" },
               },
             }),
           ] as TraceStep[],
@@ -1099,9 +1370,6 @@ describe("TracePanel — Node Detail", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Big Model").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Big Model")).toBeInTheDocument()
@@ -1130,9 +1398,6 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     expect(screen.getByText("Pass Through")).toBeInTheDocument()
   })
 
@@ -1151,9 +1416,6 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     expect(screen.getByText("Source Node")).toBeInTheDocument()
   })
 
@@ -1172,9 +1434,6 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     expect(screen.getByText("Filter Node")).toBeInTheDocument()
   })
 
@@ -1193,9 +1452,6 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     expect(screen.getByText("Agg Node")).toBeInTheDocument()
   })
 
@@ -1214,9 +1470,6 @@ describe("TracePanel — Row Lineage Type", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     expect(screen.getByText("Join Node")).toBeInTheDocument()
   })
 
@@ -1242,9 +1495,6 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepA = screen.getByText("Step A")
     const stepB = screen.getByText("Step B")
     // Step C may appear in both CalculationHero (nodeName) and StepCard
@@ -1279,9 +1529,6 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Formula Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     // Expression should be visible after expanding
@@ -1308,9 +1555,6 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Diff Step").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText(/1 added/)).toBeInTheDocument()
@@ -1338,9 +1582,6 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     // Pass-through steps with no changes should still render the step name
     expect(screen.getByText("Pass-through")).toBeInTheDocument()
   })
@@ -1378,9 +1619,6 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     // The relevant step should NOT have reduced opacity
     // "Creator" may appear in both CalculationHero (nodeName) and StepCard
     expect(screen.getAllByText("Creator").length).toBeGreaterThan(0)
@@ -1421,9 +1659,6 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     const stepButton = screen.getByText("Enhanced Step").closest("button") as HTMLElement
     // Expand
     fireEvent.click(stepButton)
@@ -1445,9 +1680,6 @@ describe("TracePanel — Waterfall View Concepts", () => {
         onClose={vi.fn()}
       />,
     )
-    // Click "Nodes" tab to switch to node list view
-    const nodesTab = screen.getByText("Nodes")
-    fireEvent.click(nodesTab)
     expect(screen.getByText("Polars Step")).toBeInTheDocument()
     expect(screen.getByText("Rating Step")).toBeInTheDocument()
   })

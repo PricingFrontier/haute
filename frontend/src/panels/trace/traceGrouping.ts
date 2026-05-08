@@ -5,7 +5,7 @@ import type { TraceStep } from "../../types/trace"
  *
  * Primary: the last step where the column is in columns_added or columns_modified.
  * Fallback: when the primary step has no usable expression (null or opaque),
- * check the final step in the trace — the backend enriches pass-through target
+ * check the final step in the trace - the backend enriches pass-through target
  * steps with the upstream creator's expression, so the final step may carry a
  * valid (non-opaque) expression even though the column is only in columns_passed.
  */
@@ -81,13 +81,16 @@ export function groupTraceSteps(steps: TraceStep[], column: string): TraceGroup[
 
 export type CollapsedEntry = TraceStep | { collapsed: TraceStep[] }
 
+interface CollapsePassthroughOptions {
+  collapseUnpreserved?: boolean
+}
+
 /**
  * Determine if a step is a passthrough for the given column:
  * the column appears in columns_passed but NOT in columns_added or columns_modified,
- * and the step is not a source node.
+ * or the step does not mention the traced column at all.
  */
 function isPassthrough(step: TraceStep, column: string): boolean {
-  if (step.node_type === "dataSource" || step.node_type === "apiInput" || step.node_type === "source") return false
   const diff = step.schema_diff
   // Column explicitly passes through
   if (diff.columns_passed.includes(column) &&
@@ -95,7 +98,7 @@ function isPassthrough(step: TraceStep, column: string): boolean {
       !diff.columns_modified.includes(column)) {
     return true
   }
-  // Column not mentioned at all — completely irrelevant step
+  // Column not mentioned at all - completely irrelevant step
   const allMentioned = [
     ...diff.columns_added,
     ...diff.columns_modified,
@@ -105,14 +108,22 @@ function isPassthrough(step: TraceStep, column: string): boolean {
   return !allMentioned.includes(column)
 }
 
+export function isSourceLikeTraceStep(step: Pick<TraceStep, "node_type">): boolean {
+  return step.node_type === "source" || step.node_type === "dataSource" || step.node_type === "apiInput"
+}
+
 /**
  * Collapse consecutive passthrough steps into groups.
- * Source steps and steps that create/modify the column are never collapsed.
+ * Source steps and steps that create/modify the column are never collapsed in the
+ * default passthrough mode. Dependency-story views can opt into collapsing every
+ * unpreserved step, including source steps.
  * When ALL steps are passthroughs, the first and last are preserved.
  */
 export function collapsePassthroughs(
   steps: TraceStep[],
   column: string,
+  preserveStepIds: ReadonlySet<string> = new Set(),
+  options: CollapsePassthroughOptions = {},
 ): CollapsedEntry[] {
   if (steps.length === 0) return []
 
@@ -137,7 +148,12 @@ export function collapsePassthroughs(
     // If all are passthroughs, preserve first and last
     const preserveAsEndpoint = allPassthrough && (isFirst || isLast)
 
-    if (preserveAsEndpoint || !isPassthrough(step, column)) {
+    const isPreserved = preserveStepIds.has(step.node_id)
+    const shouldCollapse = options.collapseUnpreserved
+      ? !isPreserved
+      : !isPreserved && !isSourceLikeTraceStep(step) && isPassthrough(step, column)
+
+    if (preserveAsEndpoint || !shouldCollapse) {
       flushCollapsed()
       result.push(step)
     } else {

@@ -142,6 +142,12 @@ def adjustments(age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
+@pipeline.optimiser_apply(config="config/apply_optimisation/apply_ratebook.json", contract="opaque")
+def apply_ratebook(age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
+    """apply_ratebook node"""
+    return age_veh_banding
+
+
 @pipeline.polars(contract="opaque")
 def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> pl.LazyFrame:
     """Join policy data"""
@@ -222,12 +228,6 @@ def ratebook_optimiser(optimiser_input: pl.LazyFrame, age_veh_banding: pl.LazyFr
     return optimiser_input
 
 
-@pipeline.optimiser_apply(config="config/apply_optimisation/apply_ratebook.json", contract="opaque")
-def apply_ratebook(optimiser_input: pl.LazyFrame, age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
-    """apply_ratebook node"""
-    return optimiser_input
-
-
 @pipeline.optimiser(config="config/optimisation/online_optimiser.json", contract={"inputs": [], "outputs": []})
 def online_optimiser(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
     """online_optimiser node"""
@@ -269,7 +269,6 @@ pipeline.connect("conversion_scoring", "optimiser_input")
 pipeline.connect("optimiser_input", "ratebook_optimiser")
 pipeline.connect("quotes", "processing")
 pipeline.connect("processing", "policies")
-pipeline.connect("optimiser_input", "apply_ratebook")
 pipeline.connect("policies", "age_veh_banding")
 pipeline.connect("age_veh_banding", "adjustments")
 pipeline.connect("age_veh_banding", "ratebook_optimiser")

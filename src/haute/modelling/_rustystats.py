@@ -304,6 +304,7 @@ class GLMAlgorithm(BaseAlgorithm):
             "Estimate": "coefficient",
             "Std. Error": "std_error",
             "Std.Error": "std_error",
+            "z": "z_value",
             "z value": "z_value",
             "z.value": "z_value",
             "Pr(>|z|)": "p_value",

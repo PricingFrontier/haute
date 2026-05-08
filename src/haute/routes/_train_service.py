@@ -7,15 +7,18 @@ delegates to ``TrainService.start()``.
 from __future__ import annotations
 
 import gc
+import math
 import os
 import shutil
 import tempfile
 import threading
 import time
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import BaseModel
 
 from haute._logging import get_logger
 from haute._types import GraphNode, PipelineGraph
@@ -143,6 +146,25 @@ def _friendly_error(exc: Exception) -> str:
         return f"Could not save model file: {msg}"
 
     return f"Training failed ({exc_type}): {msg}"
+
+
+def _assert_json_finite(value: Any, path: str = "result") -> None:
+    """Raise when a training result contains a non-JSON numeric value."""
+    if isinstance(value, BaseModel):
+        _assert_json_finite(value.model_dump(mode="python"), path)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _assert_json_finite(item, f"{path}.{key}")
+        return
+    if isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            _assert_json_finite(item, f"{path}[{index}]")
+        return
+    if isinstance(value, Real) and not isinstance(value, bool):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise ValueError(f"non-finite numeric value at {path}")
 
 
 def _check_gpu_vram(
@@ -648,6 +670,7 @@ class TrainService:
                     warning=ram_warning,
                     total_source_rows=total_source_rows,
                 )
+                _assert_json_finite(response)
                 self._store.atomic_update(
                     job_id,
                     {

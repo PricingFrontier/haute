@@ -3719,6 +3719,187 @@ class TestEnrichModelScoreRealConfig:
         result = enrich_model_score(config, input_row, output_row)
         assert result["feature_columns"] == ["feat_a"]
 
+    def test_feature_columns_use_contract_inputs_before_inference(self):
+        """Model-score detail should prefer the node contract over all input columns."""
+        from haute._trace_enrichment import enrich_model_score
+
+        config = {
+            "output_column": "pred",
+            "contract": {"inputs": ["feat_b", "feat_a"]},
+        }
+        input_row = {"feat_a": 1, "feat_b": 2, "technical_id": "Q1"}
+        output_row = {"feat_a": 1, "feat_b": 2, "technical_id": "Q1", "pred": 0.9}
+
+        result = enrich_model_score(config, input_row, output_row)
+        assert result["feature_columns"] == ["feat_b", "feat_a"]
+        assert result["feature_values"] == {"feat_b": 2, "feat_a": 1}
+
+    def test_catboost_explanation_attached_for_mlflow_cbm_config(self, monkeypatch):
+        """CatBoost MLflow configs should attach structured per-row explanation detail."""
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(config, input_row, output_row, prediction_column, prediction_value):
+            assert config["artifact_path"] == "model.cbm"
+            assert input_row["feat_a"] == 1
+            assert output_row["pred"] == 0.9
+            assert prediction_column == "pred"
+            assert prediction_value == 0.9
+            return {
+                "type": "catboost_shap",
+                "method": "catboost_shap",
+                "status": "ok",
+                "output_space": "prediction",
+                "base_value": 0.3,
+                "prediction_from_shap": 0.9,
+                "output_difference": 0.0,
+                "contributions": [
+                    {"feature": "feat_a", "feature_value": 1, "shap_value": 0.6},
+                ],
+            }
+
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        config = {
+            "output_column": "pred",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "model.cbm",
+            "contract": {"inputs": ["feat_a"]},
+        }
+
+        result = enrich_model_score(config, {"feat_a": 1}, {"feat_a": 1, "pred": 0.9})
+
+        assert result["explanation"]["method"] == "catboost_shap"
+        assert result["explanation"]["contributions"][0]["feature"] == "feat_a"
+
+    def test_rustystats_explanation_attached_for_mlflow_rsglm_config(self, monkeypatch):
+        """RustyStats GLM MLflow configs should attach native contribution detail."""
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(config, input_row, output_row, prediction_column, prediction_value):
+            assert config["artifact_path"] == "conversion.rsglm"
+            assert input_row["difference_to_market"] == -10.0
+            assert output_row["conversion_prediction"] == 0.42
+            assert prediction_column == "conversion_prediction"
+            assert prediction_value == 0.42
+            return {
+                "type": "rustystats_glm_contributions",
+                "method": "rustystats_glm_contributions",
+                "status": "ok",
+                "output_space": "linear_predictor",
+                "prediction_space": "response",
+                "base_value": 0.1,
+                "prediction_from_contributions": 0.2,
+                "prediction_value": 0.42,
+                "contributions": [
+                    {
+                        "feature": "difference_to_market",
+                        "feature_value": -10.0,
+                        "contribution": 0.1,
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        config = {
+            "output_column": "conversion_prediction",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "conversion.rsglm",
+            "contract": {"inputs": ["difference_to_market"]},
+        }
+
+        result = enrich_model_score(
+            config,
+            {"difference_to_market": -10.0},
+            {"difference_to_market": -10.0, "conversion_prediction": 0.42},
+        )
+
+        assert result["explanation"]["method"] == "rustystats_glm_contributions"
+        assert result["explanation"]["contributions"][0]["feature"] == "difference_to_market"
+
+    def test_rustystats_explanation_error_is_not_mislabeled_as_catboost(self, monkeypatch):
+        """RustyStats GLM explanation failures keep GLM method metadata."""
+        from haute._model_explainability import ModelExplanationError
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(*args, **kwargs):
+            raise ModelExplanationError("broken GLM explanation")
+
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        config = {
+            "output_column": "conversion_prediction",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "conversion.rsglm",
+            "contract": {"inputs": ["difference_to_market"]},
+        }
+
+        result = enrich_model_score(
+            config,
+            {"difference_to_market": -10.0},
+            {"difference_to_market": -10.0, "conversion_prediction": 0.42},
+        )
+
+        assert result["explanation"]["type"] == "rustystats_glm_contributions"
+        assert result["explanation"]["method"] == "rustystats_glm_contributions"
+        assert result["explanation"]["status"] == "error"
+        assert result["explanation"]["error"] == "broken GLM explanation"
+
+    def test_explanation_error_handling_survives_unsupported_artifact(self, monkeypatch):
+        """Defensive: if the supported-config check and the metadata lookup
+        disagree at runtime, the outer enrich_model_score must still return a
+        well-formed ``model_score`` detail (not crash through the catch-all).
+
+        This pins the contract that ``explanation_error_metadata_for_config``
+        is on the error-handling path and may not raise — otherwise a future
+        edit could escalate an internal mismatch into "model score enrichment
+        failed: ..." and lose all the structured detail.
+        """
+        from haute._model_explainability import ModelExplanationError
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(*args, **kwargs):
+            raise ModelExplanationError("some failure")
+
+        # Force the metadata lookup to take its unreachable branch by giving
+        # it an artifact_path the supported-config check would never accept.
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        monkeypatch.setattr(
+            "haute._model_explainability._config_requests_supported_explanation",
+            lambda config: True,
+        )
+
+        config = {
+            "output_column": "pred",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "model.unknown",
+            "contract": {"inputs": ["feat_a"]},
+        }
+
+        result = enrich_model_score(config, {"feat_a": 1}, {"feat_a": 1, "pred": 0.9})
+
+        # The outer detail is intact (no "model score enrichment failed: ..."
+        # crash through the generic catch-all), and the explanation carries
+        # the fallback metadata.
+        assert result["detail_type"] == "model_score"
+        assert result["prediction_value"] == 0.9
+        assert result["explanation"]["status"] == "error"
+        assert result["explanation"]["type"] == "model_explanation"
+        assert result["explanation"]["method"] == "model_explanation"
+
 
 class TestEnrichScenarioExpansionRealConfig:
     """Tests for enrich_scenario_expansion with real config."""

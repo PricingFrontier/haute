@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from "react"
+import React from "react"
 import WaterfallChart from "./WaterfallChart"
 import WaterfallErrorAlert from "./WaterfallErrorAlert"
 import ExpressionChainRow from "./ExpressionChain"
@@ -20,6 +20,9 @@ import {
   formatDisplayExpression,
   tabularNums,
 } from "./traceFormatting"
+import { isTraceSourceNodeType } from "./traceOrigins"
+import { TraceCalculationFrame } from "./TraceDetail"
+import { nodeTypeColors } from "../utils/nodeTypes"
 
 // Re-export the entry types so existing importers of CalculationHero keep working.
 export type { ExpressionChainEntry, InputSourceEntry, WaterfallEntryProp }
@@ -41,10 +44,17 @@ export interface CalculationHeroProps {
   executionMs?: number
   stepCount?: number
   nodeName?: string
+  nodeType?: string
+  isSourceOrigin?: boolean
+  frame?: boolean
   // Backend emits either a successful entries list or a structured error
   // (e.g. "row had 2+ passes — waterfall not well-defined").  Pass both
   // through and let resolveWaterfallProp split them into steps vs error.
   waterfall?: WaterfallEntryProp[] | WaterfallErrorProp | null
+}
+
+function isComputedPlaceholder(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === "computed"
 }
 
 // ---------------------------------------------------------------------------
@@ -93,58 +103,16 @@ function parseBranches(text: string): Branch[] {
 // ---------------------------------------------------------------------------
 
 const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
-  const { column, expression, calculation, nodeName } = props
-  const [copied, setCopied] = useState(false)
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-    }
-  }, [])
-
-  const handleCopy = useCallback(async () => {
-    const parts: string[] = []
-    parts.push(`Column: ${column}`)
-    if (expression?.expression_text) {
-      parts.push(`Formula: ${expression.expression_text}`)
-    }
-    if (calculation) {
-      if (calculation.substituted_text) {
-        parts.push(`Substituted: ${calculation.substituted_text}`)
-      }
-      parts.push(`Result: ${formatResultValueFull(calculation.result_value)}`)
-      if (Object.keys(calculation.input_values).length > 0) {
-        parts.push("Inputs:")
-        for (const [k, v] of Object.entries(calculation.input_values)) {
-          parts.push(`  ${k} = ${formatResultValueFull(v)}`)
-        }
-      }
-    }
-    const text = parts.join("\n")
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      const ta = document.createElement("textarea")
-      ta.value = text
-      ta.style.position = "fixed"
-      ta.style.opacity = "0"
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand("copy")
-      document.body.removeChild(ta)
-    }
-    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-    setCopied(true)
-    copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
-  }, [column, expression, calculation])
+  const { column, expression, calculation, nodeName, nodeType, isSourceOrigin, frame = true } = props
 
   const isNullBoth = !expression && !calculation
   const isOpaque = expression?.expression_type === "opaque"
   const isConditional = expression?.expression_type === "conditional"
   const isBanding = expression?.expression_type === "banding"
+  const isOriginNode = Boolean(isSourceOrigin || isTraceSourceNodeType(nodeType))
   const hasExpressionText =
     expression != null && expression.expression_text.length > 0
+  const calculationIsComputedPlaceholder = isComputedPlaceholder(calculation?.substituted_text)
 
   // Waterfall: prefer backend-computed waterfall data, fallback to
   // frontend parsing for arithmetic with 3+ multiplicative factors.
@@ -163,9 +131,6 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     )
   }
 
-  const columnMaxLen = 60
-  const isLongColumn = column.length > columnMaxLen
-
   const resultValue = calculation?.result_value
   const resultFormatted = calculation
     ? formatSmartValue(resultValue)
@@ -176,59 +141,6 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   const resultIsNull = calculation
     ? resultValue === null || resultValue === undefined
     : false
-
-
-  // ---------------------------------------------------------------------------
-  // Line 1: Column name + Result
-  // ---------------------------------------------------------------------------
-  const renderLine1 = () => (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-      <span
-        style={{
-          fontSize: 14,
-          fontWeight: 600,
-          color: "var(--text-primary)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-        title={isLongColumn ? column : undefined}
-      >
-        {column}
-      </span>
-      {calculation && (
-        <span
-          className={
-            resultIsNull
-              ? "result-value muted null-value"
-              : "result-value accent"
-          }
-          data-accent={!resultIsNull || undefined}
-          data-muted={resultIsNull || undefined}
-          style={{
-            fontSize: 20,
-            fontWeight: 700,
-            fontFamily: "monospace",
-            flexShrink: 0,
-            marginLeft: 8,
-            ...tabularNums,
-            borderRadius: 6,
-            padding: "2px 10px",
-            ...(resultIsNull
-              ? { fontStyle: "italic", opacity: 0.5, color: "var(--text-muted)" }
-                : {
-                    color: "var(--accent)",
-                    background: "var(--text-accent-soft)",
-                    border: "1px solid var(--text-accent-border)",
-                  }),
-          }}
-          title={resultFormattedFull !== resultFormatted ? resultFormattedFull : undefined}
-        >
-          {resultFormatted}
-        </span>
-      )}
-    </div>
-  )
 
   // ---------------------------------------------------------------------------
   // Unified calculation box — all entries top-down in one well
@@ -288,6 +200,32 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       }}
     >
       Calculation data not available for this step.
+    </div>
+  )
+
+  const renderSourceOrigin = () => (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: 6,
+        fontSize: 11,
+        color: "var(--text-secondary)",
+        marginTop: 4,
+      }}
+    >
+      <span>Source node</span>
+      {nodeName && (
+        <span
+          style={{
+            color: "var(--text-primary)",
+            fontFamily: "monospace",
+            fontWeight: 600,
+          }}
+        >
+          {nodeName}
+        </span>
+      )}
     </div>
   )
 
@@ -451,6 +389,13 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   // Body rendering
   // ---------------------------------------------------------------------------
   const renderBody = () => {
+    if (
+      isOriginNode &&
+      (isNullBoth || isOpaque || calculationIsComputedPlaceholder || (expression != null && !hasExpressionText))
+    ) {
+      return renderSourceOrigin()
+    }
+
     // Both null: source data
     if (isNullBoth) {
       return (
@@ -626,60 +571,25 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     )
   }
 
-  return (
-    <div
-      className="calculation-hero"
-      style={{
-        background: "var(--bg-elevated, rgba(255,255,255,0.03))",
-        borderRadius: 6,
-        padding: 12,
-        margin: 0,
-        overflow: "hidden",
-      }}
-    >
-      {/* Node name */}
-      {nodeName && (
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--text-secondary)",
-            marginBottom: 4,
-          }}
-        >
-          {nodeName}
-        </div>
-      )}
-
-      {/* Line 1: Column name + Result */}
-      {renderLine1()}
-
-      {/* Body */}
-      {renderBody()}
-
-      {/* Copy button -- bottom right */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "flex-end",
-          marginTop: 8,
-        }}
-      >
-        <button
-          aria-label={copied ? "Copied" : "Copy"}
-          onClick={handleCopy}
-          style={{
-            background: "none",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            cursor: "pointer",
-            padding: "2px 8px",
-            fontSize: 12,
-          }}
-        >
-          {copied ? "\u2713 Copied" : "Copy"}
-        </button>
+  if (!frame) {
+    return (
+      <div data-testid="trace-calculation-body">
+        {renderBody()}
       </div>
-    </div>
+    )
+  }
+
+  return (
+    <TraceCalculationFrame
+      nodeName={nodeName}
+      column={column}
+      result={calculation ? resultFormatted : undefined}
+      resultTitle={resultFormattedFull !== resultFormatted ? resultFormattedFull : undefined}
+      resultMuted={resultIsNull}
+      accentColor={nodeType ? nodeTypeColors[nodeType] : undefined}
+    >
+      {renderBody()}
+    </TraceCalculationFrame>
   )
 }
 

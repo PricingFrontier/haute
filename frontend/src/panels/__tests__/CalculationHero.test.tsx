@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
+import { describe, it, expect, afterEach } from "vitest"
+import { render, screen, cleanup } from "@testing-library/react"
 import CalculationHero from "../../trace/CalculationHero"
 import type { CalculationHeroProps } from "../../trace/CalculationHero"
+import { nodeTypeColors } from "../../utils/nodeTypes"
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -51,6 +52,41 @@ describe("CalculationHero \u2014 Basic Rendering", () => {
   it("renders column name prominently", () => {
     render(<CalculationHero {...makeProps()} />)
     expect(screen.getByText("premium")).toBeInTheDocument()
+  })
+
+  it("renders inside the shared trace calculation frame", () => {
+    render(<CalculationHero {...makeProps()} />)
+    const frame = screen.getByTestId("trace-calculation-frame")
+    expect(frame).toHaveTextContent("Rating")
+    expect(frame).toHaveTextContent("premium")
+    expect(frame).toHaveTextContent("369.60")
+  })
+
+  it("does not render a duplicate copy action inside the calculation frame", () => {
+    render(<CalculationHero {...makeProps()} />)
+    expect(screen.queryByRole("button", { name: /copy/i })).not.toBeInTheDocument()
+  })
+
+  it("renders the frame result as compact inline text rather than a large value pill", () => {
+    render(<CalculationHero {...makeProps()} />)
+    const result = screen.getByTestId("trace-calculation-result")
+    expect(result).toHaveTextContent("= 369.60")
+    expect(result).not.toHaveStyle({ background: "var(--text-accent-soft)" })
+    expect(result).not.toHaveStyle({ border: "1px solid var(--text-accent-border)" })
+  })
+
+  it("outlines the shared calculation frame with the node type colour", () => {
+    render(<CalculationHero {...makeProps({ nodeType: "optimiserApply" })} />)
+    const frame = screen.getByTestId("trace-calculation-frame")
+    expect(frame).toHaveStyle({ borderColor: nodeTypeColors.optimiserApply })
+  })
+
+  it("uses a flat shared calculation frame without an accent glow", () => {
+    render(<CalculationHero {...makeProps({ nodeType: "optimiserApply" })} />)
+    const frame = screen.getByTestId("trace-calculation-frame")
+    expect(frame.style.background).toBe("var(--bg-elevated, rgba(255,255,255,0.03))")
+    expect(frame.style.background).not.toContain("linear-gradient")
+    expect(frame).toHaveStyle({ boxShadow: "none" })
   })
 
   it("renders expression_text with operator replacement (\u00d7 instead of *)", () => {
@@ -238,6 +274,78 @@ describe("CalculationHero \u2014 Formula Modes", () => {
       computedEl.tagName === "EM" ||
       computedEl.tagName === "I",
     ).toBe(true)
+  })
+
+  it("source-only opaque mode names the source node instead of computed", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          nodeName: "Policy Source",
+          nodeType: "dataSource",
+          expression: makeExpression({
+            expression_text: "",
+            expression_type: "opaque",
+            referenced_columns: [],
+          }),
+          calculation: makeCalculation({
+            substituted_text: "computed",
+            result_value: 42.5,
+            input_values: {},
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Policy Source").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("source-only placeholder calculations name the source node when expression is absent", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          nodeName: "Quote Input",
+          nodeType: "apiInput",
+          expression: null,
+          calculation: makeCalculation({
+            substituted_text: "computed",
+            result_value: "Q123",
+            input_values: {},
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Quote Input").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
+  })
+
+  it("generated-column origins can name the generating node instead of computed", () => {
+    render(
+      <CalculationHero
+        {...makeProps({
+          nodeName: "Premium Expander",
+          nodeType: "scenarioExpander",
+          isSourceOrigin: true,
+          expression: makeExpression({
+            expression_text: "",
+            expression_type: "opaque",
+            referenced_columns: [],
+          }),
+          calculation: makeCalculation({
+            substituted_text: "computed",
+            result_value: 1.2,
+            input_values: {},
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Source node")).toBeInTheDocument()
+    expect(screen.getAllByText("Premium Expander").length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
   })
 
   it("banding mode: uses one compact input-to-band line", () => {
@@ -712,7 +820,7 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
       />,
     )
     // Should render without crashing and show the result
-    expect(screen.getByText("100")).toBeInTheDocument()
+    expect(screen.getByTestId("trace-calculation-result")).toHaveTextContent("= 100")
     expect(screen.getByText(/otherwise/i)).toBeInTheDocument()
   })
 
@@ -767,102 +875,7 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
     )
     // Should render without crashing
     expect(screen.getByText("premium")).toBeInTheDocument()
-    expect(screen.getByText("120")).toBeInTheDocument()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// CATEGORY 6: Copy Functionality
-// ---------------------------------------------------------------------------
-
-describe("CalculationHero \u2014 Copy Functionality", () => {
-  afterEach(cleanup)
-
-  let writeTextMock: ReturnType<typeof vi.fn>
-
-  beforeEach(() => {
-    writeTextMock = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, {
-      clipboard: { writeText: writeTextMock },
-    })
-  })
-
-  it("copy button exists", () => {
-    render(<CalculationHero {...makeProps()} />)
-    const copyBtn = screen.getByRole("button", { name: /copy/i })
-    expect(copyBtn).toBeInTheDocument()
-  })
-
-  it("click copy: copies formula text to clipboard", async () => {
-    render(<CalculationHero {...makeProps()} />)
-    const copyBtn = screen.getByRole("button", { name: /copy/i })
-    await act(async () => {
-      fireEvent.click(copyBtn)
-    })
-    expect(writeTextMock).toHaveBeenCalledOnce()
-    const copiedText = writeTextMock.mock.calls[0][0] as string
-    expect(copiedText).toContain("base_premium")
-    expect(copiedText).toContain("age_factor")
-  })
-
-  it("copy includes column name, formula, values, and result", async () => {
-    render(<CalculationHero {...makeProps()} />)
-    const copyBtn = screen.getByRole("button", { name: /copy/i })
-    await act(async () => {
-      fireEvent.click(copyBtn)
-    })
-    const copiedText = writeTextMock.mock.calls[0][0] as string
-    expect(copiedText).toContain("premium")
-    expect(copiedText).toContain("base_premium")
-    expect(copiedText).toContain("369.6")
-  })
-
-  it("copy button shows confirmation state (checkmark) for 2 seconds", async () => {
-    vi.useFakeTimers()
-    render(<CalculationHero {...makeProps()} />)
-    const copyBtn = screen.getByRole("button", { name: /copy/i })
-
-    await act(async () => {
-      fireEvent.click(copyBtn)
-    })
-
-    // Should show a checkmark or "copied" confirmation
-    expect(
-      screen.queryByText(/copied/i) ??
-      screen.queryByText(/\u2713/) ??
-      screen.queryByRole("button", { name: /copied/i }),
-    ).toBeTruthy()
-
-    // After 2 seconds, should revert
-    await act(async () => {
-      vi.advanceTimersByTime(2000)
-    })
-
-    expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument()
-
-    vi.useRealTimers()
-  })
-
-  it("copy works when expression is null (copies just the result)", async () => {
-    render(
-      <CalculationHero
-        {...makeProps({
-          expression: null,
-          calculation: makeCalculation({
-            substituted_text: "= 42.5",
-            result_value: 42.5,
-            input_values: {},
-          }),
-        })}
-      />,
-    )
-    const copyBtn = screen.getByRole("button", { name: /copy/i })
-    await act(async () => {
-      fireEvent.click(copyBtn)
-    })
-    expect(writeTextMock).toHaveBeenCalledOnce()
-    const copiedText = writeTextMock.mock.calls[0][0] as string
-    expect(copiedText).toContain("42.5")
+    expect(screen.getByTestId("trace-calculation-result")).toHaveTextContent("= 120")
   })
 })
 

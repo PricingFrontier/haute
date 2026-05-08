@@ -63,6 +63,11 @@ export interface UseJobPollingConfig<TJob, TStatus> {
   getResult: (status: TStatus) => TStatus | undefined
   /** Extract a human-readable error message from an error status. */
   getErrorMessage: (status: TStatus) => string
+  /**
+   * Return a terminal error message for non-retryable poll exceptions.
+   * Undefined keeps the existing retry/backoff behaviour for transient errors.
+   */
+  getTerminalPollErrorMessage?: (error: unknown) => string | undefined
   /** Show a toast notification. */
   addToast: (type: "success" | "error" | "warning" | "info", text: string) => void
   /** Label prefix for success toasts (e.g. "Training complete"). */
@@ -152,7 +157,7 @@ function reconcilePollers<TJob, TStatus>(
     }
 
     function schedulePoll(state: JobPollerState<TStatus>): void {
-      const { pollFn, isComplete, isError, getResult, getErrorMessage, onComplete, onFail, labelFn, addToast, successLabel, failLabel } = configRef.current
+      const { pollFn, isComplete, isError, getResult, getErrorMessage, getTerminalPollErrorMessage, onComplete, onFail, labelFn, addToast, successLabel, failLabel } = configRef.current
       const job = configRef.current.jobs[nodeId]
       if (!job || !isCurrentJob(state)) return
       const elapsed = Date.now() - state.startedAt
@@ -213,6 +218,14 @@ function reconcilePollers<TJob, TStatus>(
         } catch (e) {
           clearTimeout(pollTimeoutId)
           if (!isCurrentJob(state)) return
+          const terminalMessage = getTerminalPollErrorMessage?.(e)
+          if (terminalMessage) {
+            clearPendingProgress(state)
+            delete stateRef.current[nodeId]
+            onFail(nodeId, terminalMessage)
+            addToast("error", `${failLabel}: ${labelFn(job)} — ${terminalMessage}`)
+            return
+          }
           state.consecutiveErrors += 1
           console.warn(`${failLabel} poll failed (attempt ${state.consecutiveErrors}, will retry):`, e)
 

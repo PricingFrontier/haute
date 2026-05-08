@@ -1113,20 +1113,7 @@ def _apply_online(
     objective = artifact.get("objective", "expected_income")
     constraints = artifact.get("constraints") or {}
 
-    # Filter out null/NaN quote IDs before casting (null → "null" string is invalid)
-    lf = lf.filter(pl.col(qid_col).is_not_null())
-
-    # Cast columns to the types price-contour expects (same as solve endpoint)
-    cast_exprs = [
-        pl.col(qid_col).cast(pl.Utf8),
-        pl.col(step_col).cast(pl.Int32),
-        pl.col(mult_col).cast(pl.Float32),
-        pl.col(objective).cast(pl.Float32),
-    ]
-    for c in constraints:
-        cast_exprs.append(pl.col(c).cast(pl.Float32))
-
-    df_eager = lf.with_columns(cast_exprs).collect(engine="streaming")
+    df_eager = _prepare_online_apply_frame(lf, artifact)
 
     applier = ApplyOptimiser(
         lambdas=artifact["lambdas"],
@@ -1148,6 +1135,39 @@ def _apply_online(
         result_df = result_df.with_columns(pl.lit(version).alias(version_col))
 
     return result_df.lazy()
+
+
+def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.DataFrame:
+    """Materialise an online apply input frame using runtime apply dtypes."""
+    qid_col = artifact.get("quote_id", "quote_id")
+    step_col = artifact.get("scenario_index", "scenario_index")
+    mult_col = artifact.get("scenario_value", "scenario_value")
+    objective = artifact.get("objective", "expected_income")
+    constraints = artifact.get("constraints") or {}
+
+    # Filter out null quote IDs before casting (null -> "null" would become
+    # a real quote identifier and diverge from the optimiser apply path).
+    lf = lf.filter(pl.col(qid_col).is_not_null())
+
+    cast_exprs = [
+        pl.col(qid_col).cast(pl.Utf8),
+        pl.col(step_col).cast(pl.Int32),
+        pl.col(mult_col).cast(pl.Float32),
+        pl.col(objective).cast(pl.Float32),
+    ]
+    cast_names = {qid_col, step_col, mult_col, objective}
+    for name, spec in constraints.items():
+        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
+            for col in (spec["numerator"], spec["denominator"]):
+                col_name = str(col)
+                if col_name not in cast_names:
+                    cast_exprs.append(pl.col(col_name).cast(pl.Float32))
+                    cast_names.add(col_name)
+        elif name not in cast_names:
+            cast_exprs.append(pl.col(name).cast(pl.Float32))
+            cast_names.add(name)
+
+    return lf.with_columns(cast_exprs).collect(engine="streaming")
 
 
 def _apply_ratebook(

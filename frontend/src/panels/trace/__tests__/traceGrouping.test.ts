@@ -896,6 +896,42 @@ describe("collapsePassthroughs", () => {
     expect(nonCollapsed.some((s) => s.node_id === "api1")).toBe(true)
   })
 
+  it("dependency-story mode collapses unpreserved source-like steps", () => {
+    const steps = [
+      makeStep({
+        node_id: "ds1",
+        node_name: "Unrelated Source",
+        node_type: "dataSource",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "p1",
+        node_name: "Unrelated Pass",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
+      }),
+      makeStep({
+        node_id: "m1",
+        node_name: "Target",
+        node_type: "polars",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] },
+      }),
+    ]
+    const result = collapsePassthroughs(steps, "premium", new Set(["m1"]), {
+      collapseUnpreserved: true,
+    })
+
+    const collapsedEntries = result.filter((e) => "collapsed" in e)
+    expect(collapsedEntries).toHaveLength(1)
+    expect((collapsedEntries[0] as { collapsed: TraceStep[] }).collapsed.map((s) => s.node_id)).toEqual([
+      "ds1",
+      "p1",
+    ])
+
+    const nonCollapsed = result.filter((e) => !("collapsed" in e)) as TraceStep[]
+    expect(nonCollapsed.map((s) => s.node_id)).toEqual(["m1"])
+  })
+
   it("step with column not mentioned at all is treated as passthrough", () => {
     const steps = [
       makeStep({

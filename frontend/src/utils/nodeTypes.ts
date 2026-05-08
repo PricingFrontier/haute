@@ -86,6 +86,11 @@ export const SOURCE_ONLY_TYPES = new Set<string>([
   NODE_TYPES.DATA_SOURCE, NODE_TYPES.API_INPUT, NODE_TYPES.CONSTANT,
 ])
 
+/** Nodes whose newly-added columns originate from generated scenario/config data. */
+export const GENERATED_COLUMN_ORIGIN_TYPES = new Set<string>([
+  NODE_TYPES.SCENARIO_EXPANDER,
+])
+
 /** Nodes that only consume data — no output handle. */
 export const SINK_ONLY_TYPES = new Set<string>([
   NODE_TYPES.OUTPUT, NODE_TYPES.DATA_SINK, NODE_TYPES.MODELLING, NODE_TYPES.OPTIMISER,

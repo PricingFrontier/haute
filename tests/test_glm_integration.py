@@ -268,6 +268,42 @@ class TestCoefficientsTableFallback:
     """When model.coef_table() raises, the fallback path must build the
     table from individual arrays (feature_names, coefficients, bse, etc.)."""
 
+    def test_coefficients_table_primary_normalises_plain_z_column(self):
+        """RustyStats coef_table() may emit a plain `z` column; API rows use z_value."""
+        from haute.modelling._rustystats import GLMAlgorithm
+
+        algo = GLMAlgorithm()
+
+        class CoefTable:
+            def to_dicts(self):
+                return [
+                    {
+                        "Feature": "Intercept",
+                        "Estimate": 0.25,
+                        "Std. Error": 0.1,
+                        "z": 2.5,
+                        "Pr(>|z|)": 0.012,
+                        "Signif": "*",
+                    }
+                ]
+
+        model = MagicMock()
+        model.coef_table.return_value = CoefTable()
+
+        result = algo.coefficients_table(model)
+
+        assert result == [
+            {
+                "feature": "Intercept",
+                "coefficient": 0.25,
+                "std_error": 0.1,
+                "z_value": 2.5,
+                "p_value": 0.012,
+                "significance": "*",
+            }
+        ]
+        assert "z" not in result[0]
+
     def test_coefficients_table_fallback_with_intercept(self):
         """Fallback builds correct table when coef_table() raises and there's an intercept."""
         from haute.modelling._rustystats import GLMAlgorithm
