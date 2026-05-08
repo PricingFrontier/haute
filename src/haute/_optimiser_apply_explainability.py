@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
@@ -407,8 +407,7 @@ def _required_config_column(config: dict[str, Any], key: str, *, default: str) -
     value = config[key]
     if not isinstance(value, str) or not value:
         raise OptimiserApplyTraceError(
-            f"optimiserApply config field {key!r} must be a non-empty string; "
-            f"got {value!r}"
+            f"optimiserApply config field {key!r} must be a non-empty string; got {value!r}"
         )
     return value
 
@@ -477,7 +476,7 @@ def _polars_equality_predicate(column: str, value: Any) -> pl.Expr:
         return pl.col(column).is_null()
     if isinstance(value, float) and math.isnan(value):
         return pl.col(column).is_nan()
-    return pl.col(column) == value
+    return cast(pl.Expr, pl.col(column) == value)
 
 
 def _python_match_ratebook_input_row(

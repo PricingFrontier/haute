@@ -524,9 +524,7 @@ class TestTrainStatusEndpoint:
         finally:
             store.jobs.pop(job_id, None)
 
-    def test_finite_completed_result_is_validated_only_once(
-        self, client, monkeypatch
-    ):
+    def test_finite_completed_result_is_validated_only_once(self, client, monkeypatch):
         """Status polls must not re-walk an already-validated result on every read.
 
         ``_assert_json_finite`` is a deep recursive walk; running it on every

@@ -619,9 +619,7 @@ def test_ratebook_match_entry_uses_last_duplicate_to_match_runtime(tmp_path):
     assert london["factor_value"] == pytest.approx(1.20)
 
 
-def test_optimiser_apply_emits_friendly_error_when_price_contour_missing(
-    tmp_path, monkeypatch
-):
+def test_optimiser_apply_emits_friendly_error_when_price_contour_missing(tmp_path, monkeypatch):
     """A missing price_contour install must produce a deploy-time-friendly error
     rather than a bare ``ImportError`` string.
 
@@ -643,9 +641,7 @@ def test_optimiser_apply_emits_friendly_error_when_price_contour_missing(
             # it explicitly mirrors that production behaviour so the test
             # exercises the real wrapping path (otherwise ``exc.name`` is
             # ``None`` and the rendered message reads "uv add None").
-            raise ImportError(
-                "No module named 'price_contour'", name="price_contour"
-            )
+            raise ImportError("No module named 'price_contour'", name="price_contour")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
@@ -743,9 +739,7 @@ def test_ratebook_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
     assert "optimised_value_column" in detail["error"]
 
 
-def test_optimiser_apply_import_error_without_name_still_renders_safely(
-    tmp_path, monkeypatch
-):
+def test_optimiser_apply_import_error_without_name_still_renders_safely(tmp_path, monkeypatch):
     """Defensive: an ``ImportError`` without ``name`` (rare; e.g. a chained or
     re-raised one) must not produce a literal ``None`` in the user message.
     """
