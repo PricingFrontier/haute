@@ -496,10 +496,10 @@ class TestTrainStatusEndpoint:
 
     def test_non_finite_completed_result_becomes_job_error(self, client):
         """A bad completed payload must not make status polling 500 forever."""
-        from haute.routes._job_store import get_job_store
+        from haute.routes.modelling import _store
         from haute.schemas import TrainResponse
 
-        store = get_job_store("training")
+        store = _store
         bad_result = TrainResponse.model_construct(
             status="completed",
             job_id="bad_result",

@@ -23,8 +23,7 @@ def explain_optimiser_apply_from_config(
     input_row: dict[str, Any],
     output_row: dict[str, Any],
     *,
-    input_frames: list[pl.DataFrame | pl.LazyFrame]
-    | tuple[pl.DataFrame | pl.LazyFrame, ...],
+    input_frames: list[pl.DataFrame | pl.LazyFrame] | tuple[pl.DataFrame | pl.LazyFrame, ...],
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -70,8 +69,7 @@ def _load_artifact_from_config(config: dict[str, Any]) -> dict[str, Any]:
 def _select_frame_from_inputs(
     config: dict[str, Any],
     artifact: dict[str, Any],
-    input_frames: list[pl.DataFrame | pl.LazyFrame]
-    | tuple[pl.DataFrame | pl.LazyFrame, ...],
+    input_frames: list[pl.DataFrame | pl.LazyFrame] | tuple[pl.DataFrame | pl.LazyFrame, ...],
     source_names: list[str],
     source_ids: list[str],
 ) -> pl.LazyFrame:
@@ -264,8 +262,13 @@ def _explain_ratebook(
             )
         input_value = matched_input.get(factor_name)
         matched_entry = _match_ratebook_entry(valid_entries, input_value)
-        default_used = matched_entry is None
-        factor_value = 1.0 if default_used else matched_entry.get("optimal_scenario_value")
+        factor_value: Any
+        if matched_entry is None:
+            default_used = True
+            factor_value = 1.0
+        else:
+            default_used = False
+            factor_value = matched_entry.get("optimal_scenario_value")
         numeric_factor = _numeric_or_error(factor_value, factor_name)
         factor_col = f"{factor_name}_optimised_factor"
         if factor_col in output_row and not _values_match(output_row.get(factor_col), factor_value):

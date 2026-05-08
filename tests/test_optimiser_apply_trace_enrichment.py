@@ -254,9 +254,7 @@ def test_online_execute_trace_handles_unconstrained_artifact(tmp_path):
     assert detail["status"] == "ok"
     assert detail["constraints"] == {}
     assert detail["lambdas"] == {}
-    assert detail["selected"]["decision_score"] == pytest.approx(
-        detail["selected"]["objective"]
-    )
+    assert detail["selected"]["decision_score"] == pytest.approx(detail["selected"]["objective"])
     assert detail["baseline"]["scenario_index"] == 1
 
 

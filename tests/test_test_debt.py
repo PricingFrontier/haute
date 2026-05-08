@@ -115,6 +115,14 @@ _EXPECTED_DEBT_IDS = {
     "87a3c0f6afc4c08e",
     "87cf9927840facbd",
     "3924f620a5f73980",
+    "36389904372edffb",
+    "40f0104677c0d566",
+    "454198ff8535ff31",
+    "4ba277207894ee6d",
+    "7873443783a75106",
+    "df789ca110c56d8d",
+    "e800d20c2fdb0d00",
+    "f6ab12590998eb2c",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

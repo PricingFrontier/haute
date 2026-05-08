@@ -10,5 +10,12 @@
   "run_name": "conversion",
   "artifact_path": "conversion.rsglm",
   "selected_columns": [],
-  "contract": "opaque"
+  "contract": {
+    "inputs": [
+      "difference_to_market"
+    ],
+    "outputs": [
+      "conversion_prediction"
+    ]
+  }
 }

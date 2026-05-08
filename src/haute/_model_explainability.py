@@ -43,8 +43,7 @@ def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any
     missing = [feature for feature in features if feature not in input_row]
     if missing:
         raise ModelExplanationError(
-            "Missing feature(s) required for CatBoost SHAP explanation: "
-            + ", ".join(missing)
+            "Missing feature(s) required for CatBoost SHAP explanation: " + ", ".join(missing)
         )
 
     cat_feature_names = frozenset(scoring_model.cat_feature_names or ())
@@ -74,8 +73,7 @@ def _normalise_shap_values(shap_values: Any, feature_count: int) -> np.ndarray:
         values = values.reshape(1, -1)
     if values.ndim != 2:
         raise ModelExplanationError(
-            "CatBoost SHAP explanation returned an unsupported shape: "
-            f"{tuple(values.shape)}"
+            f"CatBoost SHAP explanation returned an unsupported shape: {tuple(values.shape)}"
         )
     expected_shape = (1, feature_count + 1)
     if tuple(values.shape) != expected_shape:
@@ -83,7 +81,8 @@ def _normalise_shap_values(shap_values: Any, feature_count: int) -> np.ndarray:
             "CatBoost SHAP explanation returned an unexpected shape: "
             f"{tuple(values.shape)}; expected {expected_shape}"
         )
-    return values[0]
+    shap_row: np.ndarray = values[0]
+    return shap_row
 
 
 def _assert_finite_shap_row(shap_row: np.ndarray) -> None:
@@ -222,8 +221,7 @@ def _rustystats_frame_for_row(scoring_model: Any, input_row: dict[str, Any]) -> 
     missing = [feature for feature in features if feature not in input_row]
     if missing:
         raise ModelExplanationError(
-            "Missing feature(s) required for RustyStats GLM explanation: "
-            + ", ".join(missing)
+            "Missing feature(s) required for RustyStats GLM explanation: " + ", ".join(missing)
         )
     return pl.DataFrame({feature: [input_row[feature]] for feature in features})
 
@@ -240,8 +238,7 @@ def _single_glm_contribution_record(records: Any) -> dict[str, Any]:
         )
     if len(rows) != 1 or not isinstance(rows[0], dict):
         raise ModelExplanationError(
-            "RustyStats GLM explanation expected exactly one contribution record; "
-            f"got {len(rows)}."
+            f"RustyStats GLM explanation expected exactly one contribution record; got {len(rows)}."
         )
     return rows[0]
 
@@ -264,8 +261,7 @@ def _assert_finite_glm_record(record: dict[str, Any]) -> None:
     for index, contribution in enumerate(contributions):
         if not isinstance(contribution, dict):
             raise ModelExplanationError(
-                "RustyStats GLM explanation returned a non-object contribution "
-                f"at index {index}."
+                f"RustyStats GLM explanation returned a non-object contribution at index {index}."
             )
         _as_float(
             contribution.get("contribution"),

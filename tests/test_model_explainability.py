@@ -189,9 +189,7 @@ class _FakeRustyStatsGLM:
     ) -> None:
         self.contribution_record = contribution_record
         self.prediction = (
-            float(contribution_record["prediction_value"])
-            if prediction is None
-            else prediction
+            float(contribution_record["prediction_value"]) if prediction is None else prediction
         )
         self.received_frame: pl.DataFrame | None = None
 
