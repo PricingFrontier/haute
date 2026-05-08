@@ -800,6 +800,7 @@ describe("TracePanel", () => {
 
     expect(screen.getByText("Optimiser Apply")).toBeInTheDocument()
     expect(screen.getByLabelText("Optimiser candidate curve")).toBeInTheDocument()
+    expect(screen.getByText("3 candidates")).toBeInTheDocument()
     expect(screen.getByText("Selected scenario")).toBeInTheDocument()
     expect(screen.getByText(/retention_offer.*0.15/)).toBeInTheDocument()
     expect(screen.getByText(/quote_id.*Q42/)).toBeInTheDocument()

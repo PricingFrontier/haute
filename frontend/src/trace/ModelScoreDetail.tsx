@@ -47,7 +47,8 @@ export function ModelScoreDetailBlock({ detail }: {
       }
     })
   })()
-  const predictionFromLadder = explanation?.prediction_from_shap ?? prediction.value
+  const additivePrediction = explanation?.prediction_from_contributions ?? explanation?.prediction_from_shap
+  const predictionFromLadder = additivePrediction ?? prediction.value
   const omittedContributionCount = explanation?.truncated ? explanation.omitted_count ?? 0 : 0
   return (
     <TraceDetailPanel
@@ -87,9 +88,9 @@ export function ModelScoreDetailBlock({ detail }: {
       {explanation?.status !== "error" && explanation?.base_value !== undefined && !showContributionLadder && (
         <TraceDetailSection title="Contribution Summary">
           <TraceDetailChip>Base value: {formatValue(explanation.base_value)}</TraceDetailChip>
-          {explanation.prediction_from_shap !== undefined && (
+          {additivePrediction !== undefined && (
             <div style={labelStyle}>
-              base + contributions = {formatValue(explanation.prediction_from_shap)}
+              base + contributions = {formatValue(additivePrediction)}
               {outputSpace ? ` (${outputSpace})` : ""}
             </div>
           )}

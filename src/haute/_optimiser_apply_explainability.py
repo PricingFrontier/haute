@@ -151,11 +151,11 @@ def _explain_online(
     objective_col = _required_artifact_column(artifact, "objective", default="expected_income")
     constraints = artifact.get("constraints") or {}
     lambdas = artifact.get("lambdas") or {}
-    output_col = config.get("optimised_value_column") or "optimal_scenario_value"
-    if not isinstance(output_col, str) or not output_col:
-        raise OptimiserApplyTraceError(
-            "optimiserApply config field 'optimised_value_column' must be a non-empty string"
-        )
+    output_col = _required_config_column(
+        config,
+        "optimised_value_column",
+        default="optimal_scenario_value",
+    )
 
     df = _prepare_online_apply_frame(parent_frame, artifact)
     applier = ApplyOptimiser(
@@ -289,25 +289,11 @@ def _explain_ratebook(
 ) -> dict[str, Any]:
     matched_input = _match_ratebook_input_row(parent_frame, output_row)
     factor_tables = artifact.get("factor_tables", {}) or {}
-    # Mirror the online-side tightening: an explicit empty
-    # ``optimised_value_column`` is misconfiguration, not a request to use
-    # the default.  The online branch validates this explicitly; do the same
-    # here so the two branches behave consistently.
-    if "optimised_value_column" in config:
-        raw_output_col = config["optimised_value_column"]
-        if raw_output_col == "" or raw_output_col is None:
-            raise OptimiserApplyTraceError(
-                "optimiserApply config field 'optimised_value_column' must be a "
-                f"non-empty string; got {raw_output_col!r}"
-            )
-        if not isinstance(raw_output_col, str):
-            raise OptimiserApplyTraceError(
-                "optimiserApply config field 'optimised_value_column' must be a "
-                f"string; got {type(raw_output_col).__name__}"
-            )
-        output_col = raw_output_col
-    else:
-        output_col = "optimised_factor"
+    output_col = _required_config_column(
+        config,
+        "optimised_value_column",
+        default="optimised_factor",
+    )
     running_product = 1.0
     factor_ladder: list[dict[str, Any]] = []
 
@@ -410,6 +396,19 @@ def _required_artifact_column(
     if not isinstance(value, str) or not value:
         raise OptimiserApplyTraceError(
             f"optimiserApply artifact field {key!r} must be a non-empty string; got {value!r}"
+        )
+    return value
+
+
+def _required_config_column(config: dict[str, Any], key: str, *, default: str) -> str:
+    """Return a configured column name, defaulting only when the key is absent."""
+    if key not in config:
+        return default
+    value = config[key]
+    if not isinstance(value, str) or not value:
+        raise OptimiserApplyTraceError(
+            f"optimiserApply config field {key!r} must be a non-empty string; "
+            f"got {value!r}"
         )
     return value
 

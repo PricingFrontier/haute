@@ -711,6 +711,77 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
   })
 
+  it("uses RustyStats contribution totals rather than response predictions in ladders", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "conversion_score",
+          column: "conversion_prediction",
+          output_value: 0.57,
+          steps: [
+            makeStep({
+              node_id: "conversion_score",
+              node_name: "Conversion GLM",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["conversion_prediction"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["difference_to_market"],
+              },
+              input_values: { difference_to_market: 0.31 },
+              output_values: { difference_to_market: 0.31, conversion_prediction: 0.57 },
+              expression: {
+                expression_text: "",
+                expression_type: "opaque",
+                referenced_columns: ["difference_to_market"],
+              },
+              calculation: {
+                substituted_text: "computed",
+                result_value: 0.57,
+                input_values: { difference_to_market: 0.31 },
+              },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 0.57,
+                prediction_column: "conversion_prediction",
+                feature_columns: ["difference_to_market"],
+                feature_values: { difference_to_market: 0.31 },
+                model_identity: { source_type: "run", run_id: "glm123", task: "classification" },
+                explanation: {
+                  method: "rustystats_glm_contributions",
+                  status: "ok",
+                  output_space: "linear_predictor",
+                  prediction_space: "response",
+                  base_value: 0.1,
+                  sum_contributions: 0.2,
+                  prediction_from_contributions: 0.3,
+                  prediction_value: 0.57,
+                  contributions: [
+                    {
+                      feature: "difference_to_market",
+                      feature_value: 0.31,
+                      contribution: 0.2,
+                      rank: 1,
+                    },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(3)
+    expect(rows[2]).toHaveTextContent("Prediction")
+    expect(rows[2]).toHaveTextContent("0.3")
+    expect(rows[2]).not.toHaveTextContent("0.57")
+  })
+
   it("renders CatBoost SHAP contributions as a running score ladder", () => {
     render(
       <TracePanel

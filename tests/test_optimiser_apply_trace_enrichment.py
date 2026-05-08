@@ -376,6 +376,30 @@ def test_online_enrichment_surfaces_missing_output_column(tmp_path):
     assert "selected_value" in detail["error"]
 
 
+def test_online_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
+    """An explicit empty online output column is misconfiguration, not defaulting."""
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "optimised_value_column": "",
+        },
+        input_row={},
+        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
+        input_frames=[_scored_online_df()],
+        source_names=["scored"],
+        source_ids=["scored"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "optimised_value_column" in detail["error"]
+
+
 def test_online_enrichment_rejects_explicit_empty_quote_id_artifact(tmp_path):
     """An artifact that explicitly sets quote_id='' must fail rather than silently fall back.
 

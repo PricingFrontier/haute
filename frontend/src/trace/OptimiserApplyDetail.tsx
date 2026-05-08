@@ -35,7 +35,7 @@ export function OptimiserOnlineDetail({ detail }: {
 }) {
   const candidates = Array.isArray(detail.candidates) ? detail.candidates : []
   const selected = optimiserSelectedCandidate(candidates, detail.selected)
-  const displayCandidates = optimiserDisplayCandidates(candidates, selected)
+  const displayCandidates = optimiserDisplayCandidates(candidates)
   const scoreComparison = optimiserScoreComparison(candidates, selected)
   const { points, objectivePath, scorePath } = optimiserChartPath(displayCandidates)
   const selectedLambdaEntries = finiteRecordEntries(selected?.lambda_terms)

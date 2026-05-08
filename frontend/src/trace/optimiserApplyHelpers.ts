@@ -22,11 +22,8 @@ export function finiteRecordEntries(values: Record<string, unknown> | undefined)
 
 export function optimiserDisplayCandidates(
   candidates: OptimiserApplyOnlineCandidateDetail[],
-  selected: OptimiserApplyOnlineCandidateDetail | undefined,
 ): OptimiserApplyOnlineCandidateDetail[] {
-  return candidates.filter((candidate) =>
-    !candidate.is_baseline || selected?.scenario_index === candidate.scenario_index
-  )
+  return candidates
 }
 
 export function optimiserConstraintNames(
