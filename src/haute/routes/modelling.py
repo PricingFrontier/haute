@@ -76,7 +76,11 @@ async def train_status(job_id: str) -> TrainStatusResponse:
             job = _store.require_job(job_id)
 
     result = job.get("result")
-    if result is not None:
+    # ``_result_finite_validated`` is an internal cache flag — it MUST stay
+    # private to this module.  Never include it in ``TrainStatusResponse`` or
+    # log it in a structured payload that gets shipped to the user; the
+    # whitelist in the response constructor below already enforces that.
+    if result is not None and not job.get("_result_finite_validated"):
         try:
             _assert_json_finite(result)
         except ValueError as exc:
@@ -89,6 +93,22 @@ async def train_status(job_id: str) -> TrainStatusResponse:
                     "message": message,
                     "result": None,
                 },
+                expected_status="completed",
+            )
+            job = _store.require_job(job_id)
+        else:
+            # Completed-job results are immutable in this store, so we only
+            # need to walk them once.  Cache the validation outcome so
+            # subsequent polls skip the recursive ``_assert_json_finite``
+            # walk — otherwise every status poll re-walks the entire result.
+            #
+            # ``atomic_update`` may return ``None`` if the status flipped (e.g.
+            # to ``error`` in a concurrent request), in which case the cache
+            # write is skipped and the next poll just re-validates against
+            # the new state — exactly what we want.
+            _store.atomic_update(
+                job_id,
+                {"_result_finite_validated": True},
                 expected_status="completed",
             )
             job = _store.require_job(job_id)

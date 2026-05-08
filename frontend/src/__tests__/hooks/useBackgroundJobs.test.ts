@@ -197,6 +197,36 @@ describe("useBackgroundJobs", () => {
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
     })
 
+    it("treats a 410 Gone optimiser job as terminal and stops polling", async () => {
+      // Backend retention may emit 410 Gone for jobs that were known but have
+      // been purged.  The polling loop must treat that as terminal too —
+      // otherwise it'd keep retrying for the 24-hour max-lifetime window.
+      const mockGetStatus = vi.mocked(getOptimiserStatus)
+      mockGetStatus.mockRejectedValue({
+        name: "ApiError",
+        status: 410,
+        detail: "Job 'sj-gone' has been purged",
+        message: "HTTP 410",
+      })
+
+      act(() => {
+        useNodeResultsStore.getState().startSolveJob("n1", "sj-gone", "Solve Node", {}, "sh")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+      expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
+        "Job 'sj-gone' has been purged",
+      )
+
+      await advance(20_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+    })
+
     it("throttles repeated running progress before writing solve job state", async () => {
       const mockGetStatus = vi.mocked(getOptimiserStatus)
       mockGetStatus.mockReset()

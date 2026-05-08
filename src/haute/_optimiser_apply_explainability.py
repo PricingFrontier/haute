@@ -31,7 +31,19 @@ def explain_optimiser_apply_from_config(
     artifact: dict[str, Any] | None = None
     try:
         artifact = _load_artifact_from_config(config)
-        mode = str(artifact.get("mode", "online") or "online")
+        # Treat absent ``mode`` as the canonical online default, but reject
+        # an explicit empty value — see _required_artifact_column for the
+        # rationale on distinguishing absent from blank.
+        if "mode" in artifact:
+            raw_mode = artifact["mode"]
+            if not isinstance(raw_mode, str) or not raw_mode:
+                raise OptimiserApplyTraceError(
+                    f"optimiserApply artifact field 'mode' must be a non-empty string; "
+                    f"got {raw_mode!r}"
+                )
+            mode = raw_mode
+        else:
+            mode = "online"
         parent_frame = _select_frame_from_inputs(
             config,
             artifact,
@@ -42,6 +54,28 @@ def explain_optimiser_apply_from_config(
         if mode == "ratebook":
             return _explain_ratebook(config, artifact, parent_frame, input_row, output_row)
         return _explain_online(config, artifact, parent_frame, output_row)
+    except ImportError as exc:
+        # The price_contour package is a hard runtime dep for online apply
+        # tracing.  When the env is misconfigured we want the user to see
+        # which library is missing, not a raw "No module named ..." string,
+        # so deploy operators can fix the environment without grepping the
+        # traceback.
+        #
+        # CPython sets ``exc.name`` automatically for ``import x``
+        # / ``from x import y`` failures, but a re-raised or chained
+        # ImportError can have ``name=None``.  Fall back to a generic phrasing
+        # in that case rather than exposing the literal ``None`` to the user.
+        if exc.name:
+            wrapped = OptimiserApplyTraceError(
+                f"optimiserApply trace requires the {exc.name!r} library to be installed; "
+                f"install it (e.g. `uv add {exc.name}`) and retry. Original error: {exc}"
+            )
+        else:
+            wrapped = OptimiserApplyTraceError(
+                f"optimiserApply trace failed to import a required library; "
+                f"check the deploy environment. Original error: {exc}"
+            )
+        return _error_detail(config, artifact, wrapped)
     except Exception as exc:
         return _error_detail(config, artifact, exc)
 
@@ -104,13 +138,24 @@ def _explain_online(
 ) -> dict[str, Any]:
     from price_contour import ApplyOptimiser
 
-    qid_col = str(artifact.get("quote_id", "quote_id") or "quote_id")
-    step_col = str(artifact.get("scenario_index", "scenario_index") or "scenario_index")
-    value_col = str(artifact.get("scenario_value", "scenario_value") or "scenario_value")
-    objective_col = str(artifact.get("objective", "expected_income") or "expected_income")
+    # Use plain ``.get(name, default)`` rather than ``.get(name, default) or default``:
+    # the previous pattern silently rewrote a deliberate empty string to the
+    # default, which hid configuration bugs.  An explicit empty value is a
+    # misconfiguration we want to surface — runtime apply will fail loudly on
+    # the resulting column lookup, but we add an early validation here so the
+    # error names the offending artifact key rather than producing a bare
+    # ``polars.ColumnNotFoundError``.
+    qid_col = _required_artifact_column(artifact, "quote_id", default="quote_id")
+    step_col = _required_artifact_column(artifact, "scenario_index", default="scenario_index")
+    value_col = _required_artifact_column(artifact, "scenario_value", default="scenario_value")
+    objective_col = _required_artifact_column(artifact, "objective", default="expected_income")
     constraints = artifact.get("constraints") or {}
     lambdas = artifact.get("lambdas") or {}
-    output_col = str(config.get("optimised_value_column", "") or "optimal_scenario_value")
+    output_col = config.get("optimised_value_column") or "optimal_scenario_value"
+    if not isinstance(output_col, str) or not output_col:
+        raise OptimiserApplyTraceError(
+            "optimiserApply config field 'optimised_value_column' must be a non-empty string"
+        )
 
     df = _prepare_online_apply_frame(parent_frame, artifact)
     applier = ApplyOptimiser(
@@ -244,7 +289,25 @@ def _explain_ratebook(
 ) -> dict[str, Any]:
     matched_input = _match_ratebook_input_row(parent_frame, output_row)
     factor_tables = artifact.get("factor_tables", {}) or {}
-    output_col = str(config.get("optimised_value_column", "") or "optimised_factor")
+    # Mirror the online-side tightening: an explicit empty
+    # ``optimised_value_column`` is misconfiguration, not a request to use
+    # the default.  The online branch validates this explicitly; do the same
+    # here so the two branches behave consistently.
+    if "optimised_value_column" in config:
+        raw_output_col = config["optimised_value_column"]
+        if raw_output_col == "" or raw_output_col is None:
+            raise OptimiserApplyTraceError(
+                "optimiserApply config field 'optimised_value_column' must be a "
+                f"non-empty string; got {raw_output_col!r}"
+            )
+        if not isinstance(raw_output_col, str):
+            raise OptimiserApplyTraceError(
+                "optimiserApply config field 'optimised_value_column' must be a "
+                f"string; got {type(raw_output_col).__name__}"
+            )
+        output_col = raw_output_col
+    else:
+        output_col = "optimised_factor"
     running_product = 1.0
     factor_ladder: list[dict[str, Any]] = []
 
@@ -329,18 +392,104 @@ def _explain_ratebook(
     return detail
 
 
+def _required_artifact_column(
+    artifact: dict[str, Any],
+    key: str,
+    *,
+    default: str,
+) -> str:
+    """Return the artifact's column name for *key*, defaulting only when absent.
+
+    Distinguishes "key missing" (legitimate, fall back to default) from "key
+    present but blank" (misconfiguration, raise) — the earlier ``str(... or default)``
+    pattern collapsed the two cases and hid bugs.
+    """
+    if key not in artifact:
+        return default
+    value = artifact[key]
+    if not isinstance(value, str) or not value:
+        raise OptimiserApplyTraceError(
+            f"optimiserApply artifact field {key!r} must be a non-empty string; got {value!r}"
+        )
+    return value
+
+
 def _match_ratebook_input_row(
     parent_frame: pl.LazyFrame,
     output_row: dict[str, Any],
 ) -> dict[str, Any]:
-    input_df = parent_frame.collect(engine="streaming")
-    if input_df.is_empty():
-        raise OptimiserApplyTraceError("selected ratebook input frame is empty")
-    shared = [column for column in input_df.columns if column in output_row]
+    """Locate the ratebook input row that produced the clicked output row.
+
+    Pushes the equality predicate into Polars (``.filter(...)``) and only
+    materialises the matching row, so a ratebook trace on a large input frame
+    no longer collects the whole DataFrame and walks it in Python.
+    """
+    schema_names = parent_frame.collect_schema().names()
+    shared = [column for column in schema_names if column in output_row]
     if not shared:
         raise OptimiserApplyTraceError(
             "selected ratebook input frame shares no columns with clicked output row"
         )
+
+    predicate = _build_polars_equality_predicate(shared, output_row)
+
+    # The Polars predicate is the fast path — it only materialises the
+    # matching row.  Two ways the fast path can miss:
+    #  1. The predicate evaluates to "no rows" (returned ``matched`` is empty).
+    #  2. Polars rejects the predicate at evaluation time (e.g. ``ComputeError``
+    #     "cannot compare string with numeric type" when output_row carries a
+    #     stringly-typed value for an Int64 column).
+    # Both fall through to the Python scan, which tolerates cross-dtype values
+    # via ``_trace_values_match``'s string-cast comparator.  Catching
+    # ``PolarsError`` (the base of ColumnNotFound/Schema/Compute/InvalidOperation)
+    # rather than bare ``Exception`` keeps unrelated bugs surfacing as errors.
+    try:
+        matched = parent_frame.filter(predicate).head(1).collect(engine="streaming")
+    except pl.exceptions.PolarsError:
+        return _python_match_ratebook_input_row(parent_frame, output_row, shared)
+    if matched.is_empty():
+        return _python_match_ratebook_input_row(parent_frame, output_row, shared)
+    return _jsonify_row(dict(matched.row(0, named=True)))
+
+
+def _build_polars_equality_predicate(
+    shared: list[str],
+    output_row: dict[str, Any],
+) -> pl.Expr:
+    """And-combine per-column equality predicates for the shared columns.
+
+    ``shared`` is guaranteed non-empty by the caller, so the result is always
+    a real predicate (no ``None`` to handle downstream).
+    """
+    predicate = _polars_equality_predicate(shared[0], output_row.get(shared[0]))
+    for column in shared[1:]:
+        predicate = predicate & _polars_equality_predicate(column, output_row.get(column))
+    return predicate
+
+
+def _polars_equality_predicate(column: str, value: Any) -> pl.Expr:
+    """Build the strictest Polars equality predicate we can for *value*.
+
+    Nulls and NaN need explicit handling because Polars ``==`` propagates them.
+    Floats use ``==`` for the fast path; NaN/tolerance comparisons fall through
+    to :func:`_python_match_ratebook_input_row`.
+    """
+    if value is None:
+        return pl.col(column).is_null()
+    if isinstance(value, float) and math.isnan(value):
+        return pl.col(column).is_nan()
+    return pl.col(column) == value
+
+
+def _python_match_ratebook_input_row(
+    parent_frame: pl.LazyFrame,
+    output_row: dict[str, Any],
+    shared: list[str],
+) -> dict[str, Any]:
+    """Fallback: scan the input frame in Python for tolerance-aware matches."""
+    input_df = parent_frame.collect(engine="streaming")
+    if input_df.is_empty():
+        raise OptimiserApplyTraceError("selected ratebook input frame is empty")
     for row in input_df.iter_rows(named=True):
         if all(_values_match(row.get(column), output_row.get(column)) for column in shared):
             return _jsonify_row(dict(row))
@@ -350,6 +499,10 @@ def _match_ratebook_input_row(
 
 
 def _match_ratebook_entry(entries: list[dict[str, Any]], input_value: Any) -> dict[str, Any] | None:
+    # ``_apply_rating_table`` deduplicates with ``unique(subset=factors, keep="last")``
+    # before joining, so a duplicate ``__factor_group__`` resolves to the LAST
+    # entry at runtime.  Walking ``entries`` in reverse mirrors that semantics
+    # — see ``test_ratebook_match_entry_uses_last_duplicate_to_match_runtime``.
     for entry in reversed(entries):
         if str(entry.get("__factor_group__")) == str(input_value):
             return entry
@@ -371,6 +524,11 @@ def _numeric_or_error(value: Any, factor_name: str) -> float:
 
 
 def _values_match(left: Any, right: Any) -> bool:
+    # ``_trace_values_match`` does an exact (string-cast) comparison — it
+    # catches stringly-typed columns, but rejects values that should compare
+    # equal under floating-point tolerance.  Ratebook factor reconciliation
+    # routes through here, so we add a tolerant numeric branch for the cases
+    # the strict comparator declines.
     if _trace_values_match(left, right):
         return True
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):

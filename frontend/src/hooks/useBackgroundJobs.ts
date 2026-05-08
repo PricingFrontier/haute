@@ -19,6 +19,13 @@ import useJobPolling from "./useJobPolling"
 
 const VISIBLE_PROGRESS_INTERVAL_MS = 1_000
 
+// HTTP statuses that mean "this job no longer exists, stop polling":
+// - 404 Not Found: job was never known, or the route signals it as missing.
+// - 410 Gone: job was known but has been purged (typical retention sweep).
+// Both are terminal; retrying would just burn the 24-hour max-lifetime window
+// for a resource that will never come back.
+const TERMINAL_MISSING_JOB_STATUSES = new Set([404, 410])
+
 function getMissingJobPollErrorMessage(error: unknown): string | undefined {
   if (!error || typeof error !== "object") return undefined
   const { status, detail, message } = error as {
@@ -26,7 +33,7 @@ function getMissingJobPollErrorMessage(error: unknown): string | undefined {
     detail?: unknown
     message?: unknown
   }
-  if (status !== 404) return undefined
+  if (typeof status !== "number" || !TERMINAL_MISSING_JOB_STATUSES.has(status)) return undefined
   if (typeof detail === "string" && detail.trim()) return detail
   if (typeof message === "string" && message.trim()) return message
   return "Job not found"

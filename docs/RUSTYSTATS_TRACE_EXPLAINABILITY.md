@@ -67,10 +67,21 @@ model.predict_contributions(
     *,
     group_terms: bool = True,
     include_design_columns: bool = False,
+    return_format: Literal["records", "frame"] = "records",
+    validate: bool = True,
 ) -> list[dict]
 ```
 
 The returned list should contain one explanation per input row.
+
+`return_format="records"` selects the per-row dict shape Haute consumes; the
+alternative is `"frame"` for a flat Polars frame.
+
+`validate=True` instructs RustyStats to assert the additivity invariants
+(`base_value + sum(contributions) == linear predictor` and
+`inverse_link(linear predictor) == prediction`) inside the library before
+returning, so a malformed contribution payload raises in RustyStats rather
+than producing a silently wrong explanation in Haute.
 
 ### Returned Row Shape
 

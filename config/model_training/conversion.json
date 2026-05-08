@@ -1,0 +1,25 @@
+{
+  "algorithm": "glm",
+  "target": "sale_flag",
+  "family": "binomial",
+  "link": "logit",
+  "metrics": [
+    "auc",
+    "logloss"
+  ],
+  "terms": {
+    "difference_to_market": {
+      "type": "ns"
+    }
+  },
+  "split": {
+    "strategy": "random",
+    "validation_size": 0,
+    "holdout_size": 0,
+    "seed": 42
+  },
+  "contract": {
+    "inputs": [],
+    "outputs": []
+  }
+}

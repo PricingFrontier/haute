@@ -350,3 +350,412 @@ def test_online_enrichment_surfaces_reconciliation_error(tmp_path):
     assert detail["status"] == "error"
     assert detail["error_type"] == "OptimiserApplyTraceError"
     assert "missing" in detail["error"]
+
+
+def test_online_enrichment_surfaces_missing_output_column(tmp_path):
+    """Output row missing the configured optimised_value_column must fail loudly."""
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "optimised_value_column": "selected_value",
+        },
+        input_row={},
+        output_row={"quote_id": "q1"},
+        input_frames=[_scored_online_df()],
+        source_names=["scored"],
+        source_ids=["scored"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "selected_value" in detail["error"]
+
+
+def test_online_enrichment_rejects_explicit_empty_quote_id_artifact(tmp_path):
+    """An artifact that explicitly sets quote_id='' must fail rather than silently fall back.
+
+    The previous code used ``str(artifact.get('quote_id', 'quote_id') or 'quote_id')``
+    which silently rewrote a deliberate empty string to the default. That hides
+    config bugs — an explicit empty value is a misconfiguration we want to surface.
+    """
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact = _online_artifact()
+    artifact["quote_id"] = ""
+    artifact_path = _write_json(tmp_path / "online_empty_qid.json", artifact)
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+        },
+        input_row={},
+        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
+        input_frames=[_scored_online_df()],
+        source_names=["scored"],
+        source_ids=["scored"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+
+
+def test_ratebook_enrichment_surfaces_factor_reconciliation_mismatch(tmp_path):
+    """If the output row's per-factor column disagrees with the artifact factor,
+    the trace must fail loudly so the user sees the divergence."""
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "ratebook.json", _ratebook_artifact())
+    banded = pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "region": ["Manchester"],
+            "age_band": ["young"],
+            "base_price": [100.0],
+        }
+    )
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "ratebook_input": "banded",
+        },
+        input_row={},
+        output_row={
+            "quote_id": "q1",
+            "region": "Manchester",
+            "age_band": "young",
+            # age_band optimal is 1.10 in the artifact; output disagrees:
+            "age_band_optimised_factor": 9.99,
+            "optimised_factor": 0.98 * 1.10,
+        },
+        input_frames=[banded],
+        source_names=["banded"],
+        source_ids=["banded"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "age_band_optimised_factor" in detail["error"]
+
+
+def test_ratebook_enrichment_returns_message_when_no_factor_tables(tmp_path):
+    """A ratebook artifact with empty factor_tables must NOT raise — it should
+    return a structured detail with the runtime warning message preserved.
+
+    The runtime ``_apply_ratebook`` logs a warning and returns the input frame
+    unchanged; the trace explanation should mirror that "no ladder" outcome
+    rather than producing a misleading reconciliation error.
+    """
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    empty_artifact = _ratebook_artifact()
+    empty_artifact["factor_tables"] = {}
+    artifact_path = _write_json(tmp_path / "ratebook_empty.json", empty_artifact)
+
+    banded = pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "region": ["Manchester"],
+            "age_band": ["young"],
+            "base_price": [100.0],
+        }
+    )
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "ratebook_input": "banded",
+        },
+        input_row={},
+        # No optimised_factor in the output because no factors were applied.
+        output_row={"quote_id": "q1", "region": "Manchester", "age_band": "young"},
+        input_frames=[banded],
+        source_names=["banded"],
+        source_ids=["banded"],
+    )
+
+    assert detail["status"] == "ok"
+    assert detail["mode"] == "ratebook"
+    assert detail["factor_ladder"] == []
+    assert "factor tables" in detail["message"].lower()
+
+
+def test_ratebook_input_match_falls_back_to_python_on_polars_type_mismatch(
+    tmp_path,
+):
+    """When a shared column is typed differently from the output_row value,
+    the Polars filter raises but the Python scan can still match via the
+    tolerant ``_trace_values_match`` (which string-casts).  The trace must
+    fall through gracefully instead of bubbling the Polars exception.
+    """
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "ratebook.json", _ratebook_artifact())
+    # quote_id is Int64 in the frame, but a stringified value in the output
+    # row — Polars rejects ``pl.col("quote_id") == "1"`` on Int64 with a
+    # ComputeError/InvalidOperationError.  The Python scan tolerates it
+    # because ``_trace_values_match`` casts both sides to str.
+    banded = pl.DataFrame(
+        {
+            "quote_id": [1],
+            "region": ["Manchester"],
+            "age_band": ["young"],
+        },
+        schema={"quote_id": pl.Int64, "region": pl.Utf8, "age_band": pl.Utf8},
+    )
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "ratebook_input": "banded",
+        },
+        input_row={},
+        output_row={
+            # Stringly-typed quote_id forces the type mismatch.
+            "quote_id": "1",
+            "region": "Manchester",
+            "age_band": "young",
+            "region_optimised_factor": 0.98,
+            "age_band_optimised_factor": 1.10,
+            "optimised_factor": 0.98 * 1.10,
+        },
+        input_frames=[banded],
+        source_names=["banded"],
+        source_ids=["banded"],
+    )
+
+    # A blocker for the user would be a ``ComputeError`` here; a graceful
+    # outcome is either a successful trace via the Python fallback, or — if
+    # the type mismatch is genuinely irreconcilable — an
+    # ``OptimiserApplyTraceError`` with our domain message.
+    assert detail["mode"] == "ratebook"
+    assert detail["error_type"] != "ComputeError"
+    assert detail["error_type"] != "InvalidOperationError"
+    assert detail["error_type"] != "SchemaError"
+
+
+def test_ratebook_match_entry_uses_last_duplicate_to_match_runtime(tmp_path):
+    """``_apply_rating_table`` deduplicates with ``keep="last"``, so when the
+    artifact carries two entries for the same level, the trace explanation must
+    pick the same (last) entry — otherwise the reconciliation check disagrees
+    with the actual selected factor.
+    """
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact = _ratebook_artifact()
+    # London appears twice — the second (last) entry wins at runtime.
+    artifact["factor_tables"]["region"] = [
+        {"__factor_group__": "London", "optimal_scenario_value": 1.05},
+        {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
+        {"__factor_group__": "London", "optimal_scenario_value": 1.20},
+    ]
+    artifact["factor_tables"]["age_band"] = [
+        {"__factor_group__": "young", "optimal_scenario_value": 1.10},
+    ]
+    artifact_path = _write_json(tmp_path / "ratebook_dup.json", artifact)
+    banded = pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "region": ["London"],
+            "age_band": ["young"],
+        }
+    )
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "ratebook_input": "banded",
+        },
+        input_row={},
+        output_row={
+            "quote_id": "q1",
+            "region": "London",
+            "age_band": "young",
+            "region_optimised_factor": 1.20,
+            "age_band_optimised_factor": 1.10,
+            "optimised_factor": 1.20 * 1.10,
+        },
+        input_frames=[banded],
+        source_names=["banded"],
+        source_ids=["banded"],
+    )
+
+    assert detail["status"] == "ok"
+    london = detail["factor_ladder"][0]
+    assert london["factor_value"] == pytest.approx(1.20)
+
+
+def test_optimiser_apply_emits_friendly_error_when_price_contour_missing(
+    tmp_path, monkeypatch
+):
+    """A missing price_contour install must produce a deploy-time-friendly error
+    rather than a bare ``ImportError`` string.
+
+    Trace enrichment runs in two contexts: production (where price_contour is
+    always present) and devboxes/test environments (where it may not be). The
+    error message must clearly state the dependency is missing so a deploy
+    operator can fix the environment without parsing Python tracebacks.
+    """
+    import builtins
+
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "price_contour":
+            # CPython sets ``name`` on import-not-found automatically; passing
+            # it explicitly mirrors that production behaviour so the test
+            # exercises the real wrapping path (otherwise ``exc.name`` is
+            # ``None`` and the rendered message reads "uv add None").
+            raise ImportError(
+                "No module named 'price_contour'", name="price_contour"
+            )
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+        },
+        input_row={},
+        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
+        input_frames=[_scored_online_df()],
+        source_names=["scored"],
+        source_ids=["scored"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    # The user-facing message should name the missing library so a deploy
+    # operator can fix the environment without grepping the traceback.
+    assert "'price_contour'" in detail["error"]
+    # The hint must include the install command — ``exc.name`` flows into the
+    # rendered ``uv add ...`` so a regression in the wrapping (e.g. dropping
+    # ``exc.name`` for a generic placeholder) is caught.
+    assert "uv add price_contour" in detail["error"]
+
+
+def test_optimiser_apply_rejects_explicit_empty_mode(tmp_path):
+    """An artifact with ``mode=""`` must not silently run the online branch.
+
+    The previous ``str(... or "online")`` pattern collapsed "key absent" with
+    "key present but blank" — which silently ran online code on what could
+    have been a misconfigured ratebook artifact.  Explicit empty values are
+    misconfiguration; surface them.
+    """
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact = _online_artifact()
+    artifact["mode"] = ""
+    artifact_path = _write_json(tmp_path / "online_empty_mode.json", artifact)
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+        },
+        input_row={},
+        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
+        input_frames=[_scored_online_df()],
+        source_names=["scored"],
+        source_ids=["scored"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "mode" in detail["error"]
+
+
+def test_ratebook_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
+    """The same tightening as the online branch — explicit empty config wins
+    a loud error rather than a silent fallback to ``optimised_factor``.
+    """
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "ratebook.json", _ratebook_artifact())
+    banded = pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "region": ["Manchester"],
+            "age_band": ["young"],
+        }
+    )
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "ratebook_input": "banded",
+            "optimised_value_column": "",
+        },
+        input_row={},
+        output_row={
+            "quote_id": "q1",
+            "region": "Manchester",
+            "age_band": "young",
+            "optimised_factor": 0.98 * 1.10,
+        },
+        input_frames=[banded],
+        source_names=["banded"],
+        source_ids=["banded"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "optimised_value_column" in detail["error"]
+
+
+def test_optimiser_apply_import_error_without_name_still_renders_safely(
+    tmp_path, monkeypatch
+):
+    """Defensive: an ``ImportError`` without ``name`` (rare; e.g. a chained or
+    re-raised one) must not produce a literal ``None`` in the user message.
+    """
+    import builtins
+
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "price_contour":
+            # Deliberately omit ``name=`` to simulate a re-raised ImportError
+            # whose ``name`` attribute was never set.
+            raise ImportError("No module named 'price_contour'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+        },
+        input_row={},
+        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
+        input_frames=[_scored_online_df()],
+        source_names=["scored"],
+        source_ids=["scored"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    # Falling back to a generic placeholder is fine — what's NOT fine is
+    # exposing the literal ``None`` from ``exc.name`` to the user.
+    assert "'None'" not in detail["error"]
+    assert "None library" not in detail["error"]

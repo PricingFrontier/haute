@@ -3854,6 +3854,52 @@ class TestEnrichModelScoreRealConfig:
         assert result["explanation"]["status"] == "error"
         assert result["explanation"]["error"] == "broken GLM explanation"
 
+    def test_explanation_error_handling_survives_unsupported_artifact(self, monkeypatch):
+        """Defensive: if the supported-config check and the metadata lookup
+        disagree at runtime, the outer enrich_model_score must still return a
+        well-formed ``model_score`` detail (not crash through the catch-all).
+
+        This pins the contract that ``explanation_error_metadata_for_config``
+        is on the error-handling path and may not raise — otherwise a future
+        edit could escalate an internal mismatch into "model score enrichment
+        failed: ..." and lose all the structured detail.
+        """
+        from haute._model_explainability import ModelExplanationError
+        from haute._trace_enrichment import enrich_model_score
+
+        def fake_explain(*args, **kwargs):
+            raise ModelExplanationError("some failure")
+
+        # Force the metadata lookup to take its unreachable branch by giving
+        # it an artifact_path the supported-config check would never accept.
+        monkeypatch.setattr(
+            "haute._model_explainability.explain_model_score_from_config",
+            fake_explain,
+        )
+        monkeypatch.setattr(
+            "haute._model_explainability._config_requests_supported_explanation",
+            lambda config: True,
+        )
+
+        config = {
+            "output_column": "pred",
+            "sourceType": "run",
+            "run_id": "abc",
+            "artifact_path": "model.unknown",
+            "contract": {"inputs": ["feat_a"]},
+        }
+
+        result = enrich_model_score(config, {"feat_a": 1}, {"feat_a": 1, "pred": 0.9})
+
+        # The outer detail is intact (no "model score enrichment failed: ..."
+        # crash through the generic catch-all), and the explanation carries
+        # the fallback metadata.
+        assert result["detail_type"] == "model_score"
+        assert result["prediction_value"] == 0.9
+        assert result["explanation"]["status"] == "error"
+        assert result["explanation"]["type"] == "model_explanation"
+        assert result["explanation"]["method"] == "model_explanation"
+
 
 class TestEnrichScenarioExpansionRealConfig:
     """Tests for enrich_scenario_expansion with real config."""

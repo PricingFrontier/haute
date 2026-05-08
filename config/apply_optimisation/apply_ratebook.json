@@ -1,0 +1,12 @@
+{
+  "sourceType": "run",
+  "artifact_path": "",
+  "version_column": "__optimiser_version__",
+  "experiment_id": "1178841860450927",
+  "experiment_name": "/Shared/haute/ratebook_optimiser",
+  "run_id": "060a0ab6c6184190ad2c0c9411a9ab5c",
+  "run_name": "ratebook_optimiser",
+  "contract": "opaque",
+  "ratebook_input": "age_veh_banding",
+  "optimised_value_column": "optimised_premium_ratebook"
+}

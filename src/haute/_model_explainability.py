@@ -7,6 +7,10 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from haute._logging import get_logger
+
+logger = get_logger(component="model_explainability")
+
 
 class ModelExplanationError(RuntimeError):
     """Raised when a model explanation cannot be computed correctly."""
@@ -453,13 +457,32 @@ def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
-    """Return stable error metadata for the configured explanation method."""
+    """Return stable error metadata for the configured explanation method.
+
+    Caller (``enrich_model_score``) only invokes this after
+    :func:`_config_requests_supported_explanation` has returned True, so the
+    artifact path is guaranteed to end in ``.rsglm`` or ``.cbm``.  We still
+    enumerate both branches explicitly so adding a third supported flavour in
+    future means extending this function alongside the loader.
+
+    The function is on the *error-handling* path: it must always return a
+    well-formed dict even when ``_config_requests_supported_explanation`` and
+    this lookup disagree — otherwise an internal mismatch crashes the entire
+    trace step through the outer ``except Exception`` in ``enrich_model_score``.
+    Hit the unreachable branch with a ``logger.warning`` so a regression
+    (e.g. a new flavour added to one half of the contract but not the other)
+    is visible without poisoning the user's trace.
+    """
     artifact_path = str(config.get("artifact_path", ""))
     if artifact_path.endswith(".rsglm"):
         method = "rustystats_glm_contributions"
     elif artifact_path.endswith(".cbm"):
         method = "catboost_shap"
     else:
+        logger.warning(
+            "explanation_error_metadata_unsupported_artifact",
+            artifact_path=artifact_path,
+        )
         method = "model_explanation"
     return {"type": method, "method": method}
 
