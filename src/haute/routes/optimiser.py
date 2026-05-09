@@ -35,6 +35,7 @@ from haute.routes._optimiser_service import (
     _find_optimiser_node,
     _job_elapsed_seconds,
     _load_apply_result_artifact,
+    _optimiser_solve_required_columns_by_node,
     _persist_apply_result_artifact,
     _ratebook_factor_level_counts,
     _serialise_ratebook_factor_tables,
@@ -46,6 +47,8 @@ from haute.schemas import (
     OptimiserEstimateResponse,
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeResponse,
+    OptimiserFrontierAutoRangeStartResponse,
+    OptimiserFrontierAutoRangeStatusResponse,
     OptimiserFrontierRequest,
     OptimiserFrontierResponse,
     OptimiserFrontierSelectRequest,
@@ -145,6 +148,11 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
     node = _find_optimiser_node(body.graph, body.node_id)
     config = node.data.config
     _solve_service._validate_config(config)
+    required_columns_by_node = _optimiser_solve_required_columns_by_node(
+        body.graph,
+        body.node_id,
+        config,
+    )
 
     job_id = _store.create_job(
         {
@@ -161,7 +169,12 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
     try:
         with tempfile.TemporaryDirectory(prefix="haute_opt_estimate_") as raw_dir:
             checkpoint_dir = Path(raw_dir)
-            lazy_outputs = _solve_service._execute_pipeline(body, job_id, checkpoint_dir)
+            lazy_outputs = _solve_service._execute_pipeline(
+                body,
+                job_id,
+                checkpoint_dir,
+                required_columns_by_node=required_columns_by_node,
+            )
             source_lf = _solve_service._resolve_data_source(
                 lazy_outputs,
                 config,
@@ -1001,6 +1014,32 @@ def estimate_frontier_auto_range(
 ) -> OptimiserFrontierAutoRangeResponse:
     """Estimate absolute efficient-frontier ranges from the scenario dataframe."""
     return _solve_service.estimate_frontier_auto_range(body)
+
+
+@router.post("/frontier/auto-range/start", response_model=OptimiserFrontierAutoRangeStartResponse)
+def start_frontier_auto_range(
+    body: OptimiserFrontierAutoRangeRequest,
+) -> OptimiserFrontierAutoRangeStartResponse:
+    """Start efficient-frontier auto-range estimation as a background job."""
+    return _solve_service.start_frontier_auto_range(body)
+
+
+@router.get(
+    "/frontier/auto-range/status/{job_id}",
+    response_model=OptimiserFrontierAutoRangeStatusResponse,
+)
+async def frontier_auto_range_status(job_id: str) -> OptimiserFrontierAutoRangeStatusResponse:
+    """Poll efficient-frontier auto-range progress."""
+    return _solve_service.frontier_auto_range_status(job_id)
+
+
+@router.post(
+    "/frontier/auto-range/cancel/{job_id}",
+    response_model=OptimiserFrontierAutoRangeStatusResponse,
+)
+def cancel_frontier_auto_range(job_id: str) -> OptimiserFrontierAutoRangeStatusResponse:
+    """Cancel efficient-frontier auto-range progress."""
+    return _solve_service.cancel_frontier_auto_range(job_id)
 
 
 @router.get("/solve/status/{job_id}", response_model=OptimiserStatusResponse)

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -98,6 +100,7 @@ class TestModelScorerInit:
         assert scorer.source_names == []
         assert scorer.source == "live"
         assert scorer.row_limit is None
+        assert scorer.reuse_loaded_model is False
 
     def test_custom_values(self):
         scorer = ModelScorer(
@@ -208,6 +211,109 @@ class TestModelScorerScore:
         features = call_args[0][2]
         assert "a" in features
         assert "b" in features
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_default_loads_model_on_each_score_call(self, mock_load, mock_score_eager):
+        """Default scorer semantics keep delegating model cache policy to MLflow IO."""
+        sm = _make_scoring_model(feature_names=["a", "b"])
+        mock_load.return_value = sm
+        mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
+
+        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
+        scorer.score(lf)
+        scorer.score(lf)
+
+        assert mock_load.call_count == 2
+        assert mock_score_eager.call_count == 2
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_reuses_loaded_model_for_repeated_score_calls(self, mock_load, mock_score_eager):
+        """Streaming chunk callers reuse one ModelScorer; model loading should be once."""
+        sm = _make_scoring_model(feature_names=["a", "b"])
+        mock_load.return_value = sm
+        mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
+
+        scorer = ModelScorer(
+            source_type="run",
+            run_id="abc",
+            source="live",
+            reuse_loaded_model=True,
+        )
+        lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
+        scorer.score(lf)
+        scorer.score(lf)
+
+        mock_load.assert_called_once()
+        assert mock_score_eager.call_count == 2
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_reuse_loaded_model_retries_after_failed_first_load(
+        self,
+        mock_load,
+        mock_score_eager,
+    ):
+        """A failed first load must not poison the scorer's local cache."""
+        sm = _make_scoring_model(feature_names=["a", "b"])
+        mock_load.side_effect = [RuntimeError("boom"), sm]
+        mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
+
+        scorer = ModelScorer(
+            source_type="run",
+            run_id="abc",
+            source="live",
+            reuse_loaded_model=True,
+        )
+        lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            scorer.score(lf)
+        scorer.score(lf)
+
+        assert mock_load.call_count == 2
+        mock_score_eager.assert_called_once()
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_reuse_loaded_model_is_thread_safe(self, mock_load, mock_score_eager):
+        """Concurrent streaming chunk calls should share one first model load."""
+        sm = _make_scoring_model(feature_names=["a", "b"])
+
+        def slow_load(**_: Any) -> ScoringModel:
+            time.sleep(0.05)
+            return sm
+
+        mock_load.side_effect = slow_load
+        mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
+        scorer = ModelScorer(
+            source_type="run",
+            run_id="abc",
+            source="live",
+            reuse_loaded_model=True,
+        )
+        lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
+        start = threading.Barrier(4)
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                start.wait(timeout=5)
+                scorer.score(lf)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        mock_load.assert_called_once()
+        assert mock_score_eager.call_count == 4
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")

@@ -42,6 +42,9 @@ export interface NodeResult {
   memory?: NodeMemory[]
   schema_warnings?: SchemaWarning[]
   node_statuses?: Record<string, string>
+  node_columns?: Record<string, ColumnInfo[]>
+  node_available_columns?: Record<string, ColumnInfo[]>
+  node_schema_warnings?: Record<string, SchemaWarning[]>
 }
 
 export interface NodeTiming {
@@ -68,6 +71,9 @@ export interface PreviewNodeResponse extends NodeResult {
   timings?: NodeTiming[]
   memory?: NodeMemory[]
   node_statuses?: Record<string, string>
+  node_columns?: Record<string, ColumnInfo[]>
+  node_available_columns?: Record<string, ColumnInfo[]>
+  node_schema_warnings?: Record<string, SchemaWarning[]>
 }
 
 export interface SubmodelCreateResponse {
@@ -385,6 +391,20 @@ export interface FrontierAutoRangeResponse {
   ranges: Record<string, FrontierRange>
   method: string
   warning: string | null
+}
+
+export interface FrontierAutoRangeStartResponse {
+  status: "started" | "error"
+  job_id: string | null
+  error: string | null
+}
+
+export interface FrontierAutoRangeStatusResponse {
+  status: "running" | "completed" | "error" | "cancelled" | "superseded"
+  progress: number
+  message: string
+  elapsed_seconds: number
+  result: FrontierAutoRangeResponse | null
 }
 
 export interface OptimiserHistoryEntry {

@@ -17,6 +17,7 @@ from haute.routes._train_service import (
     TrainService,
     _clamp_row_limit,
     _friendly_error,
+    _training_required_columns_by_node,
     _validate_glm_family_link,
 )
 from tests.conftest import make_edge, make_graph
@@ -1108,6 +1109,110 @@ class TestBackgroundThreadErrors:
 # ---------------------------------------------------------------------------
 # TrainService._execute_and_sink checkpoint cleanup
 # ---------------------------------------------------------------------------
+
+
+class TestTrainingProjection:
+    def test_glm_training_columns_include_terms_aux_and_split_column(self):
+        seeds = _training_required_columns_by_node(
+            "train",
+            {
+                "algorithm": "glm",
+                "target": "claim_count",
+                "weight": "exposure",
+                "offset": "log_exposure",
+                "terms": {
+                    "driver_age": {"type": "linear"},
+                    "territory": {"type": "categorical"},
+                },
+                "split": {"strategy": "group", "group_column": "policy_id"},
+            },
+        )
+
+        assert seeds == {
+            "train": frozenset(
+                {
+                    "claim_count",
+                    "driver_age",
+                    "exposure",
+                    "log_exposure",
+                    "policy_id",
+                    "territory",
+                }
+            )
+        }
+
+    def test_catboost_training_columns_are_not_positive_projected(self):
+        assert (
+            _training_required_columns_by_node(
+                "train",
+                {
+                    "algorithm": "catboost",
+                    "target": "claim_count",
+                    "exclude": ["policy_id"],
+                },
+            )
+            is None
+        )
+
+    def test_execute_and_sink_forwards_training_projection(self, tmp_path):
+        from haute.routes._job_store import JobStore
+        from haute.schemas import TrainRequest
+
+        store = JobStore()
+        service = TrainService(store)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": {"target": "claim_count"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+        body = TrainRequest(graph=graph, node_id="train")
+        job_id = store.create_job({"status": "running"})
+        captured: dict[str, object] = {}
+
+        def fake_execute_lazy(*args, **kwargs):
+            captured.update(kwargs)
+            return (
+                {
+                    "train": pl.DataFrame(
+                        {"claim_count": [1.0], "driver_age": [40]}
+                    ).lazy()
+                },
+                ["train"],
+                {},
+                {},
+            )
+
+        seeds = {"train": frozenset({"claim_count", "driver_age"})}
+        with (
+            patch("haute._execute_lazy._execute_lazy", side_effect=fake_execute_lazy),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+            patch("haute.executor._preview_cache", MagicMock()),
+            patch("haute.trace._cache", MagicMock()),
+            patch("haute._polars_utils.safe_sink"),
+        ):
+            tmp_parquet = service._execute_and_sink(
+                body,
+                preamble_ns=None,
+                row_limit=None,
+                job_id=job_id,
+                required_columns_by_node=seeds,
+            )
+
+        assert captured["required_columns_by_node"] == seeds
+        assert Path(tmp_parquet).exists()
+        Path(tmp_parquet).unlink()
 
 
 class TestExecuteAndSinkCheckpointCleanup:

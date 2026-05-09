@@ -229,6 +229,7 @@ function FlowEditor() {
 
   const {
     loading, previewData, setPreviewData,
+    previewBusy,
     nodeStatuses,
     fetchPreview, cancelPreview, refreshPreview, handleSave,
   } = usePipelineAPI({
@@ -535,6 +536,7 @@ function FlowEditor() {
                       ? previewData.preview
                       : undefined
                   }
+                  selectedPreviewLoading={previewBusy && selectedNode?.id === activePanelNodeId}
                 />
               </GraphProvider>
             )}

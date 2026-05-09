@@ -25,6 +25,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute.errors import ContractMismatchError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -615,6 +616,49 @@ class TestComputeNeededColumns:
         # → needs from src: {extra_col, feat_a, feat_b}
         assert needed["src"] == {"extra_col", "feat_a", "feat_b"}
 
+    def test_required_columns_seed_terminal_non_output(self):
+        """Callers can seed exact needs for direct non-OUTPUT targets."""
+        nodes = [
+            _source_node("src"),
+            _node("opt", NodeType.OPTIMISER),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["src", "opt"]
+        parents_of = {"src": [], "opt": ["src"]}
+        children_of = _build_children_of(order, parents_of)
+
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"opt": {"quote_id", "conversion_prediction"}},
+        )
+
+        assert needed["opt"] == {"quote_id", "conversion_prediction"}
+        assert needed["src"] == {"quote_id", "conversion_prediction"}
+
+    def test_required_columns_seed_unions_with_downstream_needs(self):
+        """A seed on a non-terminal node supplements descendant needs."""
+        nodes = [
+            _source_node("src"),
+            _node("mid", NodeType.LIVE_SWITCH),
+            _output_node("out", fields=["a"]),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["src", "mid", "out"]
+        parents_of = {"src": [], "mid": ["src"], "out": ["mid"]}
+        children_of = _build_children_of(order, parents_of)
+
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"mid": {"b"}},
+        )
+
+        assert needed["mid"] == {"a", "b"}
+        assert needed["src"] == {"a", "b"}
+
     def test_passthrough_chain_propagates_fields(self):
         """Chain of passthrough nodes correctly propagates OUTPUT fields."""
         nodes = [
@@ -1022,3 +1066,99 @@ class TestCheckpointProjection:
 
         out_df = outputs["out"].collect()
         assert set(out_df.columns) == {"key", "a", "b"}
+
+    def test_join_parent_checkpoints_use_inputs_by_parent(self, tmp_path):
+        """Join-feeder checkpoints are projected with parent-specific needs."""
+        nodes = [
+            _source_node("left_src"),
+            _source_node("right_src"),
+            _node("left_mid", NodeType.LIVE_SWITCH),
+            _node("right_mid", NodeType.LIVE_SWITCH),
+            _node(
+                "j",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["key", "left_value", "right_value"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "left_mid": ["key", "left_value"],
+                        "right_mid": ["key", "right_value"],
+                    },
+                },
+            ),
+            _output_node("out", fields=["key", "left_value", "right_value"]),
+        ]
+        edges = [
+            _e("left_src", "left_mid"),
+            _e("right_src", "right_mid"),
+            _e("left_mid", "j"),
+            _e("right_mid", "j"),
+            _e("j", "out"),
+        ]
+        g = PipelineGraph(nodes=nodes, edges=edges)
+
+        def build_fn(node, **kw):
+            nid = node.id
+            if nid == "left_src":
+                data = {
+                    "key": [1, 2],
+                    "left_value": [10, 20],
+                    "left_unused": [999, 999],
+                }
+                return nid, lambda d=data: pl.DataFrame(d).lazy(), True
+            if nid == "right_src":
+                data = {
+                    "key": [1, 2],
+                    "right_value": [100, 200],
+                    "right_unused": [888, 888],
+                }
+                return nid, lambda d=data: pl.DataFrame(d).lazy(), True
+            if nid == "j":
+                return nid, lambda *dfs: dfs[0].join(dfs[1], on="key", how="left"), False
+            if nid == "out":
+                fields = node.data.config.get("fields") or []
+                return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
+            return nid, lambda *dfs: dfs[0], False
+
+        outputs, *_ = _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
+
+        left_checkpoint = pl.read_parquet(tmp_path / "left_mid.parquet")
+        right_checkpoint = pl.read_parquet(tmp_path / "right_mid.parquet")
+        join_checkpoint = pl.read_parquet(tmp_path / "j.parquet")
+
+        assert left_checkpoint.columns == ["key", "left_value"]
+        assert right_checkpoint.columns == ["key", "right_value"]
+        assert join_checkpoint.columns == ["key", "left_value", "right_value"]
+
+        out_df = outputs["out"].collect().sort("key")
+        assert out_df.to_dict(as_series=False) == {
+            "key": [1, 2],
+            "left_value": [10, 20],
+            "right_value": [100, 200],
+        }
+
+    def test_checkpoint_projection_raises_when_required_column_missing(self, tmp_path):
+        """Checkpoint projection should fail loudly on impossible schemas."""
+        nodes = [
+            _source_node("src"),
+            _node("mid", NodeType.LIVE_SWITCH),
+            _output_node("needs_present", fields=["a"]),
+            _output_node("needs_missing", fields=["missing"]),
+        ]
+        edges = [
+            _e("src", "mid"),
+            _e("mid", "needs_present"),
+            _e("mid", "needs_missing"),
+        ]
+        g = PipelineGraph(nodes=nodes, edges=edges)
+
+        def build_fn(node, **kw):
+            if node.id == "src":
+                return node.id, lambda: pl.DataFrame({"a": [1]}).lazy(), True
+            if node.data.nodeType == NodeType.OUTPUT:
+                fields = node.data.config.get("fields") or []
+                return node.id, lambda *dfs, _f=fields: dfs[0].select(_f), False
+            return node.id, lambda *dfs: dfs[0], False
+
+        with pytest.raises(ContractMismatchError, match="missing"):
+            _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)

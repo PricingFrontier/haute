@@ -1,7 +1,13 @@
-import { useState, useCallback, useEffect, useMemo } from "react"
+import { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { Loader2, ChevronDown, ChevronRight, AlertTriangle, Plus, X, Target, Layers, RefreshCw } from "lucide-react"
 import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
-import { solveOptimiser, estimateOptimiserSolve, estimateOptimiserFrontierAutoRange } from "../api/client"
+import {
+  cancelOptimiserFrontierAutoRange,
+  solveOptimiser,
+  estimateOptimiserSolve,
+  getOptimiserFrontierAutoRangeStatus,
+  startOptimiserFrontierAutoRange,
+} from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
@@ -53,6 +59,7 @@ type OptimiserConfigProps = {
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
   accentColor: string
+  deferColumnFetch?: boolean
 }
 
 const CONSTRAINT_TYPES = [
@@ -61,6 +68,33 @@ const CONSTRAINT_TYPES = [
 ]
 
 type FrontierRangeConfig = { min?: number; max?: number }
+const AUTO_RANGE_POLL_INTERVAL_MS = 1_000
+
+function requestErrorDetail(error: unknown): string {
+  if (error && typeof error === "object" && "detail" in error) {
+    const detail = (error as { detail?: unknown }).detail
+    if (typeof detail === "string" && detail.trim()) return detail
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"))
+      return
+    }
+    const timeoutId = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timeoutId)
+      reject(new DOMException("Aborted", "AbortError"))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
 
 function optionalConfigNumber(config: Record<string, unknown>, key: string): number | undefined {
   const value = config[key]
@@ -86,11 +120,18 @@ function singleFactorColumnsFromLevels(levels: Record<string, string[]>): string
   return Object.keys(levels).sort().map(name => [name])
 }
 
+function columnsForNode(nodes: SimpleNode[], nodeId: string): { name: string; dtype: string }[] {
+  const node = nodes.find(n => n.id === nodeId)
+  const columns = (node?.data as Record<string, unknown> | undefined)?._columns
+  return Array.isArray(columns) ? columns as { name: string; dtype: string }[] : []
+}
+
 export default function OptimiserConfig({
   config,
   onUpdate,
   upstreamColumns = [],
   accentColor,
+  deferColumnFetch = false,
 }: OptimiserConfigProps) {
   const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
@@ -105,6 +146,18 @@ export default function OptimiserConfig({
   const [submitting, setSubmitting] = useState(false)
   const [autoRangeLoading, setAutoRangeLoading] = useState(false)
   const [autoRangeError, setAutoRangeError] = useState<string | null>(null)
+  const autoRangeAbortRef = useRef<AbortController | null>(null)
+  const autoRangeJobRef = useRef<string | null>(null)
+
+  useEffect(() => () => {
+    const jobId = autoRangeJobRef.current
+    autoRangeAbortRef.current?.abort()
+    autoRangeAbortRef.current = null
+    autoRangeJobRef.current = null
+    if (jobId) {
+      void cancelOptimiserFrontierAutoRange(jobId).catch(() => undefined)
+    }
+  }, [])
 
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
@@ -147,15 +200,22 @@ export default function OptimiserConfig({
   const constraintEntries = Object.entries(constraints)
   const constraintCount = constraintEntries.length
 
-  // Columns from the selected data input node — cached in store
-  // Prefer columns already collected for the optimiser panel so opening it
-  // does not fire a second row-limit-1 preview request just to populate menus.
-  const hasUpstreamColumns = upstreamColumns.length > 0
+  // Prefer the configured data-input node's cached columns so multi-input
+  // optimisers do not mix factor-table fields into objective/constraint menus.
+  // Fall back to the panel's upstream column union until that node has schema.
+  const selectedDataInputColumns = useMemo(
+    () => dataInput ? columnsForNode(allNodes, dataInput) : [],
+    [allNodes, dataInput],
+  )
+  const fallbackDataInputColumns = selectedDataInputColumns.length > 0
+    ? selectedDataInputColumns
+    : upstreamColumns
+  const hasDataInputColumns = fallbackDataInputColumns.length > 0
   const fetchedDataInputColumns = useDataInputColumns(dataInput, allNodes, edges, submodels, undefined, {
-    enabled: !hasUpstreamColumns,
-    fallbackColumns: upstreamColumns,
+    enabled: !hasDataInputColumns && !deferColumnFetch,
+    fallbackColumns: fallbackDataInputColumns,
   })
-  const dataInputColumns = hasUpstreamColumns ? upstreamColumns : fetchedDataInputColumns
+  const dataInputColumns = hasDataInputColumns ? fallbackDataInputColumns : fetchedDataInputColumns
 
   const buildGraphCb = useCallback(
     () => buildGraph(allNodes, edges, submodels),
@@ -190,6 +250,7 @@ export default function OptimiserConfig({
     {
       toastLabel: "Solve estimate failed",
       estimateKey: `${activeSource}:${structuralVersion}`,
+      enabled: !deferColumnFetch,
     },
   )
 
@@ -322,13 +383,53 @@ export default function OptimiserConfig({
   )
 
   const handleAutoRange = useCallback(async () => {
+    const previousJobId = autoRangeJobRef.current
+    autoRangeAbortRef.current?.abort()
+    autoRangeAbortRef.current = null
+    autoRangeJobRef.current = null
+    if (previousJobId) {
+      void cancelOptimiserFrontierAutoRange(previousJobId).catch(() => undefined)
+    }
+    const controller = new AbortController()
+    autoRangeAbortRef.current = controller
     setAutoRangeLoading(true)
     setAutoRangeError(null)
+    let jobId: string | null = null
     try {
-      const response = await estimateOptimiserFrontierAutoRange({
+      const start = await startOptimiserFrontierAutoRange({
         graph: buildGraphCb(),
         node_id: nodeId,
-      })
+      }, { signal: controller.signal })
+      if (start.status === "error" || !start.job_id) {
+        throw new Error(start.error || "Auto range failed to start")
+      }
+      jobId = start.job_id
+      autoRangeJobRef.current = jobId
+
+      let status = await getOptimiserFrontierAutoRangeStatus(
+        jobId,
+        { signal: controller.signal },
+      )
+      while (status.status === "running") {
+        await abortableDelay(AUTO_RANGE_POLL_INTERVAL_MS, controller.signal)
+        status = await getOptimiserFrontierAutoRangeStatus(
+          jobId,
+          { signal: controller.signal },
+        )
+      }
+      if (status.status === "error") {
+        throw new Error(status.message || "Auto range failed")
+      }
+      if (status.status === "cancelled" || status.status === "superseded") {
+        if (!controller.signal.aborted) {
+          setAutoRangeError(status.message || "Auto range was cancelled")
+        }
+        return
+      }
+      const response = status.result
+      if (!response) {
+        throw new Error("Auto range completed without ranges")
+      }
       const nextRanges: Record<string, FrontierRangeConfig> = {}
       const missingRanges: string[] = []
       for (const [name] of constraintEntries) {
@@ -354,9 +455,19 @@ export default function OptimiserConfig({
       })
       if (response.warning) setAutoRangeError(response.warning)
     } catch (err) {
-      setAutoRangeError(err instanceof Error ? err.message : "Auto range failed")
+      if (!controller.signal.aborted) {
+        setAutoRangeError(requestErrorDetail(err))
+      }
     } finally {
-      setAutoRangeLoading(false)
+      if (autoRangeAbortRef.current === controller) {
+        autoRangeAbortRef.current = null
+      }
+      if (jobId && autoRangeJobRef.current === jobId) {
+        autoRangeJobRef.current = null
+      }
+      if (!controller.signal.aborted) {
+        setAutoRangeLoading(false)
+      }
     }
   }, [buildGraphCb, constraintCount, constraintEntries, nodeId, onUpdate])
 

@@ -506,6 +506,21 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         ]
 
         node_statuses = {nid: r.status for nid, r in results.items() if nid in relevant}
+        node_columns = {
+            nid: r.columns
+            for nid, r in results.items()
+            if nid in node_map and nid in relevant
+        }
+        node_available_columns = {
+            nid: r.available_columns or r.columns
+            for nid, r in results.items()
+            if nid in node_map and nid in relevant
+        }
+        node_schema_warnings = {
+            nid: r.schema_warnings
+            for nid, r in results.items()
+            if nid in node_map and nid in relevant
+        }
 
         return PreviewNodeResponse(
             node_id=body.node_id,
@@ -527,6 +542,9 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             memory=memory,
             schema_warnings=node_result.schema_warnings,
             node_statuses=node_statuses,
+            node_columns=node_columns,
+            node_available_columns=node_available_columns,
+            node_schema_warnings=node_schema_warnings,
         )
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None

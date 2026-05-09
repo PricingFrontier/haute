@@ -51,7 +51,16 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
             )
         if prop.get("type") == "object" and "additionalProperties" in prop:
             additional = prop["additionalProperties"]
-            prop_summary["additionalProperties"] = additional.get("type")
+            if "$ref" in additional:
+                prop_summary["additionalProperties"] = f"ref:{_ref_name(additional['$ref'])}"
+            elif additional.get("type") == "array":
+                items = additional.get("items", {})
+                item_summary = (
+                    f"ref:{_ref_name(items['$ref'])}" if "$ref" in items else items.get("type")
+                )
+                prop_summary["additionalProperties"] = f"array:{item_summary}"
+            else:
+                prop_summary["additionalProperties"] = additional.get("type")
         summary["properties"][name] = prop_summary
 
     return summary
@@ -79,6 +88,15 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "timings": {"type": "array", "items": "ref:NodeTimingInfo"},
                 "memory": {"type": "array", "items": "ref:NodeMemoryInfo"},
                 "node_statuses": {"type": "object", "additionalProperties": "string"},
+                "node_columns": {"type": "object", "additionalProperties": "array:ref:ColumnInfo"},
+                "node_available_columns": {
+                    "type": "object",
+                    "additionalProperties": "array:ref:ColumnInfo",
+                },
+                "node_schema_warnings": {
+                    "type": "object",
+                    "additionalProperties": "array:ref:SchemaWarning",
+                },
             },
         ),
         (

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   applyOptimiser,
+  cancelOptimiserFrontierAutoRange,
   checkMlflow,
   createGitBranch,
   createSubmodel,
@@ -17,6 +18,7 @@ import {
   fetchSchema,
   getGitHistory,
   getGitStatus,
+  getOptimiserFrontierAutoRangeStatus,
   getOptimiserStatus,
   getTrainStatus,
   gitArchiveBranch,
@@ -36,6 +38,7 @@ import {
   saveOptimiser,
   selectFrontierPoint,
   solveOptimiser,
+  startOptimiserFrontierAutoRange,
   switchGitBranch,
   traceCell,
   trainModel,
@@ -97,6 +100,24 @@ describe("client runtime contracts", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({
       requested_preview_columns: ["premium", "segment"],
     })
+  })
+
+  it("previewNode preserves per-node schema maps from preview responses", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    const result = await previewNode(dummyGraph, "n1", 10)
+
+    expect(result.node_columns?.source?.map((column) => column.name)).toEqual([
+      "premium",
+      "segment",
+    ])
+    expect(result.node_available_columns?.score?.map((column) => column.name)).toEqual([
+      "premium",
+      "segment",
+    ])
+    expect(result.node_schema_warnings?.score).toEqual([
+      { column: "premium", status: "computed" },
+    ])
   })
 
   it("traceCell rejects malformed trace payloads", async () => {
@@ -176,6 +197,43 @@ describe("client runtime contracts", () => {
     })
 
     expect(autoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+
+    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
+
+    const startedRange = await startOptimiserFrontierAutoRange({
+      graph: dummyGraph,
+      node_id: "opt1",
+    })
+
+    expect(startedRange.job_id).toBe("range-job-1")
+
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 2.5,
+        result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
+      }),
+    )
+
+    const rangeStatus = await getOptimiserFrontierAutoRangeStatus("range-job-1")
+
+    expect(rangeStatus.result?.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        status: "cancelled",
+        progress: 0.25,
+        message: "Cancelled",
+        elapsed_seconds: 2.5,
+        result: null,
+      }),
+    )
+
+    const cancelledRange = await cancelOptimiserFrontierAutoRange("range-job-1")
+
+    expect(cancelledRange.status).toBe("cancelled")
 
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
 
@@ -333,6 +391,39 @@ describe("next-wave client runtime contracts", () => {
       },
       call: () => estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
       error: /parseFrontierAutoRangeResponse/i,
+    },
+    {
+      name: "startOptimiserFrontierAutoRange",
+      response: { status: "started", job_id: 42, error: null },
+      call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
+      error: /parseFrontierAutoRangeStartResponse/i,
+    },
+    {
+      name: "getOptimiserFrontierAutoRangeStatus",
+      response: {
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1,
+        result: {
+          ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_auto_range_response"),
+          ranges: { expected_margin: { min: "bad", max: 39 } },
+        },
+      },
+      call: () => getOptimiserFrontierAutoRangeStatus("range-job-1"),
+      error: /parseFrontierAutoRangeResponse/i,
+    },
+    {
+      name: "cancelOptimiserFrontierAutoRange",
+      response: {
+        status: "cancelled",
+        progress: 1,
+        message: "Cancelled",
+        elapsed_seconds: "bad",
+        result: null,
+      },
+      call: () => cancelOptimiserFrontierAutoRange("range-job-1"),
+      error: /elapsed_seconds/i,
     },
     {
       name: "selectFrontierPoint",

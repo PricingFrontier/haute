@@ -13,7 +13,7 @@ def batch_quotes() -> pl.LazyFrame:
     """batch_quotes node"""
     from pathlib import Path
     df = pl.scan_parquet(Path(__file__).parent / "data/quotes/nb_batch.parquet")
-    df = df.limit(100000)
+    df = df.limit(10000000)
     return df
 
 
@@ -123,7 +123,7 @@ def avg_top_5(competitor_join: pl.LazyFrame) -> pl.LazyFrame:
     return competitor_join
 
 
-@pipeline.polars(contract="opaque")
+@pipeline.polars(contract={'inputs': ['quote_id'], 'outputs': [], 'inputs_by_parent': {'competitor_scoring': ['competitor_premium', 'quote_id'], 'policies': ['quote_id']}})
 def join_scoring(policies: pl.LazyFrame, competitor_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """Join competitor scoring onto policies"""
     df = policies
@@ -148,7 +148,7 @@ def apply_ratebook(age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
     return age_veh_banding
 
 
-@pipeline.polars(contract="opaque")
+@pipeline.polars(contract={'inputs': ['quote_id'], 'outputs': [], 'inputs_by_parent': {'join_scoring': ['competitor_premium', 'quote_id'], 'policy_data': ['policy_id', 'quote_id']}})
 def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> pl.LazyFrame:
     """Join policy data"""
     df = join_scoring
@@ -156,7 +156,7 @@ def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> p
     return df
 
 
-@pipeline.polars(contract="opaque")
+@pipeline.polars(contract={'inputs': ['policy_id', 'premium', 'quote_id'], 'outputs': ['burn_cost', 'sale_flag'], 'inputs_by_parent': {'join_policy_data': ['competitor_premium', 'policy_id', 'quote_id'], 'quoted_premiums': ['premium', 'quote_id']}})
 def join_premiums(join_policy_data: pl.LazyFrame, quoted_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """Join quoted premiums and derive sale_flag"""
     df = join_policy_data
@@ -177,7 +177,13 @@ def competitor_features(join_premiums: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.scenario_expander(config="config/expander/premium.json", contract="opaque")
+@pipeline.scenario_expander(
+    config="config/expander/premium.json",
+    contract={
+        "inputs": ["premium"],
+        "outputs": ["premium_multiplier", "scenario_index"],
+    },
+)
 def premium(join_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """premium node"""
     df = join_premiums
@@ -210,7 +216,12 @@ def conversion_scoring(competitor_features_scenarios: pl.LazyFrame) -> pl.LazyFr
     return df
 
 
-@pipeline.polars(contract="opaque")
+@pipeline.polars(
+    contract={
+        "inputs": ["premium", "burn_cost", "conversion_prediction"],
+        "outputs": ["margin", "expected_margin"],
+    },
+)
 def optimiser_input(conversion_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """Polars 8 node"""
     df = conversion_scoring
@@ -240,7 +251,13 @@ def apply_online(optimiser_input: pl.LazyFrame) -> pl.LazyFrame:
     return optimiser_input
 
 
-@pipeline.instance(of="competitor_features")
+@pipeline.instance(
+    of="competitor_features",
+    contract={
+        "inputs": ["premium", "competitor_premium"],
+        "outputs": ["difference_to_market"],
+    },
+)
 def competitor_features_scenarios(premium: pl.LazyFrame) -> pl.LazyFrame:
     """Instance of competitor_features"""
     return competitor_features(join_premiums=premium)

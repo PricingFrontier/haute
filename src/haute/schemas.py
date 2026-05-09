@@ -141,6 +141,9 @@ class PreviewNodeResponse(NodeResult):
     timings: list[NodeTimingInfo] = Field(default_factory=list)
     memory: list[NodeMemoryInfo] = Field(default_factory=list)
     node_statuses: dict[str, str] = Field(default_factory=dict)
+    node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +721,20 @@ class OptimiserFrontierAutoRangeResponse(BaseModel):
     ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
     method: str = "scenario_envelope"
     warning: str | None = None
+
+
+class OptimiserFrontierAutoRangeStartResponse(BaseModel):
+    status: Literal["started", "error"]
+    job_id: str | None = None
+    error: str | None = None
+
+
+class OptimiserFrontierAutoRangeStatusResponse(BaseModel):
+    status: Literal["running", "completed", "error", "cancelled", "superseded"]
+    progress: float = 0.0
+    message: str = ""
+    elapsed_seconds: float = 0.0
+    result: OptimiserFrontierAutoRangeResponse | None = None
 
 
 class OptimiserFrontierRequest(BaseModel):

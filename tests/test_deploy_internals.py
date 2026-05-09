@@ -817,6 +817,53 @@ class TestScoreGraphOutputFields:
         assert set(result.columns) == {"x", "z"}
         assert "y" not in result.columns
 
+    def test_output_fields_seed_lazy_projection(self):
+        """Serving output_fields should feed the backend projection planner."""
+        from haute.deploy import _scorer
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+        output_lf = pl.DataFrame({"x": [1.0], "y": [2.0], "z": [3.0]}).lazy()
+
+        with patch.object(
+            _scorer,
+            "_execute_lazy",
+            return_value=({"out": output_lf}, ["src", "out"], {}, {}),
+        ) as execute:
+            result = _scorer.score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "y": [2.0], "z": [3.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                output_fields=["x", "z"],
+            )
+
+        assert result.columns == ["x", "z"]
+        assert execute.call_args.kwargs["required_columns_by_node"] == {
+            "out": frozenset({"x", "z"})
+        }
+
     def test_no_output_fields_returns_all_columns(self):
         """Without output_fields, all columns pass through."""
         from haute.deploy._scorer import score_graph
@@ -854,6 +901,43 @@ class TestScoreGraphOutputFields:
         )
 
         assert set(result.columns) == {"x", "y"}
+
+    def test_output_fields_rejects_bare_string(self):
+        """A malformed output_fields contract should fail before execution."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+
+        with pytest.raises(ValueError, match="output_fields"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "y": [2.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                output_fields="x",  # type: ignore[arg-type]
+            )
 
 
 class TestScoreGraphMissingOutput:
@@ -1488,6 +1572,101 @@ class TestScoreGraphModelScoreRemap:
             )
 
         assert "pred" in result.columns
+
+    def test_model_score_remap_with_output_fields_uses_bundled_contract(
+        self,
+        tmp_path,
+    ):
+        """output_fields projection must not make deployed scoring call MLflow."""
+        from haute.deploy._scorer import score_graph
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["x"],
+                feature_types={"x": "Float64"},
+                categorical_features=[],
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+
+        mock_model = MagicMock()
+        mock_model.feature_names_ = ["x"]
+        mock_model.predict.return_value = np.array([42.0])
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "remote-run",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("MLflow should not be called"),
+            ) as load_mlflow,
+        ):
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "unused": [999.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={
+                    "ms__model.cbm": str(cbm_path),
+                    f"ms__{CONTRACT_FILENAME}": str(contract_path),
+                },
+                output_fields=["pred"],
+            )
+
+        load_mlflow.assert_not_called()
+        assert result.columns == ["pred"]
+        assert result["pred"].to_list() == [42.0]
 
 
 class TestRemapArtifact:

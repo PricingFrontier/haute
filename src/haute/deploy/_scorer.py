@@ -64,6 +64,37 @@ def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
     return graph.model_copy(update={"nodes": nodes})
 
 
+def _attach_bundled_feature_contracts(
+    graph: PipelineGraph,
+    remap: dict[str, str],
+) -> PipelineGraph:
+    """Annotate bundled modelScore nodes with their local feature contract."""
+    if not remap:
+        return graph
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        if node.data.nodeType != NodeType.MODEL_SCORE:
+            nodes.append(node)
+            continue
+        contract_path = _bundled_contract_path(node.id, remap)
+        if not contract_path:
+            nodes.append(node)
+            continue
+        config = node.data.config
+        if config.get("feature_contract_path") == contract_path:
+            nodes.append(node)
+            continue
+        data = node.data.model_copy(
+            update={"config": {**config, "feature_contract_path": contract_path}}
+        )
+        nodes.append(node.model_copy(update={"data": data}))
+        changed = True
+    if not changed:
+        return graph
+    return graph.model_copy(update={"nodes": nodes})
+
+
 def _remap_artifact(
     node_id: str,
     config: dict,
@@ -186,10 +217,13 @@ def score_graph(
     Returns:
         Output DataFrame (1 or N rows).
     """
-    graph = _resolve_runtime_graph_paths(graph)
+    remap = artifact_paths or {}
+    graph = _attach_bundled_feature_contracts(
+        _resolve_runtime_graph_paths(graph),
+        remap,
+    )
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
-    remap = artifact_paths or {}
 
     def _intercept(
         node: GraphNode,
@@ -422,6 +456,16 @@ def score_graph(
     # switch routes to the live input.
     from haute.executor import ENFORCE_CONTRACTS
 
+    required_columns_by_node: dict[str, frozenset[str]] | None = None
+    if output_fields:
+        if isinstance(output_fields, str | bytes):
+            raise ValueError("output_fields must be a list of column names")
+        output_seed: set[str] = set()
+        for column in output_fields:
+            if not isinstance(column, str) or not column:
+                raise ValueError("output_fields must contain non-empty string names")
+            output_seed.add(column)
+        required_columns_by_node = {output_node_id: frozenset(output_seed)}
     lazy_outputs, order, _parents, _names = _execute_lazy(
         graph,
         builder,
@@ -429,6 +473,7 @@ def score_graph(
         preamble_ns=preamble_ns,
         source="live",
         enforce_contracts=ENFORCE_CONTRACTS,
+        required_columns_by_node=required_columns_by_node,
     )
 
     output_lf = lazy_outputs.get(output_node_id)

@@ -13,7 +13,7 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -98,6 +98,8 @@ class NodeBuildContext:
     orig_source_names: list[str] | None
     preamble_ns: dict[str, Any] | None
     source: str | None
+    required_output_columns: frozenset[str] | set[str] | None = None
+    reuse_loaded_model: bool = False
 
     @property
     def func_name(self) -> str:
@@ -150,6 +152,7 @@ class Contract:
 
     inputs: frozenset[str] | None
     outputs: frozenset[str] | None
+    inputs_by_parent: Mapping[str, frozenset[str] | None] | None = None
 
     @classmethod
     def opaque(cls) -> Contract:
@@ -199,6 +202,12 @@ class Contract:
             return None
         if isinstance(value, Contract):
             return value
+        if hasattr(value, "inputs") and hasattr(value, "outputs"):
+            return cls(
+                inputs=_freeze(getattr(value, "inputs")),
+                outputs=_freeze(getattr(value, "outputs")),
+                inputs_by_parent=_freeze_mapping(getattr(value, "inputs_by_parent", None)),
+            )
         if isinstance(value, str):
             if value.strip().lower() == OPAQUE_CONTRACT_SENTINEL:
                 return cls.opaque()
@@ -207,6 +216,13 @@ class Contract:
                 f"The only accepted string form is {OPAQUE_CONTRACT_SENTINEL!r}.",
             )
         if isinstance(value, dict):
+            unknown_keys = set(value) - {"inputs", "outputs", "inputs_by_parent"}
+            if unknown_keys:
+                raise ValueError(
+                    "Invalid contract dict: unknown key(s) "
+                    f"{sorted(unknown_keys)!r}; expected 'inputs', 'outputs', "
+                    "and optional 'inputs_by_parent'.",
+                )
             inputs_raw = value.get("inputs", ...)
             outputs_raw = value.get("outputs", ...)
             if inputs_raw is ... or outputs_raw is ...:
@@ -217,6 +233,7 @@ class Contract:
             return cls(
                 inputs=_freeze(inputs_raw),
                 outputs=_freeze(outputs_raw),
+                inputs_by_parent=_freeze_mapping(value.get("inputs_by_parent")),
             )
         if isinstance(value, tuple) and len(value) == 2:
             a, b = value
@@ -249,6 +266,24 @@ def _freeze(value: Any) -> frozenset[str] | None:
     raise ValueError(
         f"Contract column set must be iterable; got {type(value).__name__}.",
     )
+
+
+def _freeze_mapping(value: Any) -> dict[str, frozenset[str] | None] | None:
+    """Coerce a parent-id -> column-set mapping used by fan-in contracts."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            "Contract inputs_by_parent must be a mapping of parent node ids to column sets.",
+        )
+    out: dict[str, frozenset[str] | None] = {}
+    for parent_id, columns in value.items():
+        if not isinstance(parent_id, str) or not parent_id:
+            raise ValueError(
+                "Contract inputs_by_parent keys must be non-empty parent node ids.",
+            )
+        out[parent_id] = _freeze(columns)
+    return out
 
 
 def _register(
@@ -814,6 +849,13 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
     if (config.get("code") or "").strip():
         return produced, None
 
+    feature_contract_path = config.get("feature_contract_path")
+    if isinstance(feature_contract_path, str) and feature_contract_path:
+        from haute.modelling._feature_contract import load_contract
+
+        contract = load_contract(feature_contract_path)
+        return produced, set(contract.features)
+
     # Feature columns are only known after loading the model.
     source_type = config.get("sourceType", "")
     if not source_type:
@@ -901,6 +943,18 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     from haute._model_scorer import ModelScorer
 
+    required_output_columns = ctx.required_output_columns
+    if code or config.get("column_renames"):
+        required_output_columns = None
+    elif required_output_columns is None:
+        selected_columns = config.get("selected_columns") or []
+        if selected_columns:
+            required_output_columns = frozenset(
+                str(column)
+                for column in selected_columns
+                if isinstance(column, str) and column
+            )
+
     scorer = ModelScorer(
         source_type=source_type,
         run_id=_run_id,
@@ -913,6 +967,8 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         source_names=list(ctx.source_names),
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
+        required_output_columns=required_output_columns,
+        reuse_loaded_model=ctx.reuse_loaded_model,
     )
 
     return ctx.func_name, scorer.score, False
@@ -989,6 +1045,8 @@ def _build_node_fn(
     orig_source_names: list[str] | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str | None = None,
+    required_output_columns: frozenset[str] | set[str] | None = None,
+    reuse_loaded_model: bool = False,
 ) -> tuple[str, Callable, bool]:
     """Build an executable function from a graph node dict.
 
@@ -999,6 +1057,8 @@ def _build_node_fn(
     node_map: full graph node_map — used to resolve ``instanceOf`` references.
     source: the active execution source (``"live"`` for eager scoring,
         anything else for batched parquet scoring).
+    reuse_loaded_model: opts modelScore nodes into scorer-instance model
+        reuse for chunked callers that rebuild data but not node functions.
     """
     # Resolve instance → use original's config/nodeType
     if node_map:
@@ -1018,6 +1078,8 @@ def _build_node_fn(
         orig_source_names=orig_source_names,
         preamble_ns=preamble_ns,
         source=source,
+        required_output_columns=required_output_columns,
+        reuse_loaded_model=reuse_loaded_model,
     )
 
     # Dispatch through the unified registry — the single source of truth.

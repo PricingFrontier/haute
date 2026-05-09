@@ -13,5 +13,13 @@
     "competitor_premium",
     "burn_cost"
   ],
-  "contract": "opaque"
+  "contract": {
+    "inputs": [
+      "premium"
+    ],
+    "outputs": [
+      "premium_multiplier",
+      "scenario_index"
+    ]
+  }
 }

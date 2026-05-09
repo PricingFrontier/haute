@@ -544,6 +544,78 @@ def _normalise_requested_preview_columns(
     ]
 
 
+def _normalise_requested_preview_columns_for_execution(
+    node_data: NodeData,
+    requested_preview_columns: list[str] | None,
+) -> list[str] | None:
+    """Normalise request aliases before eager projection has a DataFrame.
+
+    ``_normalise_requested_preview_columns`` can inspect the collected
+    target frame.  The eager executor needs an earlier, schema-only seed, so
+    it applies only config-derived aliases whose target names are explicit.
+    """
+    if requested_preview_columns is None:
+        return None
+    if node_data.nodeType != NodeType.OPTIMISER_APPLY:
+        return requested_preview_columns
+
+    configured_column = node_data.config.get("optimised_value_column", "")
+    if not configured_column or configured_column in _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS:
+        return requested_preview_columns
+
+    columns: list[str] = []
+    seen: set[str] = set()
+    for column in requested_preview_columns:
+        candidates = (
+            (column, configured_column)
+            if column in _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS
+            else (column,)
+        )
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            columns.append(candidate)
+    return columns
+
+
+def _preview_required_columns_by_node(
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    requested_preview_columns: list[str] | None,
+) -> dict[str, list[str]] | None:
+    """Return eager projection seeds for a target preview-column request."""
+    if target_node_id is None or requested_preview_columns is None:
+        return None
+    if not requested_preview_columns:
+        raise PreviewProjectionError("requested_preview_columns must contain at least one column")
+    if any(not isinstance(column, str) or not column for column in requested_preview_columns):
+        raise PreviewProjectionError("requested_preview_columns cannot contain empty names")
+
+    node = graph.node_map.get(target_node_id)
+    if node is None:
+        return None
+
+    columns = _normalise_requested_preview_columns_for_execution(
+        node.data,
+        requested_preview_columns,
+    )
+    if not columns:
+        return None
+    return {target_node_id: columns}
+
+
+def _preview_projection_cache_suffix(
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    requested_preview_columns: list[str] | None,
+) -> str:
+    """Cache-key suffix for projected preview materialisations."""
+    if target_node_id is None or requested_preview_columns is None:
+        return ""
+    return f":preview_target={target_node_id!r}:preview_cols={tuple(requested_preview_columns)!r}"
+
+
 _preview_cache = FingerprintCache(
     slots=(
         "eager_outputs",
@@ -553,6 +625,7 @@ _preview_cache = FingerprintCache(
         "memory_bytes",
         "error_lines",
         "available_columns",
+        "output_columns",
     ),
     max_bytes=PREVIEW_CACHE_MAX_BYTES,
     size_of=_estimate_preview_cache_entry_bytes,
@@ -678,15 +751,24 @@ def execute_graph(
     # computed under a different enforcement mode.  Without this, the
     # contract-overhead benchmark measures cache-hit-vs-cache-hit.
     fingerprint_memo = GraphFingerprintMemo()
+    preview_required_columns = _preview_required_columns_by_node(
+        graph,
+        target_node_id,
+        requested_preview_columns,
+    )
     fp = graph_fingerprint(
         graph,
-        f"{row_limit}:{source}:contracts={int(enforce_contracts)}",
+        (
+            f"{row_limit}:{source}:contracts={int(enforce_contracts)}"
+            f"{_preview_projection_cache_suffix(graph, target_node_id, requested_preview_columns)}"
+        ),
         memo=fingerprint_memo,
     )
 
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
     avail_cols: dict[str, list[tuple[str, str]]] = {}
+    output_cols: dict[str, list[tuple[str, str]]] = {}
 
     # Check if we can extend the cache (same graph, new target is a superset)
     cached = _preview_cache.try_get(fp)
@@ -707,6 +789,7 @@ def execute_graph(
             memory_bytes = cached["memory_bytes"]
             error_lines = cached["error_lines"]
             avail_cols = cached["available_columns"]
+            output_cols = cached["output_columns"]
         else:
             # Partial hit — extend with newly-needed nodes
             logger.debug(
@@ -715,7 +798,16 @@ def execute_graph(
                 target=target_node_id,
                 cached_nodes=len(prev_outputs),
             )
-            (raw_outputs, order, errors, timings, memory_bytes, error_lines, avail_cols) = (
+            (
+                raw_outputs,
+                order,
+                errors,
+                timings,
+                memory_bytes,
+                error_lines,
+                avail_cols,
+                output_cols,
+            ) = (
                 _eager_execute(
                     graph,
                     target_node_id,
@@ -723,6 +815,7 @@ def execute_graph(
                     source=source,
                     enforce_contracts=enforce_contracts,
                     fingerprint_memo=fingerprint_memo,
+                    required_columns_by_node=preview_required_columns,
                 )
             )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
@@ -738,6 +831,7 @@ def execute_graph(
             merged_memory = {**cached["memory_bytes"], **memory_bytes}
             merged_error_lines = {**cached["error_lines"], **error_lines}
             merged_avail = {**cached["available_columns"], **avail_cols}
+            merged_output_cols = {**cached["output_columns"], **output_cols}
             merged_order = list(dict.fromkeys(cached["order"] + order))
             # A node that re-executed successfully in the extend path must
             # clear any stale cached error from an earlier transient failure.
@@ -754,6 +848,7 @@ def execute_graph(
                 memory_bytes=merged_memory,
                 error_lines=merged_error_lines,
                 available_columns=merged_avail,
+                output_columns=merged_output_cols,
             )
             _preview_cache.pin(fp)
             eager_outputs = merged
@@ -762,6 +857,7 @@ def execute_graph(
             memory_bytes = merged_memory
             error_lines = merged_error_lines
             avail_cols = merged_avail
+            output_cols = merged_output_cols
             order = merged_order
     else:
         # Complete cache miss — execute from scratch
@@ -771,13 +867,23 @@ def execute_graph(
             target=target_node_id,
             prev_fingerprint=(_preview_cache.fingerprint or "")[:8],
         )
-        raw_outputs, order, errors, timings, memory_bytes, error_lines, avail_cols = _eager_execute(
+        (
+            raw_outputs,
+            order,
+            errors,
+            timings,
+            memory_bytes,
+            error_lines,
+            avail_cols,
+            output_cols,
+        ) = _eager_execute(
             graph,
             target_node_id,
             row_limit,
             source=source,
             enforce_contracts=enforce_contracts,
             fingerprint_memo=fingerprint_memo,
+            required_columns_by_node=preview_required_columns,
         )
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
         _preview_cache.store(
@@ -789,6 +895,7 @@ def execute_graph(
             memory_bytes=memory_bytes,
             error_lines=error_lines,
             available_columns=avail_cols,
+            output_columns=output_cols,
         )
         # Pin this entry so the trace can always reuse the exact same
         # DataFrames.  Prevents LRU eviction between preview and trace.
@@ -810,6 +917,14 @@ def execute_graph(
     )
 
     schema_warnings: dict[str, list[SchemaWarning]] = {}
+
+    def _cached_output_names(node_id: str) -> set[str]:
+        cached = output_cols.get(node_id)
+        if cached:
+            return {name for name, _dtype in cached}
+        df = eager_outputs.get(node_id)
+        return set(df.columns) if df is not None else set()
+
     for nid in result_order:
         ref = node_map[nid].data.config.get("instanceOf")
         if not ref or ref not in node_map:
@@ -817,15 +932,11 @@ def execute_graph(
         # Columns feeding into the original node
         orig_input_cols: set[str] = set()
         for pid in parents_of.get(ref, []):
-            df = eager_outputs.get(pid)
-            if df is not None:
-                orig_input_cols.update(df.columns)
+            orig_input_cols.update(_cached_output_names(pid))
         # Columns feeding into the instance node
         inst_input_cols: set[str] = set()
         for pid in parents_of.get(nid, []):
-            df = eager_outputs.get(pid)
-            if df is not None:
-                inst_input_cols.update(df.columns)
+            inst_input_cols.update(_cached_output_names(pid))
         missing = orig_input_cols - inst_input_cols
         if missing:
             schema_warnings[nid] = [
@@ -853,7 +964,12 @@ def execute_graph(
                 memory_bytes=memory_bytes.get(nid, 0),
             )
             continue
-        columns = [ColumnInfo(name=c, dtype=str(df[c].dtype)) for c in df.columns]
+        full_output = output_cols.get(nid)
+        columns = (
+            [ColumnInfo(name=n, dtype=d) for n, d in full_output]
+            if full_output is not None
+            else [ColumnInfo(name=c, dtype=str(df[c].dtype)) for c in df.columns]
+        )
         # available_columns = full column set before selected_columns filtering
         avail = avail_cols.get(nid)
         avail_col_infos = [ColumnInfo(name=n, dtype=d) for n, d in avail] if avail else columns
@@ -888,7 +1004,7 @@ def execute_graph(
         results[nid] = NodeResult(
             status="ok",
             row_count=len(df),
-            column_count=len(df.columns),
+            column_count=len(columns),
             columns=columns,
             available_columns=avail_col_infos,
             preview=preview,
@@ -923,6 +1039,7 @@ def _eager_execute(
     source: str = "live",
     enforce_contracts: bool = True,
     fingerprint_memo: GraphFingerprintMemo | None = None,
+    required_columns_by_node: dict[str, list[str]] | None = None,
 ) -> tuple[
     dict[str, pl.DataFrame | None],
     list[str],
@@ -931,16 +1048,18 @@ def _eager_execute(
     dict[str, int],
     dict[str, int],
     dict[str, list[tuple[str, str]]],
+    dict[str, list[tuple[str, str]]],
 ]:
     """Execute the graph eagerly in topo order.
 
     Returns (outputs, order, errors, timings, memory_bytes, error_lines,
-    available_columns) where errors maps node_id → message for nodes that
+    available_columns, output_columns) where errors maps node_id → message for nodes that
     failed, timings maps node_id → execution milliseconds, memory_bytes maps
     node_id → output DataFrame size in bytes, error_lines maps
     node_id → 1-based line number in user code for the error, and
     available_columns maps node_id → list of (name, dtype) pairs before
-    any selected_columns filtering.
+    any selected_columns filtering. output_columns maps node_id → the full
+    post-selected/post-renamed schema before any preview execution projection.
     """
     preamble_error: str | None = None
     try:
@@ -966,6 +1085,7 @@ def _eager_execute(
         preamble_ns=preamble_ns or None,
         source=source,
         enforce_contracts=enforce_contracts,
+        required_columns_by_node=required_columns_by_node,
     )
     errors = result.errors
     if preamble_error:
@@ -985,6 +1105,7 @@ def _eager_execute(
         result.memory_bytes,
         result.error_lines,
         result.available_columns,
+        result.output_columns,
     )
 
 
@@ -1038,9 +1159,20 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
     config = sink_node.data.config
     path = config.get("path", "")
     fmt = config.get("format", "parquet")
+    selected_columns = config.get("selected_columns")
 
     if not path:
         raise ValueError("Sink node has no output path configured")
+    required_columns_by_node: dict[str, frozenset[str]] | None = None
+    if selected_columns:
+        if isinstance(selected_columns, str | bytes):
+            raise ValueError("Sink selected_columns must be a list of column names")
+        selected_seed: set[str] = set()
+        for column in selected_columns:
+            if not isinstance(column, str) or not column:
+                raise ValueError("Sink selected_columns must contain non-empty string names")
+            selected_seed.add(column)
+        required_columns_by_node = {sink_node_id: frozenset(selected_seed)}
 
     path = _resolve_sink_path(path, fmt)
 
@@ -1091,6 +1223,7 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
                 source=sink_scenario,
                 checkpoint_dir=checkpoint_path,
                 enforce_contracts=ENFORCE_CONTRACTS,
+                required_columns_by_node=required_columns_by_node,
             )
             lf = lazy_outputs.get(sink_node_id)
             if lf is None:

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import gc
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -181,6 +182,25 @@ def _effective_contract(node: GraphNode) -> Contract:
                 error=repr(exc),
             )
         builder = Contract.opaque()
+    return _overlay_declared_contract(node, builder)
+
+
+def _projection_contract(node: GraphNode) -> Contract:
+    """Return the column contract used by projection analysis.
+
+    Unlike :func:`_effective_contract`, this path does not soften builder
+    contract failures. Projection happens before node execution, so a
+    malformed concrete contract should be visible rather than quietly
+    widening the graph. The only extra behaviour over the registry lookup is
+    honoring a user-declared concrete contract on otherwise opaque transform
+    nodes.
+    """
+    builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+    return _overlay_declared_contract(node, builder)
+
+
+def _overlay_declared_contract(node: GraphNode, builder: Contract) -> Contract:
+    """Apply any user-declared contract fields over a builder contract."""
     declared_raw = node.data.config.get("contract")
     if declared_raw is None:
         return builder
@@ -271,16 +291,327 @@ def _should_check_contract(contract: Contract) -> bool:
     return contract.inputs is not None or contract.outputs is not None
 
 
+def _normalise_required_columns_by_node(
+    required_columns_by_node: Mapping[str, Iterable[str]] | None,
+    order: list[str],
+) -> dict[str, set[str]]:
+    """Validate caller-provided projection seeds for concrete node outputs."""
+    if not required_columns_by_node:
+        return {}
+
+    executable_ids = set(order)
+    normalised: dict[str, set[str]] = {}
+    for node_id, raw_columns in required_columns_by_node.items():
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("required_columns_by_node keys must be non-empty node ids.")
+        if node_id not in executable_ids:
+            raise ValueError(
+                f"required_columns_by_node references node {node_id!r}, "
+                "but that node is not in the lazy execution target."
+            )
+        if raw_columns is None or isinstance(raw_columns, (str, bytes)):
+            raise ValueError(
+                f"required_columns_by_node[{node_id!r}] must be an iterable of column names."
+            )
+
+        columns: set[str] = set()
+        for column in raw_columns:
+            if not isinstance(column, str) or not column:
+                raise ValueError(
+                    f"required_columns_by_node[{node_id!r}] must contain "
+                    "non-empty string column names."
+                )
+            columns.add(column)
+        normalised[node_id] = columns
+    return normalised
+
+
 # ---------------------------------------------------------------------------
 # Checkpoint projection — backward column analysis
 # ---------------------------------------------------------------------------
 
 
-def _compute_needed_columns(
+class _ProjectionContribution(NamedTuple):
+    """Columns a child contributes to its parents during projection analysis."""
+
+    default: set[str] | None
+    by_parent: dict[str, set[str] | None]
+
+    def for_parent(self, parent_id: str) -> set[str] | None:
+        return self.by_parent.get(parent_id, self.default)
+
+
+class _ProjectionPlan(NamedTuple):
+    """Column projection needs at nodes and parent-specific fan-in edges."""
+
+    needed_by_node: dict[str, set[str] | None]
+    edge_demands: dict[tuple[str, str], set[str] | None]
+
+
+def _declared_inputs_by_parent(
+    node: GraphNode,
+    parent_ids: Iterable[str],
+) -> dict[str, set[str] | None] | None:
+    """Return explicit fan-in ownership metadata for *node*, if declared."""
+    declared_raw = node.data.config.get("contract")
+    if declared_raw is None:
+        return None
+    try:
+        declared = Contract.from_user_declared(declared_raw)
+    except ValueError as exc:
+        raise ContractMismatchError(
+            "Node contract annotation is malformed and cannot be interpreted.",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            reason=str(exc),
+        ) from exc
+    if declared is None or declared.inputs_by_parent is None:
+        return None
+
+    parent_set = set(parent_ids)
+    declared_set = set(declared.inputs_by_parent)
+    unknown = declared_set - parent_set
+    missing = parent_set - declared_set
+    if unknown or missing:
+        raise ContractMismatchError(
+            "Fan-in projection contract references unknown parent(s) or "
+            "omits incoming parent(s).",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            unknown_parent_ids=sorted(unknown),
+            missing_parent_ids=sorted(missing),
+            incoming_parent_ids=sorted(parent_set),
+        )
+
+    return {
+        parent_id: None if columns is None else set(columns)
+        for parent_id, columns in declared.inputs_by_parent.items()
+    }
+
+
+def _unambiguous_passthrough_parent(
+    parent_inputs: Mapping[str, set[str] | None],
+    referenced: set[str],
+) -> str | None:
+    """Return the sole parent whose declaration contains only node input keys."""
+    candidates = [
+        parent_id
+        for parent_id, columns in parent_inputs.items()
+        if columns is not None and columns <= referenced
+    ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
+def _literal_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+class _JoinCallInfo(NamedTuple):
+    left_parent: str
+    right_parent: str
+    how: str
+    suffix: str
+
+
+def _parent_id_from_expr(
+    expr: ast.AST,
+    aliases: Mapping[str, str],
+    parent_set: set[str],
+) -> str | None:
+    if not isinstance(expr, ast.Name):
+        return None
+    parent_id = aliases.get(expr.id, expr.id)
+    return parent_id if parent_id in parent_set else None
+
+
+def _parent_aliases(tree: ast.AST, parent_set: set[str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for ast_node in ast.walk(tree):
+        if not isinstance(ast_node, ast.Assign) or not isinstance(ast_node.value, ast.Name):
+            continue
+        parent_id = aliases.get(ast_node.value.id, ast_node.value.id)
+        if parent_id not in parent_set:
+            continue
+        for target in ast_node.targets:
+            if isinstance(target, ast.Name):
+                aliases[target.id] = parent_id
+    return aliases
+
+
+def _join_calls_for_parent_inputs(
+    node: GraphNode,
+    parent_ids: Iterable[str],
+) -> list[_JoinCallInfo]:
+    """Infer simple Polars join calls between incoming parents from node code."""
+    code = node.data.config.get("code")
+    if not isinstance(code, str) or ".join" not in code:
+        return []
+    parent_set = set(parent_ids)
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    aliases = _parent_aliases(tree, parent_set)
+    joins: list[_JoinCallInfo] = []
+
+    for ast_node in ast.walk(tree):
+        if not isinstance(ast_node, ast.Call):
+            continue
+        func = ast_node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "join":
+            continue
+        if not ast_node.args:
+            continue
+
+        left_parent = _parent_id_from_expr(func.value, aliases, parent_set)
+        right_parent = _parent_id_from_expr(ast_node.args[0], aliases, parent_set)
+        if left_parent is None or right_parent is None or left_parent == right_parent:
+            continue
+
+        how = "inner"
+        suffix = "_right"
+        for kw in ast_node.keywords:
+            if kw.arg == "how":
+                how = _literal_string(kw.value) or how
+            elif kw.arg == "suffix":
+                suffix = _literal_string(kw.value) or suffix
+        joins.append(
+            _JoinCallInfo(
+                left_parent=left_parent,
+                right_parent=right_parent,
+                how=how,
+                suffix=suffix,
+            )
+        )
+    return joins
+
+
+def _join_parent_demands(
+    node: GraphNode,
+    parent_ids: Iterable[str],
+    output_columns: set[str],
+) -> tuple[dict[str, set[str]], set[str]]:
+    """Return parent input columns inferred from simple Polars join output columns."""
+    joins = _join_calls_for_parent_inputs(node, parent_ids)
+    if not joins:
+        return {}, set()
+
+    demands: dict[str, set[str]] = {}
+    handled: set[str] = set()
+
+    for join in joins:
+        if not join.suffix:
+            continue
+        for column in output_columns - handled:
+            if not column.endswith(join.suffix):
+                continue
+            parent_column = column[: -len(join.suffix)]
+            if not parent_column:
+                continue
+            demands.setdefault(join.left_parent, set()).add(parent_column)
+            demands.setdefault(join.right_parent, set()).add(parent_column)
+            handled.add(column)
+
+    remaining = output_columns - handled
+    if not remaining:
+        return demands, handled
+    for join in joins:
+        preserved_parent: str | None = None
+        if join.how == "left":
+            preserved_parent = join.left_parent
+        elif join.how == "right":
+            preserved_parent = join.right_parent
+        if preserved_parent is None:
+            continue
+        demands.setdefault(preserved_parent, set()).update(remaining)
+        handled |= remaining
+        break
+
+    return demands, handled
+
+
+def _ratebook_factor_required_columns(config: Mapping[str, Any]) -> set[str]:
+    """Return factor-side columns required from a ratebook banding source."""
+    columns: set[str] = {str(config.get("quote_id", "quote_id"))}
+    raw_factor_columns = config.get("factor_columns") or []
+    for group in raw_factor_columns:
+        if isinstance(group, str) or not isinstance(group, Iterable):
+            raise ValueError("ratebook factor_columns must be lists of column names")
+        for column in group:
+            if not isinstance(column, str) or not column:
+                raise ValueError("ratebook factor_columns must contain non-empty string names")
+            columns.add(column)
+    return columns
+
+
+def _optimiser_parent_demands(
+    node: GraphNode,
+    parent_ids: Iterable[str],
+    data_input_columns: set[str] | None,
+) -> dict[str, set[str] | None] | None:
+    """Return configured parent-specific demands for multi-parent optimiser nodes."""
+    parent_set = set(parent_ids)
+    if len(parent_set) <= 1 or node.data.nodeType != NodeType.OPTIMISER:
+        return None
+
+    config = node.data.config
+    data_input = config.get("data_input")
+    banding_source = config.get("banding_source")
+    if not isinstance(data_input, str) or not data_input:
+        raise ContractMismatchError(
+            "Multi-parent optimiser projection requires a configured data_input.",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            incoming_parent_ids=sorted(parent_set),
+        )
+    if data_input not in parent_set:
+        raise ContractMismatchError(
+            "Configured optimiser data_input is not connected to the optimiser node.",
+            node_id=node.id,
+            node_type=node.data.nodeType.value,
+            data_input=data_input,
+            incoming_parent_ids=sorted(parent_set),
+        )
+
+    by_parent: dict[str, set[str] | None] = {parent_id: set() for parent_id in parent_set}
+    by_parent[data_input] = None if data_input_columns is None else set(data_input_columns)
+
+    if config.get("mode", "online") == "ratebook":
+        if not isinstance(banding_source, str) or not banding_source:
+            raise ContractMismatchError(
+                "Ratebook optimiser projection requires a configured banding_source.",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                incoming_parent_ids=sorted(parent_set),
+            )
+        if banding_source not in parent_set:
+            raise ContractMismatchError(
+                "Configured ratebook banding_source is not connected to the optimiser node.",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                banding_source=banding_source,
+                incoming_parent_ids=sorted(parent_set),
+            )
+        factor_columns = _ratebook_factor_required_columns(config)
+        existing = by_parent[banding_source]
+        by_parent[banding_source] = (
+            set(factor_columns) if existing is None else set(existing) | factor_columns
+        )
+
+    return by_parent
+
+
+def _compute_projection_plan(
     order: list[str],
     children_of: dict[str, list[str]],
     node_map: dict[str, GraphNode],
-) -> dict[str, set[str] | None]:
+    required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
+) -> _ProjectionPlan:
     """Single reverse-topological sweep computing per-node column needs.
 
     For each node *n*, ``needed[n]`` is the set of columns from *n*'s
@@ -298,19 +629,31 @@ def _compute_needed_columns(
     lookup per node.
 
     Opaque contribution (``None``) from any child forces the parent's
-    ``needed`` to ``None`` as a short-circuit, matching the previous
-    backward-pass semantics byte-for-byte.
+    ``needed`` to ``None`` as a short-circuit.  Multi-parent POLARS nodes
+    still fence parent propagation unless the contract includes
+    ``inputs_by_parent`` ownership metadata.  When that metadata is present,
+    the pass records a separate demand for each parent edge so sibling
+    branches are not asked for each other's columns.
     """
     needed: dict[str, set[str] | None] = {}
+    edge_demands: dict[tuple[str, str], set[str] | None] = {}
+    seeded_required = _normalise_required_columns_by_node(required_columns_by_node, order)
+    parents_by_child: dict[str, set[str]] = {nid: set() for nid in order}
+    for parent_id, child_ids in children_of.items():
+        for child_id in child_ids:
+            if child_id in parents_by_child:
+                parents_by_child[child_id].add(parent_id)
     # Per-node contribution to parents.  ``None`` means "parent must
     # fall to None" — either this node is opaque or any of its
     # descendants is.  Each entry is written exactly once per node.
-    contribution: dict[str, set[str] | None] = {}
+    contribution: dict[str, _ProjectionContribution] = {}
 
     for nid in reversed(order):
         node = node_map[nid]
         children = children_of.get(nid, [])
 
+        has_seed = nid in seeded_required
+        seed = seeded_required.get(nid, frozenset())
         if not children:
             # Terminal node — determine what it needs from its input.
             if node.data.nodeType == NodeType.OUTPUT:
@@ -326,31 +669,155 @@ def _compute_needed_columns(
             # contribution short-circuits the union to ``None``.
             acc: set[str] | None = set()
             for cid in children:
-                child_contrib = contribution.get(cid)
+                child_contrib = contribution[cid].for_parent(nid)
                 if child_contrib is None:
                     acc = None
                     break
                 acc |= child_contrib  # type: ignore[operator]
             needed[nid] = acc
+        if has_seed:
+            if needed[nid] is None:
+                # A seed can replace the opaque terminal demand from the
+                # caller that consumes this node directly (for example the
+                # optimiser data_input).  It must not override an unrelated
+                # opaque sibling branch, because that sibling will still be
+                # executed and may need columns outside the seed.
+                if len(children) <= 1:
+                    needed[nid] = set(seed)
+            else:
+                needed[nid] |= seed
 
         # Cache this node's contribution to its parents.  Computed
         # once here; every parent that visits this node as a child
         # reads the cached value instead of re-fetching the contract
         # and re-doing the set algebra.
         my_needed = needed[nid]
-        if my_needed is None:
-            contribution[nid] = None
-            continue
-        produced, referenced = get_column_contract(
-            node.data.nodeType,
-            node.data.config,
-        )
-        if produced is None or referenced is None:
-            contribution[nid] = None
-        else:
-            contribution[nid] = (my_needed - produced) | referenced
+        parent_ids = parents_by_child.get(nid, set())
+        if node.data.nodeType == NodeType.OPTIMISER:
+            data_input_id = node.data.config.get("data_input")
+            seeded_data_input = (
+                set(seeded_required[data_input_id])
+                if isinstance(data_input_id, str) and data_input_id in seeded_required
+                else None
+            )
+            routed_demands = _optimiser_parent_demands(
+                node,
+                parent_ids,
+                my_needed if my_needed is not None else seeded_data_input,
+            )
+            if routed_demands is not None:
+                for parent_id, parent_demand in routed_demands.items():
+                    edge_demands[(parent_id, nid)] = (
+                        None if parent_demand is None else set(parent_demand)
+                    )
+                contribution[nid] = _ProjectionContribution(
+                    default=None,
+                    by_parent=routed_demands,
+                )
+                continue
 
-    return needed
+        if my_needed is None:
+            contribution[nid] = _ProjectionContribution(default=None, by_parent={})
+            continue
+        produced, referenced = _projection_contract(node).to_tuple()
+        if produced is None or referenced is None:
+            parent_inputs = _declared_inputs_by_parent(node, parents_by_child.get(nid, ()))
+            if parent_inputs is not None:
+                raise ContractMismatchError(
+                    "Fan-in projection contract requires concrete 'inputs' "
+                    "and 'outputs' on the node contract.",
+                    node_id=nid,
+                    node_type=node.data.nodeType.value,
+                )
+            contribution[nid] = _ProjectionContribution(default=None, by_parent={})
+            continue
+
+        base_contribution = (my_needed - produced) | referenced
+        if len(parent_ids) > 1 and node.data.nodeType == NodeType.POLARS:
+            parent_inputs = _declared_inputs_by_parent(node, parent_ids)
+            if parent_inputs is None:
+                contribution[nid] = _ProjectionContribution(default=None, by_parent={})
+                continue
+
+            opaque_parent_ids = [
+                parent_id for parent_id, parent_columns in parent_inputs.items()
+                if parent_columns is None
+            ]
+            if opaque_parent_ids:
+                raise ContractMismatchError(
+                    "Fan-in projection contract inputs_by_parent must be fully concrete.",
+                    node_id=nid,
+                    node_type=node.data.nodeType.value,
+                    opaque_parent_ids=sorted(opaque_parent_ids),
+                )
+
+            covered: set[str] = set()
+            by_parent: dict[str, set[str] | None] = {}
+            for parent_id, parent_columns in parent_inputs.items():
+                assert parent_columns is not None
+                covered |= parent_columns
+                parent_demand = base_contribution & parent_columns
+                by_parent[parent_id] = parent_demand
+                edge_demands[(parent_id, nid)] = set(parent_demand)
+
+            missing = base_contribution - covered
+            if missing:
+                join_demands, handled_missing = _join_parent_demands(
+                    node,
+                    parent_ids,
+                    missing,
+                )
+                for parent_id, extra_columns in join_demands.items():
+                    parent_demand = by_parent[parent_id]
+                    assert parent_demand is not None
+                    parent_demand |= extra_columns
+                    edge_demands[(parent_id, nid)] = set(parent_demand)
+                missing -= handled_missing
+                if missing:
+                    passthrough_parent = _unambiguous_passthrough_parent(
+                        parent_inputs,
+                        referenced,
+                    )
+                    if passthrough_parent is not None:
+                        parent_demand = by_parent[passthrough_parent]
+                        assert parent_demand is not None
+                        parent_demand |= missing
+                        edge_demands[(passthrough_parent, nid)] = set(parent_demand)
+                        missing = set()
+                if missing:
+                    raise ContractMismatchError(
+                        "Fan-in projection contract does not cover columns "
+                        "required by the node.",
+                        node_id=nid,
+                        node_type=node.data.nodeType.value,
+                        missing=sorted(missing),
+                        declared_inputs_by_parent={
+                            pid: sorted(cols) if cols is not None else None
+                            for pid, cols in parent_inputs.items()
+                        },
+                    )
+
+            contribution[nid] = _ProjectionContribution(default=None, by_parent=by_parent)
+            continue
+
+        contribution[nid] = _ProjectionContribution(default=base_contribution, by_parent={})
+
+    return _ProjectionPlan(needed_by_node=needed, edge_demands=edge_demands)
+
+
+def _compute_needed_columns(
+    order: list[str],
+    children_of: dict[str, list[str]],
+    node_map: dict[str, GraphNode],
+    required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
+) -> dict[str, set[str] | None]:
+    """Return per-node output needs from the full projection plan."""
+    return _compute_projection_plan(
+        order,
+        children_of,
+        node_map,
+        required_columns_by_node=required_columns_by_node,
+    ).needed_by_node
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +1038,7 @@ def _execute_lazy(
     checkpoint_dir: Path | None = None,
     enforce_contracts: bool = False,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
+    required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -594,6 +1062,11 @@ def _execute_lazy(
             available to the caller after their final downstream consumer has
             executed. Optimiser ratebook solves use this for the selected
             banding source side input.
+        required_columns_by_node: Optional exact output-column demand for
+            caller-consumed nodes.  These seeds supplement concrete
+            descendant-derived projection for the named nodes, and replace
+            opaque descendant demand so callers that consume a non-OUTPUT
+            node directly can avoid terminal "all columns" propagation.
         enforce_contracts: When ``True`` (see ``executor.ENFORCE_CONTRACTS``
             for the default), assert declared column contracts at each
             node boundary via ``.collect_schema()``.  Polars computes
@@ -612,6 +1085,48 @@ def _execute_lazy(
         target_node_id,
         source=source,
     )
+    normalised_required_columns = _normalise_required_columns_by_node(
+        required_columns_by_node,
+        order,
+    )
+
+    # Count downstream consumers per node so we can checkpoint fan-out
+    # points (nodes whose output feeds >1 consumer).  Without this,
+    # Polars duplicates the entire upstream plan for each branch —
+    # e.g. a 38 GB JSONL scan runs twice when two siblings share a parent.
+    children_count: dict[str, int] = {nid: 0 for nid in order}
+    children_of: dict[str, list[str]] = {nid: [] for nid in order}
+    for nid, pids in parents_of.items():
+        for pid in pids:
+            if pid in children_count:
+                children_count[pid] += 1
+                children_of[pid].append(nid)
+
+    # Backward column analysis: compute the minimal set of columns
+    # needed at each node's output so checkpoints can project away
+    # unneeded columns before writing to parquet.  Batch MODEL_SCORE
+    # nodes also consume this demand locally so their internal temp
+    # parquet write can avoid unused passthrough columns even when the
+    # outer checkpoint layer skips model-score nodes.
+    needs_projection_analysis = (
+        checkpoint_dir is not None or source != "live" or bool(normalised_required_columns)
+    )
+    projection_plan: _ProjectionPlan | None = (
+        _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node=normalised_required_columns,
+        )
+        if needs_projection_analysis
+        else None
+    )
+    needed_cols: dict[str, set[str] | None] = (
+        projection_plan.needed_by_node if projection_plan is not None else {}
+    )
+    edge_demands: dict[tuple[str, str], set[str] | None] = (
+        projection_plan.edge_demands if projection_plan is not None else {}
+    )
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
@@ -628,31 +1143,11 @@ def _execute_lazy(
         row_limit=None,
         preamble_ns=preamble_ns,
         source=source,
+        required_output_columns_by_node=needed_cols,
     )
 
     # Execute - all intermediate results stay lazy
     lazy_outputs: dict[str, _Frame] = {}
-
-    # Count downstream consumers per node so we can checkpoint fan-out
-    # points (nodes whose output feeds >1 consumer).  Without this,
-    # Polars duplicates the entire upstream plan for each branch —
-    # e.g. a 38 GB JSONL scan runs twice when two siblings share a parent.
-    children_count: dict[str, int] = {nid: 0 for nid in order}
-    children_of: dict[str, list[str]] = {nid: [] for nid in order}
-    for nid, pids in parents_of.items():
-        for pid in pids:
-            if pid in children_count:
-                children_count[pid] += 1
-                children_of[pid].append(nid)
-
-    # Backward column analysis: compute the minimal set of columns
-    # needed at each node's output so checkpoints can project away
-    # unneeded columns before writing to parquet.  Only computed when
-    # checkpointing is active — the analysis may trigger model loading
-    # (cached) and is wasted work for non-checkpoint paths.
-    needed_cols: dict[str, set[str] | None] = (
-        _compute_needed_columns(order, children_of, node_map) if checkpoint_dir is not None else {}
-    )
 
     # Separate mutable counter for tracking remaining downstream consumers.
     # Decremented at checkpoint time so we know when a parent's LazyFrame
@@ -670,9 +1165,41 @@ def _execute_lazy(
     # upstream feeds multiple consumers.
     column_cache: dict[str, frozenset[str]] = {}
 
-    def _columns_of(frame: pl.LazyFrame | pl.DataFrame) -> frozenset[str]:
+    def _schema_names_of(frame: pl.LazyFrame | pl.DataFrame) -> list[str]:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-        return frozenset(lazy_frame.collect_schema().names())
+        return lazy_frame.collect_schema().names()
+
+    def _columns_of(frame: pl.LazyFrame | pl.DataFrame) -> frozenset[str]:
+        return frozenset(_schema_names_of(frame))
+
+    def _apply_edge_projection(
+        child_id: str,
+        parent_id: str,
+        frame: _Frame,
+    ) -> tuple[_Frame, frozenset[str] | None]:
+        if (parent_id, child_id) not in edge_demands:
+            return frame, None
+        demand = edge_demands[(parent_id, child_id)]
+        if demand is None:
+            return frame, None
+
+        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
+        schema_cols = _schema_names_of(lazy_frame)
+        schema_set = set(schema_cols)
+        missing = demand - schema_set
+        if missing:
+            raise ContractMismatchError(
+                "Columns required by a fan-in projection contract are "
+                "missing from the parent frame.",
+                node_id=child_id,
+                parent_id=parent_id,
+                missing=sorted(missing),
+                required_columns=sorted(demand),
+                parent_columns=sorted(schema_set),
+            )
+
+        ordered = [column for column in schema_cols if column in demand]
+        return lazy_frame.select(ordered), frozenset(ordered)
 
     for nid in order:
         fn, is_source = funcs[nid]
@@ -701,13 +1228,29 @@ def _execute_lazy(
             if not input_lfs:
                 raise ValueError(f"No input data available for node '{nid}'")
 
+            projected_input_lfs: list[_Frame] = []
+            projected_input_columns: list[frozenset[str] | None] = []
+            for input_id, input_lf in zip(input_ids, input_lfs, strict=True):
+                projected_lf, projected_cols = _apply_edge_projection(nid, input_id, input_lf)
+                projected_input_lfs.append(projected_lf)
+                projected_input_columns.append(projected_cols)
+            input_lfs = projected_input_lfs
+
             if check_here and contract is not None and contract.inputs is not None:
                 upstream_col_sets: list[frozenset[str]] = []
-                for upstream_pid, upstream_lf in zip(input_ids, input_lfs, strict=True):
-                    upstream_cols = column_cache.get(upstream_pid)
-                    if upstream_cols is None:
-                        upstream_cols = _columns_of(upstream_lf)
-                        column_cache[upstream_pid] = upstream_cols
+                for upstream_pid, upstream_lf, projected_cols in zip(
+                    input_ids,
+                    input_lfs,
+                    projected_input_columns,
+                    strict=True,
+                ):
+                    if projected_cols is not None:
+                        upstream_cols = projected_cols
+                    else:
+                        upstream_cols = column_cache.get(upstream_pid)
+                        if upstream_cols is None:
+                            upstream_cols = _columns_of(upstream_lf)
+                            column_cache[upstream_pid] = upstream_cols
                     upstream_col_sets.append(upstream_cols)
                 upstream_cols = frozenset().union(*upstream_col_sets)
                 _assert_inputs_satisfy_contract(node, contract, upstream_cols)
@@ -769,6 +1312,18 @@ def _execute_lazy(
             projection = needed_cols.get(nid)
             if projection is not None:
                 schema_cols = sink_lf.collect_schema().names()
+                schema_set = set(schema_cols)
+                missing = projection - schema_set
+                if missing:
+                    raise ContractMismatchError(
+                        "Checkpoint projection references columns missing "
+                        "from the node output schema.",
+                        node_id=nid,
+                        node_type=node.data.nodeType.value,
+                        missing=sorted(missing),
+                        required_columns=sorted(projection),
+                        output_columns=sorted(schema_set),
+                    )
                 valid = [c for c in schema_cols if c in projection]
                 if valid and len(valid) < len(schema_cols):
                     logger.info(
@@ -778,6 +1333,7 @@ def _execute_lazy(
                         projected_cols=len(valid),
                     )
                     sink_lf = sink_lf.select(valid)
+                    column_cache[nid] = frozenset(valid)
 
             safe_sink(sink_lf, tmp, fast_checkpoint=True)
 
@@ -829,6 +1385,8 @@ def _build_funcs(
     row_limit: int | None = None,
     preamble_ns: dict | None = None,
     source: str = "live",
+    required_output_columns_by_node: Mapping[str, set[str] | None] | None = None,
+    reuse_loaded_model_by_node: Mapping[str, bool] | None = None,
 ) -> dict[str, tuple[Callable, bool]]:
     """Build per-node executable functions from the graph.
 
@@ -837,6 +1395,8 @@ def _build_funcs(
     ``preamble_ns`` is a compiled namespace of user-defined helpers from
     the pipeline file's preamble section.
     ``source`` is the active execution source forwarded to build_node_fn.
+    ``reuse_loaded_model_by_node`` opts selected modelScore nodes into
+    scorer-instance model reuse for chunked callers.
     """
     funcs: dict[str, tuple[Callable, bool]] = {}
     for nid in order:
@@ -857,6 +1417,16 @@ def _build_funcs(
             orig_source_names=orig_src_names,
             preamble_ns=preamble_ns,
             source=source,
+            required_output_columns=(
+                required_output_columns_by_node.get(nid)
+                if required_output_columns_by_node is not None
+                else None
+            ),
+            reuse_loaded_model=(
+                bool(reuse_loaded_model_by_node.get(nid))
+                if reuse_loaded_model_by_node is not None
+                else False
+            ),
         )
         funcs[nid] = (fn, is_source)
     return funcs
@@ -897,6 +1467,7 @@ class EagerResult(NamedTuple):
     memory_bytes: dict[str, int]
     error_lines: dict[str, int]
     available_columns: dict[str, list[tuple[str, str]]]
+    output_columns: dict[str, list[tuple[str, str]]]
 
 
 def _execute_eager_core(
@@ -908,6 +1479,7 @@ def _execute_eager_core(
     preamble_ns: dict | None = None,
     source: str = "live",
     enforce_contracts: bool = True,
+    required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
 ) -> EagerResult:
     """Execute the graph eagerly in topo order and collect DataFrames.
 
@@ -926,6 +1498,9 @@ def _execute_eager_core(
             mismatch always raises ``ContractMismatchError`` regardless
             of *swallow_errors* — the contract is an API-level claim
             and a silent error would defeat the adoption effort.
+        required_columns_by_node: Optional exact output-column demand for
+            caller-consumed nodes.  Eager preview uses this to collect only
+            the visible target columns while still reporting the full schema.
 
     Returns:
         An ``EagerResult`` with named fields for outputs, order,
@@ -938,9 +1513,52 @@ def _execute_eager_core(
         target_node_id,
         source=source,
     )
+    normalised_required_columns = _normalise_required_columns_by_node(
+        required_columns_by_node,
+        order,
+    )
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
+
+    # Fan-out count per node — how many direct children consume this
+    # node's output.  Used to add a Polars ``.cache()`` hint when the
+    # parent feeds >1 consumer so the optimiser reuses one materialized
+    # plan across branches (diamond graphs) instead of duplicating the
+    # upstream work.  Each eager_outputs entry is already a concrete
+    # DataFrame, so the cache hint only matters once we re-enter a
+    # LazyFrame via ``.lazy()`` for the next node's inputs.
+    children_count: dict[str, int] = dict.fromkeys(order, 0)
+    children_of: dict[str, list[str]] = {nid: [] for nid in order}
+    for _nid, _pids in parents_of.items():
+        for _pid in _pids:
+            if _pid in children_count:
+                children_count[_pid] += 1
+                children_of[_pid].append(_nid)
+
+    projection_plan: _ProjectionPlan | None = (
+        _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node=normalised_required_columns,
+        )
+        if normalised_required_columns
+        else None
+    )
+    needed_cols: dict[str, set[str] | None] = (
+        projection_plan.needed_by_node if projection_plan is not None else {}
+    )
+    builder_needed_cols: dict[str, set[str] | None] = {}
+    if needed_cols:
+        builder_needed_cols = {
+            nid: (
+                None
+                if node_map[nid].data.nodeType == NodeType.MODEL_SCORE
+                else required_columns
+            )
+            for nid, required_columns in needed_cols.items()
+        }
 
     funcs = _build_funcs(
         order,
@@ -952,6 +1570,7 @@ def _execute_eager_core(
         row_limit=row_limit,
         preamble_ns=preamble_ns,
         source=source,
+        required_output_columns_by_node=builder_needed_cols,
     )
 
     eager_outputs: dict[str, pl.DataFrame | None] = {}
@@ -960,6 +1579,7 @@ def _execute_eager_core(
     timings: dict[str, float] = {}
     memory_bytes: dict[str, int] = {}
     available_columns: dict[str, list[tuple[str, str]]] = {}
+    output_columns: dict[str, list[tuple[str, str]]] = {}
 
     # Per-node column sets used by the boundary contract checks.  We
     # compute each frame's column set exactly once and reuse it — both
@@ -969,18 +1589,49 @@ def _execute_eager_core(
     # keeps the contract-enforced path within the <5% budget.
     column_cache: dict[str, frozenset[str]] = {}
 
-    # Fan-out count per node — how many direct children consume this
-    # node's output.  Used to add a Polars ``.cache()`` hint when the
-    # parent feeds >1 consumer so the optimiser reuses one materialized
-    # plan across branches (diamond graphs) instead of duplicating the
-    # upstream work.  Each eager_outputs entry is already a concrete
-    # DataFrame, so the cache hint only matters once we re-enter a
-    # LazyFrame via ``.lazy()`` for the next node's inputs.
-    children_count: dict[str, int] = dict.fromkeys(order, 0)
-    for _nid, _pids in parents_of.items():
-        for _pid in _pids:
-            if _pid in children_count:
-                children_count[_pid] += 1
+    def _schema_items_of(frame: pl.LazyFrame | pl.DataFrame) -> list[tuple[str, str]]:
+        lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
+        schema = lazy_frame.collect_schema()
+        return [(name, str(schema[name])) for name in schema.names()]
+
+    def _full_model_score_schema(
+        node_id: str,
+        node: GraphNode,
+        actual_columns: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        config = node.data.config
+        if (
+            node.data.nodeType != NodeType.MODEL_SCORE
+            or config.get("code")
+            or config.get("column_renames")
+            or config.get("selected_columns")
+        ):
+            return actual_columns
+
+        parent_ids = parents_of.get(node_id, [])
+        if not parent_ids:
+            return actual_columns
+        parent_columns = output_columns.get(parent_ids[0])
+        if parent_columns is None:
+            return actual_columns
+
+        actual_by_name = dict(actual_columns)
+        generated_names = [str(config.get("output_column") or "prediction")]
+        proba_col = f"{generated_names[0]}_proba"
+        if proba_col in actual_by_name:
+            generated_names.append(proba_col)
+
+        seen: set[str] = set()
+        full_columns: list[tuple[str, str]] = []
+        for name, dtype in parent_columns:
+            full_columns.append((name, actual_by_name.get(name, dtype)))
+            seen.add(name)
+        for name in generated_names:
+            if name in seen or name not in actual_by_name:
+                continue
+            full_columns.append((name, actual_by_name[name]))
+            seen.add(name)
+        return full_columns
 
     for nid in order:
         fn, is_source = funcs[nid]
@@ -1050,17 +1701,33 @@ def _execute_eager_core(
 
                 result = fn(*input_lfs)
 
-            df = result.collect(engine="streaming") if isinstance(result, pl.LazyFrame) else result
+            if not isinstance(result, (pl.LazyFrame, pl.DataFrame)):
+                raise TypeError(
+                    f"Node '{nid}' returned {type(result).__name__}; expected a Polars frame."
+                )
+
+            result_lf = result if isinstance(result, pl.LazyFrame) else result.lazy()
 
             # Capture full column set before selected_columns filtering
-            available_columns[nid] = [(c, str(df[c].dtype)) for c in df.columns]
+            available_columns[nid] = _schema_items_of(result_lf)
 
             # Apply selected_columns filter first (uses pre-rename names),
             # then column renames on the surviving columns.
-            filtered = _apply_selected_columns(df, node_map[nid].data.config)
-            df = filtered if isinstance(filtered, pl.DataFrame) else filtered.collect()
-            renamed = _apply_column_renames(df, node_map[nid].data.config)
-            df = renamed if isinstance(renamed, pl.DataFrame) else renamed.collect()
+            filtered = _apply_selected_columns(result_lf, node_map[nid].data.config)
+            renamed = _apply_column_renames(filtered, node_map[nid].data.config)
+            output_lf = renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+            full_output_columns = _schema_items_of(output_lf)
+            full_output_columns = _full_model_score_schema(nid, node, full_output_columns)
+            if (
+                node.data.nodeType == NodeType.MODEL_SCORE
+                and not node.data.config.get("code")
+                and not node.data.config.get("column_renames")
+                and not node.data.config.get("selected_columns")
+            ):
+                available_columns[nid] = full_output_columns
+            output_columns[nid] = full_output_columns
+            output_column_names = [name for name, _dtype in full_output_columns]
+            output_column_set = set(output_column_names)
 
             # Output-side contract check: every column the node promises
             # to produce must be present on the result.  We check the
@@ -1068,15 +1735,40 @@ def _execute_eager_core(
             # downstream consumers actually see.  Passthrough-runtime
             # nodes are exempt — see the ``is_passthrough_runtime``
             # note above.
-            final_cols = frozenset(df.columns)
+            final_cols = frozenset(output_column_names)
             if (
                 check_here
                 and contract.outputs is not None  # type: ignore[union-attr]
                 and not is_passthrough_runtime
             ):
                 _assert_outputs_satisfy_contract(node, contract, final_cols)  # type: ignore[arg-type]
+
+            projection = needed_cols.get(nid)
+            if projection is not None:
+                missing = projection - output_column_set
+                if missing and nid not in normalised_required_columns:
+                    raise ContractMismatchError(
+                        "Eager projection references columns missing "
+                        "from the node output schema.",
+                        node_id=nid,
+                        node_type=node.data.nodeType.value,
+                        missing=sorted(missing),
+                        required_columns=sorted(projection),
+                        output_columns=sorted(output_column_set),
+                    )
+                projected_columns = [c for c in output_column_names if c in projection]
+                if len(projected_columns) < len(output_column_names):
+                    logger.info(
+                        "eager_projection",
+                        node_id=nid,
+                        total_cols=len(output_column_names),
+                        projected_cols=len(projected_columns),
+                    )
+                    output_lf = output_lf.select(projected_columns)
+                    final_cols = frozenset(projected_columns)
             column_cache[nid] = final_cols
 
+            df = output_lf.collect(engine="streaming")
             eager_outputs[nid] = df
             memory_bytes[nid] = int(df.estimated_size("b"))
         except ContractMismatchError:
@@ -1106,4 +1798,5 @@ def _execute_eager_core(
         memory_bytes,
         error_lines,
         available_columns,
+        output_columns,
     )

@@ -21,6 +21,8 @@ import type {
   FetchTableResponse,
   FileListItem,
   FrontierAutoRangeResponse,
+  FrontierAutoRangeStartResponse,
+  FrontierAutoRangeStatusResponse,
   FrontierResponse,
   FrontierSelectResponse,
   GitArchiveResponse,
@@ -77,6 +79,8 @@ import {
   parseFetchProgressResponse,
   parseFetchTableResponse,
   parseFrontierAutoRangeResponse,
+  parseFrontierAutoRangeStartResponse,
+  parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -590,6 +594,35 @@ export function estimateOptimiserFrontierAutoRange(
 ): Promise<FrontierAutoRangeResponse> {
   return post<unknown>("/api/optimiser/frontier/auto-range", payload, { timeout: 300_000, ...options })
     .then(parseFrontierAutoRangeResponse)
+}
+
+export function startOptimiserFrontierAutoRange(
+  payload: { graph: GraphPayload; node_id: string },
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeStartResponse> {
+  return post<unknown>("/api/optimiser/frontier/auto-range/start", payload, options)
+    .then(parseFrontierAutoRangeStartResponse)
+}
+
+export function getOptimiserFrontierAutoRangeStatus(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeStatusResponse> {
+  return request<unknown>(
+    `/api/optimiser/frontier/auto-range/status/${encodeURIComponent(jobId)}`,
+    options,
+  ).then(parseFrontierAutoRangeStatusResponse)
+}
+
+export function cancelOptimiserFrontierAutoRange(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeStatusResponse> {
+  return post<unknown>(
+    `/api/optimiser/frontier/auto-range/cancel/${encodeURIComponent(jobId)}`,
+    {},
+    options,
+  ).then(parseFrontierAutoRangeStatusResponse)
 }
 
 export function selectFrontierPoint(

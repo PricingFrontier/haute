@@ -305,6 +305,30 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/OptimiserFrontierAutoRangeResponse"},
         },
     },
+    "/api/optimiser/frontier/auto-range/start": {
+        "POST": {
+            "request_ref": "#/components/schemas/OptimiserFrontierAutoRangeRequest",
+            "success_schema": {
+                "$ref": "#/components/schemas/OptimiserFrontierAutoRangeStartResponse"
+            },
+        },
+    },
+    "/api/optimiser/frontier/auto-range/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {
+                "$ref": "#/components/schemas/OptimiserFrontierAutoRangeStatusResponse"
+            },
+        },
+    },
+    "/api/optimiser/frontier/auto-range/status/{job_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {
+                "$ref": "#/components/schemas/OptimiserFrontierAutoRangeStatusResponse"
+            },
+        },
+    },
     "/api/optimiser/frontier/select": {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserFrontierSelectRequest",

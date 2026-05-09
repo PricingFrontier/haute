@@ -1344,6 +1344,36 @@ class TestLoadMlflowModelFastCache:
         )
         assert result is fake_sm
 
+    def test_disk_cache_hit_for_native_run_artifact_skips_mlflow_resolution(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Run artifacts already cached on disk should load without MLflow setup."""
+        monkeypatch.chdir(tmp_path)
+        cached = tmp_path / ".cache" / "models" / "abc123" / "model.cbm"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(b"cached model")
+        fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
+
+        with (
+            patch("haute._mlflow_io.load_local_model", return_value=fake_sm) as load_local,
+            patch("haute._mlflow_io.resolve_mlflow_source") as resolve_source,
+        ):
+            result = load_mlflow_model(
+                source_type="run",
+                run_id="abc123",
+                artifact_path="model.cbm",
+                task="regression",
+            )
+
+        assert result is fake_sm
+        load_local.assert_called_once_with(str(cached), task="regression")
+        resolve_source.assert_not_called()
+
+        cache_key = ("run", "abc123", "model.cbm", "regression")
+        assert _model_cache.get(cache_key) is fake_sm
+
     def test_post_resolve_cache_hit(self):
         """Cache hit after resolve_mlflow_source (second cache check, line 469)."""
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")

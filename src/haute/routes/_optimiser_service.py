@@ -6,12 +6,16 @@ The route handler becomes a thin adapter that delegates to
 
 from __future__ import annotations
 
+import ast
 import gc
 import os
+import re
 import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,7 +36,9 @@ from haute._types import (
     RatebookSolveResultLike,
     SolveResultLike,
 )
-from haute.graph_utils import NodeType
+from haute.errors import ContractMismatchError
+from haute.graph_utils import NodeType, graph_fingerprint
+from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_store import JobStore, register_artifact_cleaner
 from haute.routes._optimiser_limits import limited_frontier_payload
@@ -40,6 +46,8 @@ from haute.schemas import (
     OptimiserEstimateRequest,
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeResponse,
+    OptimiserFrontierAutoRangeStartResponse,
+    OptimiserFrontierAutoRangeStatusResponse,
     OptimiserFrontierRange,
     OptimiserSolveRequest,
     OptimiserSolveResponse,
@@ -50,9 +58,16 @@ logger = get_logger(component="server.optimiser.solve")
 
 # ── Default constants ─────────────────────────────────────────────
 _DEFAULT_TIMEOUT = int(os.environ.get("HAUTE_SOLVER_TIMEOUT", "300"))
+_DEFAULT_AUTO_RANGE_TIMEOUT = int(os.environ.get("HAUTE_AUTO_RANGE_TIMEOUT", "1800"))
 _HISTOGRAM_BINS = 20  # bin count for scenario-value distribution histogram
 _DEFAULT_MAX_ITER = 50  # max solver iterations (online & ratebook)
 _DEFAULT_CHUNK_SIZE = 500_000  # rows per chunk for solver processing
+_DEFAULT_AUTO_RANGE_CHUNK_SIZE = int(
+    os.environ.get("HAUTE_AUTO_RANGE_CHUNK_SIZE", "2000000")
+)
+_DEFAULT_AUTO_RANGE_PARTITIONS = int(
+    os.environ.get("HAUTE_AUTO_RANGE_PARTITIONS", "16")
+)  # disk buckets for chunked auto-range aggregation
 _DEFAULT_TOLERANCE = 1e-6  # convergence tolerance for solver
 _DEFAULT_MAX_CD_ITERATIONS = 10  # max coordinate-descent iterations (ratebook)
 _DEFAULT_CD_TOLERANCE = 1e-3  # coordinate-descent convergence tolerance (ratebook)
@@ -67,21 +82,171 @@ _SOLVE_JOB_TYPE = "solve"
 _ESTIMATE_JOB_TYPE = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
+_AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
+_FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
+_FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
+_FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        "error",
+        _FRONTIER_AUTO_RANGE_CANCELLED_STATUS,
+        _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS,
+    }
+)
 _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
     {
         _ESTIMATE_JOB_TYPE,
         _FRONTIER_AUTO_RANGE_JOB_TYPE,
     }
 )
+_STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES = frozenset(
+    {
+        NodeType.SCENARIO_EXPANDER,
+        NodeType.POLARS,
+        NodeType.MODEL_SCORE,
+    }
+)
+_STREAMING_AUTO_RANGE_GLOBAL_CODE_MARKERS = (
+    ".group_by(",
+    ".groupby(",
+    ".agg(",
+    ".join(",
+    ".sort(",
+    ".unique(",
+    ".over(",
+    ".rank(",
+    ".sample(",
+    ".head(",
+    ".tail(",
+    ".limit(",
+    ".slice(",
+    ".with_row_index(",
+    ".with_row_count(",
+    ".rolling(",
+    ".rolling_",
+    ".cum_",
+)
+_STREAMING_AUTO_RANGE_GLOBAL_METHOD_NAMES = frozenset(
+    {
+        "agg",
+        "approx_n_unique",
+        "collect",
+        "count",
+        "cum_count",
+        "cum_max",
+        "cum_min",
+        "cum_prod",
+        "cum_sum",
+        "diff",
+        "explode",
+        "first",
+        "group_by",
+        "groupby",
+        "head",
+        "interpolate",
+        "join",
+        "last",
+        "len",
+        "limit",
+        "map_batches",
+        "map_elements",
+        "max",
+        "mean",
+        "median",
+        "min",
+        "n_unique",
+        "over",
+        "product",
+        "quantile",
+        "rank",
+        "rolling",
+        "sample",
+        "shift",
+        "slice",
+        "sort",
+        "std",
+        "sum",
+        "tail",
+        "unique",
+        "var",
+        "with_row_count",
+        "with_row_index",
+    }
+)
+_STREAMING_AUTO_RANGE_ROW_LOCAL_DF_METHOD_NAMES = frozenset(
+    {"cast", "drop", "filter", "rename", "select", "with_columns"}
+)
+_STREAMING_AUTO_RANGE_ROW_LOCAL_EXPR_METHOD_NAMES = frozenset(
+    {
+        "abs",
+        "alias",
+        "cast",
+        "ceil",
+        "clip",
+        "exp",
+        "fill_nan",
+        "fill_null",
+        "floor",
+        "is_between",
+        "is_finite",
+        "is_in",
+        "is_infinite",
+        "is_nan",
+        "is_not_nan",
+        "is_not_null",
+        "is_null",
+        "log",
+        "not_",
+        "otherwise",
+        "round",
+        "sqrt",
+        "then",
+    }
+)
+_STREAMING_AUTO_RANGE_ROW_LOCAL_POLARS_FUNCTIONS = frozenset(
+    {
+        "all_horizontal",
+        "any_horizontal",
+        "coalesce",
+        "col",
+        "concat_str",
+        "lit",
+        "max_horizontal",
+        "min_horizontal",
+        "when",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamingAutoRangePlan:
+    base_node_id: str
+    scenario_node_id: str
+    chain_node_ids: tuple[str, ...]
+    required_output_columns_by_node: Mapping[str, set[str] | None]
+    base_required_columns: frozenset[str] | None
+
+
+def _positive_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer.")
+    return int(value)
 
 
 def _chunk_size_from_config(config: dict[str, Any]) -> int:
-    raw_chunk_size = config.get("chunk_size", _DEFAULT_CHUNK_SIZE)
-    if isinstance(raw_chunk_size, bool) or not isinstance(raw_chunk_size, int):
-        raise ValueError("chunk_size must be a positive integer.")
-    if raw_chunk_size <= 0:
-        raise ValueError("chunk_size must be a positive integer.")
-    return int(raw_chunk_size)
+    return _positive_int(config.get("chunk_size", _DEFAULT_CHUNK_SIZE), field="chunk_size")
+
+
+def _auto_range_chunk_size_from_config(config: dict[str, Any]) -> int:
+    if "auto_range_chunk_size" in config:
+        return _positive_int(
+            config["auto_range_chunk_size"],
+            field="auto_range_chunk_size",
+        )
+    return _positive_int(
+        config.get("chunk_size", _DEFAULT_AUTO_RANGE_CHUNK_SIZE),
+        field="chunk_size",
+    )
 
 
 def _job_elapsed_seconds(job: dict[str, Any], fallback: float = 0.0) -> float:
@@ -103,6 +268,385 @@ def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[s
     if isinstance(banding_source, str) and banding_source:
         return frozenset({banding_source})
     return frozenset()
+
+
+def _optimiser_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
+    """Return the columns needed to validate and consume optimiser input."""
+    objective = str(config["objective"])
+    qid_col = str(config.get("quote_id", "quote_id"))
+    mult_col = str(config.get("scenario_value", "scenario_value"))
+    step_col = str(config.get("scenario_index", "scenario_index"))
+    constraints = config.get("constraints") or {}
+    constraint_cols = [str(cname) for cname in constraints]
+    return frozenset({qid_col, step_col, mult_col, objective, *constraint_cols})
+
+
+def _ratebook_factor_required_columns(config: dict[str, Any]) -> frozenset[str]:
+    """Return factor-side columns required from a ratebook banding source."""
+    columns: set[str] = {str(config.get("quote_id", "quote_id"))}
+    raw_factor_columns = config.get("factor_columns") or []
+    for group in raw_factor_columns:
+        if isinstance(group, str):
+            raise ValueError("ratebook factor_columns must be lists of column names")
+        if not isinstance(group, Iterable):
+            raise ValueError("ratebook factor_columns must be lists of column names")
+        for column in group:
+            if not isinstance(column, str) or not column:
+                raise ValueError("ratebook factor_columns must contain non-empty string names")
+            columns.add(column)
+    return frozenset(columns)
+
+
+def _auto_range_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
+    """Return the optimiser input columns needed by auto-range only."""
+    qid_col = str(config.get("quote_id", "quote_id"))
+    constraints = config.get("constraints") or {}
+    constraint_cols = [str(cname) for cname in constraints]
+    return frozenset({qid_col, *constraint_cols})
+
+
+def _auto_range_partition_count_from_config(config: dict[str, Any]) -> int:
+    return _positive_int(
+        config.get("auto_range_partition_count", _DEFAULT_AUTO_RANGE_PARTITIONS),
+        field="auto_range_partition_count",
+    )
+
+
+def _auto_range_timeout_from_config(config: dict[str, Any]) -> int:
+    return _positive_int(
+        config.get("auto_range_timeout", _DEFAULT_AUTO_RANGE_TIMEOUT),
+        field="auto_range_timeout",
+    )
+
+
+def _auto_range_required_columns_by_node(
+    graph: PipelineGraph,
+    node_id: str,
+    config: dict[str, Any],
+    *,
+    mode: str,
+) -> dict[str, frozenset[str]]:
+    """Return lazy projection seeds for online frontier auto-range.
+
+    Online auto-range consumes only the optimiser input frame.  When a
+    configured ``data_input`` is a direct optimiser parent, seed that node so
+    other optimiser parents do not inherit the solver-column projection.  In
+    ratebook mode we leave projection unseeded because factor-source coupling
+    needs a wider, mode-specific safety proof before pruning.
+    """
+    if mode != "online":
+        return {}
+
+    required = _auto_range_input_required_columns(config)
+    data_input_id = _resolve_online_auto_range_data_input_id(graph, node_id, config)
+    if isinstance(data_input_id, str) and data_input_id:
+        return {data_input_id: required}
+    return {node_id: required}
+
+
+def _optimiser_solve_required_columns_by_node(
+    graph: PipelineGraph,
+    node_id: str,
+    config: dict[str, Any],
+) -> dict[str, frozenset[str]]:
+    """Return lazy projection seeds for solve/estimate optimiser input.
+
+    The optimiser node may also receive side inputs, for example ratebook
+    banding factors.  Seed the proven data-input parent only, so side-input
+    branches are not asked for solver columns they do not own.
+    """
+    required = _optimiser_input_required_columns(config)
+    data_input_id = _resolve_optimiser_data_input_id(graph, node_id, config)
+    if isinstance(data_input_id, str) and data_input_id:
+        if (
+            config.get("mode", "online") == "ratebook"
+            and config.get("banding_source") == data_input_id
+        ):
+            required = frozenset(set(required) | set(_ratebook_factor_required_columns(config)))
+        return {data_input_id: required}
+    return {}
+
+
+def _resolve_optimiser_data_input_id(
+    graph: PipelineGraph,
+    node_id: str,
+    config: dict[str, Any],
+) -> str | None:
+    """Return the optimiser dataframe input when it can be proven."""
+    data_input_id = config.get("data_input")
+    direct_parents = list(graph.parents_of.get(node_id, []))
+    if isinstance(data_input_id, str) and data_input_id:
+        if data_input_id not in set(direct_parents):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Configured optimiser data_input {data_input_id!r} is not connected "
+                    f"to optimiser node {node_id!r}."
+                ),
+            )
+        return data_input_id
+    if len(direct_parents) == 1:
+        return direct_parents[0]
+    return None
+
+
+def _resolve_online_auto_range_data_input_id(
+    graph: PipelineGraph,
+    node_id: str,
+    config: dict[str, Any],
+) -> str | None:
+    """Return the optimiser input node id that online auto-range consumes."""
+    return _resolve_optimiser_data_input_id(graph, node_id, config)
+
+
+def _row_local_polars_call_is_supported(call: ast.Call) -> bool:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        method_name = func.attr
+        if method_name in _STREAMING_AUTO_RANGE_GLOBAL_METHOD_NAMES:
+            return False
+        if isinstance(func.value, ast.Name) and func.value.id == "pl":
+            if method_name not in _STREAMING_AUTO_RANGE_ROW_LOCAL_POLARS_FUNCTIONS:
+                return False
+        elif method_name not in (
+            _STREAMING_AUTO_RANGE_ROW_LOCAL_DF_METHOD_NAMES
+            | _STREAMING_AUTO_RANGE_ROW_LOCAL_EXPR_METHOD_NAMES
+        ):
+            return False
+        elif not _row_local_polars_expr_is_supported(func.value):
+            return False
+        return all(
+            _row_local_polars_expr_is_supported(value)
+            for value in (*call.args, *(keyword.value for keyword in call.keywords))
+        )
+    return False
+
+
+def _row_local_polars_expr_is_supported(node: ast.AST) -> bool:
+    if isinstance(node, ast.Call):
+        return _row_local_polars_call_is_supported(node)
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name) and node.value.id == "pl":
+            return True
+        return _row_local_polars_expr_is_supported(node.value)
+    if isinstance(node, ast.Name | ast.Constant):
+        return True
+    if isinstance(node, ast.BinOp):
+        return _row_local_polars_expr_is_supported(
+            node.left
+        ) and _row_local_polars_expr_is_supported(node.right)
+    if isinstance(node, ast.UnaryOp):
+        return _row_local_polars_expr_is_supported(node.operand)
+    if isinstance(node, ast.BoolOp):
+        return all(_row_local_polars_expr_is_supported(value) for value in node.values)
+    if isinstance(node, ast.Compare):
+        return _row_local_polars_expr_is_supported(node.left) and all(
+            _row_local_polars_expr_is_supported(value) for value in node.comparators
+        )
+    if isinstance(node, ast.IfExp):
+        return (
+            _row_local_polars_expr_is_supported(node.test)
+            and _row_local_polars_expr_is_supported(node.body)
+            and _row_local_polars_expr_is_supported(node.orelse)
+        )
+    if isinstance(node, ast.List | ast.Tuple | ast.Set):
+        return all(_row_local_polars_expr_is_supported(value) for value in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            (key is None or _row_local_polars_expr_is_supported(key))
+            and _row_local_polars_expr_is_supported(value)
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
+    if isinstance(node, ast.Subscript):
+        return _row_local_polars_expr_is_supported(
+            node.value
+        ) and _row_local_polars_expr_is_supported(node.slice)
+    if isinstance(node, ast.Slice):
+        return (
+            (node.lower is None or _row_local_polars_expr_is_supported(node.lower))
+            and (node.upper is None or _row_local_polars_expr_is_supported(node.upper))
+            and (node.step is None or _row_local_polars_expr_is_supported(node.step))
+        )
+    return False
+
+
+def _row_local_polars_stmt_is_supported(stmt: ast.stmt) -> bool:
+    if isinstance(stmt, ast.Assign):
+        return all(isinstance(target, ast.Name) for target in stmt.targets) and (
+            _row_local_polars_expr_is_supported(stmt.value)
+        )
+    if isinstance(stmt, ast.AnnAssign):
+        return isinstance(stmt.target, ast.Name) and (
+            stmt.value is not None and _row_local_polars_expr_is_supported(stmt.value)
+        )
+    if isinstance(stmt, ast.Expr):
+        return _row_local_polars_expr_is_supported(stmt.value)
+    return False
+
+
+def _looks_chunk_local_user_code(code: object) -> bool:
+    """Return whether user code is eligible for chunk-local execution.
+
+    The streaming path only uses code that can be proven row-local by a small
+    AST allow-list.  Anything global, order-sensitive, or custom falls back to
+    the existing full lazy path where Polars can execute the graph as authored.
+    """
+    if not isinstance(code, str) or not code.strip():
+        return True
+    compact = re.sub(r"\s+", "", code).lower()
+    if any(marker in compact for marker in _STREAMING_AUTO_RANGE_GLOBAL_CODE_MARKERS):
+        return False
+    try:
+        module = ast.parse(code)
+    except SyntaxError:
+        return False
+    return all(_row_local_polars_stmt_is_supported(stmt) for stmt in module.body)
+
+
+def _streaming_auto_range_node_is_eligible(node: GraphNode) -> bool:
+    node_type = node.data.nodeType
+    config = node.data.config
+    if node_type not in _STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES:
+        return False
+    if node_type == NodeType.MODEL_SCORE:
+        # Model-score post-processing and column renames can be arbitrary
+        # user-defined transforms; keep them on the full lazy path for now.
+        return not (config.get("code") or "").strip() and not config.get("column_renames")
+    return _looks_chunk_local_user_code(config.get("code"))
+
+
+def _projection_plan_for_auto_range(
+    graph: PipelineGraph,
+    node_id: str,
+    *,
+    required_columns_by_node: Mapping[str, Iterable[str]],
+) -> Any:
+    from haute._execute_lazy import _compute_projection_plan
+    from haute.graph_utils import _prepare_graph
+
+    node_map, order, parents_of, _id_to_name = _prepare_graph(
+        graph,
+        node_id,
+        source="batch",
+    )
+    children_of: dict[str, list[str]] = {nid: [] for nid in order}
+    for child_id, parent_ids in parents_of.items():
+        for parent_id in parent_ids:
+            if parent_id in children_of:
+                children_of[parent_id].append(child_id)
+    return _compute_projection_plan(
+        order,
+        children_of,
+        node_map,
+        required_columns_by_node=required_columns_by_node,
+    )
+
+
+def _upstream_slice_contains_node_type(
+    graph: PipelineGraph,
+    node_id: str,
+    node_type: NodeType,
+    *,
+    resolve_node: Callable[[GraphNode, dict[str, GraphNode]], GraphNode],
+) -> bool:
+    node_map = graph.node_map
+    stack = [node_id]
+    seen: set[str] = set()
+    while stack:
+        current_id = stack.pop()
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        raw_node = node_map.get(current_id)
+        if raw_node is not None and resolve_node(raw_node, node_map).data.nodeType == node_type:
+            return True
+        stack.extend(graph.parents_of.get(current_id, []))
+    return False
+
+
+def _build_streaming_auto_range_plan(
+    graph: PipelineGraph,
+    node_id: str,
+    config: dict[str, Any],
+    *,
+    mode: str,
+    required_columns_by_node: Mapping[str, Iterable[str]],
+) -> _StreamingAutoRangePlan | None:
+    """Build a strict online auto-range plan that chunks before expansion.
+
+    The first implementation intentionally handles only a single-parent chain
+    from one scenario expander to the optimiser ``data_input``.  Unsupported
+    graph shapes keep the existing general lazy execution path.
+    """
+    from haute._builders import resolve_instance_node
+
+    if mode != "online":
+        return None
+
+    try:
+        data_input_id = _resolve_online_auto_range_data_input_id(graph, node_id, config)
+    except HTTPException:
+        return None
+    if not isinstance(data_input_id, str) or not data_input_id:
+        return None
+
+    node_map = graph.node_map
+    downstream_to_upstream: list[str] = []
+    current_id = data_input_id
+    seen: set[str] = set()
+    base_node_id: str | None = None
+    scenario_node_id: str | None = None
+    while True:
+        if current_id in seen:
+            return None
+        seen.add(current_id)
+
+        raw_node = node_map.get(current_id)
+        if raw_node is None:
+            return None
+        node = resolve_instance_node(raw_node, node_map)
+        if not _streaming_auto_range_node_is_eligible(node):
+            return None
+        parent_ids = graph.parents_of.get(current_id, [])
+        if len(parent_ids) != 1:
+            return None
+
+        downstream_to_upstream.append(current_id)
+        if node.data.nodeType == NodeType.SCENARIO_EXPANDER:
+            base_node_id = parent_ids[0]
+            scenario_node_id = current_id
+            break
+        current_id = parent_ids[0]
+
+    if base_node_id is None or scenario_node_id is None:
+        return None
+    if _upstream_slice_contains_node_type(
+        graph,
+        base_node_id,
+        NodeType.SCENARIO_EXPANDER,
+        resolve_node=resolve_instance_node,
+    ):
+        return None
+
+    projection_plan = _projection_plan_for_auto_range(
+        graph,
+        node_id,
+        required_columns_by_node=required_columns_by_node,
+    )
+    base_needed = projection_plan.needed_by_node.get(base_node_id)
+
+    chain_node_ids = tuple(reversed(downstream_to_upstream))
+    required_output_columns_by_node = {
+        chain_id: projection_plan.needed_by_node.get(chain_id)
+        for chain_id in chain_node_ids
+    }
+    return _StreamingAutoRangePlan(
+        base_node_id=base_node_id,
+        scenario_node_id=scenario_node_id,
+        chain_node_ids=chain_node_ids,
+        required_output_columns_by_node=required_output_columns_by_node,
+        base_required_columns=(frozenset(base_needed) if base_needed is not None else None),
+    )
 
 
 def _apply_artifact_root() -> Path:
@@ -372,64 +916,188 @@ def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple
     return {str(cname): (frontier_min, frontier_max) for cname in constraints}
 
 
+class _ScenarioFrontierRangeAccumulator:
+    """Accumulate per-quote scenario extrema through disk-backed buckets."""
+
+    def __init__(
+        self,
+        *,
+        quote_id_col: str,
+        constraint_cols: list[str],
+        partition_count: int,
+        parts_root: Path,
+    ) -> None:
+        import polars as pl
+
+        self.quote_id_col = quote_id_col
+        self.constraint_cols = list(constraint_cols)
+        self.partition_count = partition_count
+        self.parts_root = parts_root
+        self.bucket_files: dict[int, list[Path]] = {}
+        self.row_count = 0
+        self.null_quote_id_count = 0
+        self.aliases: dict[str, tuple[str, str]] = {}
+        self.aggregate_exprs = []
+        self.combine_exprs = []
+        self.bucket_total_exprs = []
+        for idx, cname in enumerate(self.constraint_cols):
+            min_alias = f"__haute_frontier_min_{idx}"
+            max_alias = f"__haute_frontier_max_{idx}"
+            self.aliases[cname] = (min_alias, max_alias)
+            self.aggregate_exprs.extend(
+                [
+                    pl.col(cname).min().alias(min_alias),
+                    pl.col(cname).max().alias(max_alias),
+                ]
+            )
+            self.combine_exprs.extend(
+                [
+                    pl.col(min_alias).min().alias(min_alias),
+                    pl.col(max_alias).max().alias(max_alias),
+                ]
+            )
+            self.bucket_total_exprs.extend(
+                [
+                    pl.col(min_alias).sum().alias(min_alias),
+                    pl.col(max_alias).sum().alias(max_alias),
+                ]
+            )
+
+    def add_batch(self, batch: pl.DataFrame, *, batch_index: int) -> None:
+        import polars as pl
+
+        if batch.height == 0:
+            return
+        self.row_count += batch.height
+        null_count = int(batch[self.quote_id_col].null_count())
+        if null_count > 0:
+            self.null_quote_id_count += null_count
+            return
+
+        partial = batch.group_by(self.quote_id_col).agg(self.aggregate_exprs).with_columns(
+            (
+                pl.col(self.quote_id_col).hash(seed=0) % self.partition_count
+            ).cast(pl.UInt32).alias(_AUTO_RANGE_BUCKET_COLUMN)
+        )
+        bucket_ids = (
+            partial.select(_AUTO_RANGE_BUCKET_COLUMN)
+            .unique(maintain_order=False)
+            .get_column(_AUTO_RANGE_BUCKET_COLUMN)
+            .to_list()
+        )
+        for raw_bucket in bucket_ids:
+            bucket = int(raw_bucket)
+            bucket_df = partial.filter(
+                pl.col(_AUTO_RANGE_BUCKET_COLUMN) == bucket
+            ).drop(_AUTO_RANGE_BUCKET_COLUMN)
+            bucket_dir = self.parts_root / f"bucket_{bucket:04d}"
+            bucket_dir.mkdir(exist_ok=True)
+            part_path = bucket_dir / f"part_{batch_index:08d}.parquet"
+            bucket_df.write_parquet(part_path, compression="lz4")
+            self.bucket_files.setdefault(bucket, []).append(part_path)
+
+    def finish(
+        self,
+        *,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> dict[str, dict[str, float]]:
+        import polars as pl
+
+        if check_cancelled is not None:
+            check_cancelled()
+        if self.row_count == 0:
+            raise ValueError("Unable to estimate frontier ranges from an empty scenario frame.")
+        if self.null_quote_id_count > 0:
+            detail = (
+                f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({self.null_quote_id_count} rows). "
+                "Every row must have a non-null quote_id; check upstream filters and joins."
+            )
+            raise ValueError(detail)
+
+        range_totals = {
+            cname: {"min": 0.0, "max": 0.0}
+            for cname in self.constraint_cols
+        }
+        for paths in self.bucket_files.values():
+            if check_cancelled is not None:
+                check_cancelled()
+            bucket_totals = (
+                pl.scan_parquet([str(path) for path in paths])
+                .group_by(self.quote_id_col)
+                .agg(self.combine_exprs)
+                .select(self.bucket_total_exprs)
+                .collect(engine="streaming")
+            )
+            if bucket_totals.height != 1:
+                raise ValueError("Unable to estimate frontier ranges from a scenario bucket.")
+            row = bucket_totals.row(0, named=True)
+            for cname, (min_alias, max_alias) in self.aliases.items():
+                range_totals[cname]["min"] += float(row[min_alias])
+                range_totals[cname]["max"] += float(row[max_alias])
+
+        ranges: dict[str, dict[str, float]] = {}
+        for cname, values in range_totals.items():
+            min_value = values["min"]
+            max_value = values["max"]
+            if not np.isfinite(min_value) or not np.isfinite(max_value):
+                raise ValueError(f"Estimated frontier range for {cname!r} is not finite.")
+            if min_value > max_value:
+                raise ValueError(f"Estimated frontier range for {cname!r} is invalid.")
+            ranges[cname] = {"min": min_value, "max": max_value}
+        return ranges
+
+
 def _estimate_scenario_frontier_ranges(
     scored_lf: Any,
     *,
     quote_id_col: str,
     constraint_cols: list[str],
+    chunk_size: int = _DEFAULT_AUTO_RANGE_CHUNK_SIZE,
+    partition_count: int = _DEFAULT_AUTO_RANGE_PARTITIONS,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Return exact online achievable min/max totals from the scenario frame.
 
     For each constraint, each quote can independently choose the scenario that
-    minimises or maximises that constraint total.  This avoids relying on
-    scenario ordering and only materialises two aggregate floats per
-    constraint.
+    minimises or maximises that constraint total.  The input is read in bounded
+    batches, reduced to per-batch quote extrema, then hash-partitioned to
+    temporary parquet files so quotes split across read batches are recombined
+    without one global per-quote aggregate table.
     """
     import polars as pl
 
     if not constraint_cols:
         return {}
 
-    aggregate_exprs = []
-    total_exprs = []
-    aliases: dict[str, tuple[str, str]] = {}
-    for idx, cname in enumerate(constraint_cols):
-        min_alias = f"__haute_frontier_min_{idx}"
-        max_alias = f"__haute_frontier_max_{idx}"
-        aliases[cname] = (min_alias, max_alias)
-        aggregate_exprs.extend(
-            [
-                pl.col(cname).min().alias(min_alias),
-                pl.col(cname).max().alias(max_alias),
-            ]
-        )
-        total_exprs.extend(
-            [
-                pl.col(min_alias).sum().alias(min_alias),
-                pl.col(max_alias).sum().alias(max_alias),
-            ]
-        )
-
-    totals = (
-        scored_lf.group_by(quote_id_col)
-        .agg(aggregate_exprs)
-        .select(total_exprs)
-        .collect(engine="streaming")
+    if check_cancelled is not None:
+        check_cancelled()
+    chunk_size = _positive_int(chunk_size, field="chunk_size")
+    partition_count = _positive_int(partition_count, field="partition_count")
+    selected_lf = scored_lf.select(
+        [
+            pl.col(quote_id_col).cast(pl.String).alias(quote_id_col),
+            *[pl.col(cname) for cname in constraint_cols],
+        ]
     )
-    if totals.height != 1:
-        raise ValueError("Unable to estimate frontier ranges from an empty scenario frame.")
-    row = totals.row(0, named=True)
 
-    ranges: dict[str, dict[str, float]] = {}
-    for cname, (min_alias, max_alias) in aliases.items():
-        min_value = float(row[min_alias])
-        max_value = float(row[max_alias])
-        if not np.isfinite(min_value) or not np.isfinite(max_value):
-            raise ValueError(f"Estimated frontier range for {cname!r} is not finite.")
-        if min_value > max_value:
-            raise ValueError(f"Estimated frontier range for {cname!r} is invalid.")
-        ranges[cname] = {"min": min_value, "max": max_value}
-    return ranges
+    with tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as raw_dir:
+        accumulator = _ScenarioFrontierRangeAccumulator(
+            quote_id_col=quote_id_col,
+            constraint_cols=constraint_cols,
+            partition_count=partition_count,
+            parts_root=Path(raw_dir),
+        )
+        for batch_index, batch in enumerate(
+            selected_lf.collect_batches(
+                chunk_size=chunk_size,
+                maintain_order=False,
+                engine="streaming",
+            )
+        ):
+            if check_cancelled is not None:
+                check_cancelled()
+            accumulator.add_batch(batch, batch_index=batch_index)
+        return accumulator.finish(check_cancelled=check_cancelled)
 
 
 _RATEBOOK_FACTOR_LEVEL_SEPARATOR = "\x1f"
@@ -1039,6 +1707,7 @@ class OptimiserSolveService:
     def __init__(self, store: JobStore) -> None:
         self._store = store
         self._start_lock = threading.Lock()
+        self._auto_range_jobs = CancellableJobRegistry()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -1055,6 +1724,11 @@ class OptimiserSolveService:
 
         mode = self._validate_config(config)
         factor_level_order = _compute_ratebook_factor_level_order(body.graph, config, mode)
+        required_columns_by_node = _optimiser_solve_required_columns_by_node(
+            body.graph,
+            body.node_id,
+            config,
+        )
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -1075,7 +1749,12 @@ class OptimiserSolveService:
         with tempfile.TemporaryDirectory(prefix="haute_opt_") as raw_dir:
             checkpoint_dir = Path(raw_dir)
             try:
-                lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
+                lazy_outputs = self._execute_pipeline(
+                    body,
+                    job_id,
+                    checkpoint_dir,
+                    required_columns_by_node=required_columns_by_node,
+                )
                 source_lf = self._resolve_data_source(
                     lazy_outputs,
                     config,
@@ -1145,10 +1824,9 @@ class OptimiserSolveService:
         each constraint.  The calculation operates on the projected lazy frame
         and returns only tiny metadata.
         """
-        node = _find_optimiser_node(body.graph, body.node_id)
-        config = node.data.config
-        mode = self._validate_config(config)
-
+        prepared = self._prepare_frontier_auto_range(body)
+        node = prepared["node"]
+        config = prepared["config"]
         job_id = self._store.create_job(
             {
                 "status": "running",
@@ -1159,86 +1837,661 @@ class OptimiserSolveService:
                 "node_label": node.data.label,
             }
         )
+        try:
+            return self._run_frontier_auto_range_job(body, job_id, **prepared)
+        finally:
+            self._store.delete_job(job_id)
+
+    def start_frontier_auto_range(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+    ) -> OptimiserFrontierAutoRangeStartResponse:
+        """Start auto-range in a background thread and return a pollable job."""
+        prepared = self._prepare_frontier_auto_range(body)
+        node = prepared["node"]
+        config = prepared["config"]
+        job_key = self._frontier_auto_range_job_key(body)
+        with self._start_lock:
+            job_id = self._store.create_job(
+                {
+                    "status": "running",
+                    _JOB_TYPE_KEY: _FRONTIER_AUTO_RANGE_JOB_TYPE,
+                    "progress": 0.0,
+                    "message": "Estimating frontier range",
+                    "config": dict(config),
+                    "node_label": node.data.label,
+                }
+            )
+            _token, previous_job_id = self._auto_range_jobs.register_latest(job_key, job_id)
+            if previous_job_id is not None:
+                self._stop_frontier_auto_range_job(
+                    previous_job_id,
+                    status=_FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS,
+                    message="Superseded by a newer auto-range request.",
+                )
+        self._launch_frontier_auto_range_background(body, job_id, **prepared)
+        return OptimiserFrontierAutoRangeStartResponse(status="started", job_id=job_id)
+
+    def frontier_auto_range_status(
+        self,
+        job_id: str,
+    ) -> OptimiserFrontierAutoRangeStatusResponse:
+        """Return status for a background auto-range job."""
+        job = self._store.require_job(job_id)
+        if job.get(_JOB_TYPE_KEY) != _FRONTIER_AUTO_RANGE_JOB_TYPE:
+            raise HTTPException(status_code=404, detail=f"Auto-range job '{job_id}' not found")
+
+        if job.get("status") == "running":
+            start = job.get("start_time")
+            timeout = job.get("timeout", _DEFAULT_AUTO_RANGE_TIMEOUT)
+            if start and (time.monotonic() - start) > timeout:
+                self._auto_range_jobs.cancel(job_id)
+                updated_job = self._store.atomic_update(
+                    job_id,
+                    {
+                        "status": "error",
+                        "message": (
+                            f"Auto range timed out after {timeout}s. "
+                            "Reduce the input size or increase HAUTE_AUTO_RANGE_TIMEOUT."
+                        ),
+                        "elapsed_seconds": time.monotonic() - start,
+                    },
+                    expected_status="running",
+                )
+                job = updated_job if updated_job is not None else self._store.require_job(job_id)
+                self._auto_range_jobs.release(job_id)
+
+        return self._frontier_auto_range_status_response(job)
+
+    def cancel_frontier_auto_range(
+        self,
+        job_id: str,
+    ) -> OptimiserFrontierAutoRangeStatusResponse:
+        """Cancel a running background auto-range job."""
+        job = self._stop_frontier_auto_range_job(
+            job_id,
+            status=_FRONTIER_AUTO_RANGE_CANCELLED_STATUS,
+            message="Cancelled",
+        )
+        return self._frontier_auto_range_status_response(job)
+
+    def _frontier_auto_range_status_response(
+        self,
+        job: dict[str, Any],
+    ) -> OptimiserFrontierAutoRangeStatusResponse:
+        result = None
+        if job.get("status") == "completed" and job.get("result") is not None:
+            result = OptimiserFrontierAutoRangeResponse.model_validate(job["result"])
+        elapsed_seconds = job.get("elapsed_seconds", 0.0)
+        if job.get("status") == "running":
+            elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
+        return OptimiserFrontierAutoRangeStatusResponse(
+            status=job.get("status", "running"),
+            progress=job.get("progress", 0.0),
+            message=job.get("message", ""),
+            elapsed_seconds=elapsed_seconds,
+            result=result,
+        )
+
+    @staticmethod
+    def _frontier_auto_range_job_key(
+        body: OptimiserFrontierAutoRangeRequest,
+    ) -> tuple[str, str, str]:
+        return (_FRONTIER_AUTO_RANGE_JOB_TYPE, body.node_id, graph_fingerprint(body.graph))
+
+    def _stop_frontier_auto_range_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        message: str,
+    ) -> dict[str, Any]:
+        if status not in _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES:
+            raise ValueError(f"Unsupported auto-range stop status: {status!r}")
+        job = self._store.require_job(job_id)
+        if job.get(_JOB_TYPE_KEY) != _FRONTIER_AUTO_RANGE_JOB_TYPE:
+            raise HTTPException(status_code=404, detail=f"Auto-range job '{job_id}' not found")
+        if job.get("status") in _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES:
+            return job
+
+        self._auto_range_jobs.cancel(job_id)
+        updated_job = self._store.atomic_update(
+            job_id,
+            {
+                "status": status,
+                "message": message,
+                "elapsed_seconds": _job_elapsed_seconds(job),
+            },
+            expected_status="running",
+        )
+        self._auto_range_jobs.release(job_id)
+        return updated_job if updated_job is not None else self._store.require_job(job_id)
+
+    def _raise_if_frontier_auto_range_stopped(self, job_id: str) -> None:
+        job = self._store.require_job(job_id)
+        status = str(job.get("status", "running"))
+        if status != "running":
+            raise BackgroundJobStoppedError(job_id, status)
+        if self._auto_range_jobs.is_cancelled(job_id):
+            raise BackgroundJobStoppedError(job_id, _FRONTIER_AUTO_RANGE_CANCELLED_STATUS)
+
+    def _prepare_frontier_auto_range(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+    ) -> dict[str, Any]:
+        node = _find_optimiser_node(body.graph, body.node_id)
+        config = dict(node.data.config)
+        mode = self._validate_config(config)
+        try:
+            chunk_size = _auto_range_chunk_size_from_config(config)
+            partition_count = _auto_range_partition_count_from_config(config)
+            timeout = _auto_range_timeout_from_config(config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        required_columns_by_node = _auto_range_required_columns_by_node(
+            body.graph,
+            body.node_id,
+            config,
+            mode=mode,
+        )
+        streaming_plan = _build_streaming_auto_range_plan(
+            body.graph,
+            body.node_id,
+            config,
+            mode=mode,
+            required_columns_by_node=required_columns_by_node,
+        )
+        return {
+            "node": node,
+            "config": config,
+            "mode": mode,
+            "chunk_size": chunk_size,
+            "partition_count": partition_count,
+            "timeout": timeout,
+            "required_columns_by_node": required_columns_by_node,
+            "streaming_plan": streaming_plan,
+        }
+
+    def _run_frontier_auto_range_job(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        *,
+        node: GraphNode,
+        config: dict[str, Any],
+        mode: str,
+        chunk_size: int,
+        partition_count: int,
+        timeout: int,
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        streaming_plan: _StreamingAutoRangePlan | None,
+    ) -> OptimiserFrontierAutoRangeResponse:
+        del node, mode, timeout
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        if streaming_plan is not None:
+            return self._run_streaming_frontier_auto_range_job(
+                body,
+                job_id,
+                config=config,
+                chunk_size=chunk_size,
+                partition_count=partition_count,
+                streaming_plan=streaming_plan,
+            )
+
         # ``TemporaryDirectory`` ensures the checkpoint dir is removed even
-        # on signal/abort, where ``mkdtemp`` + ``rmtree`` in finally would
-        # leak.  The store-level cleanup (``delete_job``) stays in an outer
-        # finally so the job entry never outlives this call.
+        # on signal/abort, where ``mkdtemp`` + ``rmtree`` in finally would leak.
         try:
             with tempfile.TemporaryDirectory(prefix="haute_frontier_range_") as raw_dir:
                 checkpoint_dir = Path(raw_dir)
-                try:
-                    lazy_outputs = self._execute_pipeline(body, job_id, checkpoint_dir)
-                    source_lf = self._resolve_data_source(
-                        lazy_outputs,
-                        config,
-                        body.node_id,
-                        job_id,
-                    )
-                    constraint_cols, scored_lf = self._validate_and_project(
-                        source_lf,
-                        config,
-                        job_id,
-                    )
-                    ranges = _estimate_scenario_frontier_ranges(
-                        scored_lf,
-                        quote_id_col=str(config.get("quote_id", "quote_id")),
-                        constraint_cols=constraint_cols,
-                    )
-                    warning = None
-                    if mode == "ratebook":
-                        warning = (
-                            "Auto range uses the scenario dataframe envelope. "
-                            "Ratebook factor-table coupling can make the exact achievable "
-                            "range narrower."
-                        )
-                    self._store.atomic_update(
-                        job_id,
-                        {
-                            "status": "completed",
-                            "progress": 1.0,
-                            "message": "Completed",
-                            "result": {"ranges": ranges},
-                        },
-                    )
-                    response_ranges = {
-                        name: OptimiserFrontierRange(min=value["min"], max=value["max"])
-                        for name, value in ranges.items()
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "message": "Executing pipeline",
+                        "progress": 0.05,
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    },
+                    expected_status="running",
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                lazy_outputs = self._execute_pipeline(
+                    body,
+                    job_id,
+                    checkpoint_dir,
+                    required_columns_by_node=required_columns_by_node,
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "message": "Projecting auto-range columns",
+                        "progress": 0.65,
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    },
+                    expected_status="running",
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                source_lf = self._resolve_data_source(
+                    lazy_outputs,
+                    config,
+                    body.node_id,
+                    job_id,
+                )
+                constraint_cols, scored_lf = self._validate_and_project_auto_range(
+                    source_lf,
+                    config,
+                    job_id,
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                del lazy_outputs
+                gc.collect()
+
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "message": "Aggregating scenario envelope",
+                        "progress": 0.75,
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    },
+                    expected_status="running",
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                ranges = _estimate_scenario_frontier_ranges(
+                    scored_lf,
+                    quote_id_col=str(config.get("quote_id", "quote_id")),
+                    constraint_cols=constraint_cols,
+                    chunk_size=chunk_size,
+                    partition_count=partition_count,
+                    check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                response_ranges = {
+                    name: OptimiserFrontierRange(min=value["min"], max=value["max"])
+                    for name, value in ranges.items()
+                }
+                response = OptimiserFrontierAutoRangeResponse(
+                    status="ok",
+                    ranges=response_ranges,
+                    warning=None,
+                )
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "status": "completed",
+                        "progress": 1.0,
+                        "message": "Completed",
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "result": response.model_dump(),
+                    },
+                    expected_status="running",
+                )
+                return response
+        except BackgroundJobStoppedError:
+            raise
+        except HTTPException as exc:
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": str(exc.detail),
+                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                },
+                expected_status="running",
+            )
+            raise
+        except ValueError as exc:
+            detail = str(exc)
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": detail,
+                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                },
+                expected_status="running",
+            )
+            raise HTTPException(status_code=400, detail=detail) from exc
+        except Exception as exc:
+            logger.error(
+                "frontier_auto_range_failed",
+                error=str(exc),
+                node_id=body.node_id,
+                exc_info=True,
+            )
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Frontier auto range failed: {exc}",
+                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                },
+                expected_status="running",
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Frontier auto range failed. Check the server logs for details.",
+            ) from exc
+
+    def _run_streaming_frontier_auto_range_job(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        *,
+        config: dict[str, Any],
+        chunk_size: int,
+        partition_count: int,
+        streaming_plan: _StreamingAutoRangePlan,
+    ) -> OptimiserFrontierAutoRangeResponse:
+        import polars as pl
+
+        try:
+            self._raise_if_frontier_auto_range_stopped(job_id)
+            with (
+                tempfile.TemporaryDirectory(prefix="haute_frontier_range_") as raw_dir,
+                tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as parts_dir,
+            ):
+                checkpoint_dir = Path(raw_dir)
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "message": "Executing base pipeline",
+                        "progress": 0.05,
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    },
+                    expected_status="running",
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                base_required = None
+                if streaming_plan.base_required_columns is not None:
+                    base_required = {
+                        streaming_plan.base_node_id: streaming_plan.base_required_columns,
                     }
-                    return OptimiserFrontierAutoRangeResponse(
-                        status="ok",
-                        ranges=response_ranges,
-                        warning=warning,
+                lazy_outputs = self._execute_pipeline(
+                    body,
+                    job_id,
+                    checkpoint_dir,
+                    required_columns_by_node=base_required,
+                    target_node_id=streaming_plan.base_node_id,
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                base_lf = lazy_outputs.get(streaming_plan.base_node_id)
+                if base_lf is None:
+                    raise ValueError(
+                        "Streaming auto-range base node did not produce a dataframe: "
+                        f"{streaming_plan.base_node_id!r}."
                     )
-                except HTTPException as exc:
-                    self._store.atomic_update(
+
+                funcs = self._build_streaming_auto_range_chain_functions(
+                    body,
+                    streaming_plan,
+                )
+                scenario_steps = self._streaming_scenario_steps(body, streaming_plan)
+                base_chunk_size = max(1, chunk_size // scenario_steps)
+                qid_col = str(config.get("quote_id", "quote_id"))
+                constraint_cols = (
+                    list(config["constraints"].keys())
+                    if isinstance(config.get("constraints"), dict)
+                    else []
+                )
+                accumulator = _ScenarioFrontierRangeAccumulator(
+                    quote_id_col=qid_col,
+                    constraint_cols=constraint_cols,
+                    partition_count=partition_count,
+                    parts_root=Path(parts_dir),
+                )
+
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "message": "Streaming scenario chunks",
+                        "progress": 0.30,
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    },
+                    expected_status="running",
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                chunk_index = 0
+                base_lazy = base_lf if isinstance(base_lf, pl.LazyFrame) else base_lf.lazy()
+                for base_batch in base_lazy.collect_batches(
+                    chunk_size=base_chunk_size,
+                    maintain_order=False,
+                    engine="streaming",
+                ):
+                    self._raise_if_frontier_auto_range_stopped(job_id)
+                    if base_batch.height == 0:
+                        continue
+                    streamed_lf: Any = base_batch.lazy()
+                    for chain_id in streaming_plan.chain_node_ids:
+                        self._raise_if_frontier_auto_range_stopped(job_id)
+                        fn, _is_source = funcs[chain_id]
+                        streamed_lf = fn(streamed_lf)
+                        if not isinstance(streamed_lf, pl.LazyFrame):
+                            streamed_lf = streamed_lf.lazy()
+
+                    validated_constraints, scored_lf = self._validate_and_project_auto_range(
+                        streamed_lf,
+                        config,
                         job_id,
-                        {
-                            "status": "error",
-                            "message": str(exc.detail),
-                        },
-                        expected_status="running",
                     )
-                    raise
-                except Exception as exc:
-                    logger.error(
-                        "frontier_auto_range_failed",
-                        error=str(exc),
-                        node_id=body.node_id,
-                        exc_info=True,
+                    self._raise_if_frontier_auto_range_stopped(job_id)
+                    if validated_constraints != constraint_cols:
+                        raise ValueError("Streaming auto-range constraint columns changed.")
+                    batch = (
+                        scored_lf.select(
+                            [
+                                pl.col(qid_col).cast(pl.String).alias(qid_col),
+                                *[pl.col(cname) for cname in constraint_cols],
+                            ]
+                        )
+                        .collect(engine="streaming")
                     )
-                    self._store.atomic_update(
-                        job_id,
-                        {
-                            "status": "error",
-                            "message": f"Frontier auto range failed: {exc}",
-                        },
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Frontier auto range failed. Check the server logs for details.",
-                    ) from exc
-        finally:
-            self._store.delete_job(job_id)
+                    self._raise_if_frontier_auto_range_stopped(job_id)
+                    accumulator.add_batch(batch, batch_index=chunk_index)
+                    chunk_index += 1
+                    if chunk_index % 10 == 0:
+                        self._store.atomic_update(
+                            job_id,
+                            {
+                                "message": f"Streaming scenario chunks ({chunk_index})",
+                                "progress": 0.30,
+                                "elapsed_seconds": _job_elapsed_seconds(
+                                    self._store.jobs[job_id]
+                                ),
+                            },
+                            expected_status="running",
+                        )
+
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "message": "Combining scenario envelope",
+                        "progress": 0.85,
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                    },
+                    expected_status="running",
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                ranges = accumulator.finish(
+                    check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
+                )
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                response_ranges = {
+                    name: OptimiserFrontierRange(min=value["min"], max=value["max"])
+                    for name, value in ranges.items()
+                }
+                response = OptimiserFrontierAutoRangeResponse(
+                    status="ok",
+                    ranges=response_ranges,
+                    warning=None,
+                )
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        "status": "completed",
+                        "progress": 1.0,
+                        "message": "Completed",
+                        "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                        "result": response.model_dump(),
+                    },
+                    expected_status="running",
+                )
+                return response
+        except BackgroundJobStoppedError:
+            raise
+        except HTTPException as exc:
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": str(exc.detail),
+                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                },
+                expected_status="running",
+            )
+            raise
+        except ValueError as exc:
+            detail = str(exc)
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": detail,
+                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                },
+                expected_status="running",
+            )
+            raise HTTPException(status_code=400, detail=detail) from exc
+        except Exception as exc:
+            logger.error(
+                "frontier_auto_range_streaming_failed",
+                error=str(exc),
+                node_id=body.node_id,
+                exc_info=True,
+            )
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Streaming frontier auto range failed: {exc}",
+                    "elapsed_seconds": _job_elapsed_seconds(self._store.jobs[job_id]),
+                },
+                expected_status="running",
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Frontier auto range failed. Check the server logs for details.",
+            ) from exc
+
+    def _build_streaming_auto_range_chain_functions(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        streaming_plan: _StreamingAutoRangePlan,
+    ) -> dict[str, tuple[Callable, bool]]:
+        from haute._execute_lazy import _build_funcs
+        from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
+        from haute.graph_utils import _prepare_graph
+
+        node_map, _order, _parents_of, id_to_name = _prepare_graph(
+            body.graph,
+            body.node_id,
+            source="batch",
+        )
+        preamble_ns = (
+            _compile_preamble(
+                body.graph.preamble or "",
+                force_refresh=False,
+                pipeline_dir=_pipeline_dir(body.graph),
+            )
+            or None
+        )
+        chain_parents: dict[str, list[str]] = {}
+        parent_id = streaming_plan.base_node_id
+        for chain_id in streaming_plan.chain_node_ids:
+            chain_parents[chain_id] = [parent_id]
+            parent_id = chain_id
+        reuse_loaded_model_by_node = {
+            chain_id: True
+            for chain_id in streaming_plan.chain_node_ids
+            if node_map[chain_id].data.nodeType == NodeType.MODEL_SCORE
+        }
+        return _build_funcs(
+            list(streaming_plan.chain_node_ids),
+            node_map,
+            chain_parents,
+            id_to_name,
+            body.graph.parents_of,
+            _build_node_fn,
+            preamble_ns=preamble_ns,
+            source="live",
+            required_output_columns_by_node=streaming_plan.required_output_columns_by_node,
+            reuse_loaded_model_by_node=reuse_loaded_model_by_node,
+        )
+
+    @staticmethod
+    def _streaming_scenario_steps(
+        body: OptimiserFrontierAutoRangeRequest,
+        streaming_plan: _StreamingAutoRangePlan,
+    ) -> int:
+        from haute._builders import _DEFAULT_SCENARIO_STEPS
+
+        node = body.graph.node_map[streaming_plan.scenario_node_id]
+        raw_steps = node.data.config.get("steps")
+        steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
+        if steps < 1:
+            raise ValueError(f"Scenario expander requires steps >= 1, got {steps}")
+        return steps
+
+    def _launch_frontier_auto_range_background(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        **prepared: Any,
+    ) -> None:
+        start_time = time.monotonic()
+        self._store.atomic_update(
+            job_id,
+            {
+                "start_time": start_time,
+                "timeout": prepared["timeout"],
+            },
+        )
+
+        def _auto_range_background() -> None:
+            try:
+                self._run_frontier_auto_range_job(body, job_id, **prepared)
+            except BackgroundJobStoppedError:
+                return
+            except HTTPException:
+                return
+            except Exception as exc:
+                logger.error(
+                    "frontier_auto_range_worker_failed",
+                    error=str(exc),
+                    node_id=body.node_id,
+                    exc_info=True,
+                )
+            finally:
+                self._auto_range_jobs.release(job_id)
+
+        thread = threading.Thread(target=_auto_range_background, daemon=True)
+        try:
+            thread.start()
+        except Exception as exc:
+            logger.error(
+                "frontier_auto_range_worker_start_failed",
+                error=str(exc),
+                node_id=body.node_id,
+                exc_info=True,
+            )
+            self._store.atomic_update(
+                job_id,
+                {
+                    "status": "error",
+                    "message": f"Failed to start auto-range worker: {exc}",
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
+                expected_status="running",
+            )
+            self._auto_range_jobs.release(job_id)
 
     # ------------------------------------------------------------------
     # Private orchestration steps
@@ -1296,6 +2549,9 @@ class OptimiserSolveService:
         body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
         job_id: str,
         checkpoint_dir: Path,
+        *,
+        required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
+        target_node_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute the pipeline lazily up to the optimiser node.
 
@@ -1335,12 +2591,13 @@ class OptimiserSolveService:
                 lazy_outputs, *_ = _execute_lazy(
                     body.graph,
                     _build_node_fn,
-                    target_node_id=body.node_id,
+                    target_node_id=target_node_id or body.node_id,
                     preamble_ns=preamble_ns,
                     source=scenario,
                     checkpoint_dir=checkpoint_dir,
                     enforce_contracts=ENFORCE_CONTRACTS,
                     preserve_node_ids=_optimiser_side_input_ids(body.graph, body.node_id),
+                    required_columns_by_node=required_columns_by_node,
                 )
             finally:
                 # Restore previous streaming chunk size if one was explicitly set.
@@ -1351,6 +2608,16 @@ class OptimiserSolveService:
             return lazy_outputs
         except HTTPException:
             raise
+        except ContractMismatchError as exc:
+            error_msg = f"Pipeline execution failed: {exc}"
+            logger.warning(
+                "pipeline_contract_mismatch",
+                error=str(exc),
+                node_id=body.node_id,
+                exc_info=True,
+            )
+            self._store.atomic_update(job_id, {"status": "error", "message": error_msg})
+            raise HTTPException(status_code=400, detail=error_msg) from exc
         except Exception as exc:
             error_msg = f"Pipeline execution failed: {exc}"
             logger.error(
@@ -1374,8 +2641,16 @@ class OptimiserSolveService:
     ) -> Any:
         """Pick the correct lazy source from pipeline outputs."""
         data_input_id = config.get("data_input")
-        if data_input_id and data_input_id in lazy_outputs:
-            source_lf = lazy_outputs[data_input_id]
+        if isinstance(data_input_id, str) and data_input_id:
+            if data_input_id in lazy_outputs:
+                source_lf = lazy_outputs[data_input_id]
+            else:
+                error_msg = (
+                    f"Configured optimiser data_input {data_input_id!r} did not produce data. "
+                    "Make sure it is connected to the optimiser node and produces a dataframe."
+                )
+                self._store.atomic_update(job_id, {"status": "error", "message": error_msg})
+                raise HTTPException(status_code=400, detail=error_msg)
         else:
             source_lf = lazy_outputs.get(node_id)
 
@@ -1394,6 +2669,8 @@ class OptimiserSolveService:
         source_lf: Any,
         config: dict[str, Any],
         job_id: str,
+        *,
+        validate_quote_id_nulls: bool = True,
     ) -> tuple[list[str], Any]:
         """Validate columns and build the projection for the solver.
 
@@ -1431,18 +2708,19 @@ class OptimiserSolveService:
             self._store.atomic_update(job_id, {"status": "error", "message": detail})
             raise HTTPException(status_code=400, detail=detail)
 
-        null_count = int(
-            source_lf.select(pl.col(qid_col).null_count().alias("n"))
-            .collect(engine="streaming")
-            .item()
-        )
-        if null_count > 0:
-            detail = (
-                f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
-                "Every row must have a non-null quote_id; check upstream filters and joins."
+        if validate_quote_id_nulls:
+            null_count = int(
+                source_lf.select(pl.col(qid_col).null_count().alias("n"))
+                .collect(engine="streaming")
+                .item()
             )
-            self._store.atomic_update(job_id, {"status": "error", "message": detail})
-            raise HTTPException(status_code=400, detail=detail)
+            if null_count > 0:
+                detail = (
+                    f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
+                    "Every row must have a non-null quote_id; check upstream filters and joins."
+                )
+                self._store.atomic_update(job_id, {"status": "error", "message": detail})
+                raise HTTPException(status_code=400, detail=detail)
 
         solver_cols = [qid_col, step_col, mult_col, objective] + [
             c for c in constraint_cols if c in available_cols
@@ -1459,6 +2737,52 @@ class OptimiserSolveService:
             cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
 
         scored_lf = source_lf.select(solver_cols).with_columns(cast_exprs)
+        return constraint_cols, scored_lf
+
+    def _validate_and_project_auto_range(
+        self,
+        source_lf: Any,
+        config: dict[str, Any],
+        job_id: str,
+    ) -> tuple[list[str], Any]:
+        """Validate and project only the columns auto-range needs.
+
+        Auto-range computes per-quote extrema for configured constraints. It
+        does not need the objective, scenario index, or scenario value columns
+        that the full solver needs to build a ``QuoteGrid``.
+        """
+        import polars as pl
+
+        constraints = config["constraints"]
+        qid_col = str(config.get("quote_id", "quote_id"))
+
+        schema = source_lf.collect_schema()
+        available_cols = set(schema.names())
+        constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
+        required_cols = {qid_col, *constraint_cols}
+        missing_cols = sorted(required_cols - available_cols)
+        if missing_cols:
+            avail = sorted(available_cols)
+            detail = f"Missing columns in scored data: {missing_cols}. Available: {avail}"
+            self._store.atomic_update(job_id, {"status": "error", "message": detail})
+            raise HTTPException(status_code=400, detail=detail)
+
+        qid_dtype = schema[qid_col]
+        if not (
+            qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
+        ):
+            detail = (
+                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
+                "Numeric, binary, and other dtypes are not supported as quote_id columns."
+            )
+            self._store.atomic_update(job_id, {"status": "error", "message": detail})
+            raise HTTPException(status_code=400, detail=detail)
+
+        auto_range_cols = [qid_col, *constraint_cols]
+        cast_exprs = [pl.col(c).cast(pl.Float32()) for c in constraint_cols]
+        if qid_dtype == pl.String:
+            cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
+        scored_lf = source_lf.select(auto_range_cols).with_columns(cast_exprs)
         return constraint_cols, scored_lf
 
     @staticmethod

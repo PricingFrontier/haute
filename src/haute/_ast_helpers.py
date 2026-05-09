@@ -70,7 +70,7 @@ def _eval_contract_constructor(node: ast.expr) -> dict[str, Any] | tuple[Any, An
     kwargs: dict[str, Any] = {}
     for kw in node.keywords:
         key = kw.arg
-        if key is None or key not in {"inputs", "outputs"}:
+        if key is None or key not in {"inputs", "outputs", "inputs_by_parent"}:
             return None
         kwargs[key] = _eval_ast_literal(kw.value)
     return kwargs

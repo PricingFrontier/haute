@@ -73,6 +73,13 @@ class TestContracts:
 
     def test_contract_from_user_declared_accepts_multiple_shapes(self) -> None:
         from_dict = Contract.from_user_declared({"inputs": ["a"], "outputs": ("b",)})
+        from_parent_dict = Contract.from_user_declared(
+            {
+                "inputs": ["key", "premium"],
+                "outputs": [],
+                "inputs_by_parent": {"left": ["key"], "right": ["key", "premium"]},
+            }
+        )
         from_tuple = Contract.from_user_declared((["feature"], None))
         from_object = Contract.from_user_declared(
             SimpleNamespace(inputs=("x", "y"), outputs=["score"])
@@ -80,6 +87,14 @@ class TestContracts:
         from_opaque = Contract.from_user_declared("opaque")
 
         assert from_dict == Contract(inputs=frozenset({"a"}), outputs=frozenset({"b"}))
+        assert from_parent_dict == Contract(
+            inputs=frozenset({"key", "premium"}),
+            outputs=frozenset(),
+            inputs_by_parent={
+                "left": frozenset({"key"}),
+                "right": frozenset({"key", "premium"}),
+            },
+        )
         assert from_tuple == Contract(inputs=frozenset({"feature"}), outputs=None)
         assert from_object == Contract(
             inputs=frozenset({"x", "y"}),
@@ -100,6 +115,14 @@ class TestContracts:
 
         with pytest.raises(ValueError, match="must be iterable"):
             Contract.from_user_declared({"inputs": "age", "outputs": []})
+
+        with pytest.raises(ValueError, match="unknown key"):
+            Contract.from_user_declared({"inputs": [], "outputs": [], "typo": []})
+
+        with pytest.raises(ValueError, match="inputs_by_parent"):
+            Contract.from_user_declared(
+                {"inputs": [], "outputs": [], "inputs_by_parent": ["left"]}
+            )
 
         with pytest.raises(ValueError, match="unsupported type"):
             Contract.from_user_declared(123)

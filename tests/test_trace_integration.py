@@ -1907,6 +1907,46 @@ class TestCacheReusesPreview:
         result = execute_trace(graph, row_index=0, target_node_id="t", row_limit=_ROW_LIMIT)
         assert result.output_value["x"] == 1
 
+    def test_trace_reuses_projected_preview_cache(self, tmp_path):
+        from unittest.mock import patch
+
+        _trace_cache.invalidate()
+        _preview_cache.invalidate()
+
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        preview = execute_graph(
+            graph,
+            target_node_id="t",
+            row_limit=_ROW_LIMIT,
+            target_preview_only=True,
+            requested_preview_columns=["x", "z"],
+        )["t"].preview[0]
+
+        with patch("haute.trace._execute_eager_core", side_effect=AssertionError("cold trace")):
+            result = execute_trace(
+                graph,
+                row_index=0,
+                target_node_id="t",
+                column="z",
+                row_limit=_ROW_LIMIT,
+                row_values=preview,
+                preview=_preview_cache,
+            )
+
+        assert result.output_value == 11
+
 
 # ===========================================================================
 # L. Error Handling Tests

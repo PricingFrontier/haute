@@ -121,6 +121,7 @@ class ModelScoreConfig(TypedDict, total=False):
     # common
     task: str  # "regression" | "classification"
     output_column: str  # prediction column name, default "prediction"
+    feature_contract_path: str  # local deploy/runtime feature-contract artifact
     code: str  # optional post-processing code
     instanceOf: str
     inputMapping: dict[str, str]

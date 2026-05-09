@@ -10,12 +10,16 @@ import type { SimpleNode, SimpleEdge } from "../editors"
 // ── Mock API client ──
 const mockSolveOptimiser = vi.fn()
 const mockEstimateOptimiserSolve = vi.fn()
-const mockEstimateOptimiserFrontierAutoRange = vi.fn()
+const mockStartOptimiserFrontierAutoRange = vi.fn()
+const mockGetOptimiserFrontierAutoRangeStatus = vi.fn()
+const mockCancelOptimiserFrontierAutoRange = vi.fn()
 
 vi.mock("../../api/client", () => ({
   solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
   estimateOptimiserSolve: (...args: unknown[]) => mockEstimateOptimiserSolve(...args),
-  estimateOptimiserFrontierAutoRange: (...args: unknown[]) => mockEstimateOptimiserFrontierAutoRange(...args),
+  startOptimiserFrontierAutoRange: (...args: unknown[]) => mockStartOptimiserFrontierAutoRange(...args),
+  getOptimiserFrontierAutoRangeStatus: (...args: unknown[]) => mockGetOptimiserFrontierAutoRangeStatus(...args),
+  cancelOptimiserFrontierAutoRange: (...args: unknown[]) => mockCancelOptimiserFrontierAutoRange(...args),
 }))
 
 // ── Mock buildGraph ──
@@ -177,7 +181,9 @@ beforeEach(() => {
   // Never-resolving promise so tests don't race with the estimate's async
   // settlement — mirrors the ModellingConfig.test.tsx pattern.
   mockEstimateOptimiserSolve.mockReset().mockReturnValue(new Promise(() => {}))
-  mockEstimateOptimiserFrontierAutoRange.mockReset()
+  mockStartOptimiserFrontierAutoRange.mockReset()
+  mockGetOptimiserFrontierAutoRangeStatus.mockReset()
+  mockCancelOptimiserFrontierAutoRange.mockReset()
   mockHandleAddConstraint.mockReset()
   mockHandleRemoveConstraint.mockReset()
   mockHandleConstraintColumnChange.mockReset()
@@ -270,6 +276,92 @@ describe("OptimiserConfig", () => {
           fallbackColumns: props.componentProps.upstreamColumns,
         },
       )
+    })
+
+    it("prefers the configured data-input node columns over other upstream columns", () => {
+      const dataInputNode = {
+        id: "input_1",
+        data: {
+          label: "Data Input",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [{ name: "expected_margin", dtype: "Float64" }],
+        },
+      } satisfies SimpleNode
+      const bandingNode = {
+        id: "rating_factors",
+        data: {
+          label: "Rating Factors",
+          description: "",
+          nodeType: "banding",
+          config: {},
+          _columns: [{ name: "rating_factor_only", dtype: "Utf8" }],
+        },
+      } satisfies SimpleNode
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          data_input: "input_1",
+          objective: "expected_margin",
+          constraints: {},
+        },
+        allNodes: [dataInputNode, bandingNode],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "rating_factors", target: "opt_1" },
+        ],
+        upstreamColumns: [
+          { name: "expected_margin", dtype: "Float64" },
+          { name: "rating_factor_only", dtype: "Utf8" },
+        ],
+      })
+
+      renderConfig(props)
+
+      expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+        "input_1",
+        props.graph.allNodes,
+        props.graph.edges,
+        undefined,
+        undefined,
+        {
+          enabled: false,
+          fallbackColumns: [{ name: "expected_margin", dtype: "Float64" }],
+        },
+      )
+      expect(screen.getByText(/expected_margin \(Float64\)/)).toBeInTheDocument()
+      expect(screen.queryByText(/rating_factor_only \(Utf8\)/)).not.toBeInTheDocument()
+    })
+
+    it("defers data-input column fetches while the selected preview is loading", () => {
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          data_input: "input_1",
+          objective: "expected_margin",
+          constraints: {},
+        },
+        upstreamColumns: [],
+        deferColumnFetch: true,
+      } as unknown as MakePropsOverrides)
+
+      renderConfig(props)
+
+      expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+        "input_1",
+        props.graph.allNodes,
+        props.graph.edges,
+        undefined,
+        undefined,
+        {
+          enabled: false,
+          fallbackColumns: [],
+        },
+      )
+      expect(mockEstimateOptimiserSolve).not.toHaveBeenCalled()
     })
 
     it("objective change calls onUpdate with objective key", () => {
@@ -1314,11 +1406,22 @@ describe("OptimiserConfig", () => {
     })
 
     it("auto range populates efficient-frontier values from scenario envelope", async () => {
-      mockEstimateOptimiserFrontierAutoRange.mockResolvedValue({
-        status: "ok",
-        ranges: { loss_ratio: { min: 11, max: 39 } },
-        method: "scenario_envelope",
-        warning: null,
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-1",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1.2,
+        result: {
+          status: "ok",
+          ranges: { loss_ratio: { min: 11, max: 39 } },
+          method: "scenario_envelope",
+          warning: null,
+        },
       })
       const props = makeProps({
         config: {
@@ -1334,10 +1437,17 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
 
       await waitFor(() => {
-        expect(mockEstimateOptimiserFrontierAutoRange).toHaveBeenCalledWith({
-          graph: { nodes: [], edges: [], preamble: "" },
-          node_id: "opt_1",
-        })
+        expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith(
+          {
+            graph: { nodes: [], edges: [], preamble: "" },
+            node_id: "opt_1",
+          },
+          { signal: expect.any(AbortSignal) },
+        )
+        expect(mockGetOptimiserFrontierAutoRangeStatus).toHaveBeenCalledWith(
+          "range-job-1",
+          { signal: expect.any(AbortSignal) },
+        )
       })
       expect(props.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 11, max: 39 } },

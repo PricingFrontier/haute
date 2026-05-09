@@ -49,7 +49,10 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def _format_contract_kwarg(node: GraphNode) -> str | None:
+def _format_contract_kwarg(
+    node: GraphNode,
+    parent_name_by_id: dict[str, str] | None = None,
+) -> str | None:
     """Return the ``contract=...`` decorator kwarg source, or ``None``.
 
     For concrete contracts, emits
@@ -79,8 +82,13 @@ def _format_contract_kwarg(node: GraphNode) -> str | None:
     far from the broken config.
     """
     config = node.data.config
-    if config.get("instanceOf"):
+    declared_raw = config.get("contract")
+    if config.get("instanceOf") and declared_raw is None:
         return None
+    if declared_raw is not None:
+        declared = Contract.from_user_declared(declared_raw)
+        if declared is not None:
+            return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
     try:
         tup = get_column_contract(node.data.nodeType, config)
     except ConfigError:
@@ -101,6 +109,61 @@ def _format_contract_kwarg(node: GraphNode) -> str | None:
     inputs_repr = repr(sorted(contract.inputs))
     outputs_repr = repr(sorted(contract.outputs))
     return f'contract={{"inputs": {inputs_repr}, "outputs": {outputs_repr}}}'
+
+
+def _format_contract_source(
+    contract: Contract,
+    *,
+    parent_name_by_id: dict[str, str] | None = None,
+) -> str:
+    """Format a declared contract while preserving fan-in ownership metadata."""
+    if (
+        contract.inputs is None
+        and contract.outputs is None
+        and contract.inputs_by_parent is None
+    ):
+        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
+
+    contract_dict: dict[str, object] = {
+        "inputs": None if contract.inputs is None else sorted(contract.inputs),
+        "outputs": None if contract.outputs is None else sorted(contract.outputs),
+    }
+    if contract.inputs_by_parent is not None:
+        parent_names = set(parent_name_by_id.values()) if parent_name_by_id is not None else set()
+        inputs_by_parent: dict[str, list[str] | None] = {}
+        for parent_id, columns in sorted(contract.inputs_by_parent.items()):
+            emitted_parent = parent_id
+            if parent_name_by_id is not None:
+                if parent_id in parent_name_by_id:
+                    emitted_parent = parent_name_by_id[parent_id]
+                elif parent_id in parent_names:
+                    emitted_parent = parent_id
+                else:
+                    raise ParseError(
+                        "inputs_by_parent references a parent that is not connected "
+                        "to this node.",
+                        parent_id=parent_id,
+                        connected_parent_ids=sorted(parent_name_by_id),
+                        connected_parent_names=sorted(parent_names),
+                    )
+            inputs_by_parent[emitted_parent] = None if columns is None else sorted(columns)
+        contract_dict["inputs_by_parent"] = {
+            parent_id: columns
+            for parent_id, columns in sorted(inputs_by_parent.items())
+        }
+    return f"contract={contract_dict!r}"
+
+
+def _parent_name_by_id(
+    source_ids: list[str],
+    source_names: list[str],
+) -> dict[str, str]:
+    """Map incoming parent node ids to emitted Python function names."""
+    return {
+        source_id: source_names[index]
+        for index, source_id in enumerate(source_ids)
+        if index < len(source_names)
+    }
 
 
 def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
@@ -296,7 +359,10 @@ def _node_to_code(
         except ValueError:
             logger.warning("no_def_in_generated_code", node=node.data.label)
 
-    contract_kwarg = _format_contract_kwarg(node)
+    contract_kwarg = _format_contract_kwarg(
+        node,
+        parent_name_by_id=_parent_name_by_id(source_ids, source_names),
+    )
     if contract_kwarg is not None:
         try:
             code = _inject_contract_kwarg(code, contract_kwarg)
@@ -339,6 +405,7 @@ def _instance_to_code(
     node: GraphNode,
     original_func_name: str,
     source_names: list[str] | None = None,
+    source_ids: list[str] | None = None,
     orig_source_names: list[str] | None = None,
 ) -> str:
     """Generate code for an instance node that delegates to the original function.
@@ -354,6 +421,8 @@ def _instance_to_code(
 
     if source_names is None:
         source_names = []
+    if source_ids is None:
+        source_ids = []
 
     params = _build_params(source_names)
 
@@ -367,12 +436,19 @@ def _instance_to_code(
     else:
         args = ", ".join(source_names) if source_names else "df"
 
-    return (
+    code = (
         f'@pipeline.instance(of="{original_func_name}")\n'
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    return {original_func_name}({args})\n"
     )
+    contract_kwarg = _format_contract_kwarg(
+        node,
+        parent_name_by_id=_parent_name_by_id(source_ids, source_names),
+    )
+    if contract_kwarg is not None:
+        code = _inject_contract_kwarg(code, contract_kwarg)
+    return code
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +639,7 @@ def _generate_pipeline_lines(
             node,
             orig_func,
             source_names=srcs,
+            source_ids=(node_source_ids or {}).get(node.id, []),
             orig_source_names=orig_src,
         )
         # Inside submodel files the decorator prefix must be @submodel.*

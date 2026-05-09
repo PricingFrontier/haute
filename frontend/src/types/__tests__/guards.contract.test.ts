@@ -5,6 +5,7 @@ import {
   parseApplyOptimiserResponse,
   parseDissolveSubmodelResponse,
   parseFrontierAutoRangeResponse,
+  parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -313,6 +314,13 @@ describe("API response guards", () => {
     expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
     expect(frontierAutoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+    expect(parseFrontierAutoRangeStatusResponse({
+      status: "superseded",
+      progress: 0.25,
+      message: "Superseded by a newer request.",
+      elapsed_seconds: 1.5,
+      result: null,
+    }).status).toBe("superseded")
     expect(parseFrontierResponse({
       status: "ok",
       points: [{ total_objective: 1 }],

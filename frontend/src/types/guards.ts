@@ -18,6 +18,8 @@ import type {
   FetchProgressResponse,
   FetchTableResponse,
   FrontierAutoRangeResponse,
+  FrontierAutoRangeStartResponse,
+  FrontierAutoRangeStatusResponse,
   FrontierPoint,
   FrontierResponse,
   FrontierSelectResponse,
@@ -324,6 +326,33 @@ function optionalStringRecord(
   return value === undefined ? defaultValue : parseStringRecord(parser, value, `field \`${key}\``)
 }
 
+function parseArrayRecord<T>(
+  parser: string,
+  value: unknown,
+  field: string,
+  itemParser: (value: unknown, field: string) => T,
+): Record<string, T[]> {
+  const obj = expectPlainObject(parser, value, field)
+  const result: Record<string, T[]> = {}
+  for (const [recordKey, item] of Object.entries(obj)) {
+    result[recordKey] = parseArray(parser, item, `${field}.${recordKey}`, itemParser)
+  }
+  return result
+}
+
+function optionalArrayRecord<T>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+  itemParser: (value: unknown, field: string) => T,
+  defaultValue: Record<string, T[]> = {},
+): Record<string, T[]> {
+  const value = obj[key]
+  return value === undefined
+    ? defaultValue
+    : parseArrayRecord(parser, value, `field \`${key}\``, itemParser)
+}
+
 function optionalNullableObject(
   parser: string,
   obj: Record<string, unknown>,
@@ -483,6 +512,24 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     memory: optionalArray("parsePreviewNodeResponse", obj, "memory", parseNodeMemory),
     schema_warnings: optionalArray("parsePreviewNodeResponse", obj, "schema_warnings", parseSchemaWarning),
     node_statuses: optionalStringRecord("parsePreviewNodeResponse", obj, "node_statuses"),
+    node_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_columns",
+      parseColumnInfo,
+    ),
+    node_available_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_available_columns",
+      parseColumnInfo,
+    ),
+    node_schema_warnings: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_schema_warnings",
+      parseSchemaWarning,
+    ),
   }
 }
 
@@ -1000,6 +1047,36 @@ export function parseFrontierAutoRangeResponse(value: unknown): FrontierAutoRang
     ranges,
     method: expectString("parseFrontierAutoRangeResponse", obj.method, "field `method`"),
     warning: optionalNullableString("parseFrontierAutoRangeResponse", obj, "warning"),
+  }
+}
+
+export function parseFrontierAutoRangeStartResponse(value: unknown): FrontierAutoRangeStartResponse {
+  const obj = expectPlainObject("parseFrontierAutoRangeStartResponse", value)
+  return {
+    status: expectStringLiteral(
+      "parseFrontierAutoRangeStartResponse",
+      obj.status,
+      "field `status`",
+      ["started", "error"],
+    ),
+    job_id: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "job_id"),
+    error: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "error"),
+  }
+}
+
+export function parseFrontierAutoRangeStatusResponse(value: unknown): FrontierAutoRangeStatusResponse {
+  const obj = expectPlainObject("parseFrontierAutoRangeStatusResponse", value)
+  return {
+    status: expectStringLiteral(
+      "parseFrontierAutoRangeStatusResponse",
+      obj.status,
+      "field `status`",
+      ["running", "completed", "error", "cancelled", "superseded"],
+    ),
+    progress: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "progress"),
+    message: optionalString("parseFrontierAutoRangeStatusResponse", obj, "message"),
+    elapsed_seconds: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "elapsed_seconds"),
+    result: obj.result == null ? null : parseFrontierAutoRangeResponse(obj.result),
   }
 }
 

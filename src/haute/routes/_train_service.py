@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Iterable, Mapping
 from numbers import Real
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,59 @@ def _clamp_row_limit(
         if clamped > 0:
             return min(current_limit, clamped) if current_limit else clamped
     return current_limit
+
+
+def _glm_training_term_columns(config: dict[str, Any]) -> frozenset[str] | None:
+    if str(config.get("algorithm", "catboost")).lower() != "glm":
+        return None
+    raw_terms = config.get("terms")
+    params = config.get("params")
+    if raw_terms is None and isinstance(params, dict):
+        raw_terms = params.get("terms")
+    if not isinstance(raw_terms, dict) or not raw_terms:
+        return None
+    terms = frozenset(name for name in raw_terms if isinstance(name, str) and name)
+    return terms or None
+
+
+def _training_required_columns_by_node(
+    node_id: str,
+    config: dict[str, Any],
+) -> dict[str, frozenset[str]] | None:
+    """Return exact modelling-node output columns needed by training.
+
+    Only GLM with explicit terms has a positive feature contract before the
+    target schema is materialised. CatBoost derives features as all
+    non-excluded columns, so it needs a negative-projection contract before
+    upstream execution can prune it safely.
+    """
+    term_columns = _glm_training_term_columns(config)
+    if term_columns is None:
+        return None
+
+    target = config.get("target")
+    if not isinstance(target, str) or not target:
+        return None
+
+    columns = set(term_columns)
+    columns.add(target)
+    for aux_key in ("weight", "offset"):
+        aux_col = config.get(aux_key)
+        if isinstance(aux_col, str) and aux_col:
+            columns.add(aux_col)
+
+    split = config.get("split") or DEFAULT_SPLIT_DICT
+    if isinstance(split, dict):
+        strategy = split.get("strategy", "random")
+        split_col = None
+        if strategy == "temporal":
+            split_col = split.get("date_column")
+        elif strategy == "group":
+            split_col = split.get("group_column")
+        if isinstance(split_col, str) and split_col:
+            columns.add(split_col)
+
+    return {node_id: frozenset(columns)}
 
 
 def _find_modelling_node(graph: PipelineGraph, node_id: str) -> GraphNode:
@@ -290,6 +344,10 @@ class TrainService:
             if config.get("offset"):
                 keep_cols.append(config["offset"])
 
+            required_columns_by_node = _training_required_columns_by_node(
+                body.node_id,
+                config,
+            )
             tmp_parquet = self._execute_and_sink(
                 body,
                 preamble_ns,
@@ -297,6 +355,7 @@ class TrainService:
                 job_id,
                 exclude=excluded or None,
                 keep_columns=keep_cols,
+                required_columns_by_node=required_columns_by_node,
             )
         except Exception as exc:
             self._store.update_job(job_id, status="error", error=str(exc))
@@ -460,6 +519,7 @@ class TrainService:
         *,
         exclude: list[str] | None = None,
         keep_columns: list[str] | None = None,
+        required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
     ) -> str:
         """Execute the pipeline lazily and sink to a temp parquet file.
 
@@ -506,6 +566,7 @@ class TrainService:
                 source=body.source,
                 checkpoint_dir=checkpoint_dir,
                 enforce_contracts=ENFORCE_CONTRACTS,
+                required_columns_by_node=required_columns_by_node,
             )
 
             target_lf = lazy_outputs.get(body.node_id)

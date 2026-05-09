@@ -20,7 +20,16 @@ from haute.routes._optimiser_limits import (
     APPLY_PREVIEW_ROW_LIMIT,
     FRONTIER_POINT_LIMIT,
 )
-from haute.routes._optimiser_service import _compute_scenario_value_stats
+from haute.routes._optimiser_service import (
+    _DEFAULT_AUTO_RANGE_CHUNK_SIZE,
+    _DEFAULT_AUTO_RANGE_PARTITIONS,
+    _auto_range_required_columns_by_node,
+    _build_streaming_auto_range_plan,
+    _compute_scenario_value_stats,
+    _estimate_scenario_frontier_ranges,
+    _looks_chunk_local_user_code,
+    _optimiser_solve_required_columns_by_node,
+)
 from haute.routes.optimiser import _build_artifact_payload
 from tests.conftest import make_edge, make_graph
 
@@ -884,6 +893,1292 @@ class TestEstimateRoute:
         assert not any(
             job.get("job_type") == "frontier_auto_range" for job in clean_job_store.jobs.values()
         )
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_does_not_require_solver_only_columns(
+        self,
+        client,
+        tmp_path,
+    ):
+        """Auto-range needs only quote id plus constraints, not full solver columns."""
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2"],
+                "volume": [2.0, 5.0, 7.0],
+            }
+        )
+        path = tmp_path / "constraint_only.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ranges"]["volume"]["min"] == pytest.approx(9.0)
+        assert data["ranges"]["volume"]["max"] == pytest.approx(12.0)
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_background_job_completes(
+        self,
+        client,
+        scored_data,
+        clean_job_store,
+    ):
+        """GUI auto-range uses a short start request plus pollable status."""
+        graph = _make_optimiser_graph(scored_data)
+
+        start_resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert start_resp.status_code == 200
+        job_id = start_resp.json()["job_id"]
+        assert job_id
+        deadline = time.monotonic() + 10
+        status_data = None
+        while time.monotonic() < deadline:
+            status_resp = client.get(f"/api/optimiser/frontier/auto-range/status/{job_id}")
+            assert status_resp.status_code == 200
+            status_data = status_resp.json()
+            if status_data["status"] in {"completed", "error"}:
+                break
+            time.sleep(0.02)
+
+        assert status_data is not None
+        assert status_data["status"] == "completed"
+        assert status_data["result"]["status"] == "ok"
+        assert status_data["result"]["ranges"]["volume"]["min"] <= status_data["result"][
+            "ranges"
+        ]["volume"]["max"]
+        assert clean_job_store.jobs[job_id]["job_type"] == "frontier_auto_range"
+
+    def test_frontier_auto_range_start_supersedes_previous_running_job(self, scored_data):
+        """Repeated GUI starts for the same graph/node are single-flight server-side."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        body = OptimiserFrontierAutoRangeRequest(
+            graph=_make_optimiser_graph(scored_data),
+            node_id="opt",
+        )
+
+        with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
+            first = service.start_frontier_auto_range(body)
+            second = service.start_frontier_auto_range(body)
+
+        assert first.job_id is not None
+        assert second.job_id is not None
+        first_job = store.require_job(first.job_id)
+        second_job = store.require_job(second.job_id)
+        assert first_job["status"] == "superseded"
+        assert first_job["message"] == "Superseded by a newer auto-range request."
+        assert second_job["status"] == "running"
+        assert store.atomic_update(
+            first.job_id,
+            {"status": "completed", "progress": 1.0},
+            expected_status="running",
+        ) is None
+        assert store.require_job(first.job_id)["status"] == "superseded"
+
+    def test_frontier_auto_range_cancel_marks_job_terminal(self, scored_data):
+        """Explicit cancellation stops stale workers from later completing the job."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        body = OptimiserFrontierAutoRangeRequest(
+            graph=_make_optimiser_graph(scored_data),
+            node_id="opt",
+        )
+
+        with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
+            started = service.start_frontier_auto_range(body)
+
+        assert started.job_id is not None
+        response = service.cancel_frontier_auto_range(started.job_id)
+
+        assert response.status == "cancelled"
+        assert response.message == "Cancelled"
+        assert store.atomic_update(
+            started.job_id,
+            {"status": "completed", "progress": 1.0},
+            expected_status="running",
+        ) is None
+
+    def test_frontier_auto_range_estimator_honors_cancellation_between_batches(self):
+        """The chunked estimator exposes cooperative cancellation checkpoints."""
+        from haute.routes._background_jobs import BackgroundJobStoppedError
+
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q1"],
+                "volume": [1.0, 2.0, 3.0],
+            }
+        )
+        checks = 0
+
+        def check_cancelled() -> None:
+            nonlocal checks
+            checks += 1
+            if checks >= 2:
+                raise BackgroundJobStoppedError("range-job", "cancelled")
+
+        with pytest.raises(BackgroundJobStoppedError):
+            _estimate_scenario_frontier_ranges(
+                df.lazy(),
+                quote_id_col="quote_id",
+                constraint_cols=["volume"],
+                chunk_size=1,
+                partition_count=2,
+                check_cancelled=check_cancelled,
+            )
+
+    def test_frontier_auto_range_estimator_handles_quotes_split_across_batches(self):
+        """Chunking must not double-count quote extrema when a quote spans read batches."""
+        df = pl.DataFrame(
+            {
+                "quote_id": pl.Series(
+                    ["q1", "q2", "q1", "q3", "q2", "q1", "q3"],
+                    dtype=pl.Categorical,
+                ),
+                "scenario_index": [0, 0, 1, 0, 1, 2, 1],
+                "scenario_value": [0.8, 0.9, 1.0, 0.95, 1.1, 1.2, 1.05],
+                "expected_income": [100.0, 90.0, 120.0, 70.0, 95.0, 110.0, 74.0],
+                "volume": [10.0, 4.0, 3.0, -1.0, 8.0, 9.0, 2.0],
+                "margin": [100.0, 40.0, 90.0, 5.0, 30.0, 150.0, 10.0],
+            }
+        )
+
+        ranges = _estimate_scenario_frontier_ranges(
+            df.lazy(),
+            quote_id_col="quote_id",
+            constraint_cols=["volume", "margin"],
+            chunk_size=2,
+            partition_count=2,
+        )
+
+        assert ranges == {
+            "volume": {"min": pytest.approx(6.0), "max": pytest.approx(20.0)},
+            "margin": {"min": pytest.approx(125.0), "max": pytest.approx(200.0)},
+        }
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_streams_before_scenario_expansion_and_recombines_quotes(
+        self,
+        tmp_path,
+    ):
+        """Streaming auto-range expands one base chunk at a time without double-counting."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        source_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q1"],
+                "premium": [100.0, 200.0, 50.0],
+                "base_premium": [100.0, 100.0, 100.0],
+                "wide_unused": ["drop", "these", "values"],
+            }
+        )
+        source_path = tmp_path / "base.parquet"
+        source_df.write_parquet(source_path)
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(source_path), "contract": "opaque"},
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "quote_id": "quote_id",
+                                "column_name": "premium_multiplier",
+                                "min_value": 0.5,
+                                "max_value": 1.5,
+                                "steps": 3,
+                                "step_column": "scenario_index",
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["premium_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "features",
+                        "data": {
+                            "label": "features",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium.with_columns("
+                                    "scenario_feature=("
+                                    "pl.col('premium') * pl.col('premium_multiplier')"
+                                    " / pl.col('base_premium')"
+                                    "))"
+                                ),
+                                "contract": {
+                                    "inputs": [
+                                        "premium",
+                                        "base_premium",
+                                        "premium_multiplier",
+                                    ],
+                                    "outputs": ["scenario_feature"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "conversion_scoring",
+                        "data": {
+                            "label": "conversion_scoring",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run-1",
+                                "artifact_path": "model.rsglm",
+                                "task": "regression",
+                                "output_column": "conversion_prediction",
+                                "contract": {
+                                    "inputs": ["scenario_feature"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "optimiser_input",
+                        "data": {
+                            "label": "optimiser_input",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = conversion_scoring",
+                                "contract": {
+                                    "inputs": ["conversion_prediction"],
+                                    "outputs": [],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed_for_auto_range",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "premium_multiplier",
+                                "data_input": "optimiser_input",
+                                "chunk_size": 3,
+                                "auto_range_partition_count": 2,
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "premium").model_dump(),
+                    make_edge("premium", "features").model_dump(),
+                    make_edge("features", "conversion_scoring").model_dump(),
+                    make_edge("conversion_scoring", "optimiser_input").model_dump(),
+                    make_edge("optimiser_input", "opt").model_dump(),
+                ],
+            }
+        )
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+
+        service = OptimiserSolveService(JobStore())
+        score_chunk_sizes = []
+
+        class FakeScoringModel:
+            feature_names = ["scenario_feature"]
+            cat_feature_names = frozenset()
+
+        def fake_score_eager(scoring_model, lf, features, output_col, task):
+            del scoring_model, features, task
+            row_count = int(lf.select(pl.len().alias("n")).collect().item())
+            score_chunk_sizes.append(row_count)
+            return lf.with_columns((pl.col("scenario_feature") * 2.0).alias(output_col))
+
+        with (
+            patch.object(service, "_execute_pipeline", wraps=service._execute_pipeline) as execute,
+            patch("haute._mlflow_io.load_mlflow_model", return_value=FakeScoringModel()) as load,
+            patch("haute._mlflow_io._score_eager", side_effect=fake_score_eager),
+        ):
+            response = service.estimate_frontier_auto_range(body)
+
+        assert response.status == "ok"
+        assert response.ranges["conversion_prediction"].min == pytest.approx(2.5)
+        assert response.ranges["conversion_prediction"].max == pytest.approx(9.0)
+        assert execute.call_args.kwargs["target_node_id"] == "source"
+        assert score_chunk_sizes
+        assert max(score_chunk_sizes) == 3
+        # One load for projection planning and one for the streaming scorer;
+        # repeated chunks must reuse the streaming scorer's loaded model.
+        assert load.call_count == 2
+
+    def test_streaming_auto_range_plan_allows_opaque_base_projection(self, tmp_path):
+        """Opaque base projection should not block chunking before expansion."""
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(source_path), "contract": "opaque"},
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "quote_id": "quote_id",
+                                "column_name": "premium_multiplier",
+                                "steps": 2,
+                                "code": (
+                                    "df = df.with_columns("
+                                    "premium=pl.col('premium') * "
+                                    "pl.col('premium_multiplier'))"
+                                ),
+                                "contract": "opaque",
+                            },
+                        },
+                    },
+                    {
+                        "id": "optimiser_input",
+                        "data": {
+                            "label": "optimiser_input",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium.with_columns("
+                                    "conversion_prediction=pl.col('premium'))"
+                                ),
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "premium_multiplier",
+                                "data_input": "optimiser_input",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "premium").model_dump(),
+                    make_edge("premium", "optimiser_input").model_dump(),
+                    make_edge("optimiser_input", "opt").model_dump(),
+                ],
+            }
+        )
+
+        plan = _build_streaming_auto_range_plan(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+            required_columns_by_node={
+                "optimiser_input": frozenset({"quote_id", "conversion_prediction"}),
+            },
+        )
+
+        assert plan is not None
+        assert plan.base_node_id == "source"
+        assert plan.chain_node_ids == ("premium", "optimiser_input")
+        assert plan.base_required_columns is None
+
+    def test_streaming_auto_range_plan_infers_single_optimiser_parent(self, tmp_path):
+        """Single-input optimiser graphs do not need explicit data_input for streaming."""
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(source_path)},
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "quote_id": "quote_id",
+                                "column_name": "premium_multiplier",
+                                "steps": 2,
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["premium_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "optimiser_input",
+                        "data": {
+                            "label": "optimiser_input",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium.with_columns("
+                                    "conversion_prediction=pl.col('premium'))"
+                                ),
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "premium_multiplier",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "premium").model_dump(),
+                    make_edge("premium", "optimiser_input").model_dump(),
+                    make_edge("optimiser_input", "opt").model_dump(),
+                ],
+            }
+        )
+        required_columns_by_node = _auto_range_required_columns_by_node(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+        )
+
+        plan = _build_streaming_auto_range_plan(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+            required_columns_by_node=required_columns_by_node,
+        )
+
+        assert required_columns_by_node == {
+            "optimiser_input": frozenset({"quote_id", "conversion_prediction"})
+        }
+        assert plan is not None
+        assert plan.base_node_id == "source"
+        assert plan.chain_node_ids == ("premium", "optimiser_input")
+
+    def test_streaming_auto_range_plan_rejects_global_polars_transform(self, tmp_path):
+        """Global transforms are not eligible for chunk-local auto-range execution."""
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [1.0]}).write_parquet(source_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(source_path)},
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "column_name": "premium_multiplier",
+                                "steps": 2,
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["premium_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "aggregate",
+                        "data": {
+                            "label": "aggregate",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium.group_by('quote_id').agg("
+                                    "conversion_prediction=pl.col('premium').sum())"
+                                ),
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "data_input": "aggregate",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "premium").model_dump(),
+                    make_edge("premium", "aggregate").model_dump(),
+                    make_edge("aggregate", "opt").model_dump(),
+                ],
+            }
+        )
+
+        plan = _build_streaming_auto_range_plan(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+            required_columns_by_node={
+                "aggregate": frozenset({"quote_id", "conversion_prediction"}),
+            },
+        )
+
+        assert plan is None
+
+    def test_streaming_auto_range_plan_rejects_global_polars_transform_with_whitespace(
+        self,
+        tmp_path,
+    ):
+        """Formatting cannot hide a global transform from the streaming guard."""
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [1.0]}).write_parquet(source_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(source_path)},
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "column_name": "premium_multiplier",
+                                "steps": 2,
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["premium_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "aggregate",
+                        "data": {
+                            "label": "aggregate",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium\n"
+                                    ".group_by\n"
+                                    "('quote_id')\n"
+                                    ".agg\n"
+                                    "(conversion_prediction=pl.col('premium').sum())"
+                                ),
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "data_input": "aggregate",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "premium").model_dump(),
+                    make_edge("premium", "aggregate").model_dump(),
+                    make_edge("aggregate", "opt").model_dump(),
+                ],
+            }
+        )
+
+        plan = _build_streaming_auto_range_plan(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+            required_columns_by_node={
+                "aggregate": frozenset({"quote_id", "conversion_prediction"}),
+            },
+        )
+
+        assert plan is None
+
+    def test_streaming_auto_range_guard_rejects_expression_aggregate(self):
+        """Aggregates hidden in with_columns are not chunk-local."""
+        assert not _looks_chunk_local_user_code(
+            "df = premium.with_columns("
+            "conversion_prediction=pl.col('premium').mean())"
+        )
+        assert _looks_chunk_local_user_code(
+            "df = premium.with_columns("
+            "conversion_prediction=pl.col('premium') * pl.lit(2.0))"
+        )
+
+    def test_streaming_auto_range_plan_resolves_instance_node_code(self, tmp_path):
+        """Instance wrappers should be checked against their original node code."""
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(source_path)},
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "column_name": "premium_multiplier",
+                                "steps": 2,
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["premium_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "row_local_features",
+                        "data": {
+                            "label": "row_local_features",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium.with_columns("
+                                    "conversion_prediction=pl.col('premium'))"
+                                ),
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "features_instance",
+                        "data": {
+                            "label": "features_instance",
+                            "nodeType": "polars",
+                            "config": {
+                                "instanceOf": "row_local_features",
+                                "code": "df = row_local_features(premium=premium)",
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "data_input": "features_instance",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "premium").model_dump(),
+                    make_edge("premium", "features_instance").model_dump(),
+                    make_edge("features_instance", "opt").model_dump(),
+                ],
+            }
+        )
+
+        plan = _build_streaming_auto_range_plan(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+            required_columns_by_node={
+                "features_instance": frozenset(
+                    {"quote_id", "scenario_index", "conversion_prediction"}
+                ),
+            },
+        )
+
+        assert plan is not None
+        assert plan.chain_node_ids == ("premium", "features_instance")
+
+    def test_streaming_auto_range_plan_rejects_preexpanded_base(self, tmp_path):
+        """A previous scenario expansion must not be hidden inside the base."""
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(source_path)},
+                        },
+                    },
+                    {
+                        "id": "market_scenario",
+                        "data": {
+                            "label": "market_scenario",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "column_name": "market_multiplier",
+                                "steps": 2,
+                                "contract": {
+                                    "inputs": [],
+                                    "outputs": ["market_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "column_name": "premium_multiplier",
+                                "steps": 2,
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["premium_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "optimiser_input",
+                        "data": {
+                            "label": "optimiser_input",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium.with_columns("
+                                    "conversion_prediction=pl.col('premium'))"
+                                ),
+                                "contract": {
+                                    "inputs": ["premium"],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "data_input": "optimiser_input",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "market_scenario").model_dump(),
+                    make_edge("market_scenario", "premium").model_dump(),
+                    make_edge("premium", "optimiser_input").model_dump(),
+                    make_edge("optimiser_input", "opt").model_dump(),
+                ],
+            }
+        )
+
+        plan = _build_streaming_auto_range_plan(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+            required_columns_by_node={
+                "optimiser_input": frozenset(
+                    {"quote_id", "scenario_index", "conversion_prediction"}
+                ),
+            },
+        )
+
+        assert plan is None
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_streams_from_multi_parent_base_before_expander(
+        self,
+        tmp_path,
+    ):
+        """Fan-in before the scenario expander can still stream from that base."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        left_path = tmp_path / "left.parquet"
+        right_path = tmp_path / "right.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [100.0, 50.0],
+                "burn_cost": [60.0, 20.0],
+            }
+        ).write_parquet(left_path)
+        pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(
+            right_path
+        )
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "left",
+                        "data": {
+                            "label": "left",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(left_path)},
+                        },
+                    },
+                    {
+                        "id": "right",
+                        "data": {
+                            "label": "right",
+                            "nodeType": "dataSource",
+                            "config": {"path": str(right_path)},
+                        },
+                    },
+                    {
+                        "id": "joined",
+                        "data": {
+                            "label": "joined",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = left.join(right, on='quote_id', how='left')"
+                                ),
+                                "contract": "opaque",
+                            },
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "quote_id": "quote_id",
+                                "column_name": "premium_multiplier",
+                                "min_value": 1.0,
+                                "max_value": 2.0,
+                                "steps": 2,
+                                "code": (
+                                    "df = df.with_columns("
+                                    "premium=pl.col('premium') * "
+                                    "pl.col('premium_multiplier'))"
+                                ),
+                                "contract": "opaque",
+                            },
+                        },
+                    },
+                    {
+                        "id": "optimiser_input",
+                        "data": {
+                            "label": "optimiser_input",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = premium.with_columns("
+                                    "conversion_prediction="
+                                    "pl.col('premium') * pl.col('factor'), "
+                                    "margin=pl.col('premium') - pl.col('burn_cost'))"
+                                ),
+                                "contract": "opaque",
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed",
+                                "constraints": {
+                                    "conversion_prediction": {"min": 0.0},
+                                    "margin": {"min": 0.0},
+                                },
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "premium_multiplier",
+                                "data_input": "optimiser_input",
+                                "chunk_size": 2,
+                                "auto_range_partition_count": 2,
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("left", "joined").model_dump(),
+                    make_edge("right", "joined").model_dump(),
+                    make_edge("joined", "premium").model_dump(),
+                    make_edge("premium", "optimiser_input").model_dump(),
+                    make_edge("optimiser_input", "opt").model_dump(),
+                ],
+            }
+        )
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+
+        service = OptimiserSolveService(JobStore())
+        with patch.object(
+            service,
+            "_execute_pipeline",
+            wraps=service._execute_pipeline,
+        ) as execute:
+            response = service.estimate_frontier_auto_range(body)
+
+        assert response.status == "ok"
+        assert response.ranges["conversion_prediction"].min == pytest.approx(350.0)
+        assert response.ranges["conversion_prediction"].max == pytest.approx(700.0)
+        assert response.ranges["margin"].min == pytest.approx(70.0)
+        assert response.ranges["margin"].max == pytest.approx(220.0)
+        assert execute.call_args.kwargs["target_node_id"] == "joined"
+
+    @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
+    def test_frontier_auto_range_estimator_rejects_invalid_chunk_size(self, chunk_size):
+        """The chunked estimator should fail loudly for invalid chunk configuration."""
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "scenario_index": [0],
+                "scenario_value": [1.0],
+                "expected_income": [100.0],
+                "volume": [1.0],
+            }
+        )
+
+        with pytest.raises(ValueError, match="chunk_size must be a positive integer"):
+            _estimate_scenario_frontier_ranges(
+                df.lazy(),
+                quote_id_col="quote_id",
+                constraint_cols=["volume"],
+                chunk_size=chunk_size,
+            )
+
+    def test_frontier_auto_range_prepare_uses_auto_range_tuned_defaults(self, scored_data):
+        """Auto-range defaults are tuned independently from solver grid chunking."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+
+        assert prepared["chunk_size"] == _DEFAULT_AUTO_RANGE_CHUNK_SIZE
+        assert prepared["partition_count"] == _DEFAULT_AUTO_RANGE_PARTITIONS
+
+    def test_frontier_auto_range_prepare_prefers_auto_range_chunk_override(
+        self,
+        scored_data,
+    ):
+        """Auto-range can be tuned without changing solver grid chunking."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={"chunk_size": 3, "auto_range_chunk_size": 7},
+        )
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+
+        assert prepared["chunk_size"] == 7
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_rejects_invalid_chunk_size(
+        self,
+        client,
+        scored_data,
+    ):
+        graph = _make_optimiser_graph(scored_data, config={"chunk_size": 0})
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "chunk_size must be a positive integer" in resp.json()["detail"]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_rejects_invalid_auto_range_chunk_size(
+        self,
+        client,
+        scored_data,
+    ):
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={"chunk_size": 3, "auto_range_chunk_size": 0},
+        )
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "auto_range_chunk_size must be a positive integer" in resp.json()[
+            "detail"
+        ]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_rejects_invalid_partition_count(
+        self,
+        client,
+        scored_data,
+    ):
+        graph = _make_optimiser_graph(scored_data, config={"auto_range_partition_count": 0})
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range/start",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "auto_range_partition_count must be a positive integer" in resp.json()["detail"]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_rejects_null_quote_id_in_chunked_estimator(
+        self,
+        client,
+        tmp_path,
+    ):
+        """Auto-range validates quote_id nulls inside the chunked estimator pass."""
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", None, None],
+                "scenario_index": [0, 0, 1],
+                "scenario_value": [0.9, 0.9, 1.1],
+                "expected_income": [100.0, 90.0, 110.0],
+                "volume": [1.0, 2.0, 3.0],
+            }
+        )
+        path = tmp_path / "auto_range_null_quote.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path), config={"chunk_size": 1})
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "Null quote_id values found in optimiser input" in detail
+        assert "(2 rows)" in detail
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_missing_required_column_returns_400(
+        self,
+        client,
+        tmp_path,
+    ):
+        """Projection seeding must preserve the existing loud column validation."""
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "scenario_index": [0, 1],
+                "scenario_value": [0.9, 1.1],
+                "expected_income": [100.0, 120.0],
+            }
+        )
+        path = tmp_path / "missing_auto_range_constraint.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(
+            str(path),
+            config={
+                "objective": "expected_income",
+                "constraints": {"expected_margin": {"max": 35.0}},
+            },
+        )
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "Missing columns in scored data" in resp.json()["detail"]
+        assert "expected_margin" in resp.json()["detail"]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_ratebook_returns_no_warning(
+        self,
+        client,
+        tmp_path,
+    ):
+        """Ratebook auto-range should not show an explanatory warning."""
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2", "q2"],
+                "scenario_index": [0, 1, 0, 1],
+                "scenario_value": [0.9, 1.1, 0.9, 1.1],
+                "expected_income": [100.0, 120.0, 90.0, 95.0],
+                "expected_margin": [10.0, 30.0, 5.0, 9.0],
+            }
+        )
+        path = tmp_path / "ratebook_scored.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(
+            str(path),
+            config={
+                "mode": "ratebook",
+                "objective": "expected_income",
+                "constraints": {"expected_margin": {"max": 35.0}},
+                "factor_columns": [["territory"]],
+            },
+        )
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["warning"] is None
+        assert "Ratebook factor-table coupling" not in resp.text
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_ratebook_still_validates_factor_columns(
+        self,
+        client,
+        tmp_path,
+    ):
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "scenario_index": [0, 1],
+                "scenario_value": [0.9, 1.1],
+                "expected_income": [100.0, 120.0],
+                "expected_margin": [10.0, 30.0],
+            }
+        )
+        path = tmp_path / "ratebook_missing_factors.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(
+            str(path),
+            config={
+                "mode": "ratebook",
+                "objective": "expected_income",
+                "constraints": {"expected_margin": {"max": 35.0}},
+                "factor_columns": [],
+            },
+        )
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        assert "factor_columns" in resp.json()["detail"]
 
 
 class TestApplyRoute:
@@ -2293,6 +3588,393 @@ class TestUnsupportedMode:
 class TestExecutePipelineArgs:
     """Verify _execute_pipeline passes scenario, preamble_ns, and checkpoint_dir."""
 
+    def test_auto_range_required_columns_seed_uses_configured_data_input(self, scored_data):
+        """Online auto-range seeds only the configured data_input branch."""
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": scored_data},
+                        },
+                    },
+                    {
+                        "id": "side_source",
+                        "data": {
+                            "label": "side source",
+                            "nodeType": "dataSource",
+                            "config": {"path": scored_data},
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "data_input": "source",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "opt").model_dump(),
+                    make_edge("side_source", "opt").model_dump(),
+                ],
+            }
+        )
+
+        seeds = _auto_range_required_columns_by_node(
+            graph,
+            "opt",
+            graph.nodes[-1].data.config,
+            mode="online",
+        )
+
+        assert seeds == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "volume",
+                }
+            )
+        }
+
+    def test_auto_range_required_columns_rejects_unconnected_data_input(self, scored_data):
+        """A configured data_input must be a connected optimiser parent."""
+        from fastapi import HTTPException
+
+        graph_dict = _make_optimiser_graph(
+            scored_data,
+            config={
+                "data_input": "missing_source",
+            },
+        )
+        graph = make_graph(graph_dict)
+
+        with pytest.raises(HTTPException) as exc_info:
+            _auto_range_required_columns_by_node(
+                graph,
+                "opt",
+                graph.nodes[-1].data.config,
+                mode="online",
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "data_input" in exc_info.value.detail
+        assert "missing_source" in exc_info.value.detail
+
+    def test_auto_range_required_columns_skips_ratebook(self, scored_data):
+        """Ratebook auto-range keeps the existing all-column side-input path."""
+        graph_dict = _make_optimiser_graph(
+            scored_data,
+            config={
+                "mode": "ratebook",
+                "factor_columns": [["territory"]],
+                "data_input": "source",
+            },
+        )
+        graph = make_graph(graph_dict)
+
+        seeds = _auto_range_required_columns_by_node(
+            graph,
+            "opt",
+            graph.nodes[-1].data.config,
+            mode="ratebook",
+        )
+
+        assert seeds == {}
+
+    def test_optimiser_solve_required_columns_seed_uses_configured_data_input(self, scored_data):
+        """Solve/estimate seeds only the actual optimiser data input branch."""
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": scored_data},
+                        },
+                    },
+                    {
+                        "id": "side_source",
+                        "data": {
+                            "label": "side source",
+                            "nodeType": "dataSource",
+                            "config": {"path": scored_data},
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "data_input": "source",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "opt").model_dump(),
+                    make_edge("side_source", "opt").model_dump(),
+                ],
+            }
+        )
+
+        seeds = _optimiser_solve_required_columns_by_node(
+            graph,
+            "opt",
+            graph.nodes[-1].data.config,
+        )
+
+        assert seeds == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "scenario_index",
+                    "scenario_value",
+                    "expected_income",
+                    "volume",
+                }
+            )
+        }
+
+    def test_optimiser_solve_required_columns_rejects_unconnected_data_input(
+        self,
+        scored_data,
+    ):
+        """Solve/estimate reject a data_input that is not an optimiser parent."""
+        from fastapi import HTTPException
+
+        graph_dict = _make_optimiser_graph(
+            scored_data,
+            config={
+                "data_input": "missing_source",
+            },
+        )
+        graph = make_graph(graph_dict)
+
+        with pytest.raises(HTTPException) as exc_info:
+            _optimiser_solve_required_columns_by_node(
+                graph,
+                "opt",
+                graph.nodes[-1].data.config,
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "data_input" in exc_info.value.detail
+        assert "missing_source" in exc_info.value.detail
+
+    def test_optimiser_solve_required_columns_ratebook_seeds_configured_data_input(
+        self,
+        scored_data,
+    ):
+        """Ratebook solve can project the solver input without pruning factors."""
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": scored_data},
+                        },
+                    },
+                    {
+                        "id": "banding",
+                        "data": {
+                            "label": "banding",
+                            "nodeType": "banding",
+                            "config": {
+                                "factors": [
+                                    {
+                                        "column": "territory",
+                                        "outputColumn": "territory_band",
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "ratebook",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "factor_columns": [["territory_band"]],
+                                "banding_source": "banding",
+                                "data_input": "source",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "opt").model_dump(),
+                    make_edge("banding", "opt").model_dump(),
+                ],
+            }
+        )
+
+        seeds = _optimiser_solve_required_columns_by_node(
+            graph,
+            "opt",
+            graph.nodes[-1].data.config,
+        )
+
+        assert seeds == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "scenario_index",
+                    "scenario_value",
+                    "expected_income",
+                    "volume",
+                }
+            )
+        }
+
+    def test_optimiser_solve_required_columns_ratebook_shared_input_keeps_factors(
+        self,
+        scored_data,
+    ):
+        """Shared ratebook data/factor input needs solver and factor columns."""
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {"path": scored_data},
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "ratebook",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "factor_columns": [["territory_band"]],
+                                "banding_source": "source",
+                                "data_input": "source",
+                            },
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "opt").model_dump()],
+            }
+        )
+
+        seeds = _optimiser_solve_required_columns_by_node(
+            graph,
+            "opt",
+            graph.nodes[-1].data.config,
+        )
+
+        assert seeds == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "scenario_index",
+                    "scenario_value",
+                    "expected_income",
+                    "volume",
+                    "territory_band",
+                }
+            )
+        }
+
+    def test_solve_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph_dict = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        scored_lf = pl.scan_parquet(scored_data)
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}) as execute,
+            patch.object(service, "_build_grid", return_value=object()),
+            patch.object(service, "_launch_background"),
+        ):
+            response = service.start(body)
+
+        assert response.status == "started"
+        assert execute.call_args.kwargs["required_columns_by_node"] == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "scenario_index",
+                    "scenario_value",
+                    "expected_income",
+                    "volume",
+                }
+            )
+        }
+
+    def test_estimate_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
+        from haute.routes import optimiser as optimiser_module
+        from haute.schemas import OptimiserEstimateRequest
+
+        graph_dict = _make_optimiser_graph(scored_data)
+        body = OptimiserEstimateRequest(graph=graph_dict, node_id="opt")
+        scored_lf = pl.scan_parquet(scored_data)
+
+        with patch.object(
+            optimiser_module._solve_service,
+            "_execute_pipeline",
+            return_value={"opt": scored_lf},
+        ) as execute:
+            metrics = optimiser_module._optimiser_input_metrics(body)
+
+        assert metrics["expanded_row_count"] == 250
+        assert execute.call_args.kwargs["required_columns_by_node"] == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "scenario_index",
+                    "scenario_value",
+                    "expected_income",
+                    "volume",
+                }
+            )
+        }
+
     def test_execute_pipeline_passes_scenario_and_checkpoint(self, scored_data, tmp_path):
         """_execute_lazy receives scenario != 'live', caller's checkpoint_dir, and preamble_ns."""
 
@@ -2337,6 +4019,105 @@ class TestExecutePipelineArgs:
         # preamble_ns is the dict returned by _compile_preamble
         assert captured["preamble_ns"] is not None
         assert "helper" in captured["preamble_ns"]
+
+    def test_execute_pipeline_forwards_required_columns_by_node(self, scored_data, tmp_path):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph_dict = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+
+        captured = {}
+
+        def fake_execute_lazy(*args, **kwargs):
+            captured.update(kwargs)
+            return ({"opt": MagicMock()}, [], {}, {})
+
+        seeds = {"opt": frozenset({"quote_id", "expected_income"})}
+        with (
+            patch("haute.graph_utils._execute_lazy", side_effect=fake_execute_lazy),
+            patch("haute.executor._resolve_batch_scenario", return_value=None),
+            patch("haute.executor._compile_preamble", return_value={}),
+        ):
+            service._execute_pipeline(
+                body,
+                job_id,
+                checkpoint_dir,
+                required_columns_by_node=seeds,
+            )
+
+        assert captured["required_columns_by_node"] == seeds
+
+    def test_execute_pipeline_contract_mismatch_returns_400(self, scored_data, tmp_path):
+        from fastapi import HTTPException
+
+        from haute.errors import ContractMismatchError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph_dict = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+
+        with (
+            patch(
+                "haute.graph_utils._execute_lazy",
+                side_effect=ContractMismatchError(
+                    "Checkpoint projection references missing columns",
+                    missing=["volume"],
+                ),
+            ),
+            patch("haute.executor._resolve_batch_scenario", return_value=None),
+            patch("haute.executor._compile_preamble", return_value={}),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                service._execute_pipeline(
+                    body,
+                    job_id,
+                    checkpoint_dir,
+                    required_columns_by_node={"source": frozenset({"volume"})},
+                )
+
+        assert exc_info.value.status_code == 400
+        assert "volume" in exc_info.value.detail
+        assert store.require_job(job_id)["status"] == "error"
+
+    def test_frontier_auto_range_passes_online_seed_to_execute_pipeline(self, scored_data):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph_dict = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph_dict, node_id="opt")
+        scored_lf = pl.scan_parquet(scored_data)
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        with patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}) as execute:
+            response = service.estimate_frontier_auto_range(body)
+
+        assert response.status == "ok"
+        assert execute.call_args.kwargs["required_columns_by_node"] == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "volume",
+                }
+            )
+        }
 
     def test_execute_pipeline_defaults_to_batch_when_no_ism(self, scored_data, tmp_path):
         """When _resolve_batch_scenario returns None, scenario defaults to 'batch'."""
@@ -7178,6 +8959,27 @@ class TestResolveDataSource:
 
         result = service._resolve_data_source(lazy_outputs, config, "opt", job_id)
         assert result is mock_lf
+
+    def test_configured_data_input_missing_raises_400(self):
+        """A configured data_input must be present instead of falling back."""
+        from fastapi import HTTPException
+
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+
+        lazy_outputs = {"opt": MagicMock()}
+        config = {"data_input": "missing_data"}
+
+        with pytest.raises(HTTPException) as exc_info:
+            service._resolve_data_source(lazy_outputs, config, "opt", job_id)
+
+        assert exc_info.value.status_code == 400
+        assert "missing_data" in exc_info.value.detail
+        assert store.require_job(job_id)["status"] == "error"
 
     def test_no_data_raises_400(self):
         """When no data arrives at the node, raises HTTPException."""

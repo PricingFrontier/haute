@@ -2499,6 +2499,604 @@ class TestPreviewCachePartialHit:
         _preview_cache.invalidate()
 
 
+class TestRequestedPreviewProjection:
+    """Preview-column requests should reduce backend work, not just JSON size."""
+
+    def test_requested_preview_columns_project_before_collect(self, tmp_path):
+        from haute.executor import _preview_cache
+
+        _preview_cache.invalidate()
+        p = tmp_path / "wide.parquet"
+        pl.DataFrame({"feature": [1, 2, 3], "keep": [10, 20, 30]}).write_parquet(p)
+
+        code = """
+def _boom(value):
+    raise RuntimeError("unused preview column was collected")
+
+df = df.with_columns(
+    pl.col("feature").map_elements(_boom, return_dtype=pl.Int64).alias("unused_bomb")
+)
+"""
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="t",
+            target_preview_only=True,
+            requested_preview_columns=["feature"],
+        )
+
+        assert results["t"].status == "ok"
+        assert results["t"].preview_columns == ["feature"]
+        assert results["t"].preview == [{"feature": 1}, {"feature": 2}, {"feature": 3}]
+        assert [column.name for column in results["t"].columns] == [
+            "feature",
+            "keep",
+            "unused_bomb",
+        ]
+
+        _preview_cache.invalidate()
+
+    def test_requested_preview_cache_key_includes_requested_columns(self, tmp_path):
+        from haute.executor import _preview_cache
+
+        _preview_cache.invalidate()
+        p = tmp_path / "wide.parquet"
+        pl.DataFrame({"a": [1], "b": [2]}).write_parquet(p)
+        graph = _g({"nodes": [_source_node("src", str(p))], "edges": []})
+
+        first = execute_graph(
+            graph,
+            target_node_id="src",
+            target_preview_only=True,
+            requested_preview_columns=["a"],
+        )
+        second = execute_graph(
+            graph,
+            target_node_id="src",
+            target_preview_only=True,
+            requested_preview_columns=["b"],
+        )
+
+        assert first["src"].preview == [{"a": 1}]
+        assert first["src"].preview_columns == ["a"]
+        assert [column.name for column in first["src"].columns] == ["a", "b"]
+        assert second["src"].preview == [{"b": 2}]
+        assert second["src"].preview_columns == ["b"]
+        assert [column.name for column in second["src"].columns] == ["a", "b"]
+
+        _preview_cache.invalidate()
+
+    def test_model_score_requested_preview_keeps_full_schema(self, tmp_path, monkeypatch):
+        from haute.executor import _preview_cache
+
+        class FakeScoringModel:
+            feature_names = ["feature"]
+            cat_feature_names: list[str] = []
+
+        def fake_score_eager(scoring_model, lf, features, output_col, task):
+            return lf.with_columns(pl.lit(0.75).alias(output_col))
+
+        _preview_cache.invalidate()
+        monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", lambda **_: FakeScoringModel())
+        monkeypatch.setattr("haute._mlflow_io._score_eager", fake_score_eager)
+
+        p = tmp_path / "score.parquet"
+        pl.DataFrame({"quote_id": [101], "feature": [1.5], "unused": [99]}).write_parquet(p)
+        score_node = _n(
+            {
+                "id": "score",
+                "data": {
+                    "label": "score",
+                    "nodeType": "modelScore",
+                    "config": {
+                        "sourceType": "run",
+                        "run_id": "abc123",
+                        "artifact_path": "model",
+                        "task": "regression",
+                        "output_column": "prediction",
+                    },
+                },
+            }
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), score_node],
+                "edges": [_edge("src", "score")],
+            }
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="score",
+            target_preview_only=True,
+            requested_preview_columns=["prediction"],
+        )
+
+        assert results["score"].status == "ok"
+        assert results["score"].preview == [{"prediction": 0.75}]
+        assert results["score"].preview_columns == ["prediction"]
+        assert [column.name for column in results["score"].columns] == [
+            "quote_id",
+            "feature",
+            "unused",
+            "prediction",
+        ]
+        assert [column.name for column in results["score"].available_columns] == [
+            "quote_id",
+            "feature",
+            "unused",
+            "prediction",
+        ]
+
+        _preview_cache.invalidate()
+
+    def test_requested_preview_columns_preserve_join_left_passthrough_columns(self, tmp_path):
+        """Fan-in projection should not treat inputs_by_parent as a passthrough allow-list."""
+        policies_path = tmp_path / "policies.parquet"
+        competitor_path = tmp_path / "competitor.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "aggregator_quote_id": ["a1", "a2"],
+                "annual_mileage": [8_000, 12_000],
+                "youngest_driver_age": [34, 42],
+                "policy_unused": ["drop", "drop"],
+            }
+        ).write_parquet(policies_path)
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "competitor_premium": [101.5, 202.5],
+                "competitor_unused": ["drop", "drop"],
+            }
+        ).write_parquet(competitor_path)
+        join_node = _n(
+            {
+                "id": "join_scoring",
+                "data": {
+                    "label": "join_scoring",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": (
+                            "df = policies.join("
+                            "competitor_scoring, on='quote_id', how='left'"
+                            ")"
+                        ),
+                        "contract": {
+                            "inputs": ["quote_id"],
+                            "outputs": [],
+                            "inputs_by_parent": {
+                                "policies": ["quote_id"],
+                                "competitor_scoring": ["quote_id", "competitor_premium"],
+                            },
+                        },
+                    },
+                },
+            }
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("policies", str(policies_path)),
+                    _source_node("competitor_scoring", str(competitor_path)),
+                    join_node,
+                ],
+                "edges": [
+                    _edge("policies", "join_scoring"),
+                    _edge("competitor_scoring", "join_scoring"),
+                ],
+            }
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="join_scoring",
+            target_preview_only=True,
+            requested_preview_columns=[
+                "aggregator_quote_id",
+                "annual_mileage",
+                "youngest_driver_age",
+                "quote_id",
+                "competitor_premium",
+            ],
+        )
+
+        result = results["join_scoring"]
+        assert result.status == "ok"
+        assert result.error is None
+        assert result.preview_columns == [
+            "aggregator_quote_id",
+            "annual_mileage",
+            "youngest_driver_age",
+            "quote_id",
+            "competitor_premium",
+        ]
+        assert sorted(result.preview, key=lambda row: row["quote_id"]) == [
+            {
+                "aggregator_quote_id": "a1",
+                "annual_mileage": 8_000,
+                "youngest_driver_age": 34,
+                "quote_id": "q1",
+                "competitor_premium": 101.5,
+            },
+            {
+                "aggregator_quote_id": "a2",
+                "annual_mileage": 12_000,
+                "youngest_driver_age": 42,
+                "quote_id": "q2",
+                "competitor_premium": 202.5,
+            },
+        ]
+
+    def test_requested_preview_columns_preserve_chained_left_join_passthrough_columns(
+        self,
+        tmp_path,
+    ):
+        """A later left join must keep passthrough fields on its left parent."""
+        joined_policy_path = tmp_path / "joined_policy.parquet"
+        quoted_premiums_path = tmp_path / "quoted_premiums.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "policy_id": ["p1", None],
+                "competitor_premium": [110.0, 220.0],
+                "aggregator_quote_id": ["a1", "a2"],
+                "annual_mileage": [8_000, 12_000],
+                "youngest_driver_age": [34, 42],
+                "left_unused": ["drop", "drop"],
+            }
+        ).write_parquet(joined_policy_path)
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [100.0, 200.0],
+                "right_unused": ["drop", "drop"],
+            }
+        ).write_parquet(quoted_premiums_path)
+        join_node = _n(
+            {
+                "id": "join_premiums",
+                "data": {
+                    "label": "join_premiums",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": (
+                            "df = join_policy_data.join("
+                            "quoted_premiums, on='quote_id', how='left'"
+                            ").with_columns("
+                            "sale_flag=pl.when(pl.col('policy_id').is_null())"
+                            ".then(pl.lit(0)).otherwise(pl.lit(1)), "
+                            "burn_cost=pl.col('premium') * 0.7"
+                            ")"
+                        ),
+                        "contract": {
+                            "inputs": ["policy_id", "premium", "quote_id"],
+                            "outputs": ["burn_cost", "sale_flag"],
+                            "inputs_by_parent": {
+                                "join_policy_data": [
+                                    "competitor_premium",
+                                    "policy_id",
+                                    "quote_id",
+                                ],
+                                "quoted_premiums": ["premium", "quote_id"],
+                            },
+                        },
+                    },
+                },
+            }
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("join_policy_data", str(joined_policy_path)),
+                    _source_node("quoted_premiums", str(quoted_premiums_path)),
+                    join_node,
+                ],
+                "edges": [
+                    _edge("join_policy_data", "join_premiums"),
+                    _edge("quoted_premiums", "join_premiums"),
+                ],
+            }
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="join_premiums",
+            target_preview_only=True,
+            requested_preview_columns=[
+                "aggregator_quote_id",
+                "annual_mileage",
+                "youngest_driver_age",
+                "quote_id",
+                "premium",
+                "competitor_premium",
+                "burn_cost",
+                "sale_flag",
+            ],
+        )
+
+        result = results["join_premiums"]
+        assert result.status == "ok"
+        assert result.error is None
+        assert result.preview_columns == [
+            "aggregator_quote_id",
+            "annual_mileage",
+            "youngest_driver_age",
+            "quote_id",
+            "premium",
+            "competitor_premium",
+            "burn_cost",
+            "sale_flag",
+        ]
+        assert sorted(result.preview, key=lambda row: row["quote_id"]) == [
+            {
+                "aggregator_quote_id": "a1",
+                "annual_mileage": 8_000,
+                "youngest_driver_age": 34,
+                "quote_id": "q1",
+                "premium": 100.0,
+                "competitor_premium": 110.0,
+                "burn_cost": 70.0,
+                "sale_flag": 1,
+            },
+            {
+                "aggregator_quote_id": "a2",
+                "annual_mileage": 12_000,
+                "youngest_driver_age": 42,
+                "quote_id": "q2",
+                "premium": 200.0,
+                "competitor_premium": 220.0,
+                "burn_cost": 140.0,
+                "sale_flag": 0,
+            },
+        ]
+
+    def test_requested_preview_columns_project_suffixed_right_join_output(self, tmp_path):
+        """Requested suffixed join outputs project the original right-side column."""
+        left_path = tmp_path / "left.parquet"
+        right_path = tmp_path / "right.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [100.0, 200.0],
+                "left_unused": ["drop", "drop"],
+            }
+        ).write_parquet(left_path)
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [95.0, 210.0],
+                "right_unused": ["drop", "drop"],
+            }
+        ).write_parquet(right_path)
+        join_node = _n(
+            {
+                "id": "join_lookup",
+                "data": {
+                    "label": "join_lookup",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": (
+                            "df = policies.join("
+                            "lookup, on='quote_id', how='left', suffix='_lookup'"
+                            ")"
+                        ),
+                        "contract": {
+                            "inputs": ["quote_id"],
+                            "outputs": [],
+                            "inputs_by_parent": {
+                                "policies": ["quote_id"],
+                                "lookup": ["quote_id"],
+                            },
+                        },
+                    },
+                },
+            }
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("policies", str(left_path)),
+                    _source_node("lookup", str(right_path)),
+                    join_node,
+                ],
+                "edges": [
+                    _edge("policies", "join_lookup"),
+                    _edge("lookup", "join_lookup"),
+                ],
+            }
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="join_lookup",
+            target_preview_only=True,
+            requested_preview_columns=["quote_id", "premium_lookup"],
+        )
+
+        result = results["join_lookup"]
+        assert result.status == "ok"
+        assert result.error is None
+        assert result.preview_columns == ["quote_id", "premium_lookup"]
+        assert sorted(result.preview, key=lambda row: row["quote_id"]) == [
+            {"quote_id": "q1", "premium_lookup": 95.0},
+            {"quote_id": "q2", "premium_lookup": 210.0},
+        ]
+
+    def test_requested_ratebook_optimiser_preview_routes_columns_by_parent(self, tmp_path):
+        """Ratebook optimiser preview columns belong to data_input, not banding_source."""
+        optimiser_input_path = tmp_path / "optimiser_input.parquet"
+        banding_source_path = tmp_path / "age_veh_banding.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [100.0, 200.0],
+                "burn_cost": [60.0, 125.0],
+                "conversion_prediction": [0.25, 0.5],
+                "expected_margin": [10.0, 20.0],
+                "margin": [40.0, 75.0],
+                "scenario_index": [0, 1],
+                "premium_multiplier": [0.95, 1.05],
+                "unused_data": ["drop", "drop"],
+            }
+        ).write_parquet(optimiser_input_path)
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "channel_band": ["web", "direct"],
+                "proposer_age_band": ["30-39", "40-49"],
+                "vehicle_age_band": ["0-3", "4-7"],
+                "unused_banding": ["drop", "drop"],
+            }
+        ).write_parquet(banding_source_path)
+        optimiser_node = _n(
+            {
+                "id": "ratebook_optimiser",
+                "data": {
+                    "label": "ratebook_optimiser",
+                    "nodeType": "optimiser",
+                    "config": {
+                        "mode": "ratebook",
+                        "quote_id": "quote_id",
+                        "data_input": "optimiser_input",
+                        "banding_source": "age_veh_banding",
+                        "factor_columns": [
+                            ["channel_band"],
+                            ["proposer_age_band"],
+                            ["vehicle_age_band"],
+                        ],
+                    },
+                },
+            }
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("optimiser_input", str(optimiser_input_path)),
+                    _source_node("age_veh_banding", str(banding_source_path)),
+                    optimiser_node,
+                ],
+                "edges": [
+                    _edge("optimiser_input", "ratebook_optimiser"),
+                    _edge("age_veh_banding", "ratebook_optimiser"),
+                ],
+            }
+        )
+
+        age_result = execute_graph(
+            graph,
+            target_node_id="age_veh_banding",
+            target_preview_only=True,
+        )["age_veh_banding"]
+        assert age_result.status == "ok"
+
+        results = execute_graph(
+            graph,
+            target_node_id="ratebook_optimiser",
+            target_preview_only=True,
+            requested_preview_columns=[
+                "quote_id",
+                "premium",
+                "burn_cost",
+                "conversion_prediction",
+                "expected_margin",
+                "margin",
+                "scenario_index",
+                "premium_multiplier",
+            ],
+        )
+
+        result = results["ratebook_optimiser"]
+        assert result.status == "ok"
+        assert result.error is None
+        assert result.preview_columns == [
+            "quote_id",
+            "premium",
+            "burn_cost",
+            "conversion_prediction",
+            "expected_margin",
+            "margin",
+            "scenario_index",
+            "premium_multiplier",
+        ]
+        assert sorted(result.preview, key=lambda row: row["quote_id"]) == [
+            {
+                "quote_id": "q1",
+                "premium": 100.0,
+                "burn_cost": 60.0,
+                "conversion_prediction": 0.25,
+                "expected_margin": 10.0,
+                "margin": 40.0,
+                "scenario_index": 0,
+                "premium_multiplier": 0.95,
+            },
+            {
+                "quote_id": "q2",
+                "premium": 200.0,
+                "burn_cost": 125.0,
+                "conversion_prediction": 0.5,
+                "expected_margin": 20.0,
+                "margin": 75.0,
+                "scenario_index": 1,
+                "premium_multiplier": 1.05,
+            },
+        ]
+
+    def test_invalid_requested_preview_columns_fail_before_execution(self, tmp_path):
+        from unittest.mock import patch
+
+        from haute.executor import PreviewProjectionError
+
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(p)
+        graph = _g({"nodes": [_source_node("src", str(p))], "edges": []})
+
+        with patch("haute.executor._eager_execute") as mock_execute:
+            with pytest.raises(PreviewProjectionError, match="empty names"):
+                execute_graph(
+                    graph,
+                    target_node_id="src",
+                    target_preview_only=True,
+                    requested_preview_columns=[""],
+                )
+            mock_execute.assert_not_called()
+
+    def test_optimiser_apply_preview_alias_seed_preserves_default_name(self):
+        from haute.executor import (
+            _preview_projection_cache_suffix,
+            _preview_required_columns_by_node,
+        )
+
+        node = _n(
+            {
+                "id": "apply",
+                "data": {
+                    "label": "apply",
+                    "nodeType": "optimiserApply",
+                    "config": {"optimised_value_column": "custom_value"},
+                },
+            }
+        )
+        graph = _g({"nodes": [node], "edges": []})
+
+        assert _preview_required_columns_by_node(
+            graph,
+            "apply",
+            ["optimal_scenario_value"],
+        ) == {"apply": ["optimal_scenario_value", "custom_value"]}
+        assert _preview_projection_cache_suffix(
+            graph,
+            "apply",
+            ["optimal_scenario_value"],
+        ) != _preview_projection_cache_suffix(graph, "apply", ["custom_value"])
+
+
 # ---------------------------------------------------------------------------
 # GAP 2: Preview cache invalidation
 # Production failure: User edits a node's code, but the preview still

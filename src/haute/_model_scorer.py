@@ -9,7 +9,8 @@ from __future__ import annotations
 import contextvars
 import os
 import threading
-from collections.abc import Hashable
+from collections.abc import Hashable, Iterable
+from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
 import numpy as np
@@ -340,6 +341,20 @@ _scenario_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 _SCORE_BATCH_SIZE = 500_000
 
+
+@dataclass(frozen=True, slots=True)
+class ScoreWriteProjection:
+    """Explicit projection for batch model-score parquet writes.
+
+    ``None`` passthrough columns means preserve the full scored input.  A
+    concrete set means write exactly those input columns, in input schema
+    order, plus the prediction/probability outputs produced by scoring.
+    """
+
+    passthrough_columns: frozenset[str] | None = None
+    optional_passthrough_columns: frozenset[str] = frozenset()
+    required_output_columns: frozenset[str] = frozenset()
+
 # Module-level temp file cleanup — avoids accumulating atexit handlers
 _temp_files_to_clean: set[str] = set()
 _atexit_registered = False
@@ -389,6 +404,74 @@ def _predict_positive_proba(raw_model: Any, x_data: Any) -> np.ndarray | None:
     return np.asarray(probas).flatten()
 
 
+def _raw_model_supports_predict_proba(model: Any) -> bool:
+    raw_model = getattr(model, "raw_model", model)
+    return getattr(raw_model, "predict_proba", None) is not None
+
+
+def _score_output_projection_columns(
+    schema_names: list[str],
+    write_projection: ScoreWriteProjection,
+    *,
+    generated_columns: Iterable[str],
+) -> list[str]:
+    if write_projection.passthrough_columns is None:
+        passthrough = list(schema_names)
+        optional_passthrough: list[str] = []
+    else:
+        passthrough = _ordered_required_columns(
+            schema_names,
+            write_projection.passthrough_columns,
+            context="model-score output projection",
+        )
+        optional_passthrough = [
+            c
+            for c in schema_names
+            if c in write_projection.optional_passthrough_columns
+            and c not in passthrough
+        ]
+
+    projected_columns = list(passthrough)
+    for cname in generated_columns:
+        if cname in schema_names and cname not in projected_columns:
+            projected_columns.append(cname)
+    for cname in optional_passthrough:
+        if cname not in projected_columns:
+            projected_columns.append(cname)
+
+    missing_required = write_projection.required_output_columns - set(projected_columns)
+    if missing_required:
+        raise ValueError(
+            "model-score output projection requested columns that were "
+            f"not produced or preserved: {sorted(missing_required)}"
+        )
+    return projected_columns
+
+
+def _project_scored_output(
+    result_lf: pl.LazyFrame,
+    write_projection: ScoreWriteProjection | None,
+    *,
+    output_col: str,
+    generated_columns: Iterable[str] | None = None,
+) -> pl.LazyFrame:
+    if write_projection is None:
+        return result_lf
+
+    schema_names = result_lf.collect_schema().names()
+    generated = list(generated_columns) if generated_columns is not None else [output_col]
+    if generated_columns is None:
+        proba_col = f"{output_col}_proba"
+        if proba_col in schema_names:
+            generated.append(proba_col)
+    projected_columns = _score_output_projection_columns(
+        schema_names,
+        write_projection,
+        generated_columns=generated,
+    )
+    return result_lf.select(projected_columns)
+
+
 def _score_eager_unified(
     model: Any,
     lf: pl.LazyFrame,
@@ -397,6 +480,7 @@ def _score_eager_unified(
     flavor: str,
     task: str,
     output_col: str,
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Eager in-memory scoring for a pre-validated flavor.
 
@@ -417,11 +501,58 @@ def _score_eager_unified(
     )
     preds = np.asarray(model.predict(x_data)).flatten()
     prediction_columns = [pl.Series(output_col, preds)]
+    generated_columns = [output_col]
     if task == "classification":
         probas = _predict_positive_proba(model, x_data)
         if probas is not None:
-            prediction_columns.append(pl.Series(f"{output_col}_proba", probas))
-    return lf.with_columns(prediction_columns)
+            proba_col = f"{output_col}_proba"
+            prediction_columns.append(pl.Series(proba_col, probas))
+            generated_columns.append(proba_col)
+    result_lf = lf.with_columns(prediction_columns)
+    return _project_scored_output(
+        result_lf,
+        write_projection,
+        output_col=output_col,
+        generated_columns=generated_columns,
+    )
+
+
+def _normalise_score_write_projection(
+    required_output_columns: frozenset[str] | set[str] | None,
+    *,
+    output_col: str,
+    task: str,
+) -> ScoreWriteProjection | None:
+    if required_output_columns is None:
+        return None
+    generated = {output_col}
+    optional_passthrough: set[str] = set()
+    if task == "classification":
+        proba_col = f"{output_col}_proba"
+        generated.add(proba_col)
+        if proba_col in required_output_columns:
+            optional_passthrough.add(proba_col)
+    passthrough_columns = frozenset(
+        str(c) for c in required_output_columns if c not in generated
+    )
+    return ScoreWriteProjection(
+        passthrough_columns=passthrough_columns,
+        optional_passthrough_columns=frozenset(optional_passthrough),
+        required_output_columns=frozenset(str(c) for c in required_output_columns),
+    )
+
+
+def _ordered_required_columns(
+    schema_names: list[str],
+    required_columns: frozenset[str],
+    *,
+    context: str,
+) -> list[str]:
+    available = set(schema_names)
+    missing = sorted(required_columns - available)
+    if missing:
+        raise ValueError(f"{context} requested missing passthrough columns: {missing}")
+    return [c for c in schema_names if c in required_columns]
 
 
 def _score_batched_unified(
@@ -432,6 +563,7 @@ def _score_batched_unified(
     flavor: str,
     task: str,
     output_col: str,
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path) for the unified API.
 
@@ -449,13 +581,23 @@ def _score_batched_unified(
         cat_feature_names=cat_feature_names,
         flavor=flavor,
     )
-    input_path = _sink_to_temp(lf)
+    sink_columns: frozenset[str] | None = None
+    if write_projection is not None and write_projection.passthrough_columns is not None:
+        optional_present = frozenset()
+        if write_projection.optional_passthrough_columns:
+            schema_names = frozenset(lf.collect_schema().names())
+            optional_present = write_projection.optional_passthrough_columns & schema_names
+        sink_columns = (
+            frozenset(features) | write_projection.passthrough_columns | optional_present
+        )
+    input_path = _sink_to_temp(lf, columns=sink_columns)
     scored_path = _batch_score_to_parquet(
         carrier,
         input_path,
         features,
         output_col,
         task,
+        write_projection=write_projection,
     )
     _register_temp_cleanup(scored_path)
     os.unlink(input_path)
@@ -472,6 +614,8 @@ def score_frame(
     task: str = "regression",
     output_col: str = "prediction",
     batch: bool = False,
+    required_output_columns: frozenset[str] | set[str] | None = None,
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Unified scoring entry point with explicit flavor dispatch.
 
@@ -530,11 +674,38 @@ def score_frame(
             supported=sorted(_SUPPORTED_FLAVORS),
         )
 
+    if required_output_columns is not None:
+        if write_projection is not None:
+            raise ValueError(
+                "Pass either required_output_columns or write_projection to score_frame, not both."
+            )
+        write_projection = _normalise_score_write_projection(
+            required_output_columns,
+            output_col=output_col,
+            task=task,
+        )
+
     if batch:
         return _score_batched_unified(
-            model, lf, features, cat_feature_names, flavor, task, output_col
+            model,
+            lf,
+            features,
+            cat_feature_names,
+            flavor,
+            task,
+            output_col,
+            write_projection=write_projection,
         )
-    return _score_eager_unified(model, lf, features, cat_feature_names, flavor, task, output_col)
+    return _score_eager_unified(
+        model,
+        lf,
+        features,
+        cat_feature_names,
+        flavor,
+        task,
+        output_col,
+        write_projection=write_projection,
+    )
 
 
 def _run_score_pipeline(
@@ -548,6 +719,7 @@ def _run_score_pipeline(
     extra_dfs: tuple[_Frame, ...] = (),
     source: str = "live",
     row_limit: int | None = None,
+    required_output_columns: frozenset[str] | set[str] | None = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
@@ -586,10 +758,30 @@ def _run_score_pipeline(
     # ``_execute_lazy`` boundary already handles per-node failures
     # correctly (preview swallows, trace / batch propagate), so letting
     # the real error type reach the caller is both safe and fail-loud.
+    write_projection = None
+    if not code:
+        write_projection = _normalise_score_write_projection(
+            required_output_columns,
+            output_col=output_col,
+            task=task,
+        )
+
     if source == "live" or row_limit:
         result_lf = score_eager_(scoring_model, lf, features, output_col, task)
+        result_lf = _project_scored_output(
+            result_lf,
+            write_projection,
+            output_col=output_col,
+        )
     else:
-        result_lf = _score_batched_standalone(scoring_model, lf, features, output_col, task)
+        result_lf = _score_batched_standalone(
+            scoring_model,
+            lf,
+            features,
+            output_col,
+            task,
+            write_projection=write_projection,
+        )
 
     if code:
         from haute._user_exec import _exec_user_code
@@ -610,6 +802,7 @@ def _score_batched_standalone(
     features: list[str],
     output_col: str,
     task: str,
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path).
 
@@ -625,6 +818,7 @@ def _score_batched_standalone(
         task=task,
         output_col=output_col,
         batch=True,
+        write_projection=write_projection,
     )
 
 
@@ -662,6 +856,9 @@ class ModelScorer:
         else uses the batched parquet path.
     row_limit : int | None
         When set (preview/trace), forces the eager path regardless of source.
+    reuse_loaded_model : bool
+        When true, pin the loaded model on this scorer instance. Intended for
+        short-lived streaming jobs that reuse one scorer across many chunks.
     """
 
     def __init__(
@@ -678,6 +875,8 @@ class ModelScorer:
         source_names: list[str] | None = None,
         source: str = "live",
         row_limit: int | None = None,
+        required_output_columns: frozenset[str] | set[str] | None = None,
+        reuse_loaded_model: bool = False,
     ) -> None:
         self.source_type = source_type
         self.run_id = run_id
@@ -690,6 +889,40 @@ class ModelScorer:
         self.source_names = list(source_names) if source_names else []
         self.source = source
         self.row_limit = row_limit
+        self.required_output_columns = (
+            frozenset(str(c) for c in required_output_columns)
+            if required_output_columns is not None
+            else None
+        )
+        self.reuse_loaded_model = reuse_loaded_model
+        self._scoring_model: Any | None = None
+        self._scoring_model_lock = threading.Lock()
+
+    def _load_scoring_model_uncached(self) -> Any:
+        """Load the configured model via the shared MLflow loader."""
+        from haute._mlflow_io import load_mlflow_model
+
+        return load_mlflow_model(
+            source_type=self.source_type,
+            run_id=self.run_id,
+            artifact_path=self.artifact_path,
+            registered_model=self.registered_model,
+            version=self.version,
+            task=self.task,
+        )
+
+    def _load_scoring_model(self) -> Any:
+        """Load the configured model, optionally pinning it for this scorer."""
+        if not self.reuse_loaded_model:
+            return self._load_scoring_model_uncached()
+
+        if self._scoring_model is not None:
+            return self._scoring_model
+
+        with self._scoring_model_lock:
+            if self._scoring_model is None:
+                self._scoring_model = self._load_scoring_model_uncached()
+        return self._scoring_model
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -701,16 +934,7 @@ class ModelScorer:
         Accepts one or more upstream LazyFrames (first is the scoring input).
         Returns a LazyFrame with prediction column(s) appended.
         """
-        from haute._mlflow_io import load_mlflow_model
-
-        scoring_model = load_mlflow_model(
-            source_type=self.source_type,
-            run_id=self.run_id,
-            artifact_path=self.artifact_path,
-            registered_model=self.registered_model,
-            version=self.version,
-            task=self.task,
-        )
+        scoring_model = self._load_scoring_model()
 
         lf = dfs[0] if dfs else pl.LazyFrame()
         return _run_score_pipeline(
@@ -723,6 +947,7 @@ class ModelScorer:
             extra_dfs=dfs[1:],
             source=self.source,
             row_limit=self.row_limit,
+            required_output_columns=self.required_output_columns,
         )
 
     # ------------------------------------------------------------------
@@ -757,6 +982,11 @@ class ModelScorer:
             features,
             self.output_col,
             self.task,
+            write_projection=_normalise_score_write_projection(
+                None if self.code else self.required_output_columns,
+                output_col=self.output_col,
+                task=self.task,
+            ),
         )
 
 
@@ -822,7 +1052,11 @@ def score_from_config(
 # ----------------------------------------------------------------------
 
 
-def _sink_to_temp(lf: pl.LazyFrame) -> str:
+def _sink_to_temp(
+    lf: pl.LazyFrame,
+    *,
+    columns: frozenset[str] | set[str] | None = None,
+) -> str:
     """Sink a LazyFrame to a temp parquet file via streaming.
 
     Uses ``fast_checkpoint=True`` for lz4 compression — these temp
@@ -834,12 +1068,21 @@ def _sink_to_temp(lf: pl.LazyFrame) -> str:
 
     from haute._polars_utils import safe_sink
 
+    sink_lf = lf
+    if columns is not None:
+        ordered = _ordered_required_columns(
+            sink_lf.collect_schema().names(),
+            frozenset(columns),
+            context="model-score input projection",
+        )
+        sink_lf = sink_lf.select(ordered)
+
     fd, path = tempfile.mkstemp(
         suffix=".parquet",
         prefix="haute_score_in_",
     )
     os.close(fd)
-    safe_sink(lf, path, fast_checkpoint=True)
+    safe_sink(sink_lf, path, fast_checkpoint=True)
     return path
 
 
@@ -849,6 +1092,8 @@ def _batch_score_to_parquet(
     features: list[str],
     output_col: str,
     task: str,
+    *,
+    write_projection: ScoreWriteProjection | None = None,
 ) -> str:
     """Score a parquet file in batches, return path to scored output."""
     import os
@@ -865,8 +1110,10 @@ def _batch_score_to_parquet(
     os.close(fd)
 
     pf = pq.ParquetFile(input_path)
+    input_schema_names = list(pf.schema_arrow.names)
     writer = None
     want_proba = task == "classification"
+    can_predict_proba = want_proba and _raw_model_supports_predict_proba(scoring_model)
 
     try:
         for batch in pf.iter_batches(
@@ -895,6 +1142,18 @@ def _batch_score_to_parquet(
                     x_data,
                     output_col,
                 )
+            if write_projection is not None:
+                generated = [output_col]
+                proba_col = f"{output_col}_proba"
+                if can_predict_proba and proba_col in chunk.columns:
+                    generated.append(proba_col)
+                chunk = chunk.select(
+                    _score_output_projection_columns(
+                        chunk.columns,
+                        write_projection,
+                        generated_columns=generated,
+                    )
+                )
             table = chunk.to_arrow()
             if writer is None:
                 writer = pq.ParquetWriter(
@@ -910,9 +1169,24 @@ def _batch_score_to_parquet(
             # Zero-row input: write an empty parquet preserving correct dtypes
             input_schema = pl.read_parquet_schema(input_path)
             empty = pl.DataFrame(
-                {c: pl.Series([], dtype=input_schema.get(c, pl.Float64)) for c in features}
+                {
+                    c: pl.Series([], dtype=input_schema.get(c, pl.Float64))
+                    for c in input_schema_names
+                }
             ).with_columns(pl.Series(output_col, [], dtype=pl.Float64))
-            if want_proba:
+            if can_predict_proba:
                 empty = empty.with_columns(pl.Series(f"{output_col}_proba", [], dtype=pl.Float64))
+            if write_projection is not None:
+                generated = [output_col]
+                proba_col = f"{output_col}_proba"
+                if can_predict_proba and proba_col in empty.columns:
+                    generated.append(proba_col)
+                empty = empty.select(
+                    _score_output_projection_columns(
+                        empty.columns,
+                        write_projection,
+                        generated_columns=generated,
+                    )
+                )
             pq.write_table(empty.to_arrow(), out_path)
     return out_path

@@ -7,7 +7,7 @@ side builder module import.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +38,7 @@ class Contract:
 
     inputs: frozenset[str] | None
     outputs: frozenset[str] | None
+    inputs_by_parent: Mapping[str, frozenset[str] | None] | None = None
 
     @classmethod
     def opaque(cls) -> Contract:
@@ -69,6 +70,7 @@ class Contract:
             return cls(
                 inputs=_freeze(getattr(value, "inputs")),
                 outputs=_freeze(getattr(value, "outputs")),
+                inputs_by_parent=_freeze_mapping(getattr(value, "inputs_by_parent", None)),
             )
         if isinstance(value, str):
             if value.strip().lower() == OPAQUE_CONTRACT_SENTINEL:
@@ -78,6 +80,13 @@ class Contract:
                 f"The only accepted string form is {OPAQUE_CONTRACT_SENTINEL!r}.",
             )
         if isinstance(value, dict):
+            unknown_keys = set(value) - {"inputs", "outputs", "inputs_by_parent"}
+            if unknown_keys:
+                raise ValueError(
+                    "Invalid contract dict: unknown key(s) "
+                    f"{sorted(unknown_keys)!r}; expected 'inputs', 'outputs', "
+                    "and optional 'inputs_by_parent'.",
+                )
             inputs_raw = value.get("inputs", ...)
             outputs_raw = value.get("outputs", ...)
             if inputs_raw is ... or outputs_raw is ...:
@@ -88,6 +97,7 @@ class Contract:
             return cls(
                 inputs=_freeze(inputs_raw),
                 outputs=_freeze(outputs_raw),
+                inputs_by_parent=_freeze_mapping(value.get("inputs_by_parent")),
             )
         if isinstance(value, tuple) and len(value) == 2:
             a, b = value
@@ -118,6 +128,24 @@ def _freeze(value: Any) -> frozenset[str] | None:
     raise ValueError(
         f"Contract column set must be iterable; got {type(value).__name__}.",
     )
+
+
+def _freeze_mapping(value: Any) -> dict[str, frozenset[str] | None] | None:
+    """Coerce a parent-id -> column-set mapping used by fan-in contracts."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            "Contract inputs_by_parent must be a mapping of parent node ids to column sets.",
+        )
+    out: dict[str, frozenset[str] | None] = {}
+    for parent_id, columns in value.items():
+        if not isinstance(parent_id, str) or not parent_id:
+            raise ValueError(
+                "Contract inputs_by_parent keys must be non-empty parent node ids.",
+            )
+        out[parent_id] = _freeze(columns)
+    return out
 
 
 def get_column_contract(
