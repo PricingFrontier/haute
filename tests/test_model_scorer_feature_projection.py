@@ -5,11 +5,17 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
+import pytest
 
 from haute._builders import _build_node_fn
 from haute._execute_lazy import _execute_lazy
 from haute._mlflow_io import ScoringModel
-from haute._model_scorer import ScoreWriteProjection, _batch_score_to_parquet, score_frame
+from haute._model_scorer import (
+    ScoreWriteProjection,
+    _batch_score_to_parquet,
+    _project_scored_output,
+    score_frame,
+)
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 
 
@@ -125,9 +131,71 @@ def test_eager_score_write_projection_none_preserves_full_scored_input() -> None
     assert result["unused"].to_list() == [10.0, 20.0]
 
 
-def test_eager_classification_projection_preserves_existing_required_proba_without_predict_proba() -> (
-    None
-):
+def test_score_frame_rejects_conflicting_projection_arguments() -> None:
+    with pytest.raises(ValueError, match="Pass either required_output_columns"):
+        score_frame(
+            model=_predicting_model([0.1]),
+            lf=pl.DataFrame({"feature": [1.0]}).lazy(),
+            features=["feature"],
+            cat_feature_names=frozenset(),
+            flavor="pyfunc",
+            output_col="prediction",
+            batch=False,
+            required_output_columns=frozenset({"prediction"}),
+            write_projection=ScoreWriteProjection(),
+        )
+
+
+def test_eager_score_write_projection_rejects_missing_passthrough_column() -> None:
+    with pytest.raises(ValueError, match="missing passthrough columns"):
+        score_frame(
+            model=_predicting_model([0.1]),
+            lf=pl.DataFrame({"feature": [1.0]}).lazy(),
+            features=["feature"],
+            cat_feature_names=frozenset(),
+            flavor="pyfunc",
+            output_col="prediction",
+            batch=False,
+            write_projection=ScoreWriteProjection(
+                passthrough_columns=frozenset({"missing_quote_id"})
+            ),
+        )
+
+
+def test_eager_score_write_projection_rejects_required_column_not_produced() -> None:
+    with pytest.raises(ValueError, match="not produced or preserved"):
+        score_frame(
+            model=_predicting_model([0.1]),
+            lf=pl.DataFrame({"feature": [1.0]}).lazy(),
+            features=["feature"],
+            cat_feature_names=frozenset(),
+            flavor="pyfunc",
+            output_col="prediction",
+            batch=False,
+            write_projection=ScoreWriteProjection(
+                required_output_columns=frozenset({"missing_prediction"})
+            ),
+        )
+
+
+def test_default_projection_includes_existing_probability_column() -> None:
+    result = _project_scored_output(
+        pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "prediction": [1],
+                "prediction_proba": [0.75],
+                "unused": [10],
+            }
+        ).lazy(),
+        ScoreWriteProjection(passthrough_columns=frozenset({"quote_id"})),
+        output_col="prediction",
+    ).collect()
+
+    assert result.columns == ["quote_id", "prediction", "prediction_proba"]
+
+
+def test_eager_classification_projection_preserves_required_existing_proba() -> None:
     raw_model = MagicMock(spec=["predict"])
     raw_model.predict.return_value = np.asarray([0, 1], dtype=np.int64)
     input_frame = pl.DataFrame(
@@ -380,6 +448,40 @@ def test_batched_classification_projection_preserves_existing_proba_without_pred
     assert result.columns == ["prediction", "prediction_proba"]
     assert result["prediction_proba"].to_list() == [0.25, 0.75]
     assert result["prediction"].to_list() == [0, 1]
+
+
+def test_batched_classification_write_projection_includes_generated_proba() -> None:
+    raw_model = MagicMock(spec=["predict", "predict_proba"])
+    raw_model.predict.return_value = np.asarray([0, 1], dtype=np.int64)
+    raw_model.predict_proba.return_value = np.asarray(
+        [[0.8, 0.2], [0.3, 0.7]],
+        dtype=np.float64,
+    )
+
+    result = score_frame(
+        model=raw_model,
+        lf=pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "feature": [1.0, 2.0],
+                "unused": [10, 20],
+            }
+        ).lazy(),
+        features=["feature"],
+        cat_feature_names=frozenset(),
+        flavor="pyfunc",
+        task="classification",
+        output_col="prediction",
+        batch=True,
+        write_projection=ScoreWriteProjection(
+            passthrough_columns=frozenset({"quote_id"}),
+            required_output_columns=frozenset({"quote_id", "prediction", "prediction_proba"}),
+        ),
+    ).collect()
+
+    assert result.columns == ["quote_id", "prediction", "prediction_proba"]
+    assert result["prediction"].to_list() == [0, 1]
+    assert result["prediction_proba"].to_list() == [0.2, 0.7]
 
 
 def test_batched_score_frame_does_not_collect_wide_unused_columns_when_projected() -> None:

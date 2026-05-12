@@ -41,6 +41,17 @@ def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
     admission_mod._clear_in_flight_reservations_for_tests()
 
 
+def test_windows_current_rss_bytes_returns_none_when_windll_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_context as context_mod
+
+    monkeypatch.setattr(context_mod.os, "name", "nt")
+    monkeypatch.delattr(context_mod.ctypes, "WinDLL", raising=False)
+
+    assert context_mod._windows_current_rss_bytes() is None
+
+
 class _ImmediateThread:
     """Run a background target inline while preserving the Thread constructor API."""
 

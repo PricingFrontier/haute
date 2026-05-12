@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 from collections.abc import Awaitable, Callable, Hashable
+from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
 from typing import TypeAlias
 
@@ -244,6 +245,31 @@ async def test_preview_supersession_cancels_active_execution_context(
 
 
 @pytest.mark.asyncio
+async def test_preview_returns_404_when_executor_omits_target_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute.routes.pipeline as route_mod
+    from haute.server import app
+
+    monkeypatch.setattr(route_mod, "execute_graph", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        route_mod,
+        "temporary_streaming_chunk_size",
+        lambda _chunk_size: nullcontext(),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.post(
+            "/api/pipeline/preview",
+            json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Node 'target' not found in results"
+
+
+@pytest.mark.asyncio
 async def test_preview_admission_failure_still_cancels_active_same_key_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -326,6 +352,11 @@ async def test_preview_limits_blocking_workers_across_distinct_keys(
     from haute.server import app
 
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(2))
+    monkeypatch.setattr(
+        route_mod,
+        "temporary_streaming_chunk_size",
+        lambda _chunk_size: nullcontext(),
+    )
 
     limit_reached = threading.Event()
     extra_worker_started_before_release = threading.Event()
@@ -1242,6 +1273,11 @@ async def test_trace_limits_blocking_workers_across_distinct_keys(
     from haute.server import app
 
     monkeypatch.setattr(route_mod, "_trace_work_slots", asyncio.Semaphore(2))
+    monkeypatch.setattr(
+        route_mod,
+        "temporary_streaming_chunk_size",
+        lambda _chunk_size: nullcontext(),
+    )
 
     limit_reached = threading.Event()
     extra_worker_started_before_release = threading.Event()

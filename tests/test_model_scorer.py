@@ -108,6 +108,61 @@ def _write_region_feature_contract(
     return contract_path
 
 
+def test_feature_validation_uses_lru_cache_after_last_entry_is_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._model_scorer as model_scorer
+
+    _clear_feature_validation_cache()
+    scoring_model = _make_scoring_model(feature_names=["a"])
+    schema = pl.Schema({"a": pl.Float64})
+
+    assert _validate_features(scoring_model, schema) == (["a"], [])
+    monkeypatch.setattr(model_scorer, "_feature_validation_last_entry", None)
+    monkeypatch.setattr(
+        model_scorer,
+        "_validate_features_uncached",
+        MagicMock(side_effect=AssertionError("expected cached feature validation")),
+    )
+
+    assert _validate_features(scoring_model, schema) == (["a"], [])
+
+
+def test_registered_temp_cleanup_callback_unlinks_all_registered_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._model_scorer as model_scorer
+
+    first = tmp_path / "first.parquet"
+    second = tmp_path / "second.parquet"
+    missing = tmp_path / "already_gone.parquet"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    callbacks: list[Any] = []
+
+    monkeypatch.setattr(model_scorer, "_atexit_registered", False)
+    monkeypatch.setattr("atexit.register", callbacks.append)
+    with model_scorer._temp_cleanup_lock:
+        model_scorer._temp_files_to_clean.clear()
+
+    try:
+        _register_temp_cleanup(str(first))
+        _register_temp_cleanup(str(second))
+        _register_temp_cleanup(str(missing))
+
+        assert len(callbacks) == 1
+        callbacks[0]()
+
+        assert not first.exists()
+        assert not second.exists()
+        with model_scorer._temp_cleanup_lock:
+            assert model_scorer._temp_files_to_clean == set()
+    finally:
+        with model_scorer._temp_cleanup_lock:
+            model_scorer._temp_files_to_clean.clear()
+
+
 # ===========================================================================
 # ModelScorer construction
 # ===========================================================================
