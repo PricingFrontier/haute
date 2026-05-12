@@ -50,7 +50,7 @@ export interface UseJobPollingConfig<TJob, TStatus> {
   /** Called when a job completes successfully. */
   onComplete: (nodeId: string, result: TStatus) => void
   /** Called when a job fails (API error status or network failure). */
-  onFail: (nodeId: string, errorMsg: string) => void
+  onFail: (nodeId: string, errorMsg: string, terminalStatus?: TStatus) => void
   /** Extract a display label from a job (for toast messages). */
   labelFn: (job: TJob) => string
   /** Extract the server-side job ID from a job object. */
@@ -202,7 +202,7 @@ function reconcilePollers<TJob, TStatus>(
               addToast("success", `${successLabel}: ${labelFn(job)}`)
             } else {
               const msg = getErrorMessage(status) || "Unknown error"
-              onFail(nodeId, msg)
+              onFail(nodeId, msg, status)
               addToast("error", `${failLabel}: ${labelFn(job)} — ${msg}`)
             }
             return

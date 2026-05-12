@@ -159,33 +159,32 @@ def _verify_static_source_schema(
 ) -> None:
     """Check that a static dataSource file matches its declared schema.
 
-    Compares the file's actual column order (inferred via a cheap
-    ``pl.scan_*`` schema read) against ``config['expected_columns']``.
-    Disagreement raises :class:`DeployError` naming the node — the
-    deploy layer refuses to bundle a file whose shape drifted from the
-    contract the rest of the pipeline was designed against.
+    Reads the file schema through the same data-source adapter used at
+    execution time, so schema declarations and bounded-profile source
+    restrictions are enforced at the deploy boundary too. When
+    ``expected_columns`` is declared, disagreement raises
+    :class:`DeployError` naming the node. The deploy layer refuses to
+    bundle a file whose shape drifted from the contract the rest of the
+    pipeline was designed against.
     """
     expected = config.get("expected_columns")
-    if not expected:
+    has_schema_declaration = any(
+        key in config
+        for key in ("schema_overrides", "dtypes", "column_dtypes", "schema")
+    )
+    if not expected and not has_schema_declaration:
         return
 
-    import polars as pl
-
+    from haute._execution_context import ExecutionProfile
+    from haute._io import read_data_source
     from haute.errors import DeployError
-
-    suffix = abs_path.suffix.lower()
     try:
-        if suffix == ".csv":
-            actual = pl.scan_csv(str(abs_path)).collect_schema().names()
-        elif suffix == ".parquet":
-            actual = list(pl.read_parquet_schema(str(abs_path)).keys())
-        elif suffix in (".json", ".jsonl"):
-            actual = pl.scan_ndjson(str(abs_path)).collect_schema().names()
-        else:
-            # Unknown extension — we can't validate, so pass through.  The
-            # deploy manifest still records the file, but schema drift on
-            # custom formats is a pipeline-level concern.
-            return
+        source_config = {**config, "path": str(abs_path)}
+        schema = read_data_source(
+            source_config,
+            profile=ExecutionProfile.DEPLOY_BATCH,
+        ).collect_schema()
+        actual = schema.names()
     except Exception as exc:  # pragma: no cover — malformed-file path
         raise DeployError(
             f"Could not read schema for static dataSource node {node_id!r} "
@@ -195,7 +194,7 @@ def _verify_static_source_schema(
             error=str(exc),
         ) from exc
 
-    if list(expected) != list(actual):
+    if expected and list(expected) != list(actual):
         raise DeployError(
             f"Static dataSource {node_id!r} column order does not match the "
             f"expected_columns declared in the pipeline: "

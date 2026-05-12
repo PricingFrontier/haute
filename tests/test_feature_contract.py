@@ -25,6 +25,7 @@ import dataclasses
 import json
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from haute.errors import FeatureMismatchError
@@ -33,7 +34,9 @@ from haute.modelling._feature_contract import (
     assert_contracts_match,
     build_contract,
     load_contract,
+    merge_categorical_level_declarations,
     save_contract,
+    validate_categorical_value_domains,
 )
 
 # ---------------------------------------------------------------------------
@@ -73,16 +76,100 @@ class TestBuildContract:
         assert contract.features == kwargs["features"]
         assert contract.feature_types == kwargs["feature_types"]
         assert contract.categorical_features == kwargs["categorical_features"]
+        assert contract.categorical_levels == {}
         assert contract.target_name == kwargs["target_name"]
         assert contract.target_type == kwargs["target_type"]
         assert contract.task == kwargs["task"]
         assert isinstance(contract.contract_hash, str)
         assert contract.contract_hash  # non-empty
 
+    def test_build_contract_records_declared_categorical_levels(self) -> None:
+        kwargs = _basic_kwargs()
+        kwargs["categorical_levels"] = {"region": ["north", "south"]}
+
+        contract = build_contract(**kwargs)
+
+        assert contract.categorical_levels == {"region": ["north", "south"]}
+
+    def test_categorical_levels_are_deterministically_ordered(self) -> None:
+        kwargs = _basic_kwargs()
+        kwargs["categorical_levels"] = {"region": ["south", "north", None]}
+
+        contract = build_contract(**kwargs)
+
+        assert contract.categorical_levels == {"region": ["north", "south", None]}
+
+    def test_categorical_levels_reject_unordered_iterables(self) -> None:
+        kwargs = _basic_kwargs()
+        kwargs["categorical_levels"] = {"region": {"north", "south"}}
+
+        with pytest.raises(FeatureMismatchError, match="must be lists"):
+            build_contract(**kwargs)
+
 
 # ---------------------------------------------------------------------------
 # 2–4. Hash determinism, sensitivity, order-independence
 # ---------------------------------------------------------------------------
+
+
+class TestValidateCategoricalValueDomains:
+    def test_allows_null_only_when_declared(self) -> None:
+        frame = pl.DataFrame({"region": ["north", None]})
+
+        validate_categorical_value_domains(
+            frame,
+            {"region": ["north", None]},
+        )
+
+    def test_rejects_null_when_not_declared(self) -> None:
+        frame = pl.DataFrame({"region": [None]})
+
+        with pytest.raises(FeatureMismatchError, match="outside declared") as exc_info:
+            validate_categorical_value_domains(frame, {"region": ["north"]})
+
+        assert exc_info.value.context["column"] == "region"
+        assert exc_info.value.context["invalid_levels"] == [None]
+
+    def test_rejects_unknown_observed_level(self) -> None:
+        frame = pl.DataFrame({"region": ["east"]})
+
+        with pytest.raises(FeatureMismatchError, match="outside declared") as exc_info:
+            validate_categorical_value_domains(frame, {"region": ["north", "south"]})
+
+        assert exc_info.value.context["invalid_levels"] == ["east"]
+
+    def test_rejects_missing_declared_column(self) -> None:
+        frame = pl.DataFrame({"other": ["north"]})
+
+        with pytest.raises(FeatureMismatchError, match="missing"):
+            validate_categorical_value_domains(frame, {"region": ["north"]})
+
+
+class TestMergeCategoricalLevelDeclarations:
+    def test_merges_matching_declarations(self) -> None:
+        merged = merge_categorical_level_declarations(
+            [
+                ("source", {"region": ["north", "south"]}),
+                ("modelScore", {"region": ["north", "south"], "channel": ["web"]}),
+            ]
+        )
+
+        assert merged == {
+            "region": ["north", "south"],
+            "channel": ["web"],
+        }
+
+    def test_rejects_conflicting_declarations(self) -> None:
+        with pytest.raises(FeatureMismatchError, match="Conflicting") as exc_info:
+            merge_categorical_level_declarations(
+                [
+                    ("source", {"region": ["north", "south"]}),
+                    ("modelScore", {"region": ["north", "east"]}),
+                ]
+            )
+
+        assert exc_info.value.context["column"] == "region"
+        assert exc_info.value.context["source_node"] == "modelScore"
 
 
 class TestContractHash:
@@ -109,6 +196,8 @@ class TestContractHash:
             {"feature_types": {"age": "Float64", "region": "String", "vehicle_value": "Float64"}},
             # Change categorical set
             {"categorical_features": ["region", "age"]},
+            # Change categorical value-domain
+            {"categorical_levels": {"region": ["north", "east"]}},
             # Change target name
             {"target_name": "ClaimAmount"},
             # Change target type
@@ -152,6 +241,28 @@ class TestContractHash:
         a = build_contract(**kwargs_a)
         b = build_contract(**kwargs_b)
         assert a.contract_hash == b.contract_hash
+
+    def test_empty_categorical_levels_preserves_legacy_hash(self) -> None:
+        """Adding an empty level map should not invalidate older contracts."""
+        legacy = build_contract(**_basic_kwargs())
+        explicit_empty = build_contract(
+            **{
+                **_basic_kwargs(),
+                "categorical_levels": {},
+            }
+        )
+
+        assert legacy.contract_hash == explicit_empty.contract_hash
+
+    def test_categorical_level_reorder_preserves_hash(self) -> None:
+        kwargs_a = _basic_kwargs()
+        kwargs_a["categorical_levels"] = {"region": ["north", "south"]}
+        kwargs_b = _basic_kwargs()
+        kwargs_b["categorical_levels"] = {"region": ["south", "north"]}
+
+        assert build_contract(**kwargs_a).contract_hash == build_contract(
+            **kwargs_b
+        ).contract_hash
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +440,26 @@ class TestAssertContractsMatch:
         message = str(exc_info.value).lower()
         assert "categorical" in message or "age" in message
 
+    def test_categorical_level_difference_raises(self) -> None:
+        expected = build_contract(
+            **{
+                **_basic_kwargs(),
+                "categorical_levels": {"region": ["north", "south"]},
+            }
+        )
+        actual = build_contract(
+            **{
+                **_basic_kwargs(),
+                "categorical_levels": {"region": ["north", "east"]},
+            }
+        )
+
+        with pytest.raises(FeatureMismatchError) as exc_info:
+            assert_contracts_match(expected, actual)
+
+        assert exc_info.value.context["field"] == "categorical_levels"
+        assert "region" in str(exc_info.value)
+
     def test_task_difference_raises(self) -> None:
         """regression vs classification is a structural mismatch —
         the model-family assumptions differ.
@@ -433,6 +564,7 @@ def _raw_from_contract(contract: FeatureContract) -> dict:
         "features": contract.features,
         "feature_types": contract.feature_types,
         "categorical_features": contract.categorical_features,
+        "categorical_levels": contract.categorical_levels,
         "target_name": contract.target_name,
         "target_type": contract.target_type,
         "task": contract.task,
@@ -488,6 +620,28 @@ class TestStructuredContext:
         assert ctx.get("field") == "target_type"
         assert ctx.get("expected") == "Int64"
         assert ctx.get("actual") == "Float64"
+
+    def test_load_legacy_contract_without_categorical_levels(self, tmp_path: Path) -> None:
+        contract = build_contract(**_basic_kwargs())
+        raw = _raw_from_contract(contract)
+        raw.pop("categorical_levels")
+        path = tmp_path / "legacy.json"
+        path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
+
+        loaded = load_contract(path)
+
+        assert loaded.categorical_levels == {}
+        assert loaded.contract_hash == contract.contract_hash
+
+    def test_load_rejects_malformed_categorical_levels(self, tmp_path: Path) -> None:
+        contract = build_contract(**_basic_kwargs())
+        raw = _raw_from_contract(contract)
+        raw["categorical_levels"] = {"region": ["north", "north"]}
+        path = tmp_path / "bad_levels.json"
+        path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
+
+        with pytest.raises(FeatureMismatchError, match="duplicate"):
+            load_contract(path, verify_hash=False)
 
 
 # ---------------------------------------------------------------------------

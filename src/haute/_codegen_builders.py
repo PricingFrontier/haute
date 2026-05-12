@@ -204,7 +204,7 @@ def _first_source(source_names: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _api_input_template(path: str) -> str:
+def _api_input_template(path: str, config: dict) -> str:
     """Return the API input template string for the given file path.
 
     JSON/JSONL files use ``read_json_flat``, CSV uses ``scan_csv``,
@@ -217,10 +217,15 @@ def _api_input_template(path: str) -> str:
             "    from haute._json_flatten import read_json_flat\n"
             "    return read_json_flat({portable_path}, config_path={config_path_repr})"
         )
-    elif lower.endswith(".csv"):
-        body = "    from pathlib import Path\n    return pl.scan_csv({portable_path})"
     else:
-        body = "    from pathlib import Path\n    return pl.scan_parquet({portable_path})"
+        runtime_config = {"sourceType": "flat_file", **config}
+        runtime_expr = _data_source_runtime_config_expr(runtime_config)
+        runtime_expr = runtime_expr.replace("{", "{{").replace("}", "}}")
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import read_data_source\n"
+            f"    return read_data_source({runtime_expr})"
+        )
 
     return (
         "@pipeline.api_input(path={path_repr}{row_id_kw})\n"
@@ -248,11 +253,33 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 
+def _data_source_runtime_config_expr(config: dict) -> str:
+    runtime_config = {
+        key: value
+        for key, value in config.items()
+        if key != "code" and not str(key).startswith("_")
+    }
+    source_type = runtime_config.get("sourceType", "flat_file")
+    items: list[str] = [f'"sourceType": {source_type!r}']
+
+    if source_type != "databricks":
+        path = str(runtime_config.get("path", ""))
+        items.append(f'"path": str({_portable_path_expr(path)})')
+
+    for key, value in runtime_config.items():
+        if key in {"sourceType", "path"}:
+            continue
+        items.append(f"{key!r}: {value!r}")
+
+    return "{" + ", ".join(items) + "}"
+
+
 def _data_source_parts(config: dict) -> tuple[str, str, str]:
     """Return (decorator, imports, load_expr) for a DataSource node.
 
-    *imports* is empty for flat files, non-empty for Databricks.
-    *load_expr* is the bare expression (e.g. ``pl.scan_parquet("path")``).
+    Generated data sources use the same shared I/O boundary as runtime
+    execution. This keeps file dispatch, schema declarations, bounded JSON
+    rules, and source-type validation in one place.
     """
     source_type = config.get("sourceType", "flat_file")
     path = config.get("path", "")
@@ -267,24 +294,14 @@ def _data_source_parts(config: dict) -> tuple[str, str, str]:
         if query:
             parts.append(f"query={query!r}")
         decorator = f"@pipeline.data_source({', '.join(parts)})"
-        imports = "    from haute._databricks_io import read_cached_table\n"
-        load_expr = f"read_cached_table({_safe_str(table)})"
-    elif path.lower().endswith(".csv"):
-        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.scan_csv({_portable_path_expr(path)})"
-    elif path.lower().endswith(".jsonl"):
-        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.scan_ndjson({_portable_path_expr(path)})"
-    elif path.lower().endswith(".json"):
-        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.read_json({_portable_path_expr(path)}).lazy()"
     else:
         decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.scan_parquet({_portable_path_expr(path)})"
+
+    imports = (
+        "    from pathlib import Path\n"
+        "    from haute.graph_utils import read_data_source\n"
+    )
+    load_expr = f"read_data_source({_data_source_runtime_config_expr(config)})"
 
     return decorator, imports, load_expr
 
@@ -320,8 +337,8 @@ _SINK_PARQUET = '''\
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from pathlib import Path
-    from haute._polars_utils import safe_sink
-    safe_sink({first}, {portable_path})
+    from haute._polars_utils import bounded_sink
+    bounded_sink({first}, {portable_path})
     return {first}
 '''
 
@@ -330,8 +347,8 @@ _SINK_CSV = '''\
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from pathlib import Path
-    from haute._polars_utils import safe_sink
-    safe_sink({first}, {portable_path}, fmt="csv")
+    from haute._polars_utils import bounded_sink
+    bounded_sink({first}, {portable_path}, fmt="csv")
     return {first}
 '''
 
@@ -446,7 +463,7 @@ def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
     if config.get("row_id_column"):
         row_id_kw = f", row_id_column={_safe_str(config['row_id_column'])}"
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    template = _api_input_template(path)
+    template = _api_input_template(path, config)
     return template.format(
         func_name=func_name,
         description=description,

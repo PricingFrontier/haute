@@ -29,6 +29,16 @@ def _clear_trace_caches():
     _preview_cache.invalidate()
 
 
+@pytest.fixture(autouse=True)
+def _clear_execution_admission_reservations():
+    """Keep process-wide in-flight budget reservations isolated per test."""
+    from haute._execution_admission import _clear_in_flight_reservations_for_tests
+
+    _clear_in_flight_reservations_for_tests()
+    yield
+    _clear_in_flight_reservations_for_tests()
+
+
 @pytest.fixture(scope="session")
 def _default_bus_baseline() -> dict:
     """Capture default_bus' import-time subscribers once per session.

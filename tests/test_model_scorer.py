@@ -18,6 +18,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -30,14 +31,17 @@ from haute._model_scorer import (
     FeatureMismatchError,
     ModelScorer,
     _batch_score_to_parquet,
+    _cleanup_registered_temp_files,
     _clear_feature_validation_cache,
     _format_feature_mismatch,
     _register_temp_cleanup,
     _run_score_pipeline,
     _sink_to_temp,
     _validate_features,
+    model_score_temp_file_scope,
     score_from_config,
 )
+from haute.errors import BoundedMemoryUnsupportedError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,6 +83,29 @@ def _make_scoring_model(
         cat_feature_names=cat_feature_names or frozenset(),
         flavor=flavor,
     )
+
+
+def _write_region_feature_contract(
+    tmp_path: Path,
+    *,
+    categorical_levels: dict[str, list[str | None]],
+) -> Path:
+    from haute.modelling._feature_contract import build_contract, save_contract
+
+    contract_path = tmp_path / "feature_contract.json"
+    save_contract(
+        build_contract(
+            features=["region"],
+            feature_types={"region": "String"},
+            categorical_features=["region"],
+            categorical_levels=categorical_levels,
+            target_name="target",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract_path,
+    )
+    return contract_path
 
 
 # ===========================================================================
@@ -124,6 +151,10 @@ class TestModelScorerInit:
     def test_source_names_none_becomes_empty_list(self):
         scorer = ModelScorer(source_type="run", source_names=None)
         assert scorer.source_names == []
+
+    def test_feature_contract_path_defaults_to_none(self):
+        scorer = ModelScorer(source_type="run")
+        assert scorer.feature_contract_path is None
 
 
 # ===========================================================================
@@ -211,6 +242,93 @@ class TestModelScorerScore:
         features = call_args[0][2]
         assert "a" in features
         assert "b" in features
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_feature_contract_rejects_declared_categorical_level_drift(
+        self,
+        mock_load,
+        mock_score_eager,
+        tmp_path,
+    ):
+        """Local modelScore enforces declared category domains before model load."""
+        contract_path = _write_region_feature_contract(
+            tmp_path,
+            categorical_levels={"region": ["north", "south"]},
+        )
+        scorer = ModelScorer(
+            source_type="run",
+            run_id="abc",
+            source="live",
+            feature_contract_path=str(contract_path),
+            categorical_levels={"region": ["north", "east"]},
+        )
+
+        with pytest.raises(FeatureMismatchError, match="categorical_levels") as exc_info:
+            scorer.score(pl.DataFrame({"region": ["north"]}).lazy())
+
+        assert exc_info.value.context["field"] == "categorical_levels"
+        mock_load.assert_not_called()
+        mock_score_eager.assert_not_called()
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_feature_contract_rejects_observed_category_outside_domain_live(
+        self,
+        mock_load,
+        mock_score_eager,
+        tmp_path,
+    ):
+        """A matching declaration still rejects live values outside the training domain."""
+        contract_path = _write_region_feature_contract(
+            tmp_path,
+            categorical_levels={"region": ["north", "south"]},
+        )
+        mock_load.return_value = _make_scoring_model(
+            feature_names=["region"],
+            cat_feature_names=frozenset({"region"}),
+        )
+        scorer = ModelScorer(
+            source_type="run",
+            run_id="abc",
+            source="live",
+            feature_contract_path=str(contract_path),
+            categorical_levels={"region": ["north", "south"]},
+        )
+
+        with pytest.raises(FeatureMismatchError, match="outside declared"):
+            scorer.score(pl.DataFrame({"region": ["west"]}).lazy())
+
+        mock_score_eager.assert_not_called()
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_feature_contract_enforces_levels_without_runtime_redeclaration(
+        self,
+        mock_load,
+        mock_score_eager,
+        tmp_path,
+    ):
+        """The saved contract is self-sufficient when runtime config omits levels."""
+        contract_path = _write_region_feature_contract(
+            tmp_path,
+            categorical_levels={"region": ["north", "south"]},
+        )
+        mock_load.return_value = _make_scoring_model(
+            feature_names=["region"],
+            cat_feature_names=frozenset({"region"}),
+        )
+        scorer = ModelScorer(
+            source_type="run",
+            run_id="abc",
+            source="live",
+            feature_contract_path=str(contract_path),
+        )
+
+        with pytest.raises(FeatureMismatchError, match="outside declared"):
+            scorer.score(pl.DataFrame({"region": ["west"]}).lazy())
+
+        mock_score_eager.assert_not_called()
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
@@ -369,22 +487,42 @@ class TestSinkToTemp:
         finally:
             os.unlink(path)
 
-    def test_fallback_on_sink_failure(self):
-        """If sink_parquet fails with a Polars error, fallback to collect+write_parquet."""
+    def test_streaming_sink_failure_propagates_without_collect_fallback(self):
+        """Model-score temp sinks fail loudly instead of broadening to collect."""
         lf = MagicMock(spec=pl.LazyFrame)
-        lf.sink_parquet.side_effect = pl.exceptions.ComputeError("sink failed")
+        lf.sink_parquet.side_effect = pl.exceptions.ComputeError("streaming sink failed")
+        lf.collect.side_effect = AssertionError("collect fallback should not run")
 
-        # Set up the fallback path
-        mock_df = pl.DataFrame({"x": [1]})
-        lf.collect.return_value = mock_df
+        with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming sink failed"):
+            _sink_to_temp(lf)
 
-        path = _sink_to_temp(lf)
-        try:
-            assert os.path.exists(path)
-            df = pl.read_parquet(path)
-            assert len(df) == 1
-        finally:
-            os.unlink(path)
+        lf.collect.assert_not_called()
+
+    def test_temp_path_removed_when_streaming_sink_raises(self, tmp_path, monkeypatch):
+        """A sink failure before _sink_to_temp returns must not leak its temp file."""
+        import tempfile
+        from pathlib import Path
+
+        created_paths: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def tracked_mkstemp(*args, **kwargs):
+            kwargs["dir"] = tmp_path
+            fd, path = real_mkstemp(*args, **kwargs)
+            created_paths.append(path)
+            return fd, path
+
+        def fail_bounded_sink(*_args, **_kwargs):
+            raise RuntimeError("sink failed")
+
+        monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
+        monkeypatch.setattr("haute._polars_utils.bounded_sink", fail_bounded_sink)
+
+        with pytest.raises(RuntimeError, match="sink failed"):
+            _sink_to_temp(pl.DataFrame({"x": [1]}).lazy())
+
+        assert created_paths
+        assert all(not Path(path).exists() for path in created_paths)
 
 
 # ===========================================================================
@@ -473,6 +611,91 @@ class TestBatchScoreToParquet:
             assert "pred_proba" not in result.columns
         finally:
             os.unlink(out_path)
+
+    def test_predict_failure_removes_partial_output_parquet(self, tmp_path, monkeypatch):
+        """Batch parquet output must not survive when prediction fails mid-write."""
+        import tempfile
+        from pathlib import Path
+
+        input_path = str(tmp_path / "input.parquet")
+        pl.DataFrame({"a": [1.0]}).write_parquet(input_path)
+        sm = _make_scoring_model(feature_names=["a"])
+        sm._model.predict.side_effect = RuntimeError("boom")
+        created_paths: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def tracked_mkstemp(*args, **kwargs):
+            kwargs["dir"] = tmp_path
+            fd, path = real_mkstemp(*args, **kwargs)
+            created_paths.append(path)
+            return fd, path
+
+        monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _batch_score_to_parquet(
+                sm,
+                input_path,
+                ["a"],
+                "pred",
+                "regression",
+            )
+
+        assert created_paths
+        assert all(not Path(path).exists() for path in created_paths)
+
+    def test_unreadable_input_removes_output_temp_parquet(self, tmp_path, monkeypatch):
+        """Output temp is cleaned when the input parquet cannot even be opened."""
+        import tempfile
+        from pathlib import Path
+
+        input_path = tmp_path / "not_parquet.parquet"
+        input_path.write_bytes(b"not parquet")
+        sm = _make_scoring_model(feature_names=["a"])
+        created_paths: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def tracked_mkstemp(*args, **kwargs):
+            kwargs["dir"] = tmp_path
+            fd, path = real_mkstemp(*args, **kwargs)
+            created_paths.append(path)
+            return fd, path
+
+        monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
+
+        with pytest.raises(Exception):
+            _batch_score_to_parquet(
+                sm,
+                str(input_path),
+                ["a"],
+                "pred",
+                "regression",
+            )
+
+        assert created_paths
+        assert all(not Path(path).exists() for path in created_paths)
+
+    def test_declared_categorical_levels_validate_before_batch_predict(self, tmp_path):
+        """Batch scoring checks category domains per chunk before predict."""
+        input_path = str(tmp_path / "input.parquet")
+        pl.DataFrame({"region": ["west"]}).write_parquet(input_path)
+        sm = _make_scoring_model(
+            feature_names=["region"],
+            cat_feature_names=frozenset({"region"}),
+            predictions=np.array([0.1]),
+        )
+
+        with pytest.raises(FeatureMismatchError, match="outside declared"):
+            _batch_score_to_parquet(
+                sm,
+                input_path,
+                ["region"],
+                "pred",
+                "regression",
+                categorical_levels={"region": ["north", "south"]},
+            )
+
+        sm.raw_model.predict.assert_not_called()
 
 
 # ===========================================================================
@@ -940,6 +1163,35 @@ class TestRunScorePipeline:
         call_args = mock_exec.call_args[0]
         assert call_args[1] == []
 
+    def test_batched_failure_removes_input_temp_file(self, tmp_path, monkeypatch):
+        """A failed batch score should not leak the already-sunk input parquet."""
+        sm = _make_scoring_model(feature_names=["a"])
+        input_path = tmp_path / "haute_score_in_failure.parquet"
+        pl.DataFrame({"a": [1.0]}).write_parquet(input_path)
+
+        def fake_sink_to_temp(*_args, **_kwargs):
+            return str(input_path)
+
+        def fail_batch_score(*_args, **_kwargs):
+            raise RuntimeError("predict failed")
+
+        monkeypatch.setattr("haute._model_scorer._sink_to_temp", fake_sink_to_temp)
+        monkeypatch.setattr(
+            "haute._model_scorer._batch_score_to_parquet",
+            fail_batch_score,
+        )
+
+        with pytest.raises(RuntimeError, match="predict failed"):
+            _run_score_pipeline(
+                sm,
+                pl.DataFrame({"a": [1.0]}).lazy(),
+                task="regression",
+                output_col="prediction",
+                source="batch",
+            )
+
+        assert not input_path.exists()
+
 
 # ===========================================================================
 # _register_temp_cleanup
@@ -958,6 +1210,57 @@ class TestRegisterTempCleanup:
         finally:
             mod._temp_files_to_clean.discard("/fake/path/for_test.parquet")
             mod._temp_files_to_clean.update(original & mod._temp_files_to_clean)
+
+    def test_cleanup_registered_temp_files_unlinks_and_unregisters(self, tmp_path):
+        """Request-scoped cleanup removes files before long-lived process exit."""
+        import haute._model_scorer as mod
+
+        temp_path = tmp_path / "haute_score_out_cleanup.parquet"
+        temp_path.write_bytes(b"temporary")
+        original = mod._temp_files_to_clean.copy()
+
+        try:
+            _register_temp_cleanup(str(temp_path))
+            _cleanup_registered_temp_files([str(temp_path)])
+
+            assert not temp_path.exists()
+            assert str(temp_path) not in mod._temp_files_to_clean
+        finally:
+            mod._temp_files_to_clean.clear()
+            mod._temp_files_to_clean.update(original)
+
+    def test_active_temp_file_scope_tracks_batch_output(self, tmp_path, monkeypatch):
+        """Batch scorers built outside deploy hooks can still expose request temps."""
+        scored_path = tmp_path / "haute_score_out_scoped.parquet"
+        input_path = tmp_path / "haute_score_in_scoped.parquet"
+        pl.DataFrame({"a": [1.0]}).write_parquet(input_path)
+        sm = _make_scoring_model(feature_names=["a"])
+
+        def fake_sink_to_temp(*_args, **_kwargs):
+            return str(input_path)
+
+        def fake_batch_score(*_args, **_kwargs):
+            pl.DataFrame({"a": [1.0], "prediction": [0.5]}).write_parquet(scored_path)
+            return str(scored_path)
+
+        monkeypatch.setattr("haute._model_scorer._sink_to_temp", fake_sink_to_temp)
+        monkeypatch.setattr("haute._model_scorer._batch_score_to_parquet", fake_batch_score)
+
+        scoped_paths: list[str] = []
+        with model_score_temp_file_scope(scoped_paths):
+            result = _run_score_pipeline(
+                sm,
+                pl.DataFrame({"a": [1.0]}).lazy(),
+                task="regression",
+                output_col="prediction",
+                source="batch",
+            ).collect()
+
+        try:
+            assert result["prediction"].to_list() == [0.5]
+            assert scoped_paths == [str(scored_path)]
+        finally:
+            _cleanup_registered_temp_files(scoped_paths)
 
 
 # ===========================================================================
@@ -1131,6 +1434,7 @@ class TestBatchScoreToParquetEmpty:
         sm = _make_scoring_model(
             feature_names=["a", "b"],
             predictions=np.array([]),
+            probas=np.empty((0, 2)),
         )
 
         out_path = _batch_score_to_parquet(

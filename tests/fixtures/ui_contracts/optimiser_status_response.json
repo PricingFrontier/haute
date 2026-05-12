@@ -98,5 +98,7 @@
     ],
     "points_limit": 2000,
     "points_truncated": false
-  }
+  },
+  "terminal_reason": null,
+  "execution_metrics": null
 }

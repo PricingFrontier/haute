@@ -108,7 +108,7 @@ class TestNodeToCode:
                 {"path": "data/input.parquet"},
                 [
                     "def Load_Data()",
-                    'scan_parquet(Path(__file__).parent / "data/input.parquet")',
+                    "read_data_source",
                     'config="config/data_source/Load_Data.json"',
                 ],
                 id="parquet",
@@ -117,7 +117,7 @@ class TestNodeToCode:
                 "CSV Source",
                 {"path": "data/input.csv"},
                 [
-                    'scan_csv(Path(__file__).parent / "data/input.csv")',
+                    "read_data_source",
                     "def CSV_Source()",
                     'config="config/data_source/CSV_Source.json"',
                 ],
@@ -127,8 +127,7 @@ class TestNodeToCode:
                 "JSON Source",
                 {"path": "data/input.json"},
                 [
-                    'read_json(Path(__file__).parent / "data/input.json")',
-                    ".lazy()",
+                    "read_data_source",
                     "def JSON_Source()",
                     'config="config/data_source/JSON_Source.json"',
                 ],
@@ -138,7 +137,7 @@ class TestNodeToCode:
                 "JSONL Source",
                 {"path": "data/input.jsonl"},
                 [
-                    'scan_ndjson(Path(__file__).parent / "data/input.jsonl")',
+                    "read_data_source",
                     "def JSONL_Source()",
                     'config="config/data_source/JSONL_Source.json"',
                 ],
@@ -148,7 +147,7 @@ class TestNodeToCode:
                 "DB Source",
                 {"sourceType": "databricks", "table": "catalog.schema.tbl"},
                 [
-                    "read_cached_table",
+                    "read_data_source",
                     "catalog.schema.tbl",
                     'config="config/data_source/DB_Source.json"',
                 ],
@@ -174,19 +173,19 @@ class TestNodeToCode:
             pytest.param(
                 "Load Data",
                 {"path": "data/input.parquet", "code": "df = df.filter(pl.col('x') > 0)"},
-                ["df = pl.scan_parquet", "filter", "return df"],
+                ["df = read_data_source", "filter", "return df"],
                 id="parquet_with_code",
             ),
             pytest.param(
                 "CSV Source",
                 {"path": "data/input.csv", "code": "df = df.select('a', 'b')"},
-                ["df = pl.scan_csv", "select", "return df"],
+                ["df = read_data_source", "select", "return df"],
                 id="csv_with_code",
             ),
             pytest.param(
                 "DB Source",
                 {"sourceType": "databricks", "table": "cat.sch.tbl", "code": "df = df.limit(100)"},
-                ["read_cached_table", "limit", "return df"],
+                ["read_data_source", "limit", "return df"],
                 id="databricks_with_code",
             ),
         ],
@@ -219,7 +218,7 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node)
-        assert "df = pl.scan_parquet" in code
+        assert "df = read_data_source" in code
         assert "return df" in code
         _compile_node_code(code)
 
@@ -243,7 +242,8 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node)
-        assert code.count("scan_parquet") == 1
+        assert code.count("scan_parquet") == 0
+        assert code.count("df = read_data_source") == 1
         assert "df = df.limit(10)" in code
         _compile_node_code(code)
 
@@ -373,7 +373,7 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["transform"])
-        assert 'safe_sink(transform, Path(__file__).parent / "outputs/out.parquet")' in code
+        assert 'bounded_sink(transform, Path(__file__).parent / "outputs/out.parquet")' in code
         assert "def Write(transform: pl.LazyFrame)" in code
         _compile_node_code(code)
 
@@ -389,7 +389,7 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node)
-        assert 'safe_sink(df, Path(__file__).parent / "outputs/out.csv", fmt="csv")' in code
+        assert 'bounded_sink(df, Path(__file__).parent / "outputs/out.csv", fmt="csv")' in code
         _compile_node_code(code)
 
     def test_model_score(self):
@@ -1602,7 +1602,7 @@ class TestDataSourceJsonCodegen:
 
     def test_csv_uses_scan_csv(self):
         code = _node_to_code(self._make_ds_node("data/file.csv", "CSVSrc"))
-        assert 'scan_csv(Path(__file__).parent / "data/file.csv")' in code
+        assert "read_data_source" in code
         assert "scan_parquet" not in code
         assert "read_json" not in code
         _compile_node_code(code)
@@ -1611,7 +1611,7 @@ class TestDataSourceJsonCodegen:
 
     def test_parquet_uses_scan_parquet(self):
         code = _node_to_code(self._make_ds_node("data/file.parquet", "ParqSrc"))
-        assert 'scan_parquet(Path(__file__).parent / "data/file.parquet")' in code
+        assert "read_data_source" in code
         assert "scan_csv" not in code
         assert "read_json" not in code
         _compile_node_code(code)
@@ -1619,10 +1619,10 @@ class TestDataSourceJsonCodegen:
     # -- JSON (new behaviour) -----------------------------------------------
 
     def test_json_uses_read_json_lazy(self):
-        """JSON data source should use pl.read_json(...).lazy(), matching _io.read_source."""
+        """JSON data source should route through the shared source boundary."""
         code = _node_to_code(self._make_ds_node("data/quotes.json", "JSONSrc"))
-        assert 'read_json(Path(__file__).parent / "data/quotes.json")' in code
-        assert ".lazy()" in code
+        assert "read_data_source" in code
+        assert "read_json" not in code
         assert "scan_parquet" not in code
         assert "scan_csv" not in code
         _compile_node_code(code)
@@ -1645,9 +1645,9 @@ class TestDataSourceJsonCodegen:
     # -- JSONL (new behaviour) ----------------------------------------------
 
     def test_jsonl_uses_scan_ndjson(self):
-        """JSONL data source should use pl.scan_ndjson(...), matching _io.read_source."""
+        """JSONL data source should route through the shared source boundary."""
         code = _node_to_code(self._make_ds_node("data/events.jsonl", "JsonlSrc"))
-        assert 'scan_ndjson(Path(__file__).parent / "data/events.jsonl")' in code
+        assert "read_data_source" in code
         assert "scan_parquet" not in code
         assert "scan_csv" not in code
         assert "read_json" not in code
@@ -1673,22 +1673,22 @@ class TestDataSourceJsonCodegen:
     def test_uppercase_json_extension(self):
         """Path with .JSON (uppercase) should still use the JSON template."""
         code = _node_to_code(self._make_ds_node("data/INPUT.JSON", "UpperJson"))
-        assert 'read_json(Path(__file__).parent / "data/INPUT.JSON")' in code
-        assert ".lazy()" in code
+        assert "read_data_source" in code
+        assert "read_json" not in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_uppercase_jsonl_extension(self):
         """Path with .JSONL (uppercase) should still use the JSONL template."""
         code = _node_to_code(self._make_ds_node("data/EVENTS.JSONL", "UpperJsonl"))
-        assert 'scan_ndjson(Path(__file__).parent / "data/EVENTS.JSONL")' in code
+        assert "read_data_source" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_uppercase_csv_extension(self):
         """Path with .CSV (uppercase) should still use the CSV template."""
         code = _node_to_code(self._make_ds_node("data/FILE.CSV", "UpperCsv"))
-        assert 'scan_csv(Path(__file__).parent / "data/FILE.CSV")' in code
+        assert "read_data_source" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -1697,49 +1697,51 @@ class TestDataSourceJsonCodegen:
     def test_json_with_dots_in_directory(self):
         """Dots in parent directory names must not confuse extension detection."""
         code = _node_to_code(self._make_ds_node("data/v2.1/quotes.json", "DotDir"))
-        assert 'read_json(Path(__file__).parent / "data/v2.1/quotes.json")' in code
-        assert ".lazy()" in code
+        assert "read_data_source" in code
+        assert "read_json" not in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_jsonl_with_dots_in_directory(self):
         """Dots in parent directory names must not confuse extension detection."""
         code = _node_to_code(self._make_ds_node("data/v3.0.beta/events.jsonl", "DotDirL"))
-        assert 'scan_ndjson(Path(__file__).parent / "data/v3.0.beta/events.jsonl")' in code
+        assert "read_data_source" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_parquet_with_dots_in_directory(self):
         """Parquet path with dots in directory should still use scan_parquet."""
         code = _node_to_code(self._make_ds_node("data/v1.2/file.parquet", "DotDirP"))
-        assert 'scan_parquet(Path(__file__).parent / "data/v1.2/file.parquet")' in code
+        assert "read_data_source" in code
         _compile_node_code(code)
 
     # -- Consistency with _io.read_source -----------------------------------
 
     @pytest.mark.parametrize(
-        "ext, expected_fn",
+        "ext",
         [
-            (".csv", "scan_csv"),
-            (".json", "read_json"),
-            (".jsonl", "scan_ndjson"),
-            (".parquet", "scan_parquet"),
+            ".csv",
+            ".json",
+            ".jsonl",
+            ".parquet",
         ],
         ids=["csv", "json", "jsonl", "parquet"],
     )
-    def test_codegen_matches_read_source_dispatch(self, ext, expected_fn):
-        """Codegen must use the same Polars function as _io.read_source for each extension."""
+    def test_codegen_uses_shared_source_boundary(self, ext):
+        """Codegen must use the same source boundary as runtime execution."""
         path = f"data/file{ext}"
         code = _node_to_code(self._make_ds_node(path, f"Src{ext.strip('.')}"))
-        assert expected_fn in code, f"Expected {expected_fn!r} in codegen for {ext!r}, got:\n{code}"
+        assert "read_data_source" in code
+        assert "read_json" not in code
         _compile_node_code(code)
 
-    # -- Unknown extension falls through to parquet -------------------------
+    # -- Unknown extension fails through the shared source boundary ----------
 
-    def test_unknown_extension_falls_through_to_parquet(self):
-        """An unrecognised extension should still fall through to scan_parquet."""
+    def test_unknown_extension_uses_shared_source_boundary(self):
+        """An unrecognised extension should fail at the shared source boundary."""
         code = _node_to_code(self._make_ds_node("data/file.feather", "FeatherSrc"))
-        assert "scan_parquet" in code
+        assert "read_data_source" in code
+        assert "scan_parquet" not in code
         _compile_node_code(code)
 
     # -- Full graph integration with JSON/JSONL data sources ----------------
@@ -1770,8 +1772,8 @@ class TestDataSourceJsonCodegen:
             }
         )
         code = graph_to_code(graph)
-        assert 'read_json(Path(__file__).parent / "data.json")' in code
-        assert ".lazy()" in code
+        assert "read_data_source" in code
+        assert "read_json" not in code
         assert "def Clean(JsonData: pl.LazyFrame)" in code
         compile(code, "<test>", "exec")
 
@@ -1801,7 +1803,8 @@ class TestDataSourceJsonCodegen:
             }
         )
         code = graph_to_code(graph)
-        assert 'scan_ndjson(Path(__file__).parent / "events.jsonl")' in code
+        assert "read_data_source" in code
+        assert "scan_ndjson" not in code
         assert "def Filter(EventLog: pl.LazyFrame)" in code
         compile(code, "<test>", "exec")
 
@@ -1810,33 +1813,37 @@ class TestDataSourceJsonCodegen:
     def test_ndjson_extension_falls_through_to_parquet(self):
         """.ndjson is NOT a supported user-facing extension — falls through to parquet."""
         code = _node_to_code(self._make_ds_node("data/events.ndjson", "NdjsonSrc"))
-        assert "scan_parquet" in code
+        assert "read_data_source" in code
+        assert "scan_parquet" not in code
         assert "scan_ndjson" not in code
         _compile_node_code(code)
 
     def test_empty_path_falls_through_to_parquet(self):
         """Empty path string should fall through to parquet template."""
         code = _node_to_code(self._make_ds_node("", "EmptyPath"))
-        assert "scan_parquet" in code
+        assert "read_data_source" in code
+        assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_no_extension_falls_through_to_parquet(self):
         """Path with no extension should fall through to parquet template."""
         code = _node_to_code(self._make_ds_node("data/noext", "NoExt"))
-        assert "scan_parquet" in code
+        assert "read_data_source" in code
+        assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_mixed_case_json_extension(self):
         """Path with .Json (mixed case) should use the JSON template."""
         code = _node_to_code(self._make_ds_node("data/file.Json", "MixedJson"))
-        assert 'read_json(Path(__file__).parent / "data/file.Json")' in code
-        assert ".lazy()" in code
+        assert "read_data_source" in code
+        assert "read_json" not in code
         _compile_node_code(code)
 
     def test_mixed_case_parquet_extension(self):
         """Path with .Parquet (mixed case) should use the parquet template."""
         code = _node_to_code(self._make_ds_node("data/file.Parquet", "MixedPq"))
-        assert 'scan_parquet(Path(__file__).parent / "data/file.Parquet")' in code
+        assert "read_data_source" in code
+        assert "scan_parquet" not in code
         _compile_node_code(code)
 
 
@@ -1869,7 +1876,8 @@ class TestApiInputCodegen:
 
     def test_csv_api_input(self):
         code = _node_to_code(self._make_api_node("input.csv", "CsvIn"))
-        assert "scan_csv" in code
+        assert "read_data_source" in code
+        assert "input.csv" in code
         assert "read_json_flat" not in code
         _compile_node_code(code)
 
@@ -1881,15 +1889,16 @@ class TestApiInputCodegen:
         _compile_node_code(code)
 
     def test_uppercase_csv_api_input(self):
-        """Case-insensitive: .CSV should use scan_csv, not scan_parquet."""
+        """Case-insensitive: .CSV should use the shared source reader, not JSON."""
         code = _node_to_code(self._make_api_node("input.CSV", "UpperCsv"))
-        assert "scan_csv" in code
-        assert "scan_parquet" not in code
+        assert "read_data_source" in code
+        assert "input.CSV" in code
         _compile_node_code(code)
 
     def test_parquet_api_input(self):
         code = _node_to_code(self._make_api_node("input.parquet", "PqIn"))
-        assert "scan_parquet" in code
+        assert "read_data_source" in code
+        assert "input.parquet" in code
         assert "read_json_flat" not in code
         _compile_node_code(code)
 
@@ -2845,7 +2854,8 @@ class TestGenDataSourceEdgeCases:
             }
         )
         code = _node_to_code(node)
-        assert "scan_parquet" in code
+        assert "read_data_source" in code
+        assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_no_extension_defaults_to_parquet(self):
@@ -2860,7 +2870,8 @@ class TestGenDataSourceEdgeCases:
             }
         )
         code = _node_to_code(node)
-        assert "scan_parquet" in code
+        assert "read_data_source" in code
+        assert "scan_parquet" not in code
         _compile_node_code(code)
 
     def test_databricks_config(self):
@@ -2880,7 +2891,8 @@ class TestGenDataSourceEdgeCases:
             }
         )
         code = _node_to_code(node)
-        assert "read_cached_table" in code
+        assert "read_data_source" in code
+        assert "read_cached_table" not in code
         assert "catalog.schema.tbl" in code
         _compile_node_code(code)
 
@@ -3261,7 +3273,8 @@ class TestRoundTripEdgeCases:
             }
         )
         code = _node_to_code(node)
-        assert "read_cached_table" in code
+        assert "read_data_source" in code
+        assert "read_cached_table" not in code
         assert "catalog.schema.my_table" in code
         assert "def DBRead()" in code
         _compile_node_code(code)

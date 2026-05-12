@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from haute.schemas import (
+    ExecutionMetricsPayload,
     FetchTableResponse,
     GitStatusResponse,
     JsonCacheStatusResponse,
@@ -148,6 +149,10 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "train_loss": {"type": "object", "additionalProperties": "number"},
                 "result": {"anyOf": ["ref:TrainResponse", "null"], "default": None},
                 "warning": {"anyOf": ["string", "null"], "default": None},
+                "execution_metrics": {
+                    "anyOf": ["ref:ExecutionMetricsPayload", "null"],
+                    "default": None,
+                },
             },
         ),
         (
@@ -159,6 +164,42 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "message": {"type": "string", "default": ""},
                 "result": {"anyOf": ["ref:OptimiserSolveResult", "null"], "default": None},
                 "frontier": {"anyOf": ["ref:OptimiserFrontierResponse", "null"], "default": None},
+                "execution_metrics": {
+                    "anyOf": ["ref:ExecutionMetricsPayload", "null"],
+                    "default": None,
+                },
+            },
+        ),
+        (
+            ExecutionMetricsPayload,
+            [],
+            {
+                "schema_version": {"type": "integer", "default": 1},
+                "operation": {"type": "string", "default": ""},
+                "profile": {"type": "string", "default": ""},
+                "status": {"anyOf": ["string", "null"], "default": None},
+                "terminal_reason": {"anyOf": ["string", "null"], "default": None},
+                "stage_count": {"type": "integer", "default": 0},
+                "retained_stage_count": {"type": "integer", "default": 0},
+                "truncated_stage_count": {"type": "integer", "default": 0},
+                "stages_truncated": {"type": "boolean", "default": False},
+                "n_collects": {"type": "integer", "default": 0},
+                "n_checkpoints": {"type": "integer", "default": 0},
+                "memory_pressure_event_count": {"type": "integer", "default": 0},
+                "retained_memory_pressure_event_count": {"type": "integer", "default": 0},
+                "truncated_memory_pressure_event_count": {"type": "integer", "default": 0},
+                "memory_pressure_events_truncated": {"type": "boolean", "default": False},
+                "node_elapsed_ms": {"type": "object", "additionalProperties": "number"},
+                "stage_elapsed_ms": {"type": "object", "additionalProperties": "number"},
+                "admission": {
+                    "anyOf": ["ref:ExecutionAdmissionPayload", "null"],
+                    "default": None,
+                },
+                "stages": {"type": "array", "items": "ref:ExecutionStageMetricsPayload"},
+                "memory_pressure_events": {
+                    "type": "array",
+                    "items": "ref:ExecutionMemoryPressureEventPayload",
+                },
             },
         ),
         (

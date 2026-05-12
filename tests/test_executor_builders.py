@@ -14,6 +14,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from haute._execution_context import ExecutionProfile
+from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
 from haute.executor import NodeBuildContext, _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -635,6 +637,64 @@ class TestBuildApiInput:
         result = fn().collect()
         assert result.shape == (2, 1)
 
+    def test_bounded_csv_source_requires_declared_dtypes(
+        self,
+        tmp_path: Path,
+        _widen_sandbox_root,
+    ) -> None:
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        node = _n(
+            {
+                "id": "n1",
+                "data": {
+                    "label": "CSV_Input",
+                    "nodeType": "apiInput",
+                    "config": {"path": str(data_file)},
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
+            fn()
+
+    def test_bounded_csv_source_uses_declared_dtypes(
+        self,
+        tmp_path: Path,
+        _widen_sandbox_root,
+    ) -> None:
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        node = _n(
+            {
+                "id": "n1",
+                "data": {
+                    "label": "CSV_Input",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "schema_overrides": {
+                            "quote_id": "String",
+                            "premium": "Float64",
+                        },
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        result = fn().collect()
+
+        assert result.schema["quote_id"] == pl.String
+        assert result["quote_id"].to_list() == ["001"]
+
     def test_func_name_sanitized(self) -> None:
         func_name, _, _ = _build(
             "apiInput",
@@ -715,6 +775,190 @@ class TestBuildApiInput:
 
         df = fn().collect()
         assert df.to_dicts() == [{"x": 1, "y": 2}]
+
+    def test_json_cache_projection_missing_required_column_fails_loudly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._json_flatten import build_json_cache
+
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "input.json"
+        schema = {"x": "int"}
+        data_file.write_text(json.dumps([{"x": 1}]), encoding="utf-8")
+        build_json_cache(str(data_file), schema=schema)
+
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {"path": str(data_file), "flattenSchema": schema},
+                },
+            }
+        )
+
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"missing"}),
+            execution_profile=ExecutionProfile.LAZY_SINK.value,
+        )
+
+        with pytest.raises(SchemaMismatchError, match="Source projection references"):
+            fn()
+
+    def test_source_projection_maps_renamed_output_columns_to_physical_columns(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("quote_id,premium_raw,unused\n001,10.5,x\n", encoding="utf-8")
+        captured: dict[str, object] = {}
+
+        def fake_read_data_source(
+            config,
+            *,
+            profile=None,
+            columns=None,
+            validate_columns=None,
+        ):
+            captured["profile"] = profile
+            captured["columns"] = columns
+            captured["validate_columns"] = validate_columns
+            return pl.DataFrame({"quote_id": ["001"], "premium_raw": [10.5]}).lazy()
+
+        monkeypatch.setattr("haute._builders.read_data_source", fake_read_data_source)
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "selected_columns": ["quote_id", "premium_raw", "unused"],
+                        "column_renames": {"premium_raw": "premium"},
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"quote_id", "premium"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        fn()
+
+        assert captured["columns"] == frozenset({"quote_id", "premium_raw"})
+        assert captured["validate_columns"] == frozenset(
+            {"quote_id", "premium_raw", "unused"}
+        )
+
+    def test_source_projection_avoids_ambiguous_rename_pushdown(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("a,b\n1,2\n", encoding="utf-8")
+        captured: dict[str, object] = {}
+
+        def fake_read_data_source(
+            config,
+            *,
+            profile=None,
+            columns=None,
+            validate_columns=None,
+        ):
+            captured["columns"] = columns
+            captured["validate_columns"] = validate_columns
+            return pl.DataFrame({"a": [1], "b": [2]}).lazy()
+
+        monkeypatch.setattr("haute._builders.read_data_source", fake_read_data_source)
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "column_renames": {"a": "x", "b": "x"},
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"x"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        fn()
+
+        assert captured["columns"] is None
+        assert captured["validate_columns"] == frozenset()
+
+    def test_source_projection_validates_stale_selected_columns(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        data_file = tmp_path / "input.parquet"
+        pl.DataFrame({"quote_id": [1], "premium": [10.5]}).write_parquet(data_file)
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "selected_columns": ["quote_id", "stale_column"],
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"quote_id"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        with pytest.raises(SchemaMismatchError, match="selected_columns"):
+            fn()
+
+    def test_source_projection_rejects_demand_excluded_by_selected_columns(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        data_file = tmp_path / "input.parquet"
+        pl.DataFrame({"quote_id": [1], "raw_premium": [10.5]}).write_parquet(data_file)
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "selected_columns": ["quote_id"],
+                        "column_renames": {"raw_premium": "premium"},
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"premium"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        with pytest.raises(ValueError, match="excluded by selected_columns"):
+            fn()
 
 
 # ---------------------------------------------------------------------------

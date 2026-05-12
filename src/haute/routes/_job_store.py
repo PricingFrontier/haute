@@ -28,7 +28,7 @@ from haute._logging import get_logger
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
 _DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result", "quote_grid")
-_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df")
+_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df", "ratebook_factor_contexts")
 _HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"
 
 logger = get_logger(component="server.job_store")

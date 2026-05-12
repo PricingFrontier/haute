@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import DataPreview from "../DataPreview"
 import type { PreviewData } from "../DataPreview"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 const resizeObserverStats = {
   constructed: 0,
@@ -97,6 +98,13 @@ describe("DataPreview", () => {
     render(<DataPreview data={makePreview({ status: "loading" })} />)
     expect(screen.getByText("Running...")).toBeInTheDocument()
     expect(screen.getByText("Executing pipeline...")).toBeInTheDocument()
+  })
+
+  it("surfaces preview memory-pressure diagnostics with technical details", () => {
+    render(<DataPreview data={makePreview({ execution_metrics: makeExecutionMetricsFixture() })} />)
+
+    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
   })
 
   it("cell click calls onCellClick with row index and column", () => {

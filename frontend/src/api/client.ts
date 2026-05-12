@@ -122,12 +122,14 @@ import {
 export class ApiError extends Error {
   status: number
   detail?: string
+  rawDetail?: unknown
 
-  constructor(message: string, status: number, detail?: string) {
+  constructor(message: string, status: number, detail?: string, rawDetail?: unknown) {
     super(message)
     this.name = "ApiError"
     this.status = status
     this.detail = detail
+    this.rawDetail = rawDetail
   }
 }
 
@@ -279,14 +281,17 @@ async function attemptFetch<T>(
     const res = await fetch(url, { ...fetchOptions, signal: controller.signal })
     if (!res.ok) {
       let detail: string | undefined
+      let rawDetail: unknown
       try {
         const body = await res.json()
         const raw = body.detail ?? body
+        rawDetail = raw
         detail = typeof raw === "string" ? raw : JSON.stringify(raw)
       } catch {
         detail = res.statusText
+        rawDetail = detail
       }
-      throw new ApiError(`HTTP ${res.status}`, res.status, detail)
+      throw new ApiError(`HTTP ${res.status}`, res.status, detail, rawDetail)
     }
     return await res.json() as T
   } finally {
@@ -502,6 +507,17 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
     .then((data) => parseTrainStatusResponse(data) as T)
 }
 
+export function cancelTraining(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<TrainStatusResponse> {
+  return post<unknown>(
+    `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
+    {},
+    options,
+  ).then(parseTrainStatusResponse)
+}
+
 export function trainModel(
   payload: { graph: GraphPayload; node_id: string; source?: string },
   options?: { signal?: AbortSignal },
@@ -556,6 +572,17 @@ export function getOptimiserStatus<T extends OptimiserStatusResponse = Optimiser
 ): Promise<T> {
   return request<unknown>(`/api/optimiser/solve/status/${encodeURIComponent(jobId)}`, options)
     .then((data) => parseOptimiserStatusResponse(data) as T)
+}
+
+export function cancelOptimiserSolve(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<OptimiserStatusResponse> {
+  return post<unknown>(
+    `/api/optimiser/solve/cancel/${encodeURIComponent(jobId)}`,
+    {},
+    options,
+  ).then(parseOptimiserStatusResponse)
 }
 
 export function applyOptimiser(

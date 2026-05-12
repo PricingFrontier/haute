@@ -42,6 +42,14 @@ __all__ = [
 
 logger = get_logger(component="parser_helpers.config")
 
+SOURCE_DTYPE_CONFIG_KEYS: tuple[str, ...] = (
+    "schema_overrides",
+    "dtypes",
+    "column_dtypes",
+    "schema",
+    "categorical_levels",
+)
+
 
 def _copy_config_keys(
     config: dict[str, Any],
@@ -72,6 +80,7 @@ def _build_node_config(
         config["path"] = decorator_kwargs.get("path", "")
         if decorator_kwargs.get("row_id_column"):
             config["row_id_column"] = decorator_kwargs["row_id_column"]
+        _copy_config_keys(config, decorator_kwargs, SOURCE_DTYPE_CONFIG_KEYS)
     elif node_type == NodeType.DATA_SOURCE:
         config["path"] = decorator_kwargs.get("path", "")
         if "table" in decorator_kwargs:
@@ -83,6 +92,7 @@ def _build_node_config(
                 config["query"] = decorator_kwargs["query"]
         else:
             config["sourceType"] = "flat_file"
+        _copy_config_keys(config, decorator_kwargs, SOURCE_DTYPE_CONFIG_KEYS)
     elif node_type == NodeType.LIVE_SWITCH:
         config["input_scenario_map"] = decorator_kwargs.get("input_scenario_map", {})
         config["inputs"] = param_names
@@ -190,6 +200,8 @@ def _build_node_config(
         config["code"] = _extract_user_code(body, param_names) if body else ""
         if "selected_columns" in decorator_kwargs:
             config["selected_columns"] = decorator_kwargs["selected_columns"]
+        if "categorical_levels" in decorator_kwargs:
+            config["categorical_levels"] = decorator_kwargs["categorical_levels"]
     # Instance reference (works for any node type)
     if "instance_of" in decorator_kwargs:
         config["instanceOf"] = decorator_kwargs["instance_of"]

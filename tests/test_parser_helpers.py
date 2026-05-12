@@ -1418,6 +1418,19 @@ class TestExtractSourceUserCode:
         assert "scan_parquet" not in result
         assert result == "df = df.limit(10)"
 
+    def test_generated_read_data_source_load_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import read_data_source\n"
+            '    df = read_data_source({"sourceType": "flat_file", '
+            '"path": str(Path(__file__).parent / "data.csv")})\n'
+            "    df = df.limit(10)\n"
+            "    return df"
+        )
+        result = _extract_source_user_code(body)
+        assert "read_data_source" not in result
+        assert result == "df = df.limit(10)"
+
     def test_repeated_multiline_generated_loads_are_not_user_code(self):
         body = (
             "    from pathlib import Path\n"

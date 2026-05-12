@@ -23,6 +23,103 @@ export interface SchemaWarning {
   status: string
 }
 
+export interface ExecutionStageMetrics {
+  schema_version: number
+  name: string
+  operation: string
+  profile: string
+  elapsed_ms: number
+  node_id: string | null
+  job_id: string | null
+  rss_start_bytes: number | null
+  rss_end_bytes: number | null
+  rss_delta_bytes: number | null
+  rss_peak_bytes: number | null
+  rows_in: number | null
+  rows_out: number | null
+  bytes_read: number | null
+  bytes_written: number | null
+  columns_scanned: number | null
+  n_collects: number
+  n_checkpoints: number
+}
+
+export interface ExecutionAdmission {
+  admitted: boolean
+  operation: string
+  profile: string
+  memory_limit_bytes: number
+  rss_at_admission_bytes: number | null
+  rss_limit_bytes: number | null
+  process_rss_limit_bytes: number | null
+  headroom_bytes: number | null
+  config_key: string
+  budget_policy: string
+  available_ram_bytes: number | null
+  os_reserve_bytes: number | null
+  reason: string
+}
+
+export interface ExecutionMemoryPressureEvent {
+  schema_version: number
+  event: "memory_pressure"
+  operation: string
+  profile: string
+  job_id: string | null
+  node_id: string | null
+  stage: string | null
+  label: string | null
+  threshold_ratio: number
+  threshold_percent: number
+  rss_bytes: number
+  rss_limit_bytes: number
+  headroom_bytes: number
+  headroom_used_bytes: number
+  rss_peak_bytes: number
+  memory_limit_bytes: number | null
+  memory_baseline_bytes: number | null
+  baseline_rss_bytes: number | null
+  budget_policy: string | null
+  config_key: string | null
+  available_ram_bytes: number | null
+  os_reserve_bytes: number | null
+  pressure_ratio: number
+}
+
+export interface ExecutionMetrics {
+  schema_version: number
+  operation: string
+  profile: string
+  job_id: string | null
+  status: string | null
+  terminal_reason: string | null
+  stage_count: number
+  retained_stage_count: number
+  truncated_stage_count: number
+  stages_truncated: boolean
+  total_elapsed_ms: number
+  node_elapsed_ms: Record<string, number>
+  stage_elapsed_ms: Record<string, number>
+  rss_start_bytes: number | null
+  rss_end_bytes: number | null
+  rss_delta_bytes: number | null
+  rss_peak_bytes: number | null
+  max_rss_bytes: number | null
+  n_collects: number
+  n_checkpoints: number
+  memory_pressure_event_count: number
+  retained_memory_pressure_event_count: number
+  truncated_memory_pressure_event_count: number
+  memory_pressure_events_truncated: boolean
+  memory_limit_bytes: number | null
+  memory_baseline_bytes: number | null
+  rss_limit_bytes: number | null
+  admission: ExecutionAdmission | null
+  projection_plan_diagnostics: Record<string, unknown> | null
+  stages: ExecutionStageMetrics[]
+  memory_pressure_events: ExecutionMemoryPressureEvent[]
+}
+
 export interface NodeResult {
   status: string
   row_count?: number
@@ -45,6 +142,7 @@ export interface NodeResult {
   node_columns?: Record<string, ColumnInfo[]>
   node_available_columns?: Record<string, ColumnInfo[]>
   node_schema_warnings?: Record<string, SchemaWarning[]>
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface NodeTiming {
@@ -257,6 +355,7 @@ export interface TrainResponse {
   error?: string | null
   best_iteration?: number | null
   loss_history?: Array<{ iteration: number; [key: string]: number }>
+  loss_history_truncated?: boolean
   double_lift?: TrainDoubleLiftRow[]
   shap_summary?: TrainShapSummaryRow[]
   feature_importance_loss?: TrainFeatureImportanceRow[]
@@ -277,15 +376,19 @@ export interface TrainResponse {
 }
 
 export interface TrainStatusResponse {
-  status: string
+  status: JobStatus
   progress: number
   message: string
   iteration: number
   total_iterations: number
   train_loss: Record<string, number>
+  train_loss_history?: Record<string, number>[]
+  train_loss_history_truncated?: boolean
   elapsed_seconds: number
   result?: TrainResponse | null
   warning?: string | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface MlflowLogResponse {
@@ -386,6 +489,16 @@ export interface FrontierRange {
   max: number
 }
 
+export type JobStatus =
+  | "running"
+  | "completed"
+  | "error"
+  | "cancelled"
+  | "superseded"
+  | "timed_out"
+  | "memory_limited"
+  | "contract_error"
+
 export interface FrontierAutoRangeResponse {
   status: string
   ranges: Record<string, FrontierRange>
@@ -400,11 +513,16 @@ export interface FrontierAutoRangeStartResponse {
 }
 
 export interface FrontierAutoRangeStatusResponse {
-  status: "running" | "completed" | "error" | "cancelled" | "superseded"
+  status: JobStatus
   progress: number
   message: string
   elapsed_seconds: number
   result: FrontierAutoRangeResponse | null
+  terminal_reason?: string | null
+  error_code?: string | null
+  http_status_code?: number | null
+  error_detail?: unknown
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface OptimiserHistoryEntry {
@@ -458,12 +576,14 @@ export interface OptimiserSolveResult {
 }
 
 export interface OptimiserStatusResponse {
-  status: string
+  status: JobStatus
   progress: number
   message?: string
   elapsed_seconds: number
   result?: OptimiserSolveResult | null
   frontier?: FrontierResponse | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface FrontierSelectResponse {

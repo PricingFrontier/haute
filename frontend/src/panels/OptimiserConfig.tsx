@@ -13,16 +13,25 @@ import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import type { SolveResult } from "./OptimiserPreview"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useNodeResultsStore, { type SolveProgress } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import { formatElapsed } from "../utils/formatValue"
+import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
+import {
+  buildExecutionFailureMessage,
+  executionErrorDetailMessage,
+  executionJobStatusFromReason,
+  executionMetricsFromError,
+  executionTerminalReasonFromError,
+} from "../utils/executionDiagnostics"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import { withAlpha } from "../utils/color"
 import { extractBandingLevelsForNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
 import { useGraph } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
+import type { ExecutionMetrics, FrontierAutoRangeStatusResponse } from "../api/types"
 
 // ─── Banding factor extraction ───
 
@@ -71,11 +80,56 @@ type FrontierRangeConfig = { min?: number; max?: number }
 const AUTO_RANGE_POLL_INTERVAL_MS = 1_000
 
 function requestErrorDetail(error: unknown): string {
+  const detailMessage = executionErrorDetailMessage(error)
+  if (detailMessage) return detailMessage
   if (error && typeof error === "object" && "detail" in error) {
     const detail = (error as { detail?: unknown }).detail
     if (typeof detail === "string" && detail.trim()) return detail
   }
   return error instanceof Error ? error.message : String(error)
+}
+
+function solveFailureStatus(error: unknown, message: string): SolveProgress | undefined {
+  const metrics = executionMetricsFromError(error)
+  if (!metrics) return undefined
+  const terminalReason = executionTerminalReasonFromError(error)
+  return {
+    status: executionJobStatusFromReason(terminalReason),
+    progress: 1,
+    message,
+    elapsed_seconds: 0,
+    terminal_reason: terminalReason,
+    execution_metrics: metrics,
+  }
+}
+
+function autoRangeStatusDetail(detail: unknown): string | null {
+  if (typeof detail === "string" && detail.trim()) return detail
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null
+  const fields = detail as Record<string, unknown>
+  for (const key of ["message", "detail", "reason", "error_code"]) {
+    const value = fields[key]
+    if (typeof value === "string" && value.trim()) return value
+  }
+  return null
+}
+
+function autoRangeFailureMessage(status: FrontierAutoRangeStatusResponse): string {
+  const message = status.message.trim()
+  const detail = autoRangeStatusDetail(status.error_detail)
+  const fallback = status.error_code?.trim() ? `Auto range failed (${status.error_code})` : "Auto range failed"
+  const baseMessage = message || detail || fallback
+  if (status.status === "memory_limited" || status.terminal_reason === "memory_limited" || status.error_code === "memory_limit" || status.error_code === "memory_limited") {
+    return buildExecutionFailureMessage(baseMessage, status.execution_metrics, {
+      prefix: "Auto range failed",
+      status: status.status,
+      terminalReason: status.terminal_reason,
+      errorCode: status.error_code,
+    })
+  }
+  if (message) return message
+  if (detail) return detail
+  return fallback
 }
 
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
@@ -146,6 +200,10 @@ export default function OptimiserConfig({
   const [submitting, setSubmitting] = useState(false)
   const [autoRangeLoading, setAutoRangeLoading] = useState(false)
   const [autoRangeError, setAutoRangeError] = useState<string | null>(null)
+  const [autoRangeTerminalMetrics, setAutoRangeTerminalMetrics] = useState<ExecutionMetrics | null>(null)
+  const [autoRangeTerminalStatus, setAutoRangeTerminalStatus] = useState<string | null>(null)
+  const [autoRangeTerminalReason, setAutoRangeTerminalReason] = useState<string | null>(null)
+  const [autoRangeTerminalErrorCode, setAutoRangeTerminalErrorCode] = useState<string | null>(null)
   const autoRangeAbortRef = useRef<AbortController | null>(null)
   const autoRangeJobRef = useRef<string | null>(null)
 
@@ -162,6 +220,8 @@ export default function OptimiserConfig({
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
   const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
+  const solveTerminalStatus = solveJob?.progress ?? cachedResult?.terminalStatus ?? null
+  const solveTerminalMetrics = solveTerminalStatus?.execution_metrics ?? null
   const solveResult: SolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
   const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   // Collapse state from UI store (persisted)
@@ -285,10 +345,14 @@ export default function OptimiserConfig({
         // Register job in store — background hook picks up polling
         startSolveJob(nodeId, result.job_id, nodeLabel, constraints, currentConfigHash)
       } else if (result.status === "error") {
+        startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash)
         useNodeResultsStore.getState().failSolveJob(nodeId, result.error || "Unknown error")
       }
     } catch (e) {
-      useNodeResultsStore.getState().failSolveJob(nodeId, String(e))
+      const errorMessage = requestErrorDetail(e)
+      const terminalStatus = solveFailureStatus(e, errorMessage)
+      startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash)
+      useNodeResultsStore.getState().failSolveJob(nodeId, errorMessage, terminalStatus)
     } finally {
       setSubmitting(false)
     }
@@ -394,6 +458,10 @@ export default function OptimiserConfig({
     autoRangeAbortRef.current = controller
     setAutoRangeLoading(true)
     setAutoRangeError(null)
+    setAutoRangeTerminalMetrics(null)
+    setAutoRangeTerminalStatus(null)
+    setAutoRangeTerminalReason(null)
+    setAutoRangeTerminalErrorCode(null)
     let jobId: string | null = null
     try {
       const start = await startOptimiserFrontierAutoRange({
@@ -417,13 +485,24 @@ export default function OptimiserConfig({
           { signal: controller.signal },
         )
       }
-      if (status.status === "error") {
-        throw new Error(status.message || "Auto range failed")
-      }
       if (status.status === "cancelled" || status.status === "superseded") {
         if (!controller.signal.aborted) {
-          setAutoRangeError(status.message || "Auto range was cancelled")
+          setAutoRangeTerminalMetrics(status.execution_metrics ?? null)
+          setAutoRangeTerminalStatus(status.status)
+          setAutoRangeTerminalReason(status.terminal_reason ?? status.status)
+          setAutoRangeTerminalErrorCode(status.error_code ?? null)
+          setAutoRangeError(
+            status.message || autoRangeStatusDetail(status.error_detail) || "Auto range was cancelled",
+          )
         }
+        return
+      }
+      if (status.status !== "completed") {
+        setAutoRangeTerminalMetrics(status.execution_metrics ?? null)
+        setAutoRangeTerminalStatus(status.status)
+        setAutoRangeTerminalReason(status.terminal_reason ?? status.status)
+        setAutoRangeTerminalErrorCode(status.error_code ?? null)
+        setAutoRangeError(autoRangeFailureMessage(status))
         return
       }
       const response = status.result
@@ -456,7 +535,17 @@ export default function OptimiserConfig({
       if (response.warning) setAutoRangeError(response.warning)
     } catch (err) {
       if (!controller.signal.aborted) {
-        setAutoRangeError(requestErrorDetail(err))
+        const metrics = executionMetricsFromError(err)
+        if (metrics) setAutoRangeTerminalMetrics(metrics)
+        setAutoRangeTerminalStatus(executionJobStatusFromReason(executionTerminalReasonFromError(err)))
+        setAutoRangeTerminalReason(executionTerminalReasonFromError(err))
+        setAutoRangeTerminalErrorCode(null)
+        setAutoRangeError(
+          buildExecutionFailureMessage(requestErrorDetail(err), metrics, {
+            prefix: "Auto range failed",
+            terminalReason: executionTerminalReasonFromError(err),
+          }),
+        )
       }
     } finally {
       if (autoRangeAbortRef.current === controller) {
@@ -807,8 +896,16 @@ export default function OptimiserConfig({
                       />
                     </div>
                     {autoRangeError && (
-                      <div className="text-[11px]" style={{ color: "var(--warning)" }}>
-                        {autoRangeError}
+                      <div className="space-y-1">
+                        <div className="text-[11px]" style={{ color: "var(--warning)" }}>
+                          {autoRangeError}
+                        </div>
+                        <ExecutionDiagnosticsSummary
+                          metrics={autoRangeTerminalMetrics}
+                          status={autoRangeTerminalStatus}
+                          terminalReason={autoRangeTerminalReason}
+                          errorCode={autoRangeTerminalErrorCode}
+                        />
                       </div>
                     )}
                   </div>
@@ -1000,6 +1097,11 @@ export default function OptimiserConfig({
                     style={{ width: `${Math.max(solveProgress.progress * 100, 2)}%`, background: accentColor }}
                   />
                 </div>
+                <ExecutionDiagnosticsSummary
+                  metrics={solveProgress.execution_metrics}
+                  status={solveProgress.status}
+                  terminalReason={solveProgress.terminal_reason}
+                />
               </div>
             ) : (
               <div className="flex items-center gap-2">
@@ -1033,6 +1135,11 @@ export default function OptimiserConfig({
             <div className="space-y-1 min-w-0">
               <div className="font-semibold" style={{ color: "var(--danger)" }}>Optimisation failed</div>
               <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{solveError}</div>
+              <ExecutionDiagnosticsSummary
+                metrics={solveTerminalMetrics}
+                status={solveTerminalStatus?.status}
+                terminalReason={solveTerminalStatus?.terminal_reason}
+              />
             </div>
           </div>
         </div>

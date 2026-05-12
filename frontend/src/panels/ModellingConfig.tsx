@@ -6,6 +6,12 @@ import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import { configField } from "../utils/configField"
 import { buildGraph } from "../utils/buildGraph"
+import {
+  executionErrorDetailMessage,
+  executionJobStatusFromReason,
+  executionMetricsFromError,
+  executionTerminalReasonFromError,
+} from "../utils/executionDiagnostics"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { FeatureAndAlgorithmConfig } from "./modelling/FeatureAndAlgorithmConfig"
@@ -23,6 +29,28 @@ type ModellingConfigProps = {
 }
 
 import type { TrainResult, TrainProgress } from "../stores/useNodeResultsStore"
+
+function trainErrorMessage(error: unknown): string {
+  return executionErrorDetailMessage(error) ?? String(error)
+}
+
+function trainFailureStatus(error: unknown, message: string): TrainProgress | undefined {
+  const metrics = executionMetricsFromError(error)
+  if (!metrics) return undefined
+  const terminalReason = executionTerminalReasonFromError(error)
+  return {
+    status: executionJobStatusFromReason(terminalReason),
+    progress: 1,
+    message,
+    iteration: 0,
+    total_iterations: 0,
+    train_loss: {},
+    elapsed_seconds: 0,
+    warning: null,
+    terminal_reason: terminalReason,
+    execution_metrics: metrics,
+  }
+}
 
 export default function ModellingConfig({ config, onUpdate, upstreamColumns }: ModellingConfigProps) {
   const { allNodes, edges, submodels, preamble } = useGraph()
@@ -115,10 +143,11 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
         useNodeResultsStore.getState().completeTrainJob(nodeId, result as unknown as TrainResult)
       }
     } catch (e) {
+      const errorMessage = trainErrorMessage(e)
       useNodeResultsStore.getState().completeTrainJob(nodeId, {
         status: "error", metrics: {}, feature_importance: [],
-        model_path: "", train_rows: 0, test_rows: 0, error: String(e),
-      })
+        model_path: "", train_rows: 0, test_rows: 0, error: errorMessage,
+      }, trainFailureStatus(e, errorMessage))
     } finally {
       setSubmitting(false)
     }
@@ -198,6 +227,9 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
           ramEstimateLoading={ramEstimateLoading}
           ramEstimateError={ramEstimateError}
           rowLimit={typeof config.row_limit === "number" ? config.row_limit : null}
+          terminalMetrics={cachedResult?.terminalStatus?.execution_metrics ?? null}
+          terminalStatus={cachedResult?.terminalStatus?.status ?? null}
+          terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
           submitting={submitting}
           onTrain={handleTrain}
         />
@@ -254,6 +286,9 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
         ramEstimateLoading={ramEstimateLoading}
         ramEstimateError={ramEstimateError}
         rowLimit={typeof config.row_limit === "number" ? config.row_limit : null}
+        terminalMetrics={cachedResult?.terminalStatus?.execution_metrics ?? null}
+        terminalStatus={cachedResult?.terminalStatus?.status ?? null}
+        terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
         submitting={submitting}
         onTrain={handleTrain}
       />

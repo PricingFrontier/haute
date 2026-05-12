@@ -7,6 +7,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import type { SimpleNode, SimpleEdge } from "../editors"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -465,6 +466,39 @@ describe("ModellingConfig", () => {
         expect(cached).toBeTruthy()
         expect(cached.result.status).toBe("error")
         expect(cached.result.error).toBe("Error: Network fail")
+      })
+    })
+
+    it("preserves structured execution metrics when trainModel admission fails", async () => {
+      const executionMetrics = makeExecutionMetricsFixture({
+        profile: "training_prep",
+        status: "memory_limited",
+        terminal_reason: "memory_limited",
+      })
+      mockTrainModel.mockRejectedValue(Object.assign(new Error("HTTP 507"), {
+        name: "ApiError",
+        status: 507,
+        detail: JSON.stringify({
+          message: "Training rejected by admission control",
+          terminal_reason: "memory_limited",
+          execution_metrics: executionMetrics,
+        }),
+        rawDetail: {
+          message: "Training rejected by admission control",
+          terminal_reason: "memory_limited",
+          execution_metrics: executionMetrics,
+        },
+      }))
+
+      renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+
+      await waitFor(() => {
+        const cached = useNodeResultsStore.getState().trainResults.node_1
+        expect(cached?.result.error).toBe("Training rejected by admission control")
+        expect(cached?.terminalStatus?.status).toBe("memory_limited")
+        expect(cached?.terminalStatus?.terminal_reason).toBe("memory_limited")
+        expect(cached?.terminalStatus?.execution_metrics).toBe(executionMetrics)
       })
     })
 

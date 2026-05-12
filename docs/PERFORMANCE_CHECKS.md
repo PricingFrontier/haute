@@ -29,6 +29,18 @@ For a focused preview/trace run with tighter local budgets:
 uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_preview_trace_perf.py --max-total-seconds 120 --max-test-seconds 30
 ```
 
+The preview/trace lane currently enforces these Phase 9 latency budgets on a
+representative multi-branch graph:
+
+- cached target preview: `< 0.5s`
+- first trace backed by a full preview cache: `< 0.8s`
+- trace-cache hit: `< 0.3s`
+
+Large local scale checks should use the same runner and artifact path, with
+the representative test target replaced by the scale test or reproduction
+script under investigation. Do not commit 10m-row fixtures; record the run
+output from the generated JSON and Markdown artifacts instead.
+
 The default artifact directory is `.cache/perf`. A completed run writes:
 
 - `.cache/perf/perf-report.json`

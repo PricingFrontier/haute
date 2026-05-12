@@ -275,6 +275,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/TrainResponse"},
         },
     },
+    "/api/modelling/train/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/TrainStatusResponse"},
+        },
+    },
     "/api/modelling/train/status/{job_id}": {
         "GET": {
             "request_ref": None,
@@ -351,6 +357,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserSolveRequest",
             "success_schema": {"$ref": "#/components/schemas/OptimiserSolveResponse"},
+        },
+    },
+    "/api/optimiser/solve/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/OptimiserStatusResponse"},
         },
     },
     "/api/optimiser/solve/status/{job_id}": {

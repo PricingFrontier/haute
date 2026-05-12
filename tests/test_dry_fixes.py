@@ -315,9 +315,8 @@ class TestFinalizeFrontier:
 
     def test_computes_frontier_when_ratebook_with_factors(self) -> None:
         """Ratebook mode + factors + enabled frontier -> frontier_data is populated."""
+        from types import SimpleNamespace
         from unittest.mock import MagicMock
-
-        import polars as pl
 
         from haute.routes._optimiser_service import _finalize_solve_result
 
@@ -336,7 +335,7 @@ class TestFinalizeFrontier:
                 },
             }
         )
-        factors_df = pl.DataFrame({"region": ["North", "South"]})
+        factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
         mock_solver = MagicMock()
         mock_points = MagicMock()
         mock_points.to_dicts.return_value = [
@@ -356,7 +355,7 @@ class TestFinalizeFrontier:
             store=store,
             job_id=job_id,
             elapsed=1.0,
-            factors_df=factors_df,
+            ratebook_factor_contexts=factor_contexts,
             factor_columns=[["region"]],
         )
 
@@ -366,7 +365,7 @@ class TestFinalizeFrontier:
         assert job["frontier_data"]["n_points"] == 2
         assert job["result"]["frontier"] is not None
         mock_solver.frontier.assert_called_once()
-        assert mock_solver.frontier.call_args.args == ("fake_grid", factors_df)
+        assert mock_solver.frontier.call_args.args == ("fake_grid", factor_contexts)
         assert mock_solver.frontier.call_args.kwargs["threshold_ranges"]["loss"] == (
             0.8,
             1.1,

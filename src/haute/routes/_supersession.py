@@ -21,6 +21,7 @@ class _SupersessionState:
     latest_generation: int = 0
     active: bool = False
     references: int = 0
+    active_cancel: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,7 @@ class SupersessionCoordinator:
         limiter: asyncio.Semaphore | None = None,
         operation: str | None = None,
         superseded_message: str | None = None,
+        cancel_active: Callable[[], None] | None = None,
     ) -> R:
         state = await self._retain_state(key)
         generation: int | None = None
@@ -58,6 +60,8 @@ class SupersessionCoordinator:
             async with state.condition:
                 state.latest_generation += 1
                 generation = state.latest_generation
+                if state.active and state.active_cancel is not None:
+                    state.active_cancel()
                 state.condition.notify_all()
 
                 while state.active:
@@ -90,6 +94,7 @@ class SupersessionCoordinator:
                     if generation != state.latest_generation:
                         raise SupersededRequestError(message)
                     state.active = True
+                    state.active_cancel = cancel_active
                     active = True
 
                 worker_error: Exception | None = None
@@ -100,10 +105,21 @@ class SupersessionCoordinator:
                     worker_error = exc
                     deferred_limiter_release = _background_task_from_error(exc)
                 finally:
-                    async with state.condition:
-                        state.active = False
+                    if deferred_limiter_release is None:
+                        async with state.condition:
+                            state.active = False
+                            active = False
+                            if state.active_cancel is cancel_active:
+                                state.active_cancel = None
+                            state.condition.notify_all()
+                    else:
                         active = False
-                        state.condition.notify_all()
+                        self._clear_active_when_done(
+                            deferred_limiter_release,
+                            key,
+                            state,
+                            cancel_active,
+                        )
 
                 async with state.condition:
                     if generation != state.latest_generation:
@@ -116,6 +132,8 @@ class SupersessionCoordinator:
                 if active:
                     async with state.condition:
                         state.active = False
+                        if state.active_cancel is cancel_active:
+                            state.active_cancel = None
                         state.condition.notify_all()
                 if limiter_acquired and limiter is not None:
                     if deferred_limiter_release is None:
@@ -205,6 +223,37 @@ class SupersessionCoordinator:
     async def _release_state(self, key: Hashable, state: _SupersessionState) -> None:
         async with self._states_lock:
             state.references -= 1
+            if state.references == 0 and not state.active and self._states.get(key) is state:
+                del self._states[key]
+
+    def _clear_active_when_done(
+        self,
+        future: asyncio.Future[object],
+        key: Hashable,
+        state: _SupersessionState,
+        cancel_active: Callable[[], None] | None,
+    ) -> None:
+        if future.done():
+            asyncio.create_task(self._clear_active_after_background(key, state, cancel_active))
+            return
+        future.add_done_callback(
+            lambda _done: asyncio.create_task(
+                self._clear_active_after_background(key, state, cancel_active)
+            )
+        )
+
+    async def _clear_active_after_background(
+        self,
+        key: Hashable,
+        state: _SupersessionState,
+        cancel_active: Callable[[], None] | None,
+    ) -> None:
+        async with state.condition:
+            state.active = False
+            if state.active_cancel is cancel_active:
+                state.active_cancel = None
+            state.condition.notify_all()
+        async with self._states_lock:
             if state.references == 0 and not state.active and self._states.get(key) is state:
                 del self._states[key]
 

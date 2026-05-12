@@ -12,7 +12,6 @@ import httpx
 import polars as pl
 import pytest
 
-from haute._cache import graph_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
 from haute.schemas import NodeResult
@@ -132,10 +131,6 @@ df = df.with_columns(
     )
 
 
-def _preview_cache_fingerprint(graph: PipelineGraph) -> str:
-    return graph_fingerprint(graph, f"{_ROW_LIMIT}:live:contracts=1")
-
-
 def _single_node_graph_payload() -> dict[str, Any]:
     graph = PipelineGraph(
         nodes=[
@@ -208,10 +203,12 @@ def test_preview_warm_cache_avoids_reexecuting_representative_dag(
     assert warm[_TARGET_NODE].row_count == _ROW_LIMIT
 
     assert node_calls == Counter(dict.fromkeys(_EXPECTED_NODE_IDS, 1))
-    cache_entry = _preview_cache.try_get(_preview_cache_fingerprint(graph))
+    preview_fp = _preview_cache.fingerprint
+    assert preview_fp is not None
+    cache_entry = _preview_cache.try_get(preview_fp)
     assert cache_entry is not None
     assert tuple(cache_entry["order"]) == _EXPECTED_NODE_IDS
-    assert set(cache_entry["eager_outputs"]) == set(_EXPECTED_NODE_IDS)
+    assert set(cache_entry["eager_outputs"]) == {_TARGET_NODE}
     assert _preview_cache.stats()["bytes"] > 0
 
     assert warm_seconds < 0.5, (
@@ -231,8 +228,6 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         target_node_id=_TARGET_NODE,
         row_limit=_ROW_LIMIT,
         max_preview_rows=_MAX_PREVIEW_ROWS,
-        target_preview_only=True,
-        requested_preview_columns=["policy_id", "premium", "risk_bucket"],
     )
     assert preview[_TARGET_NODE].status == "ok"
 

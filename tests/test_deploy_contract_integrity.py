@@ -146,6 +146,68 @@ class TestStaticDataSourceSchemaDrift:
         msg = str(exc_info.value)
         assert "static_ds" in msg or "area_factors" in msg or "column" in msg.lower()
 
+    def test_static_source_schema_declaration_mismatch_raises(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Deploy bundling must validate static source schema declarations."""
+        from haute.deploy._bundler import collect_artifacts
+
+        source_path = tmp_path / "static.csv"
+        source_path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "static_ds",
+                        "data": {
+                            "label": "static_ds",
+                            "nodeType": "dataSource",
+                            "config": {
+                                "path": str(source_path),
+                                "schema_overrides": {"missing": "String"},
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        with pytest.raises(DeployError, match="static_ds"):
+            collect_artifacts(graph, [], tmp_path)
+
+    def test_static_plain_json_source_rejected_by_bounded_deploy_validation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Plain JSON static sources should fail before deployed batch scoring."""
+        from haute.deploy._bundler import collect_artifacts
+
+        source_path = tmp_path / "static.json"
+        source_path.write_text(json.dumps([{"quote_id": "001"}]), encoding="utf-8")
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "static_ds",
+                        "data": {
+                            "label": "static_ds",
+                            "nodeType": "dataSource",
+                            "config": {
+                                "path": str(source_path),
+                                "expected_columns": ["quote_id"],
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        with pytest.raises(DeployError, match="Plain JSON"):
+            collect_artifacts(graph, [], tmp_path)
+
 
 # ===========================================================================
 # Item #16 — validate_deploy must fail on test-quote errors

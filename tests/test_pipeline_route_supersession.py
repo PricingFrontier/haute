@@ -182,6 +182,142 @@ async def test_preview_supersedes_obsolete_same_key_requests(
 
 
 @pytest.mark.asyncio
+async def test_preview_supersession_cancels_active_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newer same-key preview should request cooperative cancellation."""
+    import haute.routes.pipeline as route_mod
+    from haute.server import app
+
+    first_started = threading.Event()
+    cancel_seen = threading.Event()
+    call_count = 0
+    state_lock = threading.Lock()
+
+    def cancellable_preview(*args, **kwargs) -> dict[str, NodeResult]:
+        del args
+        nonlocal call_count
+        target = kwargs["target_node_id"]
+        execution_context = kwargs["execution_context"]
+        with state_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call == 1:
+            first_started.set()
+            while not execution_context.cancellation_token.cancelled:
+                time.sleep(0.005)
+            cancel_seen.set()
+            execution_context.checkpoint(label="superseded", node_id=target)
+        return {
+            target: NodeResult(
+                status="ok",
+                row_count=1,
+                column_count=1,
+                preview=[{"call": current_call}],
+            )
+        }
+
+    monkeypatch.setattr(route_mod, "execute_graph", cancellable_preview)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        first = asyncio.create_task(
+            ac.post(
+                "/api/pipeline/preview",
+                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+            )
+        )
+        await _wait_for_thread_event(first_started, "first preview worker")
+        second = asyncio.create_task(
+            ac.post(
+                "/api/pipeline/preview",
+                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+            )
+        )
+
+        first_response, second_response = await asyncio.gather(first, second)
+
+    assert first_response.status_code == 409
+    assert second_response.status_code == 200
+    assert cancel_seen.is_set()
+    assert second_response.json()["preview"] == [{"call": 2}]
+
+
+@pytest.mark.asyncio
+async def test_preview_admission_failure_still_cancels_active_same_key_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newer request must cancel active work before its own admission check fails."""
+    import haute.routes.pipeline as route_mod
+    from haute.server import app
+
+    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "64")
+    rss_calls = 0
+
+    def admission_rss() -> int:
+        nonlocal rss_calls
+        rss_calls += 1
+        if rss_calls == 1:
+            return 1 * 1024 * 1024
+        return 65 * 1024 * 1024
+
+    monkeypatch.setattr("haute._execution_admission.current_rss_bytes", admission_rss)
+
+    first_started = threading.Event()
+    cancel_seen = threading.Event()
+    call_count = 0
+    state_lock = threading.Lock()
+
+    def cancellable_preview(*args, **kwargs) -> dict[str, NodeResult]:
+        del args
+        nonlocal call_count
+        target = kwargs["target_node_id"]
+        execution_context = kwargs["execution_context"]
+        with state_lock:
+            call_count += 1
+            current_call = call_count
+        first_started.set()
+        while not execution_context.cancellation_token.cancelled:
+            time.sleep(0.005)
+        cancel_seen.set()
+        return {
+            target: NodeResult(
+                status="ok",
+                row_count=1,
+                column_count=1,
+                preview=[{"call": current_call}],
+            )
+        }
+
+    monkeypatch.setattr(route_mod, "execute_graph", cancellable_preview)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        first = asyncio.create_task(
+            ac.post(
+                "/api/pipeline/preview",
+                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+            )
+        )
+        await _wait_for_thread_event(first_started, "first preview worker")
+        second = asyncio.create_task(
+            ac.post(
+                "/api/pipeline/preview",
+                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+            )
+        )
+
+        first_response, second_response = await asyncio.gather(first, second)
+
+    assert first_response.status_code == 409
+    assert second_response.status_code == 507
+    assert second_response.json()["detail"]["error_code"] == "memory_limit"
+    assert cancel_seen.is_set()
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_preview_limits_blocking_workers_across_distinct_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -764,11 +900,105 @@ async def test_timed_out_preview_requests_hold_slot_until_worker_finishes(
             release["third"].set()
             await _wait_for_thread_event(finished["third"], "third preview completion")
 
-        assert await coordinator.snapshot_for_tests() == {}
+        await _wait_for_coordinator_snapshot(
+            coordinator,
+            lambda snapshot: snapshot == {},
+            "timed-out preview worker cleanup",
+        )
         await asyncio.wait_for(limiter.acquire(), timeout=0.1)
         limiter.release()
         with state_lock:
             assert call_count == 3
+            assert max_active == 1
+            assert active == 0
+    finally:
+        for event in release.values():
+            event.set()
+
+
+@pytest.mark.asyncio
+async def test_timed_out_same_key_preview_stays_active_until_worker_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same-key previews must not overlap after a response timeout."""
+    import haute.routes.pipeline as route_mod
+    from haute.server import app
+
+    coordinator = SupersessionCoordinator()
+    monkeypatch.setattr(route_mod, "_PREVIEW_TIMEOUT", 0.05)
+    monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(2))
+    monkeypatch.setattr(route_mod, "_preview_supersession", coordinator)
+
+    started = {1: threading.Event(), 2: threading.Event()}
+    finished = {1: threading.Event(), 2: threading.Event()}
+    release = {1: threading.Event(), 2: threading.Event()}
+    state_lock = threading.Lock()
+    call_count = 0
+    active = 0
+    max_active = 0
+
+    def slow_preview(*args, **kwargs) -> dict[str, NodeResult]:
+        nonlocal active, call_count, max_active
+        target = kwargs["target_node_id"]
+        with state_lock:
+            call_count += 1
+            call_number = call_count
+            active += 1
+            max_active = max(max_active, active)
+        started[call_number].set()
+        try:
+            release[call_number].wait(2)
+            return {
+                target: NodeResult(
+                    status="ok",
+                    row_count=1,
+                    column_count=1,
+                    preview=[{"call": call_number}],
+                )
+            }
+        finally:
+            with state_lock:
+                active -= 1
+            finished[call_number].set()
+
+    monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
+
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+
+            async def post() -> httpx.Response:
+                return await ac.post(
+                    "/api/pipeline/preview",
+                    json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                )
+
+            first = asyncio.create_task(post())
+            await _wait_for_thread_event(started[1], "first same-key preview worker")
+            first_response = await first
+            assert first_response.status_code == 504
+
+            second = asyncio.create_task(post())
+            assert not await _thread_event_was_set(started[2], 0.05)
+            with state_lock:
+                assert active == 1
+
+            release[1].set()
+            await _wait_for_thread_event(finished[1], "first same-key preview completion")
+            await _wait_for_thread_event(started[2], "second same-key preview worker")
+            second_response = await second
+            assert second_response.status_code == 504
+
+            release[2].set()
+            await _wait_for_thread_event(finished[2], "second same-key preview completion")
+
+        await _wait_for_coordinator_snapshot(
+            coordinator,
+            lambda snapshot: snapshot == {},
+            "timed-out same-key preview cleanup",
+        )
+        with state_lock:
+            assert call_count == 2
             assert max_active == 1
             assert active == 0
     finally:
@@ -860,7 +1090,11 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
             release[2].set()
             await _wait_for_thread_event(finished[2], "second preview completion")
 
-        assert await coordinator.snapshot_for_tests() == {}
+        await _wait_for_coordinator_snapshot(
+            coordinator,
+            lambda snapshot: snapshot == {},
+            "superseded timed-out preview cleanup",
+        )
         await asyncio.wait_for(limiter.acquire(), timeout=0.1)
         limiter.release()
         with state_lock:

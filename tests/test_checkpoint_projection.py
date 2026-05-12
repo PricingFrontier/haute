@@ -16,8 +16,10 @@ import pytest
 from haute._builders import get_column_contract
 from haute._execute_lazy import (
     _compute_needed_columns,
+    _compute_projection_plan,
     _execute_lazy,
 )
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -25,7 +27,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
-from haute.errors import ContractMismatchError
+from haute.errors import ContractMismatchError, ProjectionImpossibleError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -103,8 +105,8 @@ def _scenario_expander_node(
     )
 
 
-def _transform_node(nid: str) -> GraphNode:
-    return _node(nid, NodeType.POLARS)
+def _transform_node(nid: str, *, code: str = "") -> GraphNode:
+    return _node(nid, NodeType.POLARS, **({"code": code} if code else {}))
 
 
 # ===========================================================================
@@ -536,11 +538,11 @@ class TestComputeNeededColumns:
         assert needed["out"] is None
         assert needed["src"] is None
 
-    def test_opaque_node_propagates_none(self):
-        """POLARS (opaque) in the chain → None propagates backward."""
+    def test_simple_polars_expression_projects_dependencies(self):
+        """Simple POLARS expressions project exact dependencies backward."""
         nodes = [
             _source_node("src"),
-            _transform_node("t"),
+            _transform_node("t", code="df = df.with_columns(pl.col('z'))"),
             _output_node("out", fields=["z"]),
         ]
         node_map = {n.id: n for n in nodes}
@@ -552,8 +554,8 @@ class TestComputeNeededColumns:
 
         # needed["t"] = what downstream needs from t's output = {"z"}
         assert needed["t"] == {"z"}
-        # t is POLARS (opaque) → can't determine what it needs from src → None
-        assert needed["src"] is None
+        # ``with_columns(pl.col("z"))`` is dependency-extractable.
+        assert needed["src"] == {"z"}
 
     def test_diamond_union(self):
         """Fan-out + reconverge: union of both paths.
@@ -759,6 +761,230 @@ class TestComputeNeededColumns:
         assert needed["src"] == {"col"}
 
 
+class TestProjectionImpossibleDiagnostics:
+    """Strict projection diagnostics for bounded/projection-seeded execution."""
+
+    def test_strict_projection_uses_boundary_for_opaque_fan_in_without_parent_contract(self):
+        nodes = [
+            _source_node("left"),
+            _source_node("right"),
+            _transform_node("join"),
+            _output_node("out", fields=["quote_id", "premium"]),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join", "out"]
+        parents_of = {
+            "left": [],
+            "right": [],
+            "join": ["left", "right"],
+            "out": ["join"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            strict_projection=True,
+        )
+
+        assert plan.needed_by_node["join"] == {"quote_id", "premium"}
+        assert plan.needed_by_node["left"] is None
+        assert plan.needed_by_node["right"] is None
+
+    def test_non_strict_projection_allows_opaque_fan_in_for_compatibility(self):
+        nodes = [
+            _source_node("left"),
+            _source_node("right"),
+            _transform_node("join"),
+            _output_node("out", fields=["quote_id", "premium"]),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join", "out"]
+        parents_of = {
+            "left": [],
+            "right": [],
+            "join": ["left", "right"],
+            "out": ["join"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(order, children_of, node_map)
+
+        assert plan.needed_by_node["left"] is None
+        assert plan.needed_by_node["right"] is None
+
+    def test_strict_projection_rejects_seed_that_conflicts_with_opaque_sibling(self):
+        nodes = [
+            _source_node("src"),
+            _node("mid", NodeType.LIVE_SWITCH),
+            _output_node("known", fields=["a"]),
+            _transform_node("opaque"),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["src", "mid", "known", "opaque"]
+        parents_of = {
+            "src": [],
+            "mid": ["src"],
+            "known": ["mid"],
+            "opaque": ["mid"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ProjectionImpossibleError, match="Projection seed"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"mid": {"a"}},
+                strict_projection=True,
+            )
+
+    def test_strict_projection_reports_unparseable_join_inference(self):
+        nodes = [
+            _source_node("left"),
+            _source_node("right"),
+            _node(
+                "join",
+                NodeType.POLARS,
+                code="df = left.join(right, on='quote_id'",
+                contract={
+                    "inputs": ["quote_id", "premium"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "left": ["quote_id", "premium"],
+                        "right": ["quote_id", "premium"],
+                    },
+                },
+            ),
+            _output_node("out", fields=["quote_id", "premium_right"]),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join", "out"]
+        parents_of = {
+            "left": [],
+            "right": [],
+            "join": ["left", "right"],
+            "out": ["join"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ProjectionImpossibleError, match="could not be parsed"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                strict_projection=True,
+            )
+
+    def test_strict_projection_allows_concrete_inputs_by_parent_join(self):
+        nodes = [
+            _source_node("left"),
+            _source_node("right"),
+            _node(
+                "join",
+                NodeType.POLARS,
+                code="df = left.join(right, on='quote_id', how='left')",
+                contract={
+                    "inputs": ["quote_id", "left_value", "right_value"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "left": ["quote_id", "left_value"],
+                        "right": ["quote_id", "right_value"],
+                    },
+                },
+            ),
+            _output_node("out", fields=["quote_id", "left_value", "right_value"]),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join", "out"]
+        parents_of = {
+            "left": [],
+            "right": [],
+            "join": ["left", "right"],
+            "out": ["join"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            strict_projection=True,
+        )
+
+        assert plan.edge_demands[("left", "join")] == {"quote_id", "left_value"}
+        assert plan.edge_demands[("right", "join")] == {"quote_id", "right_value"}
+
+    def test_lazy_execution_required_seed_enables_strict_projection(self, tmp_path):
+        nodes = [
+            _source_node("left"),
+            _source_node("right"),
+            _transform_node("join"),
+            _output_node("out", fields=["quote_id"]),
+        ]
+        edges = [_e("left", "join"), _e("right", "join"), _e("join", "out")]
+        graph = PipelineGraph(nodes=nodes, edges=edges)
+
+        def build_fn(node, **kw):
+            if node.id == "left":
+                return node.id, lambda: pl.DataFrame({"quote_id": ["q1"]}).lazy(), True
+            if node.id == "right":
+                return node.id, lambda: pl.DataFrame({"quote_id": ["q1"]}).lazy(), True
+            if node.id == "join":
+                return node.id, lambda *dfs: dfs[0].join(dfs[1], on="quote_id"), False
+            return node.id, lambda *dfs: dfs[0], False
+
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_fn,
+            target_node_id="out",
+            checkpoint_dir=tmp_path,
+            required_columns_by_node={"out": {"quote_id"}},
+            execution_context=ExecutionContext(
+                operation="test",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+
+        assert outputs["out"].collect().to_dict(as_series=False) == {"quote_id": ["q1"]}
+
+    def test_lazy_execution_bounded_profile_is_strict_without_required_seed(
+        self,
+        tmp_path,
+    ):
+        nodes = [
+            _source_node("left"),
+            _source_node("right"),
+            _transform_node("join"),
+            _output_node("out", fields=["quote_id"]),
+        ]
+        edges = [_e("left", "join"), _e("right", "join"), _e("join", "out")]
+        graph = PipelineGraph(nodes=nodes, edges=edges)
+
+        def build_fn(node, **kw):
+            if node.id == "left":
+                return node.id, lambda: pl.DataFrame({"quote_id": ["q1"]}).lazy(), True
+            if node.id == "right":
+                return node.id, lambda: pl.DataFrame({"quote_id": ["q1"]}).lazy(), True
+            if node.id == "join":
+                return node.id, lambda *dfs: dfs[0].join(dfs[1], on="quote_id"), False
+            return node.id, lambda *dfs: dfs[0], False
+
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_fn,
+            target_node_id="out",
+            checkpoint_dir=tmp_path,
+            execution_context=ExecutionContext(
+                operation="test",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+
+        assert outputs["out"].collect().to_dict(as_series=False) == {"quote_id": ["q1"]}
+
+
 # ===========================================================================
 # Integration: checkpoint projection in _execute_lazy
 # ===========================================================================
@@ -866,16 +1092,16 @@ class TestCheckpointProjection:
         o2 = outputs["o2"].collect()
         assert set(o2.columns) == {"b", "c"}
 
-    def test_projection_none_writes_all_columns(self, tmp_path):
-        """When projection is None (opaque downstream), all columns are written.
+    def test_simple_expression_projection_writes_only_needed_fanout_columns(self, tmp_path):
+        """Expression dependency extraction narrows fan-out checkpoints.
 
-        Source → mid(fan-out) → POLARS(opaque) → Output(fields=[a])
+        Source → mid(fan-out) → POLARS(simple expression) → Output(fields=[a])
                                → Output(fields=[b])
         """
         nodes = [
             _source_node("src"),
             _node("mid", NodeType.LIVE_SWITCH),
-            _transform_node("t"),  # opaque POLARS
+            _transform_node("t", code="df = df.with_columns(pl.col('a'))"),
             _output_node("o1", fields=["a"]),
             _output_node("o2", fields=["b"]),
         ]
@@ -895,9 +1121,10 @@ class TestCheckpointProjection:
 
         _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
 
-        # mid has an opaque child (POLARS) → needed is None → all columns
+        # The POLARS child now proves it needs only ``a`` while the sibling
+        # output needs ``b``; the unrelated ``c`` column should be dropped.
         checkpoint_df = pl.read_parquet(tmp_path / "mid.parquet")
-        assert set(checkpoint_df.columns) == {"a", "b", "c"}
+        assert set(checkpoint_df.columns) == {"a", "b"}
 
     def test_projection_with_banding(self, tmp_path):
         """Banding creates a column; only needed input columns survive checkpoint.

@@ -392,12 +392,14 @@ _SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
     "df=pl.read_json(",
     "df=read_cached_table(",
     "df=read_source(",
+    "df=read_data_source(",
     "returnpl.scan_parquet(",
     "returnpl.scan_csv(",
     "returnpl.scan_ndjson(",
     "returnpl.read_json(",
     "returnread_cached_table(",
     "returnread_source(",
+    "returnread_data_source(",
 )
 
 

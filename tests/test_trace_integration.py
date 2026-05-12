@@ -1907,8 +1907,13 @@ class TestCacheReusesPreview:
         result = execute_trace(graph, row_index=0, target_node_id="t", row_limit=_ROW_LIMIT)
         assert result.output_value["x"] == 1
 
-    def test_trace_reuses_projected_preview_cache(self, tmp_path):
+    def test_trace_reexecutes_when_projected_preview_cache_has_only_target(
+        self,
+        tmp_path,
+    ):
         from unittest.mock import patch
+
+        import haute.trace as trace_mod
 
         _trace_cache.invalidate()
         _preview_cache.invalidate()
@@ -1934,7 +1939,10 @@ class TestCacheReusesPreview:
             requested_preview_columns=["x", "z"],
         )["t"].preview[0]
 
-        with patch("haute.trace._execute_eager_core", side_effect=AssertionError("cold trace")):
+        with patch(
+            "haute.trace._execute_eager_core",
+            wraps=trace_mod._execute_eager_core,
+        ) as execute_eager:
             result = execute_trace(
                 graph,
                 row_index=0,
@@ -1945,7 +1953,9 @@ class TestCacheReusesPreview:
                 preview=_preview_cache,
             )
 
+        execute_eager.assert_called_once()
         assert result.output_value == 11
+        assert {"src", "t"}.issubset({step.node_id for step in result.steps})
 
 
 # ===========================================================================

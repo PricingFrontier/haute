@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -15,6 +18,8 @@ from haute.routes._optimiser_service import OptimiserSolveService
 from haute.schemas import OptimiserFrontierRequest
 from tests.conftest import make_edge, make_graph, make_node
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.fixture()
 def clean_job_store():
@@ -24,6 +29,18 @@ def clean_job_store():
     yield _store
     _store.jobs.clear()
     _store.jobs.update(snapshot)
+
+
+def _poll_solve_status(client, job_id: str, timeout: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/optimiser/solve/status/{job_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        if data["status"] != "running":
+            return data
+        time.sleep(0.02)
+    raise TimeoutError(f"Solve job {job_id} did not finish within {timeout}s")
 
 
 def _assert_quote_scenario_blocks(
@@ -57,7 +74,7 @@ def test_scenario_expander_streaming_output_is_quote_contiguous_for_optimiser(
     tmp_path,
 ) -> None:
     """Streaming parquet output must keep one ordered scenario block per quote."""
-    from haute._polars_utils import safe_sink
+    from haute._polars_utils import bounded_sink
 
     node = make_node(
         {
@@ -85,7 +102,7 @@ def test_scenario_expander_streaming_output_is_quote_contiguous_for_optimiser(
     ).lazy()
 
     out_path = tmp_path / "expanded.parquet"
-    safe_sink(expand(source), str(out_path))
+    bounded_sink(expand(source), str(out_path))
     expanded = pl.read_parquet(out_path)
 
     assert expanded["scenario_index"].dtype == pl.Int32
@@ -139,6 +156,16 @@ def _make_expander_optimiser_graph(data_path: str) -> dict:
                                 "    pl.lit('wide-unused').alias('unused_payload'),\n"
                                 "])"
                             ),
+                            "contract": {
+                                "inputs": ["base_income", "base_volume"],
+                                "outputs": [
+                                    "scenario_index",
+                                    "scenario_value",
+                                    "expected_income",
+                                    "volume",
+                                    "unused_payload",
+                                ],
+                            },
                         },
                     },
                 },
@@ -187,11 +214,13 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
         }
     ).write_parquet(source_path)
     captured: dict[str, object] = {}
+    grid_captured = threading.Event()
 
-    def capture_grid(scored_lf, constraint_cols, config, node_id, job_id):
+    def capture_grid(scored_lf, constraint_cols, config, node_id, job_id, **_kwargs):
         captured["df"] = scored_lf.collect()
         captured["constraint_cols"] = constraint_cols
         captured["config"] = dict(config)
+        grid_captured.set()
         return MagicMock()
 
     from haute.routes import optimiser as optimiser_routes
@@ -211,6 +240,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
                 "node_id": "opt",
             },
         )
+        assert grid_captured.wait(timeout=2.0)
 
     assert resp.status_code == 200
     assert captured["constraint_cols"] == ["volume"]
@@ -310,11 +340,13 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
         }
     ).model_dump()
     captured: dict[str, object] = {}
+    launched = threading.Event()
 
-    def capture_launch(job_id, node_id, config, mode, quote_grid, factors_df, **kwargs):
+    def capture_launch(job_id, node_id, config, mode, quote_grid, ratebook_factors, **kwargs):
         captured["job_id"] = job_id
         captured["mode"] = mode
-        captured["factors_df"] = factors_df
+        captured["ratebook_factors"] = ratebook_factors
+        launched.set()
 
     from haute.routes import optimiser as optimiser_routes
 
@@ -330,15 +362,112 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
             "/api/optimiser/solve",
             json={"graph": graph, "node_id": "opt"},
         )
+        assert launched.wait(timeout=2.0)
 
     assert resp.status_code == 200
     assert captured["mode"] == "ratebook"
-    factors_df = captured["factors_df"]
-    assert isinstance(factors_df, pl.DataFrame)
+    ratebook_factors = captured["ratebook_factors"]
+    assert isinstance(ratebook_factors, dict)
+    factors_df = pl.read_parquet(ratebook_factors["path"])
     assert factors_df.select("quote_id", "region").to_dicts() == [
         {"quote_id": "q1", "region": "North"},
         {"quote_id": "q2", "region": "South"},
     ]
+
+
+def test_ratebook_factor_extraction_uses_execution_context_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_context import ExecutionContext, ExecutionProfile
+    from haute.routes import _optimiser_service as optimiser_service
+
+    context = ExecutionContext(
+        operation="optimiser_solve",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_sampler=lambda: 1_000,
+    )
+    calls: list[ExecutionProfile | str] = []
+
+    def fail_if_streaming_collect_reached(*_args, **_kwargs) -> pl.DataFrame:
+        calls.append("streaming_collect")
+        raise AssertionError("ratebook factor extraction must not collect the full frame")
+
+    monkeypatch.setattr(optimiser_service, "streaming_collect", fail_if_streaming_collect_reached)
+
+    factors_handle = optimiser_service.OptimiserSolveService._extract_factors(
+        {
+            "banding": pl.LazyFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["North", "South"],
+                }
+            )
+        },
+        {
+            "mode": "ratebook",
+            "banding_source": "banding",
+            "factor_columns": [["region"]],
+        },
+        "ratebook",
+        execution_context=context,
+    )
+
+    assert pl.read_parquet(factors_handle["path"]).to_dicts() == [
+        {"quote_id": "q1", "region": "North"},
+        {"quote_id": "q2", "region": "South"},
+    ]
+    assert calls == []
+    assert "optimiser_extract_factors" in context.metrics_summary().stage_elapsed_ms
+
+
+def test_ratebook_factor_source_sinks_without_final_collect_under_low_memory_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_context import (
+        ExecutionContext,
+        ExecutionProfile,
+    )
+    from haute.routes import _optimiser_service as optimiser_service
+
+    context = ExecutionContext(
+        operation="optimiser_solve",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_limit_bytes=1,
+        memory_baseline_bytes=0,
+        rss_limit_bytes=1,
+        memory_sampler=lambda: 0,
+    )
+
+    def fail_if_collect_reached(*_args, **_kwargs):
+        raise AssertionError("factor extraction should reject before final collect")
+
+    monkeypatch.setattr(optimiser_service, "streaming_collect", fail_if_collect_reached)
+
+    factors_handle = optimiser_service.OptimiserSolveService._extract_factors(
+        {
+            "banding": pl.LazyFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["North", "South"],
+                }
+            )
+        },
+        {
+            "mode": "ratebook",
+            "banding_source": "banding",
+            "factor_columns": [["region"]],
+        },
+        "ratebook",
+        execution_context=context,
+    )
+
+    assert factors_handle["row_count"] == 2
+
+
+def test_optimiser_projection_rule_is_not_hard_coded_in_lazy_executor() -> None:
+    source = (ROOT / "src/haute/_execute_lazy.py").read_text(encoding="utf-8")
+
+    assert re.search(r"NodeType\.OPTIMISER(?!_)", source) is None
 
 
 def test_validate_and_project_keeps_only_price_contour_columns() -> None:
@@ -416,7 +545,8 @@ def test_validate_and_project_rejects_null_quote_id_loudly() -> None:
     assert exc_info.value.status_code == 400
     assert expected in exc_info.value.detail
     job = store.require_job(job_id)
-    assert job["status"] == "error"
+    assert job["status"] == "contract_error"
+    assert job["terminal_reason"] == "contract_error"
     assert expected in job["message"]
 
 
@@ -479,9 +609,11 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
             "/api/optimiser/solve",
             json={"graph": graph, "node_id": "opt"},
         )
+        assert resp.status_code == 200
+        status = _poll_solve_status(client, resp.json()["job_id"])
 
-    assert resp.status_code == 400
-    assert "Null quote_id values found in optimiser input (2 rows)." in resp.json()["detail"]
+    assert status["status"] == "contract_error"
+    assert "Null quote_id values found in optimiser input (2 rows)." in status["message"]
 
 
 def test_build_grid_rejects_interleaved_quote_blocks_loudly() -> None:
@@ -517,7 +649,9 @@ def test_build_grid_rejects_interleaved_quote_blocks_loudly() -> None:
     assert exc_info.value.status_code == 400
     assert "contiguous rows" in exc_info.value.detail
     assert "scenario_index order" in exc_info.value.detail
-    assert store.require_job(job_id)["status"] == "error"
+    job = store.require_job(job_id)
+    assert job["status"] == "contract_error"
+    assert job["terminal_reason"] == "contract_error"
 
 
 @pytest.mark.parametrize(

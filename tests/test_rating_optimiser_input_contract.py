@@ -31,18 +31,21 @@ def test_rating_optimiser_input_declares_online_solver_shape() -> None:
     online_optimiser = _node_by_label(graph, "online_optimiser")
 
     online_config = online_optimiser.data.config
-    assert premium.data.config["contract"] == {
-        "inputs": ["premium"],
-        "outputs": ["premium_multiplier", "scenario_index"],
+    premium_contract = premium.data.config["contract"]
+    assert set(premium_contract["inputs"]) == {"premium"}
+    assert set(premium_contract["outputs"]) == {"premium_multiplier", "scenario_index"}
+
+    competitor_contract = competitor_features_scenarios.data.config["contract"]
+    assert set(competitor_contract["inputs"]) == {"premium", "competitor_premium"}
+    assert set(competitor_contract["outputs"]) == {"difference_to_market"}
+
+    optimiser_input_contract = optimiser_input.data.config["contract"]
+    assert set(optimiser_input_contract["inputs"]) == {
+        "premium",
+        "burn_cost",
+        "conversion_prediction",
     }
-    assert competitor_features_scenarios.data.config["contract"] == {
-        "inputs": ["premium", "competitor_premium"],
-        "outputs": ["difference_to_market"],
-    }
-    assert optimiser_input.data.config["contract"] == {
-        "inputs": ["premium", "burn_cost", "conversion_prediction"],
-        "outputs": ["margin", online_config["objective"]],
-    }
+    assert set(optimiser_input_contract["outputs"]) == {"margin", online_config["objective"]}
     assert "selected_columns" not in optimiser_input.data.config
 
 

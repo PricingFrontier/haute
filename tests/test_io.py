@@ -9,7 +9,15 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from haute._io import _load_cached, load_external_object, read_source
+from haute._execution_context import ExecutionProfile
+from haute._io import (
+    _load_cached,
+    build_data_source_adapter,
+    load_external_object,
+    read_data_source,
+    read_source,
+)
+from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
 
 # ---------------------------------------------------------------------------
 # read_source
@@ -33,6 +41,87 @@ class TestReadSourceCSV:
         result = read_source(str(path)).collect()
         assert result["col"].to_list() == [4, 5]
 
+    @pytest.mark.parametrize(
+        "profile",
+        [
+            ExecutionProfile.LAZY_SINK,
+            ExecutionProfile.TRAINING_PREP,
+            ExecutionProfile.OPTIMISER_SETUP,
+            ExecutionProfile.AUTO_RANGE,
+            ExecutionProfile.DEPLOY_BATCH,
+            ExecutionProfile.CHUNKED_MAP_REDUCE,
+        ],
+    )
+    def test_bounded_profiles_require_declared_csv_schema(
+        self,
+        tmp_path: Path,
+        profile: ExecutionProfile,
+    ) -> None:
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"quote_id": ["001"], "premium": [10.5]}).write_csv(path)
+
+        with patch.object(pl, "scan_csv", wraps=pl.scan_csv) as scan_csv:
+            with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
+                read_source(path, profile=profile)
+
+        scan_csv.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "profile",
+        [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE],
+    )
+    def test_small_eager_profiles_can_infer_csv_schema(
+        self,
+        tmp_path: Path,
+        profile: ExecutionProfile,
+    ) -> None:
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"col": [4, 5]}).write_csv(path)
+
+        result = read_source(path, profile=profile).collect()
+
+        assert result["col"].to_list() == [4, 5]
+
+    def test_bounded_profile_accepts_declared_csv_schema(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.csv"
+        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+
+        result = read_source(
+            path,
+            profile=ExecutionProfile.AUTO_RANGE,
+            schema_overrides={"quote_id": "String", "premium": "Float64"},
+        ).collect()
+
+        assert result["quote_id"].to_list() == ["001"]
+
+    def test_bounded_profile_requires_declared_dtype_for_every_unprojected_csv_column(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "data.csv"
+        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+
+        with pytest.raises(BoundedMemoryUnsupportedError, match="premium"):
+            read_source(
+                path,
+                profile=ExecutionProfile.LAZY_SINK,
+                schema_overrides={"quote_id": "String"},
+            )
+
+    def test_bounded_profile_projection_requires_declared_dtype_for_projected_csv_column(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "data.csv"
+        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+
+        with pytest.raises(BoundedMemoryUnsupportedError, match="premium"):
+            read_source(
+                path,
+                profile=ExecutionProfile.LAZY_SINK,
+                columns=["premium"],
+            )
+
 
 class TestReadSourceJSON:
     def test_reads_json_file(self, tmp_path: Path) -> None:
@@ -41,6 +130,27 @@ class TestReadSourceJSON:
         result = read_source(str(path)).collect()
         assert result["name"].to_list() == ["alice", "bob"]
 
+    def test_bounded_profile_rejects_plain_json_before_eager_read(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "data.json"
+        pl.DataFrame({"name": ["alice"]}).write_json(str(path))
+
+        with patch.object(pl, "read_json", wraps=pl.read_json) as read_json:
+            with pytest.raises(BoundedMemoryUnsupportedError, match="Plain JSON"):
+                read_source(str(path), profile=ExecutionProfile.LAZY_SINK)
+
+        read_json.assert_not_called()
+
+    def test_deploy_live_can_read_plain_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+        pl.DataFrame({"name": ["alice"]}).write_json(str(path))
+
+        result = read_source(str(path), profile=ExecutionProfile.DEPLOY_LIVE).collect()
+
+        assert result["name"].to_list() == ["alice"]
+
 
 class TestReadSourceJSONL:
     def test_reads_ndjson_file(self, tmp_path: Path) -> None:
@@ -48,6 +158,92 @@ class TestReadSourceJSONL:
         pl.DataFrame({"v": [10, 20]}).write_ndjson(str(path))
         result = read_source(str(path)).collect()
         assert result["v"].to_list() == [10, 20]
+
+
+class TestReadSourceProjectionAndSchema:
+    def test_parquet_projection_pushes_into_scan_plan(self, tmp_path: Path) -> None:
+        path = tmp_path / "wide.parquet"
+        pl.DataFrame({"a": [1], "b": [2], "c": [3]}).write_parquet(path)
+
+        lf = read_source(path, columns=["a", "c"])
+
+        assert lf.collect_schema().names() == ["a", "c"]
+        assert "PROJECT 2/3 COLUMNS" in lf.explain()
+
+    def test_csv_schema_overrides_are_applied(self, tmp_path: Path) -> None:
+        path = tmp_path / "quoted.csv"
+        path.write_text("quote_id,premium\n001,10.5\n002,11.5\n", encoding="utf-8")
+
+        lf = read_source(
+            path,
+            schema_overrides={"quote_id": "String", "premium": "Float64"},
+        )
+
+        schema = lf.collect_schema()
+        assert schema["quote_id"] == pl.String
+        assert schema["premium"] == pl.Float64
+        assert lf.collect()["quote_id"].to_list() == ["001", "002"]
+
+    def test_csv_schema_declaration_missing_column_fails_loudly(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "quoted.csv"
+        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+
+        with pytest.raises(SchemaMismatchError, match="Declared source schema mismatch"):
+            read_source(path, schema_overrides={"missing": "String"})
+
+    def test_ndjson_schema_declaration_missing_column_fails_loudly(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "source.jsonl"
+        pl.DataFrame({"premium": [10.5]}).write_ndjson(path)
+
+        with pytest.raises(SchemaMismatchError, match="Declared source schema mismatch"):
+            read_source(path, schema_overrides={"missing": "String"})
+
+    def test_invalid_declared_dtype_fails_loudly(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"a": [1]}).write_csv(path)
+
+        with pytest.raises(SchemaMismatchError, match="Unsupported declared source dtype"):
+            read_source(path, schema_overrides={"a": "NotAType"})
+
+    def test_parquet_schema_declarations_validate_without_replacing_schema(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "source.parquet"
+        pl.DataFrame(
+            {"quote_id": ["001"], "premium": [10.5], "unused": [99]},
+        ).write_parquet(path)
+
+        lf = read_source(path, schema_overrides={"quote_id": "String"})
+
+        assert lf.collect_schema().names() == ["quote_id", "premium", "unused"]
+        assert lf.collect()["quote_id"].to_list() == ["001"]
+
+    def test_parquet_schema_declaration_mismatch_fails_loudly(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "source.parquet"
+        pl.DataFrame({"premium": [10.5]}).write_parquet(path)
+
+        with pytest.raises(SchemaMismatchError, match="Declared source schema mismatch"):
+            read_source(path, schema_overrides={"premium": "String"})
+
+    def test_json_schema_declaration_mismatch_fails_loudly(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "source.json"
+        pl.DataFrame({"premium": [10.5]}).write_json(path)
+
+        with pytest.raises(SchemaMismatchError, match="Declared source schema mismatch"):
+            read_source(path, schema_overrides={"premium": "String"})
 
 
 class TestReadSourceCaseInsensitive:
@@ -232,6 +428,129 @@ class TestReadSourcePathTraversal:
     def test_dotdot_in_middle_blocked(self) -> None:
         with pytest.raises(ValueError, match="not allowed"):
             read_source("/data/../secrets/file.parquet")
+
+
+# ---------------------------------------------------------------------------
+# Data source adaptors
+# ---------------------------------------------------------------------------
+
+
+class TestDataSourceAdapterFlatFile:
+    def test_defaults_to_flat_file_source_type(self, tmp_path: Path) -> None:
+        path = tmp_path / "source.parquet"
+        pl.DataFrame({"policy_id": [101, 102]}).write_parquet(path)
+
+        adapter = build_data_source_adapter({"path": str(path)})
+
+        assert adapter.source_type == "flat_file"
+        assert adapter.location == str(path)
+        assert adapter.read().collect()["policy_id"].to_list() == [101, 102]
+
+    def test_read_data_source_uses_the_same_adapter_boundary(self, tmp_path: Path) -> None:
+        path = tmp_path / "source.csv"
+        pl.DataFrame({"premium": [10.5, 12.0]}).write_csv(path)
+
+        result = read_data_source({"sourceType": "flat_file", "path": str(path)}).collect()
+
+        assert result["premium"].to_list() == [10.5, 12.0]
+
+    def test_read_data_source_forwards_projection_and_schema(self, tmp_path: Path) -> None:
+        path = tmp_path / "source.csv"
+        path.write_text("quote_id,premium,unused\n001,10.5,x\n", encoding="utf-8")
+
+        lf = read_data_source(
+            {
+                "sourceType": "flat_file",
+                "path": str(path),
+                "schema_overrides": {"quote_id": "String", "premium": "Float64"},
+            },
+            profile=ExecutionProfile.LAZY_SINK,
+            columns=["quote_id", "premium"],
+        )
+
+        assert lf.collect_schema().names() == ["quote_id", "premium"]
+        result = lf.collect()
+        assert result["quote_id"].to_list() == ["001"]
+
+    @pytest.mark.parametrize(
+        "schema_key",
+        ["schema_overrides", "dtypes", "column_dtypes", "schema"],
+    )
+    def test_read_data_source_accepts_all_declared_dtype_config_keys(
+        self,
+        tmp_path: Path,
+        schema_key: str,
+    ) -> None:
+        path = tmp_path / "source.csv"
+        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+
+        result = read_data_source(
+            {
+                "sourceType": "flat_file",
+                "path": str(path),
+                schema_key: {"quote_id": "String", "premium": "Float64"},
+            },
+            profile=ExecutionProfile.AUTO_RANGE,
+        ).collect()
+
+        assert result.schema["quote_id"] == pl.String
+        assert result["quote_id"].to_list() == ["001"]
+
+    def test_read_data_source_rejects_bounded_csv_without_dtypes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "source.csv"
+        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+
+        with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
+            read_data_source(
+                {
+                    "sourceType": "flat_file",
+                    "path": str(path),
+                    "expected_columns": ["quote_id", "premium"],
+                },
+                profile=ExecutionProfile.AUTO_RANGE,
+            )
+
+    def test_source_config_is_not_mutated(self, tmp_path: Path) -> None:
+        path = tmp_path / "source.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(path)
+        config = {"sourceType": "flat_file", "path": str(path), "code": "df = df"}
+
+        build_data_source_adapter(config)
+
+        assert config == {"sourceType": "flat_file", "path": str(path), "code": "df = df"}
+
+    def test_flat_file_requires_path(self) -> None:
+        with pytest.raises(ValueError, match="flat_file.*path"):
+            build_data_source_adapter({"sourceType": "flat_file", "path": ""})
+
+
+class TestDataSourceAdapterDatabricks:
+    def test_databricks_delegates_to_cached_table_reader(self) -> None:
+        sentinel = pl.DataFrame({"x": [1]}).lazy()
+
+        with patch("haute._databricks_io.read_cached_table", return_value=sentinel) as read_cached:
+            adapter = build_data_source_adapter(
+                {"sourceType": "databricks", "table": "cat.sch.policies"}
+            )
+            result = adapter.read()
+
+        assert adapter.source_type == "databricks"
+        assert adapter.location == "cat.sch.policies"
+        assert result is sentinel
+        read_cached.assert_called_once_with("cat.sch.policies")
+
+    def test_databricks_requires_table(self) -> None:
+        with pytest.raises(ValueError, match="databricks.*table"):
+            build_data_source_adapter({"sourceType": "databricks", "table": ""})
+
+
+class TestDataSourceAdapterErrors:
+    def test_unknown_source_type_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported data source type"):
+            build_data_source_adapter({"sourceType": "warehouse", "path": "data.parquet"})
 
 
 class TestObjectCacheDifferentModelClass:

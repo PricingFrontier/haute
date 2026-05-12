@@ -25,6 +25,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
 import type { SolveProgress, TrainProgress } from "../../stores/useNodeResultsStore.ts"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -545,6 +546,91 @@ describe("useBackgroundJobs", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.length).toBeGreaterThanOrEqual(1)
       expect(toasts.some((t) => t.type === "error")).toBe(true)
+    })
+
+    it.each(["cancelled", "superseded", "timed_out", "memory_limited", "contract_error"] as const)(
+      "fails the job when API returns %s status",
+      async (status) => {
+        const mockGetStatus = vi.mocked(getOptimiserStatus)
+        mockGetStatus.mockResolvedValueOnce(
+          makeSolveProgress({ status, message: "Stopped" }),
+        )
+
+        act(() => {
+          useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        })
+
+        renderHook(() => useBackgroundJobs())
+
+        await advance(500)
+
+        expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
+        expect(useToastStore.getState().toasts.some((t) => t.type === "error")).toBe(true)
+      },
+    )
+
+    it("derives memory-limited optimiser failure text from structured execution metrics", async () => {
+      const mockGetStatus = vi.mocked(getOptimiserStatus)
+      mockGetStatus.mockResolvedValueOnce(
+        makeSolveProgress({
+          status: "memory_limited",
+          message: "Stopped",
+          execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_setup", terminal_reason: "memory_limited" }),
+        }),
+      )
+
+      act(() => {
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
+        "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+      )
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.status).toBe("memory_limited")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
+      expect(useToastStore.getState().toasts.some(
+        (toast) =>
+          toast.type === "error" &&
+          toast.text.includes(
+            "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+          ),
+      )).toBe(true)
+    })
+
+    it("keeps contract-error messages when pressure metrics are retained without a memory terminal reason", async () => {
+      const mockGetStatus = vi.mocked(getOptimiserStatus)
+      mockGetStatus.mockResolvedValueOnce(
+        makeSolveProgress({
+          status: "contract_error",
+          message: "Projection contract failed",
+          terminal_reason: "contract_error",
+          execution_metrics: makeExecutionMetricsFixture({
+            profile: "optimiser_setup",
+            terminal_reason: null,
+          }),
+        }),
+      )
+
+      act(() => {
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe("Projection contract failed")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
+      expect(useToastStore.getState().toasts.some(
+        (toast) =>
+          toast.type === "error" &&
+          toast.text.includes("Projection contract failed") &&
+          !toast.text.includes("Memory pressure reached"),
+      )).toBe(true)
     })
   })
 })

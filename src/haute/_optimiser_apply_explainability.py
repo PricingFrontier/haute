@@ -12,6 +12,7 @@ from haute._logging import get_logger
 from haute._trace_correlation import _jsonify_row, _trace_values_match
 
 logger = get_logger(component="optimiser_apply_explainability")
+_TRACE_MATCH_BATCH_SIZE = 50_000
 
 
 class OptimiserApplyTraceError(RuntimeError):
@@ -442,7 +443,13 @@ def _match_ratebook_input_row(
     # ``PolarsError`` (the base of ColumnNotFound/Schema/Compute/InvalidOperation)
     # rather than bare ``Exception`` keeps unrelated bugs surfacing as errors.
     try:
-        matched = parent_frame.filter(predicate).head(1).collect(engine="streaming")
+        from haute._execution_context import ExecutionProfile
+        from haute._polars_utils import streaming_collect
+
+        matched = streaming_collect(
+            parent_frame.filter(predicate).head(1),
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
     except pl.exceptions.PolarsError:
         return _python_match_ratebook_input_row(parent_frame, output_row, shared)
     if matched.is_empty():
@@ -484,13 +491,26 @@ def _python_match_ratebook_input_row(
     output_row: dict[str, Any],
     shared: list[str],
 ) -> dict[str, Any]:
-    """Fallback: scan the input frame in Python for tolerance-aware matches."""
-    input_df = parent_frame.collect(engine="streaming")
-    if input_df.is_empty():
+    """Fallback: scan bounded batches in Python for tolerance-aware matches."""
+    from haute._execution_context import ExecutionProfile
+    from haute._polars_utils import bounded_collect_batches
+
+    saw_row = False
+    for batch in bounded_collect_batches(
+        parent_frame,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        chunk_size=_TRACE_MATCH_BATCH_SIZE,
+        maintain_order=True,
+        stage_name="optimiser_trace_match_batch",
+    ):
+        if batch.is_empty():
+            continue
+        saw_row = True
+        for row in batch.iter_rows(named=True):
+            if all(_values_match(row.get(column), output_row.get(column)) for column in shared):
+                return _jsonify_row(dict(row))
+    if not saw_row:
         raise OptimiserApplyTraceError("selected ratebook input frame is empty")
-    for row in input_df.iter_rows(named=True):
-        if all(_values_match(row.get(column), output_row.get(column)) for column in shared):
-            return _jsonify_row(dict(row))
     raise OptimiserApplyTraceError(
         "could not reconcile clicked ratebook output row to the selected input frame"
     )

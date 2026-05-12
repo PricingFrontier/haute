@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+from unittest.mock import patch
 
 import polars as pl
 import pytest
 
+from haute._execution_context import ExecutionProfile
 from haute._user_exec import _exec_user_code
+from haute.errors import BoundedMemoryUnsupportedError
 from haute.executor import (
     PreambleError,
     _build_node_fn,
@@ -333,6 +336,169 @@ class TestBuildNodeFn:
         assert is_source is True
         df = fn().collect()
         assert df["x"].to_list() == [1]
+
+    def test_data_source_builder_pushes_projection_when_no_user_code(self, tmp_path):
+        p = tmp_path / "wide.parquet"
+        pl.DataFrame({"quote_id": [1], "premium": [10], "unused": [99]}).write_parquet(p)
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "dataSource",
+                    "config": {"path": str(p)},
+                },
+            }
+        )
+
+        _, fn, is_source = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"quote_id", "premium"}),
+            execution_profile=ExecutionProfile.LAZY_SINK.value,
+        )
+
+        assert is_source is True
+        lf = fn()
+        assert set(lf.collect_schema().names()) == {"quote_id", "premium"}
+        assert "PROJECT 2/3 COLUMNS" in lf.explain()
+
+    def test_data_source_builder_pushes_projection_through_source_limit_code(self, tmp_path):
+        p = tmp_path / "wide.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": [1, 2],
+                "premium": [10, 20],
+                "unused": [99, 100],
+            }
+        ).write_parquet(p)
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "path": str(p),
+                        "contract": "opaque",
+                        "code": "df = df.limit(1)",
+                    },
+                },
+            }
+        )
+
+        _, fn, is_source = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"quote_id", "premium"}),
+            execution_profile=ExecutionProfile.LAZY_SINK.value,
+        )
+
+        assert is_source is True
+        lf = fn()
+        assert set(lf.collect_schema().names()) == {"quote_id", "premium"}
+        assert lf.collect().to_dict(as_series=False) == {
+            "quote_id": [1],
+            "premium": [10],
+        }
+        assert "PROJECT 2/3 COLUMNS" in lf.explain()
+
+    def test_data_source_builder_does_not_pre_project_user_code_inputs(self, tmp_path):
+        p = tmp_path / "wide.parquet"
+        pl.DataFrame({"quote_id": [1, 2], "segment": ["A", "B"]}).write_parquet(p)
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "path": str(p),
+                        "code": "df = df.filter(pl.col('segment') == 'A').select('quote_id')",
+                    },
+                },
+            }
+        )
+
+        _, fn, is_source = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"quote_id"}),
+            execution_profile=ExecutionProfile.LAZY_SINK.value,
+        )
+
+        assert is_source is True
+        assert fn().collect()["quote_id"].to_list() == [1]
+
+    def test_data_source_builder_does_not_pre_project_before_source_renames(
+        self,
+        tmp_path,
+    ):
+        p = tmp_path / "source.parquet"
+        pl.DataFrame({"raw_premium": [10], "unused": [99]}).write_parquet(p)
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "dataSource",
+                    "config": {
+                        "path": str(p),
+                        "column_renames": {"raw_premium": "premium"},
+                    },
+                },
+            }
+        )
+
+        _, fn, is_source = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"premium"}),
+            execution_profile=ExecutionProfile.LAZY_SINK.value,
+        )
+
+        assert is_source is True
+        assert fn().collect_schema().names() == ["raw_premium", "unused"]
+
+    def test_data_source_builder_rejects_json_in_bounded_profile(self, tmp_path):
+        p = tmp_path / "data.json"
+        pl.DataFrame({"quote_id": [1]}).write_json(p)
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "dataSource",
+                    "config": {"path": str(p)},
+                },
+            }
+        )
+
+        _, fn, is_source = _build_node_fn(
+            node,
+            execution_profile=ExecutionProfile.LAZY_SINK.value,
+        )
+
+        assert is_source is True
+        with pytest.raises(BoundedMemoryUnsupportedError, match="Plain JSON"):
+            fn()
+
+    def test_data_source_builder_rejects_empty_path_in_bounded_profile(self):
+        node = _n(
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "dataSource",
+                    "config": {"path": ""},
+                },
+            }
+        )
+
+        _, fn, is_source = _build_node_fn(
+            node,
+            execution_profile=ExecutionProfile.LAZY_SINK.value,
+        )
+
+        assert is_source is True
+        with pytest.raises(ValueError, match="flat_file.*path"):
+            fn()
 
     def test_transform_with_code(self):
         node = _transform_node("t", code="df = df.with_columns(y=pl.col('x') + 1)")
@@ -751,9 +917,38 @@ class TestExecuteGraph:
             target_preview_only=True,
         )
         assert "b" in narrow_results
+        assert "a" not in narrow_results
         assert "c" not in narrow_results
-        assert narrow_results["a"].preview == []
         assert narrow_results["b"].preview == [{"x": 1, "y": 2}]
+
+    def test_cached_target_only_preview_does_not_satisfy_broad_preview(self, tmp_path):
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("a", str(p)),
+                    _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
+                ],
+                "edges": [_edge("a", "b"), _edge("b", "c")],
+            }
+        )
+
+        narrow_results = execute_graph(
+            graph,
+            target_node_id="c",
+            target_preview_only=True,
+        )
+        assert list(narrow_results) == ["c"]
+
+        broad_results = execute_graph(graph, target_node_id="c")
+
+        assert set(broad_results) == {"a", "b", "c"}
+        assert broad_results["a"].status == "ok"
+        assert broad_results["b"].status == "ok"
+        assert broad_results["c"].status == "ok"
 
     def test_error_node_captured(self, tmp_path):
         p = tmp_path / "d.parquet"
@@ -1359,6 +1554,37 @@ class TestExecuteSink:
         result = execute_sink(graph, sink_node_id="sink")
         assert result.status == "ok"
         assert out_path.exists()
+        assert result.execution_metrics is not None
+        assert "sink_row_count" in result.execution_metrics.stage_elapsed_ms
+
+    def test_plain_json_source_rejected_by_default_bounded_sink_context(self, tmp_path):
+        src_path = tmp_path / "in.json"
+        out_path = tmp_path / "out.parquet"
+        pl.DataFrame({"a": [10]}).write_json(src_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(src_path)),
+                    _n(
+                        {
+                            "id": "sink",
+                            "data": {
+                                "label": "sink",
+                                "nodeType": "dataSink",
+                                "config": {"path": str(out_path), "format": "parquet"},
+                            },
+                        }
+                    ),
+                ],
+                "edges": [_edge("src", "sink")],
+            }
+        )
+
+        with patch.object(pl, "read_json", wraps=pl.read_json) as read_json:
+            with pytest.raises(BoundedMemoryUnsupportedError, match="Plain JSON"):
+                execute_sink(graph, sink_node_id="sink")
+
+        read_json.assert_not_called()
 
     def test_missing_sink_raises(self):
         graph = _g({"nodes": [], "edges": []})
@@ -2501,6 +2727,75 @@ class TestPreviewCachePartialHit:
 
 class TestRequestedPreviewProjection:
     """Preview-column requests should reduce backend work, not just JSON size."""
+
+    def test_target_only_preview_materializes_only_the_requested_node(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Selected-node previews should not collect every ancestor DataFrame.
+
+        The GUI preview route asks for one target node.  Ancestors still need
+        to be planned for schema, projection, and contract checks, but they
+        should stay lazy until the target collect.
+        """
+        import haute._execute_lazy as execute_lazy_mod
+        from haute.executor import _preview_cache
+
+        _preview_cache.invalidate()
+
+        p = tmp_path / "wide.parquet"
+        pl.DataFrame(
+            {
+                "x": [1, 2, 3],
+                "unused": [100, 200, 300],
+            }
+        ).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
+                ],
+                "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
+            }
+        )
+
+        collect_calls = 0
+        original_streaming_collect = execute_lazy_mod.streaming_collect
+
+        def counting_streaming_collect(*args, **kwargs):
+            nonlocal collect_calls
+            collect_calls += 1
+            return original_streaming_collect(*args, **kwargs)
+
+        monkeypatch.setattr(
+            execute_lazy_mod,
+            "streaming_collect",
+            counting_streaming_collect,
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="leaf",
+            target_preview_only=True,
+            requested_preview_columns=["z"],
+        )
+
+        assert list(results) == ["leaf"]
+        assert results["leaf"].status == "ok"
+        assert results["leaf"].preview == [{"z": 20}, {"z": 30}, {"z": 40}]
+        assert collect_calls == 1
+
+        fp = _preview_cache.fingerprint
+        assert fp is not None
+        cache_entry = _preview_cache.try_get(fp)
+        assert cache_entry is not None
+        assert set(cache_entry["eager_outputs"]) == {"leaf"}
+        assert set(cache_entry["output_columns"]) == {"src", "mid", "leaf"}
+
+        _preview_cache.invalidate()
 
     def test_requested_preview_columns_project_before_collect(self, tmp_path):
         from haute.executor import _preview_cache

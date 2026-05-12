@@ -354,6 +354,8 @@ def execute_trace(
                         graph,
                         target_node_id,
                         requested_preview_columns,
+                        target_preview_only=True,
+                        initial_column_limit=None,
                     ),
                     memo=fingerprint_memo,
                 )
@@ -615,8 +617,9 @@ def _materialize_eager_outputs(
         # Snapshot dicts without an ``eager_outputs`` slot are treated
         # as empty — the cold-execute path below will handle them.
         prev_outputs = preview_data.get("eager_outputs") or {}
-        # Preview uses swallow_errors=True, so some outputs may be
-        # None on error.  Only reuse if target node has a real value.
+        # Preview uses swallow_errors=True, so some outputs may be None on
+        # error.  Only reuse when the full ancestor chain is present; target-
+        # only previews intentionally cache just the selected node.
         if target_node_id in prev_outputs and prev_outputs[target_node_id] is not None:
             # Graph-structure metadata still needs computing for
             # the trace-specific fields (parents_of, node_map, etc.)
@@ -625,15 +628,22 @@ def _materialize_eager_outputs(
                 target_node_id,
                 source=source,
             )
-            # Use preview DataFrames for all nodes that have them.
-            # Some upstream nodes may have errored in preview
-            # (swallow_errors=True) — include only the ones that
-            # succeeded.  The post-hoc correlator handles missing
-            # nodes gracefully.
-            eager_outputs = {
-                nid: prev_outputs[nid] for nid in order if prev_outputs.get(nid) is not None
-            }
-            if target_node_id in eager_outputs:
+            # A full trace needs every executed ancestor so its waterfall
+            # remains truthful. Partial target-only preview caches fall
+            # through to cold trace execution below.
+            missing_preview_nodes = [
+                nid for nid in order if prev_outputs.get(nid) is None
+            ]
+            if missing_preview_nodes:
+                logger.debug(
+                    "trace_preview_cache_partial",
+                    fingerprint=fp[:8],
+                    preview_fingerprint=matched_preview_fp[:8],
+                    target=target_node_id,
+                    missing_nodes=missing_preview_nodes,
+                )
+            else:
+                eager_outputs = {nid: prev_outputs[nid] for nid in order}
                 source_ids = {nid for nid in order if not parents_of.get(nid)}
                 logger.debug(
                     "trace_reused_preview_cache",

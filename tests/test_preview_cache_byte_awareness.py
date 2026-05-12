@@ -38,6 +38,7 @@ class TestFingerprintCacheByteLimit:
         assert cache.stats() == {
             "entries": 2,
             "max_entries": 10,
+            "pinned_entries": 0,
             "bytes": 80,
             "max_bytes": 100,
         }

@@ -39,6 +39,7 @@ import {
   getJsonCacheStatus,
   deleteJsonCache,
 } from "../client"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -862,6 +863,23 @@ describe("request() edge cases", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe(JSON.stringify(nestedDetail))
+    }
+  })
+
+  it("preserves structured detail objects on ApiError for execution diagnostics", async () => {
+    const structuredDetail = {
+      message: "Training rejected by admission control",
+      terminal_reason: "memory_limited",
+      execution_metrics: makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" }),
+    }
+    mockFetch.mockReturnValue(errorResponse(507, { detail: structuredDetail }))
+
+    try {
+      await getGitStatus()
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError)
+      expect((err as ApiError).detail).toBe(JSON.stringify(structuredDetail))
+      expect((err as ApiError).rawDetail).toEqual(structuredDetail)
     }
   })
 

@@ -83,6 +83,11 @@ class ApiInputConfig(TypedDict, total=False):
     path: str
     row_id_column: str
     flattenSchema: dict[str, Any]
+    schema_overrides: dict[str, Any]
+    dtypes: dict[str, Any]
+    column_dtypes: dict[str, Any]
+    schema: dict[str, Any]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class DataSourceConfig(TypedDict, total=False):
@@ -91,9 +96,16 @@ class DataSourceConfig(TypedDict, total=False):
     path: str
     sourceType: str  # "flat_file" | "databricks"
     table: str
+    catalog: str
     http_path: str
     query: str
     code: str
+    expected_columns: list[str]
+    schema_overrides: dict[str, Any]
+    dtypes: dict[str, Any]
+    column_dtypes: dict[str, Any]
+    schema: str | dict[str, Any]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class TransformConfig(TypedDict, total=False):
@@ -122,6 +134,7 @@ class ModelScoreConfig(TypedDict, total=False):
     task: str  # "regression" | "classification"
     output_column: str  # prediction column name, default "prediction"
     feature_contract_path: str  # local deploy/runtime feature-contract artifact
+    categorical_levels: dict[str, list[str | None]]
     code: str  # optional post-processing code
     instanceOf: str
     inputMapping: dict[str, str]
@@ -208,6 +221,7 @@ class ModellingConfig(TypedDict, total=False):
     name: str
     target: str
     weight: str
+    feature_columns: list[str]
     exclude: list[str]
     algorithm: str  # "catboost" | "glm"
     task: str  # "regression" | "classification"
@@ -234,6 +248,9 @@ class ModellingConfig(TypedDict, total=False):
     variance_power: float
     monotone_constraints: dict[str, int]
     feature_weights: dict[str, float]
+    fold_column: str
+    id_columns: list[str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class OptimiserConfig(TypedDict, total=False):
@@ -406,6 +423,7 @@ MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
     "version",
     "task",
     "output_column",
+    "categorical_levels",
     "experiment_name",
     "experiment_id",
 )
@@ -423,6 +441,7 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "mlflow_experiment",
     "model_name",
     "output_dir",
+    "categorical_levels",
 )
 
 OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (

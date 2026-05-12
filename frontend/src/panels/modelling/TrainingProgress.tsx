@@ -5,6 +5,7 @@
 import type { TrainProgress } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
 import { formatElapsed } from "../../utils/formatValue"
+import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 
 type TrainingProgressProps = {
   trainProgress: TrainProgress
@@ -41,6 +42,12 @@ export function TrainingProgress({ trainProgress }: TrainingProgressProps) {
           ))}
         </div>
       )}
+
+      <ExecutionDiagnosticsSummary
+        metrics={trainProgress.execution_metrics}
+        status={trainProgress.status}
+        terminalReason={trainProgress.terminal_reason}
+      />
     </div>
   )
 }

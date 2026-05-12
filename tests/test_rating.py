@@ -133,6 +133,28 @@ class TestApplyRatingTable:
         result = _apply_rating_table(lf, table).collect()
         assert result["rate"].to_list() == [1.5, 1.0, 0.8]
 
+    def test_streaming_lookup_preserves_left_input_row_order(self) -> None:
+        lf = pl.DataFrame(
+            {
+                "row_id": list(range(1_000)),
+                "region": ["South" if i % 2 == 0 else "North" for i in range(1_000)],
+            }
+        ).lazy()
+        table: dict[str, Any] = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [
+                {"region": "South", "value": 0.95},
+                {"region": "North", "value": 1.10},
+            ],
+            "defaultValue": "1.0",
+        }
+
+        result = _apply_rating_table(lf, table).collect(engine="streaming")
+
+        assert result["row_id"].to_list() == list(range(1_000))
+        assert result["factor"].head(4).to_list() == [0.95, 1.10, 0.95, 1.10]
+
     def test_default_value(self) -> None:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         table: dict[str, Any] = {

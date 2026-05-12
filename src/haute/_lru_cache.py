@@ -30,7 +30,7 @@ import logging
 import threading
 import time as _time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Generic, TypeVar
 
 K = TypeVar("K")
@@ -57,6 +57,10 @@ class LRUCache(Generic[K, V]):
         Optional time-to-live in seconds.  Entries older than *ttl* are
         treated as misses and evicted lazily on the next ``get``.
         ``None`` (the default) disables expiry.
+    pin_slots:
+        Optional keys that are protected from LRU eviction as soon as
+        they are populated.  Unlike ``pin(key)``, these may be named
+        before the corresponding entry exists.
     max_bytes:
         Optional byte budget.  When configured, *size_of* must return a
         deterministic byte weight for each value.  Eviction uses the same
@@ -69,6 +73,7 @@ class LRUCache(Generic[K, V]):
         "_data",
         "_timestamps",
         "_pinned",
+        "_pin_slots",
         "_lock",
         "_max_bytes",
         "_size_of",
@@ -81,6 +86,7 @@ class LRUCache(Generic[K, V]):
         max_size: int = 128,
         ttl: float | None = None,
         *,
+        pin_slots: Iterable[K] = (),
         max_bytes: int | None = None,
         size_of: Callable[[V], int] | None = None,
     ) -> None:
@@ -97,6 +103,7 @@ class LRUCache(Generic[K, V]):
         self._data: OrderedDict[K, V] = OrderedDict()
         self._timestamps: dict[K, float] = {}  # only populated when ttl is set
         self._pinned: set[K] = set()
+        self._pin_slots = set(pin_slots)
         self._lock = threading.RLock()
         self._max_bytes = max_bytes
         self._size_of = size_of
@@ -178,10 +185,15 @@ class LRUCache(Generic[K, V]):
         """Remove eviction exemption for *key*.  Silent on unknown keys."""
         with self._lock:
             self._pinned.discard(key)
+            self._pin_slots.discard(key)
             self._evict_if_over_capacity()
 
     def clear(self) -> None:
-        """Remove all entries and pins."""
+        """Remove all entries and dynamic pins.
+
+        Constructor-level ``pin_slots`` are cache policy and remain in
+        force after ``clear()`` so a repopulated slot stays protected.
+        """
         with self._lock:
             self._data.clear()
             self._timestamps.clear()
@@ -222,6 +234,7 @@ class LRUCache(Generic[K, V]):
                 "max_entries": self._max_size,
                 "bytes": self._current_bytes,
                 "max_bytes": self._max_bytes,
+                "pinned_entries": sum(1 for key in self._data if self._is_pinned(key)),
             }
 
     def __contains__(self, key: K) -> bool:  # type: ignore[override]
@@ -257,6 +270,13 @@ class LRUCache(Generic[K, V]):
             raise ValueError(f"size_of must return a non-negative int, got {size!r}")
         return size
 
+    def _is_pinned(self, key: K) -> bool:
+        return key in self._pinned or key in self._pin_slots
+
+    def _capacity_entry_count(self) -> int:
+        """Return the number of entries that count against ``max_size``."""
+        return sum(1 for key in self._data if not self._is_pinned(key))
+
     def _remove_key(self, key: K) -> V:
         """Delete *key* and keep all auxiliary bookkeeping in sync."""
         value = self._data.pop(key)
@@ -272,7 +292,7 @@ class LRUCache(Generic[K, V]):
         If every live entry is pinned, the loop exits without evicting
         and the cache is allowed to exceed capacity.
         """
-        while len(self._data) > self._max_size or (
+        while self._capacity_entry_count() > self._max_size or (
             self._max_bytes is not None and self._current_bytes > self._max_bytes
         ):
             evicted = False
@@ -280,7 +300,7 @@ class LRUCache(Generic[K, V]):
             # materialises the keys so we can ``del`` during iteration
             # without mutating what we're walking.
             for candidate in list(self._data.keys()):
-                if candidate in self._pinned:
+                if self._is_pinned(candidate):
                     continue
                 self._remove_key(candidate)
                 evicted = True

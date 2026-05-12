@@ -19,9 +19,11 @@ from typing import Any
 
 import polars as pl
 
+import haute.projection as projection
 from haute._code_extraction import _strip_generated_boilerplate_from_code
+from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
-from haute._io import load_external_object, read_source
+from haute._io import load_external_object, read_data_source, read_source
 from haute._logging import get_logger
 from haute._rating import (
     _apply_banding,
@@ -48,6 +50,20 @@ _DEFAULT_SCENARIO_MIN = 0.8  # scenario expander lower bound
 _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
 _DEFAULT_SCENARIO_STEPS = 21  # number of steps in scenario grid
 _DEFAULT_CHUNK_SIZE = 500_000  # rows per chunk for optimiser apply
+
+
+def _source_scan_projection(
+    profile: str | None,
+    columns: frozenset[str] | set[str] | None,
+    config: Mapping[str, Any],
+) -> projection.SourceScanProjection:
+    if profile in {None, ExecutionProfile.PREVIEW_EAGER.value}:
+        return projection.SourceScanProjection(columns=None)
+    return projection.source_scan_projection(config, columns)
+
+
+def _allow_empty_source_path(profile: str | None) -> bool:
+    return profile in {None, ExecutionProfile.PREVIEW_EAGER.value}
 
 
 # ---------------------------------------------------------------------------
@@ -98,8 +114,10 @@ class NodeBuildContext:
     orig_source_names: list[str] | None
     preamble_ns: dict[str, Any] | None
     source: str | None
+    upstream_ids: list[str] | None = None
     required_output_columns: frozenset[str] | set[str] | None = None
     reuse_loaded_model: bool = False
+    execution_profile: str | None = None
 
     @property
     def func_name(self) -> str:
@@ -382,12 +400,23 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     api_source_fn: Callable[..., _Frame]
     if path.lower().endswith((".json", ".jsonl")):
 
-        def _api_source_json(_path: str = path, _schema: dict | None = flat_schema) -> _Frame:
+        def _api_source_json(
+            _path: str = path,
+            _schema: dict | None = flat_schema,
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        ) -> _Frame:
             from haute._json_flatten import json_cache_path_if_valid
 
             cache_path = json_cache_path_if_valid(_path, schema=_schema)
             if cache_path is not None:
-                return pl.scan_parquet(cache_path)
+                projected = _source_scan_projection(_profile, _columns, config)
+                return read_source(
+                    cache_path,
+                    profile=_profile,
+                    columns=projected.columns,
+                    validate_columns=projected.validate_columns,
+                )
             raise RuntimeError(
                 "JSON data has not been cached yet, or the existing cache is stale "
                 "or schema-incompatible. "
@@ -397,8 +426,18 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         api_source_fn = _api_source_json
     else:
 
-        def _api_source_flat() -> _Frame:
-            return read_source(path)
+        def _api_source_flat(
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+            _config: dict[str, Any] = config,
+        ) -> _Frame:
+            projected = _source_scan_projection(_profile, _columns, _config)
+            return read_data_source(
+                _config,
+                profile=_profile,
+                columns=projected.columns,
+                validate_columns=projected.validate_columns,
+            )
 
         api_source_fn = _api_source_flat
 
@@ -414,29 +453,87 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         config.get("code") or "",
         kind="data_source",
     )
+    code_preserves_projection = projection.source_user_code_preserves_column_projection(
+        code
+    )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     base_fn: Callable[..., _Frame]
+    if not code:
+
+        def plain_source_fn(
+            _config: Mapping[str, Any] = config,
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        ) -> _Frame:
+            if (
+                source_type != "databricks"
+                and not path
+                and _allow_empty_source_path(_profile)
+            ):
+                return pl.LazyFrame()
+            projected = _source_scan_projection(_profile, _columns, _config)
+            return read_data_source(
+                _config,
+                profile=_profile,
+                columns=projected.columns,
+                validate_columns=projected.validate_columns,
+            )
+
+        return ctx.func_name, plain_source_fn, True
+
     if source_type == "databricks":
         table = config.get("table", "")
 
-        def _databricks_source(_table: str = table) -> _Frame:
+        def _databricks_source(
+            _table: str = table,
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+            _config: dict[str, Any] = config,
+        ) -> _Frame:
             from haute._databricks_io import read_cached_table
 
-            return read_cached_table(_table)
+            lf = read_cached_table(_table)
+            projected = _source_scan_projection(
+                _profile,
+                _columns if code_preserves_projection else None,
+                _config,
+            )
+            if projected.validate_columns:
+                source_columns = set(lf.collect_schema().names())
+                missing = projected.validate_columns - source_columns
+                if missing:
+                    raise ValueError(
+                        "source selected_columns references columns missing from "
+                        f"the source schema: {sorted(missing)!r}"
+                    )
+            if projected.columns is not None:
+                return lf.select(list(projected.columns))
+            return lf
 
         base_fn = _databricks_source
     else:
 
-        def source_fn() -> _Frame:
-            if not path:
+        def source_fn(
+            _config: Mapping[str, Any] = config,
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        ) -> _Frame:
+            if not path and _allow_empty_source_path(_profile):
                 return pl.LazyFrame()
-            return read_source(path)
+            projected = _source_scan_projection(
+                _profile,
+                _columns if code_preserves_projection else None,
+                _config,
+            )
+            return read_data_source(
+                _config,
+                profile=_profile,
+                columns=projected.columns,
+                validate_columns=projected.validate_columns,
+            )
 
         base_fn = source_fn
-
-    if not code:
-        return ctx.func_name, base_fn, True
 
     def source_with_code() -> _Frame:
         raw = base_fn()
@@ -846,7 +943,12 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
     produced = {out} if out else {"prediction"}
 
     # Post-processing code can reference arbitrary columns — opaque.
-    if (config.get("code") or "").strip():
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="model_score",
+        param_names=("df",),
+    )
+    if code:
         return produced, None
 
     feature_contract_path = config.get("feature_contract_path")
@@ -916,6 +1018,26 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
     return produced, None
 
 
+def _declared_categorical_levels_for_model_score(
+    config: dict[str, Any],
+    source_ids: list[str],
+    node_map: dict[str, GraphNode] | None,
+    upstream_ids: list[str] | None = None,
+) -> dict[str, list[str | None]]:
+    """Merge explicit categorical level declarations at a modelScore boundary."""
+    from haute.modelling._feature_contract import merge_categorical_level_declarations
+
+    declarations: list[tuple[str, Any]] = [("modelScore", config.get("categorical_levels"))]
+    candidate_ids = list(dict.fromkeys([*source_ids, *(upstream_ids or [])]))
+    if node_map is not None:
+        declarations.extend(
+            (source_id, node_map[source_id].data.config.get("categorical_levels"))
+            for source_id in candidate_ids
+            if source_id in node_map
+        )
+    return merge_categorical_level_declarations(declarations)
+
+
 @_register(NodeType.MODEL_SCORE, columns=_model_score_columns)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -943,17 +1065,17 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     from haute._model_scorer import ModelScorer
 
-    required_output_columns = ctx.required_output_columns
-    if code or config.get("column_renames"):
-        required_output_columns = None
-    elif required_output_columns is None:
-        selected_columns = config.get("selected_columns") or []
-        if selected_columns:
-            required_output_columns = frozenset(
-                str(column)
-                for column in selected_columns
-                if isinstance(column, str) and column
-            )
+    required_output_columns = projection.model_score_required_output_columns(
+        config,
+        ctx.required_output_columns,
+        post_processing_code=code,
+    )
+    declared_categorical_levels = _declared_categorical_levels_for_model_score(
+        config,
+        ctx.source_ids,
+        ctx.node_map,
+        ctx.upstream_ids,
+    )
 
     scorer = ModelScorer(
         source_type=source_type,
@@ -968,6 +1090,8 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
         required_output_columns=required_output_columns,
+        feature_contract_path=config.get("feature_contract_path") or None,
+        categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
     )
 
@@ -1043,10 +1167,12 @@ def _build_node_fn(
     row_limit: int | None = None,
     node_map: dict[str, GraphNode] | None = None,
     orig_source_names: list[str] | None = None,
+    upstream_ids: list[str] | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str | None = None,
     required_output_columns: frozenset[str] | set[str] | None = None,
     reuse_loaded_model: bool = False,
+    execution_profile: str | None = None,
 ) -> tuple[str, Callable, bool]:
     """Build an executable function from a graph node dict.
 
@@ -1076,10 +1202,12 @@ def _build_node_fn(
         row_limit=row_limit,
         node_map=node_map,
         orig_source_names=orig_source_names,
+        upstream_ids=upstream_ids,
         preamble_ns=preamble_ns,
         source=source,
         required_output_columns=required_output_columns,
         reuse_loaded_model=reuse_loaded_model,
+        execution_profile=execution_profile,
     )
 
     # Dispatch through the unified registry — the single source of truth.
@@ -1201,6 +1329,9 @@ def _apply_online(
 
 def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.DataFrame:
     """Materialise an online apply input frame using runtime apply dtypes."""
+    from haute._execution_context import ExecutionProfile
+    from haute._polars_utils import streaming_collect
+
     qid_col = artifact.get("quote_id", "quote_id")
     step_col = artifact.get("scenario_index", "scenario_index")
     mult_col = artifact.get("scenario_value", "scenario_value")
@@ -1229,7 +1360,10 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
             cast_exprs.append(pl.col(name).cast(pl.Float32))
             cast_names.add(name)
 
-    return lf.with_columns(cast_exprs).collect(engine="streaming")
+    return streaming_collect(
+        lf.with_columns(cast_exprs),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
 
 
 def _apply_ratebook(

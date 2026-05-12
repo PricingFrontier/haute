@@ -85,6 +85,45 @@ class TestValidKeysRegistry:
         """Spot-check that well-known keys appear in each type's valid set."""
         assert expected_key in VALID_KEYS[node_type]
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "catalog",
+            "schema",
+            "expected_columns",
+            "schema_overrides",
+            "dtypes",
+            "column_dtypes",
+            "categorical_levels",
+        ],
+    )
+    @pytest.mark.parametrize("node_type", [NodeType.API_INPUT, NodeType.DATA_SOURCE])
+    def test_source_boundary_keys_present(self, node_type, key):
+        """Source dtype/deploy schema keys are first-class config keys."""
+        if key == "catalog" and node_type == NodeType.API_INPUT:
+            return
+        if key == "expected_columns" and node_type == NodeType.API_INPUT:
+            return
+        assert key in VALID_KEYS[node_type]
+
+    @pytest.mark.parametrize(
+        "node_type",
+        [NodeType.MODELLING, NodeType.MODEL_SCORE, NodeType.POLARS],
+    )
+    def test_categorical_levels_key_present_on_model_boundaries(self, node_type):
+        assert "categorical_levels" in VALID_KEYS[node_type]
+
+    @pytest.mark.parametrize(
+        "key",
+        ["schema_overrides", "dtypes", "column_dtypes", "schema"],
+    )
+    def test_api_input_dtype_keys_do_not_warn(self, key):
+        bad = warn_unrecognized_config_keys(
+            NodeType.API_INPUT,
+            {"path": "quotes.csv", key: {"quote_id": "String"}},
+        )
+        assert bad == []
+
 
 # ---------------------------------------------------------------------------
 # warn_unrecognized_config_keys
@@ -351,6 +390,23 @@ class TestBuildNodeConfigProducesValidKeys:
         assert bad == [], f"Unrecognized keys in modelScore: {bad}"
         assert config["sourceType"] == "registered"
         assert "source_type" not in config, "snake_case source_type should not appear in config"
+
+    def test_api_input_preserves_declared_dtype_config(self):
+        """API-input decorators need a schema migration path for bounded CSV."""
+        from haute._parser_helpers import _build_node_config
+
+        config = _build_node_config(
+            NodeType.API_INPUT,
+            {
+                "path": "quotes.csv",
+                "schema_overrides": {"quote_id": "String"},
+            },
+            "",
+            [],
+        )
+
+        assert config["schema_overrides"] == {"quote_id": "String"}
+        assert warn_unrecognized_config_keys(NodeType.API_INPUT, config) == []
 
     def test_model_score_all_keys_valid(self):
         """All keys from MODEL_SCORE_CONFIG_KEYS should be recognised."""

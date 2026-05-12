@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   applyOptimiser,
+  cancelOptimiserSolve,
   cancelOptimiserFrontierAutoRange,
+  cancelTraining,
   checkMlflow,
   createGitBranch,
   createSubmodel,
@@ -160,6 +162,25 @@ describe("client runtime contracts", () => {
     await expect(getTrainStatus("job-1")).rejects.toThrow(/parseTrainResponse/i)
   })
 
+  it("cancels training jobs through the typed status parser", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        status: "cancelled",
+        progress: 0.25,
+        message: "Cancelled",
+        elapsed_seconds: 1.5,
+        result: null,
+        terminal_reason: "cancelled",
+      }),
+    )
+
+    const result = await cancelTraining("job 1")
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/modelling/train/cancel/job%201")
+    expect(result.status).toBe("cancelled")
+    expect(result.terminal_reason).toBe("cancelled")
+  })
+
   it("getOptimiserStatus rejects malformed optimiser result payloads", async () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("optimiser_status_response")
     const result = fixture.result as Record<string, unknown>
@@ -175,6 +196,26 @@ describe("client runtime contracts", () => {
     )
 
     await expect(getOptimiserStatus("job-1")).rejects.toThrow(/parseOptimiserStatusResponse/i)
+  })
+
+  it("cancels optimiser solves through the typed status parser", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        status: "cancelled",
+        progress: 0.5,
+        message: "Cancelled",
+        elapsed_seconds: 2.5,
+        result: null,
+        frontier: null,
+        terminal_reason: "cancelled",
+      }),
+    )
+
+    const result = await cancelOptimiserSolve("opt job")
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/optimiser/solve/cancel/opt%20job")
+    expect(result.status).toBe("cancelled")
+    expect(result.terminal_reason).toBe("cancelled")
   })
 
   it("preserves optimiser payload budget metadata from contract fixtures", async () => {

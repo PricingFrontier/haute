@@ -6,6 +6,7 @@ import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock("../../utils/makePreviewData", () => ({
     timings: opts.timings ?? [],
     memory: opts.memory ?? [],
     schema_warnings: opts.schema_warnings ?? [],
+    execution_metrics: opts.execution_metrics ?? null,
   })),
 }))
 
@@ -379,6 +381,32 @@ describe("usePipelineAPI", () => {
     })
     // Wait for the async preview to resolve
     await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "ok", n0: "ok" }))
+  })
+
+  it("fetchPreview carries execution metrics into visible preview data and cache", async () => {
+    const executionMetrics = makeExecutionMetricsFixture()
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "n1",
+      status: "ok",
+      columns: [{ name: "a", dtype: "f64" }],
+      preview: [{ a: 1 }],
+      row_count: 1,
+      column_count: 1,
+      execution_metrics: executionMetrics,
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
+    })
+
+    await waitFor(() => {
+      expect(result.current.previewData?.execution_metrics).toBe(executionMetrics)
+    })
+    expect(useNodeResultsStore.getState().getPreview("n1")?.data.execution_metrics).toBe(executionMetrics)
   })
 
   it("keeps nodeStatuses when selectedNode is recreated with the same id", async () => {

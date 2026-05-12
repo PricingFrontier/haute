@@ -92,6 +92,7 @@ function resultToPreview(nodeId: string, label: string, r: NodeResult): PreviewD
     timings: r.timings ?? [],
     memory: r.memory ?? [],
     schema_warnings: r.schema_warnings ?? [],
+    execution_metrics: r.execution_metrics ?? null,
   })
 }
 

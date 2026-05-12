@@ -493,6 +493,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
                         "run_id": "run-123",
                         "task": "regression",
                         "output_column": "prediction",
+                        "code": "df = df",
                     },
                 ),
             ),
@@ -683,7 +684,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
     assert result["expected_margin"].to_list() == [0.0, 60.0, 180.0]
 
 
-def test_lazy_batch_model_score_uses_node_selected_columns_when_downstream_opaque(
+def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
     tmp_path,
 ) -> None:
     data_path = tmp_path / "policies_selected.parquet"
@@ -721,7 +722,7 @@ def test_lazy_batch_model_score_uses_node_selected_columns_when_downstream_opaqu
                         "run_id": "run-123",
                         "task": "regression",
                         "output_column": "prediction",
-                        "selected_columns": ["quote_id", "prediction"],
+                        "selected_columns": ["quote_id", "prediction", "stale"],
                     },
                 ),
             ),
@@ -767,5 +768,5 @@ def test_lazy_batch_model_score_uses_node_selected_columns_when_downstream_opaqu
 
     result = outputs["output"].collect()
 
-    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b"]]
+    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b", "unused"]]
     assert result.columns == ["quote_id", "prediction"]
