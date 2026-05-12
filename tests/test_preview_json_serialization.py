@@ -164,6 +164,183 @@ def test_requested_preview_columns_project_rows_but_keep_full_schema(tmp_path) -
     ]
 
 
+def test_first_click_target_preview_caps_materialized_columns_but_keeps_schema(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import haute.executor as executor
+
+    monkeypatch.setattr(executor, "PREVIEW_INITIAL_COLUMN_LIMIT", 3)
+    executor._preview_cache.invalidate()
+    path = tmp_path / "wide_first_click.parquet"
+    pl.DataFrame({f"c{i}": [i] for i in range(5)}).write_parquet(path)
+
+    result = execute_graph(
+        PipelineGraph(nodes=[_source_node("src", str(path))]),
+        target_node_id="src",
+        target_preview_only=True,
+    )["src"]
+
+    assert [column.name for column in result.columns] == [f"c{i}" for i in range(5)]
+    assert result.column_count == 5
+    assert result.preview_columns == ["c0", "c1", "c2"]
+    assert result.preview == [{"c0": 0, "c1": 1, "c2": 2}]
+
+    fp = executor._preview_cache.fingerprint
+    assert fp is not None
+    cache_entry = executor._preview_cache.try_get(fp)
+    assert cache_entry is not None
+    assert cache_entry["eager_outputs"]["src"].columns == ["c0", "c1", "c2"]
+    assert [name for name, _dtype in cache_entry["output_columns"]["src"]] == [
+        f"c{i}" for i in range(5)
+    ]
+    executor._preview_cache.invalidate()
+
+
+def test_first_click_target_preview_does_not_collect_columns_beyond_initial_cap(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import haute.executor as executor
+
+    monkeypatch.setattr(executor, "PREVIEW_INITIAL_COLUMN_LIMIT", 2)
+    executor._preview_cache.invalidate()
+    path = tmp_path / "first_click_pushdown.parquet"
+    pl.DataFrame({"feature": [1, 2], "keep": [3, 4]}).write_parquet(path)
+
+    graph = PipelineGraph(
+        nodes=[
+            _source_node("source", str(path)),
+            GraphNode(
+                id="target",
+                data=NodeData(
+                    label="target",
+                    nodeType="polars",
+                    config={
+                        "code": """
+df = df.with_columns(
+    unused_bomb=pl.col("feature").map_elements(
+        lambda _value: (_ for _ in ()).throw(RuntimeError("unused column evaluated")),
+        return_dtype=pl.Int64,
+    )
+)
+""",
+                    },
+                ),
+            ),
+        ],
+        edges=[{"id": "source-target", "source": "source", "target": "target"}],
+    )
+
+    result = execute_graph(
+        graph,
+        target_node_id="target",
+        target_preview_only=True,
+    )["target"]
+
+    assert result.status == "ok"
+    assert [column.name for column in result.columns] == [
+        "feature",
+        "keep",
+        "unused_bomb",
+    ]
+    assert result.column_count == 3
+    assert result.preview_columns == ["feature", "keep"]
+    assert result.preview == [{"feature": 1, "keep": 3}, {"feature": 2, "keep": 4}]
+
+    fp = executor._preview_cache.fingerprint
+    assert fp is not None
+    cache_entry = executor._preview_cache.try_get(fp)
+    assert cache_entry is not None
+    assert cache_entry["eager_outputs"]["target"].columns == ["feature", "keep"]
+    assert [name for name, _dtype in cache_entry["output_columns"]["target"]] == [
+        "feature",
+        "keep",
+        "unused_bomb",
+    ]
+    executor._preview_cache.invalidate()
+
+
+def test_first_click_capped_cache_does_not_satisfy_broad_preview(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import haute.executor as executor
+
+    monkeypatch.setattr(executor, "PREVIEW_INITIAL_COLUMN_LIMIT", 2)
+    executor._preview_cache.invalidate()
+    path = tmp_path / "wide_then_broad.parquet"
+    pl.DataFrame({f"c{i}": [i] for i in range(5)}).write_parquet(path)
+    graph = PipelineGraph(nodes=[_source_node("src", str(path))])
+
+    first_click = execute_graph(
+        graph,
+        target_node_id="src",
+        target_preview_only=True,
+    )["src"]
+    assert first_click.preview_columns == ["c0", "c1"]
+
+    broad = execute_graph(
+        graph,
+        target_node_id="src",
+        target_preview_only=False,
+    )["src"]
+
+    assert broad.status == "ok"
+    assert [column.name for column in broad.columns] == [f"c{i}" for i in range(5)]
+    assert broad.preview_columns == [f"c{i}" for i in range(5)]
+    assert broad.preview == [{f"c{i}": i for i in range(5)}]
+
+    fp = executor._preview_cache.fingerprint
+    assert fp is not None
+    cache_entry = executor._preview_cache.try_get(fp)
+    assert cache_entry is not None
+    assert cache_entry["eager_outputs"]["src"].columns == [f"c{i}" for i in range(5)]
+    executor._preview_cache.invalidate()
+
+
+def test_target_only_preview_reports_upstream_error_on_target(tmp_path) -> None:
+    path = tmp_path / "upstream_error.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(path)
+    graph = PipelineGraph(
+        nodes=[
+            _source_node("source", str(path)),
+            GraphNode(
+                id="bad",
+                data=NodeData(
+                    label="bad",
+                    nodeType="polars",
+                    config={"code": 'raise RuntimeError("bad upstream schema")'},
+                ),
+            ),
+            GraphNode(
+                id="target",
+                data=NodeData(
+                    label="target",
+                    nodeType="polars",
+                    config={"code": "df = df"},
+                ),
+            ),
+        ],
+        edges=[
+            {"id": "source-bad", "source": "source", "target": "bad"},
+            {"id": "bad-target", "source": "bad", "target": "target"},
+        ],
+    )
+
+    result = execute_graph(
+        graph,
+        target_node_id="target",
+        target_preview_only=True,
+    )["target"]
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "Upstream node(s) failed" in result.error
+    assert "bad" in result.error
+    assert "bad upstream schema" in result.error
+
+
 def test_requested_preview_columns_fail_for_missing_columns(tmp_path) -> None:
     path = tmp_path / "wide.parquet"
     pl.DataFrame({"age": [25], "premium": [100.5]}).write_parquet(path)

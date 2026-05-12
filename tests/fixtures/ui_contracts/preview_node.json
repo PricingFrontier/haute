@@ -72,5 +72,59 @@
   "node_statuses": {
     "source": "ok",
     "score": "ok"
-  }
+  },
+  "node_columns": {
+    "source": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ],
+    "score": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ]
+  },
+  "node_available_columns": {
+    "source": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ],
+    "score": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ]
+  },
+  "node_schema_warnings": {
+    "source": [],
+    "score": [
+      {
+        "column": "premium",
+        "status": "computed"
+      }
+    ]
+  },
+  "execution_metrics": null
 }

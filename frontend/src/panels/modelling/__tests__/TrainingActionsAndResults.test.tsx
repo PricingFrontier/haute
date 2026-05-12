@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { TrainingActionsAndResults } from "../TrainingActionsAndResults"
 import type { TrainingActionsAndResultsProps } from "../TrainingActionsAndResults"
 import { makeTrainResult, makeTrainEstimate } from "../../../test-utils/factories"
+import { makeExecutionMetricsFixture } from "../../../testSupport/executionMetricsFixture"
 
 afterEach(cleanup)
 
@@ -102,6 +103,34 @@ describe("TrainingActionsAndResults", () => {
     })} />)
     expect(screen.getByText("Training failed")).toBeInTheDocument()
     expect(screen.getByText("Out of memory")).toBeInTheDocument()
+  })
+
+  it("shows structured terminal memory diagnostics when training failed", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
+      terminalMetrics: makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" }),
+    })} />)
+
+    expect(screen.getByText("Memory pressure reached 75% of the training budget.")).toBeInTheDocument()
+    expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
+  })
+
+  it("does not imply memory caused non-memory terminal training failures", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Feature contract mismatch" }),
+      terminalMetrics: makeExecutionMetricsFixture({
+        profile: "training_prep",
+        status: "running",
+        terminal_reason: null,
+      }),
+      terminalStatus: "contract_error",
+      terminalReason: "contract_error",
+    })} />)
+
+    expect(screen.getByText("Training failed")).toBeInTheDocument()
+    expect(screen.getByText("Feature contract mismatch")).toBeInTheDocument()
+    expect(screen.queryByText("Memory pressure reached 75% of the training budget.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
   })
 
   it("shows RAM estimate loading state", () => {

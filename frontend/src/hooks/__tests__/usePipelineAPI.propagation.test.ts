@@ -137,7 +137,12 @@ function makeControllablePreview() {
     string,
     { resolve: (v: unknown) => void; reject: (e: unknown) => void; source?: string; rowLimit?: number }
   >()
-  mockPreview.mockImplementation((graph: unknown, nodeId: string, rowLimit: number, source?: string) => {
+  mockPreview.mockImplementation(({
+    graph,
+    nodeId,
+    rowLimit,
+    source,
+  }: { graph: unknown; nodeId: string; rowLimit: number; source?: string }) => {
     callOrder.push(nodeId)
     const graphs = graphsByNode.get(nodeId) ?? []
     graphs.push(graph)
@@ -629,7 +634,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     const deferreds = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
     let maxConcurrentDownstream = 0
 
-    mockPreview.mockImplementation((_graph: unknown, nodeId: string) => {
+    mockPreview.mockImplementation(({ nodeId }: { nodeId: string }) => {
       callOrder.push(nodeId)
       if (nodeId !== "A") {
         activeDownstream.add(nodeId)

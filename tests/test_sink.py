@@ -42,13 +42,17 @@ def _sink_node(
     path: str = "",
     fmt: str = "parquet",
     label: str | None = None,
+    selected_columns: list[str] | None = None,
 ) -> GraphNode:
+    config = {"path": path, "format": fmt}
+    if selected_columns is not None:
+        config["selected_columns"] = selected_columns
     return GraphNode(
         id=nid,
         data=NodeData(
             label=label or nid,
             nodeType=NodeType.DATA_SINK,
-            config={"path": path, "format": fmt},
+            config=config,
         ),
     )
 
@@ -140,6 +144,35 @@ class TestExecuteSinkParquet:
         """Sink without explicit format defaults to parquet."""
         node = _sink_node("s", path="/tmp/out.parquet")
         assert node.data.config.get("format", "parquet") == "parquet"
+
+    def test_selected_columns_seed_lazy_projection(self, tmp_path):
+        """Sink selected_columns should feed the backend projection planner."""
+        from haute.executor import execute_sink
+
+        out_path = str(tmp_path / "output.parquet")
+        graph = _make_graph(
+            nodes=[
+                _source_node("s"),
+                _sink_node(
+                    "sink",
+                    path=out_path,
+                    fmt="parquet",
+                    selected_columns=["x", "z"],
+                ),
+            ],
+            edges=[_e("s", "sink")],
+        )
+        captured_kwargs = {}
+
+        def mock_execute_lazy(graph, build_fn, **kwargs):
+            captured_kwargs.update(kwargs)
+            lf = pl.DataFrame({"x": [1], "y": [2], "z": [3]}).lazy()
+            return {"sink": lf}, ["s", "sink"], {}, {}
+
+        with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
+            execute_sink(graph, "sink")
+
+        assert captured_kwargs["required_columns_by_node"] == {"sink": frozenset({"x", "z"})}
 
 
 class TestExecuteSinkCSV:

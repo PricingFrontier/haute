@@ -5,6 +5,7 @@ import {
   parseApplyOptimiserResponse,
   parseDissolveSubmodelResponse,
   parseFrontierAutoRangeResponse,
+  parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -38,6 +39,102 @@ import {
   parseUtilityWriteResponse,
 } from "../guards"
 
+function executionMetricsFixture() {
+  return {
+    schema_version: 1,
+    operation: "pipeline_preview",
+    profile: "preview_eager",
+    job_id: "job-1",
+    status: "completed",
+    terminal_reason: null,
+    stage_count: 1,
+    retained_stage_count: 1,
+    truncated_stage_count: 0,
+    stages_truncated: false,
+    total_elapsed_ms: 12.5,
+    node_elapsed_ms: { score: 12.5 },
+    stage_elapsed_ms: { collect: 12.5 },
+    rss_start_bytes: 1000,
+    rss_end_bytes: 1800,
+    rss_delta_bytes: 800,
+    rss_peak_bytes: 1800,
+    max_rss_bytes: 1800,
+    n_collects: 1,
+    n_checkpoints: 2,
+    memory_pressure_event_count: 1,
+    retained_memory_pressure_event_count: 1,
+    truncated_memory_pressure_event_count: 0,
+    memory_pressure_events_truncated: false,
+    memory_limit_bytes: 2000,
+    memory_baseline_bytes: 1000,
+    rss_limit_bytes: 3000,
+    admission: {
+      admitted: true,
+      operation: "pipeline_preview",
+      profile: "preview_eager",
+      memory_limit_bytes: 2000,
+      rss_at_admission_bytes: 1000,
+      rss_limit_bytes: 3000,
+      process_rss_limit_bytes: null,
+      headroom_bytes: 2000,
+      config_key: "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+      budget_policy: "adaptive_local",
+      available_ram_bytes: 8000,
+      os_reserve_bytes: 2000,
+      reason: "within_memory_budget",
+    },
+    stages: [
+      {
+        schema_version: 1,
+        name: "collect",
+        operation: "pipeline_preview",
+        profile: "preview_eager",
+        elapsed_ms: 12.5,
+        node_id: "score",
+        job_id: "job-1",
+        rss_start_bytes: 1000,
+        rss_end_bytes: 1800,
+        rss_delta_bytes: 800,
+        rss_peak_bytes: 1800,
+        rows_in: 10,
+        rows_out: 2,
+        bytes_read: 512,
+        bytes_written: 128,
+        columns_scanned: 4,
+        n_collects: 1,
+        n_checkpoints: 2,
+      },
+    ],
+    memory_pressure_events: [
+      {
+        schema_version: 1,
+        event: "memory_pressure",
+        operation: "pipeline_preview",
+        profile: "preview_eager",
+        job_id: "job-1",
+        node_id: "score",
+        stage: "collect",
+        label: "after_collect",
+        threshold_ratio: 0.75,
+        threshold_percent: 75,
+        rss_bytes: 1750,
+        rss_limit_bytes: 3000,
+        headroom_bytes: 2000,
+        headroom_used_bytes: 1500,
+        rss_peak_bytes: 1800,
+        memory_limit_bytes: 2000,
+        memory_baseline_bytes: 1000,
+        baseline_rss_bytes: 1000,
+        budget_policy: "adaptive_local",
+        config_key: "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+        available_ram_bytes: 8000,
+        os_reserve_bytes: 2000,
+        pressure_ratio: 0.75,
+      },
+    ],
+  }
+}
+
 describe("API response guards", () => {
   it("parses savePipeline responses with warnings", () => {
     const parsed = parseSavePipelineResponse(loadUiContractFixture("save_pipeline"))
@@ -66,6 +163,18 @@ describe("API response guards", () => {
     expect(parsed.preview_row_limit).toBe(10_000)
     expect(parsed.preview_truncated).toBe(false)
     expect(parsed.preview_columns).toEqual(["premium", "segment"])
+  })
+
+  it("preserves typed execution metrics on preview responses", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
+    expect(parsed.execution_metrics?.admission?.available_ram_bytes).toBe(8000)
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.pressure_ratio).toBe(0.75)
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.budget_policy).toBe("adaptive_local")
   })
 
   it("rejects malformed preview node ids", () => {
@@ -236,11 +345,31 @@ describe("API response guards", () => {
     expect(parsed.train_loss.learn).toBe(0.1)
   })
 
+  it("preserves typed execution metrics on train status responses", () => {
+    const parsed = parseTrainStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.threshold_percent).toBe(75)
+  })
+
   it("parses optimiser status responses with completed solve payloads", () => {
     const parsed = parseOptimiserStatusResponse(loadUiContractFixture("optimiser_status_response"))
 
     expect(parsed.result?.lambdas.loss).toBe(0.3)
     expect(parsed.frontier?.constraint_names).toEqual(["loss"])
+  })
+
+  it("preserves typed execution metrics on optimiser status responses", () => {
+    const parsed = parseOptimiserStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.admission?.os_reserve_bytes).toBe(2000)
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.headroom_used_bytes).toBe(1500)
   })
 
   it("preserves optimiser status frontier errors", () => {
@@ -313,6 +442,37 @@ describe("API response guards", () => {
     expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
     expect(frontierAutoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+    expect(parseFrontierAutoRangeStatusResponse({
+      status: "superseded",
+      progress: 0.25,
+      message: "Superseded by a newer request.",
+      elapsed_seconds: 1.5,
+      result: null,
+      execution_metrics: executionMetricsFixture(),
+    }).status).toBe("superseded")
+    const contractErrorStatus = parseFrontierAutoRangeStatusResponse({
+      status: "contract_error",
+      progress: 1,
+      message: "Frontier auto range cannot run in bounded streaming mode",
+      elapsed_seconds: 2.5,
+      result: null,
+      terminal_reason: "contract_error",
+      error_code: "contract_error",
+      http_status_code: 422,
+      error_detail: "Fan-in projection contract does not cover columns required by the node.",
+    })
+    expect(contractErrorStatus.status).toBe("contract_error")
+    expect(contractErrorStatus.terminal_reason).toBe("contract_error")
+    expect(contractErrorStatus.error_code).toBe("contract_error")
+    expect(contractErrorStatus.http_status_code).toBe(422)
+    expect(parseFrontierAutoRangeStatusResponse({
+      status: "completed",
+      progress: 1,
+      message: "done",
+      elapsed_seconds: 2.5,
+      result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
+      execution_metrics: executionMetricsFixture(),
+    }).execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
     expect(parseFrontierResponse({
       status: "ok",
       points: [{ total_objective: 1 }],
@@ -324,6 +484,38 @@ describe("API response guards", () => {
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
+  })
+
+  it("rejects malformed execution metric pressure and admission fields", () => {
+    const metrics = executionMetricsFixture()
+
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...metrics,
+          admission: {
+            ...metrics.admission,
+            budget_policy: 42,
+          },
+        },
+      }),
+    ).toThrow(/budget_policy/i)
+
+    expect(() =>
+      parseOptimiserStatusResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
+        execution_metrics: {
+          ...metrics,
+          memory_pressure_events: [
+            {
+              ...metrics.memory_pressure_events[0],
+              pressure_ratio: "high",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/pressure_ratio/i)
   })
 
   it("parses utility response payloads", () => {

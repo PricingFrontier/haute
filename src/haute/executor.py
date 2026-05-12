@@ -13,6 +13,7 @@ can optimise the full plan end-to-end.
 from __future__ import annotations
 
 import ast as _ast
+import contextlib
 import ctypes
 import functools
 import gc
@@ -45,6 +46,7 @@ from haute._cache import (
     preamble_execution_fingerprint,
     preamble_imports_utility,
 )
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
@@ -62,7 +64,13 @@ from haute.graph_utils import (
     ancestors,
     graph_fingerprint,
 )
-from haute.schemas import ColumnInfo, NodeResult, SchemaWarning, SinkResponse
+from haute.schemas import (
+    ColumnInfo,
+    ExecutionMetricsPayload,
+    NodeResult,
+    SchemaWarning,
+    SinkResponse,
+)
 
 logger = get_logger(component="executor")
 
@@ -96,6 +104,11 @@ PREVIEW_CACHE_MAX_BYTES = _positive_int_from_env(
 """Maximum retained bytes for materialized preview DataFrames."""
 PREVIEW_MAX_CELLS = _positive_int_from_env("HAUTE_PREVIEW_MAX_CELLS", 50_000)
 """Maximum cells converted to JSON rows for a single node preview."""
+PREVIEW_INITIAL_COLUMN_LIMIT = _positive_int_from_env(
+    "HAUTE_PREVIEW_INITIAL_COLUMN_LIMIT",
+    200,
+)
+"""Maximum first-click preview columns when the frontend has no cached schema."""
 
 # Module-level toggle for column-contract enforcement.  ``True`` by
 # default: contract mismatches should fail loudly.  Benchmarks may
@@ -145,6 +158,15 @@ class PreambleError(HauteError):
 
 class PreviewProjectionError(ValueError):
     """Requested preview columns cannot be projected from the target DataFrame."""
+
+
+def _execution_stage(
+    execution_context: ExecutionContext | None,
+    name: str,
+) -> contextlib.AbstractContextManager[None]:
+    if execution_context is None:
+        return contextlib.nullcontext()
+    return execution_context.stage(name)
 
 
 # Cache compiled preamble results by (content, pipeline_dir, execution
@@ -544,6 +566,130 @@ def _normalise_requested_preview_columns(
     ]
 
 
+def _normalise_requested_preview_columns_for_execution(
+    node_data: NodeData,
+    requested_preview_columns: list[str] | None,
+) -> list[str] | None:
+    """Normalise request aliases before eager projection has a DataFrame.
+
+    ``_normalise_requested_preview_columns`` can inspect the collected
+    target frame.  The eager executor needs an earlier, schema-only seed, so
+    it applies only config-derived aliases whose target names are explicit.
+    """
+    if requested_preview_columns is None:
+        return None
+    if node_data.nodeType != NodeType.OPTIMISER_APPLY:
+        return requested_preview_columns
+
+    configured_column = node_data.config.get("optimised_value_column", "")
+    if not configured_column or configured_column in _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS:
+        return requested_preview_columns
+
+    columns: list[str] = []
+    seen: set[str] = set()
+    for column in requested_preview_columns:
+        candidates = (
+            (column, configured_column)
+            if column in _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS
+            else (column,)
+        )
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            columns.append(candidate)
+    return columns
+
+
+def _preview_required_columns_by_node(
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    requested_preview_columns: list[str] | None,
+) -> dict[str, list[str]] | None:
+    """Return eager projection seeds for a target preview-column request."""
+    if target_node_id is None or requested_preview_columns is None:
+        return None
+    if not requested_preview_columns:
+        raise PreviewProjectionError("requested_preview_columns must contain at least one column")
+    if any(not isinstance(column, str) or not column for column in requested_preview_columns):
+        raise PreviewProjectionError("requested_preview_columns cannot contain empty names")
+
+    node = graph.node_map.get(target_node_id)
+    if node is None:
+        return None
+
+    columns = _normalise_requested_preview_columns_for_execution(
+        node.data,
+        requested_preview_columns,
+    )
+    if not columns:
+        return None
+    return {target_node_id: columns}
+
+
+def _preview_projection_cache_suffix(
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    requested_preview_columns: list[str] | None,
+    *,
+    target_preview_only: bool = False,
+    initial_column_limit: int | None = None,
+) -> str:
+    """Cache-key suffix for projected preview materialisations."""
+    parts: list[str] = []
+    if target_preview_only and target_node_id is not None:
+        parts.append(f":preview_target_only={target_node_id!r}")
+        if requested_preview_columns is None:
+            parts.append(f":initial_col_limit={initial_column_limit!r}")
+    if target_node_id is not None and requested_preview_columns is not None:
+        parts.append(f":preview_target={target_node_id!r}")
+        parts.append(f":preview_cols={tuple(requested_preview_columns)!r}")
+    return "".join(parts)
+
+
+def _cache_has_required_materialization(
+    *,
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    requested_preview_columns: list[str] | None,
+    required_materialized_nodes: set[str],
+    materialize_column_limits_by_node: dict[str, int] | None,
+    cached_outputs: dict[str, pl.DataFrame],
+    cached_output_columns: dict[str, list[tuple[str, str]]],
+) -> bool:
+    node_map = graph.node_map
+    column_limits = materialize_column_limits_by_node or {}
+    for node_id in required_materialized_nodes:
+        df = cached_outputs.get(node_id)
+        if df is None:
+            return False
+        full_columns = [name for name, _dtype in cached_output_columns.get(node_id, [])]
+
+        if requested_preview_columns is not None and node_id == target_node_id:
+            node = node_map.get(node_id)
+            if node is None:
+                return False
+            try:
+                required_columns = _preview_projection_columns(
+                    df,
+                    _normalise_requested_preview_columns(
+                        node.data,
+                        df,
+                        requested_preview_columns,
+                    ),
+                )
+            except PreviewProjectionError:
+                return False
+        elif node_id in column_limits and full_columns:
+            required_columns = full_columns[: column_limits[node_id]]
+        else:
+            required_columns = full_columns or list(df.columns)
+
+        if not set(required_columns) <= set(df.columns):
+            return False
+    return True
+
+
 _preview_cache = FingerprintCache(
     slots=(
         "eager_outputs",
@@ -553,6 +699,7 @@ _preview_cache = FingerprintCache(
         "memory_bytes",
         "error_lines",
         "available_columns",
+        "output_columns",
     ),
     max_bytes=PREVIEW_CACHE_MAX_BYTES,
     size_of=_estimate_preview_cache_entry_bytes,
@@ -632,6 +779,8 @@ def execute_graph(
     *,
     target_preview_only: bool = False,
     requested_preview_columns: list[str] | None = None,
+    include_schema_metadata: bool = False,
+    execution_context: ExecutionContext | None = None,
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -658,6 +807,9 @@ def execute_graph(
             preview route uses this to avoid serialising unused cached
             DataFrames when switching from a downstream result panel back
             to an upstream table.
+        include_schema_metadata: If ``True`` with ``target_preview_only``,
+            include schema/status/timing metadata for relevant non-materialised
+            ancestors while still building preview rows only for the target.
 
     Returns:
         Dict mapping node_id → {
@@ -678,35 +830,85 @@ def execute_graph(
     # computed under a different enforcement mode.  Without this, the
     # contract-overhead benchmark measures cache-hit-vs-cache-hit.
     fingerprint_memo = GraphFingerprintMemo()
+    preview_required_columns = _preview_required_columns_by_node(
+        graph,
+        target_node_id,
+        requested_preview_columns,
+    )
+    preview_materialize_node_ids: frozenset[str] | None = (
+        frozenset({target_node_id}) if target_preview_only and target_node_id is not None else None
+    )
+    preview_materialize_column_limits: dict[str, int] | None = (
+        {target_node_id: PREVIEW_INITIAL_COLUMN_LIMIT}
+        if (
+            target_preview_only and target_node_id is not None and requested_preview_columns is None
+        )
+        else None
+    )
+    preview_cache_suffix = _preview_projection_cache_suffix(
+        graph,
+        target_node_id,
+        requested_preview_columns,
+        target_preview_only=target_preview_only,
+        initial_column_limit=(
+            PREVIEW_INITIAL_COLUMN_LIMIT
+            if target_preview_only and requested_preview_columns is None
+            else None
+        ),
+    )
     fp = graph_fingerprint(
         graph,
-        f"{row_limit}:{source}:contracts={int(enforce_contracts)}",
+        (f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}"),
         memo=fingerprint_memo,
     )
 
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
     avail_cols: dict[str, list[tuple[str, str]]] = {}
+    output_cols: dict[str, list[tuple[str, str]]] = {}
+    preview_entry_pinned = False
 
     # Check if we can extend the cache (same graph, new target is a superset)
-    cached = _preview_cache.try_get(fp)
+    with _execution_stage(execution_context, "preview_cache_lookup"):
+        cached = _preview_cache.try_get(fp)
     if cached is not None:
         prev_outputs = cached["eager_outputs"]
-        if target_node_id is None or target_node_id in prev_outputs:
-            # Full cache hit — all required nodes already materialised
-            logger.debug(
-                "preview_cache_hit",
-                fingerprint=fp[:8],
-                target=target_node_id,
-                cached_nodes=len(prev_outputs),
+        cached_order = cached["order"]
+        required_materialized_nodes = (
+            set(cached_order)
+            if preview_materialize_node_ids is None
+            else set(preview_materialize_node_ids)
+        )
+        cache_satisfies_request = (
+            (target_node_id is None or target_node_id in prev_outputs)
+            and required_materialized_nodes <= set(prev_outputs)
+            and _cache_has_required_materialization(
+                graph=graph,
+                target_node_id=target_node_id,
+                requested_preview_columns=requested_preview_columns,
+                required_materialized_nodes=required_materialized_nodes,
+                materialize_column_limits_by_node=preview_materialize_column_limits,
+                cached_outputs=prev_outputs,
+                cached_output_columns=cached["output_columns"],
             )
-            eager_outputs = prev_outputs
-            order = cached["order"]
-            errors = cached["errors"]
-            timings = cached["timings"]
-            memory_bytes = cached["memory_bytes"]
-            error_lines = cached["error_lines"]
-            avail_cols = cached["available_columns"]
+        )
+        if cache_satisfies_request:
+            # Full cache hit — all required nodes already materialised
+            with _execution_stage(execution_context, "preview_cache_hit"):
+                logger.debug(
+                    "preview_cache_hit",
+                    fingerprint=fp[:8],
+                    target=target_node_id,
+                    cached_nodes=len(prev_outputs),
+                )
+                eager_outputs = prev_outputs
+                order = cached_order
+                errors = cached["errors"]
+                timings = cached["timings"]
+                memory_bytes = cached["memory_bytes"]
+                error_lines = cached["error_lines"]
+                avail_cols = cached["available_columns"]
+                output_cols = cached["output_columns"]
         else:
             # Partial hit — extend with newly-needed nodes
             logger.debug(
@@ -715,16 +917,28 @@ def execute_graph(
                 target=target_node_id,
                 cached_nodes=len(prev_outputs),
             )
-            (raw_outputs, order, errors, timings, memory_bytes, error_lines, avail_cols) = (
-                _eager_execute(
+            with _execution_stage(execution_context, "preview_cache_extend"):
+                (
+                    raw_outputs,
+                    order,
+                    errors,
+                    timings,
+                    memory_bytes,
+                    error_lines,
+                    avail_cols,
+                    output_cols,
+                ) = _eager_execute(
                     graph,
                     target_node_id,
                     row_limit,
                     source=source,
                     enforce_contracts=enforce_contracts,
                     fingerprint_memo=fingerprint_memo,
+                    required_columns_by_node=preview_required_columns,
+                    materialize_node_ids=preview_materialize_node_ids,
+                    materialize_column_limits_by_node=preview_materialize_column_limits,
+                    execution_context=execution_context,
                 )
-            )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
             # Fresh eager outputs win over prev_outputs for any overlap:
             # the prev_outputs may contain stale entries for nodes that were
@@ -738,6 +952,7 @@ def execute_graph(
             merged_memory = {**cached["memory_bytes"], **memory_bytes}
             merged_error_lines = {**cached["error_lines"], **error_lines}
             merged_avail = {**cached["available_columns"], **avail_cols}
+            merged_output_cols = {**cached["output_columns"], **output_cols}
             merged_order = list(dict.fromkeys(cached["order"] + order))
             # A node that re-executed successfully in the extend path must
             # clear any stale cached error from an earlier transient failure.
@@ -754,14 +969,17 @@ def execute_graph(
                 memory_bytes=merged_memory,
                 error_lines=merged_error_lines,
                 available_columns=merged_avail,
+                output_columns=merged_output_cols,
             )
             _preview_cache.pin(fp)
+            preview_entry_pinned = True
             eager_outputs = merged
             errors = merged_errors
             timings = merged_timings
             memory_bytes = merged_memory
             error_lines = merged_error_lines
             avail_cols = merged_avail
+            output_cols = merged_output_cols
             order = merged_order
     else:
         # Complete cache miss — execute from scratch
@@ -771,14 +989,28 @@ def execute_graph(
             target=target_node_id,
             prev_fingerprint=(_preview_cache.fingerprint or "")[:8],
         )
-        raw_outputs, order, errors, timings, memory_bytes, error_lines, avail_cols = _eager_execute(
-            graph,
-            target_node_id,
-            row_limit,
-            source=source,
-            enforce_contracts=enforce_contracts,
-            fingerprint_memo=fingerprint_memo,
-        )
+        with _execution_stage(execution_context, "preview_cache_miss"):
+            (
+                raw_outputs,
+                order,
+                errors,
+                timings,
+                memory_bytes,
+                error_lines,
+                avail_cols,
+                output_cols,
+            ) = _eager_execute(
+                graph,
+                target_node_id,
+                row_limit,
+                source=source,
+                enforce_contracts=enforce_contracts,
+                fingerprint_memo=fingerprint_memo,
+                required_columns_by_node=preview_required_columns,
+                materialize_node_ids=preview_materialize_node_ids,
+                materialize_column_limits_by_node=preview_materialize_column_limits,
+                execution_context=execution_context,
+            )
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
         _preview_cache.store(
             fp,
@@ -789,122 +1021,172 @@ def execute_graph(
             memory_bytes=memory_bytes,
             error_lines=error_lines,
             available_columns=avail_cols,
+            output_columns=output_cols,
         )
-        # Pin this entry so the trace can always reuse the exact same
-        # DataFrames.  Prevents LRU eviction between preview and trace.
+        # Pin this entry through result serialisation so it cannot be
+        # evicted while the caller is still building the response. Full
+        # preview entries may later be reused by trace; target-only
+        # entries intentionally retain only the selected node.
         _preview_cache.pin(fp)
+        preview_entry_pinned = True
 
-    # Pre-compute schema warnings for instance nodes by comparing the
-    # columns available at the instance's inputs vs the original's inputs.
-    node_map = graph.node_map
-    parents_of = graph.parents_of
-    result_order = (
-        _result_order_for_target(graph, order, target_node_id, source)
-        if target_preview_only
-        else order
-    )
-    preview_node_ids = (
-        {target_node_id}
-        if target_preview_only and target_node_id is not None
-        else set(result_order)
-    )
-
-    schema_warnings: dict[str, list[SchemaWarning]] = {}
-    for nid in result_order:
-        ref = node_map[nid].data.config.get("instanceOf")
-        if not ref or ref not in node_map:
-            continue
-        # Columns feeding into the original node
-        orig_input_cols: set[str] = set()
-        for pid in parents_of.get(ref, []):
-            df = eager_outputs.get(pid)
-            if df is not None:
-                orig_input_cols.update(df.columns)
-        # Columns feeding into the instance node
-        inst_input_cols: set[str] = set()
-        for pid in parents_of.get(nid, []):
-            df = eager_outputs.get(pid)
-            if df is not None:
-                inst_input_cols.update(df.columns)
-        missing = orig_input_cols - inst_input_cols
-        if missing:
-            schema_warnings[nid] = [
-                SchemaWarning(column=c, status="missing") for c in sorted(missing)
-            ]
-
-    results: dict[str, NodeResult] = {}
-    for nid in result_order:
-        if nid in errors:
-            results[nid] = NodeResult(
-                status="error",
-                error=errors[nid],
-                error_line=error_lines.get(nid),
-                timing_ms=timings.get(nid, 0),
-                memory_bytes=memory_bytes.get(nid, 0),
-                schema_warnings=schema_warnings.get(nid, []),
+    try:
+        # Pre-compute schema warnings for instance nodes by comparing the
+        # columns available at the instance's inputs vs the original's inputs.
+        node_map = graph.node_map
+        parents_of = graph.parents_of
+        if target_preview_only and not include_schema_metadata:
+            result_order = (
+                [target_node_id]
+                if target_node_id is not None and target_node_id in node_map
+                else []
             )
-            continue
-        df = eager_outputs.get(nid)
-        if df is None:
-            results[nid] = NodeResult(
-                status="error",
-                error="No output",
-                timing_ms=timings.get(nid, 0),
-                memory_bytes=memory_bytes.get(nid, 0),
-            )
-            continue
-        columns = [ColumnInfo(name=c, dtype=str(df[c].dtype)) for c in df.columns]
-        # available_columns = full column set before selected_columns filtering
-        avail = avail_cols.get(nid)
-        avail_col_infos = [ColumnInfo(name=n, dtype=d) for n, d in avail] if avail else columns
-
-        # Stale column detection: columns referenced in config but not
-        # present in the upstream available columns.
-        node_data = node_map[nid].data
-        config_refs = _extract_column_refs(node_data.config)
-        node_warnings = list(schema_warnings.get(nid, []))
-        if config_refs and avail_col_infos:
-            available_names = {c.name for c in avail_col_infos}
-            stale = config_refs - available_names
-            if stale:
-                node_warnings.extend(SchemaWarning(column=c, status="stale") for c in sorted(stale))
-
-        if nid in preview_node_ids:
-            preview_columns = _preview_projection_columns(
-                df,
-                _normalise_requested_preview_columns(
-                    node_data,
-                    df,
-                    requested_preview_columns,
-                ),
-            )
-            preview_row_limit = _preview_row_limit_for_width(max_preview_rows, len(preview_columns))
-            preview = df.select(preview_columns).head(preview_row_limit).to_dicts()
+        elif target_preview_only:
+            result_order = _result_order_for_target(graph, order, target_node_id, source)
         else:
-            preview_columns = []
-            preview_row_limit = None
-            preview = []
-
-        results[nid] = NodeResult(
-            status="ok",
-            row_count=len(df),
-            column_count=len(df.columns),
-            columns=columns,
-            available_columns=avail_col_infos,
-            preview=preview,
-            preview_columns=preview_columns,
-            preview_row_count=len(preview),
-            preview_row_limit=preview_row_limit,
-            preview_truncated=preview_row_limit is not None and len(df) > len(preview),
-            timing_ms=timings.get(nid, 0),
-            memory_bytes=memory_bytes.get(nid, 0),
-            schema_warnings=node_warnings,
+            result_order = order
+        preview_node_ids = (
+            {target_node_id}
+            if target_preview_only and target_node_id is not None
+            else set(result_order)
         )
 
-    # Release the pin now that results have been built from the cached
-    # DataFrames.  The entry remains in the LRU cache but is no longer
-    # exempt from eviction, preventing unbounded memory growth.
-    _preview_cache.unpin(fp)
+        schema_warnings: dict[str, list[SchemaWarning]] = {}
+
+        def _cached_output_names(node_id: str) -> set[str]:
+            cached = output_cols.get(node_id)
+            if cached:
+                return {name for name, _dtype in cached}
+            df = eager_outputs.get(node_id)
+            return set(df.columns) if df is not None else set()
+
+        for nid in result_order:
+            ref = node_map[nid].data.config.get("instanceOf")
+            if not ref or ref not in node_map:
+                continue
+            # Columns feeding into the original node
+            orig_input_cols: set[str] = set()
+            for pid in parents_of.get(ref, []):
+                orig_input_cols.update(_cached_output_names(pid))
+            # Columns feeding into the instance node
+            inst_input_cols: set[str] = set()
+            for pid in parents_of.get(nid, []):
+                inst_input_cols.update(_cached_output_names(pid))
+            missing = orig_input_cols - inst_input_cols
+            if missing:
+                schema_warnings[nid] = [
+                    SchemaWarning(column=c, status="missing") for c in sorted(missing)
+                ]
+
+        def _column_infos_for_node(
+            node_id: str,
+            df: pl.DataFrame | None,
+        ) -> tuple[list[ColumnInfo], list[ColumnInfo]]:
+            full_output = output_cols.get(node_id)
+            if full_output is not None:
+                columns = [ColumnInfo(name=n, dtype=d) for n, d in full_output]
+            elif df is not None:
+                columns = [ColumnInfo(name=c, dtype=str(df[c].dtype)) for c in df.columns]
+            else:
+                columns = []
+
+            # available_columns = full column set before selected_columns filtering
+            avail = avail_cols.get(node_id)
+            available = [ColumnInfo(name=n, dtype=d) for n, d in avail] if avail else columns
+            return columns, available
+
+        def _node_schema_warnings(
+            node_id: str,
+            available: list[ColumnInfo],
+        ) -> list[SchemaWarning]:
+            node_data = node_map[node_id].data
+            config_refs = _extract_column_refs(node_data.config)
+            node_warnings = list(schema_warnings.get(node_id, []))
+            if config_refs and available:
+                available_names = {c.name for c in available}
+                stale = config_refs - available_names
+                if stale:
+                    node_warnings.extend(
+                        SchemaWarning(column=c, status="stale") for c in sorted(stale)
+                    )
+            return node_warnings
+
+        results: dict[str, NodeResult] = {}
+        for nid in result_order:
+            if nid in errors:
+                results[nid] = NodeResult(
+                    status="error",
+                    error=errors[nid],
+                    error_line=error_lines.get(nid),
+                    timing_ms=timings.get(nid, 0),
+                    memory_bytes=memory_bytes.get(nid, 0),
+                    schema_warnings=schema_warnings.get(nid, []),
+                )
+                continue
+            df = eager_outputs.get(nid)
+            columns, avail_col_infos = _column_infos_for_node(nid, df)
+            node_warnings = _node_schema_warnings(nid, avail_col_infos)
+            if df is None:
+                if columns and nid not in preview_node_ids:
+                    results[nid] = NodeResult(
+                        status="ok",
+                        column_count=len(columns),
+                        columns=columns,
+                        available_columns=avail_col_infos,
+                        timing_ms=timings.get(nid, 0),
+                        memory_bytes=memory_bytes.get(nid, 0),
+                        schema_warnings=node_warnings,
+                    )
+                    continue
+                results[nid] = NodeResult(
+                    status="error",
+                    error="No output",
+                    timing_ms=timings.get(nid, 0),
+                    memory_bytes=memory_bytes.get(nid, 0),
+                )
+                continue
+            node_data = node_map[nid].data
+
+            if nid in preview_node_ids:
+                preview_columns = _preview_projection_columns(
+                    df,
+                    _normalise_requested_preview_columns(
+                        node_data,
+                        df,
+                        requested_preview_columns,
+                    ),
+                )
+                preview_row_limit = _preview_row_limit_for_width(
+                    max_preview_rows,
+                    len(preview_columns),
+                )
+                preview = df.select(preview_columns).head(preview_row_limit).to_dicts()
+            else:
+                preview_columns = []
+                preview_row_limit = None
+                preview = []
+
+            results[nid] = NodeResult(
+                status="ok",
+                row_count=len(df),
+                column_count=len(columns),
+                columns=columns,
+                available_columns=avail_col_infos,
+                preview=preview,
+                preview_columns=preview_columns,
+                preview_row_count=len(preview),
+                preview_row_limit=preview_row_limit,
+                preview_truncated=preview_row_limit is not None and len(df) > len(preview),
+                timing_ms=timings.get(nid, 0),
+                memory_bytes=memory_bytes.get(nid, 0),
+                schema_warnings=node_warnings,
+            )
+    finally:
+        # Release the pin even when result serialisation/projection fails.
+        # The entry remains in the LRU cache but is no longer exempt from
+        # eviction, preventing exception paths from leaking pinned frames.
+        if preview_entry_pinned:
+            _preview_cache.unpin(fp)
 
     error_count = sum(1 for r in results.values() if r.status == "error")
     logger.info(
@@ -923,6 +1205,10 @@ def _eager_execute(
     source: str = "live",
     enforce_contracts: bool = True,
     fingerprint_memo: GraphFingerprintMemo | None = None,
+    required_columns_by_node: dict[str, list[str]] | None = None,
+    materialize_node_ids: set[str] | frozenset[str] | None = None,
+    materialize_column_limits_by_node: dict[str, int] | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> tuple[
     dict[str, pl.DataFrame | None],
     list[str],
@@ -931,16 +1217,18 @@ def _eager_execute(
     dict[str, int],
     dict[str, int],
     dict[str, list[tuple[str, str]]],
+    dict[str, list[tuple[str, str]]],
 ]:
     """Execute the graph eagerly in topo order.
 
     Returns (outputs, order, errors, timings, memory_bytes, error_lines,
-    available_columns) where errors maps node_id → message for nodes that
+    available_columns, output_columns) where errors maps node_id → message for nodes that
     failed, timings maps node_id → execution milliseconds, memory_bytes maps
     node_id → output DataFrame size in bytes, error_lines maps
     node_id → 1-based line number in user code for the error, and
     available_columns maps node_id → list of (name, dtype) pairs before
-    any selected_columns filtering.
+    any selected_columns filtering. output_columns maps node_id → the full
+    post-selected/post-renamed schema before any preview execution projection.
     """
     preamble_error: str | None = None
     try:
@@ -966,6 +1254,10 @@ def _eager_execute(
         preamble_ns=preamble_ns or None,
         source=source,
         enforce_contracts=enforce_contracts,
+        required_columns_by_node=required_columns_by_node,
+        materialize_node_ids=materialize_node_ids,
+        materialize_column_limits_by_node=materialize_column_limits_by_node,
+        execution_context=execution_context,
     )
     errors = result.errors
     if preamble_error:
@@ -985,6 +1277,7 @@ def _eager_execute(
         result.memory_bytes,
         result.error_lines,
         result.available_columns,
+        result.output_columns,
     )
 
 
@@ -1014,7 +1307,14 @@ def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:
     return batch_scenario
 
 
-def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") -> SinkResponse:
+def execute_sink(
+    graph: PipelineGraph,
+    sink_node_id: str,
+    source: str = "live",
+    *,
+    execution_context: ExecutionContext | None = None,
+    streaming_chunk_size: int | None = None,
+) -> SinkResponse:
     """Execute the pipeline up to a sink node and write its input to disk.
 
     Sinks are batch-only — they always run with a non-``"live"`` source
@@ -1023,10 +1323,9 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
     source-switch routing) but is coerced away from ``"live"`` for scoring.
 
     Uses Polars streaming sinks (``sink_parquet`` / ``sink_csv``) so the
-    full dataset is never materialised in memory at once.  Falls back to
-    ``collect(engine="streaming")`` + eager write if the streaming sink raises
-    (e.g. when the plan contains an operation that doesn't support the
-    streaming engine).
+    full dataset is never materialised in memory at once. If Polars cannot
+    sink the plan in streaming mode, the sink fails loudly instead of
+    broadening to an eager collect.
 
     This is called on-demand (not during normal run/preview).
     Returns a ``SinkResponse`` with row count and output path.
@@ -1038,9 +1337,26 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
     config = sink_node.data.config
     path = config.get("path", "")
     fmt = config.get("format", "parquet")
+    selected_columns = config.get("selected_columns")
 
     if not path:
         raise ValueError("Sink node has no output path configured")
+    if execution_context is None:
+        execution_context = ExecutionContext(
+            operation="pipeline_sink",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+
+    required_columns_by_node: dict[str, frozenset[str]] | None = None
+    if selected_columns:
+        if isinstance(selected_columns, str | bytes):
+            raise ValueError("Sink selected_columns must be a list of column names")
+        selected_seed: set[str] = set()
+        for column in selected_columns:
+            if not isinstance(column, str) or not column:
+                raise ValueError("Sink selected_columns must contain non-empty string names")
+            selected_seed.add(column)
+        required_columns_by_node = {sink_node_id: frozenset(selected_seed)}
 
     path = _resolve_sink_path(path, fmt)
 
@@ -1054,7 +1370,12 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
     else:
         sink_scenario = source
 
-    from haute._polars_utils import _malloc_trim, safe_sink
+    from haute._polars_utils import (
+        DEFAULT_STREAMING_CHUNK_SIZE,
+        _malloc_trim,
+        bounded_sink,
+        streaming_collect,
+    )
 
     # Create a temp directory for join checkpoints.  Multi-input nodes
     # are sunk to parquet here so Polars sees each join as an independent
@@ -1062,16 +1383,6 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
     # The directory (and all checkpoint files) is cleaned up in finally.
     tmp_dir = tempfile.mkdtemp(prefix="haute_sink_")
     checkpoint_path = Path(tmp_dir)
-
-    # Reduce streaming chunk size for sink operations to lower per-step
-    # peak memory.  The default is auto-sized and can be too aggressive
-    # for wide schemas (100+ columns).
-    # NOTE: pl.Config is process-global — not thread-safe for concurrent
-    # sinks.  This is acceptable because sinks run sequentially (GUI is
-    # single-user, CLI `run` is sequential, background jobs don't use
-    # execute_sink).
-    _prev_chunk_size = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-    pl.Config.set_streaming_chunk_size(50_000)
 
     try:
         # Sink path: use cached preamble (no GUI edits expected during
@@ -1091,6 +1402,8 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
                 source=sink_scenario,
                 checkpoint_dir=checkpoint_path,
                 enforce_contracts=ENFORCE_CONTRACTS,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
             )
             lf = lazy_outputs.get(sink_node_id)
             if lf is None:
@@ -1115,17 +1428,40 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
         except Exception:
             logger.debug("explain_failed", path=path)
 
-        safe_sink(lf, out, fmt=fmt)
+        if execution_context is not None:
+            execution_context.checkpoint(label="before_sink_write", node_id=sink_node_id)
+            with execution_context.stage("sink_write", node_id=sink_node_id):
+                bounded_sink(
+                    lf,
+                    out,
+                    fmt=fmt,
+                    streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+                )
+            execution_context.checkpoint(label="after_sink_write", node_id=sink_node_id)
+        else:
+            bounded_sink(
+                lf,
+                out,
+                fmt=fmt,
+                streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+            )
         logger.info("sink_written", path=path, format=fmt)
         del lf
         gc.collect()
         _malloc_trim()
 
-        # Read back row count cheaply from file metadata.
-        if fmt == "csv":
-            row_count = pl.scan_csv(out).select(pl.len()).collect().item()
-        else:
-            row_count = pl.scan_parquet(out).select(pl.len()).collect().item()
+        execution_context.checkpoint(label="before_sink_row_count", node_id=sink_node_id)
+        with execution_context.stage("sink_row_count", node_id=sink_node_id):
+            count_lf = (
+                pl.scan_csv(out).select(pl.len())
+                if fmt == "csv"
+                else pl.scan_parquet(out).select(pl.len())
+            )
+            row_count = streaming_collect(
+                count_lf,
+                profile=execution_context.profile,
+            ).item()
+        execution_context.checkpoint(label="after_sink_row_count", node_id=sink_node_id)
 
         return SinkResponse(
             status="ok",
@@ -1133,11 +1469,13 @@ def execute_sink(graph: PipelineGraph, sink_node_id: str, source: str = "live") 
             row_count=row_count,
             path=path,
             format=fmt,
+            execution_metrics=(
+                ExecutionMetricsPayload.model_validate(
+                    execution_context.metrics_payload(status="completed")
+                )
+                if execution_context is not None
+                else None
+            ),
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        # Restore previous streaming chunk size if one was explicitly set.
-        # When _prev_chunk_size is None (Polars auto-default), skip the
-        # restore — Polars does not accept 0 and has no "unset" API.
-        if _prev_chunk_size is not None:
-            pl.Config.set_streaming_chunk_size(int(_prev_chunk_size))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -15,6 +16,9 @@ from haute.schemas import (
     FileItem,
     SchemaResponse,
 )
+
+if TYPE_CHECKING:
+    import polars as pl
 
 logger = get_logger(component="server.files")
 
@@ -57,6 +61,14 @@ async def browse_files(
     )
 
 
+def _collect_file_preview(lf: pl.LazyFrame) -> pl.DataFrame:
+    """Collect a small schema-preview frame through the profiled helper."""
+    from haute._execution_context import ExecutionProfile
+    from haute._polars_utils import streaming_collect
+
+    return streaming_collect(lf, profile=ExecutionProfile.PREVIEW_EAGER)
+
+
 def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
     """Synchronous schema + preview reader.
 
@@ -75,7 +87,7 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
 
         schema = lf.collect_schema()
         columns = [ColumnInfo(name=c, dtype=str(d)) for c, d in schema.items()]
-        preview_df = lf.head(5).collect()
+        preview_df = _collect_file_preview(lf.head(5))
         meta = read_parquet_metadata(target)
 
         return SchemaResponse(
@@ -89,7 +101,7 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
 
     schema = lf.collect_schema()
     columns = [ColumnInfo(name=c, dtype=str(d)) for c, d in schema.items()]
-    preview_df = lf.head(5).collect()
+    preview_df = _collect_file_preview(lf.head(5))
 
     # For JSONL files, estimating row count avoids reading the entire file
     # into memory (pl.len() on scan_ndjson materialises every row).
@@ -112,7 +124,7 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
             row_count = 0
         row_count_estimated = row_count is not None and row_count > 0
     else:
-        row_count = lf.select(pl.len()).collect().item()
+        row_count = _collect_file_preview(lf.select(pl.len())).item()
 
     return SchemaResponse(
         path=path,
@@ -197,7 +209,7 @@ def _read_databricks_schema_blocking(table: str, p: Path) -> SchemaResponse:
     lf = pl.scan_parquet(p)
     schema = lf.collect_schema()
     columns = [ColumnInfo(name=c, dtype=str(d)) for c, d in schema.items()]
-    preview_df = lf.head(5).collect()
+    preview_df = _collect_file_preview(lf.head(5))
     meta = read_parquet_metadata(p)
     row_count = meta["row_count"]
 

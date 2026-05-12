@@ -15,10 +15,15 @@ from haute.schemas import (
     GraphEdge,
     GraphNode,
     GraphNodeData,
+    OptimiserEstimateRequest,
+    OptimiserFrontierAutoRangeRequest,
+    OptimiserFrontierRequest,
+    OptimiserSolveRequest,
     PreviewNodeRequest,
     SavePipelineRequest,
     SinkRequest,
     TraceRequest,
+    TrainRequest,
 )
 
 
@@ -141,3 +146,73 @@ class TestSavePipelineRequestDefaults:
     def test_explicit_name_overrides_default(self):
         r = SavePipelineRequest(name="custom")
         assert r.name == "custom"
+
+
+_SCHEMA_CASES_WITH_NODE_ID = [
+    PreviewNodeRequest,
+    TraceRequest,
+    SinkRequest,
+    TrainRequest,
+    OptimiserSolveRequest,
+    OptimiserEstimateRequest,
+    OptimiserFrontierAutoRangeRequest,
+    OptimiserFrontierRequest,
+]
+
+
+def _kwargs_for(schema_cls: type) -> dict:
+    if schema_cls is TraceRequest:
+        return {"graph": Graph()}
+    if schema_cls is OptimiserFrontierRequest:
+        return {"job_id": "j"}
+    return {"graph": Graph(), "node_id": "n"}
+
+
+class TestStreamingChunkSizeField:
+    """The optional ``streaming_chunk_size`` field on request schemas."""
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_default_is_none(self, schema_cls):
+        r = schema_cls(**_kwargs_for(schema_cls))
+        assert r.streaming_chunk_size is None
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_accepts_positive_int(self, schema_cls):
+        r = schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=12345)
+        assert r.streaming_chunk_size == 12345
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_accepts_lower_boundary(self, schema_cls):
+        r = schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=1)
+        assert r.streaming_chunk_size == 1
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_accepts_upper_boundary(self, schema_cls):
+        r = schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=10_000_000)
+        assert r.streaming_chunk_size == 10_000_000
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_rejects_zero(self, schema_cls):
+        with pytest.raises(ValidationError):
+            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=0)
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_rejects_negative(self, schema_cls):
+        with pytest.raises(ValidationError):
+            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=-1)
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_rejects_above_upper_boundary(self, schema_cls):
+        with pytest.raises(ValidationError):
+            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=10_000_001)
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    def test_rejects_non_int(self, schema_cls):
+        with pytest.raises(ValidationError):
+            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size="big")
+
+    @pytest.mark.parametrize("schema_cls", _SCHEMA_CASES_WITH_NODE_ID)
+    @pytest.mark.parametrize("bool_value", [True, False])
+    def test_rejects_bool(self, schema_cls, bool_value):
+        with pytest.raises(ValidationError):
+            schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=bool_value)

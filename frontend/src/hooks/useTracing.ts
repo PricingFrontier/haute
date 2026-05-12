@@ -175,6 +175,7 @@ export default function useTracing({
 }: TracingParams): TracingReturn {
   const addToast = useToastStore((s) => s.addToast)
   const rowLimit = useSettingsStore((s) => s.rowLimit)
+  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const activeSource = useSettingsStore((s) => s.activeSource)
   // Boost edge contrast at low zoom — only re-renders on threshold change
   const zoomedOut = useStore((s) => s.transform[2] < 0.45)
@@ -198,7 +199,16 @@ export default function useTracing({
     if (!selectedNode) return
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
     setTracedCell({ rowIndex, column })
-    traceCell({ graph, row_index: rowIndex, target_node_id: selectedNode.id, column, row_limit: rowLimit, source: activeSource, row_values: rowValues })
+    traceCell({
+      graph,
+      row_index: rowIndex,
+      target_node_id: selectedNode.id,
+      column,
+      row_limit: rowLimit,
+      source: activeSource,
+      row_values: rowValues,
+      streamingChunkSize,
+    })
       .then((data) => {
         if (data.status === "ok" && data.trace) {
           setTraceResult(data.trace as TraceResult)
@@ -218,7 +228,7 @@ export default function useTracing({
         addToast("error", `Trace error: ${message}`)
         clearTrace()
       })
-  }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, activeSource, addToast, clearTrace])
+  }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, addToast, clearTrace])
 
   // Map child node IDs → submodel placeholder node IDs
   const childToSubmodelId = useMemo(() => {

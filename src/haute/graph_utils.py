@@ -9,7 +9,7 @@ Modules:
     _graph_utils.py  — pure-function graph helpers (sanitize, mappings)
     _topo.py         — topo_sort_ids, ancestors
     _cache.py        — graph_fingerprint
-    _io.py           — read_source, load_external_object
+    _io.py           — read_source, read_data_source, load_external_object
     _flatten.py      — flatten_graph
     _execute_lazy.py — _prepare_graph, _execute_lazy
 """
@@ -28,6 +28,7 @@ from haute._graph_utils import _sanitize_func_name as _sanitize_func_name
 from haute._graph_utils import build_instance_mapping as build_instance_mapping
 from haute._graph_utils import resolve_orig_source_names as resolve_orig_source_names
 from haute._io import load_external_object as load_external_object
+from haute._io import read_data_source as read_data_source
 from haute._io import read_source as read_source
 from haute._mlflow_io import ScoringModel as ScoringModel
 from haute._mlflow_io import load_local_model as load_local_model

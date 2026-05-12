@@ -392,14 +392,17 @@ class TestRowLimitEdgeCases:
 class TestExecuteSinkIOErrors:
     def test_permission_error_propagates(self, tmp_path):
         graph, _out = _sink_graph(tmp_path, fmt="parquet")
-        with patch("haute._polars_utils.safe_sink", side_effect=PermissionError("Access denied")):
+        with patch(
+            "haute._polars_utils.bounded_sink",
+            side_effect=PermissionError("Access denied"),
+        ):
             with pytest.raises(PermissionError, match="Access denied"):
                 execute_sink(graph, sink_node_id="sink")
 
     def test_oserror_disk_full_propagates(self, tmp_path):
         graph, _out = _sink_graph(tmp_path, fmt="parquet")
         err = OSError(errno.ENOSPC, "No space left")
-        with patch("haute._polars_utils.safe_sink", side_effect=err):
+        with patch("haute._polars_utils.bounded_sink", side_effect=err):
             with pytest.raises(OSError, match="No space left"):
                 execute_sink(graph, sink_node_id="sink")
 
@@ -415,7 +418,7 @@ class TestExecuteSinkIOErrors:
             return d
 
         with patch("haute.executor.tempfile.mkdtemp", side_effect=_tracking_mkdtemp):
-            with patch("haute._polars_utils.safe_sink", side_effect=RuntimeError("boom")):
+            with patch("haute._polars_utils.bounded_sink", side_effect=RuntimeError("boom")):
                 with pytest.raises(RuntimeError, match="boom"):
                     execute_sink(graph, sink_node_id="sink")
 

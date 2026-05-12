@@ -181,16 +181,17 @@ class TestStreamingChunkRestoreOptimiser:
         body = MagicMock()
         body.graph = graph
         body.node_id = "opt"
+        body.streaming_chunk_size = None
 
         svc = OptimiserSolveService(store=JobStore())
 
         # Ensure no prior chunk size is set
         prev_chunk = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
 
-        # Patch at the source modules (imports are lazy inside the method)
+        # Patch the optimiser-service facade used by _execute_pipeline.
         with (
             patch(
-                "haute.graph_utils._execute_lazy",
+                "haute.routes._optimiser_service.execute_lazy_graph",
                 return_value=(mock_lazy_outputs, ["s", "opt"], {}, {}),
             ),
             patch(

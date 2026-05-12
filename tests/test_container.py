@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._container import (
+    DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES,
     DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
     ContainerBuildResult,
     _check_docker_available,
@@ -33,6 +35,14 @@ from haute.deploy._container import (
     deploy_to_platform_container,
 )
 from haute.deploy._mlflow import DeployResult
+from haute.deploy._request_limits import (
+    DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV,
+    DEPLOY_QUOTE_REQUEST_BODY_LIMIT_MB_ENV,
+    RequestBodyHeaderError,
+    RequestBodyLimitError,
+    deploy_quote_request_body_limit_bytes,
+    read_limited_json_body,
+)
 from haute.deploy._utils import build_manifest as _build_manifest
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._deploy_helpers import make_resolved_deploy
@@ -88,7 +98,11 @@ def _load_generated_app(
     app_path = tmp_path / "app.py"
     app_path.write_text(_generate_app_source("motor", 8080), encoding="utf-8")
 
-    def fake_score_graph(**_kwargs):
+    def fake_score_graph(**kwargs):
+        execution_context = kwargs.get("execution_context")
+        if execution_context is not None:
+            with execution_context.stage("deploy_collect", node_id="quotes"):
+                pass
         return result_df
 
     monkeypatch.setattr("haute.deploy._scorer.score_graph", fake_score_graph)
@@ -103,6 +117,18 @@ def _load_generated_app(
         return module
     finally:
         sys.modules.pop(module_name, None)
+
+
+class _FakeRequest:
+    def __init__(self, *, headers: dict[str, str] | None = None, chunks: list[bytes]):
+        self.headers = headers or {}
+        self.chunks = chunks
+        self.yielded_chunks = 0
+
+    async def stream(self):
+        for chunk in self.chunks:
+            self.yielded_chunks += 1
+            yield chunk
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +251,344 @@ class TestGenerateAppSource:
 
     def test_imports_score_graph(self) -> None:
         source = _generate_app_source("m", 8080)
-        assert "from haute.deploy._scorer import score_graph" in source
+        assert (
+            "from haute.deploy._scorer import admit_deploy_execution, score_graph, score_graph_lazy"
+        ) in source
+        assert "from fastapi.responses import JSONResponse, StreamingResponse" in source
+        assert "bounded_collect_batches" in source
+        assert "from haute._execution_context import" in source
+        assert "ExecutionCancelledError" in source
+        assert "ExecutionMemoryLimitExceededError" in source
+        assert "from haute.errors import BoundedMemoryUnsupportedError" in source
+        assert "read_limited_json_body" in source
+        assert "RequestBodyLimitError" in source
+        assert "await request.json()" not in source
+        assert 'operation="deploy_quote"' in source
+        assert "row_count=row_count" in source
+        assert "execution_context=execution_context" in source
+
+    def test_quote_admits_before_polars_dataframe_materialisation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._execution_admission import ExecutionAdmissionError
+        from haute._execution_context import ExecutionProfile
+
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+        admission_error = ExecutionAdmissionError(
+            "deploy_quote",
+            profile=ExecutionProfile.DEPLOY_BATCH,
+            memory_limit_bytes=512,
+            rss_at_admission_bytes=600,
+            process_rss_limit_bytes=512,
+            reason="process_rss_limit_exceeded",
+        )
+        captured: dict[str, object] = {}
+
+        def reject_admission(*, operation: str, row_count: int):
+            captured["operation"] = operation
+            captured["row_count"] = row_count
+            raise admission_error
+
+        def fail_dataframe(*_args, **_kwargs):
+            raise AssertionError("Polars DataFrame should not be built before admission")
+
+        monkeypatch.setattr(module, "admit_deploy_execution", reject_admission)
+        monkeypatch.setattr(module.pl, "DataFrame", fail_dataframe)
+
+        response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
+
+        assert response.status_code == 507
+        assert response.json()["error_code"] == "memory_limit"
+        assert response.json()["profile"] == "deploy_batch"
+        assert captured == {"operation": "deploy_quote", "row_count": 2}
+
+    def test_quote_maps_runtime_memory_failure_to_typed_507(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+        memory_error = ExecutionMemoryLimitExceededError(
+            "deploy_quote",
+            rss_bytes=600,
+            limit_bytes=512,
+            baseline_rss_bytes=1,
+            rss_limit_bytes=513,
+        )
+
+        def fail_score_graph(**_kwargs):
+            raise memory_error
+
+        monkeypatch.setattr(module, "score_graph", fail_score_graph)
+
+        response = TestClient(module.app).post("/quote", json={"age": 30})
+
+        assert response.status_code == 507
+        assert response.json()["error_code"] == "memory_limit"
+        assert response.json()["operation"] == "deploy_quote"
+        assert response.json()["reason"] == "rss_exceeds_memory_limit"
+
+    def test_quote_maps_bounded_streaming_failure_to_actionable_422(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.errors import BoundedMemoryUnsupportedError
+
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+
+        def fail_score_graph(**_kwargs):
+            raise BoundedMemoryUnsupportedError("Bounded streaming sink failed", path="sink")
+
+        monkeypatch.setattr(module, "score_graph", fail_score_graph)
+
+        response = TestClient(module.app).post("/quote", json={"age": 30})
+
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "bounded_streaming_unsupported"
+        assert "Bounded streaming sink failed" in response.json()["detail"]
+
+    def test_quote_maps_cancellation_to_typed_response(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._execution_context import ExecutionCancelledError
+
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+
+        def fail_score_graph(**_kwargs):
+            raise ExecutionCancelledError("deploy_quote", job_id="job-1")
+
+        monkeypatch.setattr(module, "score_graph", fail_score_graph)
+
+        response = TestClient(module.app).post("/quote", json={"age": 30})
+
+        assert response.status_code == 499
+        assert response.json()["error_code"] == "execution_cancelled"
+        assert response.json()["operation"] == "deploy_quote"
+        assert response.json()["job_id"] == "job-1"
+
+    def test_quote_unexpected_score_failure_is_not_laundered_as_validation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+
+        def fail_score_graph(**_kwargs):
+            raise RuntimeError("corrupt model artifact")
+
+        monkeypatch.setattr(module, "score_graph", fail_score_graph)
+
+        response = TestClient(module.app, raise_server_exceptions=False).post(
+            "/quote",
+            json={"age": 30},
+        )
+
+        assert response.status_code == 500
+        body = response.json()
+        assert body["error_code"] == "deploy_internal_error"
+        assert "corrupt model artifact" in body["error"]
+        assert body != {"error": "Validation error"}
+
+    def test_quote_rejects_oversized_content_length_before_json_materialisation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV, "8")
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+
+        def fail_admission(*_args, **_kwargs):
+            raise AssertionError("admission should not run for oversized bodies")
+
+        def fail_dataframe(*_args, **_kwargs):
+            raise AssertionError("Polars DataFrame should not be built for oversized bodies")
+
+        monkeypatch.setattr(module, "admit_deploy_execution", fail_admission)
+        monkeypatch.setattr(module.pl, "DataFrame", fail_dataframe)
+
+        response = TestClient(module.app, raise_server_exceptions=False).post(
+            "/quote",
+            content=b'{"age":30}',
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == 413
+        assert response.json() == {
+            "error_code": "request_body_too_large",
+            "operation": "deploy_quote",
+            "max_request_body_bytes": 8,
+            "content_length_bytes": len(b'{"age":30}'),
+            "observed_request_body_bytes": len(b'{"age":30}'),
+            "reason": "content_length_exceeds_limit",
+        }
+
+    def test_quote_accepts_content_length_at_configured_limit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        body = b'{"age":30}'
+        monkeypatch.setenv(DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV, str(len(body)))
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+
+        response = TestClient(module.app).post(
+            "/quote",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["rows"] == [{"premium": 100.0}]
+
+    def test_invalid_quote_request_body_limit_config_fails_loudly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV, "0")
+
+        with pytest.raises(RuntimeError, match=DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV):
+            _load_generated_app(
+                tmp_path,
+                monkeypatch,
+                pl.DataFrame({"premium": [100.0]}),
+            )
+
+    def test_default_quote_request_body_limit_is_embedded(self) -> None:
+        source = _generate_app_source("motor", 8080)
+        assert DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES == 8 * 1024 * 1024
+        assert "deploy_quote_request_body_limit_bytes()" in source
+
+    def test_request_body_limit_config_bytes_wins_over_mb(self) -> None:
+        assert (
+            deploy_quote_request_body_limit_bytes(
+                {
+                    DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV: "9",
+                    DEPLOY_QUOTE_REQUEST_BODY_LIMIT_MB_ENV: "99",
+                }
+            )
+            == 9
+        )
+
+    def test_request_body_limit_config_supports_mb(self) -> None:
+        assert (
+            deploy_quote_request_body_limit_bytes({DEPLOY_QUOTE_REQUEST_BODY_LIMIT_MB_ENV: "2"})
+            == 2 * 1024 * 1024
+        )
+
+    @pytest.mark.parametrize("raw", ["0", "-1", "abc"])
+    def test_request_body_limit_config_invalid_values_fail_loudly(self, raw: str) -> None:
+        with pytest.raises(RuntimeError, match=DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV):
+            deploy_quote_request_body_limit_bytes({DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV: raw})
+
+    @pytest.mark.asyncio
+    async def test_limited_json_reader_rejects_oversized_content_length_before_stream(
+        self,
+    ) -> None:
+        request = _FakeRequest(headers={"content-length": "9"}, chunks=[b'{"age":30}'])
+
+        with pytest.raises(RequestBodyLimitError) as exc_info:
+            await read_limited_json_body(
+                request,
+                operation="deploy_quote",
+                limit_bytes=8,
+            )
+
+        assert request.yielded_chunks == 0
+        assert exc_info.value.to_payload() == {
+            "error_code": "request_body_too_large",
+            "operation": "deploy_quote",
+            "max_request_body_bytes": 8,
+            "content_length_bytes": 9,
+            "observed_request_body_bytes": 9,
+            "reason": "content_length_exceeds_limit",
+        }
+
+    @pytest.mark.asyncio
+    async def test_limited_json_reader_rejects_stream_without_content_length_at_limit(
+        self,
+    ) -> None:
+        request = _FakeRequest(headers={}, chunks=[b'{"ag', b'e":30}'])
+
+        with pytest.raises(RequestBodyLimitError) as exc_info:
+            await read_limited_json_body(
+                request,
+                operation="deploy_quote",
+                limit_bytes=8,
+            )
+
+        assert request.yielded_chunks == 2
+        assert exc_info.value.to_payload() == {
+            "error_code": "request_body_too_large",
+            "operation": "deploy_quote",
+            "max_request_body_bytes": 8,
+            "content_length_bytes": None,
+            "observed_request_body_bytes": 10,
+            "reason": "stream_exceeds_limit",
+        }
+
+    @pytest.mark.parametrize(
+        ("raw", "reason"),
+        [("not-an-int", "invalid_content_length"), ("-1", "negative_content_length")],
+    )
+    @pytest.mark.asyncio
+    async def test_limited_json_reader_rejects_invalid_content_length(
+        self,
+        raw: str,
+        reason: str,
+    ) -> None:
+        request = _FakeRequest(headers={"content-length": raw}, chunks=[b'{"age":30}'])
+
+        with pytest.raises(RequestBodyHeaderError) as exc_info:
+            await read_limited_json_body(
+                request,
+                operation="deploy_quote",
+                limit_bytes=20,
+            )
+
+        assert request.yielded_chunks == 0
+        assert exc_info.value.to_payload() == {
+            "error_code": "invalid_request_body_header",
+            "operation": "deploy_quote",
+            "header": "content-length",
+            "content_length_header": raw,
+            "reason": reason,
+        }
 
     @pytest.mark.parametrize(
         "row_count",
@@ -264,11 +627,22 @@ class TestGenerateAppSource:
         assert response.status_code == 200
         body = response.json()
         expected_returned_rows = min(row_count, DEFAULT_QUOTE_RESPONSE_ROW_LIMIT)
-        assert set(body) == {"rows", "row_count", "returned_rows", "truncated", "limit"}
+        assert set(body) == {
+            "rows",
+            "row_count",
+            "returned_rows",
+            "truncated",
+            "limit",
+            "execution_metrics",
+        }
         assert body["row_count"] == row_count
         assert body["returned_rows"] == expected_returned_rows
         assert body["limit"] == DEFAULT_QUOTE_RESPONSE_ROW_LIMIT
         assert body["truncated"] is (row_count > DEFAULT_QUOTE_RESPONSE_ROW_LIMIT)
+        assert body["execution_metrics"]["operation"] == "deploy_quote"
+        assert body["execution_metrics"]["profile"] in {"deploy_live", "deploy_batch"}
+        assert "deploy_collect" in body["execution_metrics"]["stage_elapsed_ms"]
+        assert body["execution_metrics"]["stage_count"] >= 1
         assert len(body["rows"]) == expected_returned_rows
         assert body["rows"][0] == {"premium": 0}
         assert body["rows"][-1] == {"premium": expected_returned_rows - 1}
@@ -294,7 +668,50 @@ class TestGenerateAppSource:
             "returned_rows": 0,
             "truncated": False,
             "limit": DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
+            "execution_metrics": response.json()["execution_metrics"],
         }
+        assert response.json()["execution_metrics"]["operation"] == "deploy_quote"
+
+    def test_quote_streams_ndjson_when_requested(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [999.0]}),
+        )
+        cleanup_calls: list[bool] = []
+
+        def fail_score_graph(**_kwargs):
+            raise AssertionError("NDJSON path should not collect through score_graph")
+
+        def fake_score_graph_lazy(**kwargs):
+            return SimpleNamespace(
+                lazy_frame=pl.DataFrame({"premium": [1.5, 2.5]}).lazy(),
+                execution_context=kwargs["execution_context"],
+                cleanup=lambda *, preserve_primary_error: cleanup_calls.append(
+                    preserve_primary_error
+                ),
+            )
+
+        monkeypatch.setattr(module, "score_graph", fail_score_graph)
+        monkeypatch.setattr(module, "score_graph_lazy", fake_score_graph_lazy)
+
+        response = TestClient(module.app).post(
+            "/quote",
+            json=[{"age": 30}, {"age": 31}],
+            headers={"accept": "application/x-ndjson"},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/x-ndjson")
+        assert [json.loads(line) for line in response.text.splitlines()] == [
+            {"premium": 1.5},
+            {"premium": 2.5},
+        ]
+        assert cleanup_calls == [False]
 
 
 # ---------------------------------------------------------------------------

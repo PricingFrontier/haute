@@ -14,6 +14,7 @@ import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { SolveResult } from "../../panels/OptimiserPreview.tsx"
 import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
@@ -196,6 +197,26 @@ describe("useNodeResultsStore", () => {
       expect(failedResult.error).toBe("Solver diverged")
     })
 
+    it("retains structured terminal solve diagnostics on failure", () => {
+      const s = useNodeResultsStore.getState()
+      const executionMetrics = makeExecutionMetricsFixture({ profile: "optimiser_setup", terminal_reason: "memory_limited" })
+      const terminalStatus = {
+        status: "memory_limited" as const,
+        progress: 1,
+        message: "Stopped",
+        elapsed_seconds: 9,
+        terminal_reason: "memory_limited",
+        execution_metrics: executionMetrics,
+      }
+
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h")
+      s.failSolveJob("n1", "Stopped", terminalStatus)
+
+      const failedResult = useNodeResultsStore.getState().solveResults["n1"]
+      expect(failedResult.terminalStatus).toEqual(terminalStatus)
+      expect(failedResult.terminalStatus?.execution_metrics).toBe(executionMetrics)
+    })
+
     it("is a no-op for unknown node", () => {
       useNodeResultsStore.getState().failSolveJob("ghost", "oops")
       expect(useNodeResultsStore.getState().solveJobs["ghost"]).toBeUndefined()
@@ -324,6 +345,29 @@ describe("useNodeResultsStore", () => {
       expect(failedResult).toBeDefined()
       expect(failedResult.result.error).toBe("Out of memory")
       expect(failedResult.result.status).toBe("error")
+    })
+
+    it("retains structured terminal training diagnostics on failure", () => {
+      const s = useNodeResultsStore.getState()
+      const executionMetrics = makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" })
+      const terminalStatus = {
+        status: "memory_limited" as const,
+        progress: 1,
+        message: "Stopped",
+        iteration: 0,
+        total_iterations: 0,
+        train_loss: {},
+        elapsed_seconds: 8,
+        terminal_reason: "memory_limited",
+        execution_metrics: executionMetrics,
+      }
+
+      s.startTrainJob("t1", "tj-1", "Train Node", "h")
+      s.failTrainJob("t1", "Stopped", terminalStatus)
+
+      const failedResult = useNodeResultsStore.getState().trainResults["t1"]
+      expect(failedResult.terminalStatus).toEqual(terminalStatus)
+      expect(failedResult.terminalStatus?.execution_metrics).toBe(executionMetrics)
     })
 
     it("is a no-op for unknown node", () => {

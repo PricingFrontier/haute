@@ -56,12 +56,12 @@ def test_random_split_write_sinks_without_collecting_full_split_plan(
     sink_schemas: list[list[str]] = []
     sink_kwargs: list[dict[str, Any]] = []
 
-    def recording_safe_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
+    def recording_bounded_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
         sink_schemas.append(lf.collect_schema().names())
         sink_kwargs.append(dict(kwargs))
         lf.sink_parquet(path)
 
-    monkeypatch.setattr("haute._polars_utils.safe_sink", recording_safe_sink)
+    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
 
     split = job._split_data(_prepared(data_path, len(df)), lambda _msg, _frac: None)
     try:
@@ -125,13 +125,13 @@ def test_group_split_only_collects_group_column_before_sink_write(
             f"split writer should sink the full split plan instead of collecting columns {columns}"
         )
 
-    def recording_safe_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
+    def recording_bounded_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
         sink_schemas.append(lf.collect_schema().names())
         sink_kwargs.append(dict(kwargs))
         lf.sink_parquet(path)
 
     monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
-    monkeypatch.setattr("haute._polars_utils.safe_sink", recording_safe_sink)
+    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
 
     split = job._split_data(_prepared(data_path, len(df)), lambda _msg, _frac: None)
     try:

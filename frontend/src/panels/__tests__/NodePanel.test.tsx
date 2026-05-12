@@ -5,10 +5,11 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, bandingEditorProps, modellingConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
+  optimiserConfigProps: [] as Record<string, unknown>[],
 }))
 
 // Mock all editor components — we only care that the right one renders
@@ -47,7 +48,10 @@ vi.mock("../LazyNodeEditors", () => ({
     modellingConfigProps.push(props)
     return <div data-testid="ModellingConfig" />
   },
-  OptimiserConfig: () => <div data-testid="OptimiserConfig" />,
+  OptimiserConfig: (props: Record<string, unknown>) => {
+    optimiserConfigProps.push(props)
+    return <div data-testid="OptimiserConfig" />
+  },
 }))
 
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
@@ -101,6 +105,7 @@ describe("NodePanel", () => {
     transformEditorProps.length = 0
     bandingEditorProps.length = 0
     modellingConfigProps.length = 0
+    optimiserConfigProps.length = 0
   })
 
   afterEach(cleanup)
@@ -212,6 +217,23 @@ describe("NodePanel", () => {
   it("renders OptimiserConfig for optimiser nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "Opt", description: "", nodeType: "optimiser", config: {} } }) })
     expect(screen.getByTestId("OptimiserConfig")).toBeInTheDocument()
+  })
+
+  it("asks OptimiserConfig to defer fallback column fetches while selected preview is loading", () => {
+    renderPanel({
+      node: makeNode({
+        id: "opt_1",
+        data: {
+          label: "Opt",
+          description: "",
+          nodeType: "optimiser",
+          config: { data_input: "input_1" },
+        },
+      }),
+      selectedPreviewLoading: true,
+    } as unknown as RenderPanelOverrides)
+
+    expect(optimiserConfigProps.at(-1)?.deferColumnFetch).toBe(true)
   })
 
   it("renders OptimiserApplyEditor for optimiserApply nodes", () => {

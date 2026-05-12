@@ -256,7 +256,7 @@ def _pip_requirements(resolved: ResolvedDeploy) -> list[str]:
 
     reqs = [
         f"haute=={haute.__version__}",
-        "polars>=1.0.0",
+        "polars>=1.39.2",
     ]
 
     # Check if catboost is used

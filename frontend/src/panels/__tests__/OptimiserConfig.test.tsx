@@ -6,16 +6,21 @@ import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import type { SimpleNode, SimpleEdge } from "../editors"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 // ── Mock API client ──
 const mockSolveOptimiser = vi.fn()
 const mockEstimateOptimiserSolve = vi.fn()
-const mockEstimateOptimiserFrontierAutoRange = vi.fn()
+const mockStartOptimiserFrontierAutoRange = vi.fn()
+const mockGetOptimiserFrontierAutoRangeStatus = vi.fn()
+const mockCancelOptimiserFrontierAutoRange = vi.fn()
 
 vi.mock("../../api/client", () => ({
   solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
   estimateOptimiserSolve: (...args: unknown[]) => mockEstimateOptimiserSolve(...args),
-  estimateOptimiserFrontierAutoRange: (...args: unknown[]) => mockEstimateOptimiserFrontierAutoRange(...args),
+  startOptimiserFrontierAutoRange: (...args: unknown[]) => mockStartOptimiserFrontierAutoRange(...args),
+  getOptimiserFrontierAutoRangeStatus: (...args: unknown[]) => mockGetOptimiserFrontierAutoRangeStatus(...args),
+  cancelOptimiserFrontierAutoRange: (...args: unknown[]) => mockCancelOptimiserFrontierAutoRange(...args),
 }))
 
 // ── Mock buildGraph ──
@@ -177,7 +182,9 @@ beforeEach(() => {
   // Never-resolving promise so tests don't race with the estimate's async
   // settlement — mirrors the ModellingConfig.test.tsx pattern.
   mockEstimateOptimiserSolve.mockReset().mockReturnValue(new Promise(() => {}))
-  mockEstimateOptimiserFrontierAutoRange.mockReset()
+  mockStartOptimiserFrontierAutoRange.mockReset()
+  mockGetOptimiserFrontierAutoRangeStatus.mockReset()
+  mockCancelOptimiserFrontierAutoRange.mockReset()
   mockHandleAddConstraint.mockReset()
   mockHandleRemoveConstraint.mockReset()
   mockHandleConstraintColumnChange.mockReset()
@@ -270,6 +277,92 @@ describe("OptimiserConfig", () => {
           fallbackColumns: props.componentProps.upstreamColumns,
         },
       )
+    })
+
+    it("prefers the configured data-input node columns over other upstream columns", () => {
+      const dataInputNode = {
+        id: "input_1",
+        data: {
+          label: "Data Input",
+          description: "",
+          nodeType: "dataSource",
+          config: {},
+          _columns: [{ name: "expected_margin", dtype: "Float64" }],
+        },
+      } satisfies SimpleNode
+      const bandingNode = {
+        id: "rating_factors",
+        data: {
+          label: "Rating Factors",
+          description: "",
+          nodeType: "banding",
+          config: {},
+          _columns: [{ name: "rating_factor_only", dtype: "Utf8" }],
+        },
+      } satisfies SimpleNode
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          data_input: "input_1",
+          objective: "expected_margin",
+          constraints: {},
+        },
+        allNodes: [dataInputNode, bandingNode],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "rating_factors", target: "opt_1" },
+        ],
+        upstreamColumns: [
+          { name: "expected_margin", dtype: "Float64" },
+          { name: "rating_factor_only", dtype: "Utf8" },
+        ],
+      })
+
+      renderConfig(props)
+
+      expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+        "input_1",
+        props.graph.allNodes,
+        props.graph.edges,
+        undefined,
+        undefined,
+        {
+          enabled: false,
+          fallbackColumns: [{ name: "expected_margin", dtype: "Float64" }],
+        },
+      )
+      expect(screen.getByText(/expected_margin \(Float64\)/)).toBeInTheDocument()
+      expect(screen.queryByText(/rating_factor_only \(Utf8\)/)).not.toBeInTheDocument()
+    })
+
+    it("defers data-input column fetches while the selected preview is loading", () => {
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          data_input: "input_1",
+          objective: "expected_margin",
+          constraints: {},
+        },
+        upstreamColumns: [],
+        deferColumnFetch: true,
+      } as unknown as MakePropsOverrides)
+
+      renderConfig(props)
+
+      expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+        "input_1",
+        props.graph.allNodes,
+        props.graph.edges,
+        undefined,
+        undefined,
+        {
+          enabled: false,
+          fallbackColumns: [],
+        },
+      )
+      expect(mockEstimateOptimiserSolve).not.toHaveBeenCalled()
     })
 
     it("objective change calls onUpdate with objective key", () => {
@@ -576,8 +669,72 @@ describe("OptimiserConfig", () => {
       })
       // Verify it was called with a graph payload containing node_id
       expect(mockSolveOptimiser).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "opt_1" }),
+        expect.objectContaining({ node_id: "opt_1", streamingChunkSize: expect.any(Number) }),
       )
+    })
+
+    it("preserves structured execution metrics when solve admission fails", async () => {
+      const executionMetrics = makeExecutionMetricsFixture({
+        profile: "optimiser_setup",
+        status: "memory_limited",
+        terminal_reason: "memory_limited",
+      })
+      mockSolveOptimiser.mockRejectedValue(Object.assign(new Error("HTTP 507"), {
+        name: "ApiError",
+        status: 507,
+        detail: JSON.stringify({
+          message: "Optimiser rejected by admission control",
+          terminal_reason: "memory_limited",
+          execution_metrics: executionMetrics,
+        }),
+        rawDetail: {
+          message: "Optimiser rejected by admission control",
+          terminal_reason: "memory_limited",
+          execution_metrics: executionMetrics,
+        },
+      }))
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1.05 } },
+        },
+      }))
+
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+
+      await waitFor(() => {
+        const cached = useNodeResultsStore.getState().solveResults.opt_1
+        expect(cached?.error).toBe("Optimiser rejected by admission control")
+        expect(cached?.terminalStatus?.status).toBe("memory_limited")
+        expect(cached?.terminalStatus?.terminal_reason).toBe("memory_limited")
+        expect(cached?.terminalStatus?.execution_metrics).toBe(executionMetrics)
+      })
+    })
+
+    it("stores immediate solve error responses even before a background job exists", async () => {
+      mockSolveOptimiser.mockResolvedValue({
+        status: "error",
+        job_id: null,
+        error: "Objective column is required",
+      })
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1.05 } },
+        },
+      }))
+
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+
+      await waitFor(() => {
+        const cached = useNodeResultsStore.getState().solveResults.opt_1
+        expect(cached?.error).toBe("Objective column is required")
+        expect(cached?.jobId).toBe("startup-failure:opt_1")
+      })
     })
 
     it("shows 'Executing pipeline...' during active solve job before progress arrives", () => {
@@ -1072,6 +1229,34 @@ describe("OptimiserConfig", () => {
       expect(screen.getByText("Iteration 9 of 20")).toBeInTheDocument()
       expect(screen.getByText("12s")).toBeInTheDocument()
     })
+
+    it("shows structured memory-pressure diagnostics during solve progress", () => {
+      useNodeResultsStore.setState({
+        solveJobs: {
+          opt_1: {
+            jobId: "job_42",
+            nodeId: "opt_1",
+            nodeLabel: "Optimiser",
+            progress: {
+              status: "running",
+              progress: 0.45,
+              message: "Building solve grid",
+              elapsed_seconds: 12,
+              execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_setup" }),
+            },
+            error: null,
+            constraints: {},
+            configHash: "abc",
+          },
+        },
+      })
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+      }))
+
+      expect(screen.getByText("Memory pressure reached 75% of the optimiser budget.")).toBeInTheDocument()
+      expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
+    })
   })
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1314,11 +1499,22 @@ describe("OptimiserConfig", () => {
     })
 
     it("auto range populates efficient-frontier values from scenario envelope", async () => {
-      mockEstimateOptimiserFrontierAutoRange.mockResolvedValue({
-        status: "ok",
-        ranges: { loss_ratio: { min: 11, max: 39 } },
-        method: "scenario_envelope",
-        warning: null,
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-1",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1.2,
+        result: {
+          status: "ok",
+          ranges: { loss_ratio: { min: 11, max: 39 } },
+          method: "scenario_envelope",
+          warning: null,
+        },
       })
       const props = makeProps({
         config: {
@@ -1334,16 +1530,251 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
 
       await waitFor(() => {
-        expect(mockEstimateOptimiserFrontierAutoRange).toHaveBeenCalledWith({
+        expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith({
           graph: { nodes: [], edges: [], preamble: "" },
           node_id: "opt_1",
+          streamingChunkSize: expect.any(Number),
+          signal: expect.any(AbortSignal),
         })
+        expect(mockGetOptimiserFrontierAutoRangeStatus).toHaveBeenCalledWith(
+          "range-job-1",
+          { signal: expect.any(AbortSignal) },
+        )
       })
       expect(props.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
         frontier_min: 11,
         frontier_max: 39,
       })
+    })
+
+    it("auto range surfaces contract-error status messages", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-1",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "contract_error",
+        progress: 1,
+        message: "Fan-in projection contract does not cover columns required by the node.",
+        elapsed_seconds: 1.2,
+        result: null,
+        terminal_reason: "contract_error",
+        error_code: "contract_error",
+        http_status_code: 422,
+        execution_metrics: makeExecutionMetricsFixture({
+          profile: "auto_range",
+          status: "running",
+          terminal_reason: null,
+        }),
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+
+      expect(await screen.findByText(
+        "Fan-in projection contract does not cover columns required by the node.",
+      )).toBeInTheDocument()
+      expect(screen.queryByText("Memory pressure reached 75% of the auto-range budget.")).not.toBeInTheDocument()
+      expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("auto range falls back to error_detail when status message is empty", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-1",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "contract_error",
+        progress: 1,
+        message: "",
+        elapsed_seconds: 1.2,
+        result: null,
+        terminal_reason: "contract_error",
+        error_code: "contract_error",
+        http_status_code: 400,
+        error_detail: "Configured optimiser data_input 'optimiser_input' did not produce data.",
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+
+      expect(await screen.findByText(
+        "Configured optimiser data_input 'optimiser_input' did not produce data.",
+      )).toBeInTheDocument()
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("auto range derives memory-limited messages from execution metrics", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-1",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "memory_limited",
+        progress: 1,
+        message: "Stopped",
+        elapsed_seconds: 1.2,
+        result: null,
+        terminal_reason: "memory_limited",
+        error_code: "memory_limited",
+        http_status_code: 507,
+        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range" }),
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+
+      expect(await screen.findByText(
+        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+      )).toBeInTheDocument()
+      expect(screen.getByText("Technical details")).toBeInTheDocument()
+      expect(screen.getByText("Stage collect")).toBeInTheDocument()
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("auto range uses execution metrics for memory-limited failures", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-1",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "memory_limited",
+        progress: 1,
+        message: "Auto-range exceeded its memory budget (rss_exceeds_memory_limit).",
+        elapsed_seconds: 1.2,
+        result: null,
+        terminal_reason: "memory_limited",
+        error_code: "memory_limit",
+        http_status_code: 507,
+        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range", terminal_reason: "memory_limited" }),
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+
+      expect(await screen.findByText(
+        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+      )).toBeInTheDocument()
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("auto range preserves structured metrics from admission failures before a job starts", async () => {
+      const executionMetrics = makeExecutionMetricsFixture({
+        profile: "auto_range",
+        terminal_reason: null,
+      })
+      mockStartOptimiserFrontierAutoRange.mockRejectedValue(Object.assign(new Error("HTTP 507"), {
+        name: "ApiError",
+        status: 507,
+        detail: JSON.stringify({
+          message: "Auto-range exceeded its memory budget (rss_exceeds_memory_limit).",
+          error_code: "memory_limit",
+          reason: "rss_exceeds_memory_limit",
+          execution_metrics: executionMetrics,
+        }),
+        rawDetail: {
+          message: "Auto-range exceeded its memory budget (rss_exceeds_memory_limit).",
+          error_code: "memory_limit",
+          reason: "rss_exceeds_memory_limit",
+          execution_metrics: executionMetrics,
+        },
+      }))
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+
+      expect(await screen.findByText(
+        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+      )).toBeInTheDocument()
+      expect(screen.getByText("Technical details")).toBeInTheDocument()
+      expect(screen.getByText("Stage collect")).toBeInTheDocument()
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("auto range does not render raw object error details", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-1",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "contract_error",
+        progress: 1,
+        message: "",
+        elapsed_seconds: 1.2,
+        result: null,
+        terminal_reason: "contract_error",
+        error_code: "contract_error",
+        http_status_code: 422,
+        error_detail: { raw: "developer-only", nested: { stack: "trace" } },
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_enabled: true,
+        },
+      })
+      renderConfig(props)
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+
+      expect(await screen.findByText("Auto range failed (contract_error)")).toBeInTheDocument()
+      expect(screen.queryByText(/developer-only/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/"raw"/)).not.toBeInTheDocument()
     })
 
     it("changing frontier_min calls onUpdate without inventing missing max values", () => {

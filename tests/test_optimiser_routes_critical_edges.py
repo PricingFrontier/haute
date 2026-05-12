@@ -1030,7 +1030,7 @@ def test_ratebook_materialise_emits_non_converged_warning_in_response(
     """When the ratebook re-solve at a frontier point fails to converge,
     the response and stored result must carry the standard warning so the
     UI can show it.  Without this, non-convergence is silent."""
-    factors_df = pl.DataFrame({"region": ["North"]})
+    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
     solver = MagicMock()
     # Solver returns a non-converged result for the frontier point.
     solver.solve.return_value = SimpleNamespace(
@@ -1072,7 +1072,7 @@ def test_ratebook_materialise_emits_non_converged_warning_in_response(
         },
         "solver": solver,
         "quote_grid": MagicMock(),
-        "factors_df": factors_df,
+        "ratebook_factor_contexts": factor_contexts,
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1}},
         "artifact_handles": {},
@@ -1106,7 +1106,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
     this is the hot-path the UI hits when toggling between tabs.
     """
     factor_tables = {"region": [{"__factor_group__": "North", "value": 1.0}]}
-    factors_df = pl.DataFrame({"region": ["North"]})
+    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
     solver = MagicMock()  # Must NOT be called.
     point = {
         "total_objective": 130.0,
@@ -1148,7 +1148,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "selected_frontier_point": 0,
         "solver": solver,
         "quote_grid": MagicMock(),
-        "factors_df": factors_df,
+        "ratebook_factor_contexts": factor_contexts,
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1}},
         "artifact_handles": {},
@@ -1177,7 +1177,7 @@ def test_ratebook_materialise_returns_409_on_atomic_update_race(
 ):
     """Concurrent state change between solve and write surfaces as 409, not
     a generic 500.  The user gets a clear "re-run the solve" instruction."""
-    factors_df = pl.DataFrame({"region": ["North"]})
+    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
     solver = MagicMock()
     solver.solve.return_value = SimpleNamespace(
         total_objective=130.0,
@@ -1218,7 +1218,7 @@ def test_ratebook_materialise_returns_409_on_atomic_update_race(
         },
         "solver": solver,
         "quote_grid": MagicMock(),
-        "factors_df": factors_df,
+        "ratebook_factor_contexts": factor_contexts,
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1}},
         "artifact_handles": {},

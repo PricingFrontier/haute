@@ -38,7 +38,12 @@ export default function SinkEditor({
 
     const graph = buildGraph(allNodes, edges, submodels, preamble)
 
-    executeSink(graph, nodeId, useSettingsStore.getState().activeSource)
+    executeSink({
+      graph,
+      nodeId,
+      source: useSettingsStore.getState().activeSource,
+      streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+    })
       .then((data) => {
         setWriteResult({ status: data.status || "ok", message: data.message || "Written successfully" })
         setWriting(false)

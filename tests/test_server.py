@@ -195,6 +195,44 @@ class TestPreviewNode:
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
 
+    def test_preview_returns_relevant_ancestor_node_schema_maps(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ):
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(),
+                "node_id": "transform",
+                "row_limit": 10,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        node_columns = data["node_columns"]
+        node_available_columns = data["node_available_columns"]
+        node_schema_warnings = data["node_schema_warnings"]
+
+        assert set(node_columns) == {"source", "transform"}
+        assert node_columns["source"] == [
+            {"name": "x", "dtype": "Int64"},
+            {"name": "y", "dtype": "Int64"},
+        ]
+        assert node_columns["transform"] == [
+            {"name": "x", "dtype": "Int64"},
+            {"name": "y", "dtype": "Int64"},
+        ]
+        assert node_available_columns["source"] == node_columns["source"]
+        assert node_available_columns["transform"] == node_columns["transform"]
+        assert node_schema_warnings["source"] == []
+        assert node_schema_warnings["transform"] == data["schema_warnings"]
+
     def test_preview_empty_graph_returns_400(self, client: TestClient):
         resp = client.post(
             "/api/pipeline/preview",

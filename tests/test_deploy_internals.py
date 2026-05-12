@@ -126,12 +126,17 @@ class TestHauteModelLoadContext:
 class TestHauteModelPredict:
     """Tests for HauteModel.predict()."""
 
-    def test_predict_pandas_round_trip(self, tmp_path):
+    def test_predict_pandas_round_trip(self, tmp_path, monkeypatch):
         """predict() converts pandas->polars->pandas and calls score_graph."""
         import pandas as pd
 
         from haute.deploy._model_code import HauteModel
 
+        monkeypatch.setenv("HAUTE_DEPLOY_BATCH_MEMORY_LIMIT_MB", "256")
+        monkeypatch.setattr(
+            "haute._execution_admission.current_rss_bytes",
+            lambda: 32 * 1024 * 1024,
+        )
         model = HauteModel()
         model._graph = {"nodes": [], "edges": []}
         model._input_node_ids = ["src"]
@@ -154,6 +159,50 @@ class TestHauteModelPredict:
         assert isinstance(call_kwargs["input_df"], pl.DataFrame)
         assert call_kwargs["input_node_ids"] == ["src"]
         assert call_kwargs["output_node_id"] == "out"
+        context = call_kwargs["execution_context"]
+        assert context.profile.value == "deploy_batch"
+        assert context.admission is not None
+        assert context.memory_limit_bytes == 256 * 1024 * 1024
+
+    def test_predict_admits_before_polars_conversion(self, monkeypatch):
+        """Large Pandas payloads should be admitted before Polars materialisation."""
+        import pandas as pd
+
+        from haute._execution_admission import ExecutionAdmissionError
+        from haute._execution_context import ExecutionProfile
+        from haute.deploy._model_code import HauteModel
+
+        model = HauteModel()
+        model._graph = {"nodes": [], "edges": []}
+        model._input_node_ids = ["src"]
+        model._output_node_id = "out"
+        model._artifact_paths = {}
+        model._output_fields = None
+        admission_error = ExecutionAdmissionError(
+            "deploy_pyfunc_predict",
+            profile=ExecutionProfile.DEPLOY_BATCH,
+            memory_limit_bytes=512,
+            rss_at_admission_bytes=600,
+            process_rss_limit_bytes=512,
+            reason="process_rss_limit_exceeded",
+        )
+        captured: dict[str, object] = {}
+
+        def reject_admission(*, operation: str, row_count: int):
+            captured["operation"] = operation
+            captured["row_count"] = row_count
+            raise admission_error
+
+        def fail_from_pandas(*_args, **_kwargs):
+            raise AssertionError("Polars conversion should not run before admission")
+
+        monkeypatch.setattr("haute.deploy._scorer.admit_deploy_execution", reject_admission)
+        monkeypatch.setattr(pl, "from_pandas", fail_from_pandas)
+
+        with pytest.raises(ExecutionAdmissionError):
+            model.predict(MagicMock(), pd.DataFrame({"x": [1.0, 2.0]}))
+
+        assert captured == {"operation": "deploy_pyfunc_predict", "row_count": 2}
 
     def test_predict_passes_output_fields(self, tmp_path):
         """predict() forwards output_fields to score_graph."""
@@ -817,6 +866,107 @@ class TestScoreGraphOutputFields:
         assert set(result.columns) == {"x", "z"}
         assert "y" not in result.columns
 
+    def test_output_fields_seed_lazy_projection(self):
+        """Serving output_fields should feed the backend projection planner."""
+        from haute.deploy import _scorer
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+        output_lf = pl.DataFrame({"x": [1.0], "y": [2.0], "z": [3.0]}).lazy()
+
+        with patch.object(
+            _scorer,
+            "execute_lazy_graph",
+            return_value=({"out": output_lf}, ["src", "out"], {}, {}),
+        ) as execute:
+            result = _scorer.score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "y": [2.0], "z": [3.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                output_fields=["x", "z"],
+            )
+
+        assert result.columns == ["x", "z"]
+        assert execute.call_args.kwargs["required_columns_by_node"] == {
+            "out": frozenset({"x", "z"})
+        }
+
+    def test_score_graph_lazy_returns_uncollected_plan(self):
+        """Container streaming can keep deployed output lazy through the response."""
+        from haute.deploy import _scorer
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+        output_lf = pl.DataFrame({"x": [1.0], "z": [3.0]}).lazy()
+
+        with (
+            patch.object(
+                _scorer,
+                "execute_lazy_graph",
+                return_value=({"out": output_lf}, ["src", "out"], {}, {}),
+            ) as execute,
+            patch.object(
+                _scorer,
+                "streaming_collect",
+                side_effect=AssertionError("score_graph_lazy must not collect"),
+            ),
+        ):
+            plan = _scorer.score_graph_lazy(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "z": [3.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                output_fields=["x"],
+            )
+
+        assert plan.lazy_frame.collect().columns == ["x"]
+        assert plan.execution_context.profile.value == "deploy_live"
+        assert execute.call_args.kwargs["required_columns_by_node"] == {"out": frozenset({"x"})}
+        plan.cleanup(preserve_primary_error=False)
+
     def test_no_output_fields_returns_all_columns(self):
         """Without output_fields, all columns pass through."""
         from haute.deploy._scorer import score_graph
@@ -854,6 +1004,142 @@ class TestScoreGraphOutputFields:
         )
 
         assert set(result.columns) == {"x", "y"}
+
+    def test_output_fields_rejects_bare_string(self):
+        """A malformed output_fields contract should fail before execution."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+
+        with pytest.raises(ValueError, match="output_fields"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "y": [2.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                output_fields="x",  # type: ignore[arg-type]
+            )
+
+
+class TestScoreGraphStaticDataSourceRemap:
+    def test_static_data_source_remap_uses_declared_schema(self, tmp_path):
+        """Static source artifact remaps should preserve dataSource schema config."""
+        from haute.deploy._scorer import score_graph
+
+        source_path = tmp_path / "lookup.csv"
+        source_path.write_text("quote_id,factor\n001,1.2\n", encoding="utf-8")
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "lookup",
+                        "data": {
+                            "label": "lookup",
+                            "nodeType": "dataSource",
+                            "config": {
+                                "path": "lookup.csv",
+                                "schema_overrides": {
+                                    "quote_id": "String",
+                                    "factor": "Float64",
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "lookup", "target": "out"}],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(),
+            input_node_ids=[],
+            output_node_id="out",
+            artifact_paths={"lookup__lookup.csv": str(source_path)},
+        )
+
+        assert result["quote_id"].to_list() == ["001"]
+        assert result.schema["quote_id"] == pl.String
+
+    def test_static_data_source_remap_receives_projected_columns(self, tmp_path):
+        """Bundled static sources should keep deploy output projection physical."""
+        from haute.deploy import _scorer
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "lookup",
+                        "data": {
+                            "label": "lookup",
+                            "nodeType": "dataSource",
+                            "config": {"path": "lookup.parquet"},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "lookup", "target": "out"}],
+            }
+        )
+        captured: dict[str, object] = {}
+
+        def fake_read_data_source(config, *, profile=None, columns=None, validate_columns=None):
+            captured["config"] = config
+            captured["profile"] = profile
+            captured["columns"] = columns
+            captured["validate_columns"] = validate_columns
+            return pl.DataFrame({"keep": [1], "unused": [2]}).lazy()
+
+        with patch.object(_scorer, "read_data_source", side_effect=fake_read_data_source):
+            result = _scorer.score_graph(
+                graph=graph,
+                input_df=pl.DataFrame(),
+                input_node_ids=[],
+                output_node_id="out",
+                artifact_paths={"lookup__lookup.parquet": str(tmp_path / "lookup.parquet")},
+                output_fields=["keep"],
+            )
+
+        assert result.columns == ["keep"]
+        assert captured["columns"] == frozenset({"keep"})
+        assert captured["profile"] == "deploy_live"
 
 
 class TestScoreGraphMissingOutput:
@@ -915,6 +1201,10 @@ class TestScoreGraphBadInput:
                                     "df = df.with_columns("
                                     'result=pl.col("VehPower").cast(pl.Float64) * 2)'
                                 ),
+                                "contract": {
+                                    "inputs": ["VehPower"],
+                                    "outputs": ["result"],
+                                },
                             },
                         },
                     },
@@ -1489,6 +1779,1148 @@ class TestScoreGraphModelScoreRemap:
 
         assert "pred" in result.columns
 
+    def test_model_score_remap_with_output_fields_uses_bundled_contract(
+        self,
+        tmp_path,
+    ):
+        """output_fields projection must not make deployed scoring call MLflow."""
+        from haute.deploy._scorer import score_graph
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["x"],
+                feature_types={"x": "Float64"},
+                categorical_features=[],
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+
+        mock_model = MagicMock()
+        mock_model.feature_names_ = ["x"]
+        mock_model.predict.return_value = np.array([42.0])
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "remote-run",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                                "code": "df = df",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
+            patch(
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("MLflow should not be called"),
+            ) as load_mlflow,
+        ):
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "unused": [999.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={
+                    "ms__model.cbm": str(cbm_path),
+                    f"ms__{CONTRACT_FILENAME}": str(contract_path),
+                },
+                output_fields=["pred"],
+            )
+
+        load_mlflow.assert_not_called()
+        assert result.columns == ["pred"]
+        assert result["pred"].to_list() == [42.0]
+
+    def test_remapped_model_score_rejects_observed_category_before_predict(
+        self,
+        tmp_path,
+    ):
+        from haute.deploy._scorer import score_graph
+        from haute.errors import FeatureMismatchError
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["region"],
+                feature_types={"region": "String"},
+                categorical_features=["region"],
+                categorical_levels={"region": ["north", "south"]},
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        mock_model = MagicMock()
+        mock_model.feature_names_ = ["region"]
+        mock_model.get_cat_feature_indices.return_value = [0]
+        mock_model.predict.return_value = np.array([42.0])
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "categorical_levels": {"region": ["north", "south"]},
+                            },
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "remote-run",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io._load_catboost_model", return_value=mock_model),
+            pytest.raises(FeatureMismatchError, match="outside declared"),
+        ):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"region": ["west"]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={
+                    "ms__model.cbm": str(cbm_path),
+                    f"ms__{CONTRACT_FILENAME}": str(contract_path),
+                },
+            )
+
+        mock_model.predict.assert_not_called()
+
+    def test_contract_only_model_score_rejects_runtime_feature_order_drift(
+        self,
+        tmp_path,
+    ):
+        """Bundled contract checks compare live feature order, not just names."""
+        from haute.deploy._scorer import score_graph
+        from haute.errors import FeatureMismatchError
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["age", "region"],
+                feature_types={"age": "Int64", "region": "String"},
+                categorical_features=["region"],
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with pytest.raises(FeatureMismatchError, match="features"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"region": ["north"], "age": [30]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+            )
+
+    def test_contract_only_model_score_rejects_declared_categorical_level_drift(
+        self,
+        tmp_path,
+    ):
+        """Declared category domains are compared without scanning row values."""
+        from haute.deploy._scorer import score_graph
+        from haute.errors import FeatureMismatchError
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["region"],
+                feature_types={"region": "String"},
+                categorical_features=["region"],
+                categorical_levels={"region": ["north", "south"]},
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "categorical_levels": {
+                                    "region": ["north", "east"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with pytest.raises(FeatureMismatchError, match="categorical_levels"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"region": ["north"]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+            )
+
+    def test_contract_only_model_score_accepts_matching_declared_categorical_levels(
+        self,
+        tmp_path,
+    ):
+        from haute.deploy._scorer import score_graph
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["region"],
+                feature_types={"region": "String"},
+                categorical_features=["region"],
+                categorical_levels={"region": ["north", "south"]},
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "categorical_levels": {
+                                    "region": ["north", "south"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"region": ["north"]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+        )
+
+        assert result.columns == ["region", "pred"]
+        assert result["pred"].to_list() == [None]
+
+    def test_contract_only_model_score_rejects_observed_category_outside_domain(
+        self,
+        tmp_path,
+    ):
+        from haute.deploy._scorer import score_graph
+        from haute.errors import FeatureMismatchError
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["region"],
+                feature_types={"region": "String"},
+                categorical_features=["region"],
+                categorical_levels={"region": ["north", "south"]},
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "categorical_levels": {
+                                    "region": ["north", "south"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with pytest.raises(FeatureMismatchError, match="outside declared"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"region": ["west"]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+            )
+
+    def test_contract_only_model_score_uses_contract_levels_without_redeclaration(
+        self,
+        tmp_path,
+    ):
+        from haute.deploy._scorer import score_graph
+        from haute.errors import FeatureMismatchError
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["region"],
+                feature_types={"region": "String"},
+                categorical_features=["region"],
+                categorical_levels={"region": ["north", "south"]},
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with pytest.raises(FeatureMismatchError, match="outside declared"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"region": ["west"]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+            )
+
+    def test_contract_only_model_score_collects_upstream_level_declarations(
+        self,
+        tmp_path,
+    ):
+        from haute.deploy._scorer import score_graph
+        from haute.errors import FeatureMismatchError
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["region"],
+                feature_types={"region": "String"},
+                categorical_features=["region"],
+                categorical_levels={"region": ["north", "south"]},
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "categorical_levels": {"region": ["north", "east"]},
+                            },
+                        },
+                    },
+                    {
+                        "id": "prep",
+                        "data": {
+                            "label": "prep",
+                            "nodeType": "polars",
+                            "config": {"code": "df = df"},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "prep"},
+                    {"id": "e2", "source": "prep", "target": "ms"},
+                    {"id": "e3", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with pytest.raises(FeatureMismatchError, match="categorical_levels"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"region": ["north"]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+            )
+
+    def test_multi_row_model_score_uses_deploy_batch_source(self, tmp_path):
+        """Multi-row deploy modelScore should use the batch scorer contract."""
+        from haute.deploy._scorer import score_graph
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        scoring_model = MagicMock()
+        captured: dict[str, object] = {}
+
+        def fake_run_score_pipeline(*_args, **kwargs):
+            captured.update(kwargs)
+            return pl.DataFrame({"pred": [10.0, 20.0]}).lazy()
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "r1",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            patch(
+                "haute._model_scorer._run_score_pipeline",
+                side_effect=fake_run_score_pipeline,
+            ),
+        ):
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={"ms__model.cbm": str(cbm_path)},
+            )
+
+        assert result["pred"].to_list() == [10.0, 20.0]
+        assert captured["source"] == "deploy_batch"
+
+    def test_single_row_model_score_keeps_live_source(self, tmp_path):
+        """Single-row deploy modelScore should keep the eager live scorer path."""
+        from haute.deploy._scorer import score_graph
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        scoring_model = MagicMock()
+        captured: dict[str, object] = {}
+
+        def fake_run_score_pipeline(*_args, **kwargs):
+            captured.update(kwargs)
+            return pl.DataFrame({"pred": [10.0]}).lazy()
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "r1",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            patch(
+                "haute._model_scorer._run_score_pipeline",
+                side_effect=fake_run_score_pipeline,
+            ),
+        ):
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={"ms__model.cbm": str(cbm_path)},
+            )
+
+        assert result["pred"].to_list() == [10.0]
+        assert captured["source"] == "live"
+
+    def test_model_score_remap_forwards_required_output_columns(self, tmp_path):
+        """Bundled deploy scoring should honour projection demand from output_fields."""
+        from haute.deploy._scorer import score_graph
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["x"],
+                feature_types={"x": "Float64"},
+                categorical_features=[],
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        scoring_model = MagicMock()
+        captured: dict[str, object] = {}
+
+        def fake_run_score_pipeline(*_args, **kwargs):
+            captured.update(kwargs)
+            return pl.DataFrame({"pred": [10.0], "unused": [999.0]}).lazy()
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "r1",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            patch(
+                "haute._model_scorer._run_score_pipeline",
+                side_effect=fake_run_score_pipeline,
+            ),
+        ):
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0], "unused": [999.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={
+                    "ms__model.cbm": str(cbm_path),
+                    f"ms__{CONTRACT_FILENAME}": str(contract_path),
+                },
+                output_fields=["pred"],
+            )
+
+        assert result.columns == ["pred"]
+        assert captured["required_output_columns"] == {"pred"}
+        assert captured["code"] == ""
+
+    def test_model_score_remap_forwards_secondary_inputs(self, tmp_path):
+        """Bundled deploy modelScore must preserve extra parent frames for user code."""
+        from haute.deploy._scorer import score_graph
+        from haute.modelling._feature_contract import (
+            CONTRACT_FILENAME,
+            build_contract,
+            save_contract,
+        )
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        contract_path = tmp_path / CONTRACT_FILENAME
+        save_contract(
+            build_contract(
+                features=["x"],
+                feature_types={"x": "Float64"},
+                categorical_features=[],
+                target_name="target",
+                target_type="Float64",
+                task="regression",
+            ),
+            contract_path,
+        )
+        scoring_model = MagicMock()
+        captured: dict[str, object] = {}
+
+        def fake_run_score_pipeline(*_args, **kwargs):
+            captured.update(kwargs)
+            return pl.DataFrame({"pred": [10.0, 20.0]}).lazy()
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "aux",
+                        "data": {
+                            "label": "aux",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "r1",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                                "code": "df = src",
+                                "contract": {
+                                    "inputs": ["x"],
+                                    "outputs": ["pred"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "aux", "target": "ms"},
+                    {"id": "e3", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            patch(
+                "haute._model_scorer._run_score_pipeline",
+                side_effect=fake_run_score_pipeline,
+            ),
+        ):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+                input_node_ids=["src", "aux"],
+                output_node_id="out",
+                artifact_paths={
+                    "ms__model.cbm": str(cbm_path),
+                    f"ms__{CONTRACT_FILENAME}": str(contract_path),
+                },
+            )
+
+        extra_dfs = captured["extra_dfs"]
+        assert isinstance(extra_dfs, tuple)
+        assert len(extra_dfs) == 1
+
+    def test_multi_row_unbundled_model_score_uses_deploy_batch_source(self):
+        """Configured non-bundled deploy modelScore follows deploy batch scoring."""
+        from haute.deploy._scorer import score_graph
+
+        scoring_model = MagicMock()
+        captured: dict[str, object] = {}
+
+        def fake_run_score_pipeline(*_args, **kwargs):
+            captured.update(kwargs)
+            return pl.DataFrame({"pred": [10.0, 20.0]}).lazy()
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "remote-run",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
+            patch(
+                "haute._model_scorer._run_score_pipeline",
+                side_effect=fake_run_score_pipeline,
+            ),
+        ):
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+            )
+
+        assert result["pred"].to_list() == [10.0, 20.0]
+        assert captured["source"] == "deploy_batch"
+
+    def test_deploy_batch_model_score_cleans_scored_temp_after_collect(
+        self,
+        tmp_path,
+    ):
+        """Request-scoped deploy cleanup removes scored parquet after response collect."""
+        from haute._mlflow_io import ScoringModel
+        from haute.deploy._scorer import score_graph
+
+        cbm_path = tmp_path / "model.cbm"
+        cbm_path.write_bytes(b"fake")
+        scored_path = tmp_path / "haute_score_out_deploy.parquet"
+        raw_model = MagicMock()
+        scoring_model = ScoringModel(
+            model=raw_model,
+            feature_names=["x"],
+            cat_feature_names=frozenset(),
+            flavor="catboost",
+        )
+
+        def fake_batch_score(*_args, **_kwargs):
+            pl.DataFrame({"pred": [10.0, 20.0]}).write_parquet(scored_path)
+            return str(scored_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "ms",
+                        "data": {
+                            "label": "ms",
+                            "nodeType": "modelScore",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "r1",
+                                "artifact_path": "model.cbm",
+                                "task": "regression",
+                                "output_column": "pred",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ms"},
+                    {"id": "e2", "source": "ms", "target": "out"},
+                ],
+            }
+        )
+
+        with (
+            patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            patch("haute._model_scorer._batch_score_to_parquet", side_effect=fake_batch_score),
+        ):
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={"ms__model.cbm": str(cbm_path)},
+            )
+
+        assert result["pred"].to_list() == [10.0, 20.0]
+        assert not scored_path.exists()
+
 
 class TestRemapArtifact:
     """Tests for the _remap_artifact helper function."""
@@ -1520,6 +2952,27 @@ class TestRemapArtifact:
         remap = {}
         result = _remap_artifact("node1", {}, remap, "path")
         assert result is None
+
+
+class TestDeployModelScoreTempCleanup:
+    def test_cleanup_preserves_primary_error_when_unlink_fails(self, monkeypatch):
+        from haute.deploy._scorer import _cleanup_model_score_temp_paths
+
+        def fail_cleanup(_paths):
+            raise PermissionError("locked")
+
+        monkeypatch.setattr(
+            "haute._model_scorer._cleanup_registered_temp_files",
+            fail_cleanup,
+        )
+
+        _cleanup_model_score_temp_paths(["locked.parquet"], preserve_primary_error=True)
+
+        with pytest.raises(PermissionError, match="locked"):
+            _cleanup_model_score_temp_paths(
+                ["locked.parquet"],
+                preserve_primary_error=False,
+            )
 
 
 # ===========================================================================
@@ -1881,7 +3334,7 @@ class TestCondaEnvAndPipRequirements:
         reqs = _pip_requirements(resolved)
 
         assert any("haute==" in r for r in reqs)
-        assert any("polars" in r for r in reqs)
+        assert "polars>=1.39.2" in reqs
 
     def test_pip_requirements_includes_catboost_when_used(self):
         """If a node has fileType=catboost, catboost is added to requirements."""

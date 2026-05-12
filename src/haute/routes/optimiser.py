@@ -11,10 +11,18 @@ from typing import Any, Protocol, cast
 
 from fastapi import APIRouter, HTTPException
 
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._logging import get_logger
+from haute._polars_utils import (
+    DEFAULT_STREAMING_CHUNK_SIZE,
+    streaming_collect,
+    temporary_streaming_chunk_size,
+)
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
+from haute.errors import BoundedMemoryUnsupportedError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
+from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
@@ -23,29 +31,34 @@ from haute.routes._optimiser_limits import (
 )
 from haute.routes._optimiser_service import (
     _APPLY_RESULT_HANDLE_KEY,
-    _DEFAULT_CHUNK_SIZE,
-    _DEFAULT_TIMEOUT,
     _ESTIMATE_JOB_TYPE,
     _JOB_TYPE_KEY,
     _RATEBOOK_FACTOR_LEVEL_ORDER_KEY,
+    _RATEBOOK_FACTORS_HANDLE_KEY,
     OptimiserSolveService,
     _auto_frontier_ranges_from_config,
+    _build_ratebook_factor_contexts,
     _cleanup_apply_result_artifact,
     _compute_frontier,
     _find_optimiser_node,
     _job_elapsed_seconds,
     _load_apply_result_artifact,
+    _optimiser_solve_required_columns_by_node,
     _persist_apply_result_artifact,
-    _ratebook_factor_level_counts,
+    _ratebook_factor_level_counts_from_artifact,
+    _resolve_optimiser_data_input_id,
     _serialise_ratebook_factor_tables,
 )
 from haute.schemas import (
+    JobStatus,
     OptimiserApplyRequest,
     OptimiserApplyResponse,
     OptimiserEstimateRequest,
     OptimiserEstimateResponse,
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeResponse,
+    OptimiserFrontierAutoRangeStartResponse,
+    OptimiserFrontierAutoRangeStatusResponse,
     OptimiserFrontierRequest,
     OptimiserFrontierResponse,
     OptimiserFrontierSelectRequest,
@@ -145,6 +158,12 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
     node = _find_optimiser_node(body.graph, body.node_id)
     config = node.data.config
     _solve_service._validate_config(config)
+    data_input_id = _resolve_optimiser_data_input_id(body.graph, body.node_id, config)
+    required_columns_by_node = _optimiser_solve_required_columns_by_node(
+        body.graph,
+        body.node_id,
+        config,
+    )
 
     job_id = _store.create_job(
         {
@@ -161,10 +180,25 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
     try:
         with tempfile.TemporaryDirectory(prefix="haute_opt_estimate_") as raw_dir:
             checkpoint_dir = Path(raw_dir)
-            lazy_outputs = _solve_service._execute_pipeline(body, job_id, checkpoint_dir)
+            execution_context = ExecutionContext(
+                operation="optimiser_estimate",
+                profile=ExecutionProfile.OPTIMISER_SETUP,
+                job_id=job_id,
+            )
+            lazy_outputs = _solve_service._execute_pipeline(
+                body,
+                job_id,
+                checkpoint_dir,
+                required_columns_by_node=required_columns_by_node,
+                target_node_id=data_input_id or body.node_id,
+                execution_context=execution_context,
+            )
+            resolution_config = dict(config)
+            if isinstance(data_input_id, str) and data_input_id:
+                resolution_config["data_input"] = data_input_id
             source_lf = _solve_service._resolve_data_source(
                 lazy_outputs,
-                config,
+                resolution_config,
                 body.node_id,
                 job_id,
             )
@@ -172,6 +206,7 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                 source_lf,
                 config,
                 job_id,
+                streaming_chunk_size=body.streaming_chunk_size,
             )
             quote_id_col = str(config.get("quote_id", "quote_id"))
             scenario_counts = (
@@ -179,17 +214,18 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                 .group_by(quote_id_col)
                 .agg(pl.len().alias("scenario_count"))
             )
-            row = (
-                scenario_counts.select(
-                    pl.len().alias("quote_count"),
-                    pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
-                    pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
-                    pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
-                    pl.col("scenario_count").sum().alias("expanded_row_count"),
-                )
-                .collect(engine="streaming")
-                .row(0, named=True)
-            )
+            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+            with temporary_streaming_chunk_size(chunk_size):
+                row = streaming_collect(
+                    scenario_counts.select(
+                        pl.len().alias("quote_count"),
+                        pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
+                        pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
+                        pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
+                        pl.col("scenario_count").sum().alias("expanded_row_count"),
+                    ),
+                    profile=ExecutionProfile.OPTIMISER_SETUP,
+                ).row(0, named=True)
             return {
                 "quote_count": row["quote_count"],
                 "scenarios_per_quote_min": row["scenarios_per_quote_min"],
@@ -646,7 +682,7 @@ def _ratebook_runtime_state_or_raise(
 ) -> tuple[dict[str, Any], Any, Any, Any, list[list[str]]]:
     if not _store.touch_heavy_objects(
         job_id,
-        required_keys=("solver", "quote_grid", "factors_df"),
+        required_keys=("solver", "quote_grid"),
     ):
         raise HTTPException(
             status_code=400,
@@ -659,9 +695,20 @@ def _ratebook_runtime_state_or_raise(
     job = _store.require_completed_job(job_id)
     solver = job.get("solver")
     quote_grid = job.get("quote_grid")
-    factors_df = job.get("factors_df")
     factor_columns = job.get("factor_columns_valid")
-    if solver is None or quote_grid is None or factors_df is None:
+    if solver is None or quote_grid is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Ratebook runtime state is not available for this job. Re-run the "
+                "solve to materialise this frontier point."
+            ),
+        )
+    factor_contexts = job.get("ratebook_factor_contexts")
+    artifact_handles = _artifact_handles_or_raise(job)
+    factors_handle = artifact_handles.get(_RATEBOOK_FACTORS_HANDLE_KEY)
+    has_factor_source = factor_contexts is not None or isinstance(factors_handle, dict)
+    if factor_columns is None and not has_factor_source:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -674,7 +721,22 @@ def _ratebook_runtime_state_or_raise(
         for group in factor_columns
     ):
         raise HTTPException(status_code=500, detail="Ratebook factor column metadata is invalid")
-    return job, solver, quote_grid, factors_df, factor_columns
+    if factor_contexts is None:
+        if not isinstance(factors_handle, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Ratebook runtime state is not available for this job. Re-run the "
+                    "solve to materialise this frontier point."
+                ),
+            )
+        factor_contexts = _build_ratebook_factor_contexts(
+            factors_handle,
+            quote_grid,
+            job.get("config", {}),
+            factor_columns,
+        )
+    return job, solver, quote_grid, factor_contexts, factor_columns
 
 
 def _materialise_ratebook_frontier_point(
@@ -683,6 +745,7 @@ def _materialise_ratebook_frontier_point(
     result_dict: dict[str, Any],
     *,
     require_dataframe: bool = False,
+    streaming_chunk_size: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], SolveResultLike]:
     job = _store.require_completed_job(job_id)
     cached_result = _cached_materialised_ratebook_frontier_result(
@@ -693,19 +756,29 @@ def _materialise_ratebook_frontier_point(
     if cached_result is not None and not require_dataframe:
         return job, cached_result, _summary_solve_result(cached_result)
 
-    job, solver, quote_grid, factors_df, factor_columns = _ratebook_runtime_state_or_raise(job_id)
+    job, solver, quote_grid, factor_contexts, factor_columns = _ratebook_runtime_state_or_raise(
+        job_id,
+    )
     base_result = _base_result_for_frontier(job)
     constraints_override = _frontier_point_constraints_override(job, point_index)
     solve_result = solver.solve(
         quote_grid,
-        factors_df,
+        factor_contexts,
         factor_columns=factor_columns,
         lambdas=result_dict["lambdas"],
         _constraints_override=constraints_override,
     )
     factor_level_counts = job.get("factor_level_counts")
     if not isinstance(factor_level_counts, dict):
-        factor_level_counts = _ratebook_factor_level_counts(factors_df, factor_columns)
+        artifact_handles = _artifact_handles_or_raise(job)
+        factors_handle = artifact_handles.get(_RATEBOOK_FACTORS_HANDLE_KEY)
+        if not isinstance(factors_handle, dict):
+            raise HTTPException(status_code=500, detail="Ratebook factor artifact is missing")
+        factor_level_counts = _ratebook_factor_level_counts_from_artifact(
+            factors_handle,
+            factor_columns,
+            streaming_chunk_size=streaming_chunk_size,
+        )
     factor_level_order = job.get(_RATEBOOK_FACTOR_LEVEL_ORDER_KEY) or {}
     materialised = _materialised_ratebook_result_dict(
         result_dict,
@@ -890,8 +963,8 @@ def _materialise_frontier_point_apply(
                 lambdas=result_dict["lambdas"],
                 constraints=job.get("config", {}).get("constraints", {}),
             )
-        new_handle = _persist_apply_result_artifact(apply_result)
         df = _dataframe_or_raise(apply_result, context="Apply result")
+        new_handle = _persist_apply_result_artifact(apply_result)
         if new_handle is None:
             _store.atomic_update(
                 job_id,
@@ -984,7 +1057,16 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     except Exception as exc:
         logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
 
-    metrics = _optimiser_input_metrics(body)
+    try:
+        metrics = _optimiser_input_metrics(body)
+    except BoundedMemoryUnsupportedError as exc:
+        detail = f"Optimiser estimate cannot run in bounded streaming mode: {exc}"
+        logger.warning(
+            "optimiser_estimate_bounded_streaming_unsupported",
+            error=str(exc),
+            node_id=body.node_id,
+        )
+        raise HTTPException(status_code=422, detail=detail) from exc
     return OptimiserEstimateResponse(
         total_rows=total_rows,
         quote_count=cast(int | None, metrics.get("quote_count")),
@@ -1003,32 +1085,52 @@ def estimate_frontier_auto_range(
     return _solve_service.estimate_frontier_auto_range(body)
 
 
+@router.post("/frontier/auto-range/start", response_model=OptimiserFrontierAutoRangeStartResponse)
+def start_frontier_auto_range(
+    body: OptimiserFrontierAutoRangeRequest,
+) -> OptimiserFrontierAutoRangeStartResponse:
+    """Start efficient-frontier auto-range estimation as a background job."""
+    return _solve_service.start_frontier_auto_range(body)
+
+
+@router.get(
+    "/frontier/auto-range/status/{job_id}",
+    response_model=OptimiserFrontierAutoRangeStatusResponse,
+)
+async def frontier_auto_range_status(job_id: str) -> OptimiserFrontierAutoRangeStatusResponse:
+    """Poll efficient-frontier auto-range progress."""
+    return _solve_service.frontier_auto_range_status(job_id)
+
+
+@router.post(
+    "/frontier/auto-range/cancel/{job_id}",
+    response_model=OptimiserFrontierAutoRangeStatusResponse,
+)
+def cancel_frontier_auto_range(job_id: str) -> OptimiserFrontierAutoRangeStatusResponse:
+    """Cancel efficient-frontier auto-range progress."""
+    return _solve_service.cancel_frontier_auto_range(job_id)
+
+
 @router.get("/solve/status/{job_id}", response_model=OptimiserStatusResponse)
 async def solve_status(job_id: str) -> OptimiserStatusResponse:
     """Poll optimisation job progress."""
     job = _store.require_job(job_id)
 
-    # Check for timeout on running jobs
+    # Explicit per-job timeouts remain opt-in, but long local solves should
+    # otherwise keep running until they complete or the user cancels them.
     if job.get("status") == "running":
         start = job.get("start_time")
-        timeout = job.get("timeout", _DEFAULT_TIMEOUT)
-        if start and (time.monotonic() - start) > timeout:
+        timeout = job.get("timeout")
+        if (
+            start
+            and isinstance(timeout, int | float)
+            and not isinstance(timeout, bool)
+            and timeout > 0
+            and (time.monotonic() - start) > timeout
+        ):
             # P7: Atomic update — only if still running (avoids overwriting a
             # completed result with a timeout error).
-            updated_job = _store.atomic_update(
-                job_id,
-                {
-                    "status": "error",
-                    "message": f"Solve timed out after {timeout}s. "
-                    "Increase timeout or simplify the problem.",
-                    "elapsed_seconds": time.monotonic() - start,
-                },
-                expected_status="running",
-            )
-            if updated_job is None:
-                job = _store.require_job(job_id)
-            else:
-                job = updated_job
+            job = _solve_service.timeout_solve(job_id, timeout=timeout, start_time=start)
 
     frontier_resp = None
     if job.get("status") == "completed":
@@ -1040,12 +1142,36 @@ async def solve_status(job_id: str) -> OptimiserStatusResponse:
         elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
 
     return OptimiserStatusResponse(
-        status=job.get("status", "unknown"),
+        status=cast(JobStatus, require_job_status(job)),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         elapsed_seconds=elapsed_seconds,
         result=job.get("result"),
         frontier=frontier_resp,
+        terminal_reason=job.get("terminal_reason"),
+        execution_metrics=job.get("execution_metrics"),
+    )
+
+
+@router.post("/solve/cancel/{job_id}", response_model=OptimiserStatusResponse)
+async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
+    """Cancel an in-progress optimisation solve."""
+    job = _solve_service.cancel_solve(job_id)
+    frontier_resp = None
+    if job.get("status") == "completed":
+        fd = job.get("frontier_data")
+        if fd:
+            frontier_resp = OptimiserFrontierResponse(**fd)
+
+    return OptimiserStatusResponse(
+        status=cast(JobStatus, require_job_status(job)),
+        progress=job.get("progress", 0.0),
+        message=job.get("message", ""),
+        elapsed_seconds=job.get("elapsed_seconds", 0.0),
+        result=job.get("result"),
+        frontier=frontier_resp,
+        terminal_reason=job.get("terminal_reason"),
+        execution_metrics=job.get("execution_metrics"),
     )
 
 
@@ -1077,7 +1203,9 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
 
         solve_result = job.get("solve_result")
         from_artifact = False
-        if solve_result is not None:
+        if solve_result is not None and not hasattr(solve_result, "dataframe"):
+            _dataframe_or_raise(solve_result, context="Job solve_result")
+        if solve_result is not None and getattr(solve_result, "dataframe", None) is not None:
             typed_solve_result = cast(SolveResultLike, solve_result)
             df = _dataframe_or_raise(solve_result, context="Job solve_result")
             total_objective = typed_solve_result.total_objective
@@ -1126,32 +1254,31 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     """Compute efficient frontier for a completed optimisation job."""
     job = _store.require_completed_job(body.job_id)
     mode = job.get("config", {}).get("mode", job.get("result", {}).get("mode", "online"))
-    required_runtime = (
-        ("solver", "quote_grid", "factors_df")
-        if mode == "ratebook"
-        else (
-            "solver",
-            "quote_grid",
-        )
-    )
-
     missing_runtime_detail = (
         "Solver and quote grid are not available for this job. "
         "Re-run the solve to compute a new frontier."
     )
-    _touch_heavy_objects_or_raise(
-        body.job_id,
-        required_keys=required_runtime,
-        detail=missing_runtime_detail,
-    )
-    job = _store.require_completed_job(body.job_id)
-
-    solver = job.get("solver")
-    quote_grid = job.get("quote_grid")
-    factors_df = job.get("factors_df")
-    factor_columns = job.get("factor_columns_valid")
-    if solver is None or quote_grid is None:
-        raise HTTPException(status_code=400, detail=missing_runtime_detail)
+    if mode == "ratebook":
+        (
+            job,
+            solver,
+            quote_grid,
+            ratebook_factors,
+            factor_columns,
+        ) = _ratebook_runtime_state_or_raise(body.job_id)
+    else:
+        _touch_heavy_objects_or_raise(
+            body.job_id,
+            required_keys=("solver", "quote_grid"),
+            detail=missing_runtime_detail,
+        )
+        job = _store.require_completed_job(body.job_id)
+        solver = job.get("solver")
+        quote_grid = job.get("quote_grid")
+        ratebook_factors = None
+        factor_columns = None
+        if solver is None or quote_grid is None:
+            raise HTTPException(status_code=400, detail=missing_runtime_detail)
 
     try:
         base_result = _base_result_for_frontier_recompute(job)
@@ -1167,7 +1294,7 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
             solver,
             quote_grid,
             mode=mode,
-            factors_df=factors_df,
+            ratebook_factors=ratebook_factors,
             factor_columns=factor_columns,
             threshold_ranges=ranges,
             n_points_per_dim=body.n_points_per_dim,
@@ -1329,11 +1456,15 @@ def _build_artifact_payload(
         "quote_id": job_config.get("quote_id", "quote_id"),
         "scenario_index": job_config.get("scenario_index", "scenario_index"),
         "scenario_value": job_config.get("scenario_value", "scenario_value"),
-        "chunk_size": job_config.get("chunk_size", _DEFAULT_CHUNK_SIZE),
         "converged": solve_result.converged,
         "iterations": getattr(solve_result, "iterations", None),
         "cd_iterations": getattr(solve_result, "cd_iterations", None),
     }
+    if "chunk_size" in job_config:
+        payload["chunk_size"] = job_config["chunk_size"]
+    setup_chunking = job.get("setup_chunking")
+    if isinstance(setup_chunking, dict):
+        payload["setup_chunking"] = setup_chunking
     # Frontier provenance — record which point was selected (if any)
     selected_idx = (
         selected_frontier_point

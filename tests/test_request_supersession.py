@@ -101,6 +101,51 @@ async def test_superseded_running_worker_error_returns_superseded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_new_latest_request_cancels_active_worker_cooperatively() -> None:
+    coordinator = SupersessionCoordinator()
+    key = ("preview", "graph")
+    started_first = asyncio.Event()
+    release_first = asyncio.Event()
+    cancel_calls = 0
+
+    async def first_work() -> str:
+        started_first.set()
+        await release_first.wait()
+        return "first"
+
+    async def second_work() -> str:
+        return "latest"
+
+    def cancel_first() -> None:
+        nonlocal cancel_calls
+        cancel_calls += 1
+        release_first.set()
+
+    first = asyncio.create_task(
+        coordinator.run_latest(
+            key,
+            first_work,
+            cancel_active=cancel_first,
+            superseded_message="superseded",
+        )
+    )
+    await started_first.wait()
+
+    second = asyncio.create_task(
+        coordinator.run_latest(
+            key,
+            second_work,
+            superseded_message="superseded",
+        )
+    )
+
+    with pytest.raises(SupersededRequestError):
+        await first
+    assert await second == "latest"
+    assert cancel_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_superseded_request_waiting_for_limiter_does_not_run() -> None:
     coordinator = SupersessionCoordinator()
     limiter = asyncio.Semaphore(1)

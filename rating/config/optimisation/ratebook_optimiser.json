@@ -19,12 +19,12 @@
   "frontier_enabled": true,
   "frontier_ranges": {
     "conversion_prediction": {
-      "min": 189.03746032714844,
-      "max": 99695.75
+      "min": 3443.3509674072266,
+      "max": 946350.07421875
     }
   },
-  "frontier_min": 189.03746032714844,
-  "frontier_max": 99695.75,
+  "frontier_min": 3443.3509674072266,
+  "frontier_max": 946350.07421875,
   "banding_source": "age_veh_banding",
   "factor_columns": [
     [

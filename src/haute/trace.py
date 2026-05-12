@@ -76,6 +76,7 @@ from haute.executor import (
     _build_node_fn,
     _compile_preamble,
     _pipeline_dir,
+    _preview_projection_cache_suffix,
 )
 from haute.graph_utils import (
     NodeType,
@@ -235,6 +236,18 @@ def _find_target_row_index(df: pl.DataFrame, row_values: dict[str, Any]) -> int 
     return None
 
 
+def _requested_preview_columns_from_row(
+    row_values: dict[str, Any] | None,
+    column: str | None,
+) -> list[str] | None:
+    if not row_values:
+        return None
+    columns = [str(name) for name in row_values]
+    if column and column not in columns:
+        columns.append(column)
+    return columns
+
+
 def execute_trace(
     graph: PipelineGraph,
     row_index: int = 0,
@@ -329,6 +342,32 @@ def execute_trace(
             prev_fingerprint=(_cache.fingerprint or "")[:8],
         )
 
+        base_preview_key = f"{row_limit}:{source}:contracts={int(ENFORCE_CONTRACTS)}"
+        requested_preview_columns = _requested_preview_columns_from_row(row_values, column)
+        preview_fps: list[str] = []
+        if requested_preview_columns is not None:
+            preview_fps.append(
+                graph_fingerprint(
+                    graph,
+                    base_preview_key
+                    + _preview_projection_cache_suffix(
+                        graph,
+                        target_node_id,
+                        requested_preview_columns,
+                        target_preview_only=True,
+                        initial_column_limit=None,
+                    ),
+                    memo=fingerprint_memo,
+                )
+            )
+        preview_fps.append(
+            graph_fingerprint(
+                graph,
+                base_preview_key,
+                memo=fingerprint_memo,
+            )
+        )
+
         eager_outputs, order, parents_of, node_map, source_ids = _materialize_eager_outputs(
             graph=graph,
             target_node_id=target_node_id,
@@ -336,15 +375,10 @@ def execute_trace(
             source=source,
             row_values=row_values,
             preamble_ns=preamble_ns,
-            # Match executor.py's preview cache key (includes the contract-
-            # enforcement flag so the trace reuses the correct cached
-            # preview DataFrames instead of falling through to a cold
-            # execution that may correlate differently).
-            preview_fp=graph_fingerprint(
-                graph,
-                f"{row_limit}:{source}:contracts={int(ENFORCE_CONTRACTS)}",
-                memo=fingerprint_memo,
-            ),
+            # Match executor.py's preview cache keys.  Projected preview
+            # requests include the visible row columns in the suffix; the
+            # unsuffixed key remains the fallback for full preview calls.
+            preview_fps=preview_fps,
             fp=fp,
             preview=preview,
         )
@@ -497,8 +531,8 @@ def execute_trace(
 
 def _resolve_preview_snapshot(
     preview: PreviewReader | dict[str, Any] | None,
-    preview_fp: str,
-) -> dict[str, Any] | None:
+    preview_fps: list[str],
+) -> tuple[dict[str, Any], str] | None:
     """Normalise *preview* into the slot-dict shape or ``None``.
 
     Accepts three input shapes so callers can inject whichever is
@@ -506,7 +540,7 @@ def _resolve_preview_snapshot(
 
     * ``None`` — caller opted out of preview reuse; returns ``None``.
     * A reader with ``try_get(fingerprint) -> dict | None`` — we call it
-      with *preview_fp* and return whatever it returns.  The executor's
+      with each candidate fingerprint and return the first hit. The executor's
       ``FingerprintCache`` satisfies this protocol unchanged.
     * A snapshot dict — treated as a pre-materialised cache entry.  The
       caller has already done the fingerprint lookup, so we return the
@@ -524,16 +558,18 @@ def _resolve_preview_snapshot(
     # ``hasattr`` is explicit about what we actually call.
     try_get = getattr(preview, "try_get", None)
     if callable(try_get):
-        result = try_get(preview_fp)
-        if result is None:
-            return None
-        if not isinstance(result, dict):
-            raise TypeError(
-                f"PreviewReader.try_get must return dict | None, got {type(result).__name__}"
-            )
-        return result
+        for preview_fp in preview_fps:
+            result = try_get(preview_fp)
+            if result is None:
+                continue
+            if not isinstance(result, dict):
+                raise TypeError(
+                    f"PreviewReader.try_get must return dict | None, got {type(result).__name__}"
+                )
+            return result, preview_fp
+        return None
     if isinstance(preview, dict):
-        return preview
+        return preview, preview_fps[0] if preview_fps else ""
     raise TypeError(
         "execute_trace(preview=...) expects a PreviewReader, a snapshot dict, or None; "
         f"got {type(preview).__name__}"
@@ -548,7 +584,7 @@ def _materialize_eager_outputs(
     source: str,
     row_values: dict[str, Any] | None,
     preamble_ns: dict[str, Any] | None,
-    preview_fp: str,
+    preview_fps: list[str],
     fp: str,
     preview: PreviewReader | dict[str, Any] | None,
 ) -> tuple[
@@ -573,14 +609,17 @@ def _materialize_eager_outputs(
     # dict | None``; the executor's FingerprintCache satisfies this
     # protocol) or a pre-materialised snapshot dict.  ``None`` disables
     # cache lookup entirely and forces a fresh execution.
-    preview_data = _resolve_preview_snapshot(preview, preview_fp)
+    preview_lookup = _resolve_preview_snapshot(preview, preview_fps)
+    preview_data = preview_lookup[0] if preview_lookup is not None else None
+    matched_preview_fp = preview_lookup[1] if preview_lookup is not None else ""
 
     if preview_data is not None:
         # Snapshot dicts without an ``eager_outputs`` slot are treated
         # as empty — the cold-execute path below will handle them.
         prev_outputs = preview_data.get("eager_outputs") or {}
-        # Preview uses swallow_errors=True, so some outputs may be
-        # None on error.  Only reuse if target node has a real value.
+        # Preview uses swallow_errors=True, so some outputs may be None on
+        # error.  Only reuse when the full ancestor chain is present; target-
+        # only previews intentionally cache just the selected node.
         if target_node_id in prev_outputs and prev_outputs[target_node_id] is not None:
             # Graph-structure metadata still needs computing for
             # the trace-specific fields (parents_of, node_map, etc.)
@@ -589,20 +628,25 @@ def _materialize_eager_outputs(
                 target_node_id,
                 source=source,
             )
-            # Use preview DataFrames for all nodes that have them.
-            # Some upstream nodes may have errored in preview
-            # (swallow_errors=True) — include only the ones that
-            # succeeded.  The post-hoc correlator handles missing
-            # nodes gracefully.
-            eager_outputs = {
-                nid: prev_outputs[nid] for nid in order if prev_outputs.get(nid) is not None
-            }
-            if target_node_id in eager_outputs:
+            # A full trace needs every executed ancestor so its waterfall
+            # remains truthful. Partial target-only preview caches fall
+            # through to cold trace execution below.
+            missing_preview_nodes = [nid for nid in order if prev_outputs.get(nid) is None]
+            if missing_preview_nodes:
+                logger.debug(
+                    "trace_preview_cache_partial",
+                    fingerprint=fp[:8],
+                    preview_fingerprint=matched_preview_fp[:8],
+                    target=target_node_id,
+                    missing_nodes=missing_preview_nodes,
+                )
+            else:
+                eager_outputs = {nid: prev_outputs[nid] for nid in order}
                 source_ids = {nid for nid in order if not parents_of.get(nid)}
                 logger.debug(
                     "trace_reused_preview_cache",
                     fingerprint=fp[:8],
-                    preview_fingerprint=preview_fp[:8],
+                    preview_fingerprint=matched_preview_fp[:8],
                     target=target_node_id,
                     reused_nodes=len(eager_outputs),
                 )

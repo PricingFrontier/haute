@@ -44,6 +44,8 @@ type NodePanelProps = {
   errorLine?: number | null
   /** Preview rows from the current node's preview data (input columns pass through) */
   previewRows?: Record<string, unknown>[]
+  /** True while the selected node preview request is still in flight. */
+  selectedPreviewLoading?: boolean
 }
 
 // ─── Node types that do NOT show the Columns tab ──
@@ -325,7 +327,17 @@ function clearCachedResultShape(data: HauteNodeData): HauteNodeData {
 
 // ─── NodePanel ────────────────────────────────────────────────────
 
-export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, onRefreshPreview, dimmed, errorLine, previewRows }: NodePanelProps) {
+export default function NodePanel({
+  node,
+  onClose,
+  onUpdateNode,
+  onDeleteEdge,
+  onRefreshPreview,
+  dimmed,
+  errorLine,
+  previewRows,
+  selectedPreviewLoading = false,
+}: NodePanelProps) {
   const { allNodes, edges } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
@@ -501,6 +513,7 @@ export default function NodePanel({ node, onClose, onUpdateNode, onDeleteEdge, o
             onUpdate={handleConfigUpdate}
             upstreamColumns={effectiveCols}
             accentColor={accentColor}
+            deferColumnFetch={selectedPreviewLoading}
           />
         )
       }

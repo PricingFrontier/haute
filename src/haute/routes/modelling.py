@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import time
+from typing import cast
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._train_service import (
     _DEFAULT_TIMEOUT,
@@ -22,6 +24,7 @@ from haute.routes._train_service import (
 from haute.schemas import (
     ExportScriptRequest,
     ExportScriptResponse,
+    JobStatus,
     LogExperimentRequest,
     LogExperimentResponse,
     MlflowCheckResponse,
@@ -63,17 +66,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
         start = job.get("start_time")
         timeout = job.get("timeout", _DEFAULT_TIMEOUT)
         if start and (time.monotonic() - start) > timeout:
-            _store.atomic_update(
-                job_id,
-                {
-                    "status": "error",
-                    "message": f"Training timed out after {timeout}s. "
-                    "Increase timeout or simplify the model.",
-                    "elapsed_seconds": time.monotonic() - start,
-                },
-                expected_status="running",
-            )
-            job = _store.require_job(job_id)
+            job = _train_service.timeout(job_id, timeout=timeout, start_time=start)
 
     result = job.get("result")
     # ``_result_finite_validated`` is an internal cache flag — it MUST stay
@@ -114,15 +107,40 @@ async def train_status(job_id: str) -> TrainStatusResponse:
             job = _store.require_job(job_id)
 
     return TrainStatusResponse(
-        status=job.get("status", "unknown"),
+        status=cast(JobStatus, require_job_status(job)),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         iteration=job.get("iteration", 0),
         total_iterations=job.get("total_iterations", 0),
         train_loss=job.get("train_loss", {}),
+        train_loss_history=job.get("train_loss_history", []),
+        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
         elapsed_seconds=job.get("elapsed_seconds", 0.0),
         result=job.get("result"),
         warning=job.get("warning"),
+        terminal_reason=job.get("terminal_reason"),
+        execution_metrics=job.get("execution_metrics"),
+    )
+
+
+@router.post("/train/cancel/{job_id}", response_model=TrainStatusResponse)
+async def cancel_training(job_id: str) -> TrainStatusResponse:
+    """Cancel an in-progress training job."""
+    job = _train_service.cancel(job_id)
+    return TrainStatusResponse(
+        status=cast(JobStatus, require_job_status(job)),
+        progress=job.get("progress", 0.0),
+        message=job.get("message", ""),
+        iteration=job.get("iteration", 0),
+        total_iterations=job.get("total_iterations", 0),
+        train_loss=job.get("train_loss", {}),
+        train_loss_history=job.get("train_loss_history", []),
+        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
+        elapsed_seconds=job.get("elapsed_seconds", 0.0),
+        result=job.get("result"),
+        warning=job.get("warning"),
+        terminal_reason=job.get("terminal_reason"),
+        execution_metrics=job.get("execution_metrics"),
     )
 
 
@@ -184,7 +202,9 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         n_features = max(ram_est.probe_columns - n_non_feature, 1)
         vram_check = _check_gpu_vram(effective_rows, n_features, node_params)
         if vram_check.warning:
-            vram_check.warning += " Training will fall back to CPU automatically."
+            vram_check.warning += (
+                " Switch task_type to CPU or reduce rows/features before starting GPU training."
+            )
 
     return TrainEstimateResponse(
         total_rows=ram_est.total_rows,

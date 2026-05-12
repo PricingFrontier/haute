@@ -54,6 +54,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _ROUTES_DIR = _REPO_ROOT / "src" / "haute" / "routes"
+_DEPLOY_DIR = _REPO_ROOT / "src" / "haute" / "deploy"
 _PIPELINE_PY = _ROUTES_DIR / "pipeline.py"
 _HELPERS_PY = _ROUTES_DIR / "_helpers.py"
 _JOB_STORE_PY = _ROUTES_DIR / "_job_store.py"
@@ -718,6 +719,265 @@ class TestNoDirectJobStoreInstantiation:
         tree = ast.parse(_JOB_STORE_PY.read_text(encoding="utf-8"))
         class_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
         assert "JobStore" in class_names
+
+
+class TestNoNewPrivateEngineImports:
+    """Slice 0 guardrail for the execution-engine cleanup.
+
+    Route/deploy modules should enter the execution engine through the internal
+    facade, not by importing private lazy-execution helpers directly.
+    """
+
+    _PRIVATE_ENGINE_IMPORT_ALLOWLIST: set[tuple[str, str, str]] = set()
+    _PRIVATE_ENGINE_IMPORTS_BY_MODULE = {
+        "haute._execute_lazy": None,
+        "haute.projection": None,
+        "haute.graph_utils": {
+            "_execute_lazy",
+            "_prepare_graph",
+            "_prune_live_switch_edges",
+        },
+    }
+
+    def test_no_new_private_execution_helper_imports_in_routes_or_deploy(self) -> None:
+        offenders: list[tuple[str, str, str, int]] = []
+        seen_private_imports: set[tuple[str, str, str]] = set()
+
+        for root in (_ROUTES_DIR, _DEPLOY_DIR):
+            for py_file in root.rglob("*.py"):
+                if py_file.name == "__init__.py":
+                    continue
+                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+                rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
+
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.ImportFrom):
+                        continue
+                    if node.module not in self._PRIVATE_ENGINE_IMPORTS_BY_MODULE:
+                        continue
+                    tracked_imports = self._PRIVATE_ENGINE_IMPORTS_BY_MODULE[node.module]
+                    for alias in node.names:
+                        if not alias.name.startswith("_"):
+                            continue
+                        if tracked_imports is not None and alias.name not in tracked_imports:
+                            continue
+                        private_import = (rel_path, node.module, alias.name)
+                        seen_private_imports.add(private_import)
+                        if private_import in self._PRIVATE_ENGINE_IMPORT_ALLOWLIST:
+                            continue
+                        offenders.append((*private_import, node.lineno))
+
+        assert offenders == [], (
+            "New private execution-helper imports found in routes/deploy. "
+            "Expose an internal execution facade instead, or add a short-lived allowlist "
+            f"entry with a Slice 0 cleanup note. Offenders: {offenders}"
+        )
+        assert seen_private_imports == self._PRIVATE_ENGINE_IMPORT_ALLOWLIST, (
+            "Private execution-helper allowlist is stale. Shrink the allowlist "
+            "when a private import is removed, or add a reviewed entry when one "
+            "is intentionally introduced. "
+            f"Missing: {self._PRIVATE_ENGINE_IMPORT_ALLOWLIST - seen_private_imports}; "
+            f"Unexpected: {seen_private_imports - self._PRIVATE_ENGINE_IMPORT_ALLOWLIST}"
+        )
+
+
+class TestExecutionBoundaryGuardrails:
+    """Static guardrails for the shared execution/projection architecture."""
+
+    def test_execute_lazy_call_sites_make_execution_context_decision(self) -> None:
+        offenders: list[tuple[str, int, str]] = []
+
+        for py_file in (_REPO_ROOT / "src" / "haute").rglob("*.py"):
+            rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
+            if rel_path == "src/haute/_execute_lazy.py":
+                continue
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                call_name: str | None = None
+                if isinstance(func, ast.Name):
+                    call_name = func.id
+                elif isinstance(func, ast.Attribute):
+                    call_name = func.attr
+                if call_name != "_execute_lazy":
+                    continue
+                if any(keyword.arg == "execution_context" for keyword in node.keywords):
+                    continue
+                offenders.append((rel_path, node.lineno, ast.unparse(node)))
+
+        assert offenders == [], (
+            "Every production _execute_lazy call site must explicitly pass "
+            "execution_context=... (including None only if the caller has made "
+            f"that decision deliberately). Offenders: {offenders}"
+        )
+
+    def test_ratebook_factor_column_contract_is_owned_by_projection_planner(self) -> None:
+        optimiser_service = ast.parse(
+            (_ROUTES_DIR / "_optimiser_service.py").read_text(encoding="utf-8")
+        )
+
+        local_helpers = [
+            node.lineno
+            for node in ast.walk(optimiser_service)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_ratebook_factor_required_columns"
+        ]
+        assert local_helpers == [], (
+            "Ratebook factor-column requirements must stay in haute.projection "
+            "so planning and execution cannot drift. Local helper definitions: "
+            f"{local_helpers}"
+        )
+
+        # Routes must consume the shared helper rather than redefine it.  The
+        # canonical owner is ``haute.projection``; routes go through the
+        # ``haute.execution`` facade (which re-exports the same symbol) per
+        # the execution-facade hygiene rule pinned in
+        # ``test_polars_execution_strategy_slice0`` — both paths resolve to
+        # the projection planner so planning and execution cannot drift.
+        allowed_modules = {"haute.projection", "haute.execution"}
+        imports_public_helper = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module in allowed_modules
+            and any(alias.name == "ratebook_factor_required_columns" for alias in node.names)
+            for node in ast.walk(optimiser_service)
+        )
+        assert imports_public_helper, (
+            "Ratebook factor-column requirements must be imported from the "
+            "shared projection planner — directly via haute.projection or "
+            "indirectly via the haute.execution facade — instead of being "
+            "redefined locally."
+        )
+
+    def test_polars_streaming_chunk_size_is_only_mutated_in_shared_helper(self) -> None:
+        offenders: list[tuple[str, int, str]] = []
+
+        for py_file in (_REPO_ROOT / "src" / "haute").rglob("*.py"):
+            rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
+            if rel_path == "src/haute/_polars_utils.py":
+                continue
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "set_streaming_chunk_size":
+                    offenders.append((rel_path, node.lineno, ast.unparse(node)))
+
+        assert offenders == [], (
+            "Polars streaming chunk size is process-global. Production code must "
+            "mutate it only through haute._polars_utils.temporary_streaming_chunk_size. "
+            f"Offenders: {offenders}"
+        )
+
+    def test_status_responses_do_not_default_to_unknown_status(self) -> None:
+        offenders: list[tuple[str, int, str]] = []
+
+        for py_file in _ROUTES_DIR.rglob("*.py"):
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if not isinstance(node.func, ast.Attribute) or node.func.attr != "get":
+                    continue
+                if len(node.args) < 2:
+                    continue
+                first, second = node.args[0], node.args[1]
+                if (
+                    isinstance(first, ast.Constant)
+                    and first.value == "status"
+                    and isinstance(second, ast.Constant)
+                    and second.value == "unknown"
+                ):
+                    offenders.append((rel_path, node.lineno, ast.unparse(node)))
+
+        assert offenders == [], (
+            "Job status response models use a closed status literal. Do not hide "
+            f"corrupt job state behind 'unknown'; fail loudly instead. Offenders: {offenders}"
+        )
+
+    def test_file_schema_route_uses_profiled_collect_helper(self) -> None:
+        offenders: list[tuple[int, str]] = []
+        tree = ast.parse((_ROUTES_DIR / "files.py").read_text(encoding="utf-8"))
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "collect":
+                offenders.append((node.lineno, ast.unparse(node)))
+
+        assert offenders == [], (
+            "File/schema preview routes must use haute._polars_utils.streaming_collect "
+            f"so even tiny materialisation boundaries are profiled consistently. {offenders}"
+        )
+
+    def test_deploy_schema_sampling_uses_profiled_collect_helper(self) -> None:
+        offenders: list[tuple[int, str]] = []
+        tree = ast.parse(
+            (_REPO_ROOT / "src" / "haute" / "deploy" / "_schema.py").read_text(encoding="utf-8")
+        )
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "collect":
+                offenders.append((node.lineno, ast.unparse(node)))
+
+        assert offenders == [], (
+            "Deploy schema sampling must use haute._polars_utils.streaming_collect "
+            f"so deployment-time materialisation is profiled consistently. {offenders}"
+        )
+
+    def test_optimiser_service_terminal_statuses_go_through_lifecycle(self) -> None:
+        optimiser_service = ast.parse(
+            (_ROUTES_DIR / "_optimiser_service.py").read_text(encoding="utf-8")
+        )
+        terminal_statuses = {
+            "completed",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error",
+            "error",
+        }
+        offenders: list[tuple[int, str]] = []
+
+        def _literal_terminal_status(node: ast.AST) -> str | None:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value if node.value in terminal_statuses else None
+            return None
+
+        for node in ast.walk(optimiser_service):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr == "atomic_update" and len(node.args) >= 2:
+                payload = node.args[1]
+                if isinstance(payload, ast.Dict):
+                    for key, value in zip(payload.keys, payload.values, strict=False):
+                        if (
+                            isinstance(key, ast.Constant)
+                            and key.value == "status"
+                            and _literal_terminal_status(value) is not None
+                        ):
+                            offenders.append((node.lineno, ast.unparse(node)))
+            elif node.func.attr == "update_job":
+                for keyword in node.keywords:
+                    if keyword.arg != "status":
+                        continue
+                    if _literal_terminal_status(keyword.value) is not None:
+                        offenders.append((node.lineno, ast.unparse(node)))
+
+        assert offenders == [], (
+            "Optimiser terminal job status writes must use JobLifecycle.transition() "
+            f"so status and terminal_reason cannot drift. Offenders: {offenders}"
+        )
 
 
 class TestGetJobStoreIndependentState:

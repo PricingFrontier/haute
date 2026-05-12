@@ -67,6 +67,7 @@ _UNIVERSAL_KEYS: frozenset[str] = frozenset(
         "inputMapping",
         "selected_columns",
         "column_renames",
+        "categorical_levels",
         "contract",
     }
 )

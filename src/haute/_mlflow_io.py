@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
     from mlflow.tracking import MlflowClient
 
+    from haute._model_scorer import ScoreWriteProjection
+
 logger = get_logger(component="mlflow_io")
 
 _MODEL_CACHE_MAX_SIZE = 16
@@ -760,6 +762,27 @@ def load_mlflow_model(
                 flavor=_flavor_from_artifact(artifact_path),
             )
             return cached
+        flavor = _flavor_from_artifact(artifact_path)
+        if flavor in ("catboost", "rustystats"):
+            local_path = Path.cwd() / ".cache" / "models" / run_id / artifact_path
+            if local_path.is_file():
+                _record_cache_miss(
+                    run_id=run_id,
+                    artifact_path=artifact_path,
+                    flavor=flavor,
+                )
+                scoring_model = load_local_model(str(local_path), task=task)
+                _model_cache.put(fast_key, scoring_model)
+                logger.info(
+                    "mlflow_model_loaded_from_disk_cache",
+                    source_type=source_type,
+                    run_id=run_id,
+                    artifact=artifact_path,
+                    task=task,
+                    flavor=flavor,
+                    path=str(local_path),
+                )
+                return scoring_model
 
     resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
         source_type=source_type,
@@ -904,6 +927,7 @@ def _score_eager(
     features: list[str],
     output_col: str = "prediction",
     task: str = "regression",
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
@@ -924,4 +948,5 @@ def _score_eager(
         task=task,
         output_col=output_col,
         batch=False,
+        write_projection=write_projection,
     )

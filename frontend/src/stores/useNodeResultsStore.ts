@@ -15,7 +15,7 @@ import { create } from "zustand"
 import useGraphStore from "./useGraphStore"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SolveResult, OptimiserPreviewData } from "../panels/OptimiserPreview"
-import type { FrontierSelectResponse, FrontierData } from "../api/types"
+import type { FrontierSelectResponse, FrontierData, JobStatus, ExecutionMetrics } from "../api/types"
 import type { ColumnInfo } from "../types/node"
 
 export const MAX_CACHED_PREVIEWS = 24
@@ -30,11 +30,13 @@ const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_
 // ─── Types ───────────────────────────────────────────────────────
 
 export type SolveProgress = {
-  status: string
+  status: JobStatus
   progress: number
   message: string
   elapsed_seconds: number
   result?: SolveResult
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export type TrainResult = {
@@ -52,6 +54,7 @@ export type TrainResult = {
   error?: string
   best_iteration?: number | null
   loss_history?: { iteration: number; [key: string]: number }[]
+  loss_history_truncated?: boolean
   double_lift?: { decile: number; actual: number; predicted: number; count: number }[]
   shap_summary?: { feature: string; mean_abs_shap: number }[]
   feature_importance_loss?: { feature: string; importance: number }[]
@@ -72,7 +75,7 @@ export type TrainResult = {
 }
 
 export type TrainProgress = {
-  status: string
+  status: JobStatus
   progress: number
   message: string
   iteration: number
@@ -81,6 +84,8 @@ export type TrainProgress = {
   elapsed_seconds: number
   result?: TrainResult
   warning?: string | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
 
 interface CachedPreview {
@@ -94,6 +99,7 @@ interface CachedSolveResult {
   result: SolveResult
   originalResult: SolveResult
   error?: string
+  terminalStatus?: SolveProgress | null
   jobId: string
   configHash: string
   /** Constraint config snapshot for OptimiserPreview */
@@ -116,6 +122,7 @@ interface ActiveSolveJob {
 
 interface CachedTrainResult {
   result: TrainResult
+  terminalStatus?: TrainProgress | null
   jobId: string
   configHash: string
 }
@@ -536,16 +543,16 @@ interface NodeResultsState {
   // ── Optimiser actions ──
   startSolveJob: (nodeId: string, jobId: string, nodeLabel: string, constraints: Record<string, Record<string, number>>, configHash: string) => void
   updateSolveProgress: (nodeId: string, progress: SolveProgress) => void
-  completeSolveJob: (nodeId: string, result: SolveResult) => void
-  failSolveJob: (nodeId: string, error: string) => void
+  completeSolveJob: (nodeId: string, result: SolveResult, terminalStatus?: SolveProgress) => void
+  failSolveJob: (nodeId: string, error: string, terminalStatus?: SolveProgress) => void
   selectFrontierPoint: (nodeId: string, pointIndex: number | null) => void
   updateFrontierAfterSelect: (nodeId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
 
   // ── Training actions ──
   startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string) => void
   updateTrainProgress: (nodeId: string, progress: TrainProgress) => void
-  completeTrainJob: (nodeId: string, result: TrainResult) => void
-  failTrainJob: (nodeId: string, error: string) => void
+  completeTrainJob: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
+  failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
 
   // ── Derived helpers ──
   /** Build OptimiserPreviewData for a node (from completed result or null). */
@@ -639,7 +646,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  completeSolveJob: (nodeId, result) =>
+  completeSolveJob: (nodeId, result, terminalStatus) =>
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
@@ -661,6 +668,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       let nextCached: CachedSolveResult = {
         result,
         originalResult: result,
+        terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
         constraints: job.constraints,
@@ -693,7 +701,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  failSolveJob: (nodeId, error) =>
+  failSolveJob: (nodeId, error, terminalStatus) =>
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
@@ -704,6 +712,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
           originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
         }),
+        terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
         constraints: job.constraints,
@@ -870,7 +879,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  completeTrainJob: (nodeId, result) =>
+  completeTrainJob: (nodeId, result, terminalStatus) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
       // Remove the active job if present; also works for direct completion
@@ -879,6 +888,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
         result,
+        terminalStatus: terminalStatus ?? null,
         jobId: job?.jobId ?? "",
         configHash: job?.configHash ?? "",
       }
@@ -905,7 +915,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  failTrainJob: (nodeId, error) =>
+  failTrainJob: (nodeId, error, terminalStatus) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
@@ -913,6 +923,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
         result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, test_rows: 0 } as TrainResult,
+        terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
       }

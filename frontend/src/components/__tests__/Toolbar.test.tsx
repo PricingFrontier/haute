@@ -29,6 +29,7 @@ describe("Toolbar", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       rowLimit: 1000,
+      streamingChunkSize: 500_000,
       sources: ["live"],
       activeSource: "live",
     })
@@ -125,32 +126,78 @@ describe("Toolbar", () => {
     expect(screen.getByTitle("Unsaved changes")).toBeInTheDocument()
   })
 
+  function getRowLimitInput(): HTMLInputElement {
+    return screen.getByLabelText("Rows") as HTMLInputElement
+  }
+
+  function getChunkInput(): HTMLInputElement {
+    return screen.getByLabelText("Chunk") as HTMLInputElement
+  }
+
   it("row limit input changes the store value", () => {
     render(<Toolbar {...makeProps()} />)
-    const input = screen.getByRole("spinbutton")
-    fireEvent.change(input, { target: { value: "500" } })
+    fireEvent.change(getRowLimitInput(), { target: { value: "500" } })
     expect(useSettingsStore.getState().rowLimit).toBe(500)
   })
 
   it("row limit clamps negative values to 0", () => {
     render(<Toolbar {...makeProps()} />)
-    const input = screen.getByRole("spinbutton")
-    fireEvent.change(input, { target: { value: "-50" } })
+    fireEvent.change(getRowLimitInput(), { target: { value: "-50" } })
     expect(useSettingsStore.getState().rowLimit).toBe(0)
   })
 
   it("row limit treats NaN input as 0", () => {
     render(<Toolbar {...makeProps()} />)
-    const input = screen.getByRole("spinbutton")
-    fireEvent.change(input, { target: { value: "abc" } })
+    fireEvent.change(getRowLimitInput(), { target: { value: "abc" } })
     expect(useSettingsStore.getState().rowLimit).toBe(0)
   })
 
   it("row limit input shows current store value", () => {
     useSettingsStore.setState({ rowLimit: 2000 })
     render(<Toolbar {...makeProps()} />)
-    const input = screen.getByRole("spinbutton") as HTMLInputElement
-    expect(input.value).toBe("2000")
+    expect(getRowLimitInput().value).toBe("2000")
+  })
+
+  it("chunk input renders with the current streaming chunk size", () => {
+    useSettingsStore.setState({ streamingChunkSize: 250_000 })
+    render(<Toolbar {...makeProps()} />)
+    expect(getChunkInput().value).toBe("250000")
+  })
+
+  it("chunk input updates the streaming chunk size in the store", () => {
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+  })
+
+  it("chunk input clamps sub-1000 values up to 1000", () => {
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "5" } })
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(1000)
+  })
+
+  it("chunk input ignores non-numeric input (no setter call, value preserved)", () => {
+    useSettingsStore.setState({ streamingChunkSize: 250_000 })
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "abc" } })
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+  })
+
+  it("chunk input accepts scientific notation (5e5 -> 500000)", () => {
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "5e5" } })
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
+  })
+
+  it("chunk input clamps over-max values to the backend bound (10_000_000)", () => {
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "15000000" } })
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(10_000_000)
+  })
+
+  it("chunk input has max attribute matching the backend bound", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(getChunkInput()).toHaveAttribute("max", "10000000")
   })
 
   it("zoom in button calls onZoomIn", () => {

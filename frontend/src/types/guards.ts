@@ -15,9 +15,15 @@ import type {
   DatabricksTablesResponse,
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
+  ExecutionAdmission,
+  ExecutionMemoryPressureEvent,
+  ExecutionMetrics,
+  ExecutionStageMetrics,
   FetchProgressResponse,
   FetchTableResponse,
   FrontierAutoRangeResponse,
+  FrontierAutoRangeStartResponse,
+  FrontierAutoRangeStatusResponse,
   FrontierPoint,
   FrontierResponse,
   FrontierSelectResponse,
@@ -324,6 +330,33 @@ function optionalStringRecord(
   return value === undefined ? defaultValue : parseStringRecord(parser, value, `field \`${key}\``)
 }
 
+function parseArrayRecord<T>(
+  parser: string,
+  value: unknown,
+  field: string,
+  itemParser: (value: unknown, field: string) => T,
+): Record<string, T[]> {
+  const obj = expectPlainObject(parser, value, field)
+  const result: Record<string, T[]> = {}
+  for (const [recordKey, item] of Object.entries(obj)) {
+    result[recordKey] = parseArray(parser, item, `${field}.${recordKey}`, itemParser)
+  }
+  return result
+}
+
+function optionalArrayRecord<T>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+  itemParser: (value: unknown, field: string) => T,
+  defaultValue: Record<string, T[]> = {},
+): Record<string, T[]> {
+  const value = obj[key]
+  return value === undefined
+    ? defaultValue
+    : parseArrayRecord(parser, value, `field \`${key}\``, itemParser)
+}
+
 function optionalNullableObject(
   parser: string,
   obj: Record<string, unknown>,
@@ -366,6 +399,154 @@ function parseSchemaWarning(value: unknown, field: string): { column: string; st
     column: expectString("parsePreviewNodeResponse", obj.column, `${field}.column`),
     status: expectString("parsePreviewNodeResponse", obj.status, `${field}.status`),
   }
+}
+
+function parseExecutionStageMetrics(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionStageMetrics {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    schema_version: optionalNumber(parser, obj, "schema_version", 1),
+    name: optionalString(parser, obj, "name"),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    elapsed_ms: optionalNumber(parser, obj, "elapsed_ms"),
+    node_id: optionalNullableString(parser, obj, "node_id"),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    rss_start_bytes: optionalNullableNumber(parser, obj, "rss_start_bytes"),
+    rss_end_bytes: optionalNullableNumber(parser, obj, "rss_end_bytes"),
+    rss_delta_bytes: optionalNullableNumber(parser, obj, "rss_delta_bytes"),
+    rss_peak_bytes: optionalNullableNumber(parser, obj, "rss_peak_bytes"),
+    rows_in: optionalNullableNumber(parser, obj, "rows_in"),
+    rows_out: optionalNullableNumber(parser, obj, "rows_out"),
+    bytes_read: optionalNullableNumber(parser, obj, "bytes_read"),
+    bytes_written: optionalNullableNumber(parser, obj, "bytes_written"),
+    columns_scanned: optionalNullableNumber(parser, obj, "columns_scanned"),
+    n_collects: optionalNumber(parser, obj, "n_collects"),
+    n_checkpoints: optionalNumber(parser, obj, "n_checkpoints"),
+  }
+}
+
+function parseExecutionAdmission(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionAdmission {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    admitted: optionalBoolean(parser, obj, "admitted", true),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    memory_limit_bytes: optionalNumber(parser, obj, "memory_limit_bytes"),
+    rss_at_admission_bytes: optionalNullableNumber(parser, obj, "rss_at_admission_bytes"),
+    rss_limit_bytes: optionalNullableNumber(parser, obj, "rss_limit_bytes"),
+    process_rss_limit_bytes: optionalNullableNumber(parser, obj, "process_rss_limit_bytes"),
+    headroom_bytes: optionalNullableNumber(parser, obj, "headroom_bytes"),
+    config_key: optionalString(parser, obj, "config_key"),
+    budget_policy: optionalString(parser, obj, "budget_policy", "fixed_default"),
+    available_ram_bytes: optionalNullableNumber(parser, obj, "available_ram_bytes"),
+    os_reserve_bytes: optionalNullableNumber(parser, obj, "os_reserve_bytes"),
+    reason: optionalString(parser, obj, "reason"),
+  }
+}
+
+function parseExecutionMemoryPressureEvent(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionMemoryPressureEvent {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    schema_version: optionalNumber(parser, obj, "schema_version", 1),
+    event: obj.event === undefined
+      ? "memory_pressure"
+      : expectStringLiteral(parser, obj.event, `${field}.event`, ["memory_pressure"]),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    node_id: optionalNullableString(parser, obj, "node_id"),
+    stage: optionalNullableString(parser, obj, "stage"),
+    label: optionalNullableString(parser, obj, "label"),
+    threshold_ratio: optionalNumber(parser, obj, "threshold_ratio"),
+    threshold_percent: optionalNumber(parser, obj, "threshold_percent"),
+    rss_bytes: optionalNumber(parser, obj, "rss_bytes"),
+    rss_limit_bytes: optionalNumber(parser, obj, "rss_limit_bytes"),
+    headroom_bytes: optionalNumber(parser, obj, "headroom_bytes"),
+    headroom_used_bytes: optionalNumber(parser, obj, "headroom_used_bytes"),
+    rss_peak_bytes: optionalNumber(parser, obj, "rss_peak_bytes"),
+    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
+    memory_baseline_bytes: optionalNullableNumber(parser, obj, "memory_baseline_bytes"),
+    baseline_rss_bytes: optionalNullableNumber(parser, obj, "baseline_rss_bytes"),
+    budget_policy: optionalNullableString(parser, obj, "budget_policy"),
+    config_key: optionalNullableString(parser, obj, "config_key"),
+    available_ram_bytes: optionalNullableNumber(parser, obj, "available_ram_bytes"),
+    os_reserve_bytes: optionalNullableNumber(parser, obj, "os_reserve_bytes"),
+    pressure_ratio: optionalNumber(parser, obj, "pressure_ratio"),
+  }
+}
+
+function parseExecutionMetrics(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionMetrics {
+  const obj = expectPlainObject(parser, value, field)
+  const admission = optionalNullableObject(parser, obj, "admission")
+  return {
+    schema_version: optionalNumber(parser, obj, "schema_version", 1),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    status: optionalNullableString(parser, obj, "status"),
+    terminal_reason: optionalNullableString(parser, obj, "terminal_reason"),
+    stage_count: optionalNumber(parser, obj, "stage_count"),
+    retained_stage_count: optionalNumber(parser, obj, "retained_stage_count"),
+    truncated_stage_count: optionalNumber(parser, obj, "truncated_stage_count"),
+    stages_truncated: optionalBoolean(parser, obj, "stages_truncated"),
+    total_elapsed_ms: optionalNumber(parser, obj, "total_elapsed_ms"),
+    node_elapsed_ms: optionalNumberRecord(parser, obj, "node_elapsed_ms"),
+    stage_elapsed_ms: optionalNumberRecord(parser, obj, "stage_elapsed_ms"),
+    rss_start_bytes: optionalNullableNumber(parser, obj, "rss_start_bytes"),
+    rss_end_bytes: optionalNullableNumber(parser, obj, "rss_end_bytes"),
+    rss_delta_bytes: optionalNullableNumber(parser, obj, "rss_delta_bytes"),
+    rss_peak_bytes: optionalNullableNumber(parser, obj, "rss_peak_bytes"),
+    max_rss_bytes: optionalNullableNumber(parser, obj, "max_rss_bytes"),
+    n_collects: optionalNumber(parser, obj, "n_collects"),
+    n_checkpoints: optionalNumber(parser, obj, "n_checkpoints"),
+    memory_pressure_event_count: optionalNumber(parser, obj, "memory_pressure_event_count"),
+    retained_memory_pressure_event_count: optionalNumber(parser, obj, "retained_memory_pressure_event_count"),
+    truncated_memory_pressure_event_count: optionalNumber(parser, obj, "truncated_memory_pressure_event_count"),
+    memory_pressure_events_truncated: optionalBoolean(parser, obj, "memory_pressure_events_truncated"),
+    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
+    memory_baseline_bytes: optionalNullableNumber(parser, obj, "memory_baseline_bytes"),
+    rss_limit_bytes: optionalNullableNumber(parser, obj, "rss_limit_bytes"),
+    admission: admission === null
+      ? null
+      : parseExecutionAdmission(parser, admission, `${field}.admission`),
+    projection_plan_diagnostics: optionalNullableObject(
+      parser,
+      obj,
+      "projection_plan_diagnostics",
+    ),
+    stages: optionalArray(parser, obj, "stages", (item, itemField) =>
+      parseExecutionStageMetrics(parser, item, itemField),
+    ),
+    memory_pressure_events: optionalArray(parser, obj, "memory_pressure_events", (item, itemField) =>
+      parseExecutionMemoryPressureEvent(parser, item, itemField),
+    ),
+  }
+}
+
+function optionalExecutionMetrics(
+  parser: string,
+  obj: Record<string, unknown>,
+  key = "execution_metrics",
+): ExecutionMetrics | null {
+  const value = obj[key]
+  if (value === undefined || value === null) return null
+  return parseExecutionMetrics(parser, value, `field \`${key}\``)
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +664,25 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     memory: optionalArray("parsePreviewNodeResponse", obj, "memory", parseNodeMemory),
     schema_warnings: optionalArray("parsePreviewNodeResponse", obj, "schema_warnings", parseSchemaWarning),
     node_statuses: optionalStringRecord("parsePreviewNodeResponse", obj, "node_statuses"),
+    node_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_columns",
+      parseColumnInfo,
+    ),
+    node_available_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_available_columns",
+      parseColumnInfo,
+    ),
+    node_schema_warnings: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_schema_warnings",
+      parseSchemaWarning,
+    ),
+    execution_metrics: optionalExecutionMetrics("parsePreviewNodeResponse", obj, "execution_metrics"),
   }
 }
 
@@ -806,6 +1006,17 @@ function parseLossHistoryEntry(value: unknown, field: string): NonNullable<Train
   return result
 }
 
+const JOB_STATUSES = [
+  "running",
+  "completed",
+  "error",
+  "cancelled",
+  "superseded",
+  "timed_out",
+  "memory_limited",
+  "contract_error",
+] as const
+
 export function parseTrainResponse(value: unknown): TrainResponse {
   const obj = expectPlainObject("parseTrainResponse", value)
   const rawRegularization = optionalNullableObject("parseTrainResponse", obj, "glm_regularization_path")
@@ -854,7 +1065,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
 export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
   const obj = expectPlainObject("parseTrainStatusResponse", value)
   return {
-    status: expectStringLiteral("parseTrainStatusResponse", obj.status, "field `status`", ["running", "completed", "error"]),
+    status: expectStringLiteral("parseTrainStatusResponse", obj.status, "field `status`", JOB_STATUSES),
     progress: optionalNumber("parseTrainStatusResponse", obj, "progress"),
     message: optionalString("parseTrainStatusResponse", obj, "message"),
     iteration: optionalNumber("parseTrainStatusResponse", obj, "iteration"),
@@ -863,6 +1074,8 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
     elapsed_seconds: optionalNumber("parseTrainStatusResponse", obj, "elapsed_seconds"),
     result: obj.result === undefined || obj.result === null ? null : parseTrainResponse(obj.result),
     warning: optionalNullableString("parseTrainStatusResponse", obj, "warning"),
+    terminal_reason: optionalNullableString("parseTrainStatusResponse", obj, "terminal_reason"),
+    execution_metrics: optionalExecutionMetrics("parseTrainStatusResponse", obj, "execution_metrics"),
   }
 }
 
@@ -1003,6 +1216,41 @@ export function parseFrontierAutoRangeResponse(value: unknown): FrontierAutoRang
   }
 }
 
+export function parseFrontierAutoRangeStartResponse(value: unknown): FrontierAutoRangeStartResponse {
+  const obj = expectPlainObject("parseFrontierAutoRangeStartResponse", value)
+  return {
+    status: expectStringLiteral(
+      "parseFrontierAutoRangeStartResponse",
+      obj.status,
+      "field `status`",
+      ["started", "error"],
+    ),
+    job_id: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "job_id"),
+    error: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "error"),
+  }
+}
+
+export function parseFrontierAutoRangeStatusResponse(value: unknown): FrontierAutoRangeStatusResponse {
+  const obj = expectPlainObject("parseFrontierAutoRangeStatusResponse", value)
+  return {
+    status: expectStringLiteral(
+      "parseFrontierAutoRangeStatusResponse",
+      obj.status,
+      "field `status`",
+      JOB_STATUSES,
+    ),
+    progress: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "progress"),
+    message: optionalString("parseFrontierAutoRangeStatusResponse", obj, "message"),
+    elapsed_seconds: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "elapsed_seconds"),
+    result: obj.result == null ? null : parseFrontierAutoRangeResponse(obj.result),
+    terminal_reason: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "terminal_reason"),
+    error_code: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "error_code"),
+    http_status_code: optionalNullableNumber("parseFrontierAutoRangeStatusResponse", obj, "http_status_code"),
+    error_detail: obj.error_detail,
+    execution_metrics: optionalExecutionMetrics("parseFrontierAutoRangeStatusResponse", obj, "execution_metrics"),
+  }
+}
+
 function parseOptimiserSolveResult(value: unknown, field: string): OptimiserSolveResult {
   const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
   const stats = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_stats")
@@ -1123,12 +1371,14 @@ export function parseSaveOptimiserResponse(value: unknown): SaveOptimiserRespons
 export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusResponse {
   const obj = expectPlainObject("parseOptimiserStatusResponse", value)
   return {
-    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", ["running", "completed", "error"]),
+    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", JOB_STATUSES),
     progress: optionalNumber("parseOptimiserStatusResponse", obj, "progress"),
     message: optionalString("parseOptimiserStatusResponse", obj, "message"),
     elapsed_seconds: optionalNumber("parseOptimiserStatusResponse", obj, "elapsed_seconds"),
     result: obj.result === undefined || obj.result === null ? null : parseOptimiserSolveResult(obj.result, "field `result`"),
     frontier: obj.frontier === undefined || obj.frontier === null ? null : parseFrontierResponse(obj.frontier, "field `frontier`"),
+    terminal_reason: optionalNullableString("parseOptimiserStatusResponse", obj, "terminal_reason"),
+    execution_metrics: optionalExecutionMetrics("parseOptimiserStatusResponse", obj, "execution_metrics"),
   }
 }
 

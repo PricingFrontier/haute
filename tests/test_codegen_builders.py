@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
+import pytest
+
 from haute._codegen_builders import _build_extra_kwargs
 from haute.codegen import _node_to_code, graph_to_code
 from tests.conftest import compile_node_code as _compile_node_code
@@ -91,7 +94,8 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/PolicyData.json"' in code
         assert "def PolicyData()" in code
-        assert 'scan_parquet(Path(__file__).parent / "data/api_input.parquet")' in code
+        assert "read_data_source" in code
+        assert 'Path(__file__).parent / "data/api_input.parquet"' in code
         _compile_node_code(code)
 
     def test_csv_api_input(self) -> None:
@@ -103,7 +107,24 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/CSVInput.json"' in code
         assert "def CSVInput()" in code
-        assert 'scan_csv(Path(__file__).parent / "data/input.csv")' in code
+        assert "read_data_source" in code
+        assert 'Path(__file__).parent / "data/input.csv"' in code
+        _compile_node_code(code)
+
+    def test_api_input_preserves_categorical_levels_in_shared_reader(self) -> None:
+        node = _make_codegen_node(
+            "apiInput",
+            {
+                "path": "data/input.csv",
+                "categorical_levels": {"region": ["north", "south"]},
+            },
+            label="CategoricalInput",
+        )
+
+        code = _node_to_code(node)
+
+        assert "read_data_source" in code
+        assert "'categorical_levels': {'region': ['north', 'south']}" in code
         _compile_node_code(code)
 
     def test_json_api_input(self) -> None:
@@ -819,6 +840,38 @@ class TestCodegenExecValidation:
         assert isinstance(result, pl.LazyFrame)
         assert len(result.collect()) > 0
 
+    def test_data_source_exec_uses_declared_schema_boundary(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Generated dataSource code should honour shared source schema config."""
+        monkeypatch.chdir(tmp_path)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        csv_path = data_dir / "quotes.csv"
+        csv_path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+
+        node = _make_codegen_node(
+            "dataSource",
+            {
+                "path": "data/quotes.csv",
+                "sourceType": "flat_file",
+                "schema_overrides": {"quote_id": "String", "premium": "Float64"},
+            },
+            label="load_quotes",
+        )
+
+        code = _node_to_code(node)
+
+        assert "read_data_source" in code
+        assert "scan_csv" not in code
+        result = self._exec_generated(code)
+        assert isinstance(result, pl.LazyFrame)
+        collected = result.collect()
+        assert collected["quote_id"].to_list() == ["001"]
+        assert collected.schema["quote_id"] == pl.String
+
     def test_api_input_exec_produces_lazyframe(self) -> None:
         """apiInput code that references a real JSON file executes."""
         import polars as pl
@@ -928,50 +981,50 @@ class TestCodegenExecValidation:
 
 
 # ---------------------------------------------------------------------------
-# B19: Sink templates use safe_sink instead of hardcoded collect+write
+# B19: Sink templates use bounded_sink instead of hardcoded collect+write
 # ---------------------------------------------------------------------------
 
 
 class TestGenDataSink:
-    """Tests for data sink code generation — must delegate to safe_sink."""
+    """Tests for data sink code generation - must delegate to bounded_sink."""
 
-    def test_parquet_sink_uses_safe_sink(self) -> None:
-        """Parquet sink template should import and call safe_sink."""
+    def test_parquet_sink_uses_bounded_sink(self) -> None:
+        """Parquet sink template should import and call bounded_sink."""
         node = _make_codegen_node(
             "dataSink",
             {"path": "output/results.parquet", "format": "parquet"},
             label="WriteResults",
         )
         code = _node_to_code(node, source_names=["scored"])
-        assert "from haute._polars_utils import safe_sink" in code
-        assert 'safe_sink(scored, Path(__file__).parent / "output/results.parquet")' in code
+        assert "from haute._polars_utils import bounded_sink" in code
+        assert 'bounded_sink(scored, Path(__file__).parent / "output/results.parquet")' in code
         # Must NOT contain the old hardcoded pattern
         assert ".collect(engine=" not in code
         assert ".write_parquet(" not in code
         _compile_node_code(code)
 
-    def test_csv_sink_uses_safe_sink(self) -> None:
-        """CSV sink template should import and call safe_sink with fmt='csv'."""
+    def test_csv_sink_uses_bounded_sink(self) -> None:
+        """CSV sink template should import and call bounded_sink with fmt='csv'."""
         node = _make_codegen_node(
             "dataSink",
             {"path": "output/report.csv", "format": "csv"},
             label="WriteCSV",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert "from haute._polars_utils import safe_sink" in code
-        assert 'safe_sink(data, Path(__file__).parent / "output/report.csv", fmt="csv")' in code
+        assert "from haute._polars_utils import bounded_sink" in code
+        assert 'bounded_sink(data, Path(__file__).parent / "output/report.csv", fmt="csv")' in code
         assert ".write_csv(" not in code
         _compile_node_code(code)
 
     def test_sink_default_format_is_parquet(self) -> None:
-        """When no format is specified, default to parquet safe_sink call."""
+        """When no format is specified, default to parquet bounded_sink call."""
         node = _make_codegen_node(
             "dataSink",
             {"path": "out.parquet"},
             label="DefaultSink",
         )
         code = _node_to_code(node, source_names=["df"])
-        assert "safe_sink" in code
+        assert "bounded_sink" in code
         # Default parquet call should not have fmt= kwarg
         assert 'fmt="csv"' not in code
         _compile_node_code(code)
@@ -994,6 +1047,6 @@ class TestGenDataSink:
             label="MultiSink",
         )
         code = _node_to_code(node, source_names=["a", "b", "c"])
-        assert "safe_sink(a," in code
+        assert "bounded_sink(a," in code
         assert "return a" in code
         _compile_node_code(code)

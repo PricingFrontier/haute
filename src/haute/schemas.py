@@ -8,14 +8,38 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, RootModel, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, RootModel, field_validator
 
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
 from haute._types import PipelineGraph as Graph  # noqa: F401
+
+
+def _reject_bool_chunk_size(value: object) -> object:
+    if isinstance(value, bool):
+        raise ValueError("streaming_chunk_size must not be a bool")
+    return value
+
+
+StreamingChunkSize = Annotated[
+    int | None,
+    BeforeValidator(_reject_bool_chunk_size),
+    Field(ge=1, le=10_000_000),
+]
+
+JobStatus = Literal[
+    "running",
+    "completed",
+    "error",
+    "cancelled",
+    "superseded",
+    "timed_out",
+    "memory_limited",
+    "contract_error",
+]
 
 
 def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
@@ -86,6 +110,118 @@ class SchemaWarning(BaseModel):
     status: str
 
 
+class ExecutionStageMetricsPayload(BaseModel):
+    schema_version: int = 1
+    name: str = ""
+    operation: str = ""
+    profile: str = ""
+    elapsed_ms: float = 0.0
+    node_id: str | None = None
+    job_id: str | None = None
+    rss_start_bytes: int | None = None
+    rss_end_bytes: int | None = None
+    rss_delta_bytes: int | None = None
+    rss_peak_bytes: int | None = None
+    rows_in: int | None = None
+    rows_out: int | None = None
+    bytes_read: int | None = None
+    bytes_written: int | None = None
+    columns_scanned: int | None = None
+    n_collects: int = 0
+    n_checkpoints: int = 0
+
+
+class ExecutionAdmissionPayload(BaseModel):
+    admitted: bool = True
+    operation: str = ""
+    profile: str = ""
+    memory_limit_bytes: int = 0
+    rss_at_admission_bytes: int | None = None
+    rss_limit_bytes: int | None = None
+    process_rss_limit_bytes: int | None = None
+    headroom_bytes: int | None = None
+    config_key: str = ""
+    budget_policy: str = "fixed_default"
+    available_ram_bytes: int | None = None
+    os_reserve_bytes: int | None = None
+    reason: str = ""
+
+
+class ExecutionMemoryPressureEventPayload(BaseModel):
+    schema_version: int = 1
+    event: Literal["memory_pressure"] = "memory_pressure"
+    operation: str = ""
+    profile: str = ""
+    job_id: str | None = None
+    node_id: str | None = None
+    stage: str | None = None
+    label: str | None = None
+    threshold_ratio: float = 0.0
+    threshold_percent: int = 0
+    rss_bytes: int = 0
+    rss_limit_bytes: int = 0
+    headroom_bytes: int = 0
+    headroom_used_bytes: int = 0
+    rss_peak_bytes: int = 0
+    memory_limit_bytes: int | None = None
+    memory_baseline_bytes: int | None = None
+    baseline_rss_bytes: int | None = None
+    budget_policy: str | None = None
+    config_key: str | None = None
+    available_ram_bytes: int | None = None
+    os_reserve_bytes: int | None = None
+    pressure_ratio: float = 0.0
+
+
+class ExecutionMemoryLimitErrorPayload(BaseModel):
+    error_code: Literal["memory_limit"]
+    operation: str = ""
+    profile: str | None = None
+    job_id: str | None = None
+    memory_limit_bytes: int | None = None
+    rss_bytes: int | None = None
+    rss_at_admission_bytes: int | None = None
+    baseline_rss_bytes: int | None = None
+    rss_limit_bytes: int | None = None
+    process_rss_limit_bytes: int | None = None
+    headroom_bytes: int | None = None
+    reason: str = ""
+
+
+class ExecutionMetricsPayload(BaseModel):
+    schema_version: int = 1
+    operation: str = ""
+    profile: str = ""
+    job_id: str | None = None
+    status: str | None = None
+    terminal_reason: str | None = None
+    stage_count: int = 0
+    retained_stage_count: int = 0
+    truncated_stage_count: int = 0
+    stages_truncated: bool = False
+    total_elapsed_ms: float = 0.0
+    node_elapsed_ms: dict[str, float] = Field(default_factory=dict)
+    stage_elapsed_ms: dict[str, float] = Field(default_factory=dict)
+    rss_start_bytes: int | None = None
+    rss_end_bytes: int | None = None
+    rss_delta_bytes: int | None = None
+    rss_peak_bytes: int | None = None
+    max_rss_bytes: int | None = None
+    n_collects: int = 0
+    n_checkpoints: int = 0
+    memory_pressure_event_count: int = 0
+    retained_memory_pressure_event_count: int = 0
+    truncated_memory_pressure_event_count: int = 0
+    memory_pressure_events_truncated: bool = False
+    memory_limit_bytes: int | None = None
+    memory_baseline_bytes: int | None = None
+    rss_limit_bytes: int | None = None
+    admission: ExecutionAdmissionPayload | None = None
+    stages: list[ExecutionStageMetricsPayload] = Field(default_factory=list)
+    memory_pressure_events: list[ExecutionMemoryPressureEventPayload] = Field(default_factory=list)
+    projection_plan_diagnostics: dict[str, Any] | None = None
+
+
 class NodeResult(BaseModel):
     status: str
     row_count: int = 0
@@ -115,6 +251,7 @@ class PreviewNodeRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class NodeTimingInfo(BaseModel):
@@ -141,6 +278,10 @@ class PreviewNodeResponse(NodeResult):
     timings: list[NodeTimingInfo] = Field(default_factory=list)
     memory: list[NodeMemoryInfo] = Field(default_factory=list)
     node_statuses: dict[str, str] = Field(default_factory=dict)
+    node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +297,7 @@ class TraceRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     row_values: dict[str, Any] | None = None
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class SchemaDiffResponse(BaseModel):
@@ -208,6 +350,7 @@ class SinkRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class SinkResponse(BaseModel):
@@ -216,6 +359,7 @@ class SinkResponse(BaseModel):
     row_count: int = 0
     path: str = ""
     format: str = "parquet"
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +638,7 @@ class TrainRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class TrainResponse(BaseModel):
@@ -512,6 +657,7 @@ class TrainResponse(BaseModel):
     error: str | None = None
     best_iteration: int | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
+    loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
@@ -532,15 +678,19 @@ class TrainResponse(BaseModel):
 
 
 class TrainStatusResponse(BaseModel):
-    status: Literal["running", "completed", "error"]
+    status: JobStatus
     progress: float = 0.0
     message: str = ""
     iteration: int = 0
     total_iterations: int = 0
     train_loss: dict[str, float] = Field(default_factory=dict)
+    train_loss_history: list[dict[str, float]] = Field(default_factory=list)
+    train_loss_history_truncated: bool = False
     elapsed_seconds: float = 0.0
     result: TrainResponse | None = None
     warning: str | None = None
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 class TrainEstimateRequest(BaseModel):
@@ -664,6 +814,7 @@ class MlflowModelVersionSummary(BaseModel):
 class OptimiserSolveRequest(BaseModel):
     graph: Graph
     node_id: str
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -684,6 +835,7 @@ class OptimiserEstimateRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserEstimateResponse(BaseModel):
@@ -706,6 +858,7 @@ class OptimiserEstimateResponse(BaseModel):
 class OptimiserFrontierAutoRangeRequest(BaseModel):
     graph: Graph
     node_id: str
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -720,10 +873,30 @@ class OptimiserFrontierAutoRangeResponse(BaseModel):
     warning: str | None = None
 
 
+class OptimiserFrontierAutoRangeStartResponse(BaseModel):
+    status: Literal["started", "error"]
+    job_id: str | None = None
+    error: str | None = None
+
+
+class OptimiserFrontierAutoRangeStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    elapsed_seconds: float = 0.0
+    result: OptimiserFrontierAutoRangeResponse | None = None
+    terminal_reason: str | None = None
+    error_code: str | None = None
+    http_status_code: int | None = None
+    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
 class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
+    streaming_chunk_size: StreamingChunkSize = None
 
     @field_validator("threshold_ranges", mode="after")
     @classmethod
@@ -804,12 +977,14 @@ class OptimiserSolveResult(BaseModel):
 
 
 class OptimiserStatusResponse(BaseModel):
-    status: Literal["running", "completed", "error"]
+    status: JobStatus
     progress: float = 0.0
     message: str = ""
     elapsed_seconds: float = 0.0
     result: OptimiserSolveResult | None = None
     frontier: OptimiserFrontierResponse | None = None
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 class OptimiserApplyRequest(BaseModel):

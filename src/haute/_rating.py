@@ -307,8 +307,9 @@ def _apply_rating_table(
     if cast_exprs:
         lf = lf.with_columns(cast_exprs)
 
-    # Left join
-    lf = lf.join(lookup.lazy(), on=factors, how="left")
+    # Left join.  Preserve the input row order explicitly because Polars
+    # streaming joins may otherwise emit hash-partition order.
+    lf = lf.join(lookup.lazy(), on=factors, how="left", maintain_order="left")
 
     # Revert factor columns to their original dtypes
     revert_exprs = [pl.col(f).cast(dtype) for f, dtype in original_dtypes.items()]

@@ -21,6 +21,8 @@ import type {
   FetchTableResponse,
   FileListItem,
   FrontierAutoRangeResponse,
+  FrontierAutoRangeStartResponse,
+  FrontierAutoRangeStatusResponse,
   FrontierResponse,
   FrontierSelectResponse,
   GitArchiveResponse,
@@ -77,6 +79,8 @@ import {
   parseFetchProgressResponse,
   parseFetchTableResponse,
   parseFrontierAutoRangeResponse,
+  parseFrontierAutoRangeStartResponse,
+  parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -118,12 +122,14 @@ import {
 export class ApiError extends Error {
   status: number
   detail?: string
+  rawDetail?: unknown
 
-  constructor(message: string, status: number, detail?: string) {
+  constructor(message: string, status: number, detail?: string, rawDetail?: unknown) {
     super(message)
     this.name = "ApiError"
     this.status = status
     this.detail = detail
+    this.rawDetail = rawDetail
   }
 }
 
@@ -275,14 +281,17 @@ async function attemptFetch<T>(
     const res = await fetch(url, { ...fetchOptions, signal: controller.signal })
     if (!res.ok) {
       let detail: string | undefined
+      let rawDetail: unknown
       try {
         const body = await res.json()
         const raw = body.detail ?? body
+        rawDetail = raw
         detail = typeof raw === "string" ? raw : JSON.stringify(raw)
       } catch {
         detail = res.statusText
+        rawDetail = detail
       }
-      throw new ApiError(`HTTP ${res.status}`, res.status, detail)
+      throw new ApiError(`HTTP ${res.status}`, res.status, detail, rawDetail)
     }
     return await res.json() as T
   } finally {
@@ -356,14 +365,28 @@ export function loadPipeline(options?: ApiClientOptions): Promise<PipelineGraph>
     })
 }
 
-export function previewNode(
-  graph: GraphPayload,
-  nodeId: string,
-  rowLimit: number,
-  source?: string,
-  options?: { signal?: AbortSignal; timeout?: number },
-  requestedPreviewColumns?: string[],
-): Promise<PreviewNodeResponse> {
+export interface PreviewNodeArgs {
+  graph: GraphPayload
+  nodeId: string
+  rowLimit: number
+  source?: string
+  requestedPreviewColumns?: string[]
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse> {
+  const {
+    graph,
+    nodeId,
+    rowLimit,
+    source,
+    requestedPreviewColumns,
+    streamingChunkSize,
+    signal,
+    timeout = 120_000,
+  } = args
   return post<unknown>(
     "/api/pipeline/preview",
     {
@@ -372,11 +395,9 @@ export function previewNode(
       row_limit: rowLimit,
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
-    {
-      timeout: 120_000,
-      ...options,
-    },
+    { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
 }
 
@@ -395,28 +416,55 @@ export function savePipeline(
   return post<unknown>("/api/pipeline/save", payload, options).then(parseSavePipelineResponse)
 }
 
-export function traceCell(
-  payload: {
-    graph: GraphPayload
-    row_index: number
-    target_node_id: string
-    column?: string | null
-    row_limit?: number
-    source?: string
-    row_values?: Record<string, unknown>
-  },
-  options?: { signal?: AbortSignal; timeout?: number },
-): Promise<TraceResponse> {
-  return post<unknown>("/api/pipeline/trace", payload, { timeout: 120_000, ...options }).then(parseTraceResponse)
+export interface TraceCellArgs {
+  graph: GraphPayload
+  row_index: number
+  target_node_id: string
+  column?: string | null
+  row_limit?: number
+  source?: string
+  row_values?: Record<string, unknown>
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
 }
 
-export function executeSink(
-  graph: GraphPayload,
-  nodeId: string,
-  source?: string,
-  options?: { signal?: AbortSignal; timeout?: number },
-): Promise<SinkResponse> {
-  return post("/api/pipeline/sink", { graph, node_id: nodeId, source: source ?? "live" }, { timeout: 300_000, ...options })
+export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
+  const { streamingChunkSize, signal, timeout = 120_000, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/pipeline/trace", body, { signal, timeout }).then(parseTraceResponse)
+}
+
+export interface ExecuteSinkArgs {
+  graph: GraphPayload
+  nodeId: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
+  const {
+    graph,
+    nodeId,
+    source,
+    streamingChunkSize,
+    signal,
+    timeout = 300_000,
+  } = args
+  return post(
+    "/api/pipeline/sink",
+    {
+      graph,
+      node_id: nodeId,
+      source: source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -498,13 +546,27 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
     .then((data) => parseTrainStatusResponse(data) as T)
 }
 
-export function trainModel(
-  payload: { graph: GraphPayload; node_id: string; source?: string },
-  options?: { signal?: AbortSignal },
-): Promise<TrainResponse> {
+export interface TrainModelArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
   // Pipeline execution can take minutes for large datasets - use a 10-minute timeout
-  return post<unknown>("/api/modelling/train", { ...payload, source: payload.source ?? "live" }, { ...options, timeout: 600_000 })
-    .then(parseTrainResponse)
+  const { streamingChunkSize, signal, timeout = 600_000, ...payload } = args
+  return post<unknown>(
+    "/api/modelling/train",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  ).then(parseTrainResponse)
 }
 
 export function estimateTrainingRam(
@@ -527,22 +589,44 @@ export function logToMlflow(
 // Optimiser endpoints
 // ---------------------------------------------------------------------------
 
-export function solveOptimiser(
-  payload: { graph: GraphPayload; node_id: string },
-  options?: { signal?: AbortSignal },
-): Promise<OptimiserSolveResponse> {
-  return post<unknown>("/api/optimiser/solve", payload, { timeout: 300_000, ...options })
+export interface SolveOptimiserArgs {
+  graph: GraphPayload
+  node_id: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolveResponse> {
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/optimiser/solve", body, { signal, timeout })
     .then(parseSolveOptimiserResponse)
 }
 
+export interface EstimateOptimiserSolveArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
 export function estimateOptimiserSolve(
-  payload: { graph: GraphPayload; node_id: string; source?: string },
-  options?: { signal?: AbortSignal },
+  args: EstimateOptimiserSolveArgs,
 ): Promise<OptimiserEstimate> {
+  const { streamingChunkSize, signal, timeout = 30_000, ...payload } = args
   return post<unknown>(
     "/api/optimiser/estimate",
-    { ...payload, source: payload.source ?? "live" },
-    { timeout: 30_000, ...options },
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
   ).then(parseOptimiserEstimateResponse)
 }
 
@@ -584,12 +668,63 @@ export function runFrontier(
     .then((data) => parseFrontierResponse(data))
 }
 
+export interface EstimateOptimiserFrontierAutoRangeArgs {
+  graph: GraphPayload
+  node_id: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
 export function estimateOptimiserFrontierAutoRange(
-  payload: { graph: GraphPayload; node_id: string },
-  options?: { signal?: AbortSignal },
+  args: EstimateOptimiserFrontierAutoRangeArgs,
 ): Promise<FrontierAutoRangeResponse> {
-  return post<unknown>("/api/optimiser/frontier/auto-range", payload, { timeout: 300_000, ...options })
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/optimiser/frontier/auto-range", body, { signal, timeout })
     .then(parseFrontierAutoRangeResponse)
+}
+
+export interface StartOptimiserFrontierAutoRangeArgs {
+  graph: GraphPayload
+  node_id: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function startOptimiserFrontierAutoRange(
+  args: StartOptimiserFrontierAutoRangeArgs,
+): Promise<FrontierAutoRangeStartResponse> {
+  const { streamingChunkSize, signal, timeout, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/optimiser/frontier/auto-range/start", body, { signal, timeout })
+    .then(parseFrontierAutoRangeStartResponse)
+}
+
+export function getOptimiserFrontierAutoRangeStatus(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeStatusResponse> {
+  return request<unknown>(
+    `/api/optimiser/frontier/auto-range/status/${encodeURIComponent(jobId)}`,
+    options,
+  ).then(parseFrontierAutoRangeStatusResponse)
+}
+
+export function cancelOptimiserFrontierAutoRange(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeStatusResponse> {
+  return post<unknown>(
+    `/api/optimiser/frontier/auto-range/cancel/${encodeURIComponent(jobId)}`,
+    {},
+    options,
+  ).then(parseFrontierAutoRangeStatusResponse)
 }
 
 export function selectFrontierPoint(

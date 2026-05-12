@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -159,6 +160,7 @@ def log_experiment(
     metadata: ModelCardMetadata | None = None,
     model_path: str | None = None,
     model_name: str | None = None,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> MLflowLogResult:
     """Log a training experiment to MLflow.
 
@@ -178,6 +180,12 @@ def log_experiment(
 
     mlflow.set_experiment(experiment_name)
 
+    def _check_cancelled() -> None:
+        if check_cancelled is not None:
+            check_cancelled()
+
+    _check_cancelled()
+
     # Enhanced params: add training metadata
     enhanced_params = dict(params)
     if meta.train_rows:
@@ -190,12 +198,15 @@ def log_experiment(
         enhanced_params["best_iteration"] = meta.best_iteration
 
     with mlflow.start_run(run_name=run_name) as run:
+        _check_cancelled()
         # Truncate params to 500 chars (MLflow limit) and batch in groups of 100
         truncated_params = {k: str(v)[:500] for k, v in enhanced_params.items()}
         param_items = list(truncated_params.items())
         for i in range(0, len(param_items), 100):
+            _check_cancelled()
             mlflow.log_params(dict(param_items[i : i + 100]))
         mlflow.log_metrics(metrics)
+        _check_cancelled()
 
         # Log the trained model with a ModelSignature so downstream
         # scorers can detect train-vs-score feature drift from the MLflow
@@ -204,6 +215,7 @@ def log_experiment(
         # logged via pyfunc upload the native file separately so run
         # discovery (_find_rsglm_artifact, etc.) can still locate it.
         if model_path and Path(model_path).exists():
+            _check_cancelled()
             _log_model_with_signature(
                 mlflow,
                 model_path=model_path,
@@ -215,6 +227,7 @@ def log_experiment(
                 target_name=meta.target_name,
                 target_type=meta.target_type,
             )
+            _check_cancelled()
 
         # Log SHAP summary
         if diag.shap_summary:
@@ -342,10 +355,12 @@ def log_experiment(
         # Log holdout metrics as separate MLflow metrics
         if diag.holdout_metrics:
             for k, v in diag.holdout_metrics.items():
+                _check_cancelled()
                 mlflow.log_metric(f"holdout_{k}", v)
 
         # Generate and log model card (best-effort — never fails the run)
         try:
+            _check_cancelled()
             _log_model_card(
                 mlflow,
                 name=run_name,
@@ -359,12 +374,14 @@ def log_experiment(
 
         # Register model (Databricks UC only)
         if model_name and model_path and backend == "databricks":
+            _check_cancelled()
             mlflow.register_model(
                 f"runs:/{run.info.run_id}/{Path(model_path).name}",
                 model_name,
             )
 
         run_id = run.info.run_id
+        _check_cancelled()
 
     run_url = build_run_url(backend, experiment_name, run_id)
 

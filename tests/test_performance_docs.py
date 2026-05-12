@@ -59,6 +59,10 @@ def test_local_performance_docs_cover_python_perf_suite_contract() -> None:
     assert ".cache/perf/perf-report.json" in doc
     assert ".cache/perf/perf-report.md" in doc
     assert ".cache/perf/perf-junit.xml" in doc
+    assert "cached target preview: `< 0.5s`" in doc
+    assert "first trace backed by a full preview cache: `< 0.8s`" in doc
+    assert "trace-cache hit: `< 0.3s`" in doc
+    assert "Do not commit 10m-row fixtures" in doc
 
 
 def test_local_performance_docs_cover_frontend_benchmark_and_bundle_commands() -> None:

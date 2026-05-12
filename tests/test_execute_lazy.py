@@ -636,6 +636,76 @@ class TestCheckpointing:
         assert set(df.columns) >= {"key", "a", "b"}
         assert len(df) == 2
 
+    def test_required_columns_seed_projects_data_input_checkpoint(self, tmp_path):
+        """A caller-owned data_input demand prevents terminal optimiser poisoning."""
+        required = ["quote_id", "scenario_index", "scenario_value", "objective", "constraint"]
+
+        def build_fn(node: GraphNode, source_names=None, **kwargs):
+            if node.id == "quotes":
+                return (
+                    node.id,
+                    lambda: pl.DataFrame(
+                        {
+                            "quote_id": ["q1", "q2"],
+                            "scenario_index": [0, 1],
+                            "scenario_value": [0.9, 1.1],
+                            "objective": [10.0, 12.0],
+                            "constraint": [2.0, 3.0],
+                            "unused_quote_payload": ["drop", "drop"],
+                        }
+                    ).lazy(),
+                    True,
+                )
+            if node.id == "lookup":
+                return (
+                    node.id,
+                    lambda: pl.DataFrame(
+                        {
+                            "quote_id": ["q1", "q2"],
+                            "unused_lookup_payload": [100, 200],
+                        }
+                    ).lazy(),
+                    True,
+                )
+            if node.id == "join":
+                return node.id, lambda *dfs: dfs[0].join(dfs[1], on="quote_id", how="left"), False
+            return node.id, lambda *dfs: dfs[0], False
+
+        g = PipelineGraph(
+            nodes=[
+                _source_node("quotes"),
+                _source_node("lookup"),
+                _live_switch_node("join", {}),
+                _live_switch_node("data_input", {}),
+                GraphNode(
+                    id="opt",
+                    data=NodeData(
+                        label="optimiser",
+                        nodeType=NodeType.OPTIMISER,
+                        config={"data_input": "data_input"},
+                    ),
+                ),
+            ],
+            edges=[
+                _e("quotes", "join"),
+                _e("lookup", "join"),
+                _e("join", "data_input"),
+                _e("data_input", "opt"),
+            ],
+        )
+
+        outputs, *_ = _execute_lazy(
+            g,
+            build_fn,
+            target_node_id="opt",
+            checkpoint_dir=tmp_path,
+            required_columns_by_node={"data_input": required},
+        )
+
+        checkpoint_cols = pl.read_parquet(tmp_path / "join.parquet").columns
+        assert checkpoint_cols == required
+        assert outputs["data_input"].collect().columns == required
+
     def test_no_checkpoint_for_single_input(self, tmp_path):
         """Single-input transform nodes are NOT checkpointed."""
         g = PipelineGraph(

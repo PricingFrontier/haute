@@ -3,8 +3,9 @@ import { X, ChevronDown, ChevronUp, AlertCircle, CheckCircle2, Table2, Search } 
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
 import { useDragResize } from "../hooks/useDragResize"
+import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import type { ColumnInfo } from "../types/node"
-import type { SchemaWarning, NodeTiming, NodeMemory } from "../api/types"
+import type { SchemaWarning, NodeTiming, NodeMemory, ExecutionMetrics } from "../api/types"
 
 export interface PreviewData {
   nodeId: string
@@ -25,6 +26,7 @@ export interface PreviewData {
   timings?: NodeTiming[]
   memory?: NodeMemory[]
   schema_warnings?: SchemaWarning[]
+  execution_metrics?: ExecutionMetrics | null
 }
 
 interface DataPreviewProps {
@@ -331,6 +333,8 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
           </button>
         </div>
       </div>
+
+      <ExecutionDiagnosticsSummary metrics={data.execution_metrics} />
 
       {/* Timing breakdown */}
       {/* Data table */}

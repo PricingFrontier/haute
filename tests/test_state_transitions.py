@@ -554,7 +554,8 @@ class TestOptimiserTimeoutDetection:
         resp = client.get(f"/api/optimiser/solve/status/{job_id}")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "error"
+        assert body["status"] == "timed_out"
+        assert body["terminal_reason"] == "timed_out"
         assert "timed out" in body["message"].lower()
 
 

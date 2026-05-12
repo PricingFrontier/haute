@@ -38,9 +38,6 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
     "efaa6262fa369b7b",
-    "abe480288d1271f3",
-    "e762bc8620cc887a",
-    "d677e46dc4b6c5da",
     "531fb2f9161337c8",
     "b1a877eb33f7ed72",
     "b014f75c351f71e8",
@@ -123,6 +120,7 @@ _EXPECTED_DEBT_IDS = {
     "df789ca110c56d8d",
     "e800d20c2fdb0d00",
     "f6ab12590998eb2c",
+    "394d6f9aa801fa62",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

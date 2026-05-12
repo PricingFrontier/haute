@@ -5,10 +5,12 @@ from __future__ import annotations
 import json as _json
 from pathlib import Path
 
+import polars as pl
+
 from haute._cache import graph_fingerprint
 from haute._logging import get_logger
 from haute.errors import ConfigError
-from haute.graph_utils import GraphNode, PipelineGraph, read_source
+from haute.graph_utils import GraphNode, NodeType, PipelineGraph, read_data_source, read_source
 
 logger = get_logger(component="deploy.schema")
 
@@ -21,6 +23,16 @@ def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
     if raw.is_absolute() or not graph.source_file:
         return str(raw)
     return str((Path(graph.source_file).parent / raw).resolve())
+
+
+def _read_input_source(node: GraphNode, resolved_path: str) -> pl.LazyFrame:
+    config = node.data.config
+    if node.data.nodeType in {
+        NodeType.API_INPUT,
+        NodeType.DATA_SOURCE,
+    } and not resolved_path.lower().endswith((".json", ".jsonl")):
+        return read_data_source({**config, "path": resolved_path})
+    return read_source(resolved_path)
 
 
 def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, str]:
@@ -49,7 +61,7 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
 
     try:
         resolved_path = _resolve_pipeline_path(graph, path)
-        lf = read_source(resolved_path)
+        lf = _read_input_source(node, resolved_path)
         schema = lf.collect_schema()
     except Exception as exc:
         raise ValueError(
@@ -109,7 +121,13 @@ def infer_output_schema(
 
     try:
         resolved_path = _resolve_pipeline_path(graph, path)
-        sample = read_source(resolved_path).head(1).collect()
+        from haute._execution_context import ExecutionProfile
+        from haute._polars_utils import streaming_collect
+
+        sample = streaming_collect(
+            _read_input_source(node, resolved_path).head(1),
+            profile=ExecutionProfile.DEPLOY_LIVE,
+        )
     except Exception as exc:
         raise ValueError(f"Failed to read sample from '{path}': {exc}") from exc
 

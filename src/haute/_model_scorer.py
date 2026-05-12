@@ -9,7 +9,9 @@ from __future__ import annotations
 import contextvars
 import os
 import threading
-from collections.abc import Hashable
+from collections.abc import Hashable, Iterable, Iterator, Mapping
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
 import numpy as np
@@ -70,6 +72,7 @@ _ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str]]
 _FeatureValidationCacheKey: TypeAlias = tuple[int, _ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
+_CategoricalLevels: TypeAlias = Mapping[str, Iterable[str | None]] | None
 
 _feature_validation_cache: LRUCache[_FeatureValidationCacheKey, _FeatureValidationResult] = (
     LRUCache(max_size=_MLFLOW_MODEL_CACHE_MAX_SIZE)
@@ -340,10 +343,29 @@ _scenario_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 _SCORE_BATCH_SIZE = 500_000
 
+
+@dataclass(frozen=True, slots=True)
+class ScoreWriteProjection:
+    """Explicit projection for batch model-score parquet writes.
+
+    ``None`` passthrough columns means preserve the full scored input.  A
+    concrete set means write exactly those input columns, in input schema
+    order, plus the prediction/probability outputs produced by scoring.
+    """
+
+    passthrough_columns: frozenset[str] | None = None
+    optional_passthrough_columns: frozenset[str] = frozenset()
+    required_output_columns: frozenset[str] = frozenset()
+
+
 # Module-level temp file cleanup — avoids accumulating atexit handlers
 _temp_files_to_clean: set[str] = set()
 _atexit_registered = False
 _temp_cleanup_lock = threading.Lock()
+_temp_file_scope: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "haute_model_score_temp_file_scope",
+    default=None,
+)
 
 
 def _register_temp_cleanup(path: str) -> None:
@@ -354,14 +376,35 @@ def _register_temp_cleanup(path: str) -> None:
             import atexit
 
             def _cleanup_all() -> None:
-                for p in _temp_files_to_clean:
-                    try:
+                with _temp_cleanup_lock:
+                    paths = tuple(_temp_files_to_clean)
+                    _temp_files_to_clean.clear()
+                for p in paths:
+                    with suppress(FileNotFoundError):
                         os.unlink(p)
-                    except OSError:
-                        pass
 
             atexit.register(_cleanup_all)
             _atexit_registered = True
+
+
+def _cleanup_registered_temp_files(paths: Iterable[str]) -> None:
+    """Unlink scorer temp files and remove them from the process-exit set."""
+    for path in dict.fromkeys(paths):
+        with suppress(FileNotFoundError):
+            os.unlink(path)
+        with _temp_cleanup_lock:
+            _temp_files_to_clean.discard(path)
+
+
+@contextmanager
+def model_score_temp_file_scope(paths: list[str] | None = None) -> Iterator[list[str]]:
+    """Collect batch scorer output temps created within this context."""
+    scoped_paths: list[str] = paths if paths is not None else []
+    token = _temp_file_scope.set(scoped_paths)
+    try:
+        yield scoped_paths
+    finally:
+        _temp_file_scope.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +432,73 @@ def _predict_positive_proba(raw_model: Any, x_data: Any) -> np.ndarray | None:
     return np.asarray(probas).flatten()
 
 
+def _raw_model_supports_predict_proba(model: Any) -> bool:
+    raw_model = getattr(model, "raw_model", model)
+    return getattr(raw_model, "predict_proba", None) is not None
+
+
+def _score_output_projection_columns(
+    schema_names: list[str],
+    write_projection: ScoreWriteProjection,
+    *,
+    generated_columns: Iterable[str],
+) -> list[str]:
+    if write_projection.passthrough_columns is None:
+        passthrough = list(schema_names)
+        optional_passthrough: list[str] = []
+    else:
+        passthrough = _ordered_required_columns(
+            schema_names,
+            write_projection.passthrough_columns,
+            context="model-score output projection",
+        )
+        optional_passthrough = [
+            c
+            for c in schema_names
+            if c in write_projection.optional_passthrough_columns and c not in passthrough
+        ]
+
+    projected_columns = list(passthrough)
+    for cname in generated_columns:
+        if cname in schema_names and cname not in projected_columns:
+            projected_columns.append(cname)
+    for cname in optional_passthrough:
+        if cname not in projected_columns:
+            projected_columns.append(cname)
+
+    missing_required = write_projection.required_output_columns - set(projected_columns)
+    if missing_required:
+        raise ValueError(
+            "model-score output projection requested columns that were "
+            f"not produced or preserved: {sorted(missing_required)}"
+        )
+    return projected_columns
+
+
+def _project_scored_output(
+    result_lf: pl.LazyFrame,
+    write_projection: ScoreWriteProjection | None,
+    *,
+    output_col: str,
+    generated_columns: Iterable[str] | None = None,
+) -> pl.LazyFrame:
+    if write_projection is None:
+        return result_lf
+
+    schema_names = result_lf.collect_schema().names()
+    generated = list(generated_columns) if generated_columns is not None else [output_col]
+    if generated_columns is None:
+        proba_col = f"{output_col}_proba"
+        if proba_col in schema_names:
+            generated.append(proba_col)
+    projected_columns = _score_output_projection_columns(
+        schema_names,
+        write_projection,
+        generated_columns=generated,
+    )
+    return result_lf.select(projected_columns)
+
+
 def _score_eager_unified(
     model: Any,
     lf: pl.LazyFrame,
@@ -397,6 +507,7 @@ def _score_eager_unified(
     flavor: str,
     task: str,
     output_col: str,
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Eager in-memory scoring for a pre-validated flavor.
 
@@ -406,9 +517,14 @@ def _score_eager_unified(
     positive-class probability is appended when ``predict_proba`` is
     available; otherwise only the point prediction is written.
     """
+    from haute._execution_context import ExecutionProfile
     from haute._mlflow_io import _prepare_predict_frame
+    from haute._polars_utils import streaming_collect
 
-    feature_df = lf.select(features).collect(engine="streaming")
+    feature_df = streaming_collect(
+        lf.select(features),
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
     x_data = _prepare_predict_frame(
         feature_df,
         features,
@@ -417,11 +533,82 @@ def _score_eager_unified(
     )
     preds = np.asarray(model.predict(x_data)).flatten()
     prediction_columns = [pl.Series(output_col, preds)]
+    generated_columns = [output_col]
     if task == "classification":
         probas = _predict_positive_proba(model, x_data)
         if probas is not None:
-            prediction_columns.append(pl.Series(f"{output_col}_proba", probas))
-    return lf.with_columns(prediction_columns)
+            proba_col = f"{output_col}_proba"
+            prediction_columns.append(pl.Series(proba_col, probas))
+            generated_columns.append(proba_col)
+    result_lf = lf.with_columns(prediction_columns)
+    return _project_scored_output(
+        result_lf,
+        write_projection,
+        output_col=output_col,
+        generated_columns=generated_columns,
+    )
+
+
+def _normalise_score_write_projection(
+    required_output_columns: frozenset[str] | set[str] | None,
+    *,
+    output_col: str,
+    task: str,
+) -> ScoreWriteProjection | None:
+    if required_output_columns is None:
+        return None
+    generated = {output_col}
+    optional_passthrough: set[str] = set()
+    if task == "classification":
+        proba_col = f"{output_col}_proba"
+        generated.add(proba_col)
+        if proba_col in required_output_columns:
+            optional_passthrough.add(proba_col)
+    passthrough_columns = frozenset(str(c) for c in required_output_columns if c not in generated)
+    return ScoreWriteProjection(
+        passthrough_columns=passthrough_columns,
+        optional_passthrough_columns=frozenset(optional_passthrough),
+        required_output_columns=frozenset(str(c) for c in required_output_columns),
+    )
+
+
+def _normalise_runtime_categorical_levels(
+    categorical_levels: _CategoricalLevels,
+    *,
+    features: list[str],
+) -> dict[str, list[str | None]]:
+    from haute.modelling._feature_contract import normalise_categorical_levels
+
+    feature_set = set(features)
+    return {
+        column: levels
+        for column, levels in normalise_categorical_levels(categorical_levels).items()
+        if column in feature_set
+    }
+
+
+def _validate_runtime_categorical_values(
+    frame: pl.LazyFrame | pl.DataFrame,
+    categorical_levels: Mapping[str, Iterable[str | None]],
+) -> None:
+    if not categorical_levels:
+        return
+    from haute.modelling._feature_contract import validate_categorical_value_domains
+
+    validate_categorical_value_domains(frame, categorical_levels)
+
+
+def _ordered_required_columns(
+    schema_names: list[str],
+    required_columns: frozenset[str],
+    *,
+    context: str,
+) -> list[str]:
+    available = set(schema_names)
+    missing = sorted(required_columns - available)
+    if missing:
+        raise ValueError(f"{context} requested missing passthrough columns: {missing}")
+    return [c for c in schema_names if c in required_columns]
 
 
 def _score_batched_unified(
@@ -432,6 +619,9 @@ def _score_batched_unified(
     flavor: str,
     task: str,
     output_col: str,
+    write_projection: ScoreWriteProjection | None = None,
+    temporary_paths: list[str] | None = None,
+    categorical_levels: _CategoricalLevels = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path) for the unified API.
 
@@ -449,16 +639,31 @@ def _score_batched_unified(
         cat_feature_names=cat_feature_names,
         flavor=flavor,
     )
-    input_path = _sink_to_temp(lf)
-    scored_path = _batch_score_to_parquet(
-        carrier,
-        input_path,
-        features,
-        output_col,
-        task,
-    )
+    sink_columns: frozenset[str] | None = None
+    if write_projection is not None and write_projection.passthrough_columns is not None:
+        optional_present: frozenset[str] = frozenset()
+        if write_projection.optional_passthrough_columns:
+            schema_names = frozenset(lf.collect_schema().names())
+            optional_present = write_projection.optional_passthrough_columns & schema_names
+        sink_columns = frozenset(features) | write_projection.passthrough_columns | optional_present
+    input_path = _sink_to_temp(lf, columns=sink_columns)
+    try:
+        scored_path = _batch_score_to_parquet(
+            carrier,
+            input_path,
+            features,
+            output_col,
+            task,
+            write_projection=write_projection,
+            categorical_levels=categorical_levels,
+        )
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(input_path)
     _register_temp_cleanup(scored_path)
-    os.unlink(input_path)
+    scoped_temp_paths = temporary_paths if temporary_paths is not None else _temp_file_scope.get()
+    if scoped_temp_paths is not None:
+        scoped_temp_paths.append(scored_path)
     return pl.scan_parquet(scored_path)
 
 
@@ -472,6 +677,10 @@ def score_frame(
     task: str = "regression",
     output_col: str = "prediction",
     batch: bool = False,
+    required_output_columns: frozenset[str] | set[str] | None = None,
+    write_projection: ScoreWriteProjection | None = None,
+    temporary_paths: list[str] | None = None,
+    categorical_levels: _CategoricalLevels = None,
 ) -> pl.LazyFrame:
     """Unified scoring entry point with explicit flavor dispatch.
 
@@ -530,11 +739,46 @@ def score_frame(
             supported=sorted(_SUPPORTED_FLAVORS),
         )
 
+    if required_output_columns is not None:
+        if write_projection is not None:
+            raise ValueError(
+                "Pass either required_output_columns or write_projection to score_frame, not both."
+            )
+        write_projection = _normalise_score_write_projection(
+            required_output_columns,
+            output_col=output_col,
+            task=task,
+        )
+
+    normalised_levels = _normalise_runtime_categorical_levels(
+        categorical_levels,
+        features=features,
+    )
+
     if batch:
         return _score_batched_unified(
-            model, lf, features, cat_feature_names, flavor, task, output_col
+            model,
+            lf,
+            features,
+            cat_feature_names,
+            flavor,
+            task,
+            output_col,
+            write_projection=write_projection,
+            temporary_paths=temporary_paths,
+            categorical_levels=normalised_levels,
         )
-    return _score_eager_unified(model, lf, features, cat_feature_names, flavor, task, output_col)
+    _validate_runtime_categorical_values(lf, normalised_levels)
+    return _score_eager_unified(
+        model,
+        lf,
+        features,
+        cat_feature_names,
+        flavor,
+        task,
+        output_col,
+        write_projection=write_projection,
+    )
 
 
 def _run_score_pipeline(
@@ -548,6 +792,9 @@ def _run_score_pipeline(
     extra_dfs: tuple[_Frame, ...] = (),
     source: str = "live",
     row_limit: int | None = None,
+    required_output_columns: frozenset[str] | set[str] | None = None,
+    temporary_paths: list[str] | None = None,
+    categorical_levels: _CategoricalLevels = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
@@ -574,6 +821,10 @@ def _run_score_pipeline(
 
     schema = lf.collect_schema()
     features, _missing = _validate_features(scoring_model, schema)
+    normalised_levels = _normalise_runtime_categorical_levels(
+        categorical_levels,
+        features=features,
+    )
 
     # No catch-all here by design.  ``_validate_features`` above already
     # raises ``FeatureMismatchError`` with full schema context for the
@@ -586,10 +837,33 @@ def _run_score_pipeline(
     # ``_execute_lazy`` boundary already handles per-node failures
     # correctly (preview swallows, trace / batch propagate), so letting
     # the real error type reach the caller is both safe and fail-loud.
+    write_projection = None
+    if not code:
+        write_projection = _normalise_score_write_projection(
+            required_output_columns,
+            output_col=output_col,
+            task=task,
+        )
+
     if source == "live" or row_limit:
+        _validate_runtime_categorical_values(lf, normalised_levels)
         result_lf = score_eager_(scoring_model, lf, features, output_col, task)
+        result_lf = _project_scored_output(
+            result_lf,
+            write_projection,
+            output_col=output_col,
+        )
     else:
-        result_lf = _score_batched_standalone(scoring_model, lf, features, output_col, task)
+        result_lf = _score_batched_standalone(
+            scoring_model,
+            lf,
+            features,
+            output_col,
+            task,
+            write_projection=write_projection,
+            temporary_paths=temporary_paths,
+            categorical_levels=normalised_levels,
+        )
 
     if code:
         from haute._user_exec import _exec_user_code
@@ -610,6 +884,9 @@ def _score_batched_standalone(
     features: list[str],
     output_col: str,
     task: str,
+    write_projection: ScoreWriteProjection | None = None,
+    temporary_paths: list[str] | None = None,
+    categorical_levels: _CategoricalLevels = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path).
 
@@ -625,6 +902,9 @@ def _score_batched_standalone(
         task=task,
         output_col=output_col,
         batch=True,
+        write_projection=write_projection,
+        temporary_paths=temporary_paths,
+        categorical_levels=categorical_levels,
     )
 
 
@@ -662,6 +942,13 @@ class ModelScorer:
         else uses the batched parquet path.
     row_limit : int | None
         When set (preview/trace), forces the eager path regardless of source.
+    feature_contract_path : str | None
+        Optional train-time feature contract. When it declares categorical
+        value domains, runtime declarations must match and observed values
+        are checked before prediction.
+    reuse_loaded_model : bool
+        When true, pin the loaded model on this scorer instance. Intended for
+        short-lived streaming jobs that reuse one scorer across many chunks.
     """
 
     def __init__(
@@ -678,7 +965,13 @@ class ModelScorer:
         source_names: list[str] | None = None,
         source: str = "live",
         row_limit: int | None = None,
+        required_output_columns: frozenset[str] | set[str] | None = None,
+        feature_contract_path: str | None = None,
+        categorical_levels: _CategoricalLevels = None,
+        reuse_loaded_model: bool = False,
     ) -> None:
+        from haute.modelling._feature_contract import normalise_categorical_levels
+
         self.source_type = source_type
         self.run_id = run_id
         self.artifact_path = artifact_path
@@ -690,6 +983,81 @@ class ModelScorer:
         self.source_names = list(source_names) if source_names else []
         self.source = source
         self.row_limit = row_limit
+        self.required_output_columns = (
+            frozenset(str(c) for c in required_output_columns)
+            if required_output_columns is not None
+            else None
+        )
+        self.feature_contract_path = feature_contract_path or None
+        self._declared_categorical_levels = (
+            normalise_categorical_levels(categorical_levels)
+            if categorical_levels is not None
+            else None
+        )
+        self.reuse_loaded_model = reuse_loaded_model
+        self._scoring_model: Any | None = None
+        self._scoring_model_lock = threading.Lock()
+
+    def _load_scoring_model_uncached(self) -> Any:
+        """Load the configured model via the shared MLflow loader."""
+        from haute._mlflow_io import load_mlflow_model
+
+        return load_mlflow_model(
+            source_type=self.source_type,
+            run_id=self.run_id,
+            artifact_path=self.artifact_path,
+            registered_model=self.registered_model,
+            version=self.version,
+            task=self.task,
+        )
+
+    def _load_scoring_model(self) -> Any:
+        """Load the configured model, optionally pinning it for this scorer."""
+        if not self.reuse_loaded_model:
+            return self._load_scoring_model_uncached()
+
+        if self._scoring_model is not None:
+            return self._scoring_model
+
+        with self._scoring_model_lock:
+            if self._scoring_model is None:
+                self._scoring_model = self._load_scoring_model_uncached()
+        return self._scoring_model
+
+    def _categorical_levels_for_score(self) -> dict[str, list[str | None]]:
+        """Return the categorical value domains to enforce for this score call."""
+        declared = self._declared_categorical_levels
+        if self.feature_contract_path is None:
+            return {column: list(levels) for column, levels in (declared or {}).items()}
+
+        from haute.modelling._feature_contract import (
+            load_contract,
+            normalise_categorical_levels,
+        )
+
+        expected = load_contract(self.feature_contract_path)
+        if not expected.categorical_levels:
+            return normalise_categorical_levels(declared, features=expected.features)
+
+        declared_for_contract = {
+            column: levels
+            for column, levels in (declared or {}).items()
+            if column in expected.categorical_levels
+        }
+        mismatched_levels = {
+            column: levels
+            for column, levels in declared_for_contract.items()
+            if levels != expected.categorical_levels[column]
+        }
+        if mismatched_levels:
+            raise FeatureMismatchError(
+                "contract mismatch: categorical_levels",
+                field="categorical_levels",
+                expected=expected.categorical_levels,
+                actual=mismatched_levels,
+                feature_contract_path=self.feature_contract_path,
+            )
+        return {column: list(levels) for column, levels in expected.categorical_levels.items()}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -701,16 +1069,8 @@ class ModelScorer:
         Accepts one or more upstream LazyFrames (first is the scoring input).
         Returns a LazyFrame with prediction column(s) appended.
         """
-        from haute._mlflow_io import load_mlflow_model
-
-        scoring_model = load_mlflow_model(
-            source_type=self.source_type,
-            run_id=self.run_id,
-            artifact_path=self.artifact_path,
-            registered_model=self.registered_model,
-            version=self.version,
-            task=self.task,
-        )
+        categorical_levels = self._categorical_levels_for_score()
+        scoring_model = self._load_scoring_model()
 
         lf = dfs[0] if dfs else pl.LazyFrame()
         return _run_score_pipeline(
@@ -723,6 +1083,8 @@ class ModelScorer:
             extra_dfs=dfs[1:],
             source=self.source,
             row_limit=self.row_limit,
+            required_output_columns=self.required_output_columns,
+            categorical_levels=categorical_levels,
         )
 
     # ------------------------------------------------------------------
@@ -757,6 +1119,12 @@ class ModelScorer:
             features,
             self.output_col,
             self.task,
+            write_projection=_normalise_score_write_projection(
+                None if self.code else self.required_output_columns,
+                output_col=self.output_col,
+                task=self.task,
+            ),
+            categorical_levels=self._categorical_levels_for_score(),
         )
 
 
@@ -812,6 +1180,8 @@ def score_from_config(
         task=cfg.get("task", "regression"),
         output_col=cfg.get("output_column", "prediction"),
         source=_scenario_ctx.get(),
+        feature_contract_path=cfg.get("feature_contract_path") or None,
+        categorical_levels=cfg.get("categorical_levels") or None,
     )
     return scorer.score(*dfs)
 
@@ -822,24 +1192,43 @@ def score_from_config(
 # ----------------------------------------------------------------------
 
 
-def _sink_to_temp(lf: pl.LazyFrame) -> str:
+def _sink_to_temp(
+    lf: pl.LazyFrame,
+    *,
+    columns: frozenset[str] | set[str] | None = None,
+) -> str:
     """Sink a LazyFrame to a temp parquet file via streaming.
 
     Uses ``fast_checkpoint=True`` for lz4 compression — these temp
     files are read back immediately for batch scoring and then deleted,
-    so speed matters more than compression ratio.
+    so speed matters more than compression ratio.  Streaming planner errors
+    propagate instead of broadening to an eager collect.
     """
     import os
     import tempfile
 
-    from haute._polars_utils import safe_sink
+    from haute._polars_utils import bounded_sink
+
+    sink_lf = lf
+    if columns is not None:
+        ordered = _ordered_required_columns(
+            sink_lf.collect_schema().names(),
+            frozenset(columns),
+            context="model-score input projection",
+        )
+        sink_lf = sink_lf.select(ordered)
 
     fd, path = tempfile.mkstemp(
         suffix=".parquet",
         prefix="haute_score_in_",
     )
     os.close(fd)
-    safe_sink(lf, path, fast_checkpoint=True)
+    try:
+        bounded_sink(sink_lf, path, fast_checkpoint=True)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(path)
+        raise
     return path
 
 
@@ -849,6 +1238,9 @@ def _batch_score_to_parquet(
     features: list[str],
     output_col: str,
     task: str,
+    *,
+    write_projection: ScoreWriteProjection | None = None,
+    categorical_levels: _CategoricalLevels = None,
 ) -> str:
     """Score a parquet file in batches, return path to scored output."""
     import os
@@ -864,11 +1256,19 @@ def _batch_score_to_parquet(
     )
     os.close(fd)
 
-    pf = pq.ParquetFile(input_path)
     writer = None
+    wrote_any = False
+    success = False
     want_proba = task == "classification"
+    can_predict_proba = want_proba and _raw_model_supports_predict_proba(scoring_model)
+    normalised_levels = _normalise_runtime_categorical_levels(
+        categorical_levels,
+        features=features,
+    )
 
     try:
+        pf = pq.ParquetFile(input_path)
+        input_schema_names = list(pf.schema_arrow.names)
         for batch in pf.iter_batches(
             batch_size=_SCORE_BATCH_SIZE,
         ):
@@ -878,6 +1278,7 @@ def _batch_score_to_parquet(
             else:
                 chunk = chunk_raw
             feature_chunk = chunk.select(features)
+            _validate_runtime_categorical_values(feature_chunk, normalised_levels)
             x_data = _prepare_predict_frame(
                 feature_chunk,
                 features,
@@ -895,6 +1296,18 @@ def _batch_score_to_parquet(
                     x_data,
                     output_col,
                 )
+            if write_projection is not None:
+                generated = [output_col]
+                proba_col = f"{output_col}_proba"
+                if can_predict_proba and proba_col in chunk.columns:
+                    generated.append(proba_col)
+                chunk = chunk.select(
+                    _score_output_projection_columns(
+                        chunk.columns,
+                        write_projection,
+                        generated_columns=generated,
+                    )
+                )
             table = chunk.to_arrow()
             if writer is None:
                 writer = pq.ParquetWriter(
@@ -902,17 +1315,41 @@ def _batch_score_to_parquet(
                     table.schema,
                 )
             writer.write_table(table)
+            wrote_any = True
             del chunk, x_data, table
-    finally:
         if writer is not None:
-            writer.close()
-        else:
+            active_writer = writer
+            writer = None
+            active_writer.close()
+        if not wrote_any:
             # Zero-row input: write an empty parquet preserving correct dtypes
             input_schema = pl.read_parquet_schema(input_path)
             empty = pl.DataFrame(
-                {c: pl.Series([], dtype=input_schema.get(c, pl.Float64)) for c in features}
+                {
+                    c: pl.Series([], dtype=input_schema.get(c, pl.Float64))
+                    for c in input_schema_names
+                }
             ).with_columns(pl.Series(output_col, [], dtype=pl.Float64))
-            if want_proba:
+            if can_predict_proba:
                 empty = empty.with_columns(pl.Series(f"{output_col}_proba", [], dtype=pl.Float64))
+            if write_projection is not None:
+                generated = [output_col]
+                proba_col = f"{output_col}_proba"
+                if can_predict_proba and proba_col in empty.columns:
+                    generated.append(proba_col)
+                empty = empty.select(
+                    _score_output_projection_columns(
+                        empty.columns,
+                        write_projection,
+                        generated_columns=generated,
+                    )
+                )
             pq.write_table(empty.to_arrow(), out_path)
+        success = True
+    finally:
+        if writer is not None:
+            writer.close()
+        if not success:
+            with suppress(FileNotFoundError):
+                os.unlink(out_path)
     return out_path
