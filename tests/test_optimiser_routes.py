@@ -24,6 +24,8 @@ from haute.routes._optimiser_limits import (
 from haute.routes._optimiser_service import (
     _DEFAULT_AUTO_RANGE_CHUNK_SIZE,
     _DEFAULT_AUTO_RANGE_PARTITIONS,
+    FrontierAutoRangeContext,
+    SolveContext,
     _auto_range_required_columns_by_node,
     _build_streaming_auto_range_plan,
     _compute_scenario_value_stats,
@@ -970,7 +972,7 @@ class TestSolveRoute:
             assert launched.wait(timeout=2.0)
 
         assert resp.status_code == 200
-        launched_config = launch_background.call_args.args[2]
+        launched_config = launch_background.call_args.kwargs["config"]
         assert "factor_level_order" not in launched_config
         assert launch_background.call_args.kwargs["factor_level_order"] == {
             "proposer_age_band": ["20-27", "28-34", "35-41", "missing"],
@@ -1320,9 +1322,7 @@ class TestEstimateRoute:
                 "expected_income": [100.0, 120.0],
             }
         ).write_parquet(left_path)
-        pl.DataFrame({"quote_id": ["q1", "q2"], "volume": [1.0, 0.8]}).write_parquet(
-            right_path
-        )
+        pl.DataFrame({"quote_id": ["q1", "q2"], "volume": [1.0, 0.8]}).write_parquet(right_path)
         graph = _make_estimate_projection_impossible_graph(
             str(left_path),
             str(right_path),
@@ -1530,9 +1530,10 @@ class TestEstimateRoute:
         assert status_data is not None
         assert status_data["status"] == "completed"
         assert status_data["result"]["status"] == "ok"
-        assert status_data["result"]["ranges"]["volume"]["min"] <= status_data["result"][
-            "ranges"
-        ]["volume"]["max"]
+        assert (
+            status_data["result"]["ranges"]["volume"]["min"]
+            <= status_data["result"]["ranges"]["volume"]["max"]
+        )
         assert clean_job_store.jobs[job_id]["job_type"] == "frontier_auto_range"
 
     @pytest.mark.parametrize(
@@ -1577,9 +1578,7 @@ class TestEstimateRoute:
         from haute.routes._optimiser_service import OptimiserSolveService
 
         store = JobStore()
-        job_id = store.create_job(
-            {"status": "contract-ish", "job_type": "frontier_auto_range"}
-        )
+        job_id = store.create_job({"status": "contract-ish", "job_type": "frontier_auto_range"})
 
         with pytest.raises(ValueError, match="invalid status"):
             OptimiserSolveService(store).frontier_auto_range_status(job_id)
@@ -1766,11 +1765,14 @@ class TestEstimateRoute:
 
         assert response.status == "cancelled"
         assert response.message == "Cancelled"
-        assert store.atomic_update(
-            started.job_id,
-            {"status": "completed", "progress": 1.0},
-            expected_status="running",
-        ) is None
+        assert (
+            store.atomic_update(
+                started.job_id,
+                {"status": "completed", "progress": 1.0},
+                expected_status="running",
+            )
+            is None
+        )
 
     def test_frontier_auto_range_estimator_honors_cancellation_between_batches(self):
         """The chunked estimator exposes cooperative cancellation checkpoints."""
@@ -1792,11 +1794,10 @@ class TestEstimateRoute:
 
         with pytest.raises(BackgroundJobStoppedError):
             _estimate_scenario_frontier_ranges(
-                df.lazy(),
+                FrontierAutoRangeContext(chunk_size=1, partition_count=2),
+                scored_lf=df.lazy(),
                 quote_id_col="quote_id",
                 constraint_cols=["volume"],
-                chunk_size=1,
-                partition_count=2,
                 check_cancelled=check_cancelled,
             )
 
@@ -1817,11 +1818,10 @@ class TestEstimateRoute:
         )
 
         ranges = _estimate_scenario_frontier_ranges(
-            df.lazy(),
+            FrontierAutoRangeContext(chunk_size=2, partition_count=2),
+            scored_lf=df.lazy(),
             quote_id_col="quote_id",
             constraint_cols=["volume", "margin"],
-            chunk_size=2,
-            partition_count=2,
         )
 
         assert ranges == {
@@ -1868,12 +1868,14 @@ class TestEstimateRoute:
             pytest.raises(ExecutionMemoryLimitExceededError),
         ):
             _estimate_scenario_frontier_ranges(
-                df.lazy(),
+                FrontierAutoRangeContext(
+                    chunk_size=2,
+                    partition_count=2,
+                    execution_context=context,
+                ),
+                scored_lf=df.lazy(),
                 quote_id_col="quote_id",
                 constraint_cols=["volume"],
-                chunk_size=2,
-                partition_count=2,
-                execution_context=context,
             )
 
         assert batch_added
@@ -3121,13 +3123,11 @@ class TestEstimateRoute:
     def test_streaming_auto_range_guard_rejects_expression_aggregate(self):
         """Aggregates hidden in with_columns are not chunk-local."""
         assert not _looks_chunk_local_user_code(
-            "df = premium.with_columns("
-            "conversion_prediction=pl.col('premium').mean())",
+            "df = premium.with_columns(conversion_prediction=pl.col('premium').mean())",
             frame_names=("premium",),
         )
         assert _looks_chunk_local_user_code(
-            "df = premium.with_columns("
-            "conversion_prediction=pl.col('premium') * pl.lit(2.0))",
+            "df = premium.with_columns(conversion_prediction=pl.col('premium') * pl.lit(2.0))",
             frame_names=("premium",),
         )
         assert not _looks_chunk_local_user_code(
@@ -3353,9 +3353,7 @@ class TestEstimateRoute:
                 "burn_cost": [60.0, 20.0],
             }
         ).write_parquet(left_path)
-        pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(
-            right_path
-        )
+        pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(right_path)
         graph = make_graph(
             {
                 "nodes": [
@@ -3381,9 +3379,7 @@ class TestEstimateRoute:
                             "label": "joined",
                             "nodeType": "polars",
                             "config": {
-                                "code": (
-                                    "df = left.join(right, on='quote_id', how='left')"
-                                ),
+                                "code": ("df = left.join(right, on='quote_id', how='left')"),
                                 "contract": {
                                     "inputs": [
                                         "quote_id",
@@ -3509,10 +3505,10 @@ class TestEstimateRoute:
 
         with pytest.raises(ValueError, match="chunk_size must be a positive integer"):
             _estimate_scenario_frontier_ranges(
-                df.lazy(),
+                FrontierAutoRangeContext(chunk_size=chunk_size),
+                scored_lf=df.lazy(),
                 quote_id_col="quote_id",
                 constraint_cols=["volume"],
-                chunk_size=chunk_size,
             )
 
     def test_frontier_auto_range_prepare_uses_auto_range_tuned_defaults(self, scored_data):
@@ -3692,9 +3688,7 @@ class TestEstimateRoute:
         )
 
         assert resp.status_code == 400
-        assert "auto_range_chunk_size must be a positive integer" in resp.json()[
-            "detail"
-        ]
+        assert "auto_range_chunk_size must be a positive integer" in resp.json()["detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_rejects_invalid_partition_count(
@@ -3727,9 +3721,7 @@ class TestEstimateRoute:
                 "burn_cost": [60.0, 20.0],
             }
         ).write_parquet(left_path)
-        pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(
-            right_path
-        )
+        pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(right_path)
         graph = _make_auto_range_projection_impossible_graph(
             str(left_path),
             str(right_path),
@@ -3762,9 +3754,7 @@ class TestEstimateRoute:
                 "burn_cost": [60.0, 20.0],
             }
         ).write_parquet(left_path)
-        pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(
-            right_path
-        )
+        pl.DataFrame({"quote_id": ["q1", "q2"], "factor": [2.0, 3.0]}).write_parquet(right_path)
         graph = _make_auto_range_projection_impossible_graph(
             str(left_path),
             str(right_path),
@@ -3931,10 +3921,7 @@ class TestEstimateRoute:
                             "label": "optimiser_input",
                             "nodeType": "polars",
                             "config": {
-                                "code": (
-                                    "df = source.with_columns("
-                                    "volume=pl.col('volume') * 1.0)"
-                                ),
+                                "code": ("df = source.with_columns(volume=pl.col('volume') * 1.0)"),
                                 "contract": {
                                     "inputs": ["volume"],
                                     "outputs": [],
@@ -6186,85 +6173,39 @@ class TestExecutePipelineArgs:
         build_grid.assert_not_called()
         launch_background.assert_not_called()
 
-    def test_execute_pipeline_maps_projection_impossible_to_422(self, tmp_path):
-        from haute._execution_context import ExecutionContext, ExecutionProfile
+    def test_execute_pipeline_maps_projection_impossible_to_422(self, scored_data, tmp_path):
+        from haute.errors import ProjectionImpossibleError
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
 
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "left",
-                        "data": {
-                            "label": "left",
-                            "nodeType": "dataSource",
-                            "config": {},
-                        },
-                    },
-                    {
-                        "id": "right",
-                        "data": {
-                            "label": "right",
-                            "nodeType": "dataSource",
-                            "config": {},
-                        },
-                    },
-                    {
-                        "id": "join",
-                        "data": {
-                            "label": "join",
-                            "nodeType": "polars",
-                            "config": {"code": "df = left.join(right, on='quote_id')"},
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "expected_income",
-                                "constraints": {"volume": {"min": 0.9}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "scenario_value",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("left", "join").model_dump(),
-                    make_edge("right", "join").model_dump(),
-                    make_edge("join", "opt").model_dump(),
-                ],
-            }
-        )
-        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        graph_dict = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
 
-        with pytest.raises(HTTPException) as exc_info:
+        with (
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=ProjectionImpossibleError(
+                    "Fan-in join projection requires literal how/suffix arguments.",
+                    node_id="join",
+                    node_type="polars",
+                ),
+            ),
+            patch("haute.executor._resolve_batch_scenario", return_value=None),
+            patch("haute.executor._compile_preamble", return_value={}),
+            pytest.raises(HTTPException) as exc_info,
+        ):
             service._execute_pipeline(
                 body,
                 job_id,
-                tmp_path,
-                required_columns_by_node={
-                    "opt": {
-                        "quote_id",
-                        "scenario_index",
-                        "scenario_value",
-                        "expected_income",
-                        "volume",
-                    }
-                },
-                execution_context=ExecutionContext(
-                    operation="test",
-                    profile=ExecutionProfile.OPTIMISER_SETUP,
-                ),
+                checkpoint_dir,
+                required_columns_by_node={"source": frozenset({"volume"})},
             )
 
         assert exc_info.value.status_code == 422
@@ -6408,9 +6349,7 @@ class TestExecutePipelineArgs:
                 "volume": [1.0, 2.0],
             }
         ).write_parquet(source_path)
-        pl.DataFrame({"quote_id": ["q1"], "territory": ["north"]}).write_parquet(
-            banding_path
-        )
+        pl.DataFrame({"quote_id": ["q1"], "territory": ["north"]}).write_parquet(banding_path)
         graph = make_graph(
             {
                 "nodes": [
@@ -6661,7 +6600,7 @@ class TestBuildGridBoundedSink:
         mock_grid = MagicMock()
         with (
             patch(
-                "haute._polars_utils.bounded_sink",
+                "haute.routes._optimiser_service.bounded_sink",
                 side_effect=patched_bounded_sink,
             ) as mock_sink,
             patch(
@@ -10642,7 +10581,18 @@ class TestSolveRatebookUnit:
         mock_grid = MagicMock()
 
         with pytest.raises(RuntimeError, match="banding source"):
-            _solve_ratebook(mock_grid, {}, None, store, job_id, time.monotonic())
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config={},
+                ratebook_factors_handle=None,
+            )
 
     def test_solve_ratebook_invalid_factor_columns(self):
         """Ratebook mode with factor columns not in DataFrame raises RuntimeError."""
@@ -10661,7 +10611,18 @@ class TestSolveRatebookUnit:
         }
 
         with pytest.raises(RuntimeError, match="Missing ratebook factor columns"):
-            _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
+            )
 
     def test_solve_ratebook_success(self):
         """Ratebook solve succeeds with valid factors_df."""
@@ -10711,7 +10672,18 @@ class TestSolveRatebookUnit:
 
         with patch("price_contour.RatebookOptimiser") as mock_solver:
             mock_solver.return_value.solve.return_value = mock_result
-            _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
+            )
 
         assert "chunk_size" not in mock_solver.call_args.kwargs
         job = store.require_job(job_id)
@@ -10782,12 +10754,16 @@ class TestSolveRatebookUnit:
         with patch("price_contour.RatebookOptimiser") as mock_solver:
             mock_solver.return_value.solve.return_value = mock_result
             _solve_ratebook(
-                mock_grid,
-                config,
-                factors_df,
-                store,
-                job_id,
-                time.monotonic(),
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
                 factor_level_order=factor_level_order,
             )
 
@@ -10856,7 +10832,18 @@ class TestSolveRatebookUnit:
 
         with patch("price_contour.RatebookOptimiser") as mock_solver:
             with pytest.raises(ValueError) as exc_info:
-                _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+                _solve_ratebook(
+                    SolveContext(
+                        job_id=job_id,
+                        node_id="opt",
+                        mode="ratebook",
+                        store=store,
+                        start_time=time.monotonic(),
+                    ),
+                    quote_grid=mock_grid,
+                    config=config,
+                    ratebook_factors_handle=factors_df,
+                )
 
         detail = str(exc_info.value)
         assert "contains null values" in detail
@@ -10925,7 +10912,18 @@ class TestSolveRatebookUnit:
             solver = mock_solver.return_value
             solver.solve.return_value = mock_result
             solver.frontier.return_value = SimpleNamespace(points=frontier_points)
-            _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
+            )
 
         assert mock_solver.call_args.kwargs["factor_columns"] == [["region"]]
         prepared_factors = solver.frontier.call_args.args[1]
@@ -10990,7 +10988,18 @@ class TestSolveRatebookUnit:
 
         with patch("price_contour.RatebookOptimiser") as mock_solver:
             mock_solver.return_value.solve.return_value = mock_result
-            _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
+            )
 
         job = store.require_job(job_id)
         assert job["status"] == "completed"
@@ -11026,6 +11035,120 @@ class TestSolveRatebookUnit:
                 {"banding_source": "missing_node", "factor_columns": [["region"]]},
                 "ratebook",
             )
+
+    def test_extract_factors_post_sink_checkpoint_memory_limit_cleans_artifact(self):
+        """Regression for bug_001: if the post-sink checkpoint raises
+        ExecutionMemoryLimitExceededError, the freshly-written factor
+        artifact directory must be cleaned up before the exception
+        propagates. Otherwise the caller's handle is never assigned and
+        the artifact leaks past the per-job TemporaryDirectory.
+        """
+        from pathlib import Path
+
+        from haute._execution_context import (
+            ExecutionContext,
+            ExecutionMemoryLimitExceededError,
+            ExecutionProfile,
+        )
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        mock_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["N", "S"]})
+        lazy_outputs = {"banding_node": mock_df.lazy()}
+        config = {"banding_source": "banding_node", "factor_columns": [["region"]]}
+
+        # Sampler returns a low value until the sink completes; then jumps over
+        # the limit so the post-sink checkpoint raises ExecutionMemoryLimitExceededError.
+        rss_state: dict[str, int] = {"current": 100}
+        execution_context = ExecutionContext(
+            operation="optimiser_solve",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            memory_limit_bytes=1_000,
+            memory_baseline_bytes=100,
+            rss_limit_bytes=1_100,
+            memory_sampler=lambda: rss_state["current"],
+        )
+
+        captured: dict[str, Path] = {}
+        from haute.routes import _optimiser_service as opt_mod
+
+        original_persist = opt_mod._persist_ratebook_factors_lazy_artifact
+
+        def recording_persist(factors_lf, **kwargs):
+            handle = original_persist(factors_lf, **kwargs)
+            captured["directory"] = Path(handle["directory"])
+            # Simulate RSS climbing past the admitted ceiling after the sink.
+            rss_state["current"] = 10_000
+            return handle
+
+        with (
+            patch.object(opt_mod, "_persist_ratebook_factors_lazy_artifact", recording_persist),
+            pytest.raises(ExecutionMemoryLimitExceededError),
+        ):
+            OptimiserSolveService._extract_factors(
+                lazy_outputs,
+                config,
+                "ratebook",
+                execution_context=execution_context,
+            )
+
+        assert "directory" in captured, "ratebook factor artifact should have been written"
+        assert not captured["directory"].exists(), (
+            "ratebook factor artifact directory must be cleaned up when the "
+            "post-sink checkpoint raises"
+        )
+
+    def test_extract_factors_post_sink_checkpoint_cancellation_cleans_artifact(self):
+        """Same as the memory-limit case but for ExecutionCancelledError."""
+        from pathlib import Path
+
+        from haute._execution_context import (
+            ExecutionCancellationToken,
+            ExecutionCancelledError,
+            ExecutionContext,
+            ExecutionProfile,
+        )
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        mock_df = pl.DataFrame({"quote_id": ["q1"], "region": ["N"]})
+        lazy_outputs = {"banding_node": mock_df.lazy()}
+        config = {"banding_source": "banding_node", "factor_columns": [["region"]]}
+
+        token = ExecutionCancellationToken()
+        execution_context = ExecutionContext(
+            operation="optimiser_solve",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            cancellation_token=token,
+            memory_sampler=lambda: 1_000,
+        )
+
+        captured: dict[str, Path] = {}
+        from haute.routes import _optimiser_service as opt_mod
+
+        original_persist = opt_mod._persist_ratebook_factors_lazy_artifact
+
+        def recording_persist(factors_lf, **kwargs):
+            handle = original_persist(factors_lf, **kwargs)
+            captured["directory"] = Path(handle["directory"])
+            # Trigger cancellation between sink and checkpoint.
+            token.cancel()
+            return handle
+
+        with (
+            patch.object(opt_mod, "_persist_ratebook_factors_lazy_artifact", recording_persist),
+            pytest.raises(ExecutionCancelledError),
+        ):
+            OptimiserSolveService._extract_factors(
+                lazy_outputs,
+                config,
+                "ratebook",
+                execution_context=execution_context,
+            )
+
+        assert "directory" in captured, "ratebook factor artifact should have been written"
+        assert not captured["directory"].exists(), (
+            "ratebook factor artifact directory must be cleaned up when the "
+            "post-sink cancellation token fires"
+        )
 
 
 class TestExecutePipelineExtended:
@@ -11316,7 +11439,7 @@ class TestBuildGrid:
 
         mock_grid = MagicMock()
         with (
-            patch("haute._polars_utils.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 return_value=mock_grid,
@@ -11380,9 +11503,7 @@ class TestBuildGrid:
             nonlocal expected_chunk_size
             lf.collect().write_parquet(path)
             metadata = read_parquet_metadata(Path(path))
-            row_bytes_basis = int(
-                metadata.get("uncompressed_size_bytes") or metadata["size_bytes"]
-            )
+            row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
             estimated_row_bytes = max(
                 1,
                 -(-row_bytes_basis // max(1, int(metadata["row_count"]))),
@@ -11390,7 +11511,7 @@ class TestBuildGrid:
             expected_chunk_size = max(1, 256 // estimated_row_bytes)
 
         with (
-            patch("haute._polars_utils.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 return_value=mock_grid,
@@ -11443,7 +11564,7 @@ class TestBuildGrid:
 
         with (
             patch(
-                "haute._polars_utils.bounded_sink",
+                "haute.routes._optimiser_service.bounded_sink",
                 side_effect=lambda lf, path, **kw: lf.collect().write_parquet(path),
             ),
             patch(
@@ -11464,9 +11585,7 @@ class TestBuildGrid:
         from haute.routes._optimiser_service import _chunk_size_decision_for_parquet
 
         empty_path = tmp_path / "empty.parquet"
-        pl.DataFrame({"quote_id": pl.Series([], dtype=pl.Utf8)}).write_parquet(
-            empty_path
-        )
+        pl.DataFrame({"quote_id": pl.Series([], dtype=pl.Utf8)}).write_parquet(empty_path)
 
         with pytest.raises(ValueError, match="parquet row_count"):
             _chunk_size_decision_for_parquet(
@@ -11497,9 +11616,7 @@ class TestBuildGrid:
         assert handle is not None
         factors_path = Path(handle["path"])
         metadata = read_parquet_metadata(factors_path)
-        row_bytes_basis = int(
-            metadata.get("uncompressed_size_bytes") or metadata["size_bytes"]
-        )
+        row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
         estimated_row_bytes = max(
             1,
             -(-row_bytes_basis // max(1, int(metadata["row_count"]))),
@@ -11633,7 +11750,7 @@ class TestBuildGrid:
         }
 
         with (
-            patch("haute._polars_utils.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 side_effect=RuntimeError("grid failed"),
@@ -11671,7 +11788,7 @@ class TestBuildGrid:
         )
 
         with patch(
-            "haute._polars_utils.bounded_sink",
+            "haute.routes._optimiser_service.bounded_sink",
             side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -11782,7 +11899,12 @@ class TestLaunchBackground:
         config = {"timeout": 42}
 
         with patch("haute.routes._optimiser_service._solve_online"):
-            service._launch_background(job_id, "opt", config, "online", mock_grid, None)
+            service._launch_background(
+                SolveContext(job_id=job_id, node_id="opt", mode="online"),
+                config=config,
+                quote_grid=mock_grid,
+                ratebook_factors_handle=None,
+            )
             # Give the thread time to start
             time.sleep(0.2)
 
@@ -11798,7 +11920,12 @@ class TestLaunchBackground:
         job_id = clean_job_store.create_job({"status": "running"})
 
         with patch("haute.routes._optimiser_service._solve_online"):
-            service._launch_background(job_id, "opt", {}, "online", MagicMock(), None)
+            service._launch_background(
+                SolveContext(job_id=job_id, node_id="opt", mode="online"),
+                config={},
+                quote_grid=MagicMock(),
+                ratebook_factors_handle=None,
+            )
             time.sleep(0.2)
 
         job = clean_job_store.require_job(job_id)
@@ -11820,12 +11947,10 @@ class TestLaunchBackground:
             pytest.raises(HTTPException) as exc_info,
         ):
             service._launch_background(
-                job_id,
-                "opt",
-                {"timeout": 42},
-                "online",
-                MagicMock(),
-                None,
+                SolveContext(job_id=job_id, node_id="opt", mode="online"),
+                config={"timeout": 42},
+                quote_grid=MagicMock(),
+                ratebook_factors_handle=None,
             )
 
         assert exc_info.value.status_code == 500
@@ -11883,7 +12008,12 @@ class TestLaunchBackground:
             patch("haute.routes._optimiser_service.threading.Thread", DeferredThread),
             patch("haute.routes._optimiser_service._solve_online", side_effect=_late_solve),
         ):
-            service._launch_background(job_id, "opt", {"timeout": 10}, "online", MagicMock(), None)
+            service._launch_background(
+                SolveContext(job_id=job_id, node_id="opt", mode="online"),
+                config={"timeout": 10},
+                quote_grid=MagicMock(),
+                ratebook_factors_handle=None,
+            )
 
         assert len(deferred_threads) == 1
 
@@ -12251,7 +12381,18 @@ class TestSolveRatebookFallbackQuoteId:
 
         with patch("price_contour.RatebookOptimiser") as mock_solver:
             mock_solver.return_value.solve.return_value = mock_result
-            _solve_ratebook(mock_grid, config, factors_df, store, job_id, time.monotonic())
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
+            )
 
         job = store.require_job(job_id)
         assert job["status"] == "completed"
@@ -12326,7 +12467,7 @@ class TestBuildGridHTTPExceptionPassthrough:
         original_exc = HTTPException(status_code=403, detail="not allowed")
 
         with (
-            patch("haute._polars_utils.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
             patch("price_contour.build_grid_from_parquet_chunked", side_effect=original_exc),
         ):
             mock_sink.side_effect = lambda lf, path, **kw: lf.collect().write_parquet(path)

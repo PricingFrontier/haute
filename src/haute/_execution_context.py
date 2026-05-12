@@ -359,18 +359,10 @@ class ExecutionTraceSummary:
             "n_checkpoints": self.n_checkpoints,
             "stages": [stage.to_dict() for stage in self.stages],
             "memory_pressure_event_count": self.memory_pressure_event_count,
-            "retained_memory_pressure_event_count": (
-                self.retained_memory_pressure_event_count
-            ),
-            "truncated_memory_pressure_event_count": (
-                self.truncated_memory_pressure_event_count
-            ),
-            "memory_pressure_events_truncated": (
-                self.truncated_memory_pressure_event_count > 0
-            ),
-            "memory_pressure_events": [
-                event.to_dict() for event in self.memory_pressure_events
-            ],
+            "retained_memory_pressure_event_count": (self.retained_memory_pressure_event_count),
+            "truncated_memory_pressure_event_count": (self.truncated_memory_pressure_event_count),
+            "memory_pressure_events_truncated": (self.truncated_memory_pressure_event_count > 0),
+            "memory_pressure_events": [event.to_dict() for event in self.memory_pressure_events],
         }
 
 
@@ -755,8 +747,7 @@ class ExecutionContext:
         except BaseException as exc:
             failed = True
             skip_metric = bool(
-                skip_metric_on_exception
-                and isinstance(exc, skip_metric_on_exception)
+                skip_metric_on_exception and isinstance(exc, skip_metric_on_exception)
             )
             raise
         finally:
@@ -825,8 +816,7 @@ class ExecutionContext:
         projection_plan = self.projection_plan
         payload["projection_plan_diagnostics"] = (
             projection_plan.diagnostics_payload(profile=self.profile.value)
-            if projection_plan is not None
-            and hasattr(projection_plan, "diagnostics_payload")
+            if projection_plan is not None and hasattr(projection_plan, "diagnostics_payload")
             else None
         )
         return payload
@@ -946,9 +936,7 @@ class ExecutionContext:
                 available_ram_bytes=(
                     admission.available_ram_bytes if admission is not None else None
                 ),
-                os_reserve_bytes=(
-                    admission.os_reserve_bytes if admission is not None else None
-                ),
+                os_reserve_bytes=(admission.os_reserve_bytes if admission is not None else None),
                 pressure_ratio=pressure_ratio,
             )
             self.metrics.record_memory_pressure_event(event)

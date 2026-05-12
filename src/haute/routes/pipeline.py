@@ -27,6 +27,7 @@ from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._path_resolution import resolve_runtime_file_path
+from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
 from haute.errors import BoundedMemoryUnsupportedError, ContractMismatchError
@@ -364,22 +365,29 @@ async def trace_row(body: TraceRequest) -> TraceResponse:
     try:
 
         async def _run_trace() -> Any:
+            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+
+            def _execute_trace_with_chunk_size() -> Any:
+                with temporary_streaming_chunk_size(chunk_size):
+                    return execute_trace(
+                        graph,
+                        row_index=body.row_index,
+                        target_node_id=body.target_node_id,
+                        column=body.column,
+                        row_limit=body.row_limit,
+                        source=body.source,
+                        row_values=body.row_values,
+                        # Inject the executor's preview cache explicitly so the
+                        # trace module is not coupled to a private singleton on
+                        # another module.  ``FingerprintCache``
+                        # already satisfies the :class:`~haute.trace.PreviewReader`
+                        # protocol - its ``try_get`` returns the slot dict on hit
+                        # or ``None`` on miss.
+                        preview=_preview_cache,
+                    )
+
             return await run_blocking_with_response_timeout(
-                execute_trace,
-                graph,
-                row_index=body.row_index,
-                target_node_id=body.target_node_id,
-                column=body.column,
-                row_limit=body.row_limit,
-                source=body.source,
-                row_values=body.row_values,
-                # Inject the executor's preview cache explicitly so the
-                # trace module is not coupled to a private singleton on
-                # another module.  ``FingerprintCache``
-                # already satisfies the :class:`~haute.trace.PreviewReader`
-                # protocol — its ``try_get`` returns the slot dict on hit
-                # or ``None`` on miss.
-                preview=_preview_cache,
+                _execute_trace_with_chunk_size,
                 timeout=_TRACE_TIMEOUT,
                 operation="pipeline_trace",
             )
@@ -460,6 +468,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     preview_context: ExecutionContext | None = None
 
     try:
+
         async def _run_preview() -> dict[str, Any]:
             nonlocal preview_context
             preview_context = create_admitted_execution_context(
@@ -467,16 +476,23 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
                 profile=ExecutionProfile.PREVIEW_EAGER,
                 cancellation_token=preview_token,
             )
+            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+
+            def _execute_graph_with_chunk_size() -> dict[str, Any]:
+                with temporary_streaming_chunk_size(chunk_size):
+                    return execute_graph(
+                        graph,
+                        target_node_id=body.node_id,
+                        row_limit=body.row_limit,
+                        source=body.source,
+                        target_preview_only=True,
+                        requested_preview_columns=body.requested_preview_columns,
+                        include_schema_metadata=True,
+                        execution_context=preview_context,
+                    )
+
             return await run_blocking_with_response_timeout(
-                execute_graph,
-                graph,
-                target_node_id=body.node_id,
-                row_limit=body.row_limit,
-                source=body.source,
-                target_preview_only=True,
-                requested_preview_columns=body.requested_preview_columns,
-                include_schema_metadata=True,
-                execution_context=preview_context,
+                _execute_graph_with_chunk_size,
                 timeout=_PREVIEW_TIMEOUT,
                 operation="pipeline_preview",
             )
@@ -544,9 +560,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
 
         node_statuses = {nid: r.status for nid, r in results.items() if nid in relevant}
         node_columns = {
-            nid: r.columns
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
+            nid: r.columns for nid, r in results.items() if nid in node_map and nid in relevant
         }
         node_available_columns = {
             nid: r.available_columns or r.columns
@@ -657,6 +671,7 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             sink_node_id=body.node_id,
             source=body.source,
             execution_context=sink_context,
+            streaming_chunk_size=body.streaming_chunk_size,
             timeout=_SINK_TIMEOUT,
             operation="pipeline_sink",
         )

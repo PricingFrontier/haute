@@ -303,7 +303,7 @@ describe("usePipelineAPI", () => {
     act(() => { result.current.fetchPreview(node, { debounceMs: 0 }) })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
-    expect(mockPreview.mock.calls.at(-1)?.[5]).toEqual(["age", "premium"])
+    expect(mockPreview.mock.calls.at(-1)?.[0].requestedPreviewColumns).toEqual(["age", "premium"])
   })
 
   it("fetchPreview caps requested preview columns for wide cached schemas", async () => {
@@ -335,7 +335,7 @@ describe("usePipelineAPI", () => {
     })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
-    const requested = mockPreview.mock.calls.at(-1)?.[5]
+    const requested = mockPreview.mock.calls.at(-1)?.[0].requestedPreviewColumns
     expect(requested).toHaveLength(PREVIEW_INITIAL_COLUMN_LIMIT)
     expect(requested?.[0]).toBe("col_0")
     expect(requested?.at(-1)).toBe(`col_${PREVIEW_INITIAL_COLUMN_LIMIT - 1}`)
@@ -358,7 +358,7 @@ describe("usePipelineAPI", () => {
     act(() => { result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 }) })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
-    expect(mockPreview.mock.calls.at(-1)?.[5]).toBeUndefined()
+    expect(mockPreview.mock.calls.at(-1)?.[0].requestedPreviewColumns).toBeUndefined()
   })
 
   it("fetchPreview populates nodeStatuses from response", async () => {
@@ -452,7 +452,7 @@ describe("usePipelineAPI", () => {
     }
 
     let resolveUpstream!: (value: Awaited<ReturnType<typeof previewNode>>) => void
-    mockPreview.mockImplementation((_graph, nodeId) => {
+    mockPreview.mockImplementation(({ nodeId }) => {
       if (nodeId === "upstream") {
         return new Promise((resolve) => {
           resolveUpstream = resolve
@@ -476,7 +476,7 @@ describe("usePipelineAPI", () => {
     })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
-    expect(mockPreview.mock.calls[0][1]).toBe("upstream")
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
 
     act(() => {
       useGraphStore.setState((state) => ({
@@ -515,7 +515,7 @@ describe("usePipelineAPI", () => {
     }
 
     let rejectUpstream!: (reason: unknown) => void
-    mockPreview.mockImplementation((_graph, nodeId) => {
+    mockPreview.mockImplementation(({ nodeId }) => {
       if (nodeId === "upstream") {
         return new Promise((_resolve, reject) => {
           rejectUpstream = reject
@@ -599,7 +599,7 @@ describe("usePipelineAPI", () => {
       })
 
       expect(mockPreview).toHaveBeenCalledTimes(1)
-      expect(mockPreview.mock.calls[0][1]).toBe("target")
+      expect(mockPreview.mock.calls[0][0].nodeId).toBe("target")
 
       act(() => {
         vi.advanceTimersByTime(5_000)

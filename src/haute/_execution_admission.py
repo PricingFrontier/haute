@@ -237,10 +237,7 @@ class ExecutionAdmissionError(MemoryError):
             if rss_at_admission_bytes is None or process_rss_limit_bytes is None
             else process_rss_limit_bytes - rss_at_admission_bytes
         )
-        detail = (
-            f"Execution {operation!r} was not admitted for profile {profile.value!r}: "
-            f"{reason}"
-        )
+        detail = f"Execution {operation!r} was not admitted for profile {profile.value!r}: {reason}"
         super().__init__(detail)
         self.operation = operation
         self.profile = profile
@@ -275,9 +272,7 @@ class ExecutionAdmissionError(MemoryError):
 def execution_budget_for_profile(profile: ExecutionProfile) -> ExecutionBudget:
     """Resolve the configured memory budget for *profile*."""
     memory_limit = _resolve_required_budget(profile)
-    process_rss_limit_bytes, process_rss_limit_config_key = _resolve_optional_rss_limit(
-        profile
-    )
+    process_rss_limit_bytes, process_rss_limit_config_key = _resolve_optional_rss_limit(profile)
     return ExecutionBudget(
         memory_limit_bytes=memory_limit.memory_limit_bytes,
         config_key=memory_limit.config_key,

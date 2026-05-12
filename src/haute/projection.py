@@ -95,12 +95,10 @@ class ProjectionDiagnostics:
     def to_dict(self) -> dict[str, Any]:
         return {
             "opaque_reasons": {
-                node_id: reason.to_dict()
-                for node_id, reason in sorted(self.opaque_reasons.items())
+                node_id: reason.to_dict() for node_id, reason in sorted(self.opaque_reasons.items())
             },
             "node_reasons": {
-                node_id: reason.to_dict()
-                for node_id, reason in sorted(self.node_reasons.items())
+                node_id: reason.to_dict() for node_id, reason in sorted(self.node_reasons.items())
             },
             "edge_reasons": {
                 f"{parent_id}->{child_id}": reason.to_dict()
@@ -195,7 +193,6 @@ class ProjectionPlan:
         payload = self.diagnostics.to_dict()
         payload["strategy_summary"] = self.strategy_summary_payload(profile=profile)
         return payload
-
 
 
 @dataclass(frozen=True)
@@ -562,9 +559,7 @@ def builder_required_output_columns_by_node(
                 )
             )
             continue
-        demands[node_id] = (
-            None if required_columns is None else frozenset(required_columns)
-        )
+        demands[node_id] = None if required_columns is None else frozenset(required_columns)
     return demands
 
 
@@ -599,9 +594,7 @@ def projection_contract(node: GraphNode) -> Contract:
     if node.data.nodeType == NodeType.POLARS and not _has_user_polars_code(node):
         builder = Contract(inputs=frozenset(), outputs=frozenset())
     else:
-        builder = Contract.from_tuple(
-            get_column_contract(node.data.nodeType, node.data.config)
-        )
+        builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
     return overlay_declared_contract(node, builder)
 
 
@@ -664,9 +657,7 @@ class OptimiserParentDemandRule:
             if my_needed is None and isinstance(seeded_data_input, set)
             else my_needed
         )
-        by_parent: dict[str, set[str] | None] = {
-            parent_id: set() for parent_id in parent_set
-        }
+        by_parent: dict[str, set[str] | None] = {parent_id: set() for parent_id in parent_set}
         by_parent[data_input] = None if data_input_columns is None else set(data_input_columns)
 
         if config.get("mode", "online") == "ratebook":
@@ -693,9 +684,7 @@ class OptimiserParentDemandRule:
                 )
             factor_columns = ratebook_factor_required_columns(config)
             existing = by_parent[banding_source]
-            by_parent[banding_source] = (
-                None if existing is None else set(existing) | factor_columns
-            )
+            by_parent[banding_source] = None if existing is None else set(existing) | factor_columns
 
         return ParentDemandResult(
             default=None,
@@ -922,11 +911,7 @@ class SingleParentPolarsExpressionRule:
         my_needed: set[str] | None,
     ) -> ParentDemandResult | None:
         parent_list = list(parent_ids)
-        if (
-            node.data.nodeType != NodeType.POLARS
-            or len(parent_list) != 1
-            or my_needed is None
-        ):
+        if node.data.nodeType != NodeType.POLARS or len(parent_list) != 1 or my_needed is None:
             return None
         produced, referenced = projection_contract(node).to_tuple()
         if produced is not None and referenced is not None:
@@ -1014,11 +999,8 @@ def _has_user_polars_code(node: GraphNode) -> bool:
 def _user_code_has_unbounded_projection_contract(node: GraphNode) -> bool:
     if not _has_projection_user_code(node):
         return False
-    if (
-        node.data.nodeType == NodeType.DATA_SOURCE
-        and source_user_code_preserves_column_projection(
-            str(node.data.config.get("code") or "")
-        )
+    if node.data.nodeType == NodeType.DATA_SOURCE and source_user_code_preserves_column_projection(
+        str(node.data.config.get("code") or "")
     ):
         return False
     produced, referenced = projection_contract(node).to_tuple()
@@ -1150,8 +1132,7 @@ class PolarsFanInRule:
                     missing = set()
             if missing:
                 raise ContractMismatchError(
-                    "Fan-in projection contract does not cover columns "
-                    "required by the node.",
+                    "Fan-in projection contract does not cover columns required by the node.",
                     node_id=node.id,
                     node_type=node.data.nodeType.value,
                     missing=sorted(missing),
@@ -1340,8 +1321,7 @@ def declared_inputs_by_parent(
     missing = parent_set - declared_set
     if unknown or missing:
         raise ContractMismatchError(
-            "Fan-in projection contract references unknown parent(s) or "
-            "omits incoming parent(s).",
+            "Fan-in projection contract references unknown parent(s) or omits incoming parent(s).",
             node_id=node.id,
             node_type=node.data.nodeType.value,
             unknown_parent_ids=sorted(unknown),
@@ -1658,10 +1638,7 @@ def prepare_graph(
     relevant_edges = [edge for edge in edges if edge.source in needed and edge.target in needed]
     order = topo_sort_ids([node_id for node_id in node_map if node_id in needed], relevant_edges)
     parents_of = build_parents_of(relevant_edges, set(order))
-    id_to_name = {
-        node_id: _sanitize_func_name(node_map[node_id].data.label)
-        for node_id in order
-    }
+    id_to_name = {node_id: _sanitize_func_name(node_map[node_id].data.label) for node_id in order}
     return PreparedGraph(
         node_map=node_map,
         order=order,
@@ -1731,9 +1708,7 @@ def compute_prepared_plan(
                 if needed[node_id] is not None:
                     existing = needed[node_id]
                     if existing is None:
-                        raise RuntimeError(
-                            "concrete projection branch unexpectedly became opaque"
-                        )
+                        raise RuntimeError("concrete projection branch unexpectedly became opaque")
                     existing |= set(seed.keep)
                     needed[node_id] = existing
                 node_reasons[node_id] = ProjectionReason(
@@ -1879,13 +1854,9 @@ def _freeze_plan(
     edge_reasons: Mapping[tuple[str, str], ProjectionReason] | None = None,
 ) -> ProjectionPlan:
     frozen_needed = {
-        node_id: _freeze_columns(columns)
-        for node_id, columns in needed_by_node.items()
+        node_id: _freeze_columns(columns) for node_id, columns in needed_by_node.items()
     }
-    frozen_edges = {
-        edge: _freeze_columns(columns)
-        for edge, columns in edge_demands.items()
-    }
+    frozen_edges = {edge: _freeze_columns(columns) for edge, columns in edge_demands.items()}
     opaque_boundaries = frozenset(
         node_id for node_id, columns in frozen_needed.items() if columns is None
     )
@@ -1925,6 +1896,7 @@ def explain(
     it is not a UI contract.  Filters are conjunctive: when both *column* and
     *node_id* are supplied, only matching node and edge entries are returned.
     """
+
     def _column_text(columns: frozenset[str] | None) -> str:
         if columns is None:
             return "opaque"
@@ -1956,8 +1928,7 @@ def explain(
             ProjectionReason(rule="edge_demand", message="edge demand"),
         )
         lines.append(
-            f"{parent_id} -> {child_id}: {reason.rule}: "
-            f"{reason.message} [{_column_text(columns)}]"
+            f"{parent_id} -> {child_id}: {reason.rule}: {reason.message} [{_column_text(columns)}]"
         )
 
     return tuple(lines)

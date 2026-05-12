@@ -126,7 +126,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
     const seenSources: string[] = []
-    mockPreview.mockImplementation(async (_g, nodeId, _rl, source) => {
+    mockPreview.mockImplementation(async ({ nodeId, source }) => {
       seenSources.push(source ?? "<none>")
       // Simulate a slow root preview so we have time to switch the source
       // between root and downstream.
@@ -232,7 +232,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
     const seenRowLimits: number[] = []
-    mockPreview.mockImplementation(async (_g, _nodeId, rowLimit) => {
+    mockPreview.mockImplementation(async ({ rowLimit }) => {
       seenRowLimits.push(rowLimit)
       await new Promise((r) => setTimeout(r, 50))
       return { node_id: "n1", status: "ok", row_count: 1, column_count: 0, columns: [], preview: [] }

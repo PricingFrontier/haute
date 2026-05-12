@@ -217,17 +217,17 @@ def test_default_execution_budget_is_adaptive_across_local_engine_profiles(
 
     preview_budget = admission_mod.execution_budget_for_profile(ExecutionProfile.PREVIEW_EAGER)
     assert preview_budget.budget_policy == "adaptive_local"
-    assert preview_budget.memory_limit_bytes > admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[
-        ExecutionProfile.PREVIEW_EAGER
-    ]
-
-    deploy_live_budget = admission_mod.execution_budget_for_profile(
-        ExecutionProfile.DEPLOY_LIVE
+    assert (
+        preview_budget.memory_limit_bytes
+        > admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.PREVIEW_EAGER]
     )
+
+    deploy_live_budget = admission_mod.execution_budget_for_profile(ExecutionProfile.DEPLOY_LIVE)
     assert deploy_live_budget.budget_policy == "fixed_default"
-    assert deploy_live_budget.memory_limit_bytes == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[
-        ExecutionProfile.DEPLOY_LIVE
-    ]
+    assert (
+        deploy_live_budget.memory_limit_bytes
+        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.DEPLOY_LIVE]
+    )
 
 
 def test_explicit_memory_limit_env_still_overrides_adaptive_policy(
@@ -316,9 +316,10 @@ def test_fixed_memory_policy_keeps_legacy_profile_defaults(
 
     budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
 
-    assert budget.memory_limit_bytes == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[
-        ExecutionProfile.AUTO_RANGE
-    ]
+    assert (
+        budget.memory_limit_bytes
+        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.AUTO_RANGE]
+    )
     assert budget.config_key == "default:auto_range"
     assert budget.budget_policy == "fixed_default"
     assert budget.available_ram_bytes is None
@@ -335,9 +336,10 @@ def test_strict_server_memory_policy_keeps_legacy_profile_defaults(
 
     budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
 
-    assert budget.memory_limit_bytes == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[
-        ExecutionProfile.AUTO_RANGE
-    ]
+    assert (
+        budget.memory_limit_bytes
+        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.AUTO_RANGE]
+    )
     assert budget.config_key == "default:auto_range"
     assert budget.budget_policy == "fixed_default"
     assert budget.available_ram_bytes is None
@@ -546,9 +548,11 @@ def test_execution_context_records_non_terminal_memory_pressure_events() -> None
     assert payload["retained_memory_pressure_event_count"] == 3
     assert payload["truncated_memory_pressure_event_count"] == 0
     assert payload["memory_pressure_events_truncated"] is False
-    assert [
-        event["threshold_percent"] for event in payload["memory_pressure_events"]
-    ] == [50, 75, 90]
+    assert [event["threshold_percent"] for event in payload["memory_pressure_events"]] == [
+        50,
+        75,
+        90,
+    ]
     assert [event["rss_bytes"] for event in payload["memory_pressure_events"]] == [
         500,
         760,
@@ -595,9 +599,7 @@ def test_execution_context_memory_pressure_events_are_bounded() -> None:
     assert payload["retained_memory_pressure_event_count"] == 2
     assert payload["truncated_memory_pressure_event_count"] == 1
     assert payload["memory_pressure_events_truncated"] is True
-    assert [
-        event["threshold_percent"] for event in payload["memory_pressure_events"]
-    ] == [50, 75]
+    assert [event["threshold_percent"] for event in payload["memory_pressure_events"]] == [50, 75]
     assert all(
         "frame" not in event and "traceback" not in event
         for event in payload["memory_pressure_events"]
@@ -622,17 +624,21 @@ def test_execution_context_memory_pressure_uses_growth_budget_when_baselined() -
 
     payload = context.metrics_payload(status="completed")
 
-    assert [
-        event["threshold_percent"] for event in payload["memory_pressure_events"]
-    ] == [50, 75, 90]
+    assert [event["threshold_percent"] for event in payload["memory_pressure_events"]] == [
+        50,
+        75,
+        90,
+    ]
     assert [event["rss_bytes"] for event in payload["memory_pressure_events"]] == [
         1_050,
         1_075,
         1_090,
     ]
-    assert [
-        event["headroom_used_bytes"] for event in payload["memory_pressure_events"]
-    ] == [50, 75, 90]
+    assert [event["headroom_used_bytes"] for event in payload["memory_pressure_events"]] == [
+        50,
+        75,
+        90,
+    ]
     assert [event["headroom_bytes"] for event in payload["memory_pressure_events"]] == [
         50,
         25,
@@ -663,9 +669,11 @@ def test_execution_context_memory_pressure_events_survive_memory_failure() -> No
 
     assert payload["status"] == "memory_limited"
     assert payload["memory_pressure_event_count"] == 3
-    assert [
-        event["threshold_percent"] for event in payload["memory_pressure_events"]
-    ] == [50, 75, 90]
+    assert [event["threshold_percent"] for event in payload["memory_pressure_events"]] == [
+        50,
+        75,
+        90,
+    ]
     terminal_event = payload["memory_pressure_events"][-1]
     assert terminal_event["rss_bytes"] == 101
     assert terminal_event["headroom_bytes"] == -1
@@ -794,9 +802,7 @@ def test_execution_context_memory_pressure_payload_is_json_safe() -> None:
         status="memory_limited",
         terminal_reason="memory_limited",
     )
-    round_tripped = ExecutionMetricsPayload.model_validate(payload).model_dump(
-        mode="json"
-    )
+    round_tripped = ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json")
 
     json.dumps(round_tripped)
     assert round_tripped["memory_pressure_events"][-1]["stage"] == "fit"
@@ -1405,8 +1411,7 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
         "right",
     ]
     assert any(
-        metric.name == "lazy_checkpoint_parquet" and metric.node_id == "mid"
-        for metric in metrics
+        metric.name == "lazy_checkpoint_parquet" and metric.node_id == "mid" for metric in metrics
     )
 
 
@@ -2348,8 +2353,9 @@ def test_optimiser_start_creates_admitted_setup_context(
     assert extract.call_args.kwargs["execution_context"] is context
     build.assert_called_once()
     assert build.call_args.kwargs["execution_context"] is context
-    assert launch.call_args.kwargs["execution_context"] is context
-    assert launch.call_args.kwargs["registration_already_active"] is True
+    ctx_arg = launch.call_args.args[0]
+    assert ctx_arg.execution_context is context
+    assert ctx_arg.registration_already_active is True
 
 
 def test_optimiser_cancel_during_setup_prevents_worker_launch(
@@ -2660,7 +2666,7 @@ def test_optimiser_build_grid_preserves_memory_limit_error() -> None:
         rss_limit_bytes=513,
     )
 
-    with patch("haute._polars_utils.bounded_sink", side_effect=memory_error):
+    with patch("haute.routes._optimiser_service.bounded_sink", side_effect=memory_error):
         with pytest.raises(ExecutionMemoryLimitExceededError):
             service._build_grid(
                 pl.LazyFrame({"quote_id": ["q1"], "scenario_index": [0]}),

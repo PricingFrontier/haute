@@ -14,7 +14,7 @@ def batch_quotes() -> pl.LazyFrame:
     from pathlib import Path
     from haute.graph_utils import read_data_source
     df = read_data_source({"sourceType": 'flat_file', "path": str(Path(__file__).parent / "data/quotes/nb_batch.parquet"), 'contract': 'opaque'})
-    df = df.limit(100000)
+    df = df.limit(10000000)
     return df
 
 

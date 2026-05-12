@@ -57,11 +57,7 @@ def _training_stage(
     execution_context: ExecutionContext | None,
     name: str,
 ) -> AbstractContextManager[None]:
-    return (
-        execution_context.stage(name)
-        if execution_context is not None
-        else nullcontext()
-    )
+    return execution_context.stage(name) if execution_context is not None else nullcontext()
 
 
 def _training_streaming_collect(

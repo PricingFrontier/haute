@@ -24,3 +24,20 @@ def test_polars_floor_supports_order_preserving_lazy_joins() -> None:
 
     assert lower_bounds
     assert max(lower_bounds) >= Version("1.39.2")
+
+
+def test_price_contour_floor_supports_ratebook_factor_contexts() -> None:
+    """Ratebook frontier materialisation needs the 0.4.1 factor-context API."""
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = project["project"]["dependencies"]
+    price_contour_requirement = next(
+        Requirement(dep) for dep in dependencies if Requirement(dep).name == "price-contour"
+    )
+    lower_bounds = [
+        Version(spec.version)
+        for spec in price_contour_requirement.specifier
+        if spec.operator in {">=", "=="}
+    ]
+
+    assert lower_bounds
+    assert max(lower_bounds) >= Version("0.4.1")

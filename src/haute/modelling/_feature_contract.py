@@ -82,8 +82,7 @@ def _canonical_payload(
     }
     if categorical_levels:
         payload["categorical_levels"] = {
-            str(column): list(levels)
-            for column, levels in categorical_levels.items()
+            str(column): list(levels) for column, levels in categorical_levels.items()
         }
     return payload
 
@@ -142,8 +141,7 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "feature_types": dict(contract.feature_types),
         "categorical_features": list(contract.categorical_features),
         "categorical_levels": {
-            column: list(levels)
-            for column, levels in contract.categorical_levels.items()
+            column: list(levels) for column, levels in contract.categorical_levels.items()
         },
         "target_name": contract.target_name,
         "target_type": contract.target_type,
@@ -276,9 +274,7 @@ def normalise_categorical_levels(
         )
 
     feature_set = set(features) if features is not None else None
-    categorical_set = (
-        set(categorical_features) if categorical_features is not None else None
-    )
+    categorical_set = set(categorical_features) if categorical_features is not None else None
     normalised: dict[str, list[str | None]] = {}
     for column, levels in raw.items():
         if not isinstance(column, str) or not column:

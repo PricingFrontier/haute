@@ -181,6 +181,7 @@ class TestStreamingChunkRestoreOptimiser:
         body = MagicMock()
         body.graph = graph
         body.node_id = "opt"
+        body.streaming_chunk_size = None
 
         svc = OptimiserSolveService(store=JobStore())
 

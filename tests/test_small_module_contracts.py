@@ -120,9 +120,7 @@ class TestContracts:
             Contract.from_user_declared({"inputs": [], "outputs": [], "typo": []})
 
         with pytest.raises(ValueError, match="inputs_by_parent"):
-            Contract.from_user_declared(
-                {"inputs": [], "outputs": [], "inputs_by_parent": ["left"]}
-            )
+            Contract.from_user_declared({"inputs": [], "outputs": [], "inputs_by_parent": ["left"]})
 
         with pytest.raises(ValueError, match="unsupported type"):
             Contract.from_user_declared(123)

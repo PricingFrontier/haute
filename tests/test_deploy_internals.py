@@ -964,9 +964,7 @@ class TestScoreGraphOutputFields:
 
         assert plan.lazy_frame.collect().columns == ["x"]
         assert plan.execution_context.profile.value == "deploy_live"
-        assert execute.call_args.kwargs["required_columns_by_node"] == {
-            "out": frozenset({"x"})
-        }
+        assert execute.call_args.kwargs["required_columns_by_node"] == {"out": frozenset({"x"})}
         plan.cleanup(preserve_primary_error=False)
 
     def test_no_output_fields_returns_all_columns(self):

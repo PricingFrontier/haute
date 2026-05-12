@@ -2959,9 +2959,7 @@ df = df.with_columns(
                     "nodeType": "polars",
                     "config": {
                         "code": (
-                            "df = policies.join("
-                            "competitor_scoring, on='quote_id', how='left'"
-                            ")"
+                            "df = policies.join(competitor_scoring, on='quote_id', how='left')"
                         ),
                         "contract": {
                             "inputs": ["quote_id"],

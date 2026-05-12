@@ -174,8 +174,7 @@ def test_graph_to_code_preserves_instance_contract() -> None:
                         "nodeType": "polars",
                         "config": {
                             "code": (
-                                "df = premium.with_columns("
-                                "difference_to_market=pl.col('premium'))"
+                                "df = premium.with_columns(difference_to_market=pl.col('premium'))"
                             ),
                             "contract": {
                                 "inputs": ["premium"],

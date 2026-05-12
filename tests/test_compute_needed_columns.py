@@ -60,8 +60,15 @@ def _banding(nid: str, factors: list[dict] | None = None) -> GraphNode:
 
 
 def _polars(nid: str) -> GraphNode:
-    """Opaque POLARS node (unknown produced + referenced)."""
-    return _node(nid, NodeType.POLARS)
+    """Opaque POLARS node (unknown produced + referenced).
+
+    Production ``projection_contract`` softens an *empty* POLARS node to a
+    concrete passthrough — an empty transform is just ``return df``.  To model
+    the genuinely opaque case the planner cannot statically analyse, the node
+    must carry user code so ``_has_user_polars_code`` flips ``True`` and the
+    registered opaque contract takes effect.
+    """
+    return _node(nid, NodeType.POLARS, code="df = df  # opaque user transform")
 
 
 def _passthrough(nid: str) -> GraphNode:
@@ -964,9 +971,7 @@ class TestEdgeCases:
                 order,
                 children_of,
                 node_map,
-                required_columns_by_node={
-                    "ratebook_optimiser": {"quote_id", "expected_income"}
-                },
+                required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
             )
 
     def test_multi_parent_optimiser_rejects_missing_data_input(self):
@@ -992,9 +997,7 @@ class TestEdgeCases:
                 order,
                 children_of,
                 node_map,
-                required_columns_by_node={
-                    "online_optimiser": {"quote_id", "expected_income"}
-                },
+                required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
             )
 
     def test_multi_parent_ratebook_optimiser_rejects_disconnected_banding_source(self):
@@ -1027,9 +1030,7 @@ class TestEdgeCases:
                 order,
                 children_of,
                 node_map,
-                required_columns_by_node={
-                    "ratebook_optimiser": {"quote_id", "expected_income"}
-                },
+                required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
             )
 
     def test_multi_parent_inputs_by_parent_preserves_unambiguous_passthrough_parent_columns(self):
@@ -1174,11 +1175,7 @@ class TestEdgeCases:
             _node(
                 "join",
                 NodeType.POLARS,
-                code=(
-                    "df = policies.join("
-                    "lookup, on='quote_id', how='left', suffix='_lookup'"
-                    ")"
-                ),
+                code=("df = policies.join(lookup, on='quote_id', how='left', suffix='_lookup')"),
                 contract={
                     "inputs": ["quote_id"],
                     "outputs": [],

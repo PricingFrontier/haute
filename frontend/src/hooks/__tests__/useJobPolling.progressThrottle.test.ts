@@ -207,7 +207,11 @@ describe("useJobPolling progress throttling", () => {
 
     await advance(500)
     expect(onFail).toHaveBeenCalledTimes(1)
-    expect(onFail).toHaveBeenCalledWith("n1", "Infeasible")
+    expect(onFail).toHaveBeenCalledWith("n1", "Infeasible", {
+      status: "error",
+      message: "Infeasible",
+      progress: 0.2,
+    })
     expect(onProgress).toHaveBeenCalledTimes(1)
   })
 })

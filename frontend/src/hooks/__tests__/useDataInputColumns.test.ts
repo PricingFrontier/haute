@@ -178,9 +178,8 @@ describe("useDataInputColumns", () => {
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
 
-    const callArgs = mockPreview.mock.calls[0]
-    // previewNode(graph, nodeId, rowLimit, source, options)
-    expect(callArgs[3]).toBe("nb_batch")
+    const [args] = mockPreview.mock.calls[0]
+    expect(args.source).toBe("nb_batch")
   })
 
   it("passes 'live' source when that is the active source", async () => {
@@ -190,8 +189,8 @@ describe("useDataInputColumns", () => {
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
 
-    const callArgs = mockPreview.mock.calls[0]
-    expect(callArgs[3]).toBe("live")
+    const [args] = mockPreview.mock.calls[0]
+    expect(args.source).toBe("live")
   })
 
   it("uses the source that was active at mount time", async () => {
@@ -203,7 +202,7 @@ describe("useDataInputColumns", () => {
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
 
     // Verify the call used the active source at mount time
-    expect(mockPreview.mock.calls[0][3]).toBe("nb_batch")
+    expect(mockPreview.mock.calls[0][0].source).toBe("nb_batch")
   })
 
   it("refetches with new source when cache is invalidated", async () => {
@@ -212,7 +211,7 @@ describe("useDataInputColumns", () => {
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
-    expect(mockPreview.mock.calls[0][3]).toBe("live")
+    expect(mockPreview.mock.calls[0][0].source).toBe("live")
 
     // Change source and structuralVersion (simulating a graph change)
     act(() => {
@@ -221,7 +220,7 @@ describe("useDataInputColumns", () => {
     })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2))
-    expect(mockPreview.mock.calls[1][3]).toBe("nb_batch")
+    expect(mockPreview.mock.calls[1][0].source).toBe("nb_batch")
   })
 
   // ── Error handling edge cases ──────────────────────────────────────
@@ -340,9 +339,8 @@ describe("useDataInputColumns", () => {
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
 
-    const callArgs = mockPreview.mock.calls[0]
-    // previewNode(graph, nodeId, rowLimit, source, options)
-    expect(callArgs[2]).toBe(1)
+    const [args] = mockPreview.mock.calls[0]
+    expect(args.rowLimit).toBe(1)
   })
 
   // ── AbortController (Issue 2) ──────────────────────────────────────
@@ -353,10 +351,8 @@ describe("useDataInputColumns", () => {
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
 
-    // 5th argument is options with signal
-    const options = mockPreview.mock.calls[0][4]
-    expect(options).toBeDefined()
-    expect(options?.signal).toBeInstanceOf(AbortSignal)
+    const [args] = mockPreview.mock.calls[0]
+    expect(args.signal).toBeInstanceOf(AbortSignal)
   })
 
   it("ignores AbortError when request is cancelled", async () => {
@@ -482,6 +478,21 @@ describe("useDataInputColumns", () => {
     expect(
       stringifySpy.mock.calls.some(([value]) => value === fallbackColumns),
     ).toBe(false)
+  })
+
+  it("does not refetch when only streamingChunkSize changes (chunk is a streaming-buffer config, not a preview input)", async () => {
+    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+
+    renderHook(() => useDataInputColumns("ds1", nodes, edges))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      useSettingsStore.setState({ streamingChunkSize: 12345 })
+    })
+
+    // Give any effect schedule a chance to fire
+    await new Promise((r) => setTimeout(r, 10))
+    expect(mockPreview).toHaveBeenCalledTimes(1)
   })
 
   it("refetches when source changes even if structuralVersion is same", async () => {

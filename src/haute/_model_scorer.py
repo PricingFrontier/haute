@@ -357,6 +357,7 @@ class ScoreWriteProjection:
     optional_passthrough_columns: frozenset[str] = frozenset()
     required_output_columns: frozenset[str] = frozenset()
 
+
 # Module-level temp file cleanup — avoids accumulating atexit handlers
 _temp_files_to_clean: set[str] = set()
 _atexit_registered = False
@@ -454,8 +455,7 @@ def _score_output_projection_columns(
         optional_passthrough = [
             c
             for c in schema_names
-            if c in write_projection.optional_passthrough_columns
-            and c not in passthrough
+            if c in write_projection.optional_passthrough_columns and c not in passthrough
         ]
 
     projected_columns = list(passthrough)
@@ -564,9 +564,7 @@ def _normalise_score_write_projection(
         generated.add(proba_col)
         if proba_col in required_output_columns:
             optional_passthrough.add(proba_col)
-    passthrough_columns = frozenset(
-        str(c) for c in required_output_columns if c not in generated
-    )
+    passthrough_columns = frozenset(str(c) for c in required_output_columns if c not in generated)
     return ScoreWriteProjection(
         passthrough_columns=passthrough_columns,
         optional_passthrough_columns=frozenset(optional_passthrough),
@@ -647,9 +645,7 @@ def _score_batched_unified(
         if write_projection.optional_passthrough_columns:
             schema_names = frozenset(lf.collect_schema().names())
             optional_present = write_projection.optional_passthrough_columns & schema_names
-        sink_columns = (
-            frozenset(features) | write_projection.passthrough_columns | optional_present
-        )
+        sink_columns = frozenset(features) | write_projection.passthrough_columns | optional_present
     input_path = _sink_to_temp(lf, columns=sink_columns)
     try:
         scored_path = _batch_score_to_parquet(
@@ -1061,10 +1057,7 @@ class ModelScorer:
                 actual=mismatched_levels,
                 feature_contract_path=self.feature_contract_path,
             )
-        return {
-            column: list(levels)
-            for column, levels in expected.categorical_levels.items()
-        }
+        return {column: list(levels) for column, levels in expected.categorical_levels.items()}
 
     # ------------------------------------------------------------------
     # Public entry point

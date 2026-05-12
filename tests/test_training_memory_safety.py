@@ -192,6 +192,28 @@ def test_partition_reads_use_streaming_collect_and_preserve_projection(
     assert "training_partition_materialise" in context.metrics_summary().stage_elapsed_ms
 
 
+def _admitted_training_context(
+    job_id: str | None = None,
+) -> tuple[ExecutionContext, dict[str, int]]:
+    """Build an admitted-like context with a real memory_limit so checkpoints fire."""
+    admission_calls: dict[str, int] = {"release": 0}
+
+    def _release() -> None:
+        admission_calls["release"] += 1
+
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id=job_id,
+        memory_limit_bytes=1_000,
+        memory_baseline_bytes=500,
+        rss_limit_bytes=1_500,
+        memory_sampler=lambda: 600,
+        admission_release=_release,
+    )
+    return context, admission_calls
+
+
 def test_training_background_memory_limit_sets_typed_terminal_status(
     tmp_path: Path,
 ) -> None:
@@ -225,6 +247,7 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
                 rss_limit_bytes=1_500,
             )
 
+    admitted, _ = _admitted_training_context(job_id)
     with (
         patch("haute.modelling.TrainingJob", MemoryLimitedTrainingJob),
         patch("haute.routes._train_service.threading.Thread", DeferredThread),
@@ -237,6 +260,7 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
             str(tmp_parquet),
             None,
             None,
+            execution_context=admitted,
         )
 
     deferred_threads[0].target()
@@ -249,6 +273,270 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
     assert job["http_status_code"] == 507
     assert job["execution_metrics"]["terminal_reason"] == "memory_limited"
     assert not tmp_parquet.exists()
+
+
+def test_launch_background_threads_admitted_context_through_to_training_job(
+    tmp_path: Path,
+) -> None:
+    """Regression for bug_003: _launch_background must run TrainingJob with the
+    admitted context (memory_limit_bytes / admission preserved), not a bare one.
+    """
+    store = JobStore()
+    service = TrainService(store)
+    job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+    tmp_parquet = tmp_path / "training.parquet"
+    tmp_parquet.write_bytes(b"placeholder")
+    deferred_threads: list[object] = []
+    captured: dict[str, Any] = {}
+
+    class DeferredThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+            deferred_threads.append(self)
+
+        def start(self) -> None:
+            return None
+
+    class _TrainingJob:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
+            captured["execution_context"] = execution_context
+            return TrainResult(
+                metrics={"rmse": 0.1},
+                feature_importance=[],
+                model_path=str(tmp_path / "model.cbm"),
+                train_rows=1,
+                test_rows=0,
+                features=["x"],
+                cat_features=[],
+            )
+
+    admitted, _ = _admitted_training_context(job_id)
+    with (
+        patch("haute.modelling.TrainingJob", _TrainingJob),
+        patch("haute.routes._train_service.threading.Thread", DeferredThread),
+    ):
+        service._launch_background(
+            job_id,
+            "train",
+            {"target": "target"},
+            {},
+            str(tmp_parquet),
+            None,
+            None,
+            execution_context=admitted,
+        )
+
+    deferred_threads[0].target()
+
+    ctx = captured["execution_context"]
+    assert ctx is admitted, "background must run TrainingJob with the admitted context"
+    assert ctx.memory_limit_bytes == 1_000
+    assert ctx.memory_baseline_bytes == 500
+    assert ctx.rss_limit_bytes == 1_500
+
+
+def test_launch_background_releases_admission_after_thread_completes(
+    tmp_path: Path,
+) -> None:
+    """Regression for bug_003: admission must be released by the background
+    thread's finally, not by the synchronous prep handler, so the in-flight
+    reservation stays held while training runs.
+    """
+    store = JobStore()
+    service = TrainService(store)
+    job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+    tmp_parquet = tmp_path / "training.parquet"
+    tmp_parquet.write_bytes(b"placeholder")
+    deferred_threads: list[object] = []
+
+    class DeferredThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+            deferred_threads.append(self)
+
+        def start(self) -> None:
+            return None
+
+    class _TrainingJob:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
+            return TrainResult(
+                metrics={"rmse": 0.1},
+                feature_importance=[],
+                model_path=str(tmp_path / "model.cbm"),
+                train_rows=1,
+                test_rows=0,
+                features=["x"],
+                cat_features=[],
+            )
+
+    admitted, admission_calls = _admitted_training_context(job_id)
+    with (
+        patch("haute.modelling.TrainingJob", _TrainingJob),
+        patch("haute.routes._train_service.threading.Thread", DeferredThread),
+    ):
+        service._launch_background(
+            job_id,
+            "train",
+            {"target": "target"},
+            {},
+            str(tmp_parquet),
+            None,
+            None,
+            execution_context=admitted,
+        )
+
+        # Before background runs: admission still held (transferred to worker).
+        assert admission_calls["release"] == 0
+
+        # Background completes -> admission released exactly once.
+        deferred_threads[0].target()
+
+    assert admission_calls["release"] == 1
+
+
+def test_launch_background_releases_admission_on_thread_start_failure(
+    tmp_path: Path,
+) -> None:
+    """If we cannot start the worker thread, admission must still be released."""
+    from fastapi import HTTPException
+
+    store = JobStore()
+    service = TrainService(store)
+    job_id = store.create_job({"status": "running", "progress": 0.0, "message": "Starting"})
+    tmp_parquet = tmp_path / "training.parquet"
+    tmp_parquet.write_bytes(b"placeholder")
+
+    class FailingThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self) -> None:
+            raise RuntimeError("thread spawn refused")
+
+    admitted, admission_calls = _admitted_training_context(job_id)
+    with (
+        patch("haute.modelling.TrainingJob"),
+        patch("haute.routes._train_service.threading.Thread", FailingThread),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        service._launch_background(
+            job_id,
+            "train",
+            {"target": "target"},
+            {},
+            str(tmp_parquet),
+            None,
+            None,
+            execution_context=admitted,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert admission_calls["release"] == 1
+
+
+def test_start_releases_admission_when_prep_fails_before_launch(
+    tmp_path: Path,
+) -> None:
+    """When prep raises before launch, the admitted context must be released."""
+    from haute.schemas import TrainRequest
+    from tests.test_modelling_routes import _make_modelling_graph
+
+    data_path = tmp_path / "training.parquet"
+    pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)
+    store = JobStore()
+    service = TrainService(store)
+
+    captured_contexts: list[ExecutionContext] = []
+    original = __import__(
+        "haute._execution_admission", fromlist=["create_admitted_execution_context"]
+    ).create_admitted_execution_context
+
+    def recording_create(*args, **kwargs):
+        ctx = original(*args, **kwargs)
+        captured_contexts.append(ctx)
+        return ctx
+
+    with (
+        patch(
+            "haute.routes._train_service.create_admitted_execution_context",
+            side_effect=recording_create,
+        ),
+        patch.object(service, "_execute_and_sink", side_effect=RuntimeError("prep boom")),
+        pytest.raises(RuntimeError, match="prep boom"),
+    ):
+        service.start(TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"))
+
+    assert captured_contexts, "admitted context should have been created"
+    assert captured_contexts[0]._admission_released is True
+
+
+def test_start_keeps_admission_held_after_successful_launch(
+    tmp_path: Path,
+) -> None:
+    """Regression for bug_003: on success, start() must NOT release admission
+    in its finally — ownership transfers to the background worker.
+    """
+    from haute.schemas import TrainRequest
+    from tests.test_modelling_routes import _make_modelling_graph
+
+    data_path = tmp_path / "training.parquet"
+    pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)
+    store = JobStore()
+    service = TrainService(store)
+
+    captured: dict[str, Any] = {}
+    original = __import__(
+        "haute._execution_admission", fromlist=["create_admitted_execution_context"]
+    ).create_admitted_execution_context
+
+    def recording_create(*args, **kwargs):
+        ctx = original(*args, **kwargs)
+        captured["context"] = ctx
+        return ctx
+
+    class DeferredThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+            captured["thread_target"] = target
+
+        def start(self) -> None:
+            return None
+
+    fake_tmp = tmp_path / "prep.parquet"
+    fake_tmp.write_bytes(b"placeholder")
+
+    with (
+        patch(
+            "haute.routes._train_service.create_admitted_execution_context",
+            side_effect=recording_create,
+        ),
+        patch.object(service, "_execute_and_sink", return_value=str(fake_tmp)),
+        patch("haute.routes._train_service.threading.Thread", DeferredThread),
+        patch("haute.modelling.TrainingJob"),
+    ):
+        response = service.start(
+            TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"),
+        )
+
+    assert response.status == "started"
+    admitted = captured["context"]
+    assert admitted._admission_released is False, (
+        "admission must remain held after start() returns; "
+        "ownership belongs to the background worker"
+    )
+    # And the same context must be the one passed to the worker.
+    assert admitted.memory_limit_bytes is not None
+    assert admitted.admission is not None
 
 
 def test_catboost_gpu_vram_limit_refuses_before_launch(

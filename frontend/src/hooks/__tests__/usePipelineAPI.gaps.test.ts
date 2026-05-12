@@ -632,8 +632,8 @@ describe("usePipelineAPI — gap tests", () => {
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
       const abortSignals: AbortSignal[] = []
-      mockPreview.mockImplementation((_g: unknown, _id: unknown, _limit: unknown, _source: unknown, opts?: { signal?: AbortSignal }) => {
-        if (opts?.signal) abortSignals.push(opts.signal)
+      mockPreview.mockImplementation((args: { signal?: AbortSignal }) => {
+        if (args.signal) abortSignals.push(args.signal)
         return new Promise(() => {}) // never resolves
       })
 

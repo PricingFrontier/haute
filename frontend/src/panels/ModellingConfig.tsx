@@ -130,7 +130,12 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
     const nodeLabel = allNodes.find(n => n.id === nodeId)?.data.label || "Model Training"
     setSubmitting(true)
     try {
-      const result = await trainModel({ graph: buildGraphCb(), node_id: nodeId, source: useSettingsStore.getState().activeSource })
+      const result = await trainModel({
+        graph: buildGraphCb(),
+        node_id: nodeId,
+        source: useSettingsStore.getState().activeSource,
+        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+      })
 
       if (result.status === "started" && result.job_id) {
         // Register job in store — background hook picks up polling

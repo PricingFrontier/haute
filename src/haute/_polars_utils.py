@@ -21,6 +21,8 @@ from haute.errors import BoundedMemoryUnsupportedError
 logger = get_logger(component="polars_utils")
 _STREAMING_CHUNK_SIZE_LOCK = threading.RLock()
 
+DEFAULT_STREAMING_CHUNK_SIZE: int = 500_000
+
 _POLARS_STREAMING_ERRORS = (
     pl.exceptions.ComputeError,
     pl.exceptions.InvalidOperationError,

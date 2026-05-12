@@ -231,6 +231,7 @@ def _declared_categorical_levels_for_model_score(
     )
     return merge_categorical_level_declarations(declarations)
 
+
 def _assert_runtime_contract_matches(
     lf: pl.LazyFrame,
     contract_path: str,
@@ -264,9 +265,7 @@ def _assert_runtime_contract_matches(
     expected_feature_set = set(expected.features)
     runtime_features = [name for name in schema.names() if name in expected_feature_set]
     seen_runtime_features = set(runtime_features)
-    runtime_features.extend(
-        name for name in expected.features if name not in seen_runtime_features
-    )
+    runtime_features.extend(name for name in expected.features if name not in seen_runtime_features)
     categorical_features: list[str] = []
     for name in expected.features:
         dtype = schema.get(name)
@@ -289,8 +288,7 @@ def _assert_runtime_contract_matches(
     mismatched_levels = {
         column: levels
         for column, levels in runtime_declared_levels.items()
-        if column in expected.categorical_levels
-        and levels != expected.categorical_levels[column]
+        if column in expected.categorical_levels and levels != expected.categorical_levels[column]
     }
     if mismatched_levels:
         from haute.errors import FeatureMismatchError
@@ -315,9 +313,7 @@ def _assert_runtime_contract_matches(
     )
     assert_contracts_match(expected, actual)
     score_levels = (
-        expected.categorical_levels
-        if expected.categorical_levels
-        else runtime_declared_levels
+        expected.categorical_levels if expected.categorical_levels else runtime_declared_levels
     )
     if validate_values:
         validate_categorical_value_domains(lf, score_levels)
@@ -523,9 +519,7 @@ def score_graph_lazy(
         # This branch also covers configured non-bundled modelScore nodes.
         if node_type == NodeType.MODEL_SCORE:
             bundled_contract_path = _bundled_contract_path(nid, remap) if remap else None
-            remapped_path = (
-                _remap_artifact(nid, config, remap, "artifact_path") if remap else None
-            )
+            remapped_path = _remap_artifact(nid, config, remap, "artifact_path") if remap else None
             _task = config.get("task", "regression")
             _output_col = config.get("output_column", "prediction")
             _src_names = list(source_names)

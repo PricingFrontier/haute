@@ -225,6 +225,7 @@ def _execute_contract_free_join(
         if node.id == "right":
             return node.id, lambda: right_df.lazy(), True
         if node.id == "joined":
+
             def join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
                 seen_join_schemas.append(
                     (left.collect_schema().names(), right.collect_schema().names())
@@ -260,6 +261,7 @@ def test_execute_lazy_rejects_simple_join_key_dtype_mismatch_before_running_node
                 True,
             )
         if node.id == "joined":
+
             def join_should_not_run(*_dfs):
                 raise AssertionError("join function should not run")
 
@@ -489,6 +491,7 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
                 True,
             )
         if node.id == "joined":
+
             def join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
                 seen_join_schemas.append(
                     (left.collect_schema().names(), right.collect_schema().names())
@@ -511,28 +514,24 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
     )
 
     assert seen_join_schemas == [(["quote_id"], ["quote_id", "right_value"])]
-    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(
-        as_series=False
-    ) == {"quote_id": ["q1"], "right_value": [2]}
+    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "right_value": [2],
+    }
     assert context.projection_plan is not None
-    diagnostics = context.metrics_payload(status="completed")[
-        "projection_plan_diagnostics"
-    ]
+    diagnostics = context.metrics_payload(status="completed")["projection_plan_diagnostics"]
     assert diagnostics is not None
-    assert diagnostics["edge_reasons"]["left->joined"]["rule"] == (
-        "runtime_inferred_streaming"
-    )
-    assert diagnostics["edge_reasons"]["right->joined"]["rule"] == (
-        "runtime_inferred_streaming"
-    )
+    assert diagnostics["edge_reasons"]["left->joined"]["rule"] == ("runtime_inferred_streaming")
+    assert diagnostics["edge_reasons"]["right->joined"]["rule"] == ("runtime_inferred_streaming")
     assert diagnostics["edge_reasons"]["right->joined"]["details"] == {
         "strategy": "runtime_inferred_streaming",
         "columns": ("quote_id", "right_value"),
     }
     assert diagnostics["strategy_summary"]["profile"] == "lazy_sink"
-    assert diagnostics["strategy_summary"]["node_strategy_counts"][
-        "unprojected_streaming_boundary"
-    ] >= 1
+    assert (
+        diagnostics["strategy_summary"]["node_strategy_counts"]["unprojected_streaming_boundary"]
+        >= 1
+    )
     json.dumps(diagnostics)
 
 
@@ -582,9 +581,10 @@ def test_bounded_lazy_execution_runtime_projects_join_on_string_and_list_keys(
     )
 
     assert seen_join_schemas == [(expected_left, expected_right)]
-    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(
-        as_series=False
-    ) == {"quote_id": ["q1"], "right_value": [20]}
+    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "right_value": [20],
+    }
 
 
 def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join_keys() -> None:
@@ -613,9 +613,10 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join_keys() ->
     )
 
     assert seen_join_schemas == [(["quote_id"], ["policy_id", "right_value"])]
-    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(
-        as_series=False
-    ) == {"quote_id": ["q1"], "right_value": [20]}
+    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "right_value": [20],
+    }
 
 
 @pytest.mark.parametrize(
@@ -745,6 +746,7 @@ def test_bounded_lazy_execution_runtime_projection_preserves_join_suffixes() -> 
                 True,
             )
         if node.id == "joined":
+
             def join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
                 seen_join_schemas.append(
                     (left.collect_schema().names(), right.collect_schema().names())
@@ -775,12 +777,8 @@ def test_bounded_lazy_execution_runtime_projection_preserves_custom_join_suffix(
         code="df = left.join(right, on='quote_id', suffix='_lookup')",
         join_fn=lambda left, right: left.join(right, on="quote_id", suffix="_lookup"),
         fields=["value_lookup"],
-        left_df=pl.DataFrame(
-            {"quote_id": ["q1"], "value": [1], "left_unused": [100]}
-        ),
-        right_df=pl.DataFrame(
-            {"quote_id": ["q1"], "value": [2], "right_unused": [200]}
-        ),
+        left_df=pl.DataFrame({"quote_id": ["q1"], "value": [1], "left_unused": [100]}),
+        right_df=pl.DataFrame({"quote_id": ["q1"], "value": [2], "right_unused": [200]}),
     )
 
     assert seen_join_schemas == [(["quote_id", "value"], ["quote_id", "value"])]
@@ -799,20 +797,17 @@ def test_bounded_lazy_execution_contract_free_join_missing_key_fails_loudly() ->
         if node.id == "left":
             return (
                 node.id,
-                lambda: pl.DataFrame(
-                    {"quote_id": ["q1"], "left_unused": [100]}
-                ).lazy(),
+                lambda: pl.DataFrame({"quote_id": ["q1"], "left_unused": [100]}).lazy(),
                 True,
             )
         if node.id == "right":
             return (
                 node.id,
-                lambda: pl.DataFrame(
-                    {"policy_id": ["q1"], "right_value": [20]}
-                ).lazy(),
+                lambda: pl.DataFrame({"policy_id": ["q1"], "right_value": [20]}).lazy(),
                 True,
             )
         if node.id == "joined":
+
             def join_should_not_run(*_dfs):
                 raise AssertionError("join function should not run")
 
@@ -894,9 +889,10 @@ def test_bounded_lazy_execution_dynamic_join_how_stays_unprojected_boundary() ->
             ["quote_id", "right_value", "right_unused"],
         )
     ]
-    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(
-        as_series=False
-    ) == {"quote_id": ["q1"], "right_value": [2]}
+    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "right_value": [2],
+    }
 
 
 def test_bounded_lazy_execution_empty_join_suffix_stays_unprojected_boundary() -> None:
@@ -926,9 +922,10 @@ def test_bounded_lazy_execution_empty_join_suffix_stays_unprojected_boundary() -
             ["quote_id", "right_value", "right_unused"],
         )
     ]
-    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(
-        as_series=False
-    ) == {"quote_id": ["q1"], "right_value": [2]}
+    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "right_value": [2],
+    }
 
 
 def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None:
@@ -944,8 +941,7 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
                         "nodeType": "polars",
                         "config": {
                             "code": (
-                                "df = left.join(right, left_on='quote_id', "
-                                "right_on='policy_id')"
+                                "df = left.join(right, left_on='quote_id', right_on='policy_id')"
                             )
                         },
                     },
@@ -972,9 +968,7 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
         if node.id == "left":
             return (
                 node.id,
-                lambda: pl.DataFrame(
-                    {"quote_id": ["q1"], "left_unused": [100]}
-                ).lazy(),
+                lambda: pl.DataFrame({"quote_id": ["q1"], "left_unused": [100]}).lazy(),
                 True,
             )
         if node.id == "right":
@@ -990,6 +984,7 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
                 True,
             )
         if node.id == "joined":
+
             def join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
                 seen_join_schemas.append(
                     (left.collect_schema().names(), right.collect_schema().names())
@@ -1010,9 +1005,10 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
     )
 
     assert seen_join_schemas == [(["quote_id"], ["policy_id", "right_value"])]
-    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(
-        as_series=False
-    ) == {"quote_id": ["q1"], "right_value": [2]}
+    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "right_value": [2],
+    }
 
 
 def test_bounded_lazy_execution_runtime_projection_fails_loudly_on_missing_join_key() -> None:
@@ -1106,9 +1102,7 @@ def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type() -> 
         if node.id == "left":
             return (
                 node.id,
-                lambda: pl.DataFrame(
-                    {"quote_id": ["q1"], "left_unused": [100]}
-                ).lazy(),
+                lambda: pl.DataFrame({"quote_id": ["q1"], "left_unused": [100]}).lazy(),
                 True,
             )
         if node.id == "right":
@@ -1124,6 +1118,7 @@ def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type() -> 
                 True,
             )
         if node.id == "joined":
+
             def join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
                 seen_join_schemas.append(
                     (left.collect_schema().names(), right.collect_schema().names())
@@ -1149,9 +1144,10 @@ def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type() -> 
             ["quote_id", "right_value", "right_unused"],
         )
     ]
-    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(
-        as_series=False
-    ) == {"quote_id": ["q1"], "right_value": [2]}
+    assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "right_value": [2],
+    }
 
 
 def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None:
@@ -1211,9 +1207,10 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
     assert outputs["out"].collect().to_dict(as_series=False) == {"a": [2]}
     assert context.projection_plan is not None
     assert context.projection_plan.needed_by_node["source"] == frozenset({"a"})
-    assert context.projection_plan.diagnostics.edge_reasons[
-        ("source", "custom")
-    ].rule == "polars_expression_dependency"
+    assert (
+        context.projection_plan.diagnostics.edge_reasons[("source", "custom")].rule
+        == "polars_expression_dependency"
+    )
 
 
 def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary() -> None:
@@ -1291,6 +1288,7 @@ def test_execute_lazy_rejects_left_on_right_on_join_key_dtype_mismatch() -> None
                 True,
             )
         if node.id == "joined":
+
             def join_should_not_run(*_dfs):
                 raise AssertionError("join function should not run")
 

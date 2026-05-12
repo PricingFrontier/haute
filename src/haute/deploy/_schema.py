@@ -27,10 +27,10 @@ def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
 
 def _read_input_source(node: GraphNode, resolved_path: str) -> pl.LazyFrame:
     config = node.data.config
-    if (
-        node.data.nodeType in {NodeType.API_INPUT, NodeType.DATA_SOURCE}
-        and not resolved_path.lower().endswith((".json", ".jsonl"))
-    ):
+    if node.data.nodeType in {
+        NodeType.API_INPUT,
+        NodeType.DATA_SOURCE,
+    } and not resolved_path.lower().endswith((".json", ".jsonl")):
         return read_data_source({**config, "path": resolved_path})
     return read_source(resolved_path)
 

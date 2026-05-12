@@ -141,9 +141,7 @@ def test_streaming_collect_preserves_generic_unsupported_data_errors() -> None:
     class Lazy:
         def collect(self, *args, **kwargs) -> pl.DataFrame:
             del args, kwargs
-            raise pl.exceptions.InvalidOperationError(
-                "operation not supported for dtype date"
-            )
+            raise pl.exceptions.InvalidOperationError("operation not supported for dtype date")
 
     with pytest.raises(pl.exceptions.InvalidOperationError, match="not supported"):
         streaming_collect(Lazy(), profile=ExecutionProfile.DEPLOY_BATCH)  # type: ignore[arg-type]

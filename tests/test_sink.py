@@ -172,9 +172,7 @@ class TestExecuteSinkParquet:
         with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
             execute_sink(graph, "sink")
 
-        assert captured_kwargs["required_columns_by_node"] == {
-            "sink": frozenset({"x", "z"})
-        }
+        assert captured_kwargs["required_columns_by_node"] == {"sink": frozenset({"x", "z"})}
 
 
 class TestExecuteSinkCSV:

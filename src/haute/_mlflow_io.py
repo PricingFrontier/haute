@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
     from mlflow.tracking import MlflowClient
 
+    from haute._model_scorer import ScoreWriteProjection
+
 logger = get_logger(component="mlflow_io")
 
 _MODEL_CACHE_MAX_SIZE = 16
@@ -925,7 +927,7 @@ def _score_eager(
     features: list[str],
     output_col: str = "prediction",
     task: str = "regression",
-    write_projection: object | None = None,
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 

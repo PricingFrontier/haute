@@ -8,14 +8,27 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, RootModel, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, RootModel, field_validator
 
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
 from haute._types import PipelineGraph as Graph  # noqa: F401
+
+
+def _reject_bool_chunk_size(value: object) -> object:
+    if isinstance(value, bool):
+        raise ValueError("streaming_chunk_size must not be a bool")
+    return value
+
+
+StreamingChunkSize = Annotated[
+    int | None,
+    BeforeValidator(_reject_bool_chunk_size),
+    Field(ge=1, le=10_000_000),
+]
 
 JobStatus = Literal[
     "running",
@@ -205,9 +218,7 @@ class ExecutionMetricsPayload(BaseModel):
     rss_limit_bytes: int | None = None
     admission: ExecutionAdmissionPayload | None = None
     stages: list[ExecutionStageMetricsPayload] = Field(default_factory=list)
-    memory_pressure_events: list[ExecutionMemoryPressureEventPayload] = Field(
-        default_factory=list
-    )
+    memory_pressure_events: list[ExecutionMemoryPressureEventPayload] = Field(default_factory=list)
     projection_plan_diagnostics: dict[str, Any] | None = None
 
 
@@ -240,6 +251,7 @@ class PreviewNodeRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class NodeTimingInfo(BaseModel):
@@ -285,6 +297,7 @@ class TraceRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     row_values: dict[str, Any] | None = None
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class SchemaDiffResponse(BaseModel):
@@ -337,6 +350,7 @@ class SinkRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class SinkResponse(BaseModel):
@@ -624,6 +638,7 @@ class TrainRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class TrainResponse(BaseModel):
@@ -799,6 +814,7 @@ class MlflowModelVersionSummary(BaseModel):
 class OptimiserSolveRequest(BaseModel):
     graph: Graph
     node_id: str
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -819,6 +835,7 @@ class OptimiserEstimateRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserEstimateResponse(BaseModel):
@@ -841,6 +858,7 @@ class OptimiserEstimateResponse(BaseModel):
 class OptimiserFrontierAutoRangeRequest(BaseModel):
     graph: Graph
     node_id: str
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -878,6 +896,7 @@ class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
+    streaming_chunk_size: StreamingChunkSize = None
 
     @field_validator("threshold_ranges", mode="after")
     @classmethod

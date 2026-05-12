@@ -117,11 +117,7 @@ def _format_contract_source(
     parent_name_by_id: dict[str, str] | None = None,
 ) -> str:
     """Format a declared contract while preserving fan-in ownership metadata."""
-    if (
-        contract.inputs is None
-        and contract.outputs is None
-        and contract.inputs_by_parent is None
-    ):
+    if contract.inputs is None and contract.outputs is None and contract.inputs_by_parent is None:
         return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
 
     contract_dict: dict[str, object] = {
@@ -140,16 +136,14 @@ def _format_contract_source(
                     emitted_parent = parent_id
                 else:
                     raise ParseError(
-                        "inputs_by_parent references a parent that is not connected "
-                        "to this node.",
+                        "inputs_by_parent references a parent that is not connected to this node.",
                         parent_id=parent_id,
                         connected_parent_ids=sorted(parent_name_by_id),
                         connected_parent_names=sorted(parent_names),
                     )
             inputs_by_parent[emitted_parent] = None if columns is None else sorted(columns)
         contract_dict["inputs_by_parent"] = {
-            parent_id: columns
-            for parent_id, columns in sorted(inputs_by_parent.items())
+            parent_id: columns for parent_id, columns in sorted(inputs_by_parent.items())
         }
     return f"contract={contract_dict!r}"
 

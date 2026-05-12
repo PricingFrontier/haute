@@ -260,9 +260,7 @@ class TestContractHash:
         kwargs_b = _basic_kwargs()
         kwargs_b["categorical_levels"] = {"region": ["south", "north"]}
 
-        assert build_contract(**kwargs_a).contract_hash == build_contract(
-            **kwargs_b
-        ).contract_hash
+        assert build_contract(**kwargs_a).contract_hash == build_contract(**kwargs_b).contract_hash
 
 
 # ---------------------------------------------------------------------------

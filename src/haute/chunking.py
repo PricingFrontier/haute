@@ -23,7 +23,8 @@ import polars as pl
 from haute._builders import _DEFAULT_SCENARIO_STEPS
 from haute._execution_context import ExecutionProfile
 from haute._io import read_data_source
-from haute._polars_utils import streaming_collect
+from haute._logging import get_logger
+from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.errors import ChunkPlanUnsupportedError, ContractMismatchError
 from haute.execution import ProjectionRequest, plan_execution_strategy
@@ -47,6 +48,9 @@ __all__ = [
     "run_chunked_reduce",
     "validate_chunk_capability_declarations",
 ]
+
+
+logger = get_logger(component="chunking")
 
 
 class ChunkCapabilityKind(StrEnum):
@@ -137,6 +141,7 @@ class ChunkRunnerRequest:
     checkpoint_dir: Path | None = None
     start_frame: pl.LazyFrame | pl.DataFrame | None = None
     cleanup_checkpoints_on_error: bool = True
+    streaming_chunk_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,116 +216,109 @@ def _chunk_declaration(
     )
 
 
-_CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = (
-    MappingProxyType(
-        {
-            NodeType.API_INPUT: _chunk_declaration(
-                NodeType.API_INPUT,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note=(
-                    "request-payload sources are bounded by admission, not the "
-                    "file-scan chunk runner"
-                ),
+_CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = MappingProxyType(
+    {
+        NodeType.API_INPUT: _chunk_declaration(
+            NodeType.API_INPUT,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note=(
+                "request-payload sources are bounded by admission, not the file-scan chunk runner"
             ),
-            NodeType.DATA_SOURCE: _chunk_declaration(
-                NodeType.DATA_SOURCE,
-                ChunkCapabilityStatus.CONDITIONAL,
-                _DIRECT_FILE_SCAN_RULE_NAME,
+        ),
+        NodeType.DATA_SOURCE: _chunk_declaration(
+            NodeType.DATA_SOURCE,
+            ChunkCapabilityStatus.CONDITIONAL,
+            _DIRECT_FILE_SCAN_RULE_NAME,
+        ),
+        NodeType.POLARS: _chunk_declaration(
+            NodeType.POLARS,
+            ChunkCapabilityStatus.CONDITIONAL,
+            _SINGLE_PARENT_SUFFIX_RULE_NAME,
+            _ROW_LOCAL_POLARS_RULE_NAME,
+        ),
+        NodeType.MODEL_SCORE: _chunk_declaration(
+            NodeType.MODEL_SCORE,
+            ChunkCapabilityStatus.CONDITIONAL,
+            _MODEL_SCORE_BATCH_REUSE_RULE_NAME,
+        ),
+        NodeType.BANDING: _chunk_declaration(
+            NodeType.BANDING,
+            ChunkCapabilityStatus.SUPPORTED,
+            _MAP_ONLY_RULE_NAME,
+        ),
+        NodeType.RATING_STEP: _chunk_declaration(
+            NodeType.RATING_STEP,
+            ChunkCapabilityStatus.CONDITIONAL,
+            _NO_RATING_STEP_CODE_RULE_NAME,
+        ),
+        NodeType.OUTPUT: _chunk_declaration(
+            NodeType.OUTPUT,
+            ChunkCapabilityStatus.SUPPORTED,
+            _MAP_ONLY_RULE_NAME,
+        ),
+        NodeType.DATA_SINK: _chunk_declaration(
+            NodeType.DATA_SINK,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note=("sink writes use bounded sink contracts rather than the map-reduce chunk runner"),
+        ),
+        NodeType.EXTERNAL_FILE: _chunk_declaration(
+            NodeType.EXTERNAL_FILE,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note=(
+                "external file nodes are schema/artifact references, not chunk-runner source scans"
             ),
-            NodeType.POLARS: _chunk_declaration(
-                NodeType.POLARS,
-                ChunkCapabilityStatus.CONDITIONAL,
-                _SINGLE_PARENT_SUFFIX_RULE_NAME,
-                _ROW_LOCAL_POLARS_RULE_NAME,
-            ),
-            NodeType.MODEL_SCORE: _chunk_declaration(
-                NodeType.MODEL_SCORE,
-                ChunkCapabilityStatus.CONDITIONAL,
-                _MODEL_SCORE_BATCH_REUSE_RULE_NAME,
-            ),
-            NodeType.BANDING: _chunk_declaration(
-                NodeType.BANDING,
-                ChunkCapabilityStatus.SUPPORTED,
-                _MAP_ONLY_RULE_NAME,
-            ),
-            NodeType.RATING_STEP: _chunk_declaration(
-                NodeType.RATING_STEP,
-                ChunkCapabilityStatus.CONDITIONAL,
-                _NO_RATING_STEP_CODE_RULE_NAME,
-            ),
-            NodeType.OUTPUT: _chunk_declaration(
-                NodeType.OUTPUT,
-                ChunkCapabilityStatus.SUPPORTED,
-                _MAP_ONLY_RULE_NAME,
-            ),
-            NodeType.DATA_SINK: _chunk_declaration(
-                NodeType.DATA_SINK,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note=(
-                    "sink writes use bounded sink contracts rather than the "
-                    "map-reduce chunk runner"
-                ),
-            ),
-            NodeType.EXTERNAL_FILE: _chunk_declaration(
-                NodeType.EXTERNAL_FILE,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note=(
-                    "external file nodes are schema/artifact references, not "
-                    "chunk-runner source scans"
-                ),
-            ),
-            NodeType.LIVE_SWITCH: _chunk_declaration(
-                NodeType.LIVE_SWITCH,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note="live-switch branch selection has not declared chunk-local semantics",
-            ),
-            NodeType.MODELLING: _chunk_declaration(
-                NodeType.MODELLING,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note="training preparation is governed by training memory contracts",
-            ),
-            NodeType.OPTIMISER: _chunk_declaration(
-                NodeType.OPTIMISER,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note="optimiser solve state is handled by optimiser-specific reducers",
-            ),
-            NodeType.SCENARIO_EXPANDER: _chunk_declaration(
-                NodeType.SCENARIO_EXPANDER,
-                ChunkCapabilityStatus.CONDITIONAL,
-                _SCENARIO_EXPANDER_RULE_NAME,
-                _ROW_LOCAL_POLARS_RULE_NAME,
-            ),
-            NodeType.OPTIMISER_APPLY: _chunk_declaration(
-                NodeType.OPTIMISER_APPLY,
-                ChunkCapabilityStatus.SUPPORTED,
-                _MAP_ONLY_RULE_NAME,
-            ),
-            NodeType.CONSTANT: _chunk_declaration(
-                NodeType.CONSTANT,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note="constant nodes are not a bounded scan source in the V1 runner",
-            ),
-            NodeType.SUBMODEL: _chunk_declaration(
-                NodeType.SUBMODEL,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note="submodels must be expanded before chunk contracts can be proven",
-            ),
-            NodeType.SUBMODEL_PORT: _chunk_declaration(
-                NodeType.SUBMODEL_PORT,
-                ChunkCapabilityStatus.UNSUPPORTED,
-                _UNSUPPORTED_V1_RULE_NAME,
-                note="submodel ports inherit semantics from their expanded concrete graph",
-            ),
-        }
-    )
+        ),
+        NodeType.LIVE_SWITCH: _chunk_declaration(
+            NodeType.LIVE_SWITCH,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note="live-switch branch selection has not declared chunk-local semantics",
+        ),
+        NodeType.MODELLING: _chunk_declaration(
+            NodeType.MODELLING,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note="training preparation is governed by training memory contracts",
+        ),
+        NodeType.OPTIMISER: _chunk_declaration(
+            NodeType.OPTIMISER,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note="optimiser solve state is handled by optimiser-specific reducers",
+        ),
+        NodeType.SCENARIO_EXPANDER: _chunk_declaration(
+            NodeType.SCENARIO_EXPANDER,
+            ChunkCapabilityStatus.CONDITIONAL,
+            _SCENARIO_EXPANDER_RULE_NAME,
+            _ROW_LOCAL_POLARS_RULE_NAME,
+        ),
+        NodeType.OPTIMISER_APPLY: _chunk_declaration(
+            NodeType.OPTIMISER_APPLY,
+            ChunkCapabilityStatus.SUPPORTED,
+            _MAP_ONLY_RULE_NAME,
+        ),
+        NodeType.CONSTANT: _chunk_declaration(
+            NodeType.CONSTANT,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note="constant nodes are not a bounded scan source in the V1 runner",
+        ),
+        NodeType.SUBMODEL: _chunk_declaration(
+            NodeType.SUBMODEL,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note="submodels must be expanded before chunk contracts can be proven",
+        ),
+        NodeType.SUBMODEL_PORT: _chunk_declaration(
+            NodeType.SUBMODEL_PORT,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note="submodel ports inherit semantics from their expanded concrete graph",
+        ),
+    }
 )
 
 
@@ -532,9 +530,7 @@ def _plan_chunk_sizes(
     target_columns = projection.needed_by_node.get(request.target_node_id)
     target_row_bytes = _estimate_projected_row_bytes(
         target_columns,
-        source_node=(
-            prepared.node_map[source_node_id] if source_node_id is not None else None
-        ),
+        source_node=(prepared.node_map[source_node_id] if source_node_id is not None else None),
         target_node_id=request.target_node_id,
     )
     source_columns = projection.needed_by_node.get(chunk_start_node_id)
@@ -572,8 +568,7 @@ def _estimate_projected_row_bytes(
         else {}
     )
     estimated = sum(
-        source_widths.get(column, _DEFAULT_PROJECTED_COLUMN_BYTES)
-        for column in projected_columns
+        source_widths.get(column, _DEFAULT_PROJECTED_COLUMN_BYTES) for column in projected_columns
     )
     return max(1, estimated)
 
@@ -590,10 +585,7 @@ def _source_projected_column_widths(
         schema = lf.collect_schema()
         schema_by_name = dict(schema.items())
         columns = [column for column in schema.names() if column in projected_columns]
-        widths = {
-            column: _dtype_estimated_width(schema_by_name[column])
-            for column in columns
-        }
+        widths = {column: _dtype_estimated_width(schema_by_name[column]) for column in columns}
         if not columns:
             return widths
 
@@ -736,7 +728,7 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         else _CHUNK_SIZE_POLICY_TARGET_BYTES
     )
 
-    return ChunkPlan(
+    plan = ChunkPlan(
         source_node_id=source_node_id,
         chunk_start_node_id=chunk_start_node_id,
         target_node_id=request.target_node_id,
@@ -755,6 +747,17 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         edge_demands=projection.edge_demands,
         source=request.source,
     )
+    logger.info(
+        "chunk_plan_built",
+        target_node_id=plan.target_node_id,
+        chunk_start_node_id=plan.chunk_start_node_id,
+        chunk_size=plan.chunk_size,
+        source_chunk_size=plan.source_chunk_size,
+        chunk_size_policy=plan.chunk_size_policy,
+        row_expansion_factor=plan.row_expansion_factor,
+        node_count=len(plan.node_ids),
+    )
+    return plan
 
 
 def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
@@ -778,7 +781,11 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         _build_funcs,
         _resolve_graph_paths,
     )
-    from haute._polars_utils import bounded_collect_batches, streaming_collect
+    from haute._polars_utils import (
+        bounded_collect_batches,
+        streaming_collect,
+        temporary_streaming_chunk_size,
+    )
 
     graph = _resolve_graph_paths(request.graph)
     prepared = prepare_graph(graph, plan.target_node_id, source=plan.source)
@@ -814,9 +821,7 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         source_lf = _normalise_lazy_frame(
             _apply_selected_columns(source_lf, source_node.data.config)
         )
-        source_lf = _normalise_lazy_frame(
-            _apply_column_renames(source_lf, source_node.data.config)
-        )
+        source_lf = _normalise_lazy_frame(_apply_column_renames(source_lf, source_node.data.config))
     else:
         source_lf = _normalise_lazy_frame(request.start_frame)
     source_lf = _project_frame(
@@ -826,11 +831,7 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     )
 
     builder_required = {
-        node_id: (
-            None
-            if columns is None
-            else frozenset(str(column) for column in columns)
-        )
+        node_id: (None if columns is None else frozenset(str(column) for column in columns))
         for node_id, columns in plan.required_columns_by_node.items()
     }
     reuse_loaded_model_by_node = {
@@ -855,15 +856,25 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     checkpoint_dir = request.checkpoint_dir
     written_checkpoints: list[Path] = []
     completed = False
+    yielded_chunks = 0
+    chunk_size_stack = contextlib.ExitStack()
+    chunk_size_stack.enter_context(
+        temporary_streaming_chunk_size(request.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE)
+    )
+    logger.info(
+        "chunk_runner_start",
+        target_node_id=plan.target_node_id,
+        chunk_start_node_id=plan.chunk_start_node_id,
+        chunk_size=plan.chunk_size,
+        source_chunk_size=plan.source_chunk_size,
+    )
     try:
         if context is not None:
             context.checkpoint(label="chunk_runner_start")
         source_batches = bounded_collect_batches(
             source_lf,
             profile=(
-                context.profile
-                if context is not None
-                else ExecutionProfile.CHUNKED_MAP_REDUCE
+                context.profile if context is not None else ExecutionProfile.CHUNKED_MAP_REDUCE
             ),
             chunk_size=plan.source_chunk_size,
             maintain_order=True,
@@ -960,14 +971,27 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
                 output_rows=frame.height,
                 checkpoint_path=checkpoint_path,
             )
+            yielded_chunks += 1
         completed = True
-    except BaseException:
+        logger.info(
+            "chunk_runner_complete",
+            target_node_id=plan.target_node_id,
+            chunk_count=yielded_chunks,
+        )
+    except BaseException as exc:
+        logger.warning(
+            "chunk_runner_failed",
+            target_node_id=plan.target_node_id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
         if request.cleanup_checkpoints_on_error:
             _cleanup_written_checkpoints(written_checkpoints)
         raise
     finally:
         if not completed and request.cleanup_checkpoints_on_error:
             _cleanup_written_checkpoints(written_checkpoints)
+        chunk_size_stack.close()
 
 
 def run_chunked_reduce(
@@ -1254,11 +1278,14 @@ def _row_local_expr_is_supported(
         ), False
     if isinstance(node, ast.Dict):
         return all(
-            (key is None or _row_local_expr_is_supported(
-                key,
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )[0])
+            (
+                key is None
+                or _row_local_expr_is_supported(
+                    key,
+                    allowed_frames=allowed_frames,
+                    local_frames=local_frames,
+                )[0]
+            )
             and _row_local_expr_is_supported(
                 value,
                 allowed_frames=allowed_frames,
@@ -1428,9 +1455,7 @@ def _assert_runner_shape(
         if node_id == plan.chunk_start_node_id:
             continue
         parent_ids = [
-            parent_id
-            for parent_id in parents_of.get(node_id, [])
-            if parent_id in chunk_node_set
+            parent_id for parent_id in parents_of.get(node_id, []) if parent_id in chunk_node_set
         ]
         if len(parent_ids) != 1:
             raise ChunkPlanUnsupportedError(
@@ -1521,8 +1546,12 @@ def _write_chunk_checkpoint(
         path.with_suffix(".parquet.tmp").unlink(missing_ok=True)
         try:
             checkpoint_dir.rmdir()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "chunk_checkpoint_cleanup_failed",
+                path=str(checkpoint_dir),
+                error=str(exc),
+            )
         raise
     return path
 
@@ -1535,10 +1564,18 @@ def _cleanup_written_checkpoints(paths: list[Path]) -> None:
         seen.add(path)
         try:
             path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "chunk_checkpoint_cleanup_failed",
+                path=str(path),
+                error=str(exc),
+            )
     for parent in sorted({path.parent for path in paths}, key=lambda p: len(p.parts), reverse=True):
         try:
             parent.rmdir()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "chunk_checkpoint_cleanup_failed",
+                path=str(parent),
+                error=str(exc),
+            )

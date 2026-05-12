@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import queue
+import sys
 import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
 T = TypeVar("T")
@@ -266,6 +268,11 @@ def _isolated_worker_entrypoint(
 
 
 def _apply_address_space_limit(memory_limit_bytes: int) -> None:
+    # ``resource`` only exists on POSIX. Callers gate this via
+    # ``process_memory_caps_supported`` so reaching the Windows branch here
+    # means we hit a contract bug — fail loudly rather than silently no-op.
+    if sys.platform == "win32":  # pragma: no cover - guarded by caller's support check
+        raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=memory_limit_bytes)
     import resource
 
     current_soft, current_hard = resource.getrlimit(resource.RLIMIT_AS)
@@ -293,7 +300,7 @@ def _read_worker_payload(
         ) from exc
 
 
-def _terminate_process(process: mp.Process) -> None:
+def _terminate_process(process: BaseProcess) -> None:
     process.terminate()
     process.join(timeout=2.0)
     if process.is_alive():
@@ -303,12 +310,8 @@ def _terminate_process(process: mp.Process) -> None:
             process.join(timeout=2.0)
 
 
-def _wait_for_worker(process: mp.Process, config: IsolatedWorkerConfig) -> None:
-    deadline = (
-        None
-        if config.timeout_seconds is None
-        else time.monotonic() + config.timeout_seconds
-    )
+def _wait_for_worker(process: BaseProcess, config: IsolatedWorkerConfig) -> None:
+    deadline = None if config.timeout_seconds is None else time.monotonic() + config.timeout_seconds
     while process.is_alive():
         if config.stop_reason is not None:
             reason = config.stop_reason()
@@ -349,4 +352,10 @@ def _exitcode_looks_memory_limited(
         import signal
     except ImportError:
         return False
-    return exitcode in {-signal.SIGKILL, -signal.SIGABRT}
+    # ``SIGKILL`` is POSIX-only. ``getattr`` lets this module typecheck on
+    # Windows where memory caps are unsupported anyway (callers gate via
+    # ``process_memory_caps_supported``).
+    sigkill = getattr(signal, "SIGKILL", None)
+    if sigkill is None:
+        return False
+    return exitcode in {-int(sigkill), -int(signal.SIGABRT)}

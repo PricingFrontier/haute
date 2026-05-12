@@ -257,9 +257,7 @@ def _should_check_contract(contract: Contract) -> bool:
 
 
 def _normalise_required_columns_by_node(
-    required_columns_by_node: Mapping[
-        str, Iterable[str] | projection_planner.AllExceptColumns
-    ]
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
     | None,
     order: list[str],
 ) -> dict[str, set[str] | projection_planner.AllExceptColumns]:
@@ -299,9 +297,7 @@ def _compat_projection_plan(
 
 def _strict_projection_for_context(
     execution_context: ExecutionContext | None,
-    required_columns_by_node: Mapping[
-        str, Iterable[str] | projection_planner.AllExceptColumns
-    ],
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
 ) -> bool:
     """Return whether projection-impossible cases should fail loudly."""
     return execution_context is not None and projection_planner.strict_projection_required(
@@ -314,9 +310,7 @@ def _compute_projection_plan(
     order: list[str],
     children_of: dict[str, list[str]],
     node_map: dict[str, GraphNode],
-    required_columns_by_node: Mapping[
-        str, Iterable[str] | projection_planner.AllExceptColumns
-    ]
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
     | None = None,
     *,
     strict_projection: bool = False,
@@ -336,9 +330,7 @@ def _compute_needed_columns(
     order: list[str],
     children_of: dict[str, list[str]],
     node_map: dict[str, GraphNode],
-    required_columns_by_node: Mapping[
-        str, Iterable[str] | projection_planner.AllExceptColumns
-    ]
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
     | None = None,
     *,
     strict_projection: bool = False,
@@ -554,6 +546,7 @@ def _prune_live_switch_edges(
     """
     return projection_planner.prune_live_switch_edges(edges, node_map, source)
 
+
 def _prepare_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,
@@ -585,9 +578,7 @@ def _execute_lazy(
     checkpoint_dir: Path | None = None,
     enforce_contracts: bool = False,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
-    required_columns_by_node: Mapping[
-        str, Iterable[str] | projection_planner.AllExceptColumns
-    ]
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
     | None = None,
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
@@ -909,12 +900,10 @@ def _execute_lazy(
                 and execution_context is not None
                 and public_projection_plan is not None
             ):
-                public_projection_plan = (
-                    projection_planner.with_runtime_inferred_streaming_edges(
-                        public_projection_plan,
-                        child_id=nid,
-                        demands_by_parent=runtime_edge_demands,
-                    )
+                public_projection_plan = projection_planner.with_runtime_inferred_streaming_edges(
+                    public_projection_plan,
+                    child_id=nid,
+                    demands_by_parent=runtime_edge_demands,
                 )
                 execution_context.projection_plan = public_projection_plan
             for input_id, input_lf in zip(input_ids, input_lfs, strict=True):
@@ -1159,6 +1148,7 @@ def _build_funcs(
         funcs[nid] = (fn, is_source)
     return funcs
 
+
 def _extract_error_line(exc: Exception) -> int | None:
     """Extract user-code line number from an exception, if available.
 
@@ -1206,9 +1196,7 @@ def _execute_eager_core(
     preamble_ns: dict | None = None,
     source: str = "live",
     enforce_contracts: bool = True,
-    required_columns_by_node: Mapping[
-        str, Iterable[str] | projection_planner.AllExceptColumns
-    ]
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
     | None = None,
     materialize_node_ids: set[str] | frozenset[str] | None = None,
     materialize_column_limits_by_node: Mapping[str, int] | None = None,
@@ -1261,9 +1249,7 @@ def _execute_eager_core(
         required_columns_by_node,
         order,
     )
-    materialized_ids = (
-        None if materialize_node_ids is None else frozenset(materialize_node_ids)
-    )
+    materialized_ids = None if materialize_node_ids is None else frozenset(materialize_node_ids)
     materialize_column_limits = dict(materialize_column_limits_by_node or {})
     for limit_node_id, limit in materialize_column_limits.items():
         if not isinstance(limit_node_id, str) or not limit_node_id:
@@ -1517,33 +1503,34 @@ def _execute_eager_core(
                 _assert_outputs_satisfy_contract(node, contract, final_cols)  # type: ignore[arg-type]
 
             projection = needed_cols.get(nid)
+            projected_columns: list[str] | None = None
             if projection is not None:
                 missing = projection - output_column_set
                 if missing and nid not in normalised_required_columns:
                     raise ContractMismatchError(
-                        "Eager projection references columns missing "
-                        "from the node output schema.",
+                        "Eager projection references columns missing from the node output schema.",
                         node_id=nid,
                         node_type=node.data.nodeType.value,
                         missing=sorted(missing),
                         required_columns=sorted(projection),
                         output_columns=sorted(output_column_set),
                     )
-                projected_columns = [c for c in output_column_names if c in projection]
-                if len(projected_columns) < len(output_column_names):
+                candidate_columns = [c for c in output_column_names if c in projection]
+                if len(candidate_columns) < len(output_column_names):
+                    projected_columns = candidate_columns
+            column_cache[nid] = final_cols
+
+            should_materialize = materialized_ids is None or nid in materialized_ids
+            if should_materialize:
+                collect_lf = output_lf
+                if projected_columns is not None:
                     logger.info(
                         "eager_projection",
                         node_id=nid,
                         total_cols=len(output_column_names),
                         projected_cols=len(projected_columns),
                     )
-                    output_lf = output_lf.select(projected_columns)
-                    final_cols = frozenset(projected_columns)
-            column_cache[nid] = final_cols
-
-            should_materialize = materialized_ids is None or nid in materialized_ids
-            if should_materialize:
-                collect_lf = output_lf
+                    collect_lf = collect_lf.select(projected_columns)
                 column_limit = materialize_column_limits.get(nid)
                 if (
                     column_limit is not None

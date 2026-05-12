@@ -252,8 +252,7 @@ class TestGenerateAppSource:
     def test_imports_score_graph(self) -> None:
         source = _generate_app_source("m", 8080)
         assert (
-            "from haute.deploy._scorer import admit_deploy_execution, "
-            "score_graph, score_graph_lazy"
+            "from haute.deploy._scorer import admit_deploy_execution, score_graph, score_graph_lazy"
         ) in source
         assert "from fastapi.responses import JSONResponse, StreamingResponse" in source
         assert "bounded_collect_batches" in source
@@ -508,18 +507,14 @@ class TestGenerateAppSource:
 
     def test_request_body_limit_config_supports_mb(self) -> None:
         assert (
-            deploy_quote_request_body_limit_bytes(
-                {DEPLOY_QUOTE_REQUEST_BODY_LIMIT_MB_ENV: "2"}
-            )
+            deploy_quote_request_body_limit_bytes({DEPLOY_QUOTE_REQUEST_BODY_LIMIT_MB_ENV: "2"})
             == 2 * 1024 * 1024
         )
 
     @pytest.mark.parametrize("raw", ["0", "-1", "abc"])
     def test_request_body_limit_config_invalid_values_fail_loudly(self, raw: str) -> None:
         with pytest.raises(RuntimeError, match=DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV):
-            deploy_quote_request_body_limit_bytes(
-                {DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV: raw}
-            )
+            deploy_quote_request_body_limit_bytes({DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES_ENV: raw})
 
     @pytest.mark.asyncio
     async def test_limited_json_reader_rejects_oversized_content_length_before_stream(

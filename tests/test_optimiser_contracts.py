@@ -342,10 +342,10 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
     captured: dict[str, object] = {}
     launched = threading.Event()
 
-    def capture_launch(job_id, node_id, config, mode, quote_grid, ratebook_factors, **kwargs):
-        captured["job_id"] = job_id
-        captured["mode"] = mode
-        captured["ratebook_factors"] = ratebook_factors
+    def capture_launch(ctx, *, config, quote_grid, ratebook_factors_handle, **kwargs):
+        captured["job_id"] = ctx.job_id
+        captured["mode"] = ctx.mode
+        captured["ratebook_factors"] = ratebook_factors_handle
         launched.set()
 
     from haute.routes import optimiser as optimiser_routes

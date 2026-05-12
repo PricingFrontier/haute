@@ -388,9 +388,7 @@ def test_chunk_plan_allows_multi_source_prefix_when_start_frame_is_supplied() ->
             graph=graph,
             plan=plan,
             build_node_fn=_build_node_fn,
-            start_frame=pl.DataFrame(
-                {"quote_id": ["q1", "q2"], "premium": [100.0, 200.0]}
-            ),
+            start_frame=pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [100.0, 200.0]}),
         ),
         allow_unbounded=True,
     )
@@ -491,9 +489,7 @@ def test_chunk_runner_ignores_nested_prefix_edge_demands_with_start_frame() -> N
             graph=graph,
             plan=plan,
             build_node_fn=_build_node_fn,
-            start_frame=pl.DataFrame(
-                {"quote_id": ["q1"], "adjusted_premium": [250.0]}
-            ),
+            start_frame=pl.DataFrame({"quote_id": ["q1"], "adjusted_premium": [250.0]}),
         ),
         allow_unbounded=True,
     )
@@ -735,11 +731,11 @@ def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None
                         make_edge("join", "out").model_dump(),
                     ],
                 }
+            ),
+            "exactly one parent",
+            {"node_id": "join", "node_type": "polars"},
+            id="fan-in",
         ),
-        "exactly one parent",
-        {"node_id": "join", "node_type": "polars"},
-        id="fan-in",
-    ),
     ],
 )
 def test_unsupported_chunk_graphs_fail_during_planning(
@@ -768,9 +764,7 @@ def test_collect_chunked_requires_explicit_unbounded_opt_in(tmp_path: Path) -> N
     plan = _chunk_runner_plan(graph, chunk_size=5)
 
     with pytest.raises(ChunkPlanUnsupportedError, match="retains all rows"):
-        collect_chunked(
-            ChunkRunnerRequest(graph=graph, plan=plan, build_node_fn=_build_node_fn)
-        )
+        collect_chunked(ChunkRunnerRequest(graph=graph, plan=plan, build_node_fn=_build_node_fn))
 
 
 def test_run_chunked_reduce_rejects_unbounded_reducer(tmp_path: Path) -> None:
@@ -812,10 +806,13 @@ def test_run_chunked_reduce_accepts_bounded_reducer(tmp_path: Path) -> None:
         def finish(self) -> int:
             return self.rows
 
-    assert run_chunked_reduce(
-        ChunkRunnerRequest(graph=graph, plan=plan, build_node_fn=_build_node_fn),
-        RowCounter(),
-    ) == 18
+    assert (
+        run_chunked_reduce(
+            ChunkRunnerRequest(graph=graph, plan=plan, build_node_fn=_build_node_fn),
+            RowCounter(),
+        )
+        == 18
+    )
 
 
 def test_chunk_runner_cancels_before_next_chunk_and_cleans_checkpoints(tmp_path: Path) -> None:

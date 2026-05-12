@@ -23,6 +23,7 @@ DIRECT_STREAMING_COLLECT = re.compile(
     re.DOTALL,
 )
 
+
 @pytest.mark.parametrize("relative_path", BOUNDED_COLLECT_CALLERS)
 def test_bounded_callers_route_streaming_collect_through_helper(relative_path: Path) -> None:
     """Bounded backend paths should use streaming_collect, not bare Polars collect."""

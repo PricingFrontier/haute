@@ -831,13 +831,25 @@ class TestExecutionBoundaryGuardrails:
             f"{local_helpers}"
         )
 
+        # Routes must consume the shared helper rather than redefine it.  The
+        # canonical owner is ``haute.projection``; routes go through the
+        # ``haute.execution`` facade (which re-exports the same symbol) per
+        # the execution-facade hygiene rule pinned in
+        # ``test_polars_execution_strategy_slice0`` — both paths resolve to
+        # the projection planner so planning and execution cannot drift.
+        allowed_modules = {"haute.projection", "haute.execution"}
         imports_public_helper = any(
             isinstance(node, ast.ImportFrom)
-            and node.module == "haute.projection"
+            and node.module in allowed_modules
             and any(alias.name == "ratebook_factor_required_columns" for alias in node.names)
             for node in ast.walk(optimiser_service)
         )
-        assert imports_public_helper
+        assert imports_public_helper, (
+            "Ratebook factor-column requirements must be imported from the "
+            "shared projection planner — directly via haute.projection or "
+            "indirectly via the haute.execution facade — instead of being "
+            "redefined locally."
+        )
 
     def test_polars_streaming_chunk_size_is_only_mutated_in_shared_helper(self) -> None:
         offenders: list[tuple[str, int, str]] = []
@@ -906,9 +918,7 @@ class TestExecutionBoundaryGuardrails:
     def test_deploy_schema_sampling_uses_profiled_collect_helper(self) -> None:
         offenders: list[tuple[int, str]] = []
         tree = ast.parse(
-            (_REPO_ROOT / "src" / "haute" / "deploy" / "_schema.py").read_text(
-                encoding="utf-8"
-            )
+            (_REPO_ROOT / "src" / "haute" / "deploy" / "_schema.py").read_text(encoding="utf-8")
         )
 
         for node in ast.walk(tree):

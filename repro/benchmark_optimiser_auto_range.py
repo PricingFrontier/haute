@@ -15,6 +15,7 @@ from haute._sandbox import set_project_root
 from haute.parser import parse_pipeline_file
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
+    FrontierAutoRangeContext,
     OptimiserSolveService,
     _estimate_scenario_frontier_ranges,
 )
@@ -98,11 +99,13 @@ def run_once(root: Path, pipeline: Path, node_id: str) -> dict[str, Any]:
                 )
             with timed("estimate_scenario_frontier_ranges", phases):
                 ranges = _estimate_scenario_frontier_ranges(
-                    scored_lf,
+                    FrontierAutoRangeContext(
+                        chunk_size=prepared["chunk_size"],
+                        partition_count=prepared["partition_count"],
+                    ),
+                    scored_lf=scored_lf,
                     quote_id_col=str(config.get("quote_id", "quote_id")),
                     constraint_cols=constraint_cols,
-                    chunk_size=prepared["chunk_size"],
-                    partition_count=prepared["partition_count"],
                 )
     finally:
         store.delete_job(job_id)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -15,6 +16,9 @@ from haute.schemas import (
     FileItem,
     SchemaResponse,
 )
+
+if TYPE_CHECKING:
+    import polars as pl
 
 logger = get_logger(component="server.files")
 
@@ -57,7 +61,7 @@ async def browse_files(
     )
 
 
-def _collect_file_preview(lf):
+def _collect_file_preview(lf: pl.LazyFrame) -> pl.DataFrame:
     """Collect a small schema-preview frame through the profiled helper."""
     from haute._execution_context import ExecutionProfile
     from haute._polars_utils import streaming_collect

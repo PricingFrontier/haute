@@ -631,9 +631,7 @@ def _materialize_eager_outputs(
             # A full trace needs every executed ancestor so its waterfall
             # remains truthful. Partial target-only preview caches fall
             # through to cold trace execution below.
-            missing_preview_nodes = [
-                nid for nid in order if prev_outputs.get(nid) is None
-            ]
+            missing_preview_nodes = [nid for nid in order if prev_outputs.get(nid) is None]
             if missing_preview_nodes:
                 logger.debug(
                     "trace_preview_cache_partial",

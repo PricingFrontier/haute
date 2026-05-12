@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 from haute._execution_context import ExecutionContext, ExecutionMemoryPressureEvent
 from haute.routes._job_store import JobStore
+from haute.schemas import JobStatus
 
 RUNNING_STATUS = "running"
 COMPLETED_STATUS = "completed"
@@ -87,12 +88,12 @@ def bind_running_execution_metrics_publisher(
     execution_context.memory_pressure_callback = publish
 
 
-def require_job_status(job: Mapping[str, Any]) -> str:
+def require_job_status(job: Mapping[str, Any]) -> JobStatus:
     """Return a valid persisted job status or fail loudly on corrupt state."""
     status = job.get("status")
     if not isinstance(status, str) or status not in JOB_STATUSES:
         raise ValueError(f"Job record has invalid status: {status!r}")
-    return status
+    return cast(JobStatus, status)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,18 +146,12 @@ class JobLifecycle:
                 result: dict[str, Any] | None = merged
             else:
                 old_reason = old.get("terminal_reason")
-                if (
-                    not isinstance(old_reason, str)
-                    or old_reason not in TERMINAL_REASON_TO_STATUS
-                ):
+                if not isinstance(old_reason, str) or old_reason not in TERMINAL_REASON_TO_STATUS:
                     return None
                 typed_old_reason = cast(TerminalReason, old_reason)
                 if typed_old_reason == "completed" or to == "completed":
                     return None
-                if (
-                    _TERMINAL_REASON_PRECEDENCE[to]
-                    <= _TERMINAL_REASON_PRECEDENCE[typed_old_reason]
-                ):
+                if _TERMINAL_REASON_PRECEDENCE[to] <= _TERMINAL_REASON_PRECEDENCE[typed_old_reason]:
                     return None
                 merged, schedule_cleanup, expires_at = self.store._store_merged_job_locked(  # noqa: SLF001
                     job_id,

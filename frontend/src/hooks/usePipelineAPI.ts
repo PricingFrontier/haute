@@ -172,6 +172,7 @@ export default function usePipelineAPI({
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
+  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const addToast = useToastStore((s) => s.addToast)
   const [loading, setLoading] = useState(true)
@@ -186,6 +187,8 @@ export default function usePipelineAPI({
   // trigger re-creation of callbacks. Read at call-time instead.
   const rowLimitRef = useRef(rowLimit)
   useEffect(() => { rowLimitRef.current = rowLimit }, [rowLimit])
+  const streamingChunkSizeRef = useRef(streamingChunkSize)
+  useEffect(() => { streamingChunkSizeRef.current = streamingChunkSize }, [streamingChunkSize])
   const activeSourceRef = useRef(activeSource)
   useEffect(() => { activeSourceRef.current = activeSource }, [activeSource])
 
@@ -263,6 +266,7 @@ export default function usePipelineAPI({
     // the cascade across two different sources.
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
+    const snapshotChunkSize = streamingChunkSizeRef.current
     const matchesRequestContext = (cached: { structuralVersion: number; source?: string; rowLimit?: number }) =>
       cached.structuralVersion === structuralVersion &&
       cached.source === snapshotSource &&
@@ -366,14 +370,14 @@ export default function usePipelineAPI({
           const cascadeGraph = resolveCascadeGraph()
           const dsNode = cascadeNodes.find((n) => n.id === nodeId)
           const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
-          previewNode(
-            cascadeGraph,
+          previewNode({
+            graph: cascadeGraph,
             nodeId,
-            snapshotRowLimit,
-            snapshotSource,
-            undefined,
-            dsNode ? previewColumnNamesForNode(dsNode) : undefined,
-          )
+            rowLimit: snapshotRowLimit,
+            source: snapshotSource,
+            requestedPreviewColumns: dsNode ? previewColumnNamesForNode(dsNode) : undefined,
+            streamingChunkSize: snapshotChunkSize,
+          })
             .then((result) => {
               if (!requestStillCurrent()) return
               if (!result.columns) {
@@ -412,14 +416,15 @@ export default function usePipelineAPI({
       settleNode(changedNodeId, true)
     }
 
-    previewNode(
+    previewNode({
       graph,
-      node.id,
-      snapshotRowLimit,
-      snapshotSource,
-      { signal: controller.signal },
-      previewColumnNamesForNode(node),
-    )
+      nodeId: node.id,
+      rowLimit: snapshotRowLimit,
+      source: snapshotSource,
+      requestedPreviewColumns: previewColumnNamesForNode(node),
+      streamingChunkSize: snapshotChunkSize,
+      signal: controller.signal,
+    })
       .then((result) => {
         if (!requestStillCurrent()) return
         const preview = resultToPreview(node.id, label, result)
@@ -537,18 +542,19 @@ export default function usePipelineAPI({
     // uses the same snapshot (Issues #33/#34).
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
+    const snapshotChunkSize = streamingChunkSizeRef.current
 
     // Preview stale upstream nodes in parallel, then the target node
     Promise.all(
       staleUpstream.map((upstream) =>
-          previewNode(
+          previewNode({
             graph,
-            upstream.id,
-            snapshotRowLimit,
-            snapshotSource,
-            undefined,
-            previewColumnNamesForNode(upstream),
-          )
+            nodeId: upstream.id,
+            rowLimit: snapshotRowLimit,
+            source: snapshotSource,
+            requestedPreviewColumns: previewColumnNamesForNode(upstream),
+            streamingChunkSize: snapshotChunkSize,
+          })
           .then((result) => {
             if (!requestStillCurrent()) return
             if (result.columns) {

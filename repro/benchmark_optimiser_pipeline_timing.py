@@ -18,6 +18,7 @@ from haute._sandbox import set_project_root
 from haute.routes._helpers import parse_pipeline_to_graph
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
+    FrontierAutoRangeContext,
     OptimiserSolveService,
     _auto_range_required_columns_by_node,
     _estimate_scenario_frontier_ranges,
@@ -495,7 +496,8 @@ def run_once(
                     memory_sample_interval=memory_sample_interval,
                 ):
                     ranges = _estimate_scenario_frontier_ranges(
-                        scored_lf,
+                        FrontierAutoRangeContext(),
+                        scored_lf=scored_lf,
                         quote_id_col=str(config.get("quote_id", "quote_id")),
                         constraint_cols=constraint_cols,
                     )
@@ -510,7 +512,8 @@ def run_once(
                         [pl.col(qid_col), *[pl.col(c).cast(pl.Float32) for c in constraint_cols]],
                     )
                     minimal_ranges = _estimate_scenario_frontier_ranges(
-                        minimal_lf,
+                        FrontierAutoRangeContext(),
+                        scored_lf=minimal_lf,
                         quote_id_col=qid_col,
                         constraint_cols=constraint_cols,
                     )

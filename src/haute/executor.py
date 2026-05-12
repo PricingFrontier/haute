@@ -836,16 +836,12 @@ def execute_graph(
         requested_preview_columns,
     )
     preview_materialize_node_ids: frozenset[str] | None = (
-        frozenset({target_node_id})
-        if target_preview_only and target_node_id is not None
-        else None
+        frozenset({target_node_id}) if target_preview_only and target_node_id is not None else None
     )
     preview_materialize_column_limits: dict[str, int] | None = (
         {target_node_id: PREVIEW_INITIAL_COLUMN_LIMIT}
         if (
-            target_preview_only
-            and target_node_id is not None
-            and requested_preview_columns is None
+            target_preview_only and target_node_id is not None and requested_preview_columns is None
         )
         else None
     )
@@ -862,10 +858,7 @@ def execute_graph(
     )
     fp = graph_fingerprint(
         graph,
-        (
-            f"{row_limit}:{source}:contracts={int(enforce_contracts)}"
-            f"{preview_cache_suffix}"
-        ),
+        (f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}"),
         memo=fingerprint_memo,
     )
 
@@ -934,19 +927,17 @@ def execute_graph(
                     error_lines,
                     avail_cols,
                     output_cols,
-                ) = (
-                    _eager_execute(
-                        graph,
-                        target_node_id,
-                        row_limit,
-                        source=source,
-                        enforce_contracts=enforce_contracts,
-                        fingerprint_memo=fingerprint_memo,
-                        required_columns_by_node=preview_required_columns,
-                        materialize_node_ids=preview_materialize_node_ids,
-                        materialize_column_limits_by_node=preview_materialize_column_limits,
-                        execution_context=execution_context,
-                    )
+                ) = _eager_execute(
+                    graph,
+                    target_node_id,
+                    row_limit,
+                    source=source,
+                    enforce_contracts=enforce_contracts,
+                    fingerprint_memo=fingerprint_memo,
+                    required_columns_by_node=preview_required_columns,
+                    materialize_node_ids=preview_materialize_node_ids,
+                    materialize_column_limits_by_node=preview_materialize_column_limits,
+                    execution_context=execution_context,
                 )
             eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
             # Fresh eager outputs win over prev_outputs for any overlap:
@@ -1322,6 +1313,7 @@ def execute_sink(
     source: str = "live",
     *,
     execution_context: ExecutionContext | None = None,
+    streaming_chunk_size: int | None = None,
 ) -> SinkResponse:
     """Execute the pipeline up to a sink node and write its input to disk.
 
@@ -1378,7 +1370,12 @@ def execute_sink(
     else:
         sink_scenario = source
 
-    from haute._polars_utils import _malloc_trim, bounded_sink, streaming_collect
+    from haute._polars_utils import (
+        DEFAULT_STREAMING_CHUNK_SIZE,
+        _malloc_trim,
+        bounded_sink,
+        streaming_collect,
+    )
 
     # Create a temp directory for join checkpoints.  Multi-input nodes
     # are sunk to parquet here so Polars sees each join as an independent
@@ -1434,10 +1431,20 @@ def execute_sink(
         if execution_context is not None:
             execution_context.checkpoint(label="before_sink_write", node_id=sink_node_id)
             with execution_context.stage("sink_write", node_id=sink_node_id):
-                bounded_sink(lf, out, fmt=fmt, streaming_chunk_size=50_000)
+                bounded_sink(
+                    lf,
+                    out,
+                    fmt=fmt,
+                    streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+                )
             execution_context.checkpoint(label="after_sink_write", node_id=sink_node_id)
         else:
-            bounded_sink(lf, out, fmt=fmt, streaming_chunk_size=50_000)
+            bounded_sink(
+                lf,
+                out,
+                fmt=fmt,
+                streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+            )
         logger.info("sink_written", path=path, format=fmt)
         del lf
         gc.collect()
@@ -1472,6 +1479,3 @@ def execute_sink(
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        # Restore previous streaming chunk size if one was explicitly set.
-        # When _prev_chunk_size is None (Polars auto-default), skip the
-        # restore — Polars does not accept 0 and has no "unset" API.

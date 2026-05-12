@@ -26,7 +26,6 @@ from haute._execution_admission import (
     create_admitted_execution_context,
 )
 from haute._execution_context import (
-    ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
@@ -432,6 +431,7 @@ class TrainService:
             )
 
         execution_context: ExecutionContext | None = None
+        launch_started = False
         try:
             preamble_ns = self._compile_preamble(body.graph)
             ram_warning, row_limit, total_source_rows, probe_columns = self._estimate_ram(
@@ -495,6 +495,28 @@ class TrainService:
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
             )
+
+            # Default output_dir to <pipeline_dir>/outputs when not explicitly set.
+            if "output_dir" not in config:
+                from haute.executor import _pipeline_dir
+
+                p_dir = _pipeline_dir(body.graph)
+                config = {
+                    **config,
+                    "output_dir": str(p_dir / "outputs") if p_dir else "outputs",
+                }
+
+            self._launch_background(
+                job_id,
+                body.node_id,
+                config,
+                train_params,
+                tmp_parquet,
+                ram_warning,
+                total_source_rows,
+                execution_context=execution_context,
+            )
+            launch_started = True
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             http_exc = _memory_limit_http_exception(exc)
             self._lifecycle.transition(
@@ -514,9 +536,7 @@ class TrainService:
                         "error": str(exc.detail),
                         "error_detail": exc.detail,
                         "error_code": (
-                            exc.detail.get("error_code")
-                            if isinstance(exc.detail, dict)
-                            else None
+                            exc.detail.get("error_code") if isinstance(exc.detail, dict) else None
                         ),
                         "http_status_code": exc.status_code,
                     },
@@ -530,9 +550,7 @@ class TrainService:
                         "error": str(exc.detail),
                         "error_detail": exc.detail,
                         "error_code": (
-                            exc.detail.get("error_code")
-                            if isinstance(exc.detail, dict)
-                            else None
+                            exc.detail.get("error_code") if isinstance(exc.detail, dict) else None
                         ),
                         "http_status_code": exc.status_code,
                     },
@@ -554,25 +572,9 @@ class TrainService:
             )
             raise
         finally:
-            if execution_context is not None:
+            if execution_context is not None and not launch_started:
                 execution_context.release_admission()
 
-        # Default output_dir to <pipeline_dir>/outputs when not explicitly set.
-        if "output_dir" not in config:
-            from haute.executor import _pipeline_dir
-
-            p_dir = _pipeline_dir(body.graph)
-            config = {**config, "output_dir": str(p_dir / "outputs") if p_dir else "outputs"}
-
-        self._launch_background(
-            job_id,
-            body.node_id,
-            config,
-            train_params,
-            tmp_parquet,
-            ram_warning,
-            total_source_rows,
-        )
         return TrainResponse(status="started", job_id=job_id)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -599,8 +601,7 @@ class TrainService:
             job_id,
             to="timed_out",
             message=(
-                f"Training timed out after {timeout}s. "
-                "Increase timeout or simplify the model."
+                f"Training timed out after {timeout}s. Increase timeout or simplify the model."
             ),
             elapsed_seconds=time.monotonic() - start_time,
         )
@@ -788,8 +789,7 @@ class TrainService:
         *,
         exclude: list[str] | None = None,
         keep_columns: list[str] | None = None,
-        required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns]
-        | None = None,
+        required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> str:
         """Execute the pipeline lazily and sink to a temp parquet file.
@@ -872,8 +872,7 @@ class TrainService:
                     job_id,
                     to="contract_error",
                     message=(
-                        "Training input is missing required column(s): "
-                        f"{missing_training_columns}"
+                        f"Training input is missing required column(s): {missing_training_columns}"
                     ),
                 )
                 raise HTTPException(
@@ -894,22 +893,35 @@ class TrainService:
                     target_lf = target_lf.drop(drop_cols)
                     _mem_checkpoint(f"projected: dropped {len(drop_cols)} excluded columns")
 
-            from haute._polars_utils import _malloc_trim, bounded_sink
+            from haute._polars_utils import (
+                DEFAULT_STREAMING_CHUNK_SIZE,
+                _malloc_trim,
+                bounded_sink,
+            )
 
             _mem_checkpoint("before sink_parquet")
+            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
             if execution_context is not None:
                 execution_context.checkpoint(
                     label="before_training_sink_write",
                     node_id=body.node_id,
                 )
                 with execution_context.stage("training_sink_write", node_id=body.node_id):
-                    bounded_sink(target_lf, tmp_parquet)
+                    bounded_sink(
+                        target_lf,
+                        tmp_parquet,
+                        streaming_chunk_size=chunk_size,
+                    )
                 execution_context.checkpoint(
                     label="after_training_sink_write",
                     node_id=body.node_id,
                 )
             else:
-                bounded_sink(target_lf, tmp_parquet)
+                bounded_sink(
+                    target_lf,
+                    tmp_parquet,
+                    streaming_chunk_size=chunk_size,
+                )
 
             del lazy_outputs, target_lf
             gc.collect()
@@ -982,8 +994,13 @@ class TrainService:
         tmp_parquet: str,
         ram_warning: str | None,
         total_source_rows: int | None,
+        *,
+        execution_context: ExecutionContext,
     ) -> None:
-        """Build a TrainingJob and run it in a background thread."""
+        """Run TrainingJob in a background thread, owning admission release."""
+        # Ownership of ``execution_context`` transfers here from ``start()``;
+        # the worker's ``finally`` releases admission so the in-flight
+        # reservation and memory ceiling stay armed across fit/eval/MLflow.
         from haute.modelling import TrainingJob
 
         target = config["target"]
@@ -992,19 +1009,11 @@ class TrainService:
         split_raw = config.get("split", DEFAULT_SPLIT_DICT)
 
         start_time = time.monotonic()
-        execution_token = ExecutionCancellationToken()
         self._training_jobs.register_latest(
             (_TRAINING_JOB_TYPE, job_id),
             job_id,
-            execution_token=execution_token,
+            execution_token=execution_context.cancellation_token,
         )
-        execution_context = ExecutionContext(
-            operation="training_job",
-            profile=ExecutionProfile.TRAINING_PREP,
-            job_id=job_id,
-            cancellation_token=execution_token,
-        )
-        bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
         self._store.atomic_update(
             job_id,
             {
@@ -1205,6 +1214,7 @@ class TrainService:
                         ),
                     )
                 self._training_jobs.release(job_id)
+                execution_context.release_admission()
                 if os.path.exists(tmp_parquet):
                     os.unlink(tmp_parquet)
 
@@ -1222,6 +1232,7 @@ class TrainService:
                 elapsed_seconds=time.monotonic() - start_time,
             )
             self._training_jobs.release(job_id)
+            execution_context.release_admission()
             raise HTTPException(
                 status_code=500,
                 detail="Training worker failed to start. Check the server logs for details.",

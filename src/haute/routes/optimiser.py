@@ -13,7 +13,11 @@ from fastapi import APIRouter, HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._logging import get_logger
-from haute._polars_utils import streaming_collect
+from haute._polars_utils import (
+    DEFAULT_STREAMING_CHUNK_SIZE,
+    streaming_collect,
+    temporary_streaming_chunk_size,
+)
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
 from haute.errors import BoundedMemoryUnsupportedError
@@ -202,6 +206,7 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                 source_lf,
                 config,
                 job_id,
+                streaming_chunk_size=body.streaming_chunk_size,
             )
             quote_id_col = str(config.get("quote_id", "quote_id"))
             scenario_counts = (
@@ -209,16 +214,18 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                 .group_by(quote_id_col)
                 .agg(pl.len().alias("scenario_count"))
             )
-            row = streaming_collect(
-                scenario_counts.select(
-                    pl.len().alias("quote_count"),
-                    pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
-                    pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
-                    pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
-                    pl.col("scenario_count").sum().alias("expanded_row_count"),
-                ),
-                profile=ExecutionProfile.OPTIMISER_SETUP,
-            ).row(0, named=True)
+            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+            with temporary_streaming_chunk_size(chunk_size):
+                row = streaming_collect(
+                    scenario_counts.select(
+                        pl.len().alias("quote_count"),
+                        pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
+                        pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
+                        pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
+                        pl.col("scenario_count").sum().alias("expanded_row_count"),
+                    ),
+                    profile=ExecutionProfile.OPTIMISER_SETUP,
+                ).row(0, named=True)
             return {
                 "quote_count": row["quote_count"],
                 "scenarios_per_quote_min": row["scenarios_per_quote_min"],
@@ -738,6 +745,7 @@ def _materialise_ratebook_frontier_point(
     result_dict: dict[str, Any],
     *,
     require_dataframe: bool = False,
+    streaming_chunk_size: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], SolveResultLike]:
     job = _store.require_completed_job(job_id)
     cached_result = _cached_materialised_ratebook_frontier_result(
@@ -769,6 +777,7 @@ def _materialise_ratebook_frontier_point(
         factor_level_counts = _ratebook_factor_level_counts_from_artifact(
             factors_handle,
             factor_columns,
+            streaming_chunk_size=streaming_chunk_size,
         )
     factor_level_order = job.get(_RATEBOOK_FACTOR_LEVEL_ORDER_KEY) or {}
     materialised = _materialised_ratebook_result_dict(
@@ -1112,12 +1121,13 @@ async def solve_status(job_id: str) -> OptimiserStatusResponse:
     if job.get("status") == "running":
         start = job.get("start_time")
         timeout = job.get("timeout")
-        has_timeout = (
-            isinstance(timeout, int | float)
+        if (
+            start
+            and isinstance(timeout, int | float)
             and not isinstance(timeout, bool)
             and timeout > 0
-        )
-        if start and has_timeout and (time.monotonic() - start) > timeout:
+            and (time.monotonic() - start) > timeout
+        ):
             # P7: Atomic update — only if still running (avoids overwriting a
             # completed result with a timeout error).
             job = _solve_service.timeout_solve(job_id, timeout=timeout, start_time=start)

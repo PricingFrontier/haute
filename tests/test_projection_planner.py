@@ -328,12 +328,8 @@ def test_public_projection_plan_does_not_delegate_to_executor_private_planner(
     assert projection.needed_by_node["joined"] == frozenset(
         {"quote_id", "left_value", "right_value"}
     )
-    assert projection.edge_demands[("left", "joined")] == frozenset(
-        {"quote_id", "left_value"}
-    )
-    assert projection.edge_demands[("right", "joined")] == frozenset(
-        {"quote_id", "right_value"}
-    )
+    assert projection.edge_demands[("left", "joined")] == frozenset({"quote_id", "left_value"})
+    assert projection.edge_demands[("right", "joined")] == frozenset({"quote_id", "right_value"})
 
 
 def test_public_projection_plan_routes_fan_in_demands_by_parent():
@@ -349,12 +345,8 @@ def test_public_projection_plan_routes_fan_in_demands_by_parent():
     assert projection.needed_by_node["joined"] == frozenset(
         {"quote_id", "left_value", "right_value"}
     )
-    assert projection.edge_demands[("left", "joined")] == frozenset(
-        {"quote_id", "left_value"}
-    )
-    assert projection.edge_demands[("right", "joined")] == frozenset(
-        {"quote_id", "right_value"}
-    )
+    assert projection.edge_demands[("left", "joined")] == frozenset({"quote_id", "left_value"})
+    assert projection.edge_demands[("right", "joined")] == frozenset({"quote_id", "right_value"})
     assert isinstance(projection.opaque_boundaries, frozenset)
 
 
@@ -371,10 +363,7 @@ def test_projection_explain_reports_node_and_edge_reasons():
     lines = explain(projection, column="right_value")
 
     assert any("out" in line and "caller required columns" in line for line in lines)
-    assert any(
-        "right -> joined" in line and "fan-in" in line
-        for line in lines
-    )
+    assert any("right -> joined" in line and "fan-in" in line for line in lines)
     assert all("left_value" not in line for line in lines)
 
 
@@ -397,10 +386,7 @@ def test_projection_diagnostics_records_named_rule_reasons():
     )
 
     assert fan_in_projection.diagnostics.node_reasons["out"].rule == "projection_seed"
-    assert (
-        fan_in_projection.diagnostics.edge_reasons[("right", "joined")].rule
-        == "polars_fan_in"
-    )
+    assert fan_in_projection.diagnostics.edge_reasons[("right", "joined")].rule == "polars_fan_in"
     assert (
         ratebook_projection.diagnostics.edge_reasons[("scored", "ratebook_opt")].rule
         == "optimiser_parent_demand"
@@ -421,9 +407,7 @@ def test_projection_diagnostics_payload_is_json_safe():
         "child_demand",
         "opaque_demand",
     }
-    assert projection.diagnostics_payload()["node_reasons"]["out"]["rule"] == (
-        "projection_seed"
-    )
+    assert projection.diagnostics_payload()["node_reasons"]["out"]["rule"] == ("projection_seed")
     json.dumps(projection.diagnostics_payload())
 
 
@@ -445,9 +429,7 @@ def test_execution_facade_attaches_projection_strategy_to_context():
     projection = plan_execution_strategy(request, execution_context=context)
 
     assert context.projection_plan is projection
-    diagnostics = context.metrics_payload(status="completed")[
-        "projection_plan_diagnostics"
-    ]
+    diagnostics = context.metrics_payload(status="completed")["projection_plan_diagnostics"]
     assert diagnostics["strategy_summary"]["profile"] == "lazy_sink"
 
 
@@ -503,9 +485,7 @@ def test_projection_diagnostics_payload_exposes_strategy_reasons_for_broad_and_a
             "keep": ("target", "weight"),
         },
     }
-    assert payload["opaque_reasons"]["source"]["rule"] == (
-        UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME
-    )
+    assert payload["opaque_reasons"]["source"]["rule"] == (UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME)
     assert payload["strategy_summary"]["node_strategy_counts"] == {
         "unprojected_streaming_boundary": 1,
         "schema_all_except": 1,
@@ -574,9 +554,7 @@ def test_single_parent_polars_with_columns_projects_expression_dependencies():
         )
     )
 
-    assert projection.edge_demands[("source", "features")] == frozenset(
-        {"premium", "burn_cost"}
-    )
+    assert projection.edge_demands[("source", "features")] == frozenset({"premium", "burn_cost"})
     assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
         "polars_expression_dependency"
     )
@@ -599,9 +577,7 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
                     "data": {
                         "label": "filtered",
                         "nodeType": "polars",
-                        "config": {
-                            "code": "df = df.filter(pl.col('segment') == 'A')"
-                        },
+                        "config": {"code": "df = df.filter(pl.col('segment') == 'A')"},
                     },
                 },
                 {
@@ -628,9 +604,7 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
         )
     )
 
-    assert projection.edge_demands[("source", "filtered")] == frozenset(
-        {"premium", "segment"}
-    )
+    assert projection.edge_demands[("source", "filtered")] == frozenset({"premium", "segment"})
 
 
 def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
@@ -650,9 +624,7 @@ def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
                     "data": {
                         "label": "renamed",
                         "nodeType": "polars",
-                        "config": {
-                            "code": "df = df.rename({'raw_premium': 'premium'})"
-                        },
+                        "config": {"code": "df = df.rename({'raw_premium': 'premium'})"},
                     },
                 },
                 {
@@ -679,9 +651,7 @@ def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
         )
     )
 
-    assert projection.edge_demands[("source", "renamed")] == frozenset(
-        {"raw_premium", "quote_id"}
-    )
+    assert projection.edge_demands[("source", "renamed")] == frozenset({"raw_premium", "quote_id"})
 
 
 def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projection():
@@ -1286,9 +1256,7 @@ def test_source_scan_projection_maps_logical_renames_to_physical_columns():
     )
 
     assert projection.columns == frozenset({"quote_id", "raw_premium"})
-    assert projection.validate_columns == frozenset(
-        {"quote_id", "raw_premium", "unused"}
-    )
+    assert projection.validate_columns == frozenset({"quote_id", "raw_premium", "unused"})
 
 
 def test_source_scan_projection_broadens_unsafe_rename_without_selected_columns():

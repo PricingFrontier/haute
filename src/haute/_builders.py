@@ -453,9 +453,7 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         config.get("code") or "",
         kind="data_source",
     )
-    code_preserves_projection = projection.source_user_code_preserves_column_projection(
-        code
-    )
+    code_preserves_projection = projection.source_user_code_preserves_column_projection(code)
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     base_fn: Callable[..., _Frame]
@@ -466,11 +464,7 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _profile: str | None = ctx.execution_profile,
             _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
         ) -> _Frame:
-            if (
-                source_type != "databricks"
-                and not path
-                and _allow_empty_source_path(_profile)
-            ):
+            if source_type != "databricks" and not path and _allow_empty_source_path(_profile):
                 return pl.LazyFrame()
             projected = _source_scan_projection(_profile, _columns, _config)
             return read_data_source(

@@ -854,9 +854,7 @@ class TestBuildApiInput:
         fn()
 
         assert captured["columns"] == frozenset({"quote_id", "premium_raw"})
-        assert captured["validate_columns"] == frozenset(
-            {"quote_id", "premium_raw", "unused"}
-        )
+        assert captured["validate_columns"] == frozenset({"quote_id", "premium_raw", "unused"})
 
     def test_source_projection_avoids_ambiguous_rename_pushdown(
         self,

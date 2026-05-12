@@ -682,6 +682,16 @@ Polars `LazyFrame` and `collect(engine="streaming")` are not themselves a bounde
 - how `safe_sink` is split: `bounded_sink(lf, path, ...)` (the new default for `lazy_sink`, `training_prep`, `optimiser_setup`, `deploy_batch`) raises on streaming failure; `best_effort_sink(lf, path, ..., allow_broad=True)` is the named broad path. The current behaviour at `_polars_utils.py:147-158` is the broad path under a different name.
 - how tests prove no full-frame collect happened on bounded-memory paths via an `ExecutionContext` collect counter asserted at zero.
 
+### Streaming Chunk Size Contract
+
+The Polars streaming chunk size is user-controllable per request and used uniformly across every streaming primitive in the request lifecycle.
+
+- A single public constant lives at `haute._polars_utils.DEFAULT_STREAMING_CHUNK_SIZE = 500_000` (raised from the previous defensive 50_000 reduction). Every backend fallback resolves to `streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE`; no site holds a literal default.
+- Seven request schemas accept an optional `streaming_chunk_size: StreamingChunkSize` field (the `Annotated` type with a `BeforeValidator` rejecting bool, bounded `[1, 10_000_000]`): `PreviewNodeRequest`, `TraceRequest`, `SinkRequest`, `TrainRequest`, `OptimiserSolveRequest`, `OptimiserEstimateRequest`, `OptimiserFrontierAutoRangeRequest`, and `OptimiserFrontierRequest`.
+- Route handlers thread the request value into every `bounded_sink(..., streaming_chunk_size=...)` and `temporary_streaming_chunk_size(...)` scope reachable from the request. The optimiser solve worker, ratebook factor counts, auto-range computation (per-chunk and bucket-totals), `_validate_and_project`, `_optimiser_input_metrics`, and `iter_chunked_frames` all run inside the user-scoped chunk size — none of them fall back to a per-route hardcoded constant.
+- The frontend exposes the value via a "Chunk" input next to "Rows" in the top toolbar, persisted in `useSettingsStore.streamingChunkSize`. Clamp `[MIN_STREAMING_CHUNK_SIZE=1000, MAX_STREAMING_CHUNK_SIZE=10_000_000]` is enforced at the store boundary, mirroring the backend Pydantic bounds.
+- Trade-off: 500_000 favours throughput on typical ratebook factor / scenario-expanded schemas. Wide ratebook factor schemas (100+ columns) may need a lower value to avoid OOM; the user lowers the toolbar value rather than the codebase shipping the smaller default.
+
 ### Polars Version Floor And Drift Policy
 
 The plan leans on `engine="streaming"`, `sink_parquet`, and `set_streaming_chunk_size` — surfaces Polars itself flags as unstable. We pin a minimum Polars version, run CI against the lower and upper supported versions, and fail loudly when streaming behaviour drifts. The `streaming_collect` helper above is the single seam — when Polars renames or removes the streaming engine, only that helper changes.

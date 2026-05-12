@@ -238,11 +238,12 @@ def test_missing_explicit_feature_fails_before_training_sink_write(
     job_id = service._store.create_job({"status": "running"})
 
     def fake_execute_lazy(*_args: Any, **_kwargs: Any):
-        return {
-            "train": pl.DataFrame(
-                {"claim_count": [1.0], "driver_age": [33.0]}
-            ).lazy()
-        }, ["train"], {}, {}
+        return (
+            {"train": pl.DataFrame({"claim_count": [1.0], "driver_age": [33.0]}).lazy()},
+            ["train"],
+            {},
+            {},
+        )
 
     def fail_bounded_sink(*_args: Any, **_kwargs: Any) -> None:
         pytest.fail("training sink write should not run after schema validation fails")
@@ -258,9 +259,7 @@ def test_missing_explicit_feature_fails_before_training_sink_write(
             job_id=job_id,
             exclude=None,
             keep_columns=["claim_count"],
-            required_columns_by_node={
-                "train": {"claim_count", "driver_age", "missing_feature"}
-            },
+            required_columns_by_node={"train": {"claim_count", "driver_age", "missing_feature"}},
         )
 
     assert exc_info.value.status_code == 422

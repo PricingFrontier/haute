@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute.routes._train_service import (
     TrainService,
     _clamp_row_limit,
@@ -22,6 +23,21 @@ from haute.routes._train_service import (
     _validate_glm_family_link,
 )
 from tests.conftest import make_edge, make_graph
+
+
+def _admitted_training_context_for_launch(job_id: str | None = None) -> ExecutionContext:
+    """Build an admitted-like context for direct ``_launch_background`` calls."""
+    return ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id=job_id,
+        memory_limit_bytes=1_000,
+        memory_baseline_bytes=500,
+        rss_limit_bytes=1_500,
+        memory_sampler=lambda: 600,
+        admission_release=lambda: None,
+    )
+
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -299,7 +315,6 @@ class TestTrainEndpoint:
             run.assert_not_called()
 
 
-
 class TestTrainBackgroundLaunchFailures:
     def test_launch_background_start_failure_marks_job_error(
         self,
@@ -330,6 +345,7 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                execution_context=_admitted_training_context_for_launch(job_id),
             )
 
         assert exc_info.value.status_code == 500
@@ -381,6 +397,7 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                execution_context=_admitted_training_context_for_launch(job_id),
             )
 
         assert len(deferred_threads) == 1
@@ -456,6 +473,7 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                execution_context=_admitted_training_context_for_launch(job_id),
             )
 
         deferred_threads[0].target()
@@ -1245,9 +1263,7 @@ class TestTrainingProjection:
         assert demand is not None
         assert type(demand["train"]).__name__ == "AllExcept"
         assert demand["train"].required_columns == frozenset({"claim_count"})
-        assert demand["train"].excluded_columns == frozenset(
-            {"claim_count", "policy_id"}
-        )
+        assert demand["train"].excluded_columns == frozenset({"claim_count", "policy_id"})
 
     def test_execute_and_sink_forwards_training_projection(self, tmp_path):
         from haute.routes._job_store import JobStore
@@ -1277,11 +1293,7 @@ class TestTrainingProjection:
         def fake_execute_lazy(*args, **kwargs):
             captured.update(kwargs)
             return (
-                {
-                    "train": pl.DataFrame(
-                        {"claim_count": [1.0], "driver_age": [40]}
-                    ).lazy()
-                },
+                {"train": pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).lazy()},
                 ["train"],
                 {},
                 {},

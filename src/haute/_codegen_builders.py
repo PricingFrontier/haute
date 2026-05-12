@@ -297,10 +297,7 @@ def _data_source_parts(config: dict) -> tuple[str, str, str]:
     else:
         decorator = f"@pipeline.data_source(path={_safe_path(path)})"
 
-    imports = (
-        "    from pathlib import Path\n"
-        "    from haute.graph_utils import read_data_source\n"
-    )
+    imports = "    from pathlib import Path\n    from haute.graph_utils import read_data_source\n"
     load_expr = f"read_data_source({_data_source_runtime_config_expr(config)})"
 
     return decorator, imports, load_expr

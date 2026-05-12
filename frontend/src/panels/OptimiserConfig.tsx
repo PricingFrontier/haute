@@ -213,7 +213,10 @@ export default function OptimiserConfig({
     autoRangeAbortRef.current = null
     autoRangeJobRef.current = null
     if (jobId) {
-      void cancelOptimiserFrontierAutoRange(jobId).catch(() => undefined)
+      void cancelOptimiserFrontierAutoRange(jobId).catch((err) => {
+        // Best-effort unmount cleanup: panel is gone, no toast surface remains.
+        console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId, err })
+      })
     }
   }, [])
 
@@ -288,14 +291,13 @@ export default function OptimiserConfig({
   // The hook owns the abort / toast / loading lifecycle.
   const solveEstimateEndpoint = useCallback(
     (_payload: void, { signal }: { signal: AbortSignal }) =>
-      estimateOptimiserSolve(
-        {
-          graph: buildGraphCb(),
-          node_id: nodeId,
-          source: activeSource,
-        },
-        { signal },
-      ),
+      estimateOptimiserSolve({
+        graph: buildGraphCb(),
+        node_id: nodeId,
+        source: activeSource,
+        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+        signal,
+      }),
     [buildGraphCb, nodeId, activeSource],
   )
   const {
@@ -340,7 +342,11 @@ export default function OptimiserConfig({
     setSubmitting(true)
     const nodeLabel = allNodes.find(n => n.id === nodeId)?.data.label || "Optimiser"
     try {
-      const result = await solveOptimiser({ graph: buildGraphCb(), node_id: nodeId })
+      const result = await solveOptimiser({
+        graph: buildGraphCb(),
+        node_id: nodeId,
+        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+      })
       if (result.status === "started" && result.job_id) {
         // Register job in store — background hook picks up polling
         startSolveJob(nodeId, result.job_id, nodeLabel, constraints, currentConfigHash)
@@ -452,7 +458,11 @@ export default function OptimiserConfig({
     autoRangeAbortRef.current = null
     autoRangeJobRef.current = null
     if (previousJobId) {
-      void cancelOptimiserFrontierAutoRange(previousJobId).catch(() => undefined)
+      void cancelOptimiserFrontierAutoRange(previousJobId).catch((err) => {
+        // Best-effort supersede cleanup: a new auto-range run is starting, so
+        // failures here have no user-visible action to recommend.
+        console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId: previousJobId, err })
+      })
     }
     const controller = new AbortController()
     autoRangeAbortRef.current = controller
@@ -467,7 +477,9 @@ export default function OptimiserConfig({
       const start = await startOptimiserFrontierAutoRange({
         graph: buildGraphCb(),
         node_id: nodeId,
-      }, { signal: controller.signal })
+        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+        signal: controller.signal,
+      })
       if (start.status === "error" || !start.job_id) {
         throw new Error(start.error || "Auto range failed to start")
       }

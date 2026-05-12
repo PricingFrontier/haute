@@ -210,8 +210,7 @@ def test_byte_budgeted_chunk_plan_ignores_unused_wide_source_columns(
     assert wide_source_plan.chunk_size == narrow_source_plan.chunk_size
     assert wide_source_plan.source_chunk_size == narrow_source_plan.source_chunk_size
     assert (
-        wide_source_plan.estimated_target_row_bytes
-        == narrow_source_plan.estimated_target_row_bytes
+        wide_source_plan.estimated_target_row_bytes == narrow_source_plan.estimated_target_row_bytes
     )
 
 

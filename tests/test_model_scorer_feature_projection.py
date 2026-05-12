@@ -125,8 +125,9 @@ def test_eager_score_write_projection_none_preserves_full_scored_input() -> None
     assert result["unused"].to_list() == [10.0, 20.0]
 
 
-def test_eager_classification_projection_preserves_existing_required_proba_without_predict_proba(
-) -> None:
+def test_eager_classification_projection_preserves_existing_required_proba_without_predict_proba() -> (
+    None
+):
     raw_model = MagicMock(spec=["predict"])
     raw_model.predict.return_value = np.asarray([0, 1], dtype=np.int64)
     input_frame = pl.DataFrame(

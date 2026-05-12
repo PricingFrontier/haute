@@ -109,7 +109,7 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
 
     // Node A resolves successfully with columns/preview
     // Node B aborts in-flight — pre-fix, previewData stays stuck on A.
-    mockPreview.mockImplementation(async (_g, nodeId, _rl, _src, opts) => {
+    mockPreview.mockImplementation(async ({ nodeId, signal }) => {
       if (nodeId === "A") {
         return {
           node_id: "A",
@@ -122,7 +122,7 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
       }
       // B: never resolves; will be aborted by the next fetch
       return new Promise((_res, rej) => {
-        opts?.signal?.addEventListener("abort", () => {
+        signal?.addEventListener("abort", () => {
           const e = new DOMException("aborted", "AbortError")
           rej(e)
         })
@@ -166,9 +166,9 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
 
     // Simulate a slow request for A that will be aborted mid-flight.
     let aSignal: AbortSignal | undefined
-    mockPreview.mockImplementation(async (_g, nodeId, _rl, _src, opts) => {
+    mockPreview.mockImplementation(async ({ nodeId, signal }) => {
       if (nodeId === "A") {
-        aSignal = opts?.signal
+        aSignal = signal
         return new Promise((resolve) => {
           // Resolve A only after the user has already moved on.
           setTimeout(() => {

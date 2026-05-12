@@ -669,7 +669,7 @@ describe("OptimiserConfig", () => {
       })
       // Verify it was called with a graph payload containing node_id
       expect(mockSolveOptimiser).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "opt_1" }),
+        expect.objectContaining({ node_id: "opt_1", streamingChunkSize: expect.any(Number) }),
       )
     })
 
@@ -1530,13 +1530,12 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
 
       await waitFor(() => {
-        expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith(
-          {
-            graph: { nodes: [], edges: [], preamble: "" },
-            node_id: "opt_1",
-          },
-          { signal: expect.any(AbortSignal) },
-        )
+        expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith({
+          graph: { nodes: [], edges: [], preamble: "" },
+          node_id: "opt_1",
+          streamingChunkSize: expect.any(Number),
+          signal: expect.any(AbortSignal),
+        })
         expect(mockGetOptimiserFrontierAutoRangeStatus).toHaveBeenCalledWith(
           "range-job-1",
           { signal: expect.any(AbortSignal) },

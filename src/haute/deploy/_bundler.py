@@ -169,8 +169,7 @@ def _verify_static_source_schema(
     """
     expected = config.get("expected_columns")
     has_schema_declaration = any(
-        key in config
-        for key in ("schema_overrides", "dtypes", "column_dtypes", "schema")
+        key in config for key in ("schema_overrides", "dtypes", "column_dtypes", "schema")
     )
     if not expected and not has_schema_declaration:
         return
@@ -178,6 +177,7 @@ def _verify_static_source_schema(
     from haute._execution_context import ExecutionProfile
     from haute._io import read_data_source
     from haute.errors import DeployError
+
     try:
         source_config = {**config, "path": str(abs_path)}
         schema = read_data_source(
