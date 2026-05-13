@@ -965,6 +965,57 @@ class TestScoreGraphOutputFields:
         assert plan.lazy_frame.collect().columns == ["x"]
         assert plan.execution_context.profile.value == "deploy_live"
         assert execute.call_args.kwargs["required_columns_by_node"] == {"out": frozenset({"x"})}
+        assert execute.call_args.kwargs["dataframe_cache_request"] is None
+        plan.cleanup(preserve_primary_error=False)
+
+    def test_score_graph_lazy_builds_cache_request_for_batch_deploy(self):
+        """Batch deploy can reuse materialized backend frames across identical payloads."""
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.deploy import _scorer
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+        output_lf = pl.DataFrame({"x": [1.0, 2.0]}).lazy()
+        context = ExecutionContext(
+            operation="deploy_score_graph",
+            profile=ExecutionProfile.DEPLOY_BATCH,
+        )
+
+        with patch.object(
+            _scorer,
+            "execute_lazy_graph",
+            return_value=({"out": output_lf}, ["src", "out"], {}, {}),
+        ) as execute:
+            plan = _scorer.score_graph_lazy(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                execution_context=context,
+            )
+
+        assert execute.call_args.kwargs["dataframe_cache_request"] is not None
         plan.cleanup(preserve_primary_error=False)
 
     def test_no_output_fields_returns_all_columns(self):

@@ -1318,6 +1318,9 @@ class TestTrainingProjection:
             )
 
         assert captured["required_columns_by_node"] == seeds
+        cache_request = captured["dataframe_cache_request"]
+        assert cache_request is not None
+        assert set(cache_request.keys_by_node) == {"train"}
         assert Path(tmp_parquet).exists()
         Path(tmp_parquet).unlink()
 

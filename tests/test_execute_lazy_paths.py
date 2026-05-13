@@ -1,4 +1,4 @@
-"""Direct tests for runtime path rewriting inside ``haute._execute_lazy``."""
+"""Direct tests for canonical lazy execution graph path rewriting."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def test_resolve_graph_paths_rewrites_file_backed_nodes_only() -> None:
         calls.append(raw_path)
         return Path("resolved") / raw_path.replace("/", "_")
 
-    with patch("haute._execute_lazy.resolve_runtime_file_path", side_effect=fake_resolve):
+    with patch("haute.execution.resolve_runtime_file_path", side_effect=fake_resolve):
         resolved = _resolve_graph_paths(graph)
 
     assert calls == [
@@ -64,7 +64,7 @@ def test_resolve_graph_paths_rewrites_optimiser_apply_artifact_path_for_file_sou
     )
 
     with patch(
-        "haute._execute_lazy.resolve_runtime_file_path",
+        "haute.execution.resolve_runtime_file_path",
         return_value=Path("resolved") / "artifacts_solve.json",
     ) as mock_resolve:
         resolved = _resolve_graph_paths(graph)
@@ -87,7 +87,7 @@ def test_resolve_graph_paths_does_not_rewrite_non_file_optimiser_apply() -> None
         ],
     )
 
-    with patch("haute._execute_lazy.resolve_runtime_file_path") as mock_resolve:
+    with patch("haute.execution.resolve_runtime_file_path") as mock_resolve:
         resolved = _resolve_graph_paths(graph)
 
     mock_resolve.assert_not_called()
@@ -99,7 +99,7 @@ def test_resolve_graph_paths_without_source_file_is_identity() -> None:
         nodes=[_node("api", NodeType.API_INPUT, {"path": "data/api.json"})],
     )
 
-    with patch("haute._execute_lazy.resolve_runtime_file_path") as mock_resolve:
+    with patch("haute.execution.resolve_runtime_file_path") as mock_resolve:
         resolved = _resolve_graph_paths(graph)
 
     mock_resolve.assert_not_called()

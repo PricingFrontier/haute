@@ -19,10 +19,10 @@
   "frontier_enabled": true,
   "frontier_ranges": {
     "conversion_prediction": {
-      "min": 3443.3509368896484,
-      "max": 946350.08203125
+      "min": 3443.3509216308594,
+      "max": 946350.06640625
     }
   },
-  "frontier_min": 3443.3509368896484,
-  "frontier_max": 946350.08203125
+  "frontier_min": 3443.3509216308594,
+  "frontier_max": 946350.06640625
 }

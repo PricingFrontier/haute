@@ -43,7 +43,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._graph_utils import _sanitize_func_name
+from haute._graph_utils import _sanitize_func_name, upstream_node_ids
 from haute._logging import get_logger
 from haute._polars_utils import (
     DEFAULT_STREAMING_CHUNK_SIZE,
@@ -69,7 +69,9 @@ from haute.errors import (
 )
 from haute.execution import (
     ProjectionRequest,
+    build_dataframe_execution_cache_request,
     build_linear_execution_chain_functions,
+    dataframe_graph_input_fingerprint,
     execute_lazy_graph,
     plan_execution_strategy,
     ratebook_factor_required_columns,
@@ -451,6 +453,36 @@ def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[s
     return frozenset(preserved)
 
 
+def _optimiser_dataframe_cache_node_ids(
+    graph: PipelineGraph,
+    *,
+    optimiser_node_id: str,
+    execution_target_node_id: str,
+    explicit_target_node: bool,
+) -> tuple[str, ...]:
+    """Return optimiser setup outputs that callers consume after lazy execution."""
+
+    if explicit_target_node:
+        candidates = {execution_target_node_id}
+    else:
+        optimiser_node = _find_optimiser_node(graph, optimiser_node_id)
+        preserved = set(_optimiser_side_input_ids(graph, optimiser_node_id))
+        data_input_id = _resolve_optimiser_data_input_id(
+            graph,
+            optimiser_node_id,
+            optimiser_node.data.config,
+        )
+        if isinstance(data_input_id, str) and data_input_id:
+            preserved.add(data_input_id)
+        candidates = preserved or {execution_target_node_id}
+
+    target_lineage = set(upstream_node_ids(execution_target_node_id, graph.parents_of))
+    target_lineage.add(execution_target_node_id)
+    return tuple(
+        node.id for node in graph.nodes if node.id in candidates and node.id in target_lineage
+    )
+
+
 def _optimiser_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
     """Return the columns needed to validate and consume optimiser input."""
     objective = str(config["objective"])
@@ -493,11 +525,11 @@ def _auto_range_required_columns_by_node(
 ) -> dict[str, frozenset[str]]:
     """Return lazy projection seeds for frontier auto-range.
 
-    Auto-range consumes only the optimiser input frame, not solver-only
-    objective/scenario columns.  When a configured ``data_input`` is a direct
-    optimiser parent, seed that node so other optimiser parents do not inherit
-    the auto-range projection.  Ratebook factor-side requirements are routed
-    by the shared optimiser parent-demand projection rule.
+    Auto-range itself needs only quote IDs plus constrained columns. When a
+    configured ``data_input`` is a direct optimiser parent, seed that node so
+    other optimiser parents do not inherit the projection. Ratebook factor-side
+    requirements are routed by the shared optimiser parent-demand projection
+    rule.
     """
     if mode not in {"online", "ratebook"}:
         return {}
@@ -3828,17 +3860,105 @@ class OptimiserSolveService:
             with temporary_streaming_chunk_size(chunk_size):
                 from haute.executor import ENFORCE_CONTRACTS
 
+                execution_target_node_id = target_node_id or body.node_id
+                if target_node_id is None:
+                    optimiser_node = _find_optimiser_node(body.graph, body.node_id)
+                    configured_data_input = optimiser_node.data.config.get("data_input")
+                    if (
+                        optimiser_node.data.config.get("mode", "online") == "online"
+                        and isinstance(configured_data_input, str)
+                        and configured_data_input
+                    ):
+                        data_input_id = _resolve_optimiser_data_input_id(
+                            body.graph,
+                            body.node_id,
+                            optimiser_node.data.config,
+                        )
+                        if isinstance(data_input_id, str) and data_input_id:
+                            execution_target_node_id = data_input_id
+                preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
+                cache_node_ids = _optimiser_dataframe_cache_node_ids(
+                    body.graph,
+                    optimiser_node_id=body.node_id,
+                    execution_target_node_id=execution_target_node_id,
+                    explicit_target_node=target_node_id is not None,
+                )
+                # Opportunistic cache warming for the later solve.  The
+                # cache key advertises solver-required columns so a
+                # subsequent OPTIMISER_SETUP run can hit it, but the
+                # executor still runs with the narrower auto-range
+                # projection demand.  When the node's actual output
+                # happens to include the solver columns (e.g. passthrough
+                # nodes that don't drop upstream columns), the artifact
+                # is reusable; when it doesn't, the seed-time column
+                # check rejects the hit and the solve rebuilds.  This
+                # preserves AUTO_RANGE's narrow-projection contract
+                # because the executor's demand is unchanged.
+                #
+                # The merge invariant in ``_execute_lazy`` requires that
+                # ``auto_range_required ⊆ solver_required`` so the
+                # re-derived expected_key still matches the cache key.
+                # ``_optimiser_solve_required_columns_by_node`` and
+                # ``_auto_range_required_columns_by_node`` satisfy this
+                # by construction (auto-range columns are a subset of
+                # solver columns).
+                cache_required_columns_by_node = required_columns_by_node
+                if (
+                    execution_context is not None
+                    and execution_context.profile == ExecutionProfile.AUTO_RANGE
+                ):
+                    optimiser_node = _find_optimiser_node(body.graph, body.node_id)
+                    mode = str(optimiser_node.data.config.get("mode", "online"))
+                    if mode in {"online", "ratebook"}:
+                        solver_required_columns_by_node = _optimiser_solve_required_columns_by_node(
+                            body.graph,
+                            body.node_id,
+                            optimiser_node.data.config,
+                        )
+                        solver_cache_node_ids = set(cache_node_ids).intersection(
+                            solver_required_columns_by_node
+                        )
+                        if solver_cache_node_ids:
+                            cache_required_columns = dict(required_columns_by_node or {})
+                            for node_id in solver_cache_node_ids:
+                                cache_required_columns[node_id] = solver_required_columns_by_node[
+                                    node_id
+                                ]
+                            cache_required_columns_by_node = cache_required_columns
+                dataframe_cache_request = build_dataframe_execution_cache_request(
+                    body.graph,
+                    node_ids=cache_node_ids,
+                    namespace="optimiser_setup",
+                    source=scenario,
+                    profile=(
+                        execution_context.profile
+                        if execution_context is not None
+                        else ExecutionProfile.LAZY_SINK
+                    ),
+                    input_fingerprint=dataframe_graph_input_fingerprint(
+                        body.graph,
+                        target_node_id=execution_target_node_id,
+                        source=scenario,
+                    ),
+                    target_node_id=execution_target_node_id,
+                    preserve_node_ids=preserved_node_ids,
+                    required_columns_by_node=cache_required_columns_by_node,
+                    enforce_contracts=ENFORCE_CONTRACTS,
+                    preamble_ns_supplied=preamble_ns is not None,
+                    streaming_chunk_size=chunk_size,
+                )
                 lazy_outputs, *_ = execute_lazy_graph(
                     body.graph,
                     _build_node_fn,
-                    target_node_id=target_node_id or body.node_id,
+                    target_node_id=execution_target_node_id,
                     preamble_ns=preamble_ns,
                     source=scenario,
                     checkpoint_dir=checkpoint_dir,
                     enforce_contracts=ENFORCE_CONTRACTS,
-                    preserve_node_ids=_optimiser_side_input_ids(body.graph, body.node_id),
+                    preserve_node_ids=preserved_node_ids,
                     required_columns_by_node=required_columns_by_node,
                     execution_context=execution_context,
+                    dataframe_cache_request=dataframe_cache_request,
                 )
             return lazy_outputs
         except HTTPException:
