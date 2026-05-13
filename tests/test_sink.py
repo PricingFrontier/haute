@@ -173,6 +173,9 @@ class TestExecuteSinkParquet:
             execute_sink(graph, "sink")
 
         assert captured_kwargs["required_columns_by_node"] == {"sink": frozenset({"x", "z"})}
+        cache_request = captured_kwargs["dataframe_cache_request"]
+        assert cache_request is not None
+        assert set(cache_request.keys_by_node) == {"sink"}
 
 
 class TestExecuteSinkCSV:

@@ -5774,7 +5774,7 @@ class TestExecutePipelineArgs:
     """Verify _execute_pipeline passes scenario, preamble_ns, and checkpoint_dir."""
 
     def test_auto_range_required_columns_seed_uses_configured_data_input(self, scored_data):
-        """Online auto-range seeds only the configured data_input branch."""
+        """Online auto-range seeds configured data_input with its minimal columns."""
         graph = make_graph(
             {
                 "nodes": [
@@ -5877,7 +5877,14 @@ class TestExecutePipelineArgs:
             mode="ratebook",
         )
 
-        assert seeds == {"source": frozenset({"quote_id", "volume"})}
+        assert seeds == {
+            "source": frozenset(
+                {
+                    "quote_id",
+                    "volume",
+                }
+            )
+        }
 
     def test_optimiser_solve_required_columns_seed_uses_configured_data_input(self, scored_data):
         """Solve/estimate seeds only the actual optimiser data input branch."""
@@ -6290,6 +6297,9 @@ class TestExecutePipelineArgs:
         # preamble_ns is the dict returned by _compile_preamble
         assert captured["preamble_ns"] is not None
         assert "helper" in captured["preamble_ns"]
+        cache_request = captured["dataframe_cache_request"]
+        assert cache_request is not None
+        assert set(cache_request.keys_by_node) == {"source"}
 
     def test_execute_pipeline_forwards_required_columns_by_node(self, scored_data, tmp_path):
         from haute.routes._job_store import JobStore
@@ -11260,6 +11270,268 @@ class TestExecutePipelineExtended:
             service._execute_pipeline(body, job_id, checkpoint_dir)
 
         assert "source" in execute.call_args.kwargs["preserve_node_ids"]
+
+    def test_execute_pipeline_caches_configured_data_input_between_runs(
+        self,
+        tmp_path,
+    ):
+        """A repeated online setup should reuse the consumed data_input frame."""
+        import haute.execution as execution
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {},
+                        },
+                    },
+                    {
+                        "id": "optimiser_input",
+                        "data": {
+                            "label": "optimiser input",
+                            "nodeType": "polars",
+                            "config": {},
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "data_input": "optimiser_input",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "optimiser_input").model_dump(),
+                    make_edge("optimiser_input", "opt").model_dump(),
+                ],
+            }
+        )
+        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+
+        first_calls: list[str] = []
+
+        def first_build(node, **_kwargs):
+            first_calls.append(node.id)
+            if node.id == "source":
+                return (
+                    node.id,
+                    lambda: pl.DataFrame(
+                        {
+                            "quote_id": ["q1", "q1"],
+                            "scenario_index": [0, 1],
+                            "scenario_value": [0.9, 1.1],
+                            "expected_income": [10.0, 12.0],
+                            "volume": [1.0, 0.8],
+                        }
+                    ).lazy(),
+                    True,
+                )
+            if node.id == "optimiser_input":
+                return node.id, lambda input_lf: input_lf, False
+            return node.id, lambda input_lf: input_lf, False
+
+        second_calls: list[str] = []
+
+        def second_build(node, **_kwargs):
+            second_calls.append(node.id)
+            raise AssertionError(f"cached data_input should skip every builder, got {node.id!r}")
+
+        execution.invalidate_dataframe_execution_cache()
+        try:
+            with (
+                patch("haute.executor._build_node_fn", side_effect=first_build),
+                patch("haute.executor._resolve_batch_scenario", return_value=None),
+                patch("haute.executor._compile_preamble", return_value={}),
+            ):
+                first_outputs = service._execute_pipeline(
+                    body,
+                    store.create_job({"status": "running"}),
+                    checkpoint_dir,
+                )
+
+            with (
+                patch("haute.executor._build_node_fn", side_effect=second_build),
+                patch("haute.executor._resolve_batch_scenario", return_value=None),
+                patch("haute.executor._compile_preamble", return_value={}),
+            ):
+                second_outputs = service._execute_pipeline(
+                    body,
+                    store.create_job({"status": "running"}),
+                    checkpoint_dir,
+                )
+        finally:
+            execution.invalidate_dataframe_execution_cache()
+
+        assert first_calls == ["source", "optimiser_input"]
+        assert second_calls == []
+        assert "optimiser_input" in first_outputs
+        assert second_outputs["optimiser_input"].collect().to_dict(as_series=False) == {
+            "quote_id": ["q1", "q1"],
+            "scenario_index": [0, 1],
+            "scenario_value": [0.9, 1.1],
+            "expected_income": [10.0, 12.0],
+            "volume": [1.0, 0.8],
+        }
+
+    def test_execute_pipeline_reuses_auto_range_data_input_for_solve(
+        self,
+        tmp_path,
+    ):
+        """Auto-range should warm the same optimiser input frame used by solve."""
+        import haute.execution as execution
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataSource",
+                            "config": {},
+                        },
+                    },
+                    {
+                        "id": "optimiser_input",
+                        "data": {
+                            "label": "optimiser input",
+                            "nodeType": "polars",
+                            "config": {},
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "data_input": "optimiser_input",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "optimiser_input").model_dump(),
+                    make_edge("optimiser_input", "opt").model_dump(),
+                ],
+            }
+        )
+        auto_body = OptimiserFrontierAutoRangeRequest(graph=graph.model_dump(), node_id="opt")
+        solve_body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
+        config = graph.node_map["opt"].data.config
+        auto_range_required_columns_by_node = _auto_range_required_columns_by_node(
+            graph,
+            "opt",
+            config,
+            mode="online",
+        )
+        solve_required_columns_by_node = _optimiser_solve_required_columns_by_node(
+            graph,
+            "opt",
+            config,
+        )
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+        source_frame = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "scenario_index": [0, 1],
+                "scenario_value": [0.9, 1.1],
+                "expected_income": [10.0, 12.0],
+                "volume": [1.0, 0.8],
+            }
+        )
+
+        auto_range_calls: list[str] = []
+
+        def auto_range_build(node, **_kwargs):
+            auto_range_calls.append(node.id)
+            if node.id == "source":
+                return node.id, lambda: source_frame.lazy(), True
+            if node.id == "optimiser_input":
+                return node.id, lambda input_lf: input_lf, False
+            return node.id, lambda input_lf: input_lf, False
+
+        solve_calls: list[str] = []
+
+        def solve_build(node, **_kwargs):
+            solve_calls.append(node.id)
+            raise AssertionError(f"auto-range cache should skip every builder, got {node.id!r}")
+
+        execution.invalidate_dataframe_execution_cache()
+        try:
+            with (
+                patch("haute.executor._build_node_fn", side_effect=auto_range_build),
+                patch("haute.executor._resolve_batch_scenario", return_value=None),
+                patch("haute.executor._compile_preamble", return_value={}),
+            ):
+                service._execute_pipeline(
+                    auto_body,
+                    store.create_job({"status": "running"}),
+                    checkpoint_dir,
+                    required_columns_by_node=auto_range_required_columns_by_node,
+                    execution_context=ExecutionContext(
+                        operation="frontier_auto_range",
+                        profile=ExecutionProfile.AUTO_RANGE,
+                    ),
+                )
+
+            with (
+                patch("haute.executor._build_node_fn", side_effect=solve_build),
+                patch("haute.executor._resolve_batch_scenario", return_value=None),
+                patch("haute.executor._compile_preamble", return_value={}),
+            ):
+                solve_outputs = service._execute_pipeline(
+                    solve_body,
+                    store.create_job({"status": "running"}),
+                    checkpoint_dir,
+                    required_columns_by_node=solve_required_columns_by_node,
+                    execution_context=ExecutionContext(
+                        operation="optimiser_solve",
+                        profile=ExecutionProfile.OPTIMISER_SETUP,
+                    ),
+                )
+        finally:
+            execution.invalidate_dataframe_execution_cache()
+
+        assert auto_range_calls == ["source", "optimiser_input"]
+        assert solve_calls == []
+        assert solve_outputs["optimiser_input"].collect().to_dict(as_series=False) == (
+            source_frame.to_dict(as_series=False)
+        )
 
 
 class TestValidateAndProject:

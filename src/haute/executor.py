@@ -1394,6 +1394,25 @@ def execute_sink(
         )
 
         def _run_lazy() -> pl.LazyFrame:
+            import haute.execution as execution_facade
+
+            dataframe_cache_request = execution_facade.build_dataframe_execution_cache_request(
+                graph,
+                node_ids=[sink_node_id],
+                namespace="sink",
+                source=sink_scenario,
+                profile=execution_context.profile,
+                input_fingerprint=execution_facade.dataframe_graph_input_fingerprint(
+                    graph,
+                    target_node_id=sink_node_id,
+                    source=sink_scenario,
+                ),
+                target_node_id=sink_node_id,
+                required_columns_by_node=required_columns_by_node,
+                enforce_contracts=ENFORCE_CONTRACTS,
+                preamble_ns_supplied=bool(preamble_ns),
+                streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+            )
             lazy_outputs, _order, _parents, _names = _execute_lazy(
                 graph,
                 _build_node_fn,
@@ -1404,6 +1423,7 @@ def execute_sink(
                 enforce_contracts=ENFORCE_CONTRACTS,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
+                dataframe_cache_request=dataframe_cache_request,
             )
             lf = lazy_outputs.get(sink_node_id)
             if lf is None:

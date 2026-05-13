@@ -35,7 +35,12 @@ from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
 from haute._types import GraphNode, PipelineGraph
 from haute.errors import BoundedMemoryUnsupportedError
-from haute.execution import AllExceptColumns, execute_lazy_graph
+from haute.execution import (
+    AllExceptColumns,
+    build_dataframe_execution_cache_request,
+    dataframe_graph_input_fingerprint,
+    execute_lazy_graph,
+)
 from haute.graph_utils import NodeType
 from haute.modelling._algorithms import ALGORITHM_REGISTRY
 from haute.modelling._split import DEFAULT_SPLIT_DICT
@@ -826,7 +831,31 @@ class TrainService:
             _mem_checkpoint("before _execute_lazy")
 
             checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
+            from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
             from haute.executor import ENFORCE_CONTRACTS
+
+            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+            dataframe_cache_request = build_dataframe_execution_cache_request(
+                body.graph,
+                node_ids=[body.node_id],
+                namespace="training_prep",
+                source=body.source,
+                profile=(
+                    execution_context.profile
+                    if execution_context is not None
+                    else ExecutionProfile.LAZY_SINK
+                ),
+                input_fingerprint=dataframe_graph_input_fingerprint(
+                    body.graph,
+                    target_node_id=body.node_id,
+                    source=body.source,
+                ),
+                target_node_id=body.node_id,
+                required_columns_by_node=required_columns_by_node,
+                enforce_contracts=ENFORCE_CONTRACTS,
+                preamble_ns_supplied=preamble_ns is not None,
+                streaming_chunk_size=chunk_size,
+            )
 
             lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
                 body.graph,
@@ -838,6 +867,7 @@ class TrainService:
                 enforce_contracts=ENFORCE_CONTRACTS,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
+                dataframe_cache_request=dataframe_cache_request,
             )
 
             target_lf = lazy_outputs.get(body.node_id)
@@ -894,13 +924,11 @@ class TrainService:
                     _mem_checkpoint(f"projected: dropped {len(drop_cols)} excluded columns")
 
             from haute._polars_utils import (
-                DEFAULT_STREAMING_CHUNK_SIZE,
                 _malloc_trim,
                 bounded_sink,
             )
 
             _mem_checkpoint("before sink_parquet")
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
             if execution_context is not None:
                 execution_context.checkpoint(
                     label="before_training_sink_write",

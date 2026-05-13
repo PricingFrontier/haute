@@ -9,12 +9,43 @@ evolve.
 
 from __future__ import annotations
 
+import atexit
+import json
+import shutil
+import tempfile
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from haute._cache import GraphFingerprintMemo
+from haute._dataframe_execution_cache import (
+    CacheArtifactCorruptError,
+    CacheArtifactMissingError,
+    CacheArtifactTooLargeError,
+    DataFrameExecutionCache,
+    DataFrameExecutionCacheEntry,
+    DataFrameExecutionCacheError,
+    DataFrameExecutionCacheKey,
+    DataFrameExecutionCacheRequest,
+    dataframe_execution_cache_key,
+    dataframe_execution_cache_profile,
+    dataframe_execution_policy_fingerprint,
+    materialize_lazy_frame_with_cache,
+)
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
+from haute._graph_utils import upstream_node_ids
+from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
+from haute._path_resolution import resolve_runtime_file_path
+from haute._types import (
+    MODEL_SCORE_CONFIG_KEYS,
+    OPTIMISER_APPLY_CONFIG_KEYS,
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+    _Frame,
+)
 from haute.projection import (
     AllExceptColumns,
     ProjectionPlan,
@@ -29,11 +60,31 @@ from haute.projection import (
 
 __all__ = [
     "AllExceptColumns",
+    "CacheArtifactCorruptError",
+    "CacheArtifactMissingError",
+    "CacheArtifactTooLargeError",
+    "DataFrameExecutionCache",
+    "DataFrameExecutionCacheEntry",
+    "DataFrameExecutionCacheError",
+    "DataFrameExecutionCacheKey",
+    "DataFrameExecutionCacheRequest",
+    "dataframe_execution_policy_fingerprint",
+    "dataframe_execution_cache_profile",
     "LazyExecutionResult",
     "ProjectionPlan",
     "ProjectionRequest",
     "build_linear_execution_chain_functions",
+    "build_dataframe_execution_cache_request",
+    "canonical_dataframe_execution_graph",
+    "dataframe_frame_input_fingerprint",
+    "dataframe_graph_input_fingerprint",
+    "dataframe_paths_input_fingerprint",
+    "default_dataframe_execution_cache",
+    "dataframe_lazy_execution_policy",
+    "dataframe_execution_cache_key",
     "execute_lazy_graph",
+    "invalidate_dataframe_execution_cache",
+    "materialize_lazy_frame_with_cache",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
     "prune_source_switch_edges",
@@ -41,6 +92,100 @@ __all__ = [
 ]
 
 LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]
+
+_DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT: Path | None = None
+_DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
+_DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
+
+_GRAPH_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
+    NodeType.API_INPUT: "path",
+    NodeType.DATA_SOURCE: "path",
+    NodeType.EXTERNAL_FILE: "path",
+    NodeType.DATA_SINK: "path",
+}
+
+_SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
+    NodeType.API_INPUT: "path",
+    NodeType.DATA_SOURCE: "path",
+    NodeType.EXTERNAL_FILE: "path",
+}
+
+_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
+    NodeType.API_INPUT: ("path",),
+    NodeType.DATA_SOURCE: ("path",),
+    NodeType.EXTERNAL_FILE: ("path",),
+    NodeType.MODEL_SCORE: (
+        "artifact_path",
+        "feature_contract_path",
+    ),
+}
+
+
+def default_dataframe_execution_cache() -> DataFrameExecutionCache:
+    """Return the process-local backend dataframe execution cache.
+
+    Created lazily on first use so that pure-import callers (CI smoke tests,
+    metadata scanners) do not leave a temp directory behind.  The root is
+    cleaned up at interpreter exit.
+    """
+    global _DEFAULT_DATAFRAME_EXECUTION_CACHE, _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT
+    with _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK:
+        if _DEFAULT_DATAFRAME_EXECUTION_CACHE is None:
+            root = Path(tempfile.mkdtemp(prefix="haute_dfexec_cache_"))
+            cache = DataFrameExecutionCache(root=root)
+            atexit.register(lambda: shutil.rmtree(root, ignore_errors=True))
+            _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT = root
+            _DEFAULT_DATAFRAME_EXECUTION_CACHE = cache
+        return _DEFAULT_DATAFRAME_EXECUTION_CACHE
+
+
+def invalidate_dataframe_execution_cache() -> None:
+    """Clear every materialized backend dataframe artifact owned by this process."""
+
+    with _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK:
+        cache = _DEFAULT_DATAFRAME_EXECUTION_CACHE
+    if cache is not None:
+        cache.invalidate()
+
+
+def _graph_runtime_path_config_key(node: GraphNode) -> str | None:
+    config = node.data.config
+    if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file":
+        return "artifact_path"
+    return _GRAPH_PATH_CONFIG_BY_NODE_TYPE.get(node.data.nodeType)
+
+
+def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
+    """Return the graph shape used for lazy execution and dataframe cache keys."""
+
+    if not graph.source_file:
+        return graph
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        config = node.data.config
+        key = _graph_runtime_path_config_key(node)
+        if key is None:
+            nodes.append(node)
+            continue
+        raw_path = config.get(key)
+        if isinstance(raw_path, str) and raw_path:
+            resolved = str(
+                resolve_runtime_file_path(
+                    raw_path,
+                    source_file=graph.source_file,
+                    prefer="project",
+                )
+            )
+            if resolved != raw_path:
+                data = node.data.model_copy(update={"config": {**config, key: resolved}})
+                nodes.append(node.model_copy(update={"data": data}))
+                changed = True
+                continue
+        nodes.append(node)
+    if not changed:
+        return graph
+    return graph.model_copy(update={"nodes": nodes})
 
 
 def plan_execution_strategy(
@@ -82,6 +227,297 @@ def plan_prepared_execution_strategy(
     return projection_plan
 
 
+def _normalise_policy_column_demand(
+    demand: Iterable[str] | AllExceptColumns | None,
+) -> object:
+    if demand is None:
+        return None
+    if isinstance(demand, AllExceptColumns):
+        return {
+            "kind": "all_except",
+            "required_columns": sorted(demand.required_columns),
+            "excluded_columns": sorted(demand.excluded_columns),
+        }
+    if isinstance(demand, str | bytes):
+        raise TypeError("required column policy demand must be an iterable of names")
+    columns: set[str] = set()
+    for column in demand:
+        if not isinstance(column, str) or not column:
+            raise ValueError("required column policy demand must contain non-empty strings")
+        columns.add(column)
+    return sorted(columns)
+
+
+def dataframe_lazy_execution_policy(
+    *,
+    target_node_id: str | None,
+    source_by_node: Mapping[str, str] | None = None,
+    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
+    preserve_node_ids: Iterable[str] | None = None,
+    enforce_contracts: bool = False,
+    preamble_ns_supplied: bool = False,
+) -> Mapping[str, object]:
+    """Return the non-graph policy payload used for dataframe execution keys."""
+
+    normalised_sources: dict[str, str] = {}
+    for node_id, source in (source_by_node or {}).items():
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("source_by_node keys must be non-empty strings")
+        if not isinstance(source, str) or not source:
+            raise ValueError("source_by_node values must be non-empty strings")
+        normalised_sources[node_id] = source
+
+    normalised_required: dict[str, object] = {}
+    for node_id, demand in (required_columns_by_node or {}).items():
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("required_columns_by_node keys must be non-empty strings")
+        normalised_required[node_id] = _normalise_policy_column_demand(demand)
+
+    preserved: set[str] = set()
+    for node_id in preserve_node_ids or ():
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("preserve_node_ids must contain non-empty strings")
+        preserved.add(node_id)
+
+    return {
+        "target_node_id": target_node_id,
+        "source_by_node": dict(sorted(normalised_sources.items())),
+        "required_columns_by_node": dict(sorted(normalised_required.items())),
+        "preserve_node_ids": sorted(preserved),
+        "enforce_contracts": bool(enforce_contracts),
+        "preamble_ns_supplied": bool(preamble_ns_supplied),
+    }
+
+
+def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+    resolved = path.resolve()
+    if not resolved.exists():
+        return {
+            "path": str(resolved),
+            "exists": False,
+        }
+    stat = resolved.stat()
+    if not resolved.is_file():
+        return {
+            "path": str(resolved),
+            "exists": True,
+            "is_file": False,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+    return {
+        "path": str(resolved),
+        "exists": True,
+        "is_file": True,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "hash_algo": HASH_ALGO,
+        "content_hash": content_hash(resolved),
+    }
+
+
+def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
+    """Return stable file-state fingerprints for named external path inputs."""
+
+    payload: dict[str, object] = {}
+    for key, raw_path in sorted(paths.items()):
+        if not isinstance(key, str) or not key:
+            raise ValueError("external path fingerprint keys must be non-empty strings")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("external path fingerprint values must be non-empty strings")
+        path = Path(raw_path).resolve()
+        payload[key] = _runtime_path_fingerprint(path)
+    return payload
+
+
+def dataframe_frame_input_fingerprint(input_df: Any) -> Mapping[str, object]:
+    """Fingerprint an in-memory Polars input frame for dynamic lazy execution."""
+
+    import polars as pl
+
+    if not isinstance(input_df, pl.DataFrame):
+        raise TypeError("input_df must be a polars DataFrame")
+    schema = {name: str(dtype) for name, dtype in input_df.schema.items()}
+    return {
+        "height": input_df.height,
+        "width": input_df.width,
+        "schema": schema,
+        "row_hash": content_hash_bytes(
+            ",".join(str(value) for value in input_df.hash_rows(seed=0).to_list()).encode()
+        ),
+    }
+
+
+def _runtime_path_from_graph_config(
+    graph: PipelineGraph,
+    raw_path: str,
+) -> Path:
+    return (
+        resolve_runtime_file_path(
+            raw_path,
+            source_file=graph.source_file,
+            prefer="project",
+        )
+        if graph.source_file
+        else Path(raw_path)
+    )
+
+
+def _config_subset(config: Mapping[str, Any], keys: Iterable[str]) -> Mapping[str, object]:
+    return {
+        key: config[key]
+        for key in sorted(keys)
+        if key in config and isinstance(config[key], str | int | float | bool | type(None))
+    }
+
+
+def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
+    if node_type in {NodeType.API_INPUT, NodeType.DATA_SOURCE}:
+        return (
+            "sourceType",
+            "table",
+            "catalog",
+            "schema",
+            "query",
+            "http_path",
+            "code",
+        )
+    if node_type == NodeType.EXTERNAL_FILE:
+        return ("fileType", "modelClass", "code")
+    if node_type == NodeType.MODEL_SCORE:
+        return (*MODEL_SCORE_CONFIG_KEYS, "feature_contract_path")
+    if node_type == NodeType.OPTIMISER_APPLY:
+        return OPTIMISER_APPLY_CONFIG_KEYS
+    return ()
+
+
+def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
+    fields = list(_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE.get(node.data.nodeType, ()))
+    if (
+        node.data.nodeType == NodeType.OPTIMISER_APPLY
+        and node.data.config.get("sourceType") == "file"
+    ):
+        fields.append("artifact_path")
+    return tuple(fields)
+
+
+def _runtime_input_fingerprint_entry(
+    graph: PipelineGraph,
+    node: GraphNode,
+) -> Mapping[str, object]:
+    config = node.data.config
+    payload: dict[str, object] = {
+        "node_id": node.id,
+        "node_type": node.data.nodeType.value,
+        "config": _config_subset(config, _runtime_input_config_fields(node.data.nodeType)),
+    }
+    files: dict[str, object] = {}
+    for path_field in _runtime_input_path_fields(node):
+        raw_path = config.get(path_field)
+        if isinstance(raw_path, str) and raw_path:
+            files[path_field] = _runtime_path_fingerprint(
+                _runtime_path_from_graph_config(graph, raw_path)
+            )
+    if files:
+        payload["files"] = files
+    return payload
+
+
+def dataframe_graph_input_fingerprint(
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    extra_fingerprints: Mapping[str, object] | None = None,
+    ignore_node_ids: Iterable[str] = (),
+) -> str:
+    """Fingerprint source-side inputs that sit outside the graph structure."""
+
+    graph = canonical_dataframe_execution_graph(graph)
+    if target_node_id is not None and target_node_id not in graph.node_map:
+        raise ValueError(f"Cannot fingerprint inputs for unknown node {target_node_id!r}")
+    ignored = set(ignore_node_ids)
+
+    included_node_ids = (
+        set(upstream_node_ids(target_node_id, graph.parents_of)) | {target_node_id}
+        if target_node_id is not None
+        else {node.id for node in graph.nodes}
+    )
+    runtime_input_node_types = set(_SOURCE_PATH_CONFIG_BY_NODE_TYPE) | {
+        NodeType.MODEL_SCORE,
+        NodeType.OPTIMISER_APPLY,
+    }
+    source_entries = [
+        _runtime_input_fingerprint_entry(graph, node)
+        for node in sorted(graph.nodes, key=lambda item: item.id)
+        if node.id in included_node_ids
+        and node.id not in ignored
+        and node.data.nodeType in runtime_input_node_types
+    ]
+    payload = {
+        "source": source,
+        "sources": source_entries,
+        "extra": dict(sorted((extra_fingerprints or {}).items())),
+    }
+    return content_hash_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+
+
+def build_dataframe_execution_cache_request(
+    graph: PipelineGraph,
+    *,
+    node_ids: Iterable[str],
+    namespace: str,
+    source: str,
+    profile: ExecutionProfile | str,
+    input_fingerprint: str,
+    target_node_id: str | None,
+    source_by_node: Mapping[str, str] | None = None,
+    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
+    preserve_node_ids: Iterable[str] | None = None,
+    enforce_contracts: bool = False,
+    preamble_ns_supplied: bool = False,
+    cache: DataFrameExecutionCache | None = None,
+    streaming_chunk_size: int | None = None,
+    fast_checkpoint: bool = True,
+) -> DataFrameExecutionCacheRequest:
+    """Build a validated cache request for one lazy execution run."""
+
+    graph = canonical_dataframe_execution_graph(graph)
+    node_id_list = list(node_ids)
+    if not node_id_list:
+        raise ValueError("node_ids must contain at least one node ID")
+    policy = dataframe_lazy_execution_policy(
+        target_node_id=target_node_id,
+        source_by_node=source_by_node,
+        required_columns_by_node=required_columns_by_node,
+        preserve_node_ids=preserve_node_ids,
+        enforce_contracts=enforce_contracts,
+        preamble_ns_supplied=preamble_ns_supplied,
+    )
+    memo = GraphFingerprintMemo()
+    keys_by_node: dict[str, DataFrameExecutionCacheKey] = {}
+    for node_id in node_id_list:
+        demand = (required_columns_by_node or {}).get(node_id)
+        required_columns = None if isinstance(demand, AllExceptColumns) else demand
+        keys_by_node[node_id] = dataframe_execution_cache_key(
+            graph,
+            node_id=node_id,
+            namespace=namespace,
+            source=source,
+            profile=profile,
+            input_fingerprint=input_fingerprint,
+            required_columns=required_columns,
+            execution_policy=policy,
+            memo=memo,
+        )
+    return DataFrameExecutionCacheRequest(
+        cache=cache if cache is not None else default_dataframe_execution_cache(),
+        keys_by_node=keys_by_node,
+        streaming_chunk_size=streaming_chunk_size,
+        fast_checkpoint=fast_checkpoint,
+    )
+
+
 def execute_lazy_graph(
     graph: PipelineGraph,
     build_node_fn: Callable[..., Any],
@@ -95,6 +531,7 @@ def execute_lazy_graph(
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
+    dataframe_cache_request: DataFrameExecutionCacheRequest | None = None,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine."""
     from haute._execute_lazy import _execute_lazy
@@ -111,6 +548,7 @@ def execute_lazy_graph(
         required_columns_by_node=required_columns_by_node,
         execution_context=execution_context,
         source_by_node=source_by_node,
+        dataframe_cache_request=dataframe_cache_request,
     )
 
 

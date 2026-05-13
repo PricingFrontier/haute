@@ -32,7 +32,13 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
-from haute.execution import execute_lazy_graph
+from haute.execution import (
+    build_dataframe_execution_cache_request,
+    dataframe_frame_input_fingerprint,
+    dataframe_graph_input_fingerprint,
+    dataframe_paths_input_fingerprint,
+    execute_lazy_graph,
+)
 from haute.executor import _build_node_fn
 
 _RUNTIME_PATH_NODE_TYPES = frozenset(
@@ -687,6 +693,35 @@ def score_graph_lazy(
 
     try:
         with model_score_temp_file_scope(model_score_temp_paths):
+            remapped_node_ids = {key.split("__", 1)[0] for key in remap}
+            dataframe_cache_request = (
+                build_dataframe_execution_cache_request(
+                    graph,
+                    node_ids=[output_node_id],
+                    namespace="deploy_score",
+                    source="live",
+                    profile=execution_context.profile,
+                    input_fingerprint=dataframe_graph_input_fingerprint(
+                        graph,
+                        target_node_id=output_node_id,
+                        source="live",
+                        ignore_node_ids=input_set | remapped_node_ids,
+                        extra_fingerprints={
+                            "input_df": dataframe_frame_input_fingerprint(input_df),
+                            "input_node_ids": sorted(input_set),
+                            "artifact_paths": dataframe_paths_input_fingerprint(remap),
+                        },
+                    ),
+                    target_node_id=output_node_id,
+                    source_by_node=source_by_node,
+                    required_columns_by_node=required_columns_by_node,
+                    enforce_contracts=ENFORCE_CONTRACTS,
+                    preamble_ns_supplied=preamble_ns is not None,
+                )
+                if output_node_id in graph.node_map
+                and execution_context.profile != ExecutionProfile.DEPLOY_LIVE
+                else None
+            )
             lazy_outputs, order, _parents, _names = execute_lazy_graph(
                 graph,
                 builder,
@@ -697,6 +732,7 @@ def score_graph_lazy(
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
                 source_by_node=source_by_node,
+                dataframe_cache_request=dataframe_cache_request,
             )
 
         output_lf = lazy_outputs.get(output_node_id)
