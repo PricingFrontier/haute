@@ -1136,9 +1136,7 @@ def _execute_lazy(
                         required_for_cache = sorted(materialize_cache_key.required_columns)
                         if required_for_cache:
                             cache_columns = set(_schema_names_of(lazy_frame_for_cache))
-                            missing_for_cache = sorted(
-                                set(required_for_cache) - cache_columns
-                            )
+                            missing_for_cache = sorted(set(required_for_cache) - cache_columns)
                         else:
                             missing_for_cache = []
                         if missing_for_cache:
