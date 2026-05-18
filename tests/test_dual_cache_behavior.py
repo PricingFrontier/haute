@@ -30,15 +30,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._json_flatten import (
+    _CACHE_DIR,
     _LAYER_COMMITTED,
     _LAYER_WORKING,
     _clear_session,
     _committed_cache_data_path,
+    _flatten_and_write,
     _is_working_consulted,
     _json_cache_dir,
+    _mark_working_consulted,
+    _path_hash,
+    _resolve_flatten_schema,
     _schema_fingerprint,
+    _wipe_legacy_flat_cache,
     _working_cache_data_path,
     build_json_cache,
+    cache_layer_if_valid,
     mirror_cache_to_committed,
 )
 
@@ -717,3 +724,309 @@ class TestMirrorDirectInvariants:
         changed = mirror_cache_to_committed(str(data_file))
         assert changed is True
         assert not committed.exists()
+
+
+# ---------------------------------------------------------------------------
+# Branch-coverage tests for dual-cache internals
+# ---------------------------------------------------------------------------
+
+
+class TestBuildLayerValidation:
+    """`build_json_cache(layer=...)` enforces a small enum."""
+
+    def test_unknown_layer_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        with pytest.raises(ValueError, match="Unknown cache layer"):
+            build_json_cache(str(data_file), schema=_SCHEMA_S1, layer="bogus")
+
+    def test_committed_layer_does_not_mark_consulted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`build_json_cache(layer="committed")` writes committed/ but leaves
+        the working-consulted flag unchanged — committed builds shouldn't
+        flip the emitter's precedence."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        assert not _is_working_consulted(str(data_file))
+
+        build_json_cache(str(data_file), schema=_SCHEMA_S1, layer=_LAYER_COMMITTED)
+
+        assert _json_cache_dir(str(data_file), _LAYER_COMMITTED).exists()
+        # Critical assertion: working consulted flag did NOT flip.
+        assert not _is_working_consulted(str(data_file))
+
+    def test_build_noop_for_committed_layer_keeps_consulted_off(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The cache no-op trapdoor inside build_json_cache also respects layer."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        build_json_cache(str(data_file), schema=_SCHEMA_S1, layer=_LAYER_COMMITTED)
+        _clear_session()  # ensure consulted state is clean before re-build
+        assert not _is_working_consulted(str(data_file))
+
+        # Same schema → no-op trapdoor fires.
+        build_json_cache(str(data_file), schema=_SCHEMA_S1, layer=_LAYER_COMMITTED)
+
+        # The trapdoor still must not flip working-consulted for layer="committed".
+        assert not _is_working_consulted(str(data_file))
+
+
+class TestWipeLegacyFlatCache:
+    """`_wipe_legacy_flat_cache` removes the pre-dual-cache artifacts."""
+
+    def test_returns_false_when_no_legacy_artifacts(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert _wipe_legacy_flat_cache(tmp_path / "data.jsonl") is False
+
+    def test_removes_legacy_artifacts(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        # Place every flavor of legacy artifact that _wipe_legacy_flat_cache
+        # knows about. The function should clear all of them on first touch.
+        cache_root = tmp_path / _CACHE_DIR
+        cache_root.mkdir()
+        stem = f"json_{_path_hash(str(data_file))}"
+        legacy_paths = [
+            cache_root / f"{stem}.parquet",
+            cache_root / f"{stem}.parquet.meta.json",
+            cache_root / f"{stem}.parquet.tmp",
+            cache_root / f"{stem}.raw.parquet",
+            cache_root / f"{stem}.raw.parquet.tmp",
+        ]
+        for p in legacy_paths:
+            p.write_bytes(b"x")
+        assert all(p.exists() for p in legacy_paths)
+
+        assert _wipe_legacy_flat_cache(str(data_file)) is True
+        assert not any(p.exists() for p in legacy_paths)
+
+
+class TestFlattenAndWriteMetadata:
+    """`_flatten_and_write` writes parquet kv-metadata when supplied."""
+
+    def test_embeds_parquet_metadata_when_provided(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        cache_path = tmp_path / "out.parquet"
+        metadata = {b"haute.flatten_schema": b'{"x":"int"}', b"haute.schema_mode": b"explicit"}
+
+        _flatten_and_write(
+            [{"x": 1}, {"x": 2}],
+            {"x": "int"},
+            cache_path,
+            parquet_metadata=metadata,
+        )
+
+        md = pq.read_metadata(str(cache_path)).metadata or {}
+        assert md.get(b"haute.flatten_schema") == b'{"x":"int"}'
+        assert md.get(b"haute.schema_mode") == b"explicit"
+
+    def test_writes_without_metadata_when_none(self, tmp_path: Path) -> None:
+        """Default path (no metadata) still writes a valid parquet."""
+        cache_path = tmp_path / "out.parquet"
+        _flatten_and_write([{"x": 1}], {"x": "int"}, cache_path)
+        df = pl.read_parquet(cache_path)
+        assert df["x"].to_list() == [1]
+
+
+class TestResolveFlattenSchemaConfigBranches:
+    """`_resolve_flatten_schema` config-path branches."""
+
+    def test_config_without_flatten_schema_falls_through_to_inference(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A config file present but missing ``flattenSchema`` triggers inference."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        config_file = tmp_path / "config.json"
+        # Note: config exists but has no flattenSchema key.
+        config_file.write_text(json.dumps({"path": "data.jsonl"}), encoding="utf-8")
+
+        resolved = _resolve_flatten_schema(data_file, None, str(config_file))
+        # Inference produces a non-empty schema for our 3-column data.
+        assert isinstance(resolved, dict)
+        assert "quote_id" in resolved
+
+    def test_config_missing_on_disk_falls_through_to_inference(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``_resolve_flatten_schema`` treats a non-existent config_path as no config."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        missing = tmp_path / "does_not_exist.json"
+
+        resolved = _resolve_flatten_schema(data_file, None, str(missing))
+        assert isinstance(resolved, dict)
+        assert "quote_id" in resolved
+
+
+class TestCacheLayerIfValidBranches:
+    """`cache_layer_if_valid` branches under different (schema, config_path) combos."""
+
+    def test_returns_none_when_explicit_schema_fingerprint_mismatches(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        build_json_cache(str(data_file), schema=_SCHEMA_S1)
+
+        # Look up with a different schema → fingerprint mismatch → no hit.
+        assert cache_layer_if_valid(str(data_file), schema=_SCHEMA_S2) is None
+
+    def test_returns_none_for_schemaless_lookup_on_explicit_cache(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cache built with an explicit schema is NOT served to a schema-less
+        lookup — only ``inferred``-mode caches answer the schema=None query."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        build_json_cache(str(data_file), schema=_SCHEMA_S1)
+
+        assert cache_layer_if_valid(str(data_file), schema=None) is None
+
+    def test_inferred_mode_with_config_path_hits_cache(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When config_path is supplied but has no flattenSchema, the
+        resolved mode is "inferred" and a matching inferred-mode cache hits."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"path": "data.jsonl"}), encoding="utf-8")
+        build_json_cache(str(data_file), config_path=str(config_file))
+
+        result = cache_layer_if_valid(str(data_file), config_path=str(config_file))
+        assert result is not None
+        path, layer = result
+        assert layer == _LAYER_WORKING
+        assert path == _working_cache_data_path(data_file)
+
+
+class TestMirrorAtomicSwap:
+    """`mirror_cache_to_committed` cleans up stale `.tmp`/`.old` and rolls back."""
+
+    def test_cleans_up_stale_tmp_and_backup_dirs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stale .tmp/.old siblings from a prior failed mirror get cleaned up
+        before a fresh rebuild."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+
+        # Set up: working has S1, committed has S2-stale (mismatched fingerprint
+        # so the no-op trapdoor doesn't fire). We then plant stale .tmp/.old.
+        build_json_cache(str(data_file), schema=_SCHEMA_S1)
+        committed = _json_cache_dir(str(data_file), _LAYER_COMMITTED)
+        committed.mkdir(parents=True, exist_ok=True)
+        (committed / "data.parquet").write_bytes(b"stale-committed")
+        (committed / "meta.json").write_text(
+            json.dumps({"schema_mode": "explicit", "schema_fingerprint": "deadbeef"}),
+            encoding="utf-8",
+        )
+        # Stale .tmp and .old siblings from a previous failed mirror.
+        stale_tmp = committed.with_name(committed.name + ".tmp")
+        stale_backup = committed.with_name(committed.name + ".old")
+        stale_tmp.mkdir()
+        (stale_tmp / "junk").write_bytes(b"stale-tmp")
+        stale_backup.mkdir()
+        (stale_backup / "junk").write_bytes(b"stale-backup")
+
+        changed = mirror_cache_to_committed(str(data_file))
+
+        assert changed is True
+        assert not stale_tmp.exists(), "stale .tmp must be wiped before the new copy"
+        assert not stale_backup.exists(), "stale .old must be wiped before rename"
+        # Committed now mirrors working's S1 content.
+        working = _json_cache_dir(str(data_file), _LAYER_WORKING)
+        assert (committed / "data.parquet").read_bytes() == (working / "data.parquet").read_bytes()
+
+    def test_rolls_back_when_swap_rename_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the final ``tmp_dir → committed_dir`` rename fails, the backup
+        must be restored so committed/ is never lost."""
+        monkeypatch.chdir(tmp_path)
+        data_file = tmp_path / "data.jsonl"
+        _write_data_file(data_file)
+        build_json_cache(str(data_file), schema=_SCHEMA_S1)
+        committed = _json_cache_dir(str(data_file), _LAYER_COMMITTED)
+        committed.mkdir(parents=True, exist_ok=True)
+        (committed / "data.parquet").write_bytes(b"original-committed")
+        (committed / "meta.json").write_text(
+            json.dumps({"schema_mode": "explicit", "schema_fingerprint": "deadbeef"}),
+            encoding="utf-8",
+        )
+        original_bytes = (committed / "data.parquet").read_bytes()
+
+        # Monkeypatch Path.rename so the second rename (tmp_dir → committed_dir)
+        # raises. The function's except-branch must restore the backup.
+        original_rename = Path.rename
+        call_count = {"n": 0}
+
+        def flaky_rename(self: Path, target: Path) -> Path:
+            call_count["n"] += 1
+            # First rename is committed → backup. Second is tmp → committed.
+            if call_count["n"] == 2:
+                raise OSError("simulated rename failure")
+            return original_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", flaky_rename)
+
+        with pytest.raises(OSError, match="simulated rename failure"):
+            mirror_cache_to_committed(str(data_file))
+
+        # Committed must be restored to its original bytes (rollback worked).
+        assert committed.exists()
+        assert (committed / "data.parquet").read_bytes() == original_bytes
+
+
+class TestMarkAndClearSession:
+    """Direct coverage for `_mark_working_consulted` / `_clear_session`."""
+
+    def test_mark_and_clear_round_trip(self, tmp_path: Path) -> None:
+        data_file = tmp_path / "data.jsonl"
+        data_file.write_text('{"x":1}\n', encoding="utf-8")
+        assert not _is_working_consulted(str(data_file))
+        _mark_working_consulted(str(data_file))
+        assert _is_working_consulted(str(data_file))
+        _clear_session()
+        assert not _is_working_consulted(str(data_file))
