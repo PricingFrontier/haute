@@ -861,7 +861,7 @@ class TestApiInputCacheEndToEnd:
         # Build the cache normally, then delete just the meta sidecar.
         build_json_cache(info["data_file"], schema=flatten_schema)
         cache_path = _json_cache_path(info["data_file"])
-        meta_path = Path(str(cache_path) + ".meta.json")
+        meta_path = cache_path.parent / "meta.json"
         assert cache_path.exists()
         meta_path.unlink()
 

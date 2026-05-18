@@ -2015,7 +2015,11 @@ class TestApiInputLargeFileGating:
 
     def test_large_file_with_cache_succeeds(self, tmp_path, monkeypatch):
         """Large JSONL files with a valid cache should use the cache directly."""
-        from haute._json_flatten import _LARGE_FILE_THRESHOLD, _json_cache_path
+        from haute._json_flatten import (
+            _LARGE_FILE_THRESHOLD,
+            _json_cache_path,
+            _mark_working_consulted,
+        )
 
         monkeypatch.chdir(tmp_path)
 
@@ -2026,10 +2030,13 @@ class TestApiInputLargeFileGating:
         data_file.write_text(line * lines_needed)
         assert data_file.stat().st_size >= _LARGE_FILE_THRESHOLD
 
-        # Pre-build the cache manually
+        # Pre-build the cache manually. Mark working/ as consulted so the
+        # dual-cache emitter picks it up (cache was not built via the
+        # public build_json_cache path).
         cache_path = _json_cache_path(str(data_file))
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(cache_path)
+        _mark_working_consulted(str(data_file))
 
         node = _api_input_node("api", str(data_file))
         _, fn, _ = _build_node_fn(node)

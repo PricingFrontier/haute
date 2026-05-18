@@ -738,32 +738,38 @@ class TestJsonCache:
         assert ".haute_cache" in str(p1)
 
     def test_cache_invalid_when_missing(self, tmp_path):
-        cache = tmp_path / "missing.parquet"
+        cache_dir = tmp_path / "missing_dir"
         source = tmp_path / "data.json"
         source.write_text("[]")
-        assert not _is_cache_valid(cache, source)
+        assert not _is_cache_valid(cache_dir, source)
 
     def test_cache_valid_when_newer(self, tmp_path):
         source = tmp_path / "data.json"
         source.write_text("[]")
-        cache = tmp_path / "cached.parquet"
-        cache.write_bytes(b"fake")
+        cache_dir = tmp_path / "cache_dir"
+        cache_dir.mkdir()
+        (cache_dir / "data.parquet").write_bytes(b"fake")
         # Ensure cache is newer by touching it
         import os
 
-        os.utime(cache, (cache.stat().st_mtime + 10, cache.stat().st_mtime + 10))
-        assert _is_cache_valid(cache, source)
+        data_parquet = cache_dir / "data.parquet"
+        os.utime(
+            data_parquet,
+            (data_parquet.stat().st_mtime + 10, data_parquet.stat().st_mtime + 10),
+        )
+        assert _is_cache_valid(cache_dir, source)
 
     def test_cache_invalid_when_source_newer(self, tmp_path):
-        cache = tmp_path / "cached.parquet"
-        cache.write_bytes(b"fake")
+        cache_dir = tmp_path / "cache_dir"
+        cache_dir.mkdir()
+        (cache_dir / "data.parquet").write_bytes(b"fake")
         source = tmp_path / "data.json"
         source.write_text("[]")
         # Ensure source is newer
         import os
 
         os.utime(source, (source.stat().st_mtime + 10, source.stat().st_mtime + 10))
-        assert not _is_cache_valid(cache, source)
+        assert not _is_cache_valid(cache_dir, source)
 
     def test_flatten_and_write_creates_parquet(self, tmp_path):
         schema = {"name": "str", "age": "int"}

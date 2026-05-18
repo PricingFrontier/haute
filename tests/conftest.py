@@ -93,6 +93,25 @@ def _clear_pipeline_dir_cache():
     pipeline_dir.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_dual_cache_session():
+    """Reset the dual-cache consulted-hashes set between tests.
+
+    The set is module-level in ``haute._json_flatten`` — once a test calls
+    ``build_json_cache`` or ``read_json_flat`` for a data file, the hash
+    persists across subsequent tests in the same process. That would let
+    one test's working-layer state spill into another's emitter precedence
+    check, masking regressions or producing flaky failures. Clearing
+    before AND after each test gives the same per-process isolation the
+    other module-level singletons in this conftest get.
+    """
+    from haute._json_flatten import _clear_session
+
+    _clear_session()
+    yield
+    _clear_session()
+
+
 @pytest.fixture()
 def _widen_sandbox_root():
     """Allow tests to load files from temp directories.
