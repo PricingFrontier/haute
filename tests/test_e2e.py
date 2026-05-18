@@ -56,6 +56,10 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
         cache_path = jf._json_cache_path(str(data_path))
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         pl.read_json(data_path).write_parquet(cache_path)
+        # Mark the working layer as consulted so the dual-cache emitter
+        # picks it up; otherwise it falls through to committed/ which is
+        # not populated by this fixture.
+        jf._mark_working_consulted(str(data_path))
 
 
 class TestEndToEnd:

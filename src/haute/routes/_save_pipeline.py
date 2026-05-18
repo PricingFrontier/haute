@@ -115,6 +115,7 @@ class SavePipelineService:
             self._write_code(body, graph, py_path, touched)
             self._infer_flatten_schemas(graph)
             self._write_config_files(graph, touched)
+            self._mirror_api_input_caches(graph)
             warnings.extend(
                 self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
             )
@@ -371,6 +372,50 @@ class SavePipelineService:
                 samples = load_samples(data_path)
                 if samples:
                     cfg["flattenSchema"] = infer_schema(samples)
+
+    # ------------------------------------------------------------------
+    # Dual-cache: mirror working/ → committed/ per API Input node
+    # ------------------------------------------------------------------
+
+    def _mirror_api_input_caches(self, graph: PipelineGraph) -> None:
+        """Promote each API Input node's volatile cache to the committed layer.
+
+        Walks every API Input node backed by a JSON/JSONL data file and
+        invokes :func:`haute._json_flatten.mirror_cache_to_committed`.
+        Mirror semantics (test plan):
+
+        - When working/<hash>/ exists, copy it into committed/<hash>/
+          (no-op trapdoor if fingerprints already match).
+        - When working/<hash>/ does NOT exist *and* this process previously
+          cached the file (delete-then-save flow), remove committed/<hash>/.
+        - When this process has never cached the file, do nothing — avoids
+          promoting a stale on-disk working/ from a previous session.
+
+        Mirror failures are not rolled back through ``_TouchedFile``
+        because the operation is idempotent: a partial state on disk is a
+        valid intermediate that the next save can repair. Logged for the
+        operator to investigate.
+        """
+        from haute._json_flatten import mirror_cache_to_committed
+
+        for node in graph.nodes:
+            if node.data.nodeType != NodeType.API_INPUT:
+                continue
+            cfg = node.data.config
+            path = cfg.get("path", "")
+            if not path.endswith((".json", ".jsonl")):
+                continue
+            data_path = (self._root / path).resolve()
+            if not data_path.is_relative_to(self._root):
+                continue
+            try:
+                mirror_cache_to_committed(str(data_path))
+            except Exception as exc:  # pragma: no cover - logged for operator
+                logger.error(
+                    "json_cache_mirror_failed",
+                    data_path=str(data_path),
+                    error=str(exc),
+                )
 
     # ------------------------------------------------------------------
     # Config file I/O

@@ -132,7 +132,13 @@ async def get_json_cache_progress(path: str) -> JsonCacheProgressResponse:
 
 @router.post("/status", response_model=JsonCacheStatusResponse)
 async def post_json_cache_status(body: JsonCacheBuildRequest) -> JsonCacheStatusResponse:
-    """Check whether a JSON file has been cached as parquet."""
+    """Check whether a JSON file has a valid cache the emitter would consume.
+
+    Dual-layer semantics: returns the layer the emitter would actually read
+    from — `working/` if this process has cached the file (active editing
+    session), else `committed/` — or `cached=False` if neither is valid.
+    The wire shape stays unchanged so the frontend pill behaves as today.
+    """
     data_path = _resolve_data_path(body.path)
     config_path = _resolve_config_path(body.config_path)
     from haute._json_flatten import (
@@ -169,7 +175,7 @@ async def post_json_cache_status(body: JsonCacheBuildRequest) -> JsonCacheStatus
 
 @router.get("/status", response_model=JsonCacheStatusResponse)
 async def get_json_cache_status(path: str) -> JsonCacheStatusResponse:
-    """Check whether a JSON file has been cached as parquet."""
+    """Check whether a JSON file has a valid cache (schema-agnostic)."""
     data_path = _resolve_data_path(path)
     from haute._json_flatten import json_cache_info
 
@@ -181,7 +187,12 @@ async def get_json_cache_status(path: str) -> JsonCacheStatusResponse:
 
 @router.delete("", response_model=JsonCacheStatusResponse)
 async def delete_json_cache(path: str) -> JsonCacheStatusResponse:
-    """Delete the local parquet cache for a JSON file."""
+    """Delete the volatile (working/) cache layer for a JSON file.
+
+    Dual-cache semantics: delete operates on the working/ layer only. The
+    durable committed/ layer is untouched and remains the source of truth
+    until a subsequent save mirrors a (possibly absent) working/ into it.
+    """
     data_path = _resolve_data_path(path)
     from haute._json_flatten import clear_json_cache
 

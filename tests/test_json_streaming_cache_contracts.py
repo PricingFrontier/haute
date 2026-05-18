@@ -33,10 +33,11 @@ from haute._json_flatten import (
 
 
 def _cache_artifacts(cache_path: Path) -> list[Path]:
+    """Return the on-disk artifacts inside the working/<hash>/ cache dir."""
     raw_path = cache_path.with_suffix(".raw.parquet")
     return [
         cache_path,
-        Path(str(cache_path) + ".meta.json"),
+        cache_path.parent / "meta.json",
         Path(str(cache_path) + ".tmp"),
         raw_path,
         Path(str(raw_path) + ".tmp"),
@@ -182,7 +183,7 @@ def test_explicit_schema_cache_contract_invalidates_same_path_cache(
     assert df.columns == ["x", "y"]
     assert df["y"].to_list() == [2]
 
-    meta_path = Path(str(_json_cache_path(str(data_file))) + ".meta.json")
+    meta_path = _json_cache_path(str(data_file)).parent / "meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     assert meta == {
         "schema_fingerprint": _schema_fingerprint({"x": "int", "y": "int"}),
@@ -230,10 +231,11 @@ def test_build_json_cache_cleans_progress_and_artifacts_when_schema_is_invalid(
 
 
 def test_is_cache_valid_requires_source_file_to_still_exist(tmp_path: Path) -> None:
-    cache_path = tmp_path / "cache.parquet"
-    cache_path.write_bytes(b"stale cache")
+    cache_dir = tmp_path / "cache_dir"
+    cache_dir.mkdir()
+    (cache_dir / "data.parquet").write_bytes(b"stale cache")
 
-    assert not _is_cache_valid(cache_path, tmp_path / "deleted.jsonl")
+    assert not _is_cache_valid(cache_dir, tmp_path / "deleted.jsonl")
 
 
 def test_json_cache_info_returns_none_for_stale_source(

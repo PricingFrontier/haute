@@ -18,9 +18,12 @@ Array indices are **1-based** (e.g. ``additional_drivers.1.first_name``).
 from __future__ import annotations
 
 import gc
+import hashlib
+import os
+import shutil
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
@@ -364,6 +367,7 @@ def _flatten_and_write_streaming(
     progress_key: str | None = None,
     t0: float | None = None,
     cancel_event: threading.Event | None = None,
+    parquet_metadata: Mapping[bytes, bytes] | None = None,
 ) -> int:
     """Stream JSON records through flatten → PyArrow ParquetWriter.
 
@@ -373,6 +377,9 @@ def _flatten_and_write_streaming(
 
     Peak memory per chunk ≈ ``n_cols × chunk_size × value_size``.
     Chunk size adapts to the schema width via :func:`_adaptive_chunk_size`.
+
+    When *parquet_metadata* is supplied, it is embedded in the parquet
+    footer KV-metadata for single-file robustness (DUAL_CACHE.md §3).
 
     Returns the total number of rows written.
     """
@@ -385,6 +392,8 @@ def _flatten_and_write_streaming(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_suffix(".parquet.tmp")
     arrow_schema = _arrow_schema_from_flatten(flatten_schema)
+    if parquet_metadata:
+        arrow_schema = arrow_schema.with_metadata(dict(parquet_metadata))
     col_names = [f.name for f in arrow_schema]
     n_cols = len(arrow_schema)
 
@@ -780,12 +789,16 @@ def _flatten_raw_parquet(
     progress_key: str | None = None,
     t0: float | None = None,
     cancel_event: threading.Event | None = None,
+    parquet_metadata: Mapping[bytes, bytes] | None = None,
 ) -> int:
     """Step 2: Stream raw Parquet → flattened Parquet, one row group at a time.
 
     Tries Polars expression-based flatten first (fast, Arrow memory).
     Falls back to Python ``flatten()`` per row group if expressions fail
     (e.g. deeply nested mixed-type schemas).
+
+    When *parquet_metadata* is supplied, the schema-level KV-metadata is
+    embedded in the parquet footer (DUAL_CACHE.md §3 single-file robustness).
 
     Returns total rows written.
     """
@@ -804,7 +817,12 @@ def _flatten_raw_parquet(
     if n_groups == 0 or not exprs:
         cols = schema_columns(flatten_schema)
         empty = pl.DataFrame({c: pl.Series([], dtype=pl.String) for c in cols})
-        empty.write_parquet(str(tmp), compression="zstd")
+        if parquet_metadata:
+            empty_table = empty.to_arrow()
+            empty_table = empty_table.replace_schema_metadata(dict(parquet_metadata))
+            pq.write_table(empty_table, str(tmp), compression="zstd")
+        else:
+            empty.write_parquet(str(tmp), compression="zstd")
         tmp.replace(dest)
         return 0
 
@@ -830,9 +848,12 @@ def _flatten_raw_parquet(
         del df0
 
         at = flat0.to_arrow()
+        if parquet_metadata:
+            at = at.replace_schema_metadata(dict(parquet_metadata))
         total_rows = len(flat0)
         del flat0
-        writer = pq.ParquetWriter(str(tmp), at.schema, compression="zstd")
+        writer_schema = at.schema
+        writer = pq.ParquetWriter(str(tmp), writer_schema, compression="zstd")
         writer.write_table(at)
         del at
         _release_memory()
@@ -857,6 +878,8 @@ def _flatten_raw_parquet(
                 del flat_rows, rows
 
             at = flat.to_arrow()
+            if parquet_metadata:
+                at = at.replace_schema_metadata(dict(parquet_metadata))
             total_rows += len(flat)
             del flat
             writer.write_table(at)
@@ -898,6 +921,7 @@ def _flatten_jsonl_to_cache(
     progress_key: str | None = None,
     t0: float | None = None,
     cancel_event: threading.Event | None = None,
+    parquet_metadata: Mapping[bytes, bytes] | None = None,
 ) -> int:
     """Flatten JSONL to cache, using Polars only when it preserves semantics."""
     raw_path = cache_path.with_suffix(".raw.parquet")
@@ -919,6 +943,7 @@ def _flatten_jsonl_to_cache(
                     progress_key=progress_key,
                     t0=t0,
                     cancel_event=cancel_event,
+                    parquet_metadata=parquet_metadata,
                 )
             return _flatten_raw_parquet(
                 raw_path,
@@ -927,6 +952,7 @@ def _flatten_jsonl_to_cache(
                 progress_key=progress_key,
                 t0=t0,
                 cancel_event=cancel_event,
+                parquet_metadata=parquet_metadata,
             )
         except JsonFlattenDataError:
             raise
@@ -945,6 +971,7 @@ def _flatten_jsonl_to_cache(
                 progress_key=progress_key,
                 t0=t0,
                 cancel_event=cancel_event,
+                parquet_metadata=parquet_metadata,
             )
     finally:
         raw_path.unlink(missing_ok=True)
@@ -1124,36 +1151,173 @@ def flatten_to_frame(
 
 
 # ---------------------------------------------------------------------------
-# Parquet cache for flattened JSON — avoids re-flattening on every run
+# Parquet cache for flattened JSON — dual-layer (working / committed)
 # ---------------------------------------------------------------------------
+#
+# The cache is split into two layers, each under `.haute_cache/<layer>/<hash>/`:
+#
+#  - `working/<hash>/` — written by the "Cache as Parquet" button. Volatile,
+#    in-session. Reflects whatever the editor's in-memory schema was at click
+#    time. Disposable.
+#  - `committed/<hash>/` — written by Save, which mirrors `working/<hash>/`
+#    into committed/ (including absence — if working/ doesn't exist, Save
+#    ensures committed/ also doesn't exist). The durable contract that
+#    survives a server restart.
+#
+# Each layer's `<hash>/` directory contains:
+#   - `data.parquet` — the cached parquet bytes. The flatten_schema is
+#     embedded under key `haute.flatten_schema` in the parquet footer
+#     kv-metadata (single-file robustness — no schema-wrote / data-failed
+#     race, since both land in the same file).
+#   - `meta.json` — sidecar carrying `{schema_mode, schema_fingerprint}`.
+#     The fingerprint backs the no-op trapdoors (cache: skip rebuild when
+#     in-memory schema fingerprint == working/meta.json fingerprint; save:
+#     skip mirror when working/meta.json fingerprint == committed/meta.json
+#     fingerprint).
+#
+# Emitter precedence (DUAL_CACHE.md §4 + §11):
+#   - If the current Python process has cached this data file (i.e. the
+#     data-path hash is in `_session_consulted_hashes`), the emitter
+#     prefers `working/` and falls through to `committed/` only if working/
+#     is invalid for the requested schema. This is the "active editing
+#     session" semantic.
+#   - Otherwise (e.g. immediately post-restart), the emitter reads
+#     `committed/` only. `working/` on disk is preserved untouched (no
+#     server-startup cleanup) so a future recovery UX can offer to
+#     reinstate it, but the running emitter does not consult it.
 
 _CACHE_DIR = ".haute_cache"
+_LAYER_WORKING = "working"
+_LAYER_COMMITTED = "committed"
+_DATA_FILENAME = "data.parquet"
+_META_FILENAME = "meta.json"
 
 
-def _json_cache_path(data_path: str | Path) -> Path:
-    """Compute the parquet cache path for a JSON data file.
+# Module-level session tracking. Empty per Python process. The emitter
+# consults `working/` only for data-file hashes in this set; otherwise it
+# falls through to `committed/`. The set is populated when `working/` is
+# written via `build_json_cache(layer="working")`, when `read_json_flat`
+# auto-builds into working/, and when `mirror_cache_to_committed` runs
+# (post-save the local process is still authoritative for working/).
+_session_consulted_hashes: set[str] = set()
 
-    Uses a SHA-256 hash of the canonical absolute path to keep filenames
-    short, avoid exceeding Windows MAX_PATH (260 chars), and ensure
-    semantically identical relative/absolute paths share the same cache.
+
+def _path_hash(data_path: str | Path) -> str:
+    """SHA-256 (32-char) hash of the canonical absolute data file path.
+
+    Identical for any pair of relative/absolute paths that resolve to the
+    same file, so the cache identity is stable across cwd changes.
     """
-    import hashlib
-    import os
-
     canonical_path = os.path.normcase(str(Path(data_path).expanduser().resolve()))
-    path_hash = hashlib.sha256(canonical_path.encode()).hexdigest()[:32]
-    return Path.cwd() / _CACHE_DIR / f"json_{path_hash}.parquet"
+    return hashlib.sha256(canonical_path.encode()).hexdigest()[:32]
 
 
-def _json_cache_meta_path(cache_path: Path) -> Path:
-    return Path(str(cache_path) + ".meta.json")
+def _json_cache_dir(data_path: str | Path, layer: str) -> Path:
+    """Return the `<layer>/<hash>/` directory for a JSON data file's cache."""
+    if layer not in (_LAYER_WORKING, _LAYER_COMMITTED):
+        raise ValueError(f"Unknown cache layer: {layer!r}")
+    return Path.cwd() / _CACHE_DIR / layer / f"json_{_path_hash(data_path)}"
+
+
+def _json_cache_data_path(cache_dir: Path) -> Path:
+    """Return the `data.parquet` path inside a `<layer>/<hash>/` directory."""
+    return cache_dir / _DATA_FILENAME
+
+
+def _json_cache_meta_path(cache_dir: Path) -> Path:
+    """Return the `meta.json` sidecar path inside a `<layer>/<hash>/` directory."""
+    return cache_dir / _META_FILENAME
+
+
+def _working_cache_data_path(data_path: str | Path) -> Path:
+    """Shortcut for the working layer's `data.parquet` — used by tests and
+    by callers that previously dealt in single-file cache paths.
+    """
+    return _json_cache_data_path(_json_cache_dir(data_path, _LAYER_WORKING))
+
+
+def _committed_cache_data_path(data_path: str | Path) -> Path:
+    """Shortcut for the committed layer's `data.parquet` — symmetrical helper
+    used by tests that simulate a "saved cache" pre-existing on disk.
+    """
+    return _json_cache_data_path(_json_cache_dir(data_path, _LAYER_COMMITTED))
+
+
+# Backwards-compatible alias for tests that predate the dual-layer split.
+# Points at the working layer's data.parquet, which is where the
+# Cache-as-Parquet button (and `build_json_cache(layer="working")`) writes.
+# Tests that pre-create cache fixtures without going through
+# `build_json_cache` should additionally invoke `_mark_working_consulted`
+# so the emitter's precedence picks up the working layer.
+_json_cache_path = _working_cache_data_path
+
+
+def _mark_working_consulted(data_path: str | Path) -> None:
+    """Record that working/ is authoritative for this data file in this process."""
+    _session_consulted_hashes.add(_path_hash(data_path))
+
+
+def _is_working_consulted(data_path: str | Path) -> bool:
+    """True if working/ has been written (or read-built) for this data file in this process."""
+    return _path_hash(data_path) in _session_consulted_hashes
+
+
+def _clear_session() -> None:
+    """Test-only hook: simulate a process restart by clearing the consulted-hashes set."""
+    _session_consulted_hashes.clear()
+
+
+def _wipe_legacy_flat_cache(data_path: str | Path) -> bool:
+    """Remove legacy `.haute_cache/json_<hash>.parquet` flat-layout artifacts.
+
+    Pre-dual-cache, the cache was a single parquet at
+    `.haute_cache/json_<hash>.parquet` with a sidecar `.meta.json`. The
+    dual-cache migration policy is wipe-on-first-run: on the first
+    dual-cache operation for a given data file, legacy artifacts get
+    unlinked and the user must rebuild via the Cache button.
+
+    Returns True if anything was deleted (so callers can log).
+    """
+    cache_root = Path.cwd() / _CACHE_DIR
+    legacy_stem = f"json_{_path_hash(data_path)}"
+    artifacts = [
+        cache_root / f"{legacy_stem}.parquet",
+        cache_root / f"{legacy_stem}.parquet.meta.json",
+        cache_root / f"{legacy_stem}.parquet.tmp",
+        cache_root / f"{legacy_stem}.raw.parquet",
+        cache_root / f"{legacy_stem}.raw.parquet.tmp",
+    ]
+    deleted = False
+    for artifact in artifacts:
+        if artifact.exists() and artifact.is_file():
+            artifact.unlink()
+            deleted = True
+    if deleted:
+        logger.info("legacy_flat_cache_wiped", data_path=str(data_path))
+    return deleted
 
 
 def _schema_fingerprint(flatten_schema: dict[str, Any]) -> str:
-    import hashlib
-
     payload = orjson.dumps(flatten_schema, option=orjson.OPT_SORT_KEYS)
     return hashlib.sha256(payload).hexdigest()
+
+
+def _build_parquet_metadata(
+    flatten_schema: dict[str, Any],
+    schema_mode: str,
+) -> dict[bytes, bytes]:
+    """KV-metadata embedded in the parquet footer for single-file robustness.
+
+    Encodes the flatten_schema (canonical JSON, sorted keys) under
+    `haute.flatten_schema` and the schema mode (explicit/config/inferred)
+    under `haute.schema_mode`. Downstream consumers that get only the
+    parquet file (no sidecar JSON) can still reconstruct schema + mode.
+    """
+    payload = orjson.dumps(flatten_schema, option=orjson.OPT_SORT_KEYS)
+    return {
+        b"haute.flatten_schema": payload,
+        b"haute.schema_mode": schema_mode.encode(),
+    }
 
 
 def _schema_cache_mode(
@@ -1171,8 +1335,9 @@ def _schema_cache_mode(
     return "inferred"
 
 
-def _read_json_cache_meta(cache_path: Path) -> dict[str, object] | None:
-    meta_path = _json_cache_meta_path(cache_path)
+def _read_cache_meta(cache_dir: Path) -> dict[str, object] | None:
+    """Read `meta.json` from a layer's `<hash>/` directory, or return None if absent."""
+    meta_path = _json_cache_meta_path(cache_dir)
     if not meta_path.exists():
         return None
     payload = orjson.loads(meta_path.read_bytes())
@@ -1181,13 +1346,19 @@ def _read_json_cache_meta(cache_path: Path) -> dict[str, object] | None:
     return cast(dict[str, object], payload)
 
 
-def _write_json_cache_meta(
-    cache_path: Path,
+def _write_cache_meta(
+    cache_dir: Path,
     *,
     schema_mode: str,
     flatten_schema: dict[str, Any],
 ) -> None:
-    meta_path = _json_cache_meta_path(cache_path)
+    """Write `meta.json` atomically into a layer's `<hash>/` directory.
+
+    Creates the directory if needed. The atomic-tmp-then-rename pattern
+    means a failed write never leaves a corrupt sidecar behind.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = _json_cache_meta_path(cache_dir)
     payload = {
         "schema_mode": schema_mode,
         "schema_fingerprint": _schema_fingerprint(flatten_schema),
@@ -1202,12 +1373,13 @@ def _write_json_cache_meta(
 
 
 def _is_cache_schema_compatible(
-    cache_path: Path,
+    cache_dir: Path,
     *,
     schema_mode: str,
     flatten_schema: dict[str, Any] | None = None,
 ) -> bool:
-    meta = _read_json_cache_meta(cache_path)
+    """Compare `meta.json` against expected mode+fingerprint."""
+    meta = _read_cache_meta(cache_dir)
     if meta is None:
         return schema_mode == "inferred"
     if meta.get("schema_mode") != schema_mode:
@@ -1217,58 +1389,103 @@ def _is_cache_schema_compatible(
     return meta.get("schema_fingerprint") == _schema_fingerprint(flatten_schema)
 
 
+def cache_layer_if_valid(
+    data_path: str | Path,
+    *,
+    schema: dict[str, Any] | None = None,
+    config_path: str | Path | None = None,
+) -> tuple[Path, str] | None:
+    """Return `(data_parquet_path, layer)` for the first valid layer, else None.
+
+    Layer precedence:
+      1. If `_is_working_consulted(data_path)` (i.e. this process has cached
+         the file via the cache button or read-build), try `working/` first.
+      2. Always fall through to `committed/`.
+
+    The session-set gate is what closes the cross-restart vulnerability:
+    after a server restart, the set is empty, so the emitter skips `working/`
+    even if it remains on disk from a previous session.
+
+    Schema-compatibility match (preserves pre-dual-cache semantics):
+    - If ``config_path`` is supplied, the cache's ``meta.json``
+      ``schema_mode`` AND fingerprint must both match.
+    - If only ``schema`` is supplied, fingerprint match alone is sufficient
+      (the mode may differ if the cache was built via a config_path).
+    - If neither is supplied, only inferred-mode caches are accepted.
+    """
+    if schema is not None:
+        _validate_flatten_schema(schema)
+
+    source_paths = [Path(data_path)]
+    if config_path is not None:
+        source_paths.append(Path(config_path))
+    schema_mode = _schema_cache_mode(schema, config_path)
+
+    layers_to_try: list[str] = []
+    if _is_working_consulted(data_path):
+        layers_to_try.append(_LAYER_WORKING)
+    layers_to_try.append(_LAYER_COMMITTED)
+
+    for layer in layers_to_try:
+        cache_dir = _json_cache_dir(data_path, layer)
+        if not _is_cache_valid(cache_dir, *source_paths):
+            continue
+
+        meta = _read_cache_meta(cache_dir)
+
+        if config_path is not None:
+            if schema_mode == "inferred":
+                if _is_cache_schema_compatible(cache_dir, schema_mode=schema_mode):
+                    return _json_cache_data_path(cache_dir), layer
+                continue
+            resolved = _resolve_flatten_schema(Path(data_path), schema, config_path)
+            _validate_flatten_schema(resolved)
+            if _is_cache_schema_compatible(
+                cache_dir,
+                schema_mode=schema_mode,
+                flatten_schema=resolved,
+            ):
+                return _json_cache_data_path(cache_dir), layer
+            continue
+
+        if schema is None:
+            if meta is None or meta.get("schema_mode") == "inferred":
+                return _json_cache_data_path(cache_dir), layer
+            continue
+
+        if meta is None:
+            continue
+        if meta.get("schema_fingerprint") != _schema_fingerprint(schema):
+            continue
+        return _json_cache_data_path(cache_dir), layer
+    return None
+
+
 def json_cache_path_if_valid(
     data_path: str | Path,
     *,
     schema: dict[str, Any] | None = None,
     config_path: str | Path | None = None,
 ) -> Path | None:
-    """Return the parquet cache path only when it is safe to scan directly."""
-    if schema is not None:
-        _validate_flatten_schema(schema)
+    """Return the path to a valid `data.parquet`, or None if no layer is valid.
 
-    cache_path = _json_cache_path(data_path)
-    source_paths = [Path(data_path)]
-    if config_path is not None:
-        source_paths.append(Path(config_path))
-    if not _is_cache_valid(cache_path, *source_paths):
-        return None
-
-    meta = _read_json_cache_meta(cache_path)
-    if config_path is not None:
-        schema_mode = _schema_cache_mode(schema, config_path)
-        if schema_mode == "inferred":
-            if _is_cache_schema_compatible(cache_path, schema_mode=schema_mode):
-                return cache_path
-            return None
-
-        resolved = _resolve_flatten_schema(Path(data_path), schema, config_path)
-        _validate_flatten_schema(resolved)
-        if _is_cache_schema_compatible(
-            cache_path,
-            schema_mode=schema_mode,
-            flatten_schema=resolved,
-        ):
-            return cache_path
-        return None
-
-    if schema is None:
-        if meta is None or meta.get("schema_mode") == "inferred":
-            return cache_path
-        return None
-
-    if meta is None:
-        return None
-    if meta.get("schema_fingerprint") != _schema_fingerprint(schema):
-        return None
-    return cache_path
+    Thin wrapper over `cache_layer_if_valid` for callers that don't need
+    to know which layer produced the hit.
+    """
+    result = cache_layer_if_valid(
+        data_path,
+        schema=schema,
+        config_path=config_path,
+    )
+    return result[0] if result is not None else None
 
 
-def _is_cache_valid(cache_path: Path, *source_paths: Path) -> bool:
-    """Return True if cache exists and is newer than all source files."""
-    if not cache_path.exists():
+def _is_cache_valid(cache_dir: Path, *source_paths: Path) -> bool:
+    """Return True if a layer's `data.parquet` exists and is newer than all sources."""
+    data_path = _json_cache_data_path(cache_dir)
+    if not data_path.exists():
         return False
-    cache_mtime = cache_path.stat().st_mtime
+    cache_mtime = data_path.stat().st_mtime
     for src in source_paths:
         if not src.exists():
             return False
@@ -1281,20 +1498,30 @@ def _flatten_and_write(
     samples: list[dict[str, Any]],
     schema: dict[str, Any],
     cache_path: Path,
+    *,
+    parquet_metadata: Mapping[bytes, bytes] | None = None,
 ) -> None:
     """Flatten samples and write to a parquet cache file.
 
     Writes to a temporary file first and atomically renames on success
-    so a failed flatten never leaves a corrupt cache behind.
+    so a failed flatten never leaves a corrupt cache behind. When
+    *parquet_metadata* is supplied, the bytes are embedded in the parquet
+    footer KV-metadata for single-file robustness.
     """
     import polars as pl
+    import pyarrow.parquet as pq
 
     from haute._polars_utils import atomic_write
 
     with atomic_write(cache_path) as tmp_path:
         rows = [flatten(d, schema) for d in samples]
         df = pl.from_dicts(rows) if rows else pl.DataFrame()
-        df.write_parquet(tmp_path, compression="zstd")
+        if parquet_metadata:
+            table = df.to_arrow()
+            table = table.replace_schema_metadata(dict(parquet_metadata))
+            pq.write_table(table, str(tmp_path), compression="zstd")
+        else:
+            df.write_parquet(tmp_path, compression="zstd")
 
     logger.info(
         "json_cache_written",
@@ -1338,65 +1565,57 @@ def read_json_flat(
 ) -> pl.LazyFrame:
     """Load JSON/JSONL, flatten to tabular, return a Polars ``LazyFrame``.
 
-    On the first call, flattens the data and writes a parquet cache under
-    ``.haute_cache/``.  Subsequent calls return ``pl.scan_parquet()`` directly
-    — truly lazy with predicate pushdown.  The cache auto-invalidates when
-    the source data file or config file is modified.
+    Looks up the cache via the dual-layer precedence (`working/` first if
+    this process has cached the file, else `committed/`). On a miss,
+    auto-builds into `working/` — preserving the existing "auto-cache on
+    read" affordance — and marks the data-file hash as consulted so the
+    emitter prefers `working/` for subsequent reads in this process.
 
-    For ``.jsonl`` files, uses the same two-step streaming pipeline as
-    :func:`build_json_cache`:
+    Auto-cache-on-read mirrors the existing dev workflow. Deployed
+    pipelines should have `committed/` pre-built and bundled; if a deploy
+    auto-builds because the cache is missing, that signals a packaging
+    issue but the runtime still works.
 
-    1. JSONL -> raw Parquet  (Polars/Arrow memory, freed between chunks)
-    2. raw Parquet -> flat Parquet  (row-group streaming)
-
-    For ``.json`` files, streams records through PyArrow ``ParquetWriter``
-    in chunks (JSON format requires eager parsing anyway).
+    For ``.jsonl`` files, uses the two-step streaming pipeline as
+    :func:`build_json_cache`. For ``.json`` files, streams records through
+    PyArrow ``ParquetWriter``.
     """
     import polars as pl
 
     p = Path(data_path)
-    cache_path = _json_cache_path(data_path)
 
-    source_paths = [p]
-    if config_path is not None:
-        source_paths.append(Path(config_path))
+    cache_path = json_cache_path_if_valid(data_path, schema=schema, config_path=config_path)
+    if cache_path is not None:
+        logger.info("json_cache_hit", path=str(data_path), cache=str(cache_path))
+        return pl.scan_parquet(cache_path)
 
     schema_mode = _schema_cache_mode(schema, config_path)
-    resolved: dict[str, Any] | None = None
-
-    if _is_cache_valid(cache_path, *source_paths):
-        if schema_mode == "inferred":
-            cache_compatible = _is_cache_schema_compatible(
-                cache_path,
-                schema_mode=schema_mode,
-            )
-        else:
-            resolved = _resolve_flatten_schema(p, schema, config_path)
-            cache_compatible = _is_cache_schema_compatible(
-                cache_path,
-                schema_mode=schema_mode,
-                flatten_schema=resolved,
-            )
-
-        if cache_compatible:
-            logger.info("json_cache_hit", path=str(data_path), cache=str(cache_path))
-            return pl.scan_parquet(cache_path)
-
-    if resolved is None:
-        resolved = _resolve_flatten_schema(p, schema, config_path)
+    resolved = _resolve_flatten_schema(p, schema, config_path)
     _validate_flatten_schema(resolved)
 
-    if p.suffix == ".jsonl":
-        _flatten_jsonl_to_cache(p, resolved, cache_path)
-    else:
-        _flatten_and_write_streaming(_iter_json_records(p), resolved, cache_path)
+    _wipe_legacy_flat_cache(data_path)
+    cache_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    data_parquet = _json_cache_data_path(cache_dir)
+    parquet_metadata = _build_parquet_metadata(resolved, schema_mode)
 
-    _write_json_cache_meta(
-        cache_path,
+    if p.suffix == ".jsonl":
+        _flatten_jsonl_to_cache(p, resolved, data_parquet, parquet_metadata=parquet_metadata)
+    else:
+        _flatten_and_write_streaming(
+            _iter_json_records(p),
+            resolved,
+            data_parquet,
+            parquet_metadata=parquet_metadata,
+        )
+
+    _write_cache_meta(
+        cache_dir,
         schema_mode=schema_mode,
         flatten_schema=resolved,
     )
-    return pl.scan_parquet(cache_path)
+    _mark_working_consulted(data_path)
+    return pl.scan_parquet(data_parquet)
 
 
 # ---------------------------------------------------------------------------
@@ -1431,7 +1650,11 @@ def json_cache_info(
     *,
     schema: dict[str, Any] | None = None,
 ) -> JsonCacheInfoDict | None:
-    """Return metadata about a cached JSON file, or ``None`` if not cached."""
+    """Return metadata about a cached JSON file, or ``None`` if not cached.
+
+    Uses the precedence rule via :func:`json_cache_path_if_valid` so the
+    info reflects the layer the emitter would read from.
+    """
     from haute._polars_utils import read_parquet_metadata
 
     cache_path = json_cache_path_if_valid(data_path, schema=schema)
@@ -1449,27 +1672,32 @@ def json_cache_info(
     }
 
 
-def clear_json_cache(data_path: str | Path) -> bool:
-    """Delete cached parquet artifacts for a JSON data file.
+def clear_json_cache(
+    data_path: str | Path,
+    *,
+    layer: str = _LAYER_WORKING,
+) -> bool:
+    """Delete cached parquet artifacts for a JSON data file in one layer.
 
-    Returns True if any cache artifact was deleted.
+    Default is the volatile working/ layer — used by the DELETE endpoint
+    (test 4: "delete only affects volatile"). Always wipes any legacy
+    flat-layout artifacts too.
+
+    The consulted-hashes flag is intentionally NOT cleared. The user is
+    still in the same process, so they remain authoritative for this
+    data file. The emitter precedence then resolves to: try working/
+    (gone → invalid), fall through to committed/. And on the next save,
+    ``mirror_cache_to_committed`` sees consulted=True + working/ absent
+    and propagates the absence to committed/ — that's test 5.
+
+    Returns True if anything was deleted.
     """
-    cache_path = _json_cache_path(data_path)
-    raw_path = cache_path.with_suffix(".raw.parquet")
-    artifacts = [
-        cache_path,
-        _json_cache_meta_path(cache_path),
-        Path(str(cache_path) + ".tmp"),
-        raw_path,
-        Path(str(raw_path) + ".tmp"),
-    ]
-
-    deleted = False
-    for artifact in artifacts:
-        if artifact.exists():
-            artifact.unlink()
-            deleted = True
-    return deleted
+    _wipe_legacy_flat_cache(data_path)
+    cache_dir = _json_cache_dir(data_path, layer)
+    if not cache_dir.exists():
+        return False
+    shutil.rmtree(cache_dir)
+    return True
 
 
 class JsonBuildResultDict(JsonCacheInfoDict):
@@ -1480,24 +1708,74 @@ def build_json_cache(
     data_path: str | Path,
     schema: dict[str, Any] | None = None,
     config_path: str | Path | None = None,
+    *,
+    layer: str = _LAYER_WORKING,
 ) -> JsonBuildResultDict:
     """Build the parquet cache for a JSON/JSONL file with progress tracking.
 
     This is the explicit entry point for the "Cache as Parquet" button.
+    By default targets the volatile ``working/`` layer; the ``committed/``
+    layer is populated only via :func:`mirror_cache_to_committed` (invoked
+    by Save).
 
-    For ``.jsonl`` files, uses a two-step streaming approach to avoid
-    Python memory fragmentation:
+    No-op trapdoor (DUAL_CACHE.md §6 cache trapdoor): if the target
+    layer's ``meta.json`` fingerprint already matches the resolved
+    in-memory schema fingerprint, skip the rebuild and return the
+    existing summary. The session-set is still updated when
+    ``layer="working"`` so the precedence flag persists across the no-op.
 
-    1. JSONL → raw Parquet  (Polars/Arrow memory, freed between chunks)
-    2. raw Parquet → flat Parquet  (row-group streaming)
-
-    For ``.json`` files, falls back to the Python streaming path (JSON
-    format requires eager parsing anyway, and files are typically small).
+    For ``.jsonl`` files uses the two-step streaming approach:
+    JSONL → raw Parquet → flat Parquet. For ``.json`` files streams
+    records through PyArrow ``ParquetWriter``.
     """
+    if layer not in (_LAYER_WORKING, _LAYER_COMMITTED):
+        raise ValueError(f"Unknown cache layer: {layer!r}")
+
     p = Path(data_path)
     data_path_str = str(data_path)
-    cache_path = _json_cache_path(data_path)
     schema_mode = _schema_cache_mode(schema, config_path)
+
+    # Wipe any legacy flat-layout artifacts before touching the new layout.
+    _wipe_legacy_flat_cache(data_path)
+
+    cache_dir = _json_cache_dir(data_path, layer)
+    data_parquet = _json_cache_data_path(cache_dir)
+
+    resolved = _resolve_flatten_schema(p, schema, config_path)
+    _validate_flatten_schema(resolved)
+    fingerprint = _schema_fingerprint(resolved)
+
+    # No-op trapdoor: skip rebuild when target layer already has matching meta.
+    existing_meta = _read_cache_meta(cache_dir)
+    if (
+        existing_meta is not None
+        and existing_meta.get("schema_fingerprint") == fingerprint
+        and existing_meta.get("schema_mode") == schema_mode
+        and data_parquet.exists()
+    ):
+        from haute._polars_utils import read_parquet_metadata
+
+        if layer == _LAYER_WORKING:
+            _mark_working_consulted(data_path)
+        meta = read_parquet_metadata(data_parquet)
+        logger.info(
+            "json_cache_build_noop",
+            layer=layer,
+            data_path=data_path_str,
+            cache_dir=str(cache_dir),
+        )
+        return {
+            "path": str(data_parquet),
+            "data_path": data_path_str,
+            "row_count": meta["row_count"],
+            "column_count": meta["column_count"],
+            "columns": meta["columns"],
+            "size_bytes": meta["size_bytes"],
+            "cached_at": meta["mtime"],
+            "cache_seconds": 0.0,
+        }
+
+    parquet_metadata = _build_parquet_metadata(resolved, schema_mode)
 
     event = threading.Event()
     t0 = time.monotonic()
@@ -1506,27 +1784,26 @@ def build_json_cache(
         _cancel_events[data_path_str] = event
 
     try:
-        resolved = _resolve_flatten_schema(p, schema, config_path)
-        _validate_flatten_schema(resolved)
-
         if p.suffix == ".jsonl":
             _flatten_jsonl_to_cache(
                 p,
                 resolved,
-                cache_path,
+                data_parquet,
                 progress_key=data_path_str,
                 t0=t0,
                 cancel_event=event,
+                parquet_metadata=parquet_metadata,
             )
         else:
             # .json: must be fully loaded (JSON format constraint)
             _flatten_and_write_streaming(
                 _iter_json_records(p),
                 resolved,
-                cache_path,
+                data_parquet,
                 progress_key=data_path_str,
                 t0=t0,
                 cancel_event=event,
+                parquet_metadata=parquet_metadata,
             )
     finally:
         with _flatten_lock:
@@ -1537,14 +1814,16 @@ def build_json_cache(
 
     from haute._polars_utils import read_parquet_metadata
 
-    _write_json_cache_meta(
-        cache_path,
+    _write_cache_meta(
+        cache_dir,
         schema_mode=schema_mode,
         flatten_schema=resolved,
     )
-    meta = read_parquet_metadata(cache_path)
+    if layer == _LAYER_WORKING:
+        _mark_working_consulted(data_path)
+    meta = read_parquet_metadata(data_parquet)
     return {
-        "path": str(cache_path),
+        "path": str(data_parquet),
         "data_path": data_path_str,
         "row_count": meta["row_count"],
         "column_count": meta["column_count"],
@@ -1553,3 +1832,82 @@ def build_json_cache(
         "cached_at": meta["mtime"],
         "cache_seconds": round(elapsed, 2),
     }
+
+
+def mirror_cache_to_committed(data_path: str | Path) -> bool:
+    """Promote `working/<hash>/` → `committed/<hash>/` on Save (DUAL_CACHE.md §4).
+
+    Behaviour (the user's test plan governs):
+      - If the current process has NOT cached this data file (i.e. not in
+        ``_session_consulted_hashes``), this is a no-op. This guards against
+        save inadvertently promoting a stale on-disk working/ from a
+        previous session (cross-restart vulnerability mitigation).
+      - If working/ exists: mirror it byte-for-byte into committed/
+        (test 3 — "save synchronises stable to volatile without changing
+        volatile"). No-op trapdoor: if working/meta.json fingerprint ==
+        committed/meta.json fingerprint, skip the copy.
+      - If working/ does not exist: ensure committed/ also does not exist
+        (test 5 — "save in cache-deleted state removes stable cache").
+
+    Returns True if the on-disk committed/ state changed.
+    """
+    _wipe_legacy_flat_cache(data_path)
+    if not _is_working_consulted(data_path):
+        # Stale on-disk working/ from a previous session; or no cache ever.
+        return False
+
+    working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
+    committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
+
+    if not working_dir.exists():
+        if committed_dir.exists():
+            shutil.rmtree(committed_dir)
+            logger.info(
+                "json_cache_committed_cleared",
+                data_path=str(data_path),
+                committed_dir=str(committed_dir),
+            )
+            return True
+        return False
+
+    working_meta = _read_cache_meta(working_dir)
+    committed_meta = _read_cache_meta(committed_dir) if committed_dir.exists() else None
+    if (
+        working_meta is not None
+        and committed_meta is not None
+        and working_meta.get("schema_fingerprint") == committed_meta.get("schema_fingerprint")
+        and working_meta.get("schema_mode") == committed_meta.get("schema_mode")
+    ):
+        logger.info(
+            "json_cache_save_noop",
+            data_path=str(data_path),
+            committed_dir=str(committed_dir),
+        )
+        return False
+
+    # Atomic replacement: copytree into a `.tmp` sibling then swap.
+    committed_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    shutil.copytree(working_dir, tmp_dir)
+    if committed_dir.exists():
+        backup = committed_dir.with_name(committed_dir.name + ".old")
+        if backup.exists():
+            shutil.rmtree(backup)
+        committed_dir.rename(backup)
+        try:
+            tmp_dir.rename(committed_dir)
+        except BaseException:
+            backup.rename(committed_dir)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+    else:
+        tmp_dir.rename(committed_dir)
+    logger.info(
+        "json_cache_committed_mirrored",
+        data_path=str(data_path),
+        working_dir=str(working_dir),
+        committed_dir=str(committed_dir),
+    )
+    return True
