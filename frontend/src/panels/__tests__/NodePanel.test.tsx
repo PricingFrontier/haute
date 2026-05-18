@@ -101,7 +101,7 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
 describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
-    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true })
+    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true, explorePanes: {} })
     transformEditorProps.length = 0
     bandingEditorProps.length = 0
     modellingConfigProps.length = 0
@@ -239,6 +239,105 @@ describe("NodePanel", () => {
   it("renders OptimiserApplyEditor for optimiserApply nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "OA", description: "", nodeType: "optimiserApply", config: {} } }) })
     expect(screen.getByTestId("OptimiserApplyEditor")).toBeInTheDocument()
+  })
+
+  it("hides generic config controls for explore nodes", () => {
+    renderPanel({
+      node: makeNode({
+        data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+      }),
+    })
+
+    expect(screen.queryByRole("button", { name: /^config$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
+    expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
+  })
+
+  it("renders empty Explore panes and switches between them", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+    })
+    const otherNode = makeNode({
+      id: "polars_1",
+      data: { label: "Transform", description: "", nodeType: "polars", config: {} },
+    })
+    const { rerender, props } = renderPanel({
+      node: exploreNode,
+    })
+
+    const overview = screen.getByRole("tab", { name: "Overview" })
+    const relationships = screen.getByRole("tab", { name: "Relationships" })
+    const charts = screen.getByRole("tab", { name: "Charts" })
+    const exportPane = screen.getByRole("tab", { name: "Export" })
+
+    expect(overview).toHaveAttribute("aria-selected", "true")
+    expect(relationships).toHaveAttribute("aria-selected", "false")
+    expect(charts).toHaveAttribute("aria-selected", "false")
+    expect(exportPane).toHaveAttribute("aria-selected", "false")
+    expect(screen.getByTestId("explore-overview-pane")).toBeEmptyDOMElement()
+
+    fireEvent.click(charts)
+
+    expect(charts).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={otherNode} />
+      </GraphProvider>,
+    )
+    expect(screen.getByTestId("TransformEditor")).toBeInTheDocument()
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={exploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+  })
+
+  it("keeps Explore pane selection separate per Explore node", () => {
+    const firstExploreNode = makeNode({
+      id: "explore_1",
+      data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+    })
+    const secondExploreNode = makeNode({
+      id: "explore_2",
+      data: { label: "Explore Policies", description: "", nodeType: "explore", config: {} },
+    })
+    const { rerender, props } = renderPanel({
+      node: firstExploreNode,
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Export" }))
+    expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={secondExploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Relationships" }))
+    expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={firstExploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
+    expect(useUIStore.getState().explorePanes).toEqual({
+      explore_1: "export",
+      explore_2: "relationships",
+    })
   })
 
   it("renders ScenarioExpanderEditor for scenarioExpander nodes", () => {

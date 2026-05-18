@@ -85,6 +85,12 @@ describe("PipelineNode", () => {
     expect(screen.getByText(nodeTypeLabels[NODE_TYPES.DATA_SINK])).toBeInTheDocument()
   })
 
+  it("renders an explore node", () => {
+    renderNode({ label: "Inspect Claims", nodeType: NODE_TYPES.EXPLORE })
+    expect(screen.getByText("Inspect Claims")).toBeInTheDocument()
+    expect(screen.getByText(nodeTypeLabels[NODE_TYPES.EXPLORE])).toBeInTheDocument()
+  })
+
   it("renders a modelScore node", () => {
     renderNode({ label: "Score Model", nodeType: NODE_TYPES.MODEL_SCORE })
     expect(screen.getByText("Score Model")).toBeInTheDocument()
@@ -128,6 +134,12 @@ describe("PipelineNode", () => {
     // Should have a target handle on the left
     const targetHandle = container.querySelector(".react-flow__handle-left")
     expect(targetHandle).not.toBeNull()
+  })
+
+  it("explore nodes are sink-only on the canvas", () => {
+    const { container } = renderNode({ label: "Explore", nodeType: NODE_TYPES.EXPLORE })
+    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
+    expect(container.querySelector(".react-flow__handle-left")).not.toBeNull()
   })
 
   it("modelling nodes stay canvas sink-only while still previewable from click handlers", () => {

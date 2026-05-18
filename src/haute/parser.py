@@ -26,6 +26,7 @@ from haute._graph_builders import (
     _build_rf_nodes,
     _extract_decorated_nodes,
 )
+from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._parser_regex import fallback_parse as _fallback_parse
@@ -205,6 +206,11 @@ def parse_pipeline_source(
                 explicit_connects,
                 flatten=flatten,
             )
+
+    validate_pipeline_graph_shape_contracts(
+        graph,
+        graph_label=graph.pipeline_name or source_file or "pipeline",
+    )
 
     logger.info(
         "pipeline_parsed",

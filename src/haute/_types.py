@@ -37,6 +37,7 @@ class NodeType(StrEnum):
     RATING_STEP = "ratingStep"
     OUTPUT = "output"
     DATA_SINK = "dataSink"
+    EXPLORE = "explore"
     EXTERNAL_FILE = "externalFile"
     LIVE_SWITCH = "liveSwitch"
     MODELLING = "modelling"
@@ -57,6 +58,7 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "rating_step": NodeType.RATING_STEP,
     "output": NodeType.OUTPUT,
     "data_sink": NodeType.DATA_SINK,
+    "explore": NodeType.EXPLORE,
     "external_file": NodeType.EXTERNAL_FILE,
     "live_switch": NodeType.LIVE_SWITCH,
     "modelling": NodeType.MODELLING,
@@ -193,6 +195,10 @@ class DataSinkConfig(TypedDict, total=False):
 
     path: str
     format: str  # "parquet" | "csv"
+
+
+class ExploreConfig(TypedDict, total=False):
+    """Config for explore nodes."""
 
 
 class ExternalFileConfig(TypedDict, total=False):

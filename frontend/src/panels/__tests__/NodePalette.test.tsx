@@ -75,7 +75,7 @@ describe("NodePalette", () => {
     const expectedNames = [
       "Quote Input", "Source Switch", "Quote Response",
       "Data Source", "Data Sink", "Load File", "Constant",
-      "Polars", "Expander", "Banding", "Rating Step",
+      "Polars", "Expander", "Banding", "Rating Step", "Explore",
       "Model Training", "Model Scoring",
       "Optimisation", "Apply Optimisation",
     ]

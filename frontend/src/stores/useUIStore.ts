@@ -10,6 +10,7 @@
 import { create } from "zustand"
 
 export type RatingStepEditorSection = "tables" | "combined" | "code"
+export type ExplorePane = "overview" | "relationships" | "charts" | "export"
 
 interface UIState {
   // Modals / panels
@@ -39,6 +40,8 @@ interface UIState {
   // Rating step editor section (remembered across node panel remounts)
   ratingStepEditorSections: Record<string, RatingStepEditorSection>
   setRatingStepEditorSection: (nodeId: string, section: RatingStepEditorSection) => void
+  explorePanes: Record<string, ExplorePane>
+  setExplorePane: (nodeId: string, pane: ExplorePane) => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
@@ -86,6 +89,13 @@ const useUIStore = create<UIState>()((set) => ({
     ratingStepEditorSections: {
       ...state.ratingStepEditorSections,
       [nodeId]: section,
+    },
+  })),
+  explorePanes: {},
+  setExplorePane: (nodeId, pane) => set((state) => ({
+    explorePanes: {
+      ...state.explorePanes,
+      [nodeId]: pane,
     },
   })),
 

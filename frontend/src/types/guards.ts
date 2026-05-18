@@ -19,6 +19,9 @@ import type {
   ExecutionMemoryPressureEvent,
   ExecutionMetrics,
   ExecutionStageMetrics,
+  ExploreCacheReport,
+  ExploreRunResponse,
+  ExploreStatusResponse,
   FetchProgressResponse,
   FetchTableResponse,
   FrontierAutoRangeResponse,
@@ -1076,6 +1079,54 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
     warning: optionalNullableString("parseTrainStatusResponse", obj, "warning"),
     terminal_reason: optionalNullableString("parseTrainStatusResponse", obj, "terminal_reason"),
     execution_metrics: optionalExecutionMetrics("parseTrainStatusResponse", obj, "execution_metrics"),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Explore contracts
+// ---------------------------------------------------------------------------
+
+const EXPLORE_RUN_STATUSES = ["started", "running", "completed"] as const
+
+export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
+  const obj = expectPlainObject("parseExploreCacheReport", value)
+  return {
+    status: expectStringLiteral("parseExploreCacheReport", obj.status, "field `status`", ["ok"] as const),
+    node_id: expectString("parseExploreCacheReport", obj.node_id, "field `node_id`"),
+    upstream_node_id: expectString("parseExploreCacheReport", obj.upstream_node_id, "field `upstream_node_id`"),
+    source: optionalString("parseExploreCacheReport", obj, "source", "live"),
+    dataframe_cache_key: expectString(
+      "parseExploreCacheReport",
+      obj.dataframe_cache_key,
+      "field `dataframe_cache_key`",
+    ),
+    row_count: optionalNumber("parseExploreCacheReport", obj, "row_count"),
+    column_count: optionalNumber("parseExploreCacheReport", obj, "column_count"),
+    generated_at: optionalNumber("parseExploreCacheReport", obj, "generated_at"),
+    execution_metrics: optionalExecutionMetrics("parseExploreCacheReport", obj, "execution_metrics"),
+  }
+}
+
+export function parseExploreRunResponse(value: unknown): ExploreRunResponse {
+  const obj = expectPlainObject("parseExploreRunResponse", value)
+  return {
+    status: expectStringLiteral("parseExploreRunResponse", obj.status, "field `status`", EXPLORE_RUN_STATUSES),
+    job_id: optionalNullableString("parseExploreRunResponse", obj, "job_id"),
+    cached: optionalBoolean("parseExploreRunResponse", obj, "cached"),
+    message: optionalString("parseExploreRunResponse", obj, "message"),
+    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
+  }
+}
+
+export function parseExploreStatusResponse(value: unknown): ExploreStatusResponse {
+  const obj = expectPlainObject("parseExploreStatusResponse", value)
+  return {
+    status: expectStringLiteral("parseExploreStatusResponse", obj.status, "field `status`", JOB_STATUSES),
+    progress: optionalNumber("parseExploreStatusResponse", obj, "progress"),
+    message: optionalString("parseExploreStatusResponse", obj, "message"),
+    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
+    terminal_reason: optionalNullableString("parseExploreStatusResponse", obj, "terminal_reason"),
+    execution_metrics: optionalExecutionMetrics("parseExploreStatusResponse", obj, "execution_metrics"),
   }
 }
 

@@ -126,6 +126,28 @@ describe("useEdgeHandlers", () => {
     expect(params.setEdges).not.toHaveBeenCalled()
   })
 
+  it("onConnect blocks a second explore input", () => {
+    const params = makeParams()
+    const exploreNode = {
+      id: "explore1",
+      data: { label: "Explore", nodeType: NODE_TYPES.EXPLORE },
+    } as unknown as Node
+    params.graphRef.current.nodes = [exploreNode]
+    params.graphRef.current.edges = [
+      { id: "e1", source: "a", target: "explore1" } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onConnect({
+        source: "b",
+        target: "explore1",
+        sourceHandle: null,
+        targetHandle: null,
+      })
+    })
+    expect(params.setEdges).not.toHaveBeenCalled()
+  })
+
   it("onConnect allows connection when target has not reached maxInputs", () => {
     const params = makeParams()
     const expanderNode = {
@@ -263,6 +285,7 @@ describe("useEdgeHandlers", () => {
   it.each([
     NODE_TYPES.DATA_SINK,
     NODE_TYPES.OUTPUT,
+    NODE_TYPES.EXPLORE,
   ])("onNodeClick skips automatic preview for non-previewable sink node type %s", (nodeType) => {
     const params = makeParams()
     const node = {

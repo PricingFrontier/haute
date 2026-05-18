@@ -147,6 +147,7 @@ vi.mock("../api/client", () => ({
   checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
   getOptimiserStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),
   getTrainStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),
+  getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
 }))
 
 import App from "../App"
@@ -188,6 +189,8 @@ function resetStores(): void {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
+    exploreResults: {},
+    exploreJobs: {},
   })
   useSettingsStore.setState({
     mlflow: {

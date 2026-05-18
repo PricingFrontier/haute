@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { NODE_TYPES, NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES, isSingletonType, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels } from "../nodeTypes"
+import { NODE_GROUP_COLORS } from "../../theme/colors"
 
 describe("NODE_TYPES", () => {
   it("contains all expected node types", () => {
@@ -11,6 +12,7 @@ describe("NODE_TYPES", () => {
     expect(NODE_TYPES.RATING_STEP).toBe("ratingStep")
     expect(NODE_TYPES.OUTPUT).toBe("output")
     expect(NODE_TYPES.DATA_SINK).toBe("dataSink")
+    expect(NODE_TYPES.EXPLORE).toBe("explore")
     expect(NODE_TYPES.EXTERNAL_FILE).toBe("externalFile")
     expect(NODE_TYPES.LIVE_SWITCH).toBe("liveSwitch")
     expect(NODE_TYPES.MODELLING).toBe("modelling")
@@ -20,8 +22,8 @@ describe("NODE_TYPES", () => {
     expect(NODE_TYPES.SUBMODEL_PORT).toBe("submodelPort")
   })
 
-  it("has exactly 17 node types", () => {
-    expect(Object.keys(NODE_TYPES)).toHaveLength(17)
+  it("has exactly 18 node types", () => {
+    expect(Object.keys(NODE_TYPES)).toHaveLength(18)
   })
 })
 
@@ -41,6 +43,20 @@ describe("NODE_TYPE_META", () => {
 
   it("has exactly one entry per NODE_TYPES value", () => {
     expect(Object.keys(NODE_TYPE_META)).toHaveLength(Object.keys(NODE_TYPES).length)
+  })
+
+  it("defines Explore as a one-input analysis sink", () => {
+    const meta = NODE_TYPE_META[NODE_TYPES.EXPLORE]
+
+    expect(meta.name).toBe("Explore")
+    expect(meta.label).toBe("EXPLORE")
+    expect(meta.color).toBe(NODE_GROUP_COLORS.explore)
+    expect(meta.color).not.toBe(NODE_GROUP_COLORS.data)
+    expect(meta.color).not.toBe(NODE_GROUP_COLORS.transform)
+    expect(meta.color).not.toBe(NODE_GROUP_COLORS.model)
+    expect(meta.description.toLowerCase()).toContain("analysis")
+    expect(meta.defaultConfig).toEqual({})
+    expect(meta.maxInputs).toBe(1)
   })
 
   it("label is UPPER CASE, name is Title Case", () => {
@@ -102,9 +118,10 @@ describe("SOURCE_ONLY_TYPES", () => {
 })
 
 describe("SINK_ONLY_TYPES", () => {
-  it("contains output, dataSink, modelling, and optimiser", () => {
+  it("contains output, dataSink, explore, modelling, and optimiser", () => {
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.OUTPUT)).toBe(true)
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.DATA_SINK)).toBe(true)
+    expect(SINK_ONLY_TYPES.has(NODE_TYPES.EXPLORE)).toBe(true)
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.MODELLING)).toBe(true)
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.OPTIMISER)).toBe(true)
   })
@@ -115,8 +132,8 @@ describe("SINK_ONLY_TYPES", () => {
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.API_INPUT)).toBe(false)
   })
 
-  it("has exactly 4 entries", () => {
-    expect(SINK_ONLY_TYPES.size).toBe(4)
+  it("has exactly 5 entries", () => {
+    expect(SINK_ONLY_TYPES.size).toBe(5)
   })
 })
 
@@ -131,6 +148,16 @@ describe("PALETTE_TYPES", () => {
   it("excludes submodel and submodelPort", () => {
     expect(PALETTE_TYPES).not.toContain(NODE_TYPES.SUBMODEL)
     expect(PALETTE_TYPES).not.toContain(NODE_TYPES.SUBMODEL_PORT)
+  })
+
+  it("includes explore in the palette", () => {
+    expect(PALETTE_TYPES).toContain(NODE_TYPES.EXPLORE)
+  })
+
+  it("places explore immediately after Rating Step", () => {
+    const ratingStepIndex = PALETTE_TYPES.indexOf(NODE_TYPES.RATING_STEP)
+
+    expect(PALETTE_TYPES[ratingStepIndex + 1]).toBe(NODE_TYPES.EXPLORE)
   })
 
   it("has no duplicates", () => {

@@ -47,6 +47,7 @@ class TestNodeType:
         "RATING_STEP": "ratingStep",
         "OUTPUT": "output",
         "DATA_SINK": "dataSink",
+        "EXPLORE": "explore",
         "EXTERNAL_FILE": "externalFile",
         "LIVE_SWITCH": "liveSwitch",
         "MODELLING": "modelling",

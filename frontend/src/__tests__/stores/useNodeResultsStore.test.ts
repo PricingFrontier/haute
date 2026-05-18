@@ -7,6 +7,7 @@ import useNodeResultsStore, {
   MAX_CACHED_PREVIEWS,
   MAX_CACHED_SOLVE_RESULTS,
   MAX_CACHED_TRAIN_RESULTS,
+  MAX_CACHED_EXPLORE_RESULTS,
   hashConfig,
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore.ts"
@@ -14,6 +15,7 @@ import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { SolveResult } from "../../panels/OptimiserPreview.tsx"
 import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
+import type { ExploreCacheReport } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
@@ -31,6 +33,8 @@ function resetStore() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
+    exploreResults: {},
+    exploreJobs: {},
   })
 }
 
@@ -71,6 +75,20 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
     model_path: "/tmp/model.pkl",
     train_rows: 1000,
     test_rows: 200,
+    ...overrides,
+  }
+}
+
+function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
+  return {
+    status: "ok",
+    node_id: "explore_1",
+    upstream_node_id: "source_1",
+    source: "pricing",
+    dataframe_cache_key: "explore_dataset:abc",
+    row_count: 1000,
+    column_count: 8,
+    generated_at: 1710000000,
     ...overrides,
   }
 }
@@ -379,6 +397,97 @@ describe("useNodeResultsStore", () => {
   // ────────────────────────────────────────────────────────────────
   // hashConfig
   // ────────────────────────────────────────────────────────────────
+
+  describe("explore job lifecycle", () => {
+    it("startExploreJob creates an active job entry", () => {
+      const s = useNodeResultsStore.getState()
+      s.startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
+
+      const job = useNodeResultsStore.getState().exploreJobs.e1
+      expect(job).toBeDefined()
+      expect(job.jobId).toBe("ej-1")
+      expect(job.nodeLabel).toBe("Explore Node")
+      expect(job.configHash).toBe("eh")
+      expect(job.source).toBe("pricing")
+      expect(job.structuralVersion).toBe(3)
+      expect(job.progress).toBeNull()
+      expect(job.error).toBeNull()
+    })
+
+    it("updateExploreProgress attaches progress to active job", () => {
+      const s = useNodeResultsStore.getState()
+      s.startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
+      s.updateExploreProgress("e1", {
+        status: "running",
+        progress: 0.5,
+        message: "Analysing",
+        result: null,
+      })
+
+      const job = useNodeResultsStore.getState().exploreJobs.e1
+      expect(job.progress?.progress).toBe(0.5)
+      expect(job.progress?.message).toBe("Analysing")
+    })
+
+    it("completeExploreJob moves result to exploreResults and removes the job", () => {
+      const s = useNodeResultsStore.getState()
+      const report = makeExploreReport({ row_count: 2500 })
+      s.startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
+      s.completeExploreJob("e1", report, {
+        status: "completed",
+        progress: 1,
+        message: "done",
+        result: report,
+      })
+
+      const state = useNodeResultsStore.getState()
+      expect(state.exploreJobs.e1).toBeUndefined()
+      expect(state.exploreResults.e1).toMatchObject({
+        result: report,
+        jobId: "ej-1",
+        configHash: "eh",
+        source: "pricing",
+        structuralVersion: 3,
+        nodeLabel: "Explore Node",
+      })
+      expect(state.exploreResults.e1.result).toBe(report)
+    })
+
+    it("failExploreJob stores the terminal error without discarding the previous report", () => {
+      const s = useNodeResultsStore.getState()
+      const report = makeExploreReport({ row_count: 500 })
+      s.startExploreJob("e1", "ej-1", "Explore Node", "h1", "pricing", 1)
+      s.completeExploreJob("e1", report)
+      s.startExploreJob("e1", "ej-2", "Explore Node", "h2", "pricing", 2)
+      s.failExploreJob("e1", "Out of memory", {
+        status: "memory_limited",
+        progress: 1,
+        message: "Out of memory",
+        result: null,
+        terminal_reason: "memory_limited",
+      })
+
+      const cached = useNodeResultsStore.getState().exploreResults.e1
+      expect(useNodeResultsStore.getState().exploreJobs.e1).toBeUndefined()
+      expect(cached.error).toBe("Out of memory")
+      expect(cached.result).toBe(report)
+      expect(cached.terminalStatus?.status).toBe("memory_limited")
+    })
+
+    it("trims Explore results by LRU while preserving the pinned node", () => {
+      const s = useNodeResultsStore.getState()
+      s.setPinnedPreviewNodeId("e0")
+      for (let i = 0; i < MAX_CACHED_EXPLORE_RESULTS + 2; i++) {
+        const nodeId = `e${i}`
+        s.startExploreJob(nodeId, `job-${i}`, `Explore ${i}`, `h${i}`, "pricing", i)
+        s.completeExploreJob(nodeId, makeExploreReport({ node_id: nodeId, row_count: i }))
+      }
+
+      const state = useNodeResultsStore.getState()
+      expect(Object.keys(state.exploreResults)).toHaveLength(MAX_CACHED_EXPLORE_RESULTS)
+      expect(state.exploreResults.e0).toBeDefined()
+    })
+  })
 
   describe("hashConfig", () => {
     it("returns the same hash for the same config", () => {

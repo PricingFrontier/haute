@@ -1,0 +1,18 @@
+{
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Explore cache materialisation complete",
+  "result": {
+    "status": "ok",
+    "node_id": "explore",
+    "upstream_node_id": "prep",
+    "source": "live",
+    "dataframe_cache_key": "explore_dataset:abc123",
+    "row_count": 150,
+    "column_count": 3,
+    "generated_at": 1760000000.0,
+    "execution_metrics": null
+  },
+  "terminal_reason": "completed",
+  "execution_metrics": null
+}

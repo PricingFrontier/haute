@@ -117,6 +117,12 @@ class TestFindFunctionBlocks:
         assert len(blocks) == 1
         assert blocks[0]["explicit_node_type"] == "banding"
 
+    def test_explore_decorator_is_recognised(self) -> None:
+        source = "@pipeline.explore\ndef inspect(df):\n    return df\n"
+        blocks = _find_function_blocks(source)
+        assert len(blocks) == 1
+        assert blocks[0]["explicit_node_type"] == "explore"
+
 
 # ---------------------------------------------------------------------------
 # _parse_decorator_kwargs_regex

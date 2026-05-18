@@ -187,6 +187,10 @@ def _build_node_config(
     elif node_type == NodeType.DATA_SINK:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("sink", ""))
         config["format"] = decorator_kwargs.get("format", "parquet")
+    elif node_type == NodeType.EXPLORE:
+        # Explore takes no decorator kwargs in v1; the branch exists so it does
+        # not fall through to the transform branch and try to extract a body.
+        pass
     elif node_type == NodeType.EXTERNAL_FILE:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("external", ""))
         config["fileType"] = decorator_kwargs.get("file_type", "pickle")

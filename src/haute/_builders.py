@@ -391,6 +391,11 @@ def _passthrough_fn(*dfs: _Frame) -> _Frame:
     return dfs[0] if dfs else pl.LazyFrame()
 
 
+def _explore_fn(df: _Frame) -> _Frame:
+    """Explore is a terminal analysis node, but preview still reflects its input."""
+    return df
+
+
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -599,6 +604,11 @@ def _build_data_sink(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # During normal run/preview, dataSink is a pass-through.
     # Actual writing happens via execute_sink() on explicit user action.
     return ctx.func_name, _passthrough_fn, False
+
+
+@_register(NodeType.EXPLORE, columns=_passthrough_columns)
+def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    return ctx.func_name, _explore_fn, False
 
 
 @_register(NodeType.EXTERNAL_FILE, opaque=True)

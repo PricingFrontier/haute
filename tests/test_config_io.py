@@ -36,6 +36,7 @@ class TestMappings:
     def test_all_non_transform_non_submodel_types_mapped(self):
         excluded = {
             NodeType.POLARS,
+            NodeType.EXPLORE,
             NodeType.SUBMODEL,
             NodeType.SUBMODEL_PORT,
         }
@@ -65,9 +66,10 @@ class TestConfigPathForNode:
             p = config_path_for_node(nt, "test_node")
             assert p == Path(f"config/{folder}/test_node.json")
 
-    def test_transform_raises(self):
+    @pytest.mark.parametrize("node_type", [NodeType.POLARS, NodeType.EXPLORE])
+    def test_no_config_folder_type_raises(self, node_type):
         with pytest.raises(ValueError, match="No config folder"):
-            config_path_for_node(NodeType.POLARS, "my_transform")
+            config_path_for_node(node_type, "my_transform")
 
 
 # ---------------------------------------------------------------------------

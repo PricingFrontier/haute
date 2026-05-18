@@ -62,6 +62,7 @@ function resetStore() {
     syncBanner: null,
     nodePanelWidth: 0,
     ratingStepEditorSections: {},
+    explorePanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })

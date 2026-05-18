@@ -18,6 +18,7 @@ import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
 import { GraphProvider } from "./panels/GraphContext"
 import DataPreview from "./panels/DataPreview"
+import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserPreview from "./panels/OptimiserPreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { ModellingPreview } from "./panels/ModellingPreview"
@@ -86,6 +87,7 @@ const nodeTypes = {
   [NODE_TYPES.BANDING]: PipelineNode,
   [NODE_TYPES.OUTPUT]: PipelineNode,
   [NODE_TYPES.DATA_SINK]: PipelineNode,
+  [NODE_TYPES.EXPLORE]: PipelineNode,
   [NODE_TYPES.EXTERNAL_FILE]: PipelineNode,
   [NODE_TYPES.LIVE_SWITCH]: PipelineNode,
   [NODE_TYPES.MODELLING]: PipelineNode,
@@ -179,6 +181,7 @@ function FlowEditor() {
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
   const touchOptimiserPreview = useNodeResultsStore((s) => s.touchOptimiserPreview)
   const touchModellingPreview = useNodeResultsStore((s) => s.touchModellingPreview)
+  const touchExplorePreview = useNodeResultsStore((s) => s.touchExplorePreview)
   const setPinnedPreviewNodeId = useNodeResultsStore((s) => s.setPinnedPreviewNodeId)
 
   // Refs
@@ -207,7 +210,8 @@ function FlowEditor() {
     if (!activePanelNodeId) return
     touchModellingPreview(activePanelNodeId)
     touchOptimiserPreview(activePanelNodeId)
-  }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
+    touchExplorePreview(activePanelNodeId)
+  }, [activePanelNodeId, setPinnedPreviewNodeId, touchExplorePreview, touchModellingPreview, touchOptimiserPreview])
 
   useEffect(() => {
     if (!activePanelNodeId) return
@@ -340,6 +344,7 @@ function FlowEditor() {
   // eslint-disable-next-line react-hooks/refs -- ref is mutated by hooks; reading here is intentional
   const submodelsSnapshot = submodelsRef.current
   const useLiteGraphEffects = shouldUseLiteGraphEffects(nodes.length, edges.length)
+  const panelIsExplore = panelNode ? nodeData(panelNode).nodeType === NODE_TYPES.EXPLORE : false
 
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
@@ -436,6 +441,18 @@ function FlowEditor() {
             {(() => {
               const activeNodeId = selectedNode?.id ?? lastSelectedId
               const activePreviewData = previewForActiveNode(previewData, activeNodeId)
+              const activeNode = panelGraph.getNode(activeNodeId)
+              if (activeNode && nodeData(activeNode).nodeType === NODE_TYPES.EXPLORE) {
+                return (
+                  <ExplorePreview
+                    node={activeNode}
+                    allNodes={panelGraph.allNodes}
+                    edges={panelGraph.edges}
+                    submodels={submodelsSnapshot}
+                    preamble={preamble}
+                  />
+                )
+              }
               const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
               if (modelPreview) {
                 return (
@@ -457,7 +474,6 @@ function FlowEditor() {
                 )
               }
               // Pre-solve chart view for optimiser nodes
-              const activeNode = panelGraph.getNode(activeNodeId)
               if (
                 activeNode &&
                 nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
@@ -524,7 +540,7 @@ function FlowEditor() {
                   onClose={closePanel}
                   onUpdateNode={onUpdateNode}
                   onDeleteEdge={handleDeleteEdge}
-                  onRefreshPreview={() => { if (selectedNode) refreshPreview(selectedNode) }}
+                  onRefreshPreview={panelIsExplore ? undefined : () => { if (selectedNode) refreshPreview(selectedNode) }}
                   dimmed={!selectedNode && !!lastSelectedId}
                   errorLine={
                     previewData?.nodeId === activePanelNodeId

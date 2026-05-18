@@ -209,6 +209,7 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
       importsOpen: false,
       gitOpen: false,
       ratingStepEditorSections: {},
+      explorePanes: {},
     })
     // Reset the graph store (App.tsx subscribes to preamble / isDirty).
     useGraphStore.setState({

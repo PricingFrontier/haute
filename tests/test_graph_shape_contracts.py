@@ -19,9 +19,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from haute.codegen import graph_to_code
+from haute.errors import ParseError
 from haute.executor import execute_graph
 from haute.graph_utils import GraphEdge, PipelineGraph
 from haute.parser import parse_pipeline_source
@@ -173,6 +175,285 @@ class TestSingleNodeVariants:
 
         assert results["sink"].status == "error"
         assert "No input data available" in results["sink"].error
+
+
+class TestExploreGraphShape:
+    def test_valid_explore_graph_round_trips(self, tmp_path: Path) -> None:
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "Source",
+                            "data": {
+                                "label": "Source",
+                                "nodeType": "dataSource",
+                                "config": {"path": "data/input.parquet"},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "Explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    ),
+                ],
+                "edges": [_edge("Source", "Explore")],
+            }
+        )
+
+        parsed = _roundtrip(graph, tmp_path)
+
+        assert _normalized_graph(parsed) == _normalized_graph(graph)
+
+    def test_codegen_rejects_explore_without_input(self) -> None:
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    )
+                ],
+                "edges": [],
+            }
+        )
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            graph_to_code(graph, pipeline_name="bad_explore")
+
+    def test_codegen_rejects_explore_with_multiple_inputs(self) -> None:
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "a",
+                            "data": {
+                                "label": "A",
+                                "nodeType": "dataSource",
+                                "config": {"path": "a.parquet"},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "b",
+                            "data": {
+                                "label": "B",
+                                "nodeType": "dataSource",
+                                "config": {"path": "b.parquet"},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    ),
+                ],
+                "edges": [_edge("a", "explore"), _edge("b", "explore")],
+            }
+        )
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            graph_to_code(graph, pipeline_name="bad_explore")
+
+    def test_codegen_rejects_explore_outgoing_edge(self) -> None:
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "src",
+                            "data": {
+                                "label": "Source",
+                                "nodeType": "dataSource",
+                                "config": {"path": "data.parquet"},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "out",
+                            "data": {
+                                "label": "Output",
+                                "nodeType": "output",
+                                "config": {"fields": []},
+                            },
+                        }
+                    ),
+                ],
+                "edges": [_edge("src", "explore"), _edge("explore", "out")],
+            }
+        )
+
+        with pytest.raises(ParseError, match="cannot have outgoing edges"):
+            graph_to_code(graph, pipeline_name="bad_explore")
+
+    def test_executor_rejects_raw_explore_outgoing_edge(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.parquet"
+
+        pl.DataFrame({"x": [1]}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "src",
+                            "data": {
+                                "label": "Source",
+                                "nodeType": "dataSource",
+                                "config": {"path": str(path)},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "out",
+                            "data": {
+                                "label": "Output",
+                                "nodeType": "output",
+                                "config": {"fields": ["x"]},
+                            },
+                        }
+                    ),
+                ],
+                "edges": [_edge("src", "explore"), _edge("explore", "out")],
+            }
+        )
+
+        with pytest.raises(ParseError, match="cannot have outgoing edges"):
+            execute_graph(graph, target_node_id="out")
+
+    def test_executor_rejects_raw_explore_without_input(self) -> None:
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    )
+                ],
+                "edges": [],
+            }
+        )
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            execute_graph(graph, target_node_id="explore")
+
+    def test_target_preview_ignores_disconnected_explore_outside_lineage(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        data_path = tmp_path / "claims.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(data_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "src",
+                            "data": {
+                                "label": "Source",
+                                "nodeType": "dataSource",
+                                "config": {"path": str(data_path)},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "calc",
+                            "data": {
+                                "label": "Calc",
+                                "nodeType": "polars",
+                                "config": {"code": "df = df.with_columns(y=pl.col('x') * 2)"},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    ),
+                ],
+                "edges": [_edge("src", "calc")],
+            }
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="calc",
+            target_preview_only=True,
+        )
+
+        assert results["calc"].status == "ok"
+        assert [(col.name, col.dtype) for col in results["calc"].columns] == [
+            ("x", "Int64"),
+            ("y", "Int64"),
+        ]
+
+    def test_executor_rejects_raw_explore_with_multiple_inputs(self, tmp_path: Path) -> None:
+        first = tmp_path / "first.parquet"
+        second = tmp_path / "second.parquet"
+
+        pl.DataFrame({"x": [1]}).write_parquet(first)
+        pl.DataFrame({"x": [2]}).write_parquet(second)
+        graph = _g(
+            {
+                "nodes": [
+                    _node(
+                        {
+                            "id": "first",
+                            "data": {
+                                "label": "First",
+                                "nodeType": "dataSource",
+                                "config": {"path": str(first)},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "second",
+                            "data": {
+                                "label": "Second",
+                                "nodeType": "dataSource",
+                                "config": {"path": str(second)},
+                            },
+                        }
+                    ),
+                    _node(
+                        {
+                            "id": "explore",
+                            "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                        }
+                    ),
+                ],
+                "edges": [_edge("first", "explore"), _edge("second", "explore")],
+            }
+        )
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            execute_graph(graph, target_node_id="explore")
 
 
 class TestLongDescriptions:

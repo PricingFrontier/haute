@@ -1003,6 +1003,40 @@ class TestBuildDataSink:
 
 
 # ---------------------------------------------------------------------------
+# _build_explore (analysis-only passthrough in preview mode)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildExplore:
+    """Explore builder should be a one-input analysis sink passthrough."""
+
+    def test_passthrough(self) -> None:
+        _, fn, is_source = _build(
+            "explore",
+            {},
+            source_names=["upstream"],
+        )
+        assert is_source is False
+        input_df = pl.DataFrame({"x": [1, 2]}).lazy()
+        result = fn(input_df).collect()
+        assert result["x"].to_list() == [1, 2]
+
+    def test_no_input_raises(self) -> None:
+        _, fn, is_source = _build("explore", {})
+        assert is_source is False
+        with pytest.raises(TypeError):
+            fn()
+
+    def test_multiple_inputs_raise(self) -> None:
+        _, fn, is_source = _build("explore", {})
+        assert is_source is False
+        left = pl.DataFrame({"x": [1]}).lazy()
+        right = pl.DataFrame({"y": [2]}).lazy()
+        with pytest.raises(TypeError):
+            fn(left, right)
+
+
+# ---------------------------------------------------------------------------
 # _build_optimiser (passthrough in preview mode)
 # ---------------------------------------------------------------------------
 

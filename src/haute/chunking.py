@@ -263,6 +263,12 @@ _CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = 
             _UNSUPPORTED_V1_RULE_NAME,
             note=("sink writes use bounded sink contracts rather than the map-reduce chunk runner"),
         ),
+        NodeType.EXPLORE: _chunk_declaration(
+            NodeType.EXPLORE,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note="exploratory analysis needs explicit bounded reducers before chunk execution",
+        ),
         NodeType.EXTERNAL_FILE: _chunk_declaration(
             NodeType.EXTERNAL_FILE,
             ChunkCapabilityStatus.UNSUPPORTED,

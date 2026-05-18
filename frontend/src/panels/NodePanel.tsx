@@ -26,6 +26,7 @@ import {
 } from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
 import type { HauteNodeData } from "../types/node"
+import useUIStore, { type ExplorePane } from "../stores/useUIStore"
 import PanelShell from "./PanelShell"
 import { useGraph } from "./useGraph"
 
@@ -50,12 +51,23 @@ type NodePanelProps = {
 
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
-// modelling nodes are sink-only (no outputs).
+// modelling and explore nodes are sink-only (no outputs).
 const NO_COLUMNS_TAB = new Set<string>([
   NODE_TYPES.OUTPUT,
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.MODELLING,
+  NODE_TYPES.EXPLORE,
 ])
+
+// Right-panel tabs for Explore nodes. v1 ships the tab chrome only; the panes
+// are empty scaffolding for upcoming Overview / Relationships / Charts /
+// Export work.
+const EXPLORE_PANES = [
+  { key: "overview", label: "Overview" },
+  { key: "relationships", label: "Relationships" },
+  { key: "charts", label: "Charts" },
+  { key: "export", label: "Export" },
+] as const satisfies readonly { key: ExplorePane; label: string }[]
 
 // ─── Instance sub-panel (kept inline — it references multiple node-level concerns) ──
 
@@ -341,6 +353,8 @@ export default function NodePanel({
   const { allNodes, edges } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
+  const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
+  const setExplorePane = useUIStore((s) => s.setExplorePane)
 
   // Keep config and node in refs so handleConfigUpdate never captures stale values
   const configRef = useRef(config)
@@ -406,6 +420,10 @@ export default function NodePanel({
   const nodeType = node.data.nodeType
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
   const showColumnsTab = isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)
+  const showExplorePanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.EXPLORE
+  const showRefreshPreview = !!onRefreshPreview && nodeType !== NODE_TYPES.EXPLORE
+  const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "overview" : "overview"
+  const activeExplorePaneMeta = EXPLORE_PANES.find((pane) => pane.key === activeExplorePane) ?? EXPLORE_PANES[0]
 
   // ── Render the right editor based on nodeType ──
 
@@ -439,6 +457,19 @@ export default function NodePanel({
 
       case NODE_TYPES.DATA_SINK:
         return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} accentColor={accentColor} />
+
+      case NODE_TYPES.EXPLORE:
+        // v1 ships empty pane bodies; the tab chrome above is scaffolding for
+        // upcoming EDA work (overview / relationships / charts / export).
+        return (
+          <div
+            id={`explore-${activeExplorePaneMeta.key}-pane`}
+            role="tabpanel"
+            aria-labelledby={`explore-${activeExplorePaneMeta.key}-tab`}
+            data-testid={`explore-${activeExplorePaneMeta.key}-pane`}
+            className="h-full"
+          />
+        )
 
       case NODE_TYPES.EXTERNAL_FILE:
         return <ExternalFileEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
@@ -570,7 +601,7 @@ export default function NodePanel({
           className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
           style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
         />
-        {onRefreshPreview && (
+        {showRefreshPreview && (
           <button
             onClick={onRefreshPreview}
             className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
@@ -623,8 +654,47 @@ export default function NodePanel({
         </div>
       )}
 
+      {showExplorePanes && (
+        <div
+          role="tablist"
+          aria-label="Explore panes"
+          className="grid grid-cols-4 shrink-0"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          {EXPLORE_PANES.map((pane) => {
+            const isActive = activeExplorePane === pane.key
+            const activeStyle: React.CSSProperties = {
+              color: accentColor,
+              borderBottom: `2px solid ${accentColor}`,
+              background: 'var(--accent-soft)',
+            }
+            const inactiveStyle: React.CSSProperties = {
+              color: 'var(--text-muted)',
+              borderBottom: '2px solid transparent',
+            }
+            return (
+              <button
+                key={pane.key}
+                id={`explore-${pane.key}-tab`}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                aria-controls={`explore-${pane.key}-pane`}
+                onClick={() => setExplorePane(node.id, pane.key)}
+                className={`min-w-0 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors ${
+                  isActive ? '' : 'hover:bg-[var(--bg-hover)]'
+                }`}
+                style={isActive ? activeStyle : inactiveStyle}
+              >
+                <span className="block truncate">{pane.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {/* Schema warnings for non-instance nodes */}
-      {!isInstance && (() => {
+      {!isInstance && !showExplorePanes && (() => {
         const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
         if (warnings.length === 0) return null
         return (

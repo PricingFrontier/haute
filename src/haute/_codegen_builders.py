@@ -50,7 +50,7 @@ from haute._types import (
     GraphNode,
     NodeType,
 )
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 
 # ---------------------------------------------------------------------------
 # String-safety helpers — double-quoted Python literals with proper escaping.
@@ -372,6 +372,13 @@ def {func_name}({params}) -> pl.LazyFrame:
 
 _MODELLING = '''\
 @pipeline.modelling({dec_kwargs})
+def {func_name}({params}) -> pl.LazyFrame:
+    """{description}"""
+    return {first}
+'''
+
+_EXPLORE = '''\
+@pipeline.explore()
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     return {first}
@@ -805,6 +812,26 @@ _assign_codegen(
     NodeType.MODELLING,
     _make_passthrough_builder(_MODELLING, MODELLING_CONFIG_KEYS),
 )
+
+
+@_register_codegen(NodeType.EXPLORE)
+def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
+    if len(source_names) != 1:
+        raise ParseError(
+            "Explore nodes must have exactly one incoming edge.",
+            node_id=node.id,
+            node_label=node.data.label,
+            incoming_count=len(source_names),
+            incoming_sources=source_names,
+        )
+    func_name, description, _config = _common_node_fields(node)
+    params = _build_params(source_names)
+    return _EXPLORE.format(
+        func_name=func_name,
+        description=description,
+        params=params,
+        first=source_names[0],
+    )
 
 
 @_register_codegen(NodeType.EXTERNAL_FILE)

@@ -47,6 +47,7 @@ export const NODE_GROUP_COLORS = {
   entry: "#E69F00",
   exit: "#D55E00",
   data: "#00B386",
+  explore: "#BE185D",
   external: "#B07AA1",
   constant: "#94a3b8",
   transform: "#56B4E9",
