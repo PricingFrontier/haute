@@ -18,9 +18,12 @@ Array indices are **1-based** (e.g. ``additional_drivers.1.first_name``).
 from __future__ import annotations
 
 import gc
+import hashlib
+import os
+import shutil
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
@@ -1183,11 +1186,6 @@ def flatten_to_frame(
 #     server-startup cleanup) so a future recovery UX can offer to
 #     reinstate it, but the running emitter does not consult it.
 
-import hashlib
-import os
-import shutil
-from collections.abc import Mapping
-
 _CACHE_DIR = ".haute_cache"
 _LAYER_WORKING = "working"
 _LAYER_COMMITTED = "committed"
@@ -1873,14 +1871,11 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
         return False
 
     working_meta = _read_cache_meta(working_dir)
-    committed_meta = (
-        _read_cache_meta(committed_dir) if committed_dir.exists() else None
-    )
+    committed_meta = _read_cache_meta(committed_dir) if committed_dir.exists() else None
     if (
         working_meta is not None
         and committed_meta is not None
-        and working_meta.get("schema_fingerprint")
-        == committed_meta.get("schema_fingerprint")
+        and working_meta.get("schema_fingerprint") == committed_meta.get("schema_fingerprint")
         and working_meta.get("schema_mode") == committed_meta.get("schema_mode")
     ):
         logger.info(

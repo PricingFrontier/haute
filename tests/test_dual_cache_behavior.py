@@ -42,7 +42,6 @@ from haute._json_flatten import (
     mirror_cache_to_committed,
 )
 
-
 # ---------------------------------------------------------------------------
 # Project fixture
 # ---------------------------------------------------------------------------
@@ -59,7 +58,7 @@ _SCHEMA_S2: dict[str, object] = {
 def _write_data_file(path: Path) -> None:
     """Write a small JSONL file with fields covering both S1 and S2 schemas."""
     path.write_text(
-        '\n'.join(
+        "\n".join(
             json.dumps(rec)
             for rec in (
                 {"quote_id": "q-1", "premium": 100.0, "extra": "alpha"},
@@ -286,9 +285,7 @@ class TestSetUp:
         )
 
         # Working and committed parquets are byte-identical after save (mirror).
-        assert (working / "data.parquet").read_bytes() == (
-            committed / "data.parquet"
-        ).read_bytes()
+        assert (working / "data.parquet").read_bytes() == (committed / "data.parquet").read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -325,9 +322,7 @@ class TestVolatileTracksSchemaChanges:
         _api_cache_build(client, project["data_rel"], _SCHEMA_S2)
 
         # ASSERT (2.4) — stable cache agrees with the snapshot (last-save state).
-        assert (committed / "data.parquet").read_bytes() == (
-            scratch / "data.parquet"
-        ).read_bytes()
+        assert (committed / "data.parquet").read_bytes() == (scratch / "data.parquet").read_bytes()
         assert _read_meta(committed) == _read_meta(scratch)
 
         # ASSERT (2.5) — volatile cache metadata fingerprint == in-memory S2 fingerprint.
@@ -346,9 +341,7 @@ class TestVolatileTracksSchemaChanges:
 
         # ASSERT (2.7) — volatile and stable disagree.
         assert _read_meta(working) != _read_meta(committed)
-        assert (working / "data.parquet").read_bytes() != (
-            committed / "data.parquet"
-        ).read_bytes()
+        assert (working / "data.parquet").read_bytes() != (committed / "data.parquet").read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -389,9 +382,7 @@ class TestSaveMirrors:
         assert _read_meta(working) == _read_meta(scratch_volatile)
 
         # ASSERT (3.4) — committed bytes-equal to working.
-        assert (working / "data.parquet").read_bytes() == (
-            committed / "data.parquet"
-        ).read_bytes()
+        assert (working / "data.parquet").read_bytes() == (committed / "data.parquet").read_bytes()
         assert _read_meta(working) == _read_meta(committed)
 
 
@@ -430,9 +421,7 @@ class TestDeleteOnlyAffectsVolatile:
         # ASSERT (4.2) — working/ does not exist (directory absent).
         assert not working.exists()
         # ASSERT (4.3) — committed/ unchanged.
-        assert (committed / "data.parquet").read_bytes() == (
-            scratch / "data.parquet"
-        ).read_bytes()
+        assert (committed / "data.parquet").read_bytes() == (scratch / "data.parquet").read_bytes()
         assert _read_meta(committed) == _read_meta(scratch)
 
 
@@ -471,9 +460,7 @@ class TestSaveAfterDeletePromotesAbsence:
         _api_save(client)
 
         # ASSERT (5.2) — committed/ removed (save mirrored the absence).
-        assert not committed.exists(), (
-            "Save should propagate the cache-deleted state to committed/"
-        )
+        assert not committed.exists(), "Save should propagate the cache-deleted state to committed/"
         # ASSERT (5.3) — working/ still absent.
         assert not working.exists()
 
@@ -508,9 +495,7 @@ class TestCrossRestartVulnerability:
         committed = _json_cache_dir(data_file, _LAYER_COMMITTED)
         assert b"haute.flatten_schema" in _read_parquet_metadata(working / "data.parquet")
         assert _read_meta(working)["schema_fingerprint"] == _schema_fingerprint(_SCHEMA_S2)
-        assert _read_meta(committed)["schema_fingerprint"] == _schema_fingerprint(
-            project["schema"]
-        )
+        assert _read_meta(committed)["schema_fingerprint"] == _schema_fingerprint(project["schema"])
 
         # Simulate a server restart: working/ on disk survives, but the
         # process-local consulted set is cleared.
@@ -525,9 +510,7 @@ class TestCrossRestartVulnerability:
         # restart (it reloads the saved on-disk config).
         _set_schema_in_config(config_file, project["schema"])
         status = _api_cache_status(client, project["data_rel"], schema=project["schema"])
-        assert status["cached"] is True, (
-            "status with S1 schema should hit committed/ post-restart"
-        )
+        assert status["cached"] is True, "status with S1 schema should hit committed/ post-restart"
         # Status's cache path is in committed/, not working/.
         assert _LAYER_COMMITTED in status["path"], status["path"]
 
@@ -540,9 +523,7 @@ class TestCrossRestartVulnerability:
         # unreachable by the emitter post-restart.
         assert (working / "data.parquet").exists()
         embedded = json.loads(
-            _read_parquet_metadata(working / "data.parquet")[
-                b"haute.flatten_schema"
-            ].decode()
+            _read_parquet_metadata(working / "data.parquet")[b"haute.flatten_schema"].decode()
         )
         assert embedded == _SCHEMA_S2
 
