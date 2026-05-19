@@ -187,6 +187,10 @@ def _build_node_config(
     elif node_type == NodeType.DATA_SINK:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("sink", ""))
         config["format"] = decorator_kwargs.get("format", "parquet")
+    elif node_type == NodeType.EXPLORE:
+        code = _extract_user_code(body, param_names) if body else ""
+        if code:
+            config["code"] = code
     elif node_type == NodeType.EXTERNAL_FILE:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("external", ""))
         config["fileType"] = decorator_kwargs.get("file_type", "pickle")

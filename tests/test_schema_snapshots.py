@@ -8,6 +8,8 @@ import pytest
 
 from haute.schemas import (
     ExecutionMetricsPayload,
+    ExploreRunResponse,
+    ExploreStatusResponse,
     FetchTableResponse,
     GitStatusResponse,
     JsonCacheStatusResponse,
@@ -149,6 +151,32 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "train_loss": {"type": "object", "additionalProperties": "number"},
                 "result": {"anyOf": ["ref:TrainResponse", "null"], "default": None},
                 "warning": {"anyOf": ["string", "null"], "default": None},
+                "execution_metrics": {
+                    "anyOf": ["ref:ExecutionMetricsPayload", "null"],
+                    "default": None,
+                },
+            },
+        ),
+        (
+            ExploreRunResponse,
+            ["status"],
+            {
+                "status": {"type": "string"},
+                "job_id": {"anyOf": ["string", "null"], "default": None},
+                "cached": {"type": "boolean", "default": False},
+                "message": {"type": "string", "default": ""},
+                "result": {"anyOf": ["ref:ExploreCacheReport", "null"], "default": None},
+            },
+        ),
+        (
+            ExploreStatusResponse,
+            ["status"],
+            {
+                "status": {"type": "string"},
+                "progress": {"type": "number", "default": 0.0},
+                "message": {"type": "string", "default": ""},
+                "result": {"anyOf": ["ref:ExploreCacheReport", "null"], "default": None},
+                "terminal_reason": {"anyOf": ["string", "null"], "default": None},
                 "execution_metrics": {
                     "anyOf": ["ref:ExecutionMetricsPayload", "null"],
                     "default": None,

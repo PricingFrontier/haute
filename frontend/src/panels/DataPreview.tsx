@@ -1,11 +1,12 @@
 import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent } from "react"
-import { X, ChevronDown, ChevronUp, AlertCircle, CheckCircle2, Table2, Search } from "lucide-react"
+import { X, AlertCircle, CheckCircle2, Table2, Search } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
-import { useDragResize } from "../hooks/useDragResize"
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import type { ColumnInfo } from "../types/node"
 import type { SchemaWarning, NodeTiming, NodeMemory, ExecutionMetrics } from "../api/types"
+import PreviewPanelFrame from "./PreviewPanelFrame"
+import { DEFAULT_PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
 
 export interface PreviewData {
   nodeId: string
@@ -33,6 +34,8 @@ interface DataPreviewProps {
   data: PreviewData | null
   onCellClick?: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   tracedCell?: { rowIndex: number; column: string } | null
+  embedded?: boolean
+  nodeType?: string | null
 }
 
 
@@ -45,6 +48,7 @@ const MID_COLUMN_WIDTH = 140
 const MIN_COLUMN_WIDTH = 120
 const COLUMN_OVERSCAN = 3
 const FALLBACK_VIEW_WIDTH = 960
+const FALLBACK_VIEW_HEIGHT = DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight
 const NULL_VALUE_STYLE = { color: 'var(--text-muted)', fontStyle: 'italic' }
 const EMPTY_COLUMNS: ColumnInfo[] = []
 
@@ -163,10 +167,8 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, onCellClick, tracedCell }: DataPreviewProps) {
-  const [collapsed, setCollapsed] = useState(false)
+export default function DataPreview({ data, onCellClick, tracedCell, embedded = false, nodeType }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
-  const { height, containerRef, onDragStart } = useDragResize({ initialHeight: 256, minHeight: 120, maxHeight: 600 })
 
   // Clear search when selected node changes
   const nodeId = data?.nodeId
@@ -253,211 +255,197 @@ export default function DataPreview({ data, onCellClick, tracedCell }: DataPrevi
   const returnedRows = data.preview_row_count ?? data.preview.length
   const previewLimit = data.preview_row_limit ?? returnedRows
   const showPreviewFooter = data.row_count > returnedRows || data.preview_truncated
-
-  if (collapsed) {
-    return (
-      <div className="h-8 flex items-center px-4 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-panel)' }}>
-        <button
-          onClick={() => setCollapsed(false)}
-          className="flex items-center gap-2 text-xs"
-          style={{ color: 'var(--text-secondary)' }}
-        >
-          <ChevronUp size={14} />
-          <Table2 size={14} />
-          <span className="font-medium">{data.nodeLabel}</span>
-          {data.status === "ok" && (
-            <span style={{ color: 'var(--text-muted)' }}>
-              {data.row_count.toLocaleString()} rows · {data.column_count} cols
-            </span>
-          )}
+  const columnSearchControl = (
+    <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-md" style={{ background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)' }}>
+      <Search size={11} style={{ color: 'var(--text-muted)' }} />
+      <input
+        type="text"
+        value={columnSearch}
+        onChange={(e) => setColumnSearch(e.target.value)}
+        placeholder="Search columns..."
+        className="w-28 text-[11px] font-mono bg-transparent focus:outline-none"
+        style={{ color: 'var(--text-primary)' }}
+      />
+      {columnSearch && (
+        <button onClick={() => setColumnSearch("")} className="shrink-0" style={{ color: 'var(--text-muted)' }}>
+          <X size={10} />
         </button>
+      )}
+    </div>
+  )
+  const previewContent = data.status === "loading" ? (
+    <div className="flex-1 flex items-center justify-center">
+      <div className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>Executing pipeline...</div>
+    </div>
+  ) : data.status === "error" ? (
+    <div className="flex-1 flex items-center justify-center p-4">
+      <div className="text-center">
+        <AlertCircle size={24} className="mx-auto mb-2" style={{ color: 'var(--danger)', opacity: 0.5 }} />
+        <div className="text-xs max-w-md" style={{ color: 'var(--danger)' }}>{data.error}</div>
+      </div>
+    </div>
+  ) : (
+    <div ref={setScrollContainer} data-testid="data-preview-scroll" className="flex-1 overflow-auto" onScroll={handleTableScroll}>
+      {(() => {
+        const totalRows = data.preview.length
+        const effectiveViewHeight = viewHeight || Math.max(ROW_HEIGHT, FALLBACK_VIEW_HEIGHT - 64)
+        const effectiveViewWidth = viewWidth || FALLBACK_VIEW_WIDTH
+        const columnWidth = responsiveColumnWidth(effectiveViewWidth)
+        const shouldVirtualize = totalRows > VIRTUALIZE_THRESHOLD
+        let startIdx = 0
+        let endIdx = totalRows
+        if (shouldVirtualize) {
+          startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
+          endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
+        }
+        const topPad = startIdx * ROW_HEIGHT
+        const bottomPad = (totalRows - endIdx) * ROW_HEIGHT
+        const columnWindow = getColumnWindow(filteredColumns.length, scrollLeft, effectiveViewWidth, columnWidth)
+        const visibleColumns = filteredColumns.slice(columnWindow.startIdx, columnWindow.endIdx)
+        const renderedColumnSlots =
+          1 +
+          (columnWindow.leftPad > 0 ? 1 : 0) +
+          visibleColumns.length +
+          (columnWindow.rightPad > 0 ? 1 : 0)
+        const spacerStyle = { padding: 0, borderBottom: '1px solid var(--border)' }
+
+        return (
+          <table className="text-xs table-fixed" style={{ width: columnWindow.totalWidth }}>
+            <thead className="sticky top-0 z-10" style={{ background: 'var(--bg-elevated)' }}>
+              <tr>
+                <th className="px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider"
+                  style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border)', width: ROW_NUMBER_WIDTH, minWidth: ROW_NUMBER_WIDTH }}>
+                  #
+                </th>
+                {columnWindow.leftPad > 0 && (
+                  <th aria-hidden="true" style={{ ...spacerStyle, width: columnWindow.leftPad, minWidth: columnWindow.leftPad }} />
+                )}
+                {visibleColumns.map((col) => (
+                  <th
+                    key={col.name}
+                    className="px-3 py-1.5 text-left whitespace-nowrap overflow-hidden"
+                    style={{ borderBottom: '1px solid var(--border)', width: columnWidth, minWidth: columnWidth, maxWidth: columnWidth }}
+                  >
+                    <div className="font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{col.name}</div>
+                    <div className={`text-[11px] font-normal ${getDtypeColor(col.dtype)}`}>
+                      {col.dtype}
+                    </div>
+                  </th>
+                ))}
+                {columnWindow.rightPad > 0 && (
+                  <th aria-hidden="true" style={{ ...spacerStyle, width: columnWindow.rightPad, minWidth: columnWindow.rightPad }} />
+                )}
+              </tr>
+            </thead>
+            <tbody onClick={handleCellClick}>
+              {topPad > 0 && (
+                <tr style={{ height: topPad }}>
+                  <td colSpan={renderedColumnSlots} style={{ padding: 0 }} />
+                </tr>
+              )}
+              {data.preview.slice(startIdx, endIdx).map((row, vi) => {
+                const i = startIdx + vi
+                return (
+                  <tr
+                    key={i}
+                    style={{ height: ROW_HEIGHT, background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,.02)' }}
+                  >
+                    <td className="px-3 py-1 font-mono" style={{ color: 'var(--text-muted)', borderRight: '1px solid var(--border)', width: ROW_NUMBER_WIDTH, minWidth: ROW_NUMBER_WIDTH }}>
+                      {i + 1}
+                    </td>
+                    {columnWindow.leftPad > 0 && (
+                      <td aria-hidden="true" style={{ padding: 0, width: columnWindow.leftPad, minWidth: columnWindow.leftPad }} />
+                    )}
+                    {visibleColumns.map((col) => (
+                      <DataCell
+                        key={col.name}
+                        rowIndex={i}
+                        column={col.name}
+                        value={row[col.name]}
+                        isTraced={tracedCell?.rowIndex === i && tracedCell?.column === col.name}
+                        clickable={!!onCellClick}
+                        columnWidth={columnWidth}
+                      />
+                    ))}
+                    {columnWindow.rightPad > 0 && (
+                      <td aria-hidden="true" style={{ padding: 0, width: columnWindow.rightPad, minWidth: columnWindow.rightPad }} />
+                    )}
+                  </tr>
+                )
+              })}
+              {bottomPad > 0 && (
+                <tr style={{ height: bottomPad }}>
+                  <td colSpan={renderedColumnSlots} style={{ padding: 0 }} />
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )
+      })()}
+
+      {showPreviewFooter && (
+        <div className="px-3 py-1.5 text-[11px] text-center" style={{ color: 'var(--text-muted)', borderTop: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+          Showing {returnedRows.toLocaleString()} of {data.row_count.toLocaleString()} rows
+          {data.preview_truncated && (
+            <span>{" \u00b7 capped at "}{previewLimit.toLocaleString()}</span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+
+  const previewSection = (
+    <>
+      <div className="min-h-9 flex items-center flex-wrap px-3 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+        {/* In embedded mode the outer PreviewPanelFrame already shows the node label/icon,
+            so we drop the redundant "Preview" title and just keep the additive count + search. */}
+        {!embedded && (
+          <>
+            <Table2 size={14} style={{ color: 'var(--text-muted)' }} />
+            <span className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>Preview</span>
+          </>
+        )}
+        {data.status === "ok" && (
+          <>
+            <CheckCircle2 size={13} className={embedded ? undefined : "ml-1"} style={{ color: 'var(--success)' }} />
+            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count} cols
+            </span>
+          </>
+        )}
+        {data.status === "error" && (
+          <>
+            <AlertCircle size={13} className={embedded ? undefined : "ml-1"} style={{ color: 'var(--danger)' }} />
+            <span className="text-[11px] truncate" style={{ color: 'var(--danger)' }}>{data.error}</span>
+          </>
+        )}
+        {data.status === "loading" && (
+          <span className="text-[11px] animate-pulse" style={{ color: 'var(--text-muted)' }}>Running...</span>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          {columnSearchControl}
+        </div>
+      </div>
+      <ExecutionDiagnosticsSummary metrics={data.execution_metrics} />
+      {previewContent}
+    </>
+  )
+
+  if (embedded) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col" data-testid="data-preview-embedded">
+        {previewSection}
       </div>
     )
   }
 
   return (
-    <div ref={containerRef} style={{ height, borderTop: '1px solid var(--border)', background: 'var(--bg-panel)' }} className="flex flex-col shrink-0 relative">
-      {/* Drag handle */}
-      <div
-        onMouseDown={onDragStart}
-        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
-      />
-      {/* Header bar */}
-      <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-        <Table2 size={14} style={{ color: 'var(--text-muted)' }} />
-        <span className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>{data.nodeLabel}</span>
-
-        {data.status === "ok" && (
-          <>
-            <CheckCircle2 size={13} className="ml-1" style={{ color: 'var(--success)' }} />
-            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {data.row_count.toLocaleString()} rows · {data.column_count} cols
-            </span>
-          </>
-        )}
-
-        {data.status === "error" && (
-          <>
-            <AlertCircle size={13} className="ml-1" style={{ color: 'var(--danger)' }} />
-            <span className="text-[11px] truncate" style={{ color: 'var(--danger)' }}>{data.error}</span>
-          </>
-        )}
-
-        {data.status === "loading" && (
-          <span className="text-[11px] animate-pulse" style={{ color: 'var(--text-muted)' }}>Running...</span>
-        )}
-
-        <div className="ml-auto flex items-center gap-1.5">
-          <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-md" style={{ background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)' }}>
-            <Search size={11} style={{ color: 'var(--text-muted)' }} />
-            <input
-              type="text"
-              value={columnSearch}
-              onChange={(e) => setColumnSearch(e.target.value)}
-              placeholder="Search columns..."
-              className="w-28 text-[11px] font-mono bg-transparent focus:outline-none"
-              style={{ color: 'var(--text-primary)' }}
-            />
-            {columnSearch && (
-              <button onClick={() => setColumnSearch("")} className="shrink-0" style={{ color: 'var(--text-muted)' }}>
-                <X size={10} />
-              </button>
-            )}
-          </div>
-          <button
-            onClick={() => setCollapsed(true)}
-            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            <ChevronDown size={14} />
-          </button>
-        </div>
-      </div>
-
-      <ExecutionDiagnosticsSummary metrics={data.execution_metrics} />
-
-      {/* Timing breakdown */}
-      {/* Data table */}
-      {data.status === "loading" ? (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>Executing pipeline...</div>
-        </div>
-      ) : data.status === "error" ? (
-        <div className="flex-1 flex items-center justify-center p-4">
-          <div className="text-center">
-            <AlertCircle size={24} className="mx-auto mb-2" style={{ color: 'var(--danger)', opacity: 0.5 }} />
-            <div className="text-xs max-w-md" style={{ color: 'var(--danger)' }}>{data.error}</div>
-          </div>
-        </div>
-      ) : (
-        <div ref={setScrollContainer} data-testid="data-preview-scroll" className="flex-1 overflow-auto" onScroll={handleTableScroll}>
-          {(() => {
-            const totalRows = data.preview.length
-            const effectiveViewHeight = viewHeight || Math.max(ROW_HEIGHT, height - 64)
-            const effectiveViewWidth = viewWidth || FALLBACK_VIEW_WIDTH
-            const columnWidth = responsiveColumnWidth(effectiveViewWidth)
-            const shouldVirtualize = totalRows > VIRTUALIZE_THRESHOLD
-            let startIdx = 0
-            let endIdx = totalRows
-            if (shouldVirtualize) {
-              startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-              endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
-            }
-            const topPad = startIdx * ROW_HEIGHT
-            const bottomPad = (totalRows - endIdx) * ROW_HEIGHT
-            const columnWindow = getColumnWindow(filteredColumns.length, scrollLeft, effectiveViewWidth, columnWidth)
-            const visibleColumns = filteredColumns.slice(columnWindow.startIdx, columnWindow.endIdx)
-            const renderedColumnSlots =
-              1 +
-              (columnWindow.leftPad > 0 ? 1 : 0) +
-              visibleColumns.length +
-              (columnWindow.rightPad > 0 ? 1 : 0)
-            const spacerStyle = { padding: 0, borderBottom: '1px solid var(--border)' }
-
-            return (
-              <table className="text-xs table-fixed" style={{ width: columnWindow.totalWidth }}>
-                <thead className="sticky top-0 z-10" style={{ background: 'var(--bg-elevated)' }}>
-                  <tr>
-                    <th className="px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider"
-                      style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border)', width: ROW_NUMBER_WIDTH, minWidth: ROW_NUMBER_WIDTH }}>
-                      #
-                    </th>
-                    {columnWindow.leftPad > 0 && (
-                      <th aria-hidden="true" style={{ ...spacerStyle, width: columnWindow.leftPad, minWidth: columnWindow.leftPad }} />
-                    )}
-                    {visibleColumns.map((col) => (
-                      <th
-                        key={col.name}
-                        className="px-3 py-1.5 text-left whitespace-nowrap overflow-hidden"
-                        style={{ borderBottom: '1px solid var(--border)', width: columnWidth, minWidth: columnWidth, maxWidth: columnWidth }}
-                      >
-                        <div className="font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{col.name}</div>
-                        <div className={`text-[11px] font-normal ${getDtypeColor(col.dtype)}`}>
-                          {col.dtype}
-                        </div>
-                      </th>
-                    ))}
-                    {columnWindow.rightPad > 0 && (
-                      <th aria-hidden="true" style={{ ...spacerStyle, width: columnWindow.rightPad, minWidth: columnWindow.rightPad }} />
-                    )}
-                  </tr>
-                </thead>
-                <tbody onClick={handleCellClick}>
-                  {topPad > 0 && (
-                    <tr style={{ height: topPad }}>
-                      <td colSpan={renderedColumnSlots} style={{ padding: 0 }} />
-                    </tr>
-                  )}
-                  {data.preview.slice(startIdx, endIdx).map((row, vi) => {
-                    const i = startIdx + vi
-                    return (
-                      <tr
-                        key={i}
-                        style={{ height: ROW_HEIGHT, background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,.02)' }}
-                      >
-                        <td className="px-3 py-1 font-mono" style={{ color: 'var(--text-muted)', borderRight: '1px solid var(--border)', width: ROW_NUMBER_WIDTH, minWidth: ROW_NUMBER_WIDTH }}>
-                          {i + 1}
-                        </td>
-                        {columnWindow.leftPad > 0 && (
-                          <td aria-hidden="true" style={{ padding: 0, width: columnWindow.leftPad, minWidth: columnWindow.leftPad }} />
-                        )}
-                        {visibleColumns.map((col) => (
-                          <DataCell
-                            key={col.name}
-                            rowIndex={i}
-                            column={col.name}
-                            value={row[col.name]}
-                            isTraced={tracedCell?.rowIndex === i && tracedCell?.column === col.name}
-                            clickable={!!onCellClick}
-                            columnWidth={columnWidth}
-                          />
-                        ))}
-                        {columnWindow.rightPad > 0 && (
-                          <td aria-hidden="true" style={{ padding: 0, width: columnWindow.rightPad, minWidth: columnWindow.rightPad }} />
-                        )}
-                      </tr>
-                    )
-                  })}
-                  {bottomPad > 0 && (
-                    <tr style={{ height: bottomPad }}>
-                      <td colSpan={renderedColumnSlots} style={{ padding: 0 }} />
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            )
-          })()}
-
-          {showPreviewFooter && (
-            <div className="px-3 py-1.5 text-[11px] text-center" style={{ color: 'var(--text-muted)', borderTop: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-              Showing {returnedRows.toLocaleString()} of {data.row_count.toLocaleString()} rows
-              {data.preview_truncated && (
-                <span>{" \u00b7 capped at "}{previewLimit.toLocaleString()}</span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+    <PreviewPanelFrame
+      nodeLabel={data.nodeLabel}
+      nodeType={nodeType}
+      collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count} cols` : undefined}
+    >
+      {previewSection}
+    </PreviewPanelFrame>
   )
 }

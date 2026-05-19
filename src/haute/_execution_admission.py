@@ -36,6 +36,7 @@ _DEFAULT_MEMORY_LIMIT_BYTES: dict[ExecutionProfile, int] = {
     ExecutionProfile.LAZY_SINK: 4 * 1024 * _MIB,
     ExecutionProfile.TRAINING_PREP: 4 * 1024 * _MIB,
     ExecutionProfile.OPTIMISER_SETUP: 4 * 1024 * _MIB,
+    ExecutionProfile.EXPLORE_ANALYSIS: 4 * 1024 * _MIB,
     ExecutionProfile.AUTO_RANGE: 2 * 1024 * _MIB,
     ExecutionProfile.DEPLOY_LIVE: 1024 * _MIB,
     ExecutionProfile.DEPLOY_BATCH: 4 * 1024 * _MIB,
@@ -68,6 +69,10 @@ _ADAPTIVE_MEMORY_POLICY: dict[ExecutionProfile, _AdaptiveMemoryPolicy] = {
         available_ram_basis_points=7_500,
         floor_bytes=4 * 1024 * _MIB,
     ),
+    ExecutionProfile.EXPLORE_ANALYSIS: _AdaptiveMemoryPolicy(
+        available_ram_basis_points=7_000,
+        floor_bytes=4 * 1024 * _MIB,
+    ),
     ExecutionProfile.AUTO_RANGE: _AdaptiveMemoryPolicy(
         available_ram_basis_points=6_000,
         floor_bytes=2 * 1024 * _MIB,
@@ -93,6 +98,7 @@ _ADAPTIVE_LOCAL_PROFILES = frozenset(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.EXPLORE_ANALYSIS,
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.CHUNKED_MAP_REDUCE,
@@ -115,6 +121,10 @@ _PROFILE_MEMORY_ENV: dict[ExecutionProfile, tuple[str, str]] = {
     ExecutionProfile.OPTIMISER_SETUP: (
         "HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES",
         "HAUTE_OPTIMISER_MEMORY_LIMIT_MB",
+    ),
+    ExecutionProfile.EXPLORE_ANALYSIS: (
+        "HAUTE_EXPLORE_MEMORY_LIMIT_BYTES",
+        "HAUTE_EXPLORE_MEMORY_LIMIT_MB",
     ),
     ExecutionProfile.AUTO_RANGE: (
         "HAUTE_AUTO_RANGE_MEMORY_LIMIT_BYTES",
@@ -156,6 +166,10 @@ _PROFILE_PROCESS_RSS_ENV: dict[ExecutionProfile, tuple[str, str]] = {
         "HAUTE_OPTIMISER_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_OPTIMISER_PROCESS_RSS_LIMIT_MB",
     ),
+    ExecutionProfile.EXPLORE_ANALYSIS: (
+        "HAUTE_EXPLORE_PROCESS_RSS_LIMIT_BYTES",
+        "HAUTE_EXPLORE_PROCESS_RSS_LIMIT_MB",
+    ),
     ExecutionProfile.AUTO_RANGE: (
         "HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_MB",
@@ -184,6 +198,7 @@ _IN_FLIGHT_PROFILE_SET = frozenset(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.EXPLORE_ANALYSIS,
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.CHUNKED_MAP_REDUCE,

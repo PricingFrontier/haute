@@ -5,8 +5,9 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, exploreCodeEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
+  exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
@@ -19,6 +20,10 @@ vi.mock("../LazyNodeEditors", () => ({
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return <div data-testid="TransformEditor" />
+  },
+  ExploreCodeEditor: (props: Record<string, unknown>) => {
+    exploreCodeEditorProps.push(props)
+    return <div data-testid="ExploreCodeEditor" />
   },
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => {
@@ -101,8 +106,9 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
 describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
-    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true })
+    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true, explorePanes: {}, explorePreviewPanes: {} })
     transformEditorProps.length = 0
+    exploreCodeEditorProps.length = 0
     bandingEditorProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
@@ -239,6 +245,145 @@ describe("NodePanel", () => {
   it("renders OptimiserApplyEditor for optimiserApply nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "OA", description: "", nodeType: "optimiserApply", config: {} } }) })
     expect(screen.getByTestId("OptimiserApplyEditor")).toBeInTheDocument()
+  })
+
+  it("hides generic config controls but shows the refresh action for explore nodes", () => {
+    const onRefreshPreview = vi.fn()
+    renderPanel({
+      node: makeNode({
+        data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+      }),
+      onRefreshPreview,
+    })
+
+    expect(screen.queryByRole("button", { name: /^config$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
+    const refreshButton = screen.getByTitle("Refresh Explore outputs")
+    const closeButton = screen.getByTitle("Close")
+    expect(refreshButton.compareDocumentPosition(closeButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(refreshButton)
+
+    expect(onRefreshPreview).toHaveBeenCalledOnce()
+  })
+
+  it("renders Explore code before analysis panes and switches between them", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      },
+    })
+    const sourceNode = makeNode({
+      id: "source_1",
+      data: {
+        label: "Claims Source",
+        description: "",
+        nodeType: "dataSource",
+        config: {},
+        _columns: [{ name: "premium", dtype: "Int64" }],
+      },
+    })
+    const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
+    const otherNode = makeNode({
+      id: "polars_1",
+      data: { label: "Transform", description: "", nodeType: "polars", config: {} },
+    })
+    const { rerender, props } = renderPanel({
+      node: exploreNode,
+      allNodes: [sourceNode, exploreNode],
+      edges: [sourceEdge],
+    })
+
+    const code = screen.getByRole("tab", { name: "Polars Code" })
+    const overview = screen.getByRole("tab", { name: "Overview" })
+    const relationships = screen.getByRole("tab", { name: "Relationships" })
+    const charts = screen.getByRole("tab", { name: "Charts" })
+    const exportPane = screen.getByRole("tab", { name: "Export" })
+
+    expect(code).toHaveAttribute("aria-selected", "true")
+    expect(overview).toHaveAttribute("aria-selected", "false")
+    expect(relationships).toHaveAttribute("aria-selected", "false")
+    expect(charts).toHaveAttribute("aria-selected", "false")
+    expect(exportPane).toHaveAttribute("aria-selected", "false")
+    expect(screen.getByTestId("ExploreCodeEditor")).toBeInTheDocument()
+    expect(exploreCodeEditorProps.at(-1)).toMatchObject({
+      config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      inputSources: [
+        {
+          sourceNodeId: "source_1",
+          varName: "Claims_Source",
+          sourceLabel: "Claims Source",
+          edgeId: "e_source_explore",
+        },
+      ],
+      upstreamColumns: [{ name: "premium", dtype: "Int64" }],
+    })
+
+    fireEvent.click(charts)
+
+    expect(charts).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={otherNode} />
+      </GraphProvider>,
+    )
+    expect(screen.getByTestId("TransformEditor")).toBeInTheDocument()
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={exploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+  })
+
+  it("keeps Explore pane selection separate per Explore node", () => {
+    const firstExploreNode = makeNode({
+      id: "explore_1",
+      data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+    })
+    const secondExploreNode = makeNode({
+      id: "explore_2",
+      data: { label: "Explore Policies", description: "", nodeType: "explore", config: {} },
+    })
+    const { rerender, props } = renderPanel({
+      node: firstExploreNode,
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Export" }))
+    expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={secondExploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Polars Code" })).toHaveAttribute("aria-selected", "true")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Relationships" }))
+    expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={firstExploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
+    expect(useUIStore.getState().explorePanes).toEqual({
+      explore_1: "export",
+      explore_2: "relationships",
+    })
   })
 
   it("renders ScenarioExpanderEditor for scenarioExpander nodes", () => {

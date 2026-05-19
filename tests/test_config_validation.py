@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import get_type_hints
+
 import pytest
 
 from haute._config_validation import (
@@ -15,6 +17,7 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    ExploreConfig,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,
@@ -41,6 +44,7 @@ class TestValidKeysRegistry:
             NodeType.RATING_STEP,
             NodeType.OUTPUT,
             NodeType.DATA_SINK,
+            NodeType.EXPLORE,
             NodeType.EXTERNAL_FILE,
             NodeType.LIVE_SWITCH,
             NodeType.MODELLING,
@@ -71,6 +75,7 @@ class TestValidKeysRegistry:
             (NodeType.RATING_STEP, "tables"),
             (NodeType.OUTPUT, "fields"),
             (NodeType.DATA_SINK, "format"),
+            (NodeType.EXPLORE, "contract"),
             (NodeType.EXTERNAL_FILE, "fileType"),
             (NodeType.LIVE_SWITCH, "input_scenario_map"),
             (NodeType.MODELLING, "algorithm"),
@@ -290,6 +295,13 @@ class TestBuildNodeConfigProducesValidKeys:
                 id="data_sink",
             ),
             pytest.param(
+                NodeType.EXPLORE,
+                {},
+                "",
+                ["df"],
+                id="explore",
+            ),
+            pytest.param(
                 NodeType.EXTERNAL_FILE,
                 {"external": "m.pkl", "file_type": "pickle"},
                 "",
@@ -458,6 +470,12 @@ class TestSelectedColumnsUniversal:
     def test_selected_columns_in_transform_typed_dict(self):
         """TransformConfig TypedDict should declare selected_columns."""
         assert "selected_columns" in TransformConfig.__annotations__
+
+    def test_explore_config_allows_polars_code(self):
+        """Explore can store the Polars snippet used to prepare analysis data."""
+        assert get_type_hints(ExploreConfig) == {"code": str}
+        assert warn_unrecognized_config_keys(NodeType.EXPLORE, {}) == []
+        assert warn_unrecognized_config_keys(NodeType.EXPLORE, {"code": "df = df.head(10)"}) == []
 
 
 # ---------------------------------------------------------------------------

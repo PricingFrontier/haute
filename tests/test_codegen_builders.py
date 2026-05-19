@@ -14,6 +14,7 @@ import pytest
 
 from haute._codegen_builders import _build_extra_kwargs
 from haute.codegen import _node_to_code, graph_to_code
+from haute.errors import ParseError
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
@@ -522,6 +523,61 @@ class TestGenOptimiser:
 
 
 # ---------------------------------------------------------------------------
+# _gen_explore
+# ---------------------------------------------------------------------------
+
+
+class TestGenExplore:
+    """Tests for explore code generation."""
+
+    def test_basic_explore_is_passthrough_analysis_sink(self) -> None:
+        node = _make_codegen_node("explore", {}, label="InspectClaims")
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert "@pipeline.explore(" in code
+        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        assert "return claims" in code
+        assert "config/" not in code
+        _compile_node_code(code)
+
+    def test_explore_with_polars_code_generates_transform_body(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {
+                "code": (
+                    "df = df.filter(pl.col('premium') > 0)"
+                    ".with_columns((pl.col('premium') * 2).alias('double_premium'))"
+                )
+            },
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert "@pipeline.explore(" in code
+        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        assert "df = claims" in code
+        assert ".filter(pl.col('premium') > 0)" in code
+        assert "return df" in code
+        assert "return claims" not in code
+        assert "config/" not in code
+        _compile_node_code(code)
+
+    def test_no_sources_raise(self) -> None:
+        node = _make_codegen_node("explore", {}, label="Inspect")
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            _node_to_code(node, source_names=[])
+
+    def test_multiple_sources_raise(self) -> None:
+        node = _make_codegen_node("explore", {}, label="Inspect")
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            _node_to_code(node, source_names=["left", "right"])
+
+
+# ---------------------------------------------------------------------------
 # Full graph round-trip with these node types
 # ---------------------------------------------------------------------------
 
@@ -640,6 +696,35 @@ class TestGraphToCodeWithBuilders:
         code = graph_to_code(graph)
         assert "def Optimise(Data: pl.LazyFrame)" in code
         assert 'pipeline.connect("Data", "Optimise")' in code
+        compile(code, "<test>", "exec")
+
+    def test_pipeline_with_explore_compiles(self) -> None:
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Claims",
+                            "nodeType": "dataSource",
+                            "config": {"path": "claims.parquet"},
+                        },
+                    },
+                    {
+                        "id": "explore",
+                        "data": {
+                            "label": "Explore Claims",
+                            "nodeType": "explore",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "explore"}],
+            }
+        )
+        code = graph_to_code(graph)
+        assert "def Explore_Claims(Claims: pl.LazyFrame)" in code
+        assert 'pipeline.connect("Claims", "Explore_Claims")' in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_api_input_compiles(self) -> None:

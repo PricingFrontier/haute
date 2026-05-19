@@ -76,6 +76,10 @@ vi.mock("../api/client", async () => {
     logOptimiserToMlflow: vi.fn(() => Promise.resolve({})),
     runFrontier: vi.fn(() => Promise.resolve({})),
     selectFrontierPoint: vi.fn(() => Promise.resolve({})),
+    // Explore
+    runExplore: vi.fn(() => Promise.resolve({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })),
+    getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
+    cancelExplore: vi.fn(() => Promise.resolve({ status: "cancelled", progress: 1, message: "cancelled", result: null })),
     // Databricks
     getWarehouses: vi.fn(() => Promise.resolve({ warehouses: [] })),
     getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
@@ -189,11 +193,23 @@ function resetAllStores(): void {
     syncBanner: null,
     nodePanelWidth: 0,
     ratingStepEditorSections: {},
+    explorePanes: {},
+    explorePreviewPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  useNodeResultsStore.setState({ previews: {}, columnCache: {} })
+  useNodeResultsStore.setState({
+    previews: {},
+    pinnedPreviewNodeId: null,
+    columnCache: {},
+    solveResults: {},
+    solveJobs: {},
+    trainResults: {},
+    trainJobs: {},
+    exploreResults: {},
+    exploreJobs: {},
+  })
   useSettingsStore.setState({
     rowLimit: 100,
     mlflow: {
@@ -339,6 +355,9 @@ beforeEach(() => {
   vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "" })
   vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
+  vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
+  vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
+  vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
   vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   vi.mocked(api.getGitStatus).mockReset().mockResolvedValue({ branch: "main", is_main: true, is_read_only: false, changed_files: [], main_ahead: false, main_ahead_by: 0, main_last_updated: null })
@@ -470,6 +489,85 @@ describe("App integration — load a pipeline with nodes", () => {
       expect(screen.getByRole("button", { name: /^centre$/i })).toBeEnabled()
       expect(screen.getByRole("button", { name: /^layout$/i })).toBeEnabled()
     })
+  })
+
+  it("selecting an Explore node previews the post-code dataframe in the Explore lower panel", async () => {
+    const sourceNode = makeNode("source_0", "Claims Source", "dataSource")
+    sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [
+        sourceNode,
+        makeNode("explore_1", "Claims Explore", "explore"),
+      ],
+      edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
+      preamble: "",
+    })
+    useSettingsStore.setState({ rowLimit: 2 })
+    vi.mocked(api.previewNode).mockResolvedValueOnce({
+      node_id: "explore_1",
+      status: "ok",
+      columns: [
+        { name: "premium", dtype: "i64" },
+        { name: "premium_plus_one", dtype: "i64" },
+      ],
+      preview_columns: ["premium", "premium_plus_one"],
+      preview: [
+        { premium: 10, premium_plus_one: 11 },
+        { premium: 20, premium_plus_one: 21 },
+      ],
+      preview_row_count: 2,
+      preview_row_limit: 2,
+      preview_truncated: true,
+      row_count: 3,
+      column_count: 2,
+    })
+    vi.mocked(api.previewNode).mockResolvedValueOnce({
+      node_id: "explore_1",
+      status: "ok",
+      columns: [
+        { name: "premium", dtype: "i64" },
+        { name: "premium_plus_one", dtype: "i64" },
+      ],
+      preview_columns: ["premium", "premium_plus_one"],
+      preview: [
+        { premium: 30, premium_plus_one: 31 },
+        { premium: 40, premium_plus_one: 41 },
+      ],
+      preview_row_count: 2,
+      preview_row_limit: 2,
+      preview_truncated: true,
+      row_count: 4,
+      column_count: 2,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+    const exploreNode = await screen.findByText("Claims Explore")
+    fireEvent.click(exploreNode)
+
+    expect(await screen.findByRole("button", { name: /process & cache full data/i })).toBeInTheDocument()
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: "explore_1",
+      rowLimit: 2,
+      source: "live",
+    }))
+    expect(await screen.findByTestId("data-preview-embedded")).toBeInTheDocument()
+    expect(screen.getByText("premium_plus_one")).toBeInTheDocument()
+    expect(screen.getByText("11")).toBeInTheDocument()
+    expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTitle("Refresh Explore outputs"))
+
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.previewNode)).toHaveBeenLastCalledWith(expect.objectContaining({
+      nodeId: "explore_1",
+      rowLimit: 2,
+      source: "live",
+    }))
+    expect(await screen.findByText("31")).toBeInTheDocument()
+    expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
   })
 })
 

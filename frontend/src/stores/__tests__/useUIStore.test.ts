@@ -13,6 +13,8 @@ function reset() {
     syncBanner: null,
     nodePanelWidth: 0,
     ratingStepEditorSections: {},
+    explorePanes: {},
+    explorePreviewPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
@@ -191,6 +193,60 @@ describe("useUIStore", () => {
       expect(useUIStore.getState().ratingStepEditorSections).toEqual({
         rating_1: "combined",
         rating_2: "code",
+      })
+    })
+  })
+
+  describe("explorePanes", () => {
+    it("defaults to an empty lookup", () => {
+      expect(useUIStore.getState().explorePanes).toEqual({})
+    })
+
+    it("stores the selected pane by node id", () => {
+      useUIStore.getState().setExplorePane("explore_1", "code")
+      useUIStore.getState().setExplorePane("explore_2", "charts")
+
+      expect(useUIStore.getState().explorePanes).toEqual({
+        explore_1: "code",
+        explore_2: "charts",
+      })
+    })
+
+    it("replaces only the selected node entry", () => {
+      useUIStore.getState().setExplorePane("explore_1", "overview")
+      useUIStore.getState().setExplorePane("explore_2", "relationships")
+      useUIStore.getState().setExplorePane("explore_1", "export")
+
+      expect(useUIStore.getState().explorePanes).toEqual({
+        explore_1: "export",
+        explore_2: "relationships",
+      })
+    })
+  })
+
+  describe("explorePreviewPanes", () => {
+    it("defaults to an empty lookup", () => {
+      expect(useUIStore.getState().explorePreviewPanes).toEqual({})
+    })
+
+    it("stores the selected lower pane by node id", () => {
+      useUIStore.getState().setExplorePreviewPane("explore_1", "preview")
+      useUIStore.getState().setExplorePreviewPane("explore_2", "charts")
+
+      expect(useUIStore.getState().explorePreviewPanes).toEqual({
+        explore_1: "preview",
+        explore_2: "charts",
+      })
+    })
+
+    it("replaces only the selected node entry", () => {
+      useUIStore.getState().setExplorePreviewPane("explore_1", "overview")
+      useUIStore.getState().setExplorePreviewPane("explore_2", "relationships")
+      useUIStore.getState().setExplorePreviewPane("explore_1", "charts")
+
+      expect(useUIStore.getState().explorePreviewPanes).toEqual({
+        explore_1: "charts",
+        explore_2: "relationships",
       })
     })
   })

@@ -9,6 +9,7 @@ vi.mock("../../hooks/useDragResize", () => ({
     height: 320,
     containerRef: { current: null },
     onDragStart: vi.fn(),
+    resizeToHeight: vi.fn(),
   }),
 }))
 
@@ -543,9 +544,7 @@ describe("OptimiserDataPreview", () => {
 
     it("defaults to Chart tab", () => {
       renderComponent()
-      // Chart tab should be active — chart SVG is present
-      const chartBtn = screen.getByText("Chart")
-      expect(chartBtn.style.color).toContain("var(--accent)")
+      expect(screen.getByRole("tab", { name: "Chart" })).toHaveAttribute("aria-selected", "true")
     })
 
     it("switches to Statistics tab and shows stats tables", () => {

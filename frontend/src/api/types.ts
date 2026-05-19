@@ -391,6 +391,40 @@ export interface TrainStatusResponse {
   execution_metrics?: ExecutionMetrics | null
 }
 
+// ---------------------------------------------------------------------------
+// Explore types
+// ---------------------------------------------------------------------------
+
+/** Lightweight descriptor of a materialised Explore cache entry. */
+export interface ExploreCacheReport {
+  status: "ok"
+  node_id: string
+  upstream_node_id: string
+  source: string
+  dataframe_cache_key: string
+  row_count: number
+  column_count: number
+  generated_at: number
+  execution_metrics?: ExecutionMetrics | null
+}
+
+export interface ExploreRunResponse {
+  status: "started" | "running" | "completed"
+  job_id?: string | null
+  cached: boolean
+  message: string
+  result?: ExploreCacheReport | null
+}
+
+export interface ExploreStatusResponse {
+  status: JobStatus
+  progress: number
+  message: string
+  result?: ExploreCacheReport | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
+}
+
 export interface MlflowLogResponse {
   status: string
   backend: string

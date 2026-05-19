@@ -32,6 +32,7 @@ vi.mock("../../hooks/useDragResize", () => ({
     height: 256,
     containerRef: { current: null },
     onDragStart: vi.fn(),
+    resizeToHeight: vi.fn(),
   }),
 }))
 
@@ -89,6 +90,22 @@ describe("DataPreview", () => {
     expect(screen.getByText(/2 cols/)).toBeInTheDocument()
   })
 
+  it("uses a node-level frame header above the preview section", () => {
+    render(<DataPreview data={makePreview()} />)
+
+    const nodeTitle = screen.getByText("Test Node")
+    const previewTitle = screen.getByText("Preview")
+
+    expect(screen.getByLabelText("Collapse preview panel")).toBeInTheDocument()
+    expect(nodeTitle.compareDocumentPosition(previewTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("uses the selected node type icon in the frame header", () => {
+    render(<DataPreview data={makePreview()} nodeType="dataSource" />)
+
+    expect(screen.getByTestId("preview-panel-node-icon").querySelector(".lucide-database")).toBeTruthy()
+  })
+
   it("renders error message for error status", () => {
     render(<DataPreview data={makePreview({ status: "error", error: "Division by zero" })} />)
     expect(screen.getAllByText("Division by zero").length).toBeGreaterThanOrEqual(1)
@@ -98,6 +115,20 @@ describe("DataPreview", () => {
     render(<DataPreview data={makePreview({ status: "loading" })} />)
     expect(screen.getByText("Running...")).toBeInTheDocument()
     expect(screen.getByText("Executing pipeline...")).toBeInTheDocument()
+  })
+
+  it("renders as an embedded table body without duplicating the outer frame's title", () => {
+    render(<DataPreview data={makePreview()} embedded />)
+
+    expect(screen.getByTestId("data-preview-embedded")).toBeInTheDocument()
+    // "Preview" label and Table2 icon are suppressed in embedded mode — the
+    // composite parent (e.g. ExplorePreview's PreviewPanelFrame) already shows
+    // the node label and status, so duplicating chrome here is redundant.
+    expect(screen.queryByText("Preview")).not.toBeInTheDocument()
+    expect(screen.getByText(/3 rows/)).toBeInTheDocument()
+    expect(screen.getByText("25")).toBeInTheDocument()
+    expect(screen.getByText("premium")).toBeInTheDocument()
+    expect(screen.queryByText("Test Node")).not.toBeInTheDocument()
   })
 
   it("surfaces preview memory-pressure diagnostics with technical details", () => {
@@ -456,11 +487,7 @@ describe("DataPreview", () => {
 
   it("collapse button hides table and shows collapsed bar", () => {
     render(<DataPreview data={makePreview()} />)
-    // Find the collapse button (ChevronDown)
-    const buttons = screen.getAllByRole("button")
-    // Collapse is the first button in the header bar
-    const collapseBtn = buttons[0]
-    fireEvent.click(collapseBtn)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
     // In collapsed state, we should still see the node label and row count
     expect(screen.getByText("Test Node")).toBeInTheDocument()
     expect(screen.getByText(/3 rows/)).toBeInTheDocument()
@@ -470,12 +497,8 @@ describe("DataPreview", () => {
 
   it("expanding from collapsed state shows table again", () => {
     render(<DataPreview data={makePreview()} />)
-    // Collapse first
-    const buttons = screen.getAllByRole("button")
-    fireEvent.click(buttons[0]) // collapse
-    // Now expand
-    const expandBtn = screen.getByRole("button")
-    fireEvent.click(expandBtn)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+    fireEvent.click(screen.getByLabelText("Expand preview panel"))
     // Table data should be visible again
     expect(screen.getByText("25")).toBeInTheDocument()
   })

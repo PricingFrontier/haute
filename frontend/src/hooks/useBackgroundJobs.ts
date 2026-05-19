@@ -11,9 +11,9 @@
  * wires up store selectors and API functions for each job type.
  */
 import { useCallback } from "react"
-import { getOptimiserStatus, getTrainStatus } from "../api/client"
+import { getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import type { SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import type { ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
 import useToastStore from "../stores/useToastStore"
 import { buildExecutionFailureMessage } from "../utils/executionDiagnostics"
 import useJobPolling from "./useJobPolling"
@@ -131,5 +131,46 @@ export default function useBackgroundJobs() {
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",
+  })
+
+  // ── Explore job polling ──
+
+  const exploreJobs = useNodeResultsStore((s) => s.exploreJobs)
+  const updateExploreProgress = useNodeResultsStore((s) => s.updateExploreProgress)
+  const completeExploreJob = useNodeResultsStore((s) => s.completeExploreJob)
+  const failExploreJob = useNodeResultsStore((s) => s.failExploreJob)
+
+  const explorePollFn = useCallback(
+    (jobId: string) => getExploreStatus<ExploreProgress>(jobId),
+    [],
+  )
+  const exploreOnComplete = useCallback(
+    (nodeId: string, status: ExploreProgress) => {
+      if (!status.result) return
+      completeExploreJob(nodeId, status.result, status)
+    },
+    [completeExploreJob],
+  )
+
+  useJobPolling<(typeof exploreJobs)[string], ExploreProgress>({
+    jobs: exploreJobs,
+    pollFn: explorePollFn,
+    onProgress: updateExploreProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: exploreOnComplete,
+    onFail: failExploreJob,
+    labelFn: (job) => job.nodeLabel,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => (s.result ? s : undefined),
+    getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
+      status: s.status,
+      terminalReason: s.terminal_reason,
+    }),
+    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    addToast,
+    successLabel: "Explore complete",
+    failLabel: "Explore failed",
   })
 }

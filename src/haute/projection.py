@@ -285,6 +285,7 @@ _STRICT_PROJECTION_PROFILES = frozenset(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.EXPLORE_ANALYSIS,
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.CHUNKED_MAP_REDUCE,
@@ -1209,6 +1210,7 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.OUTPUT: _coverage(NodeType.OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.DATA_SINK: _coverage(NodeType.DATA_SINK, _GENERIC_CONTRACT_RULE_NAME),
+            NodeType.EXPLORE: _coverage(NodeType.EXPLORE, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.MODELLING: _coverage(NodeType.MODELLING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.SCENARIO_EXPANDER: _coverage(
                 NodeType.SCENARIO_EXPANDER,

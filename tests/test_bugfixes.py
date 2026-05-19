@@ -627,6 +627,144 @@ class TestPreviewRouteSourceFile:
         assert results["quotes"].row_count == 1
         assert results["quotes"].preview[0]["quote_id"] == "q-1"
 
+    def test_preview_ignores_disconnected_explore_outside_target_lineage(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A draft Explore node must not break previews for unrelated nodes."""
+        from haute._sandbox import set_project_root
+
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        data_path = tmp_path / "claims.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(data_path)
+
+        graph = _make_graph(
+            nodes=[
+                _source_node("src", path="claims.parquet"),
+                GraphNode(
+                    id="calc",
+                    data=NodeData(
+                        label="Calc",
+                        nodeType=NodeType.POLARS,
+                        config={"code": "df = df.with_columns(y=pl.col('x') * 2)"},
+                    ),
+                ),
+                GraphNode(
+                    id="explore",
+                    data=NodeData(
+                        label="Explore",
+                        nodeType=NodeType.EXPLORE,
+                        config={},
+                    ),
+                ),
+            ],
+            edges=[_e("src", "calc")],
+        )
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json"),
+                "node_id": "calc",
+                "row_limit": 100,
+                "source": "live",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert [column["name"] for column in body["columns"]] == ["x", "y"]
+        assert body["preview"][0] == {"x": 1, "y": 2}
+
+    def test_preview_returns_node_error_for_unconnected_explore_target(
+        self,
+        client,
+    ):
+        """Selecting an unconnected draft Explore node should not 500."""
+        graph = _make_graph(
+            nodes=[
+                GraphNode(
+                    id="explore_8",
+                    data=NodeData(
+                        label="Explore 8",
+                        nodeType=NodeType.EXPLORE,
+                        config={},
+                    ),
+                )
+            ],
+            edges=[],
+        )
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json"),
+                "node_id": "explore_8",
+                "row_limit": 100,
+                "source": "live",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["node_id"] == "explore_8"
+        assert body["status"] == "error"
+        assert "exactly one incoming edge" in body["error"]
+
+    def test_preview_explore_target_applies_polars_code(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Explore preview should show the dataframe after its own code runs."""
+        from haute._sandbox import set_project_root
+
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        data_path = tmp_path / "claims.parquet"
+        pl.DataFrame({"x": [1, 2, 3, 4]}).write_parquet(data_path)
+
+        graph = _make_graph(
+            nodes=[
+                _source_node("src", path="claims.parquet"),
+                GraphNode(
+                    id="explore",
+                    data=NodeData(
+                        label="Explore",
+                        nodeType=NodeType.EXPLORE,
+                        config={
+                            "code": (
+                                "df = df.filter(pl.col('x') > 1)"
+                                ".with_columns((pl.col('x') * 10).alias('scaled'))"
+                            )
+                        },
+                    ),
+                ),
+            ],
+            edges=[_e("src", "explore")],
+        )
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json"),
+                "node_id": "explore",
+                "row_limit": 3,
+                "source": "live",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert [column["name"] for column in body["columns"]] == ["x", "scaled"]
+        assert body["preview"] == [{"x": 2, "scaled": 20}, {"x": 3, "scaled": 30}]
+
 
 # ---------------------------------------------------------------------------
 # Polars Config safety — general guard against invalid chunk sizes

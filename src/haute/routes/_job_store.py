@@ -532,7 +532,9 @@ class JobStore:
 #   2. Update the caller in its route module.
 #   3. Add a test that asserts the new prefix returns a store distinct
 #      from the existing ones.
-_KNOWN_PREFIXES: frozenset[str] = frozenset({"training", "optimiser"})  # pragma: no mutate
+_KNOWN_PREFIXES: frozenset[str] = frozenset(  # pragma: no mutate
+    {"training", "optimiser", "explore"}
+)
 
 
 @functools.cache

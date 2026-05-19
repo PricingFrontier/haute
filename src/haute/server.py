@@ -42,6 +42,7 @@ from haute.routes._helpers import (
     ws_clients_lock,
 )
 from haute.routes.databricks import router as databricks_router
+from haute.routes.explore import router as explore_router
 from haute.routes.files import router as files_router
 from haute.routes.git import router as git_router
 from haute.routes.json_cache import router as json_cache_router
@@ -233,6 +234,7 @@ app.include_router(databricks_router)
 app.include_router(files_router)
 app.include_router(json_cache_router)
 app.include_router(submodel_router)
+app.include_router(explore_router)
 app.include_router(modelling_router)
 app.include_router(optimiser_router)
 app.include_router(mlflow_router)

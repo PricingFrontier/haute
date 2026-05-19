@@ -137,6 +137,10 @@ class NodeRegistry:
         """Decorator alias for data-sink nodes."""
         return self._register_node(fn, _node_type=NodeType.DATA_SINK, **config)
 
+    def explore(self, fn: Callable | None = None, **config: Any) -> Callable:
+        """Decorator alias for explore nodes."""
+        return self._register_node(fn, _node_type=NodeType.EXPLORE, **config)
+
     def external_file(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for external-file nodes."""
         return self._register_node(fn, _node_type=NodeType.EXTERNAL_FILE, **config)

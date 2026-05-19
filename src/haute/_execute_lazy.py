@@ -23,6 +23,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import resolve_orig_source_names, upstream_node_ids
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim, bounded_sink, streaming_collect
@@ -600,6 +601,16 @@ def _execute_lazy(
         graph,
         target_node_id,
         source=source,
+    )
+    # Re-check graph-shape contracts for the nodes that will actually execute.
+    # The parser already validates parse-time graphs, but routes can build raw
+    # graphs from the frontend that bypass the parser; without this check, a
+    # malformed explore node would surface as a confusing Polars TypeError
+    # instead of a typed ParseError.
+    validate_pipeline_graph_shape_contracts(
+        graph,
+        graph_label=graph.pipeline_name or "execution",
+        node_ids_to_validate=set(order) if target_node_id is not None else None,
     )
     normalised_required_columns = _normalise_required_columns_by_node(
         required_columns_by_node,
@@ -1446,6 +1457,14 @@ def _execute_eager_core(
         graph,
         target_node_id,
         source=source,
+    )
+    # See _execute_lazy: the parser is bypassed for frontend-built graphs, so
+    # re-check graph-shape contracts on the executed subset to give a clean
+    # ParseError instead of a Polars TypeError.
+    validate_pipeline_graph_shape_contracts(
+        graph,
+        graph_label=graph.pipeline_name or "execution",
+        node_ids_to_validate=set(order) if target_node_id is not None else None,
     )
     normalised_required_columns = _normalise_required_columns_by_node(
         required_columns_by_node,

@@ -4,6 +4,8 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   parseApplyOptimiserResponse,
   parseDissolveSubmodelResponse,
+  parseExploreRunResponse,
+  parseExploreStatusResponse,
   parseFrontierAutoRangeResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
@@ -343,6 +345,32 @@ describe("API response guards", () => {
 
     expect(parsed.result?.status).toBe("completed")
     expect(parsed.train_loss.learn).toBe(0.1)
+  })
+
+  it("parses explore run and status responses as cache descriptors", () => {
+    const run = parseExploreRunResponse(loadUiContractFixture("explore_run_response"))
+    const status = parseExploreStatusResponse(loadUiContractFixture("explore_status_response"))
+
+    expect(run.cached).toBe(true)
+    expect(run.result?.row_count).toBe(150)
+    expect(run.result?.column_count).toBe(3)
+    expect(run.result?.dataframe_cache_key).toContain("explore_dataset")
+    expect(status.result?.dataframe_cache_key).toBe(run.result?.dataframe_cache_key)
+  })
+
+  it("rejects malformed explore result payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+    const result = fixture.result as Record<string, unknown>
+
+    expect(() =>
+      parseExploreStatusResponse({
+        ...fixture,
+        result: {
+          ...result,
+          row_count: "bad",
+        },
+      }),
+    ).toThrow(/parseExploreCacheReport/i)
   })
 
   it("preserves typed execution metrics on train status responses", () => {

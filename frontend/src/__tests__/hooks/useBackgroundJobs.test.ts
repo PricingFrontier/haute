@@ -18,13 +18,15 @@ import { renderHook, act, cleanup } from "@testing-library/react"
 vi.mock("../../api/client.ts", () => ({
   getOptimiserStatus: vi.fn(),
   getTrainStatus: vi.fn(),
+  getExploreStatus: vi.fn(),
 }))
 
-import { getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
+import { getExploreStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import type { SolveProgress, TrainProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExploreProgress, SolveProgress, TrainProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExploreCacheReport } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -37,6 +39,8 @@ function resetStores() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
+    exploreResults: {},
+    exploreJobs: {},
   })
   useToastStore.setState({
     toasts: [],
@@ -63,6 +67,30 @@ function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgres
     total_iterations: 100,
     train_loss: { rmse: 0.1 },
     elapsed_seconds: 5,
+    ...overrides,
+  }
+}
+
+function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
+  return {
+    status: "ok",
+    node_id: "explore_1",
+    upstream_node_id: "source_1",
+    source: "pricing",
+    dataframe_cache_key: "explore_dataset:abc",
+    row_count: 123,
+    column_count: 4,
+    generated_at: 1710000000,
+    ...overrides,
+  }
+}
+
+function makeExploreProgress(overrides: Partial<ExploreProgress> = {}): ExploreProgress {
+  return {
+    status: "running",
+    progress: 0.5,
+    message: "Exploring...",
+    result: null,
     ...overrides,
   }
 }
@@ -376,6 +404,65 @@ describe("useBackgroundJobs", () => {
   // ────────────────────────────────────────────────────────────────
   // Exponential backoff
   // ────────────────────────────────────────────────────────────────
+
+  describe("explore job polling", () => {
+    it("polls and completes an Explore job when API returns a cached report", async () => {
+      const mockGetStatus = vi.mocked(getExploreStatus)
+      const report = makeExploreReport({ row_count: 2000, column_count: 8 })
+      mockGetStatus.mockResolvedValueOnce(
+        makeExploreProgress({
+          status: "completed",
+          progress: 1,
+          message: "Explore analysis complete",
+          result: report,
+        }),
+      )
+
+      act(() => {
+        useNodeResultsStore.getState().startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      const state = useNodeResultsStore.getState()
+      expect(mockGetStatus).toHaveBeenCalledWith("ej-1")
+      expect(state.exploreJobs.e1).toBeUndefined()
+      expect(state.exploreResults.e1).toMatchObject({
+        jobId: "ej-1",
+        configHash: "eh",
+        source: "pricing",
+        structuralVersion: 3,
+        result: expect.objectContaining({ row_count: 2000, column_count: 8 }),
+      })
+    })
+
+    it("treats a missing Explore job as terminal and stops polling", async () => {
+      const mockGetStatus = vi.mocked(getExploreStatus)
+      mockGetStatus.mockRejectedValue({
+        name: "ApiError",
+        status: 404,
+        detail: "Job 'ej-missing' not found",
+        message: "HTTP 404",
+      })
+
+      act(() => {
+        useNodeResultsStore.getState().startExploreJob("e1", "ej-missing", "Explore Node", "eh", "pricing", 0)
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+      expect(useNodeResultsStore.getState().exploreJobs.e1).toBeUndefined()
+      expect(useNodeResultsStore.getState().exploreResults.e1?.error).toBe("Job 'ej-missing' not found")
+
+      await advance(20_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+    })
+  })
 
   describe("exponential backoff", () => {
     it("increases poll interval after consecutive errors", async () => {

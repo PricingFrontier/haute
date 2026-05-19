@@ -23,6 +23,7 @@ from haute._contracts import (
     Contract,
     get_column_contract,
 )
+from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import _sanitize_func_name, build_instance_mapping
 from haute._logging import get_logger
 from haute._registry import NODE_REGISTRY
@@ -727,6 +728,7 @@ def graph_to_code_multi(
     if not description and graph.pipeline_description:
         description = graph.pipeline_description
     submodels = graph.submodels or {}
+    validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
 
     # Detect colliding labels across the whole graph once, eagerly, so
     # duplicate-function-name collisions are reported even when the

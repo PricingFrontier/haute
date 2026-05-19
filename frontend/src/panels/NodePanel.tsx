@@ -6,6 +6,7 @@ import { sanitizeName } from "../utils/sanitizeName"
 import {
   DataSourceEditor,
   TransformEditor,
+  ExploreCodeEditor,
   ModelScoreEditor,
   BandingEditor,
   RatingStepEditor,
@@ -26,7 +27,9 @@ import {
 } from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge } from "./editors"
 import type { HauteNodeData } from "../types/node"
+import useUIStore, { type ExplorePane } from "../stores/useUIStore"
 import PanelShell from "./PanelShell"
+import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 
 // Re-export types (preserve public API for App.tsx)
@@ -50,12 +53,23 @@ type NodePanelProps = {
 
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
-// modelling nodes are sink-only (no outputs).
+// modelling and explore nodes are sink-only (no outputs).
 const NO_COLUMNS_TAB = new Set<string>([
   NODE_TYPES.OUTPUT,
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.MODELLING,
+  NODE_TYPES.EXPLORE,
 ])
+
+// Right-panel panes for Explore nodes. Code prepares the analysis dataset;
+// the remaining panes are empty scaffolding for upcoming EDA work.
+const EXPLORE_PANES = [
+  { key: "code", label: "Polars Code" },
+  { key: "overview", label: "Overview" },
+  { key: "relationships", label: "Relationships" },
+  { key: "charts", label: "Charts" },
+  { key: "export", label: "Export" },
+] as const satisfies readonly { key: ExplorePane; label: string }[]
 
 // ─── Instance sub-panel (kept inline — it references multiple node-level concerns) ──
 
@@ -341,6 +355,8 @@ export default function NodePanel({
   const { allNodes, edges } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
+  const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
+  const setExplorePane = useUIStore((s) => s.setExplorePane)
 
   // Keep config and node in refs so handleConfigUpdate never captures stale values
   const configRef = useRef(config)
@@ -406,6 +422,11 @@ export default function NodePanel({
   const nodeType = node.data.nodeType
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
   const showColumnsTab = isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)
+  const showExplorePanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.EXPLORE
+  const showRefreshPreview = !!onRefreshPreview
+  const refreshTitle = showExplorePanes ? "Refresh Explore outputs" : "Refresh preview"
+  const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
+  const activeExplorePaneMeta = EXPLORE_PANES.find((pane) => pane.key === activeExplorePane) ?? EXPLORE_PANES[0]
 
   // ── Render the right editor based on nodeType ──
 
@@ -439,6 +460,37 @@ export default function NodePanel({
 
       case NODE_TYPES.DATA_SINK:
         return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} accentColor={accentColor} />
+
+      case NODE_TYPES.EXPLORE:
+        if (activeExplorePane === "code") {
+          return (
+            <div
+              id="explore-code-pane"
+              role="tabpanel"
+              aria-labelledby="explore-code-tab"
+              data-testid="explore-code-pane"
+              className="h-full min-h-0 flex flex-col"
+            >
+              <ExploreCodeEditor
+                config={config}
+                onUpdate={handleConfigUpdate}
+                inputSources={inputSources}
+                onDeleteInput={onDeleteEdge}
+                errorLine={errorLine}
+                upstreamColumns={upstreamColumns}
+              />
+            </div>
+          )
+        }
+        return (
+          <div
+            id={`explore-${activeExplorePaneMeta.key}-pane`}
+            role="tabpanel"
+            aria-labelledby={`explore-${activeExplorePaneMeta.key}-tab`}
+            data-testid={`explore-${activeExplorePaneMeta.key}-pane`}
+            className="h-full"
+          />
+        )
 
       case NODE_TYPES.EXTERNAL_FILE:
         return <ExternalFileEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
@@ -570,12 +622,12 @@ export default function NodePanel({
           className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
           style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
         />
-        {onRefreshPreview && (
+        {showRefreshPreview && (
           <button
             onClick={onRefreshPreview}
             className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
             style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
-            title="Refresh preview"
+            title={refreshTitle}
           >
             <RefreshCw size={11} />
             Refresh
@@ -623,8 +675,20 @@ export default function NodePanel({
         </div>
       )}
 
+      {showExplorePanes && (
+        <PreviewPanelTabs
+          tabs={EXPLORE_PANES}
+          activeTab={activeExplorePane}
+          onChange={(pane) => setExplorePane(node.id, pane)}
+          ariaLabel="Explore panes"
+          accentColor={accentColor}
+          equalWidth
+          idPrefix="explore"
+        />
+      )}
+
       {/* Schema warnings for non-instance nodes */}
-      {!isInstance && (() => {
+      {!isInstance && !showExplorePanes && (() => {
         const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
         if (warnings.length === 0) return null
         return (

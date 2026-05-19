@@ -118,6 +118,16 @@ class TestPipeline:
         assert p.nodes[0].config == {"path": "data.parquet", "_node_type": NodeType.DATA_SOURCE}
         assert p.nodes[0].is_source is True
 
+    def test_explore_decorator_registers_analysis_sink_node(self):
+        p = Pipeline("explore")
+
+        @p.explore
+        def inspect(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        assert p.nodes[0].config == {"_node_type": NodeType.EXPLORE}
+        assert p.nodes[0].is_source is False
+
     def test_empty_pipeline_raises(self):
         p = Pipeline("empty")
         with pytest.raises(ValueError, match="no nodes"):

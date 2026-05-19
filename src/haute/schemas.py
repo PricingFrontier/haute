@@ -363,6 +363,54 @@ class SinkResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# /api/explore
+# ---------------------------------------------------------------------------
+
+
+class ExploreCacheReport(BaseModel):
+    """Result of materialising an Explore node's upstream dataset.
+
+    Lightweight by design: the full frame lives in DataFrameExecutionCache
+    (parquet on disk). This payload tells the UI what was cached and how to
+    identify the cache entry.
+    """
+
+    status: Literal["ok"] = "ok"
+    node_id: str
+    upstream_node_id: str
+    source: str = "live"
+    dataframe_cache_key: str
+    row_count: int = 0
+    column_count: int = 0
+    generated_at: float = 0.0
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
+class ExploreRunRequest(BaseModel):
+    graph: Graph
+    node_id: str
+    source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
+
+
+class ExploreRunResponse(BaseModel):
+    status: Literal["started", "running", "completed"]
+    job_id: str | None = None
+    cached: bool = False
+    message: str = ""
+    result: ExploreCacheReport | None = None
+
+
+class ExploreStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    result: ExploreCacheReport | None = None
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
+# ---------------------------------------------------------------------------
 # /api/files
 # ---------------------------------------------------------------------------
 

@@ -30,6 +30,7 @@ class ExecutionProfile(StrEnum):
     LAZY_SINK = "lazy_sink"
     TRAINING_PREP = "training_prep"
     OPTIMISER_SETUP = "optimiser_setup"
+    EXPLORE_ANALYSIS = "explore_analysis"
     AUTO_RANGE = "auto_range"
     DEPLOY_LIVE = "deploy_live"
     DEPLOY_BATCH = "deploy_batch"

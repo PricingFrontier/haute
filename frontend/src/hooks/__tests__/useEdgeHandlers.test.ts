@@ -126,6 +126,28 @@ describe("useEdgeHandlers", () => {
     expect(params.setEdges).not.toHaveBeenCalled()
   })
 
+  it("onConnect blocks a second explore input", () => {
+    const params = makeParams()
+    const exploreNode = {
+      id: "explore1",
+      data: { label: "Explore", nodeType: NODE_TYPES.EXPLORE },
+    } as unknown as Node
+    params.graphRef.current.nodes = [exploreNode]
+    params.graphRef.current.edges = [
+      { id: "e1", source: "a", target: "explore1" } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onConnect({
+        source: "b",
+        target: "explore1",
+        sourceHandle: null,
+        targetHandle: null,
+      })
+    })
+    expect(params.setEdges).not.toHaveBeenCalled()
+  })
+
   it("onConnect allows connection when target has not reached maxInputs", () => {
     const params = makeParams()
     const expanderNode = {
@@ -245,6 +267,27 @@ describe("useEdgeHandlers", () => {
       id: "modelling1",
       position: { x: 0, y: 0 },
       data: { label: "Conversion", nodeType: NODE_TYPES.MODELLING },
+    } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
+  })
+
+  it("onNodeClick fetches preview for explore nodes so prepared rows load", () => {
+    const params = makeParams()
+    const node = {
+      id: "explore1",
+      position: { x: 0, y: 0 },
+      data: { label: "Explore", nodeType: NODE_TYPES.EXPLORE },
     } as Node
     const event = {} as React.MouseEvent
 

@@ -17,6 +17,8 @@ import type {
   DatabricksTablesResponse,
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
+  ExploreRunResponse,
+  ExploreStatusResponse,
   FetchProgressResponse,
   FetchTableResponse,
   FileListItem,
@@ -76,6 +78,8 @@ import {
   parseDatabricksTablesResponse,
   parseDatabricksWarehousesResponse,
   parseDissolveSubmodelResponse,
+  parseExploreRunResponse,
+  parseExploreStatusResponse,
   parseFetchProgressResponse,
   parseFetchTableResponse,
   parseFrontierAutoRangeResponse,
@@ -526,6 +530,48 @@ export function fetchDatabricksSchema(
   options?: { signal?: AbortSignal },
 ): Promise<SchemaResult> {
   return request<unknown>(`/api/schema/databricks?table=${encodeURIComponent(table)}`, options).then(parseSchemaResponse)
+}
+
+// ---------------------------------------------------------------------------
+// Explore endpoints
+// ---------------------------------------------------------------------------
+
+export interface RunExploreArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function runExplore(args: RunExploreArgs): Promise<ExploreRunResponse> {
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  return post<unknown>(
+    "/api/explore/run",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  ).then(parseExploreRunResponse)
+}
+
+export function getExploreStatus<T extends ExploreStatusResponse = ExploreStatusResponse>(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<T> {
+  return request<unknown>(`/api/explore/status/${encodeURIComponent(jobId)}`, options)
+    .then((data) => parseExploreStatusResponse(data) as T)
+}
+
+export function cancelExplore<T extends ExploreStatusResponse = ExploreStatusResponse>(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<T> {
+  return post<unknown>(`/api/explore/cancel/${encodeURIComponent(jobId)}`, {}, options)
+    .then((data) => parseExploreStatusResponse(data) as T)
 }
 
 // ---------------------------------------------------------------------------

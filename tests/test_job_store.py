@@ -1924,6 +1924,20 @@ class TestJobStoreFactoryAllowList:
         finally:
             get_job_store.cache_clear()
 
+    def test_explore_prefix_returns_distinct_store(self) -> None:
+        """`_KNOWN_PREFIXES` comment requires each new prefix to be verified distinct."""
+        get_job_store.cache_clear()
+        try:
+            training = get_job_store("training")
+            optimiser = get_job_store("optimiser")
+            explore = get_job_store("explore")
+
+            assert explore is get_job_store("explore")  # singleton per prefix
+            assert explore is not training
+            assert explore is not optimiser
+        finally:
+            get_job_store.cache_clear()
+
     def test_unknown_prefix_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match="Unknown JobStore prefix 'pipeline'"):
             get_job_store("pipeline")
