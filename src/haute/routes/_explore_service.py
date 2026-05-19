@@ -42,6 +42,7 @@ from haute.routes._job_store import JobStore
 from haute.schemas import (
     ExecutionMetricsPayload,
     ExploreCacheReport,
+    ExploreColumnStat,
     ExploreRunRequest,
     ExploreRunResponse,
     ExploreStatusResponse,
@@ -51,6 +52,116 @@ logger = get_logger(component="server.explore")
 
 EXPLORE_CACHE_VERSION = 1
 EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16
+
+# Dtypes whose values are not hashable in Polars and therefore cannot have
+# ``n_unique`` computed.  Pre-detected by dtype so we never invoke n_unique on
+# a column that is guaranteed to fail.
+_UNHASHABLE_DTYPES: tuple[type[pl.DataType], ...] = (pl.Object,)
+
+# Example-value display-truncation length. Eighty characters mirrors the
+# column preview budget the Schema Table card uses on the frontend.
+_EXAMPLE_VALUE_MAX_CHARS = 80
+_EXAMPLE_VALUE_TRUNCATION_MARKER = "…"
+
+
+@dataclass(frozen=True, slots=True)
+class ExploreFrameStats:
+    row_count: int
+    columns: list[ExploreColumnStat]
+
+
+def _is_unhashable_dtype(dtype: pl.DataType) -> bool:
+    """Return True when ``n_unique`` cannot be computed for *dtype*.
+
+    Object columns are excluded because Polars raises ``InvalidOperationError``
+    when their values are hashed. All other dtypes (including Struct, Decimal,
+    Datetime, List, Array, etc.) are allowed through to ``n_unique``.
+    """
+
+    return dtype.base_type() in _UNHASHABLE_DTYPES
+
+
+def _truncate_example(text: str) -> str:
+    """Clip *text* to the example-preview budget with an ellipsis marker."""
+
+    if len(text) <= _EXAMPLE_VALUE_MAX_CHARS:
+        return text
+    return text[:_EXAMPLE_VALUE_MAX_CHARS] + _EXAMPLE_VALUE_TRUNCATION_MARKER
+
+
+def _format_example_value(value: Any) -> str | None:
+    """Return a compact, one-cell display string for a column example value."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _truncate_example(value)
+    if isinstance(value, pl.Series):
+        value = value.to_list()
+    if isinstance(value, dict | list | tuple):
+        return _truncate_example(json.dumps(value, ensure_ascii=False, default=str))
+    return _truncate_example(str(value))
+
+
+def _build_frame_stats(
+    lf: pl.LazyFrame,
+    schema: pl.Schema,
+    *,
+    execution_context: ExecutionContext,
+) -> ExploreFrameStats:
+    """Compute row count and per-column schema stats for an Explore frame.
+
+    Runs a single batched ``streaming_collect`` for ``row_count``,
+    ``null_count``, ``n_unique``, and the first non-null example value so we
+    do not pay repeated full-frame scans. Object columns skip ``n_unique``
+    (their distinct_count stays ``None``).
+    """
+
+    column_names = list(schema.names())
+    aggregations: list[pl.Expr] = [pl.len().alias("row_count")]
+    for name in column_names:
+        aggregations.append(pl.col(name).null_count().alias(f"null::{name}"))
+        aggregations.append(pl.col(name).drop_nulls().first().alias(f"example::{name}"))
+        if not _is_unhashable_dtype(schema[name]):
+            aggregations.append(pl.col(name).n_unique().alias(f"unique::{name}"))
+
+    aggregate_row = streaming_collect(
+        lf.select(aggregations),
+        profile=ExecutionProfile.EXPLORE_ANALYSIS,
+        execution_context=execution_context,
+    ).row(0, named=True)
+
+    stats: list[ExploreColumnStat] = []
+    for name in column_names:
+        dtype = schema[name]
+        null_count = int(aggregate_row[f"null::{name}"])
+        distinct_count: int | None
+        if _is_unhashable_dtype(dtype):
+            distinct_count = None
+        else:
+            distinct_count = int(aggregate_row[f"unique::{name}"])
+
+        stats.append(
+            ExploreColumnStat(
+                name=name,
+                dtype=str(dtype),
+                null_count=null_count,
+                distinct_count=distinct_count,
+                example_value=_format_example_value(aggregate_row[f"example::{name}"]),
+            )
+        )
+    return ExploreFrameStats(row_count=int(aggregate_row["row_count"]), columns=stats)
+
+
+def _build_column_stats(
+    lf: pl.LazyFrame,
+    schema: pl.Schema,
+    *,
+    execution_context: ExecutionContext,
+) -> list[ExploreColumnStat]:
+    """Compute per-column schema stats for tests and legacy internal callers."""
+
+    return _build_frame_stats(lf, schema, execution_context=execution_context).columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,12 +433,12 @@ class ExploreService:
 
         self._store.update_job(job_id, progress=0.85, message="Reading cached schema")
         schema = explore_lf.collect_schema()
-        with execution_context.stage("explore_row_count"):
-            row_count = int(
-                streaming_collect(
-                    explore_lf.select(pl.len().alias("row_count")),
-                    profile=ExecutionProfile.EXPLORE_ANALYSIS,
-                ).item()
+
+        with execution_context.stage("explore_frame_stats"):
+            frame_stats = _build_frame_stats(
+                explore_lf,
+                schema,
+                execution_context=execution_context,
             )
 
         return ExploreCacheReport(
@@ -335,7 +446,8 @@ class ExploreService:
             upstream_node_id=spec.upstream_node_id,
             source=body.source,
             dataframe_cache_key=spec.dataframe_cache_key,
-            row_count=row_count,
+            row_count=frame_stats.row_count,
             column_count=len(schema.names()),
+            columns=frame_stats.columns,
             generated_at=time.time(),
         )

@@ -18,12 +18,14 @@ from haute._types import (
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
     ExploreConfig,
+    ExploreOverviewConfig,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,
     OptimiserConfig,
     TransformConfig,
 )
+from haute.errors import ConfigError
 
 # ---------------------------------------------------------------------------
 # VALID_KEYS registry sanity checks
@@ -445,6 +447,78 @@ class TestBuildNodeConfigProducesValidKeys:
         bad = warn_unrecognized_config_keys(NodeType.MODEL_SCORE, config)
         assert bad == [], f"Unrecognized keys in modelScore: {bad}"
 
+    @pytest.mark.parametrize("overview", [True, "schema", ["schema"]])
+    def test_explore_overview_must_be_a_dict(self, overview):
+        """Explore overview decorators fail loudly when the block is not a dict."""
+        from haute._parser_helpers import _build_node_config
+
+        with pytest.raises(ConfigError, match="overview config must be a dict"):
+            _build_node_config(
+                NodeType.EXPLORE,
+                {"overview": overview},
+                "",
+                ["df"],
+            )
+
+    @pytest.mark.parametrize("key", ["dataset_header", "schema"])
+    @pytest.mark.parametrize("value", ["true", 1, None])
+    def test_explore_overview_known_keys_must_be_boolean(self, key, value):
+        """Known overview-card toggles must be real booleans, not truthy values."""
+        from haute._parser_helpers import _build_node_config
+
+        with pytest.raises(ConfigError, match="known overview key"):
+            _build_node_config(
+                NodeType.EXPLORE,
+                {"overview": {key: value}},
+                "",
+                ["df"],
+            )
+
+    def test_explore_overview_preserves_unknown_round_trippable_values(self):
+        """Unknown overview keys are kept when their values are simple literals."""
+        from haute._parser_helpers import _build_node_config
+
+        config = _build_node_config(
+            NodeType.EXPLORE,
+            {
+                "overview": {
+                    "dataset_header": True,
+                    "custom_card": {
+                        "label": "Loss ratio",
+                        "columns": ["premium", "claims"],
+                        "enabled": False,
+                        "threshold": 0.7,
+                        "empty": None,
+                    },
+                }
+            },
+            "",
+            ["df"],
+        )
+
+        assert config["overview"] == {
+            "dataset_header": True,
+            "custom_card": {
+                "label": "Loss ratio",
+                "columns": ["premium", "claims"],
+                "enabled": False,
+                "threshold": 0.7,
+                "empty": None,
+            },
+        }
+
+    def test_explore_overview_rejects_unknown_unserialisable_values(self):
+        """Unknown keys should not smuggle arbitrary Python objects into config."""
+        from haute._parser_helpers import _build_node_config
+
+        with pytest.raises(ConfigError, match="round-trip"):
+            _build_node_config(
+                NodeType.EXPLORE,
+                {"overview": {"custom_card": object()}},
+                "",
+                ["df"],
+            )
+
 
 # ---------------------------------------------------------------------------
 # B7: selected_columns is universally valid (executor applies it to all nodes)
@@ -473,9 +547,24 @@ class TestSelectedColumnsUniversal:
 
     def test_explore_config_allows_polars_code(self):
         """Explore can store the Polars snippet used to prepare analysis data."""
-        assert get_type_hints(ExploreConfig) == {"code": str}
+        assert get_type_hints(ExploreConfig) == {
+            "code": str,
+            "overview": ExploreOverviewConfig,
+        }
+        overview_hints = get_type_hints(ExploreOverviewConfig)
+        assert overview_hints == {"dataset_header": bool, "schema": bool}
         assert warn_unrecognized_config_keys(NodeType.EXPLORE, {}) == []
         assert warn_unrecognized_config_keys(NodeType.EXPLORE, {"code": "df = df.head(10)"}) == []
+        # Overview block is a recognised key on explore nodes.
+        assert (
+            warn_unrecognized_config_keys(
+                NodeType.EXPLORE, {"overview": {"dataset_header": True}}
+            )
+            == []
+        )
+        assert (
+            warn_unrecognized_config_keys(NodeType.EXPLORE, {"overview": {"schema": True}}) == []
+        )
 
 
 # ---------------------------------------------------------------------------

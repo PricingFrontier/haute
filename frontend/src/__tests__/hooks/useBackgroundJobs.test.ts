@@ -81,6 +81,7 @@ function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): Explore
     row_count: 123,
     column_count: 4,
     generated_at: 1710000000,
+    columns: [],
     ...overrides,
   }
 }

@@ -12,6 +12,8 @@ import { NODE_GROUP_COLORS } from "../theme/colors"
 import { buildGraph } from "../utils/buildGraph"
 import DataPreview, { type PreviewData } from "./DataPreview"
 import type { SimpleEdge, SimpleNode } from "./editors"
+import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
+import ExploreOverviewPane from "./explore/ExploreOverviewPane"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "./previewPanelLayout"
@@ -74,23 +76,31 @@ export default function ExplorePreview({
   const [submitting, setSubmitting] = useState(false)
 
   const hasInput = useMemo(() => edges.some((edge) => edge.target === nodeId), [edges, nodeId])
-  const configHash = useMemo(
-    () => hashConfig({
-      config: node.data.config ?? {},
-      source: activeSource,
-      structuralVersion,
-    }),
-    [activeSource, node.data.config, structuralVersion],
+  const cacheIdentity = useMemo(
+    () => buildExploreCacheIdentity({ node, allNodes, edges, submodels, preamble }),
+    [allNodes, edges, node, preamble, submodels],
   )
-  const report = cachedResult?.result ?? null
-  const status = exploreJob?.progress ?? cachedResult?.terminalStatus ?? null
-  const isBusy = submitting || !!exploreJob
+  const configHash = useMemo(
+    () => hashConfig({ graph: cacheIdentity, source: activeSource }),
+    [activeSource, cacheIdentity],
+  )
+  const currentExploreJob =
+    exploreJob && exploreJob.configHash === configHash && exploreJob.source === activeSource
+      ? exploreJob
+      : null
+  const currentCachedResult =
+    cachedResult && cachedResult.configHash === configHash && cachedResult.source === activeSource
+      ? cachedResult
+      : null
+  const report = currentCachedResult?.result ?? null
+  const status = currentExploreJob?.progress ?? currentCachedResult?.terminalStatus ?? null
+  const isBusy = submitting || !!currentExploreJob
   const progress = status?.status === "completed" ? 1 : (status?.progress ?? (submitting ? 0.03 : 0))
   const activePane = rememberedPane ?? "preview"
   const activePaneMeta = EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
 
   useEffect(() => {
-    touchExplorePreview(nodeId)
+    if (report) touchExplorePreview(nodeId)
   }, [nodeId, report, touchExplorePreview])
 
   const handleRun = useCallback(async () => {
@@ -160,9 +170,9 @@ export default function ExplorePreview({
   ])
 
   const handleCancel = useCallback(async () => {
-    if (!exploreJob) return
+    if (!currentExploreJob) return
     try {
-      const cancelled = await cancelExplore(exploreJob.jobId)
+      const cancelled = await cancelExplore(currentExploreJob.jobId)
       if (cancelled.status === "completed" && cancelled.result) {
         completeExploreJob(nodeId, cancelled.result, cancelled)
       } else {
@@ -173,9 +183,9 @@ export default function ExplorePreview({
       failExploreJob(nodeId, message)
       addToast("error", `Explore cancel failed: ${message}`)
     }
-  }, [addToast, completeExploreJob, exploreJob, failExploreJob, nodeId])
+  }, [addToast, completeExploreJob, currentExploreJob, failExploreJob, nodeId])
 
-  const actions = exploreJob ? (
+  const actions = currentExploreJob ? (
     <button
       type="button"
       onClick={handleCancel}
@@ -240,6 +250,8 @@ export default function ExplorePreview({
               tracedCell={tracedCell}
               embedded
             />
+          ) : activePane === "overview" ? (
+            <ExploreOverviewPane node={node} report={report} />
           ) : null}
         </div>
       </div>

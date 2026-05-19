@@ -367,6 +367,20 @@ class SinkResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ExploreColumnStat(BaseModel):
+    """Per-column stats captured at Explore cache-materialisation time.
+
+    distinct_count may be None when the dtype is not hashable (Object/Struct
+    columns), in which case the UI renders an em-dash.
+    """
+
+    name: str
+    dtype: str
+    null_count: int
+    distinct_count: int | None
+    example_value: str | None = None
+
+
 class ExploreCacheReport(BaseModel):
     """Result of materialising an Explore node's upstream dataset.
 
@@ -382,6 +396,7 @@ class ExploreCacheReport(BaseModel):
     dataframe_cache_key: str
     row_count: int = 0
     column_count: int = 0
+    columns: list[ExploreColumnStat] = Field(default_factory=list)
     generated_at: float = 0.0
     execution_metrics: ExecutionMetricsPayload | None = None
 

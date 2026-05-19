@@ -10,7 +10,7 @@ from typing import Any
 
 from haute._hashing import content_hash, content_hash_bytes
 from haute._logging import get_logger
-from haute._types import PipelineGraph
+from haute._types import GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="cache")
 
@@ -30,7 +30,7 @@ logger = get_logger(component="cache")
 # simulate a bump and confirm cache entries do not collide across
 # versions — pinned by
 # ``tests/test_routes_hygiene.py::TestBumpVersionInvalidatesCache``.
-ALGO_VERSION: int = 2
+ALGO_VERSION: int = 3
 
 
 @dataclass(frozen=True)
@@ -138,13 +138,22 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
     """
     parts: list[str] = []
     for n in sorted(graph.nodes, key=lambda n: n.id):
-        canonical_config = _canonicalise(n.data.config)
+        canonical_config = _canonicalise(_node_config_for_execution_fingerprint(n))
         parts.append(
             f"{n.id}|{n.data.nodeType}|{_json.dumps(canonical_config, sort_keys=True)}",
         )
     for e in sorted(graph.edges, key=lambda e: (e.source, e.target)):
         parts.append(f"{e.source}->{e.target}")
     return content_hash_bytes("\n".join(parts).encode())
+
+
+def _node_config_for_execution_fingerprint(node: GraphNode) -> dict[str, Any]:
+    """Return the node config fields that affect executor/cache output."""
+
+    config = node.data.config
+    if node.data.nodeType == NodeType.EXPLORE:
+        return {key: value for key, value in config.items() if key != "overview"}
+    return config
 
 
 def _is_utility_module_name(value: str) -> bool:

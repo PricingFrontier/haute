@@ -395,6 +395,15 @@ export interface TrainStatusResponse {
 // Explore types
 // ---------------------------------------------------------------------------
 
+/** Per-column statistics surfaced in the Schema overview card. */
+export interface ExploreColumnStat {
+  name: string
+  dtype: string
+  null_count: number
+  distinct_count: number | null
+  example_value: string | null
+}
+
 /** Lightweight descriptor of a materialised Explore cache entry. */
 export interface ExploreCacheReport {
   status: "ok"
@@ -405,6 +414,7 @@ export interface ExploreCacheReport {
   row_count: number
   column_count: number
   generated_at: number
+  columns: ExploreColumnStat[]
   execution_metrics?: ExecutionMetrics | null
 }
 

@@ -188,6 +188,28 @@ describe("shallowNodeDataHash — input-key sensitivity", () => {
     expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
+  it("explore overview config is ignored but explore code config still flips the hash", () => {
+    const exploreBase = {
+      label: "Explore",
+      nodeType: "explore",
+      config: { code: "df = df.select(pl.all())" },
+    }
+    const overviewChanged = {
+      ...exploreBase,
+      config: {
+        code: "df = df.select(pl.all())",
+        overview: { dataset_header: true, schema: true },
+      },
+    }
+    const codeChanged = {
+      ...exploreBase,
+      config: { code: "df = df.filter(pl.col('premium') > 0)" },
+    }
+
+    expect(shallowNodeDataHash(overviewChanged)).toBe(shallowNodeDataHash(exploreBase))
+    expect(shallowNodeDataHash(codeChanged)).not.toBe(shallowNodeDataHash(exploreBase))
+  })
+
   it("config with nested-object change flips the hash", () => {
     const nestedBase = { ...base, config: { nested: { a: 1, b: 2 } } }
     const nestedChanged = { ...base, config: { nested: { a: 1, b: 3 } } }

@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from typing import Any
 
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._config_io import config_path_for_node
+from haute._explore_overview import validate_explore_overview
 from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
@@ -378,7 +380,7 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 _EXPLORE = '''\
-@pipeline.explore()
+@pipeline.explore({decorator_args})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     return {first}
@@ -814,6 +816,25 @@ _assign_codegen(
 )
 
 
+# Explore uses a single nested-dict decorator kwarg (``overview={...}``)
+# instead of flat snake_case kwargs (the pattern modelling/optimiser/scenario
+# expander use via ``*_CONFIG_KEYS`` tuples).  The UI evolves Overview-card
+# toggles independently of backend keys, so an opaque dict insulates the
+# codegen from churn.
+def _explore_decorator_args(overview: Any) -> str:
+    """Build the decorator argument string for ``@pipeline.explore(...)``.
+
+    Returns ``""`` when *overview* is empty (so the decorator stays bare),
+    and ``"overview={...}"`` otherwise — using :func:`repr` on a plain
+    ``dict`` so the emitted form is a valid Python literal that round-trips
+    through :mod:`ast`.
+    """
+    overview = validate_explore_overview(overview, context="explore node config")
+    if not overview:
+        return ""
+    return f"overview={overview!r}"
+
+
 @_register_codegen(NodeType.EXPLORE)
 def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
     if len(source_names) != 1:
@@ -832,10 +853,12 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
         kind="polars",
         param_names=(first,),
     )
+    overview = config["overview"] if "overview" in config else {}
+    decorator_args = _explore_decorator_args(overview)
     if code:
         user_body = _wrap_user_code(code, ["df"])
         return (
-            "@pipeline.explore()\n"
+            f"@pipeline.explore({decorator_args})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
             f"    df = {first}\n"
@@ -846,6 +869,7 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
         description=description,
         params=params,
         first=first,
+        decorator_args=decorator_args,
     )
 
 

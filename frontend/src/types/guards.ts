@@ -20,6 +20,7 @@ import type {
   ExecutionMetrics,
   ExecutionStageMetrics,
   ExploreCacheReport,
+  ExploreColumnStat,
   ExploreRunResponse,
   ExploreStatusResponse,
   FetchProgressResponse,
@@ -207,6 +208,24 @@ function optionalNullableNumber(
   if (value === undefined) return defaultValue
   if (value === null) return null
   return expectNumber(parser, value, `field \`${key}\``)
+}
+
+function expectNullableString(
+  parser: string,
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === null || typeof value === "string") return value
+  throw new Error(`${parser}: expected ${field} to be a string or null, got ${value === undefined ? "missing" : typeName(value)}`)
+}
+
+function expectNullableNumber(
+  parser: string,
+  value: unknown,
+  field: string,
+): number | null {
+  if (value === null) return null
+  return expectNumber(parser, value, field)
 }
 
 function expectArray(
@@ -1088,21 +1107,34 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
 
 const EXPLORE_RUN_STATUSES = ["started", "running", "completed"] as const
 
+function parseExploreColumnStat(value: unknown, field: string): ExploreColumnStat {
+  const parser = "parseExploreColumnStat"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    name: expectString(parser, obj.name, `${field}.name`),
+    dtype: expectString(parser, obj.dtype, `${field}.dtype`),
+    null_count: expectNumber(parser, obj.null_count, `${field}.null_count`),
+    distinct_count: expectNullableNumber(parser, obj.distinct_count, `${field}.distinct_count`),
+    example_value: expectNullableString(parser, obj.example_value, `${field}.example_value`),
+  }
+}
+
 export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
   const obj = expectPlainObject("parseExploreCacheReport", value)
   return {
     status: expectStringLiteral("parseExploreCacheReport", obj.status, "field `status`", ["ok"] as const),
     node_id: expectString("parseExploreCacheReport", obj.node_id, "field `node_id`"),
     upstream_node_id: expectString("parseExploreCacheReport", obj.upstream_node_id, "field `upstream_node_id`"),
-    source: optionalString("parseExploreCacheReport", obj, "source", "live"),
+    source: expectString("parseExploreCacheReport", obj.source, "field `source`"),
     dataframe_cache_key: expectString(
       "parseExploreCacheReport",
       obj.dataframe_cache_key,
       "field `dataframe_cache_key`",
     ),
-    row_count: optionalNumber("parseExploreCacheReport", obj, "row_count"),
-    column_count: optionalNumber("parseExploreCacheReport", obj, "column_count"),
-    generated_at: optionalNumber("parseExploreCacheReport", obj, "generated_at"),
+    row_count: expectNumber("parseExploreCacheReport", obj.row_count, "field `row_count`"),
+    column_count: expectNumber("parseExploreCacheReport", obj.column_count, "field `column_count`"),
+    generated_at: expectNumber("parseExploreCacheReport", obj.generated_at, "field `generated_at`"),
+    columns: parseArray("parseExploreCacheReport", obj.columns, "field `columns`", parseExploreColumnStat),
     execution_metrics: optionalExecutionMetrics("parseExploreCacheReport", obj, "execution_metrics"),
   }
 }

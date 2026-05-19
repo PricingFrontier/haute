@@ -373,6 +373,127 @@ describe("API response guards", () => {
     ).toThrow(/parseExploreCacheReport/i)
   })
 
+  describe("parseExploreColumnStat (via parseExploreCacheReport.columns)", () => {
+    function withColumns(columns: unknown): Record<string, unknown> {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      return { ...fixture, result: { ...result, columns } }
+    }
+
+    function withoutResultField(key: string): Record<string, unknown> {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const { [key]: _removed, ...nextResult } = result
+      void _removed
+      return { ...fixture, result: nextResult }
+    }
+
+    it("parses a fully populated column stat", () => {
+      const parsed = parseExploreStatusResponse(
+        withColumns([
+          {
+            name: "premium",
+            dtype: "Float64",
+            null_count: 3,
+            distinct_count: 42,
+            example_value: "100.0",
+          },
+        ]),
+      )
+      expect(parsed.result?.columns).toHaveLength(1)
+      const col = parsed.result!.columns[0]
+      expect(col.name).toBe("premium")
+      expect(col.dtype).toBe("Float64")
+      expect(col.null_count).toBe(3)
+      expect(col.distinct_count).toBe(42)
+      expect(col.example_value).toBe("100.0")
+    })
+
+    it("accepts null distinct_count and null example_value", () => {
+      const parsed = parseExploreStatusResponse(
+        withColumns([
+          {
+            name: "sparse",
+            dtype: "String",
+            null_count: 10,
+            distinct_count: null,
+            example_value: null,
+          },
+        ]),
+      )
+      const col = parsed.result!.columns[0]
+      expect(col.distinct_count).toBeNull()
+      expect(col.example_value).toBeNull()
+    })
+
+    it("throws when columns is missing from a cache report", () => {
+      expect(() => parseExploreStatusResponse(withoutResultField("columns"))).toThrow(
+        /parseExploreCacheReport/i,
+      )
+    })
+
+    it.each(["source", "row_count", "column_count", "generated_at"])(
+      "throws when %s is missing from a cache report",
+      (field) => {
+        expect(() => parseExploreStatusResponse(withoutResultField(field))).toThrow(
+          /parseExploreCacheReport/i,
+        )
+      },
+    )
+
+    it("throws when distinct_count is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            { name: "minimal", dtype: "Int64", null_count: 0, example_value: "1" },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when example_value is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            { name: "minimal", dtype: "Int64", null_count: 0, distinct_count: 1 },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when name is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([{ dtype: "Float64", null_count: 0 }]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when dtype is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([{ name: "x", null_count: 0 }]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when null_count is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([{ name: "x", dtype: "Float64" }]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when null_count is a string", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([{ name: "x", dtype: "Float64", null_count: "3" }]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+  })
+
   it("preserves typed execution metrics on train status responses", () => {
     const parsed = parseTrainStatusResponse({
       ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
