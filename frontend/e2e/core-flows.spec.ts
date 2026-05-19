@@ -92,7 +92,8 @@ test.describe("core browser flows", () => {
     ).toBeVisible({ timeout: 120_000 })
     await expect(page.getByText("Model Info")).toBeVisible()
     await expect(page.getByText(/Train rows/i)).toBeVisible()
-    await expect(page.getByRole("button", { name: "Summary" })).toBeVisible()
+    const modelResultTabs = page.getByRole("tablist", { name: "Model result panes" })
+    await expect(modelResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()
 
     await page.getByRole("button", { name: /enriched/i }).click()
     await modelNode.click()
@@ -116,10 +117,11 @@ test.describe("core browser flows", () => {
     await expect(optimiseButton).toBeVisible()
     await optimiseButton.click()
 
-    await expect(page.getByRole("button", { name: "Frontier", exact: true })).toBeVisible({
+    const optimiserResultTabs = page.getByRole("tablist", { name: "Optimiser result panes" })
+    await expect(optimiserResultTabs.getByRole("tab", { name: "Frontier", exact: true })).toBeVisible({
       timeout: 120_000,
     })
-    await expect(page.getByRole("button", { name: "Summary", exact: true })).toBeVisible()
+    await expect(optimiserResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()
 
     const frontierPoint = page.getByRole("button", { name: /Select frontier point 2/i })
     await expect(frontierPoint).toBeVisible()
@@ -130,7 +132,7 @@ test.describe("core browser flows", () => {
       page.getByRole("alert").filter({ hasText: /Failed to select frontier point/i }),
     ).toHaveCount(0)
 
-    await page.getByRole("button", { name: "Export", exact: true }).click()
+    await optimiserResultTabs.getByRole("tab", { name: "Export", exact: true }).click()
     await page.getByRole("button", { name: "Save result", exact: true }).click()
 
     await expect(page.getByText(/optimiser_browser_optimiser\.json/i)).toBeVisible({
