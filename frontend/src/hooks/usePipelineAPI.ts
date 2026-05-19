@@ -247,7 +247,7 @@ export default function usePipelineAPI({
     }
   }, [setNodesRaw, setEdgesRaw, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
 
-  const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number) => {
+  const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean }) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
     // Abort any in-flight preview request
     previewAbort.current?.abort()
@@ -277,7 +277,7 @@ export default function usePipelineAPI({
 
     // Cache-first: show cached data immediately if available
     const cached = getPreview(node.id)
-    if (cached && cached.source === snapshotSource && cached.rowLimit === snapshotRowLimit) {
+    if (!options?.bypassCache && cached && cached.source === snapshotSource && cached.rowLimit === snapshotRowLimit) {
       if (requestStillCurrent()) setPreviewData(cached.data)
       // If cache is fresh for the same execution context, skip the API call.
       if (matchesRequestContext(cached)) {
@@ -527,7 +527,7 @@ export default function usePipelineAPI({
 
     if (staleUpstream.length === 0) {
       // No upstream gaps — just preview the selected node directly
-      fetchPreviewImmediate(node, requestId)
+      fetchPreviewImmediate(node, requestId, { bypassCache: true })
       return
     }
 
@@ -573,7 +573,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         return
       }
-      fetchPreviewImmediate(node, requestId)
+      fetchPreviewImmediate(node, requestId, { bypassCache: true })
     })
   }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
 

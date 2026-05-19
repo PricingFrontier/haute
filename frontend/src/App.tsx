@@ -344,8 +344,6 @@ function FlowEditor() {
   // eslint-disable-next-line react-hooks/refs -- ref is mutated by hooks; reading here is intentional
   const submodelsSnapshot = submodelsRef.current
   const useLiteGraphEffects = shouldUseLiteGraphEffects(nodes.length, edges.length)
-  const panelIsExplore = panelNode ? nodeData(panelNode).nodeType === NODE_TYPES.EXPLORE : false
-
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
       <Toolbar
@@ -450,6 +448,9 @@ function FlowEditor() {
                     edges={panelGraph.edges}
                     submodels={submodelsSnapshot}
                     preamble={preamble}
+                    previewData={activePreviewData}
+                    onCellClick={handleCellClick}
+                    tracedCell={tracedCell}
                   />
                 )
               }
@@ -491,6 +492,7 @@ function FlowEditor() {
               return (
                 <DataPreview
                   data={activePreviewData}
+                  nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
                   onCellClick={handleCellClick}
                   tracedCell={tracedCell}
                 />
@@ -540,7 +542,11 @@ function FlowEditor() {
                   onClose={closePanel}
                   onUpdateNode={onUpdateNode}
                   onDeleteEdge={handleDeleteEdge}
-                  onRefreshPreview={panelIsExplore ? undefined : () => { if (selectedNode) refreshPreview(selectedNode) }}
+                  onRefreshPreview={() => {
+                    if (!panelNode) return
+                    const refreshTarget = graphRef.current.nodes.find((n) => n.id === panelNode.id)
+                    if (refreshTarget) refreshPreview(refreshTarget)
+                  }}
                   dimmed={!selectedNode && !!lastSelectedId}
                   errorLine={
                     previewData?.nodeId === activePanelNodeId

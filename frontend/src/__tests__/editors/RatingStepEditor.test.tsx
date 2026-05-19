@@ -84,7 +84,7 @@ const BANDING_NODES: SimpleNode[] = [
 
 afterEach(() => {
   cleanup()
-  useUIStore.setState({ ratingStepEditorSections: {}, explorePanes: {} })
+  useUIStore.setState({ ratingStepEditorSections: {}, explorePanes: {}, explorePreviewPanes: {} })
 })
 
 // Tests

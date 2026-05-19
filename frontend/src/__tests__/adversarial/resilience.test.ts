@@ -59,6 +59,7 @@ function resetStores() {
     nodePanelWidth: 0,
     ratingStepEditorSections: {},
     explorePanes: {},
+    explorePreviewPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })

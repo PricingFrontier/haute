@@ -191,6 +191,45 @@ pipeline.connect("source", "inspect_claims")
         assert node_map["inspect_claims"].data.config == {}
         assert ("source", "inspect_claims") in [(e.source, e.target) for e in graph.edges]
 
+    def test_explore_decorator_extracts_polars_code(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_code")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    df = source
+    df = df.filter(pl.col("premium") > 0)
+    df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))
+    return df
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config == {
+            "code": (
+                'df = df.filter(pl.col("premium") > 0)\n'
+                'df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))'
+            )
+        }
+
     def test_explore_decorator_with_outgoing_edge_raises(self, tmp_path):
         code = """\
 import polars as pl

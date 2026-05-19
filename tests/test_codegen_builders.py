@@ -541,6 +541,29 @@ class TestGenExplore:
         assert "config/" not in code
         _compile_node_code(code)
 
+    def test_explore_with_polars_code_generates_transform_body(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {
+                "code": (
+                    "df = df.filter(pl.col('premium') > 0)"
+                    ".with_columns((pl.col('premium') * 2).alias('double_premium'))"
+                )
+            },
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert "@pipeline.explore(" in code
+        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        assert "df = claims" in code
+        assert ".filter(pl.col('premium') > 0)" in code
+        assert "return df" in code
+        assert "return claims" not in code
+        assert "config/" not in code
+        _compile_node_code(code)
+
     def test_no_sources_raise(self) -> None:
         node = _make_codegen_node("explore", {}, label="Inspect")
 

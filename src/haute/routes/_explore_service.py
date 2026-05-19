@@ -1,7 +1,7 @@
-"""ExploreService: cache an upstream dataset for an Explore node.
+"""ExploreService: cache the analysis dataset for an Explore node.
 
 This is the v1 of the Explore node — its only responsibility is to materialise
-the upstream parent frame into ``DataFrameExecutionCache`` so future analysis
+the Explore node's frame into ``DataFrameExecutionCache`` so future analysis
 work can reuse it without re-executing the graph. The returned report is a
 lightweight cache descriptor (row/column count, dataframe cache key); the
 actual frame stays on disk.
@@ -163,22 +163,22 @@ class ExploreService:
         upstream_node_id = parents[0]
         input_fingerprint = execution_facade.dataframe_graph_input_fingerprint(
             graph,
-            target_node_id=upstream_node_id,
+            target_node_id=node.id,
             source=body.source,
         )
         dataframe_cache_request = execution_facade.build_dataframe_execution_cache_request(
             graph,
-            node_ids=[upstream_node_id],
+            node_ids=[node.id],
             namespace="explore_dataset",
             source=body.source,
             profile=ExecutionProfile.EXPLORE_ANALYSIS,
             input_fingerprint=input_fingerprint,
-            target_node_id=upstream_node_id,
+            target_node_id=node.id,
             enforce_contracts=ENFORCE_CONTRACTS,
             preamble_ns_supplied=bool(graph.preamble),
             streaming_chunk_size=body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
         )
-        dataframe_key = dataframe_cache_request.keys_by_node[upstream_node_id].cache_key
+        dataframe_key = dataframe_cache_request.keys_by_node[node.id].cache_key
         report_payload: dict[str, Any] = {
             "dataframe_cache_key": dataframe_key,
             "node_id": body.node_id,
@@ -301,7 +301,7 @@ class ExploreService:
             _pipeline_dir,
         )
 
-        self._store.update_job(job_id, progress=0.1, message="Executing upstream pipeline")
+        self._store.update_job(job_id, progress=0.1, message="Executing Explore pipeline")
         preamble_ns = _compile_preamble(
             body.graph.preamble or "",
             pipeline_dir=_pipeline_dir(body.graph),
@@ -309,26 +309,23 @@ class ExploreService:
         lazy_outputs, *_ = execution_facade.execute_lazy_graph(
             body.graph,
             _build_node_fn,
-            target_node_id=spec.upstream_node_id,
+            target_node_id=spec.node_id,
             preamble_ns=preamble_ns or None,
             source=body.source,
             enforce_contracts=ENFORCE_CONTRACTS,
             execution_context=execution_context,
             dataframe_cache_request=spec.dataframe_cache_request,
         )
-        upstream_lf = lazy_outputs.get(spec.upstream_node_id)
-        if upstream_lf is None:
-            raise ValueError(
-                f"No data arrived at Explore node '{spec.node_id}' from upstream node "
-                f"'{spec.upstream_node_id}'."
-            )
+        explore_lf = lazy_outputs.get(spec.node_id)
+        if explore_lf is None:
+            raise ValueError(f"No data arrived at Explore node '{spec.node_id}'.")
 
         self._store.update_job(job_id, progress=0.85, message="Reading cached schema")
-        schema = upstream_lf.collect_schema()
+        schema = explore_lf.collect_schema()
         with execution_context.stage("explore_row_count"):
             row_count = int(
                 streaming_collect(
-                    upstream_lf.select(pl.len().alias("row_count")),
+                    explore_lf.select(pl.len().alias("row_count")),
                     profile=ExecutionProfile.EXPLORE_ANALYSIS,
                 ).item()
             )

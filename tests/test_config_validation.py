@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import get_type_hints
+
 import pytest
 
 from haute._config_validation import (
@@ -469,10 +471,11 @@ class TestSelectedColumnsUniversal:
         """TransformConfig TypedDict should declare selected_columns."""
         assert "selected_columns" in TransformConfig.__annotations__
 
-    def test_explore_config_is_empty_except_universal_keys(self):
-        """Explore intentionally has no report/UI config in the first slice."""
-        assert ExploreConfig.__annotations__ == {}
+    def test_explore_config_allows_polars_code(self):
+        """Explore can store the Polars snippet used to prepare analysis data."""
+        assert get_type_hints(ExploreConfig) == {"code": str}
         assert warn_unrecognized_config_keys(NodeType.EXPLORE, {}) == []
+        assert warn_unrecognized_config_keys(NodeType.EXPLORE, {"code": "df = df.head(10)"}) == []
 
 
 # ---------------------------------------------------------------------------

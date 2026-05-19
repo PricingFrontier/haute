@@ -12,6 +12,7 @@ export function useDragResize(opts: {
   height: number
   containerRef: React.RefObject<HTMLDivElement | null>
   onDragStart: (e: React.MouseEvent) => void
+  resizeToHeight: (nextHeight: number, opts?: { clampToMax?: boolean }) => void
 } {
   const { initialHeight, minHeight, maxHeight } = opts
   const [height, setHeight] = useState(initialHeight)
@@ -24,6 +25,24 @@ export function useDragResize(opts: {
   useEffect(() => {
     heightRef.current = height
   }, [height])
+
+  const clampHeight = useCallback(
+    (nextHeight: number, clampToMax = true) =>
+      Math.max(minHeight, Math.min(clampToMax ? maxHeight : Number.POSITIVE_INFINITY, nextHeight)),
+    [maxHeight, minHeight],
+  )
+
+  const resizeToHeight = useCallback(
+    (nextHeight: number, resizeOpts: { clampToMax?: boolean } = {}) => {
+      const finalHeight = clampHeight(nextHeight, resizeOpts.clampToMax ?? true)
+      heightRef.current = finalHeight
+      if (containerRef.current) {
+        containerRef.current.style.height = `${finalHeight}px`
+      }
+      setHeight(finalHeight)
+    },
+    [clampHeight],
+  )
 
   // Clean up any lingering listeners on unmount
   const cleanupRef = useRef<(() => void) | null>(null)
@@ -42,7 +61,7 @@ export function useDragResize(opts: {
 
       const onMove = (ev: MouseEvent) => {
         if (!draggingRef.current) return
-        const newH = Math.max(minHeight, Math.min(maxHeight, startH + (startY - ev.clientY)))
+        const newH = clampHeight(startH + (startY - ev.clientY))
         // DOM-direct mutation -- avoids React re-renders during drag
         if (containerRef.current) {
           containerRef.current.style.height = `${newH}px`
@@ -52,7 +71,8 @@ export function useDragResize(opts: {
       const onUp = (ev: MouseEvent) => {
         draggingRef.current = false
         // Commit final height to React state
-        const finalH = Math.max(minHeight, Math.min(maxHeight, startH + (startY - ev.clientY)))
+        const finalH = clampHeight(startH + (startY - ev.clientY))
+        heightRef.current = finalH
         setHeight(finalH)
         document.removeEventListener("mousemove", onMove)
         document.removeEventListener("mouseup", onUp)
@@ -68,8 +88,8 @@ export function useDragResize(opts: {
         document.removeEventListener("mouseup", onUp)
       }
     },
-    [minHeight, maxHeight],
+    [clampHeight],
   )
 
-  return { height, containerRef, onDragStart }
+  return { height, containerRef, onDragStart, resizeToHeight }
 }

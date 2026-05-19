@@ -715,6 +715,56 @@ class TestPreviewRouteSourceFile:
         assert body["status"] == "error"
         assert "exactly one incoming edge" in body["error"]
 
+    def test_preview_explore_target_applies_polars_code(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Explore preview should show the dataframe after its own code runs."""
+        from haute._sandbox import set_project_root
+
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        data_path = tmp_path / "claims.parquet"
+        pl.DataFrame({"x": [1, 2, 3, 4]}).write_parquet(data_path)
+
+        graph = _make_graph(
+            nodes=[
+                _source_node("src", path="claims.parquet"),
+                GraphNode(
+                    id="explore",
+                    data=NodeData(
+                        label="Explore",
+                        nodeType=NodeType.EXPLORE,
+                        config={
+                            "code": (
+                                "df = df.filter(pl.col('x') > 1)"
+                                ".with_columns((pl.col('x') * 10).alias('scaled'))"
+                            )
+                        },
+                    ),
+                ),
+            ],
+            edges=[_e("src", "explore")],
+        )
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json"),
+                "node_id": "explore",
+                "row_limit": 3,
+                "source": "live",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert [column["name"] for column in body["columns"]] == ["x", "scaled"]
+        assert body["preview"] == [{"x": 2, "scaled": 20}, {"x": 3, "scaled": 30}]
+
 
 # ---------------------------------------------------------------------------
 # Polars Config safety — general guard against invalid chunk sizes

@@ -1021,6 +1021,25 @@ class TestBuildExplore:
         result = fn(input_df).collect()
         assert result["x"].to_list() == [1, 2]
 
+    def test_user_code_transforms_analysis_data(self) -> None:
+        _, fn, is_source = _build(
+            "explore",
+            {
+                "code": (
+                    "df = df.filter(pl.col('x') > 1)"
+                    ".with_columns((pl.col('x') * 10).alias('scaled'))"
+                )
+            },
+            source_names=["upstream"],
+        )
+        assert is_source is False
+        input_df = pl.DataFrame({"x": [1, 2, 3]}).lazy()
+
+        result = fn(input_df).collect()
+
+        assert result["x"].to_list() == [2, 3]
+        assert result["scaled"].to_list() == [20, 30]
+
     def test_no_input_raises(self) -> None:
         _, fn, is_source = _build("explore", {})
         assert is_source is False

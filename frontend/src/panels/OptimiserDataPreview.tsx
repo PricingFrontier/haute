@@ -8,18 +8,17 @@
 
 import { useState, useMemo, useCallback, useEffect, memo } from "react"
 import {
-  ChevronDown,
-  ChevronUp,
   ChevronLeft,
   ChevronRight,
-  Target,
   Search,
 } from "lucide-react"
-import { useDragResize } from "../hooks/useDragResize"
 import { CHART_COLORS } from "../theme/colors"
 import { formatAxisLabel, yTicks } from "../utils/chartHelpers"
+import { NODE_TYPES } from "../utils/nodeTypes"
 import type { PreviewData } from "./DataPreview"
 import { computeScenarioStatsBySeries, type ScenarioStats } from "./optimiserScenarioStats"
+import PreviewPanelFrame from "./PreviewPanelFrame"
+import PreviewPanelTabs from "./PreviewPanelTabs"
 
 // ─── Colours for series lines (CVD-safe Okabe-Ito subset) ─────────
 const SERIES_COLORS = CHART_COLORS.optimiserSeries
@@ -397,35 +396,13 @@ function ScenarioStatsTable({
   )
 }
 
-// ─── StatusBar ───────────────────────────────────────────────────
-
-function StatusBar({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      className="h-8 flex items-center px-4 shrink-0"
-      style={{
-        borderTop: "1px solid var(--border)",
-        background: "var(--bg-panel)",
-      }}
-    >
-      {children}
-    </div>
-  )
-}
-
 // ─── Component ────────────────────────────────────────────────────
 
 export default function OptimiserDataPreview({
   data,
   config,
 }: OptimiserDataPreviewProps) {
-  const [collapsed, setCollapsed] = useState(false)
   const [tab, setTab] = useState<"chart" | "statistics">("chart")
-  const { height, containerRef, onDragStart } = useDragResize({
-    initialHeight: 320,
-    minHeight: 160,
-    maxHeight: 600,
-  })
 
   // ── Extract column names from optimiser config ──
   const objectiveCol = (config.objective as string) || ""
@@ -561,186 +538,123 @@ export default function OptimiserDataPreview({
   // ── No config / no data guards ──
   if (!objectiveCol) {
     return (
-      <StatusBar>
-        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+      <PreviewPanelFrame
+        nodeLabel={data.nodeLabel}
+        nodeType={NODE_TYPES.OPTIMISER}
+        collapsedMeta="Configure an objective column"
+        data-testid="optimiser-data-preview-frame"
+      >
+        <div className="flex-1 flex items-center px-4 text-xs" style={{ color: "var(--text-muted)" }}>
           Configure an objective column to see the quote chart.
-        </span>
-      </StatusBar>
+        </div>
+      </PreviewPanelFrame>
     )
   }
 
   if (quoteIds.length === 0 || currentRows.length === 0) {
     return (
-      <StatusBar>
-        <Target size={14} style={{ color: "var(--warning-strong)" }} className="mr-2" />
-        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+      <PreviewPanelFrame
+        nodeLabel={data.nodeLabel}
+        nodeType={NODE_TYPES.OPTIMISER}
+        collapsedMeta="No scenario data"
+        data-testid="optimiser-data-preview-frame"
+      >
+        <div className="flex-1 flex items-center px-4 text-xs" style={{ color: "var(--text-muted)" }}>
           No scenario data in preview. Ensure upstream nodes produce{" "}
           <span className="font-mono">{quoteIdCol}</span> and{" "}
           <span className="font-mono">{scenarioIndexCol}</span> columns.
-        </span>
-      </StatusBar>
+        </div>
+      </PreviewPanelFrame>
     )
   }
 
   const quoteCountLabel = quoteIds.length.toLocaleString()
   const scenarioCountLabel = currentRows.length.toLocaleString()
-
-  // ── Collapsed ──
-  if (collapsed) {
-    return (
-      <StatusBar>
+  const metadata = `${quoteCountLabel} quotes | ${scenarioCountLabel} scenarios${previewBudgetLabel ? ` | ${previewBudgetLabel}` : ""}`
+  const tabs = [
+    { key: "chart", label: "Chart" },
+    { key: "statistics", label: "Statistics" },
+  ] as const
+  const actions = tab === "chart" ? (
+    <>
+      <div className="flex items-center gap-1" data-testid="optimiser-quote-navigation">
         <button
-          onClick={() => setCollapsed(false)}
-          className="flex items-center gap-2 text-xs"
-          style={{ color: "var(--text-secondary)" }}
+          type="button"
+          onClick={goPrev}
+          disabled={clampedIndex === 0}
+          className="p-0.5 rounded transition-colors"
+          style={{
+            color: clampedIndex === 0 ? "var(--text-muted)" : "var(--text-secondary)",
+            opacity: clampedIndex === 0 ? 0.4 : 1,
+          }}
+          aria-label="Previous quote"
         >
-          <ChevronUp size={14} />
-          <Target size={14} />
-          <span className="font-medium">{data.nodeLabel}</span>
-          <span style={{ color: "var(--text-muted)" }}>
-            {quoteCountLabel} quotes · {scenarioCountLabel} scenarios
-            {previewBudgetLabel ? ` · ${previewBudgetLabel}` : ""}
-          </span>
+          <ChevronLeft size={14} />
         </button>
-      </StatusBar>
-    )
-  }
-
-  // ── Expanded ──
-  return (
-    <div
-      ref={containerRef}
-      style={{
-        height,
-        borderTop: "1px solid var(--border)",
-        background: "var(--bg-panel)",
-      }}
-      className="flex flex-col shrink-0 relative"
-    >
-      {/* Drag handle */}
+        <span
+          className="text-[11px] font-mono w-20 truncate text-center"
+          style={{ color: "var(--text-primary)" }}
+          title={currentQuoteId}
+        >
+          {currentQuoteId.length > 12 ? currentQuoteId.slice(0, 10) + "..." : currentQuoteId}
+        </span>
+        <button
+          type="button"
+          onClick={goNext}
+          disabled={clampedIndex >= quoteIds.length - 1}
+          className="p-0.5 rounded transition-colors"
+          style={{
+            color: clampedIndex >= quoteIds.length - 1 ? "var(--text-muted)" : "var(--text-secondary)",
+            opacity: clampedIndex >= quoteIds.length - 1 ? 0.4 : 1,
+          }}
+          aria-label="Next quote"
+        >
+          <ChevronRight size={14} />
+        </button>
+        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          {clampedIndex + 1}/{quoteIds.length}
+        </span>
+      </div>
       <div
-        onMouseDown={onDragStart}
-        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
-      />
-
-      {/* Header */}
-      <div
-        className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5"
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded-md"
         style={{
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg-elevated)",
+          background: "var(--chrome-hover)",
+          border: "1px solid var(--chrome-border)",
         }}
       >
-        <Target size={14} style={{ color: "var(--warning-strong)" }} />
-        <span
-          className="text-xs font-bold"
+        <Search size={11} style={{ color: "var(--text-muted)" }} />
+        <input
+          type="text"
+          value={searchValue}
+          onChange={(e) => setSearchValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSearchSubmit()
+          }}
+          placeholder="Find quote..."
+          className="w-24 text-[11px] font-mono bg-transparent focus:outline-none"
           style={{ color: "var(--text-primary)" }}
-        >
-          {data.nodeLabel}
-        </span>
-        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {quoteCountLabel} quotes · {scenarioCountLabel} scenarios
-          {previewBudgetLabel ? ` · ${previewBudgetLabel}` : ""}
-        </span>
-
-        {/* Quote navigation (chart tab only) */}
-        {tab === "chart" && <div className="flex items-center gap-1 ml-3">
-          <button
-            onClick={goPrev}
-            disabled={clampedIndex === 0}
-            className="p-0.5 rounded transition-colors"
-            style={{
-              color:
-                clampedIndex === 0
-                  ? "var(--text-muted)"
-                  : "var(--text-secondary)",
-              opacity: clampedIndex === 0 ? 0.4 : 1,
-            }}
-          >
-            <ChevronLeft size={14} />
-          </button>
-          <span
-            className="text-[11px] font-mono min-w-[80px] text-center"
-            style={{ color: "var(--text-primary)" }}
-            title={currentQuoteId}
-          >
-            {currentQuoteId.length > 12
-              ? currentQuoteId.slice(0, 10) + "…"
-              : currentQuoteId}
-          </span>
-          <button
-            onClick={goNext}
-            disabled={clampedIndex >= quoteIds.length - 1}
-            className="p-0.5 rounded transition-colors"
-            style={{
-              color:
-                clampedIndex >= quoteIds.length - 1
-                  ? "var(--text-muted)"
-                  : "var(--text-secondary)",
-              opacity: clampedIndex >= quoteIds.length - 1 ? 0.4 : 1,
-            }}
-          >
-            <ChevronRight size={14} />
-          </button>
-          <span
-            className="text-[10px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {clampedIndex + 1}/{quoteIds.length}
-          </span>
-        </div>}
-
-        {/* Quote search (chart tab only) */}
-        {tab === "chart" && (
-          <div
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded-md ml-1"
-            style={{
-              background: "var(--chrome-hover)",
-              border: "1px solid var(--chrome-border)",
-            }}
-          >
-            <Search size={11} style={{ color: "var(--text-muted)" }} />
-            <input
-              type="text"
-              value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSearchSubmit()
-              }}
-              placeholder="Find quote..."
-              className="w-24 text-[11px] font-mono bg-transparent focus:outline-none"
-              style={{ color: "var(--text-primary)" }}
-            />
-          </div>
-        )}
-
-        {/* Tab selector */}
-        <div className="flex gap-1 ml-3">
-          {(["chart", "statistics"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className="px-2 py-0.5 rounded text-[10px] font-medium"
-              style={{
-                background: tab === t ? "var(--accent-soft)" : "var(--chrome-hover)",
-                color: tab === t ? "var(--accent)" : "var(--text-muted)",
-              }}
-            >
-              {t === "chart" ? "Chart" : "Statistics"}
-            </button>
-          ))}
-        </div>
-
-        <div className="ml-auto flex items-center gap-1">
-          <button
-            onClick={() => setCollapsed(true)}
-            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <ChevronDown size={14} />
-          </button>
-        </div>
+        />
       </div>
+    </>
+  ) : null
+
+  return (
+    <PreviewPanelFrame
+      nodeLabel={data.nodeLabel}
+      nodeType={NODE_TYPES.OPTIMISER}
+      subtitle={metadata}
+      actions={actions}
+      collapsedMeta={metadata}
+      data-testid="optimiser-data-preview-frame"
+    >
+      <PreviewPanelTabs
+        tabs={tabs}
+        activeTab={tab}
+        onChange={setTab}
+        ariaLabel="Optimiser data preview panes"
+        accentColor="var(--warning-strong)"
+        equalWidth
+      />
 
       {/* Content */}
       <div className="flex-1 overflow-auto px-4 py-3">
@@ -849,6 +763,6 @@ export default function OptimiserDataPreview({
           </div>
         )}
       </div>
-    </div>
+    </PreviewPanelFrame>
   )
 }

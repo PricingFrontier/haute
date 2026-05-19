@@ -5,8 +5,9 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, exploreCodeEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
+  exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
@@ -19,6 +20,10 @@ vi.mock("../LazyNodeEditors", () => ({
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return <div data-testid="TransformEditor" />
+  },
+  ExploreCodeEditor: (props: Record<string, unknown>) => {
+    exploreCodeEditorProps.push(props)
+    return <div data-testid="ExploreCodeEditor" />
   },
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => {
@@ -101,8 +106,9 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
 describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
-    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true, explorePanes: {} })
+    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true, explorePanes: {}, explorePreviewPanes: {} })
     transformEditorProps.length = 0
+    exploreCodeEditorProps.length = 0
     bandingEditorProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
@@ -241,41 +247,81 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("OptimiserApplyEditor")).toBeInTheDocument()
   })
 
-  it("hides generic config controls for explore nodes", () => {
+  it("hides generic config controls but shows the refresh action for explore nodes", () => {
+    const onRefreshPreview = vi.fn()
     renderPanel({
       node: makeNode({
         data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
       }),
+      onRefreshPreview,
     })
 
     expect(screen.queryByRole("button", { name: /^config$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
-    expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
+    const refreshButton = screen.getByTitle("Refresh Explore outputs")
+    const closeButton = screen.getByTitle("Close")
+    expect(refreshButton.compareDocumentPosition(closeButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(refreshButton)
+
+    expect(onRefreshPreview).toHaveBeenCalledOnce()
   })
 
-  it("renders empty Explore panes and switches between them", () => {
+  it("renders Explore code before analysis panes and switches between them", () => {
     const exploreNode = makeNode({
       id: "explore_1",
-      data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      },
     })
+    const sourceNode = makeNode({
+      id: "source_1",
+      data: {
+        label: "Claims Source",
+        description: "",
+        nodeType: "dataSource",
+        config: {},
+        _columns: [{ name: "premium", dtype: "Int64" }],
+      },
+    })
+    const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
     const otherNode = makeNode({
       id: "polars_1",
       data: { label: "Transform", description: "", nodeType: "polars", config: {} },
     })
     const { rerender, props } = renderPanel({
       node: exploreNode,
+      allNodes: [sourceNode, exploreNode],
+      edges: [sourceEdge],
     })
 
+    const code = screen.getByRole("tab", { name: "Polars Code" })
     const overview = screen.getByRole("tab", { name: "Overview" })
     const relationships = screen.getByRole("tab", { name: "Relationships" })
     const charts = screen.getByRole("tab", { name: "Charts" })
     const exportPane = screen.getByRole("tab", { name: "Export" })
 
-    expect(overview).toHaveAttribute("aria-selected", "true")
+    expect(code).toHaveAttribute("aria-selected", "true")
+    expect(overview).toHaveAttribute("aria-selected", "false")
     expect(relationships).toHaveAttribute("aria-selected", "false")
     expect(charts).toHaveAttribute("aria-selected", "false")
     expect(exportPane).toHaveAttribute("aria-selected", "false")
-    expect(screen.getByTestId("explore-overview-pane")).toBeEmptyDOMElement()
+    expect(screen.getByTestId("ExploreCodeEditor")).toBeInTheDocument()
+    expect(exploreCodeEditorProps.at(-1)).toMatchObject({
+      config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      inputSources: [
+        {
+          sourceNodeId: "source_1",
+          varName: "Claims_Source",
+          sourceLabel: "Claims Source",
+          edgeId: "e_source_explore",
+        },
+      ],
+      upstreamColumns: [{ name: "premium", dtype: "Int64" }],
+    })
 
     fireEvent.click(charts)
 
@@ -322,7 +368,7 @@ describe("NodePanel", () => {
       </GraphProvider>,
     )
 
-    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("tab", { name: "Polars Code" })).toHaveAttribute("aria-selected", "true")
 
     fireEvent.click(screen.getByRole("tab", { name: "Relationships" }))
     expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "true")

@@ -396,6 +396,11 @@ def _explore_fn(df: _Frame) -> _Frame:
     return df
 
 
+def _explore_columns(config: dict[str, Any]) -> ColumnContract:
+    """Explore code can derive/filter arbitrary analysis columns."""
+    return OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
+
+
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -606,9 +611,32 @@ def _build_data_sink(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.EXPLORE, columns=_passthrough_columns)
+@_register(NodeType.EXPLORE, columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    return ctx.func_name, _explore_fn, False
+    code = _strip_generated_boilerplate_from_code(
+        ctx.config.get("code") or "",
+        kind="polars",
+        param_names=ctx.source_names,
+    )
+    if not code:
+        return ctx.func_name, _explore_fn, False
+
+    _src_names = list(ctx.source_names)
+    _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
+    _in_map = dict(ctx.config.get("inputMapping", {})) or None
+    _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
+
+    def explore_with_code(df: _Frame) -> _Frame:
+        return _exec_user_code(
+            code,
+            _src_names,
+            (df,),
+            extra_ns=_preamble,
+            orig_source_names=_orig_src,
+            input_mapping=_in_map,
+        )
+
+    return ctx.func_name, explore_with_code, False
 
 
 @_register(NodeType.EXTERNAL_FILE, opaque=True)

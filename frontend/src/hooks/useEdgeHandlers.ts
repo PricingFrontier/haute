@@ -23,7 +23,6 @@ const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 const NON_PREVIEWABLE_CLICK_TYPES = new Set<string>([
   NODE_TYPES.DATA_SINK,
   NODE_TYPES.OUTPUT,
-  NODE_TYPES.EXPLORE,
 ])
 
 /** Check whether the target node has reached its maxInputs limit. */

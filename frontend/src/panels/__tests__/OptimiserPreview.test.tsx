@@ -22,6 +22,7 @@ vi.mock("../../hooks/useDragResize", () => ({
     height: 320,
     containerRef: { current: null },
     onDragStart: vi.fn(),
+    resizeToHeight: vi.fn(),
   }),
 }))
 
@@ -1124,15 +1125,8 @@ describe("OptimiserPreview", () => {
   describe("collapse/expand", () => {
     it("collapse button hides the main panel", () => {
       renderPreview()
-      // Find the collapse button (ChevronDown in header)
-      const buttons = screen.getAllByRole("button")
-      const collapseBtn = buttons.find(
-        (b) => b.querySelector("svg") && b !== buttons[buttons.length - 1] && !b.textContent,
-      )
-      if (collapseBtn) {
-        fireEvent.click(collapseBtn)
-        expect(screen.getByText("My Optimiser")).toBeInTheDocument()
-      }
+      fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+      expect(screen.getByText("My Optimiser")).toBeInTheDocument()
     })
   })
 

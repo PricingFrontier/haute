@@ -824,13 +824,28 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
             incoming_count=len(source_names),
             incoming_sources=source_names,
         )
-    func_name, description, _config = _common_node_fields(node)
+    func_name, description, config = _common_node_fields(node)
     params = _build_params(source_names)
+    first = source_names[0]
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="polars",
+        param_names=(first,),
+    )
+    if code:
+        user_body = _wrap_user_code(code, ["df"])
+        return (
+            "@pipeline.explore()\n"
+            f"def {func_name}({params}) -> pl.LazyFrame:\n"
+            f'    """{description}"""\n'
+            f"    df = {first}\n"
+            f"{user_body}\n"
+        )
     return _EXPLORE.format(
         func_name=func_name,
         description=description,
         params=params,
-        first=source_names[0],
+        first=first,
     )
 
 

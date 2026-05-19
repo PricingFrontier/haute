@@ -282,10 +282,30 @@ describe("useEdgeHandlers", () => {
     expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
   })
 
+  it("onNodeClick fetches preview for explore nodes so prepared rows load", () => {
+    const params = makeParams()
+    const node = {
+      id: "explore1",
+      position: { x: 0, y: 0 },
+      data: { label: "Explore", nodeType: NODE_TYPES.EXPLORE },
+    } as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
+  })
+
   it.each([
     NODE_TYPES.DATA_SINK,
     NODE_TYPES.OUTPUT,
-    NODE_TYPES.EXPLORE,
   ])("onNodeClick skips automatic preview for non-previewable sink node type %s", (nodeType) => {
     const params = makeParams()
     const node = {

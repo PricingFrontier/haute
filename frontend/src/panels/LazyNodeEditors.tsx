@@ -2,6 +2,7 @@ import { lazy, Suspense, type ReactNode } from "react"
 
 export const DataSourceEditor = lazy(() => import("./editors/DataSourceEditor"))
 export const TransformEditor = lazy(() => import("./editors/TransformEditor"))
+export const ExploreCodeEditor = lazy(() => import("./editors/ExploreCodeEditor"))
 export const ModelScoreEditor = lazy(() => import("./editors/ModelScoreEditor"))
 export const BandingEditor = lazy(() => import("./editors/BandingEditor"))
 export const RatingStepEditor = lazy(() => import("./editors/RatingStepEditor"))

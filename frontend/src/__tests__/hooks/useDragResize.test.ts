@@ -209,4 +209,21 @@ describe("useDragResize", () => {
 
     expect(div.style.height).toBe(heightAfterDrag)
   })
+
+  it("supports programmatic resize for shared panel commands", () => {
+    const { result } = renderHook(() => useDragResize(defaultOpts))
+
+    const div = document.createElement("div")
+    Object.defineProperty(result.current.containerRef, "current", {
+      value: div,
+      writable: true,
+    })
+
+    act(() => {
+      result.current.resizeToHeight(650, { clampToMax: false })
+    })
+
+    expect(result.current.height).toBe(650)
+    expect(div.style.height).toBe("650px")
+  })
 })

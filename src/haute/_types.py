@@ -200,6 +200,8 @@ class DataSinkConfig(TypedDict, total=False):
 class ExploreConfig(TypedDict, total=False):
     """Config for explore nodes."""
 
+    code: str
+
 
 class ExternalFileConfig(TypedDict, total=False):
     """Config for externalFile nodes."""

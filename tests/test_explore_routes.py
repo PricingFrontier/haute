@@ -52,7 +52,12 @@ def _poll_explore(client: TestClient, job_id: str, timeout: float = 10.0) -> dic
     raise TimeoutError(f"Explore job {job_id} did not finish within {timeout}s")
 
 
-def _explore_graph(data_path: str, *, extra_downstream_label: str = "ignored") -> dict:
+def _explore_graph(
+    data_path: str,
+    *,
+    extra_downstream_label: str = "ignored",
+    explore_config: dict | None = None,
+) -> dict:
     graph = make_graph(
         {
             "source_file": str(Path(data_path).with_name("pipeline.py")),
@@ -80,7 +85,11 @@ def _explore_graph(data_path: str, *, extra_downstream_label: str = "ignored") -
                 },
                 {
                     "id": "explore",
-                    "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                    "data": {
+                        "label": "Explore",
+                        "nodeType": "explore",
+                        "config": explore_config or {},
+                    },
                 },
                 {
                     "id": "downstream",
@@ -136,6 +145,45 @@ def test_explore_run_returns_cache_descriptor(client: TestClient, tmp_path: Path
     assert report["generated_at"] > 0
 
 
+def test_explore_run_applies_node_polars_code_before_caching(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["a", "b", "c"],
+            "premium": [0, 10, 20],
+        }
+    ).write_parquet(path)
+
+    response = client.post(
+        "/api/explore/run",
+        json={
+            "graph": _explore_graph(
+                str(path),
+                explore_config={
+                    "code": (
+                        "df = df.filter(pl.col('premium') >= 10)"
+                        ".with_columns((pl.col('premium') + 1).alias('premium_plus_one'))"
+                    )
+                },
+            ),
+            "node_id": "explore",
+            "source": "live",
+        },
+    )
+
+    assert response.status_code == 200
+    started = response.json()
+    final = _poll_explore(client, started["job_id"])
+
+    assert final["status"] == "completed"
+    report = final["result"]
+    assert report["row_count"] == 2
+    assert report["column_count"] == 4
+
+
 def test_explore_reuses_completed_report_for_same_analysis_key(
     client: TestClient,
     tmp_path: Path,
@@ -157,7 +205,7 @@ def test_explore_reuses_completed_report_for_same_analysis_key(
     assert second["result"] == first_status["result"]
 
 
-def test_explore_downstream_edits_do_not_invalidate_parent_dataframe_cache(
+def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
     client: TestClient,
     tmp_path: Path,
 ) -> None:

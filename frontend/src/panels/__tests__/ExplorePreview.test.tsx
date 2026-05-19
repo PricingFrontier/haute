@@ -3,8 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExploreCacheReport } from "../../api/types"
 import useNodeResultsStore, { resetNodeResultsDerivedCaches } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useUIStore from "../../stores/useUIStore"
+import type { PreviewData } from "../DataPreview"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import ExplorePreview from "../ExplorePreview"
+import { DEFAULT_PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
 
 const mockRunExplore = vi.fn()
 const mockGetExploreStatus = vi.fn()
@@ -16,6 +19,12 @@ vi.mock("../../api/client", () => ({
   getExploreStatus: (...args: unknown[]) => mockGetExploreStatus(...args),
   cancelExplore: (...args: unknown[]) => mockCancelExplore(...args),
 }))
+
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
 
 function makeNode(id: string, label: string, nodeType: string): SimpleNode {
   return {
@@ -35,6 +44,29 @@ function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheRe
     row_count: 1234,
     column_count: 12,
     generated_at: 1710000000,
+    ...overrides,
+  }
+}
+
+function makePreview(overrides: Partial<PreviewData> = {}): PreviewData {
+  return {
+    nodeId: "explore_1",
+    nodeLabel: "Explore Claims",
+    status: "ok",
+    row_count: 3,
+    column_count: 2,
+    columns: [
+      { name: "premium", dtype: "i64" },
+      { name: "premium_plus_one", dtype: "i64" },
+    ],
+    preview: [
+      { premium: 10, premium_plus_one: 11 },
+      { premium: 20, premium_plus_one: 21 },
+    ],
+    preview_row_count: 2,
+    preview_row_limit: 2,
+    preview_truncated: true,
+    error: null,
     ...overrides,
   }
 }
@@ -60,9 +92,10 @@ function resetStores() {
     activeSource: "pricing",
     streamingChunkSize: 250000,
   })
+  useUIStore.setState({ explorePreviewPanes: {} })
 }
 
-function renderExplore() {
+function renderExplore(previewData?: PreviewData | null) {
   return render(
     <ExplorePreview
       node={exploreNode}
@@ -70,6 +103,7 @@ function renderExplore() {
       edges={edges}
       submodels={{}}
       preamble="import polars as pl"
+      previewData={previewData}
     />,
   )
 }
@@ -77,6 +111,7 @@ function renderExplore() {
 describe("ExplorePreview", () => {
   beforeEach(() => {
     vi.useRealTimers()
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     mockRunExplore.mockReset()
     mockGetExploreStatus.mockReset()
     mockCancelExplore.mockReset()
@@ -119,10 +154,52 @@ describe("ExplorePreview", () => {
     })
 
     expect(await screen.findByText(/pricing\s*\|\s*cached/i)).toBeInTheDocument()
-    // v1: the lower-panel body stays empty (reserved for future EDA work);
-    // the cached payload still lands in the store for downstream consumers.
-    expect(screen.getByTestId("explore-preview-body")).toBeEmptyDOMElement()
     expect(useNodeResultsStore.getState().exploreResults.explore_1?.result).toEqual(report)
+  })
+
+  it("renders preview rows for the Explore dataframe", () => {
+    renderExplore(makePreview())
+
+    const nodeTitle = screen.getByText("Explore Claims")
+    const previewTab = screen.getByRole("tab", { name: "Preview" })
+    const processButton = screen.getByRole("button", { name: "Process & cache full data" })
+
+    expect(screen.getByTestId("explore-preview-frame")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-preview-frame")).toHaveStyle({
+      height: `${DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight}px`,
+    })
+    expect(screen.getByTestId("explore-preview-frame-header")).toHaveClass("h-9")
+    expect(screen.getByTestId("preview-panel-node-icon").querySelector(".lucide-search")).toBeTruthy()
+    expect(screen.getByLabelText("Collapse preview panel")).toBeInTheDocument()
+    expect(processButton).toHaveClass("h-6", "whitespace-nowrap")
+    expect(nodeTitle.compareDocumentPosition(previewTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("data-preview-embedded")).toBeInTheDocument()
+    expect(screen.getByText("premium_plus_one")).toBeInTheDocument()
+    expect(screen.getByText("11")).toBeInTheDocument()
+    expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
+  })
+
+  it("switches lower Explore panes without rendering preview rows outside Preview", () => {
+    renderExplore(makePreview())
+
+    const preview = screen.getByRole("tab", { name: "Preview" })
+    const overview = screen.getByRole("tab", { name: "Overview" })
+    const relationships = screen.getByRole("tab", { name: "Relationships" })
+    const charts = screen.getByRole("tab", { name: "Charts" })
+
+    expect(preview).toHaveAttribute("aria-selected", "true")
+    expect(overview).toHaveAttribute("aria-selected", "false")
+    expect(relationships).toHaveAttribute("aria-selected", "false")
+    expect(charts).toHaveAttribute("aria-selected", "false")
+
+    fireEvent.click(charts)
+
+    expect(preview).toHaveAttribute("aria-selected", "false")
+    expect(charts).toHaveAttribute("aria-selected", "true")
+    expect(screen.queryByTestId("data-preview-embedded")).not.toBeInTheDocument()
+    expect(screen.getByTestId("explore-preview-charts-pane")).toBeEmptyDOMElement()
+    expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("charts")
   })
 
   it("registers a started Explore job for background polling", async () => {

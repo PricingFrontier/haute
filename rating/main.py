@@ -121,6 +121,12 @@ def age_veh_banding(policies: pl.LazyFrame) -> pl.LazyFrame:
     return policies
 
 
+@pipeline.explore(contract="opaque")
+def Explore_7(policies: pl.LazyFrame) -> pl.LazyFrame:
+    """"""
+    return policies
+
+
 @pipeline.modelling(config="config/model_training/avg_top_5.json", contract={'inputs': [], 'outputs': []})
 def avg_top_5(competitor_join: pl.LazyFrame) -> pl.LazyFrame:
     """avg_top_5 node"""
@@ -279,3 +285,4 @@ pipeline.connect("age_veh_banding", "ratebook_optimiser")
 pipeline.connect("age_veh_banding", "apply_ratebook")
 pipeline.connect("optimiser_input", "online_optimiser")
 pipeline.connect("optimiser_input", "apply_online")
+pipeline.connect("policies", "Explore_7")
