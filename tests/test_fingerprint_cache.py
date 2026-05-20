@@ -394,6 +394,53 @@ class TestGraphFingerprint:
         g = PipelineGraph(nodes=[node])
         assert graph_fingerprint(g) == graph_fingerprint(g)
 
+    def test_explore_overview_config_does_not_affect_fingerprint(self) -> None:
+        from haute._cache import graph_fingerprint
+        from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+
+        base = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="explore",
+                    data=NodeData(
+                        label="Explore",
+                        nodeType=NodeType.EXPLORE,
+                        config={"code": "df = df.select(pl.all())"},
+                    ),
+                ),
+            ],
+        )
+        with_overview = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="explore",
+                    data=NodeData(
+                        label="Explore",
+                        nodeType=NodeType.EXPLORE,
+                        config={
+                            "code": "df = df.select(pl.all())",
+                            "overview": {"dataset_snapshot": True, "schema": True},
+                        },
+                    ),
+                ),
+            ],
+        )
+        with_code_change = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="explore",
+                    data=NodeData(
+                        label="Explore",
+                        nodeType=NodeType.EXPLORE,
+                        config={"code": "df = df.filter(pl.col('premium') > 0)"},
+                    ),
+                ),
+            ],
+        )
+
+        assert graph_fingerprint(with_overview) == graph_fingerprint(base)
+        assert graph_fingerprint(with_code_change) != graph_fingerprint(base)
+
     def test_empty_graph_consistent_fingerprint(self) -> None:
         from haute._cache import graph_fingerprint
         from haute._types import PipelineGraph

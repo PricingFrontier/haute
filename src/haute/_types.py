@@ -197,10 +197,26 @@ class DataSinkConfig(TypedDict, total=False):
     format: str  # "parquet" | "csv"
 
 
+class ExploreOverviewConfig(TypedDict, total=False):
+    """Config for the overview-cards block of an explore node.
+
+    Each field toggles a single overview card in the UI.  Kept as a separate
+    TypedDict so the structure round-trips cleanly through codegen as a
+    decorator kwarg (``@pipeline.explore(overview={...})``).
+    """
+
+    dataset_snapshot: bool
+    data_quality: bool
+    numeric_summary: bool
+    categorical_summary: bool
+    schema: bool
+
+
 class ExploreConfig(TypedDict, total=False):
     """Config for explore nodes."""
 
     code: str
+    overview: ExploreOverviewConfig
 
 
 class ExternalFileConfig(TypedDict, total=False):

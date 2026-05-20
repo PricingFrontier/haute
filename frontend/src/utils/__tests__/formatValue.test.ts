@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { formatValue, formatValueCompact, formatFixed } from "../formatValue"
+import { formatNullPct, formatValue, formatValueCompact, formatFixed } from "../formatValue"
 
 describe("formatValue", () => {
   it("formats null as 'null'", () => {
@@ -167,5 +167,18 @@ describe("formatFixed", () => {
 
   it("returns N/A for null", () => {
     expect(formatFixed(null, 2)).toBe("N/A")
+  })
+})
+
+describe("formatNullPct", () => {
+  it("returns null when the row count is 0", () => {
+    expect(formatNullPct(0, 0)).toBeNull()
+    expect(formatNullPct(5, 0)).toBeNull()
+  })
+
+  it("formats the null ratio as a 1-dp percentage", () => {
+    expect(formatNullPct(0, 200)).toBe("0.0%")
+    expect(formatNullPct(50, 200)).toBe("25.0%")
+    expect(formatNullPct(200, 200)).toBe("100.0%")
   })
 })

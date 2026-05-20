@@ -355,6 +355,7 @@ describe("API response guards", () => {
     expect(run.result?.row_count).toBe(150)
     expect(run.result?.column_count).toBe(3)
     expect(run.result?.dataframe_cache_key).toContain("explore_dataset")
+    expect(run.result?.overview_summary.data_quality.issue_count).toBe(0)
     expect(status.result?.dataframe_cache_key).toBe(run.result?.dataframe_cache_key)
   })
 
@@ -371,6 +372,303 @@ describe("API response guards", () => {
         },
       }),
     ).toThrow(/parseExploreCacheReport/i)
+  })
+
+  describe("parseExploreColumnStat (via parseExploreCacheReport.columns)", () => {
+    function withColumns(columns: unknown): Record<string, unknown> {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      return { ...fixture, result: { ...result, columns } }
+    }
+
+    function withoutResultField(key: string): Record<string, unknown> {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const { [key]: _removed, ...nextResult } = result
+      void _removed
+      return { ...fixture, result: nextResult }
+    }
+
+    it("parses a fully populated column stat", () => {
+      const parsed = parseExploreStatusResponse(
+        withColumns([
+          {
+            name: "premium",
+            dtype: "Float64",
+            kind: "Numeric",
+            null_count: 3,
+            distinct_count: 42,
+            min_value: "10",
+            p25_value: "25",
+            median_value: "50",
+            mean_value: "52.5",
+            p75_value: "75",
+            max_value: "100",
+            std_value: "12.5",
+            zero_count: 1,
+            negative_count: 2,
+          },
+        ]),
+      )
+      expect(parsed.result?.columns).toHaveLength(1)
+      const col = parsed.result!.columns[0]
+      expect(col.name).toBe("premium")
+      expect(col.dtype).toBe("Float64")
+      expect(col.kind).toBe("Numeric")
+      expect(col.null_count).toBe(3)
+      expect(col.distinct_count).toBe(42)
+      expect(col.p25_value).toBe("25")
+      expect(col.median_value).toBe("50")
+      expect(col.mean_value).toBe("52.5")
+      expect(col.p75_value).toBe("75")
+      expect(col.std_value).toBe("12.5")
+      expect(col.zero_count).toBe(1)
+      expect(col.negative_count).toBe(2)
+    })
+
+    it("accepts null distinct_count", () => {
+      const parsed = parseExploreStatusResponse(
+        withColumns([
+          {
+            name: "sparse",
+            dtype: "String",
+            kind: "Text",
+            null_count: 10,
+            distinct_count: null,
+          },
+        ]),
+      )
+      const col = parsed.result!.columns[0]
+      expect(col.distinct_count).toBeNull()
+    })
+
+    it("throws when columns is missing from a cache report", () => {
+      expect(() => parseExploreStatusResponse(withoutResultField("columns"))).toThrow(
+        /parseExploreCacheReport/i,
+      )
+    })
+
+    it.each(["source", "row_count", "column_count", "generated_at"])(
+      "throws when %s is missing from a cache report",
+      (field) => {
+        expect(() => parseExploreStatusResponse(withoutResultField(field))).toThrow(
+          /parseExploreCacheReport/i,
+        )
+      },
+    )
+
+    it("throws when overview_summary is missing from a cache report", () => {
+      expect(() => parseExploreStatusResponse(withoutResultField("overview_summary"))).toThrow(
+        /parseExploreOverviewSummary/i,
+      )
+    })
+
+    it("throws when distinct_count is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            { name: "minimal", dtype: "Int64", kind: "Numeric", null_count: 0 },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when overview summary issue severity is invalid", () => {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const overview = result.overview_summary as Record<string, unknown>
+
+      expect(() =>
+        parseExploreStatusResponse({
+          ...fixture,
+          result: {
+            ...result,
+            overview_summary: {
+              ...overview,
+              data_quality: {
+                issue_count: 1,
+                issues: [{ severity: "info", label: "x", detail: "y" }],
+              },
+            },
+          },
+        }),
+      ).toThrow(/parseExploreOverviewSummary/i)
+    })
+
+    it("parses categorical summary profiles", () => {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const overview = result.overview_summary as Record<string, unknown>
+
+      const parsed = parseExploreStatusResponse({
+        ...fixture,
+        result: {
+          ...result,
+          overview_summary: {
+            ...overview,
+            categorical_summary: [
+              {
+                field: "region",
+                distinct_count: 2,
+                expandable: true,
+                values_truncated: false,
+                values: [
+                  { value: "north", count: 3 },
+                  { value: null, count: 1 },
+                ],
+              },
+            ],
+          },
+        },
+      })
+
+      expect(parsed.result?.overview_summary.categorical_summary[0]).toEqual({
+        field: "region",
+        distinct_count: 2,
+        expandable: true,
+        values_truncated: false,
+        values: [
+          { value: "north", count: 3 },
+          { value: null, count: 1 },
+        ],
+      })
+    })
+
+    it("throws when categorical summary value counts are malformed", () => {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const overview = result.overview_summary as Record<string, unknown>
+
+      expect(() =>
+        parseExploreStatusResponse({
+          ...fixture,
+          result: {
+            ...result,
+            overview_summary: {
+              ...overview,
+              categorical_summary: [
+                {
+                  field: "region",
+                  distinct_count: 2,
+                  expandable: true,
+                  values_truncated: false,
+                  values: [{ value: "north", count: "3" }],
+                },
+              ],
+            },
+          },
+        }),
+      ).toThrow(/parseExploreOverviewSummary/i)
+    })
+
+    it("throws when name is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              dtype: "Float64",
+              kind: "Numeric",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when dtype is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              kind: "Numeric",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when kind is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when kind is invalid", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              kind: "Money",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when null_count is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              kind: "Numeric",
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when null_count is a string", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              kind: "Numeric",
+              null_count: "3",
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when numeric profile counts are malformed", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "premium",
+              dtype: "Float64",
+              kind: "Numeric",
+              null_count: 0,
+              distinct_count: 1,
+              zero_count: "1",
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
   })
 
   it("preserves typed execution metrics on train status responses", () => {

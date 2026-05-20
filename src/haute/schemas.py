@@ -367,6 +367,61 @@ class SinkResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"]
+
+
+class ExploreColumnStat(BaseModel):
+    """Per-column stats captured at Explore cache-materialisation time.
+
+    distinct_count may be None when the dtype is not hashable (Object/Struct
+    columns), in which case the UI renders an em-dash.
+    """
+
+    name: str
+    dtype: str
+    kind: ExploreColumnKind
+    null_count: int
+    distinct_count: int | None
+    min_value: str | None = None
+    p25_value: str | None = None
+    median_value: str | None = None
+    mean_value: str | None = None
+    p75_value: str | None = None
+    max_value: str | None = None
+    std_value: str | None = None
+    zero_count: int | None = None
+    negative_count: int | None = None
+
+
+class ExploreDistinctValueCount(BaseModel):
+    value: str | None
+    count: int
+
+
+class ExploreCategoricalColumnProfile(BaseModel):
+    field: str
+    distinct_count: int | None
+    expandable: bool = False
+    values_truncated: bool = False
+    values: list[ExploreDistinctValueCount] = Field(default_factory=list)
+
+
+class ExploreDataQualityIssue(BaseModel):
+    severity: Literal["warning", "danger"]
+    label: str
+    detail: str
+
+
+class ExploreDataQualitySummary(BaseModel):
+    issue_count: int = 0
+    issues: list[ExploreDataQualityIssue] = Field(default_factory=list)
+
+
+class ExploreOverviewSummary(BaseModel):
+    data_quality: ExploreDataQualitySummary = Field(default_factory=ExploreDataQualitySummary)
+    categorical_summary: list[ExploreCategoricalColumnProfile] = Field(default_factory=list)
+
+
 class ExploreCacheReport(BaseModel):
     """Result of materialising an Explore node's upstream dataset.
 
@@ -382,6 +437,8 @@ class ExploreCacheReport(BaseModel):
     dataframe_cache_key: str
     row_count: int = 0
     column_count: int = 0
+    columns: list[ExploreColumnStat] = Field(default_factory=list)
+    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
     generated_at: float = 0.0
     execution_metrics: ExecutionMetricsPayload | None = None
 

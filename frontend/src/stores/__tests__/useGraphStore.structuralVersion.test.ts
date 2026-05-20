@@ -305,6 +305,83 @@ describe("useGraphStore structuralVersion", () => {
     }
   })
 
+  it("does not bump structuralVersion when Explore overview card config changes", () => {
+    const store = useGraphStore.getState()
+    const baseNode = makeNode("explore_1", "explore", {
+      data: {
+        label: "Explore",
+        nodeType: "explore",
+        config: {
+          code: "df = df.select(pl.all())",
+          overview: { dataset_snapshot: false },
+        },
+      },
+    })
+
+    act(() => {
+      store.setNodesRaw([baseNode])
+      store.markSaved()
+    })
+
+    const { structuralVersion, panelContextVersion } = useGraphStore.getState()
+
+    act(() => {
+      store.setNodesRaw([
+        makeNode("explore_1", "explore", {
+          data: {
+            label: "Explore",
+            nodeType: "explore",
+            config: {
+              code: "df = df.select(pl.all())",
+              overview: { dataset_snapshot: true, schema: true, future_card: true },
+            },
+          },
+        }),
+      ])
+    })
+
+    expect(useGraphStore.getState().structuralVersion).toBe(structuralVersion)
+    expect(useGraphStore.getState().panelContextVersion).toBeGreaterThan(panelContextVersion)
+    expect(useGraphStore.getState().dirty).toBe(true)
+  })
+
+  it("still bumps structuralVersion when Explore data-prep code changes", () => {
+    const store = useGraphStore.getState()
+    act(() => {
+      store.setNodesRaw([
+        makeNode("explore_1", "explore", {
+          data: {
+            label: "Explore",
+            nodeType: "explore",
+            config: {
+              code: "df = df.select(pl.all())",
+              overview: { dataset_snapshot: true },
+            },
+          },
+        }),
+      ])
+    })
+
+    const { structuralVersion } = useGraphStore.getState()
+
+    act(() => {
+      store.setNodesRaw([
+        makeNode("explore_1", "explore", {
+          data: {
+            label: "Explore",
+            nodeType: "explore",
+            config: {
+              code: "df = df.filter(pl.col('premium') > 0)",
+              overview: { dataset_snapshot: true },
+            },
+          },
+        }),
+      ])
+    })
+
+    expect(useGraphStore.getState().structuralVersion).toBeGreaterThan(structuralVersion)
+  })
+
   it("bumps structuralVersion when nodes are added, removed, rewired, or reconfigured", () => {
     const store = useGraphStore.getState()
 

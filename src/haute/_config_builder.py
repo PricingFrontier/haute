@@ -23,6 +23,7 @@ from haute._code_extraction import (
 from haute._config_io import has_config_folder, load_node_config
 from haute._config_validation import warn_unrecognized_config_keys
 from haute._contracts import Contract, get_column_contract
+from haute._explore_overview import validate_explore_overview
 from haute._logging import get_logger
 from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
@@ -191,6 +192,13 @@ def _build_node_config(
         code = _extract_user_code(body, param_names) if body else ""
         if code:
             config["code"] = code
+        if "overview" in decorator_kwargs:
+            overview = validate_explore_overview(
+                decorator_kwargs["overview"],
+                context="explore decorator",
+            )
+            if overview:
+                config["overview"] = dict(overview)
     elif node_type == NodeType.EXTERNAL_FILE:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("external", ""))
         config["fileType"] = decorator_kwargs.get("file_type", "pickle")
