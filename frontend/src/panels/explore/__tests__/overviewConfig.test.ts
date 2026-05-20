@@ -23,25 +23,46 @@ describe("readOverview", () => {
   })
 
   it("drops non-boolean values for known keys", () => {
-    const result = readOverview({ overview: { dataset_header: "yes", schema: 1 } })
+    const result = readOverview({
+      overview: {
+        dataset_snapshot: "yes",
+        numeric_summary: "yes",
+        categorical_summary: "yes",
+        data_quality: null,
+        schema: 1,
+      },
+    })
     expect(result).toEqual({})
   })
 
   it("returns valid boolean values faithfully", () => {
-    expect(readOverview({ overview: { dataset_header: true, schema: false } }))
-      .toEqual({ dataset_header: true, schema: false })
+    expect(readOverview({
+      overview: {
+        dataset_snapshot: true,
+        numeric_summary: true,
+        categorical_summary: true,
+        data_quality: false,
+        schema: false,
+      },
+    })).toEqual({
+      dataset_snapshot: true,
+      numeric_summary: true,
+      categorical_summary: true,
+      data_quality: false,
+      schema: false,
+    })
   })
 
   it("returns only the known keys present (dropping undefined)", () => {
-    expect(readOverview({ overview: { dataset_header: true } }))
-      .toEqual({ dataset_header: true })
+    expect(readOverview({ overview: { dataset_snapshot: true } }))
+      .toEqual({ dataset_snapshot: true })
   })
 
   it("ignores unknown extra keys", () => {
     const result = readOverview({
-      overview: { dataset_header: true, future_key: true },
+      overview: { dataset_snapshot: true, future_key: true },
     })
-    expect(result).toEqual({ dataset_header: true })
+    expect(result).toEqual({ dataset_snapshot: true })
     expect("future_key" in result).toBe(false)
   })
 })

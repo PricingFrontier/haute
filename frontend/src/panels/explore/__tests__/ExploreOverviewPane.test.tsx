@@ -23,6 +23,10 @@ function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheRe
     column_count: 12,
     generated_at: 1710000000,
     columns: [],
+    overview_summary: {
+      data_quality: { issue_count: 0, issues: [] },
+      categorical_summary: [],
+    },
     ...overrides,
   }
 }
@@ -35,45 +39,56 @@ describe("ExploreOverviewPane", () => {
     expect(screen.getByTestId("explore-overview-pane")).toBeInTheDocument()
     expect(screen.getByText(/No cards enabled/i)).toBeInTheDocument()
     expect(screen.getByText(/Overview tab in the config panel/i)).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
   it("renders no-data empty state when toggle is on but report is null", () => {
     render(
       <ExploreOverviewPane
-        node={makeNode({ overview: { dataset_header: true } })}
+        node={makeNode({ overview: { dataset_snapshot: true } })}
         report={null}
       />,
     )
     expect(screen.getByText(/No cached data yet/i)).toBeInTheDocument()
     expect(screen.getByText(/Process & cache full data/i)).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
-  it("renders the dataset header card when toggle is on and report present", () => {
+  it("renders the dataset snapshot card when toggle is on and report present", () => {
     render(
       <ExploreOverviewPane
-        node={makeNode({ overview: { dataset_header: true } })}
+        node={makeNode({ overview: { dataset_snapshot: true } })}
         report={makeReport()}
       />,
     )
-    expect(screen.getByTestId("explore-dataset-header-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-dataset-snapshot-card")).toBeInTheDocument()
     expect(screen.queryByText(/No cards enabled/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/No cached data yet/i)).not.toBeInTheDocument()
   })
 
-  it("renders both cards stacked when both toggles are on", () => {
+  it("renders all overview cards stacked when toggles are on", () => {
     render(
       <ExploreOverviewPane
-        node={makeNode({ overview: { dataset_header: true, schema: true } })}
+        node={makeNode({
+          overview: {
+            dataset_snapshot: true,
+            schema: true,
+            numeric_summary: true,
+            categorical_summary: true,
+            data_quality: true,
+          },
+        })}
         report={makeReport()}
       />,
     )
-    expect(screen.getByTestId("explore-dataset-header-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-dataset-snapshot-card")).toBeInTheDocument()
     expect(screen.getByTestId("explore-schema-table-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-numeric-summary-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-categorical-summary-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-data-quality-card")).toBeInTheDocument()
   })
 
-  it("renders only the schema card when only schema toggle is on", () => {
+  it("renders the schema card when only the schema toggle is on", () => {
     render(
       <ExploreOverviewPane
         node={makeNode({ overview: { schema: true } })}
@@ -81,42 +96,95 @@ describe("ExploreOverviewPane", () => {
       />,
     )
     expect(screen.getByTestId("explore-schema-table-card")).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-data-quality-card")).not.toBeInTheDocument()
   })
 
-  it("renders no-cards empty state when overview has dataset_header: false and schema: false", () => {
+  it("renders no-cards empty state when overview card toggles are false", () => {
     render(
       <ExploreOverviewPane
-        node={makeNode({ overview: { dataset_header: false, schema: false } })}
+        node={makeNode({
+          overview: {
+            dataset_snapshot: false,
+            schema: false,
+            numeric_summary: false,
+            categorical_summary: false,
+            data_quality: false,
+          },
+        })}
         report={makeReport()}
       />,
     )
     expect(screen.getByText(/No cards enabled/i)).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
     expect(screen.queryByTestId("explore-schema-table-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-numeric-summary-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-categorical-summary-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-data-quality-card")).not.toBeInTheDocument()
   })
 
   it("no-data empty-state body does not name a specific card", () => {
     render(
       <ExploreOverviewPane
-        node={makeNode({ overview: { schema: true } })}
+        node={makeNode({ overview: { data_quality: true } })}
         report={null}
       />,
     )
     const body = screen.getByText(/Process & cache full data/i)
-    expect(body.textContent).not.toMatch(/dataset header/i)
+    expect(body.textContent).not.toMatch(/dataset snapshot/i)
   })
 
-  it("renders dataset_header card before schema card in DOM", () => {
+  it("renders snapshot before schema before numeric before categorical before quality in DOM", () => {
     render(
       <ExploreOverviewPane
-        node={makeNode({ overview: { dataset_header: true, schema: true } })}
+        node={makeNode({
+          overview: {
+            dataset_snapshot: true,
+            schema: true,
+            numeric_summary: true,
+            categorical_summary: true,
+            data_quality: true,
+          },
+        })}
         report={makeReport()}
       />,
     )
-    const header = screen.getByTestId("explore-dataset-header-card")
+    const snapshot = screen.getByTestId("explore-dataset-snapshot-card")
     const schema = screen.getByTestId("explore-schema-table-card")
-    const relationship = header.compareDocumentPosition(schema)
-    expect(relationship & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const numeric = screen.getByTestId("explore-numeric-summary-card")
+    const categorical = screen.getByTestId("explore-categorical-summary-card")
+    const quality = screen.getByTestId("explore-data-quality-card")
+    expect(snapshot.compareDocumentPosition(schema) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(schema.compareDocumentPosition(numeric) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(numeric.compareDocumentPosition(categorical) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(categorical.compareDocumentPosition(quality) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("renders the numeric summary card when only its toggle is on", () => {
+    render(
+      <ExploreOverviewPane
+        node={makeNode({ overview: { numeric_summary: true } })}
+        report={makeReport()}
+      />,
+    )
+
+    expect(screen.getByTestId("explore-numeric-summary-card")).toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-schema-table-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-data-quality-card")).not.toBeInTheDocument()
+  })
+
+  it("renders the categorical summary card when only its toggle is on", () => {
+    render(
+      <ExploreOverviewPane
+        node={makeNode({ overview: { categorical_summary: true } })}
+        report={makeReport()}
+      />,
+    )
+
+    expect(screen.getByTestId("explore-categorical-summary-card")).toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-schema-table-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-data-quality-card")).not.toBeInTheDocument()
   })
 })

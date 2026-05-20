@@ -313,7 +313,7 @@ describe("useGraphStore structuralVersion", () => {
         nodeType: "explore",
         config: {
           code: "df = df.select(pl.all())",
-          overview: { dataset_header: false },
+          overview: { dataset_snapshot: false },
         },
       },
     })
@@ -333,7 +333,7 @@ describe("useGraphStore structuralVersion", () => {
             nodeType: "explore",
             config: {
               code: "df = df.select(pl.all())",
-              overview: { dataset_header: true, schema: true, future_card: true },
+              overview: { dataset_snapshot: true, schema: true, future_card: true },
             },
           },
         }),
@@ -355,7 +355,7 @@ describe("useGraphStore structuralVersion", () => {
             nodeType: "explore",
             config: {
               code: "df = df.select(pl.all())",
-              overview: { dataset_header: true },
+              overview: { dataset_snapshot: true },
             },
           },
         }),
@@ -372,7 +372,7 @@ describe("useGraphStore structuralVersion", () => {
             nodeType: "explore",
             config: {
               code: "df = df.filter(pl.col('premium') > 0)",
-              overview: { dataset_header: true },
+              overview: { dataset_snapshot: true },
             },
           },
         }),

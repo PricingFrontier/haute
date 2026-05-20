@@ -579,7 +579,7 @@ class TestGenExplore:
     def test_explore_with_overview_emits_decorator_kwarg(self) -> None:
         node = _make_codegen_node(
             "explore",
-            {"overview": {"dataset_header": True}},
+            {"overview": {"dataset_snapshot": True}},
             label="InspectClaims",
         )
 
@@ -590,7 +590,7 @@ class TestGenExplore:
         # call, so we only assert on the overview substring (kwarg ordering is
         # an implementation detail of contract injection).
         assert "@pipeline.explore(" in code
-        assert "overview={'dataset_header': True}" in code
+        assert "overview={'dataset_snapshot': True}" in code
         assert "def InspectClaims(claims: pl.LazyFrame)" in code
         _compile_node_code(code)
 
@@ -613,7 +613,7 @@ class TestGenExplore:
                     "df = df.filter(pl.col('premium') > 0)"
                     ".with_columns((pl.col('premium') * 2).alias('double_premium'))"
                 ),
-                "overview": {"dataset_header": True},
+                "overview": {"dataset_snapshot": True},
             },
             label="InspectClaims",
         )
@@ -621,7 +621,7 @@ class TestGenExplore:
         code = _node_to_code(node, source_names=["claims"])
 
         assert "@pipeline.explore(" in code
-        assert "overview={'dataset_header': True}" in code
+        assert "overview={'dataset_snapshot': True}" in code
         assert "df = claims" in code
         assert ".filter(pl.col('premium') > 0)" in code
         assert "return df" in code
@@ -660,7 +660,7 @@ class TestGenExplore:
 
         node = _make_codegen_node(
             "explore",
-            {"overview": {"dataset_header": True, "schema": True}},
+            {"overview": {"dataset_snapshot": True, "schema": True}},
             label="InspectClaims",
         )
 
@@ -681,7 +681,46 @@ class TestGenExplore:
         )
         overview_kwarg = next(kw for kw in explore_decorator.keywords if kw.arg == "overview")
         overview_value = ast.literal_eval(overview_kwarg.value)
-        assert overview_value == {"dataset_header": True, "schema": True}
+        assert overview_value == {"dataset_snapshot": True, "schema": True}
+        _compile_node_code(code)
+
+    def test_explore_with_concise_overview_cards_emits_decorator_kwarg(self) -> None:
+        import ast
+
+        node = _make_codegen_node(
+            "explore",
+            {
+                "overview": {
+                    "dataset_snapshot": True,
+                    "schema": True,
+                    "numeric_summary": True,
+                    "categorical_summary": True,
+                    "data_quality": True,
+                }
+            },
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        module = ast.parse(code)
+        function_defs = [n for n in module.body if isinstance(n, ast.FunctionDef)]
+        explore_decorator = next(
+            d
+            for d in function_defs[0].decorator_list
+            if isinstance(d, ast.Call)
+            and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "explore"
+        )
+        overview_kwarg = next(kw for kw in explore_decorator.keywords if kw.arg == "overview")
+        overview_value = ast.literal_eval(overview_kwarg.value)
+        assert overview_value == {
+            "dataset_snapshot": True,
+            "schema": True,
+            "numeric_summary": True,
+            "categorical_summary": True,
+            "data_quality": True,
+        }
         _compile_node_code(code)
 
     def test_explore_with_invalid_overview_fails_loudly(self) -> None:

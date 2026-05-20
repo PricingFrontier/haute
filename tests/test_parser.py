@@ -243,7 +243,7 @@ def source() -> pl.LazyFrame:
     return pl.LazyFrame()
 
 
-@pipeline.explore(overview={"dataset_header": True})
+@pipeline.explore(overview={"dataset_snapshot": True})
 def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
     return source
 
@@ -259,9 +259,7 @@ pipeline.connect("source", "inspect_claims")
         node_map = {n.id: n for n in graph.nodes}
 
         assert node_map["inspect_claims"].data.nodeType == "explore"
-        assert node_map["inspect_claims"].data.config["overview"] == {
-            "dataset_header": True
-        }
+        assert node_map["inspect_claims"].data.config["overview"] == {"dataset_snapshot": True}
 
     def test_explore_decorator_with_schema_extracts_into_config(self, tmp_path):
         code = """\
@@ -293,6 +291,51 @@ pipeline.connect("source", "inspect_claims")
 
         assert node_map["inspect_claims"].data.nodeType == "explore"
         assert node_map["inspect_claims"].data.config["overview"] == {"schema": True}
+
+    def test_explore_decorator_with_concise_overview_cards_extracts_into_config(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_overview_concise")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore(
+    overview={
+        "dataset_snapshot": True,
+        "schema": True,
+        "numeric_summary": True,
+        "categorical_summary": True,
+        "data_quality": True,
+    }
+)
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config["overview"] == {
+            "dataset_snapshot": True,
+            "schema": True,
+            "numeric_summary": True,
+            "categorical_summary": True,
+            "data_quality": True,
+        }
 
     def test_explore_decorator_with_empty_overview_does_not_set_config(self, tmp_path):
         code = """\
@@ -330,7 +373,7 @@ pipeline.connect("source", "inspect_claims")
         [
             ('overview="yes"', "must be a dict"),
             ('overview={"schema": "yes"}', "must be booleans"),
-            ('overview={1: True}', "keys must be strings"),
+            ("overview={1: True}", "keys must be strings"),
         ],
     )
     def test_explore_decorator_with_invalid_overview_fails_loudly(

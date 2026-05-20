@@ -1,6 +1,12 @@
 import type { OnUpdateConfig } from "./_shared"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { withAlpha } from "../../utils/color"
+import {
+  OVERVIEW_CARD_DEFINITIONS,
+  OVERVIEW_CONFIG_KEYS,
+  isOverviewCardEnabled,
+  type OverviewCardKey,
+} from "../explore/overviewCardDefinitions"
 import { readOverview, type OverviewConfig } from "../explore/overviewConfig"
 
 type ExploreOverviewConfigProps = {
@@ -75,8 +81,12 @@ export default function ExploreOverviewConfig({
   onUpdate,
 }: ExploreOverviewConfigProps) {
   const overview = readOverview(config)
-  const datasetHeaderEnabled = overview.dataset_header ?? false
-  const schemaEnabled = overview.schema ?? false
+  const enabledByKey = Object.fromEntries(
+    OVERVIEW_CARD_DEFINITIONS.map((definition) => [
+      definition.key,
+      isOverviewCardEnabled(overview, definition),
+    ]),
+  ) as Record<OverviewCardKey, boolean>
 
   // Drop the key on disable so the generated .py stays bare - the backend
   // parser drops an empty overview={} for the same reason. Unknown keys in the
@@ -86,12 +96,13 @@ export default function ExploreOverviewConfig({
     rawOverview && typeof rawOverview === "object" && !Array.isArray(rawOverview)
       ? { ...(rawOverview as Record<string, unknown>) }
       : {}
-  const toggleKey = (key: keyof OverviewConfig, currentlyEnabled: boolean) => {
+  const toggleKey = (key: OverviewCardKey, currentlyEnabled: boolean) => {
     const next: Record<string, unknown> = { ...baseOverview }
-    if (currentlyEnabled) {
-      delete next[key]
-    } else {
-      next[key] = true
+    for (const configKey of OVERVIEW_CONFIG_KEYS) delete next[configKey]
+
+    for (const definition of OVERVIEW_CARD_DEFINITIONS) {
+      const enabled = definition.key === key ? !currentlyEnabled : enabledByKey[definition.key]
+      if (enabled) next[definition.key] = true
     }
     onUpdate("overview", next)
   }
@@ -109,20 +120,16 @@ export default function ExploreOverviewConfig({
       </div>
 
       <div className="flex flex-col gap-2">
-        <OverviewCardToggle
-          enabled={datasetHeaderEnabled}
-          toggleKey="dataset_header"
-          label="Dataset header"
-          description="Shows row count, columns, source, and last cached time in the Overview pane below."
-          onToggle={() => toggleKey("dataset_header", datasetHeaderEnabled)}
-        />
-        <OverviewCardToggle
-          enabled={schemaEnabled}
-          toggleKey="schema"
-          label="Schema table"
-          description="Lists every column with dtype, null %, distinct count, and an example value."
-          onToggle={() => toggleKey("schema", schemaEnabled)}
-        />
+        {OVERVIEW_CARD_DEFINITIONS.map((definition) => (
+          <OverviewCardToggle
+            key={definition.key}
+            enabled={enabledByKey[definition.key]}
+            toggleKey={definition.key}
+            label={definition.label}
+            description={definition.description}
+            onToggle={() => toggleKey(definition.key, enabledByKey[definition.key])}
+          />
+        ))}
       </div>
     </div>
   )

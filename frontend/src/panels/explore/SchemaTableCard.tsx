@@ -2,14 +2,14 @@
  * Schema table card for the Explore preview's Overview pane.
  *
  * Lists every column in the cached dataset with its dtype, null percentage,
- * distinct count, and an example value. Purely presentational — receives a
- * validated `ExploreCacheReport` via props.
+ * distinct count, and min/max values. The card intentionally avoids inferred
+ * semantic grouping so the schema stays factual and field-level.
  *
  * Null-% colour ramp:
  *   exactly 0   -> muted (uninteresting, all-populated)
  *   (0, 50]     -> primary
  *   > 50        -> warning-strong (call out high-null columns)
- *   undefined   -> em-dash when row_count === 0
+ *   undefined   -> placeholder when row_count === 0
  */
 
 import { useMemo, useState } from "react"
@@ -17,6 +17,8 @@ import { ChevronLeft, ChevronRight, Columns, Search } from "lucide-react"
 import type { ExploreCacheReport, ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { getDtypeColor } from "../../utils/dtypeColors"
+import { formatNullPct } from "../../utils/formatValue"
+import { StatValueCell } from "./StatValueCell"
 
 interface SchemaTableCardProps {
   report: ExploreCacheReport
@@ -52,14 +54,6 @@ const MUTED_STYLE = { color: "var(--text-muted)" } as const
 const PRIMARY_STYLE = { color: "var(--text-primary)" } as const
 const SCHEMA_PAGE_SIZE = 50
 
-/** Format a null-count / row-count ratio as a 1-dp percentage, or null when undefined. */
-function formatNullPct(nullCount: number, rowCount: number): string | null {
-  if (rowCount === 0) return null
-  const pct = (nullCount / rowCount) * 100
-  return `${pct.toFixed(1)}%`
-}
-
-/** Map a null-% value to the appropriate text colour token. */
 function nullPctStyle(nullCount: number, rowCount: number): { color: string } {
   if (rowCount === 0) return MUTED_STYLE
   const pct = (nullCount / rowCount) * 100
@@ -98,30 +92,18 @@ function SchemaRow({
         className={CELL_BASE_CLASS}
         style={nullStyle}
       >
-        {nullPct ?? "—"}
+        {nullPct ?? "-"}
       </td>
       <td
         className={CELL_BASE_CLASS}
         style={column.distinct_count === null ? MUTED_STYLE : PRIMARY_STYLE}
       >
         {column.distinct_count === null
-          ? "—"
+          ? "-"
           : column.distinct_count.toLocaleString()}
       </td>
-      {column.example_value === null ? (
-        <td className={CELL_BASE_CLASS} style={MUTED_STYLE}>
-          —
-        </td>
-      ) : (
-        <td
-          data-testid="explore-schema-example"
-          className={`${CELL_BASE_CLASS} font-mono max-w-[32ch] truncate`}
-          style={PRIMARY_STYLE}
-          title={column.example_value}
-        >
-          {column.example_value}
-        </td>
-      )}
+      <StatValueCell testId="explore-schema-min-value" value={column.min_value} />
+      <StatValueCell testId="explore-schema-max-value" value={column.max_value} />
     </tr>
   )
 }
@@ -137,8 +119,14 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
     return report.columns.filter((column) => {
       const name = column.name.toLowerCase()
       const dtype = column.dtype.toLowerCase()
-      const example = column.example_value?.toLowerCase() ?? ""
-      return name.includes(normalisedQuery) || dtype.includes(normalisedQuery) || example.includes(normalisedQuery)
+      const minValue = column.min_value?.toLowerCase() ?? ""
+      const maxValue = column.max_value?.toLowerCase() ?? ""
+      return (
+        name.includes(normalisedQuery) ||
+        dtype.includes(normalisedQuery) ||
+        minValue.includes(normalisedQuery) ||
+        maxValue.includes(normalisedQuery)
+      )
     })
   }, [normalisedQuery, report.columns])
   const pageCount = Math.max(Math.ceil(filteredColumns.length / SCHEMA_PAGE_SIZE), 1)
@@ -244,7 +232,10 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
                 Distinct
               </th>
               <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Example
+                Min
+              </th>
+              <th className={HEADER_CLASS} style={HEADER_STYLE}>
+                Max
               </th>
             </tr>
           </thead>
@@ -252,7 +243,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
             {report.columns.length === 0 ? (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className={CELL_BASE_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"
@@ -263,7 +254,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
             ) : visibleColumns.length === 0 ? (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className={CELL_BASE_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"

@@ -57,6 +57,10 @@ function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheRe
     column_count: 12,
     generated_at: 1710000000,
     columns: [],
+    overview_summary: {
+      data_quality: { issue_count: 0, issues: [] },
+      categorical_summary: [],
+    },
     ...overrides,
   }
 }
@@ -319,11 +323,11 @@ describe("ExplorePreview", () => {
     expect(mockGetExploreStatus).not.toHaveBeenCalled()
   })
 
-  it("renders the dataset header card on Overview tab when toggle is on and report present", () => {
+  it("renders the dataset snapshot card on Overview tab when toggle is on and report present", () => {
     const report = makeReport({ row_count: 9876, column_count: 7, source: "pricing" })
     const nodeWithToggle: SimpleNode = {
       ...exploreNode,
-      data: { ...exploreNode.data, config: { overview: { dataset_header: true } } },
+      data: { ...exploreNode.data, config: { overview: { dataset_snapshot: true } } },
     }
     seedCachedExplore({ config: nodeWithToggle.data.config as Record<string, unknown>, report })
 
@@ -340,12 +344,12 @@ describe("ExplorePreview", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
-    expect(screen.getByTestId("explore-dataset-header-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-dataset-snapshot-card")).toBeInTheDocument()
     expect(screen.getByText("9,876")).toBeInTheDocument()
-    expect(screen.getByText("7")).toBeInTheDocument()
+    expect(screen.getByText("source_1")).toBeInTheDocument()
   })
 
-  it("renders the schema table card on Overview tab when toggle is on and report present", () => {
+  it("renders schema and quality cards on Overview tab when toggles are on and report present", () => {
     const report = makeReport({
       row_count: 200,
       column_count: 1,
@@ -353,15 +357,15 @@ describe("ExplorePreview", () => {
         {
           name: "a",
           dtype: "Int64",
+          kind: "Numeric",
           null_count: 0,
           distinct_count: 5,
-          example_value: "1",
         },
       ],
     })
     const nodeWithToggle: SimpleNode = {
       ...exploreNode,
-      data: { ...exploreNode.data, config: { overview: { schema: true } } },
+      data: { ...exploreNode.data, config: { overview: { schema: true, data_quality: true } } },
     }
     seedCachedExplore({ config: nodeWithToggle.data.config as Record<string, unknown>, report })
 
@@ -379,7 +383,9 @@ describe("ExplorePreview", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
     expect(screen.getByTestId("explore-schema-table-card")).toBeInTheDocument()
-    expect(screen.getByTestId("explore-schema-row-a")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-data-quality-card")).toBeInTheDocument()
+    expect(screen.getByText("Schema")).toBeInTheDocument()
+    expect(screen.getByText("Data Quality")).toBeInTheDocument()
   })
 
   it("reuses cached report when only overview toggles change", () => {
@@ -391,7 +397,7 @@ describe("ExplorePreview", () => {
       ...exploreNode,
       data: {
         ...exploreNode.data,
-        config: { ...dataConfig, overview: { dataset_header: true } },
+        config: { ...dataConfig, overview: { dataset_snapshot: true } },
       },
     }
 
@@ -409,7 +415,7 @@ describe("ExplorePreview", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
     expect(screen.getByText(/pricing\s*\|\s*cached/i)).toBeInTheDocument()
-    expect(screen.getByTestId("explore-dataset-header-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-dataset-snapshot-card")).toBeInTheDocument()
     expect(screen.getByText("9,876")).toBeInTheDocument()
   })
 
@@ -423,7 +429,7 @@ describe("ExplorePreview", () => {
       ...exploreNode,
       data: {
         ...exploreNode.data,
-        config: { ...dataConfig, overview: { dataset_header: true } },
+        config: { ...dataConfig, overview: { dataset_snapshot: true } },
       },
     }
     act(() => {
@@ -463,7 +469,7 @@ describe("ExplorePreview", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
     expect(screen.getByText(/pricing\s*\|\s*cached/i)).toBeInTheDocument()
-    expect(screen.getByTestId("explore-dataset-header-card")).toBeInTheDocument()
+    expect(screen.getByTestId("explore-dataset-snapshot-card")).toBeInTheDocument()
     expect(screen.getByText("9,876")).toBeInTheDocument()
   })
 
@@ -472,7 +478,7 @@ describe("ExplorePreview", () => {
     const nodeBeforeToggle = exploreNodeWithConfig(dataConfig)
     const nodeAfterToggle = exploreNodeWithConfig({
       ...dataConfig,
-      overview: { schema: true },
+      overview: { schema: true, data_quality: true },
     })
     useNodeResultsStore.setState({
       exploreJobs: {
@@ -518,7 +524,7 @@ describe("ExplorePreview", () => {
     const previousConfig = { code: "df = df.select(pl.all())" }
     const nextConfig = {
       code: "df = df.filter(pl.col('premium') > 0)",
-      overview: { dataset_header: true },
+      overview: { dataset_snapshot: true },
     }
     seedCachedExplore({
       config: previousConfig,
@@ -544,12 +550,12 @@ describe("ExplorePreview", () => {
 
     expect(screen.getByText(/pricing\s*\|\s*ready/i)).toBeInTheDocument()
     expect(screen.getByText(/No cached data yet/i)).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: /process & cache full data/i })).toBeInTheDocument()
   })
 
   it("hides cached report and status when the active source changes", () => {
-    const config = { overview: { dataset_header: true } }
+    const config = { overview: { dataset_snapshot: true } }
     seedCachedExplore({
       config,
       source: "pricing",
@@ -576,11 +582,11 @@ describe("ExplorePreview", () => {
 
     expect(screen.getByText(/renewal\s*\|\s*ready/i)).toBeInTheDocument()
     expect(screen.getByText(/No cached data yet/i)).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
   it("hides cached report and status when upstream graph state changes", () => {
-    const config = { overview: { dataset_header: true } }
+    const config = { overview: { dataset_snapshot: true } }
     const cachedSourceNode: SimpleNode = {
       ...sourceNode,
       data: {
@@ -620,13 +626,13 @@ describe("ExplorePreview", () => {
 
     expect(screen.getByText(/pricing\s*\|\s*ready/i)).toBeInTheDocument()
     expect(screen.getByText(/No cached data yet/i)).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
   it("renders the no-data empty state on Overview tab when toggle is on but no report", () => {
     const nodeWithToggle: SimpleNode = {
       ...exploreNode,
-      data: { ...exploreNode.data, config: { overview: { dataset_header: true } } },
+      data: { ...exploreNode.data, config: { overview: { dataset_snapshot: true } } },
     }
 
     render(
@@ -643,7 +649,7 @@ describe("ExplorePreview", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
     expect(screen.getByText(/No cached data yet/i)).toBeInTheDocument()
-    expect(screen.queryByTestId("explore-dataset-header-card")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
   it("cancels the active Explore job through the API", async () => {

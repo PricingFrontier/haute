@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,9 +53,7 @@ def _poll_explore(client: TestClient, job_id: str, timeout: float = 10.0) -> dic
     raise TimeoutError(f"Explore job {job_id} did not finish within {timeout}s")
 
 
-_DEFAULT_PREP_CODE = (
-    "df = source.with_columns((pl.col('premium') * 2).alias('double_premium'))"
-)
+_DEFAULT_PREP_CODE = "df = source.with_columns((pl.col('premium') * 2).alias('double_premium'))"
 
 
 def _explore_graph(
@@ -144,6 +143,8 @@ def test_explore_run_returns_cache_descriptor(client: TestClient, tmp_path: Path
     assert report["source"] == "live"
     assert report["dataframe_cache_key"]
     assert report["generated_at"] > 0
+    assert report["overview_summary"]["data_quality"]["issue_count"] >= 1
+    assert isinstance(report["overview_summary"]["categorical_summary"], list)
 
 
 def test_explore_run_applies_node_polars_code_before_caching(
@@ -269,7 +270,7 @@ def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
             str(path),
             explore_config={
                 **data_config,
-                "overview": {"dataset_header": True, "schema": True},
+                "overview": {"dataset_snapshot": True, "schema": True},
             },
         ),
         "node_id": "explore",
@@ -296,6 +297,69 @@ def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
         ).dataframe_cache_key
         == first_key
     )
+
+
+def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from haute.routes._explore_service import EXPLORE_CACHE_VERSION
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreCacheReport, ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {
+        "graph": _explore_graph(str(path)),
+        "node_id": "explore",
+        "source": "live",
+    }
+    spec = _explore_service._prepare_spec(ExploreRunRequest.model_validate(body))
+    assert EXPLORE_CACHE_VERSION == 2
+    assert spec.report_cache_key.startswith("explore:v2:")
+
+    _explore_service._report_cache.put(
+        spec.report_cache_key,
+        ExploreCacheReport.model_validate(
+            {
+                "status": "ok",
+                "node_id": "explore",
+                "upstream_node_id": spec.upstream_node_id,
+                "source": "live",
+                "dataframe_cache_key": spec.dataframe_cache_key,
+                "row_count": 1,
+                "column_count": 2,
+                "columns": [
+                    {
+                        "name": "premium",
+                        "dtype": "Int64",
+                        "kind": "Numeric",
+                        "null_count": 0,
+                        "distinct_count": 1,
+                    }
+                ],
+                "generated_at": 123.0,
+            }
+        ),
+    )
+
+    def fail_materialise(*args, **kwargs):  # pragma: no cover - assertion path only
+        raise AssertionError("cached Explore report should not re-execute upstream sources")
+
+    monkeypatch.setattr(_explore_service, "_materialise_and_summarise", fail_materialise)
+
+    response = client.post("/api/explore/run", json=body)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["cached"] is True
+    assert payload["result"]["dataframe_cache_key"] == spec.dataframe_cache_key
+    assert payload["result"]["overview_summary"] == {
+        "categorical_summary": [],
+        "data_quality": {"issue_count": 0, "issues": []},
+    }
 
 
 def test_explore_code_config_change_invalidates_analysis_dataframe_cache(
@@ -383,6 +447,13 @@ def test_explore_cancel_stops_in_flight_job(
     assert final["status"] == "cancelled"
     assert final["terminal_reason"] == "cancelled"
 
+    worker_name = f"haute-explore-{started['job_id']}"
+    for thread in threading.enumerate():
+        if thread.name == worker_name:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+            break
+
 
 def test_explore_status_unknown_job_is_404(client: TestClient) -> None:
     response = client.get("/api/explore/status/not-a-job")
@@ -454,24 +525,7 @@ def test_distinct_count_matches_input(client: TestClient, tmp_path: Path) -> Non
     assert columns[0]["distinct_count"] == 3
 
 
-def test_example_value_is_first_non_null_stringified(
-    client: TestClient,
-    tmp_path: Path,
-) -> None:
-    path_a = tmp_path / "a.parquet"
-    pl.DataFrame({"value": ["a", "b", "c"]}).write_parquet(path_a)
-
-    columns_a = _run_explore_and_get_columns(client, str(path_a))
-    assert columns_a[0]["example_value"] == "a"
-
-    path_b = tmp_path / "b.parquet"
-    pl.DataFrame({"value": [None, "b", "c"]}).write_parquet(path_b)
-
-    columns_b = _run_explore_and_get_columns(client, str(path_b))
-    assert columns_b[0]["example_value"] == "b"
-
-
-def test_example_value_truncated_at_80_chars_with_ellipsis(
+def test_min_value_truncated_at_80_chars_with_ellipsis(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -481,12 +535,12 @@ def test_example_value_truncated_at_80_chars_with_ellipsis(
 
     columns = _run_explore_and_get_columns(client, str(path))
 
-    example = columns[0]["example_value"]
-    assert example.endswith("…")
-    assert len(example) == 81
+    min_value = columns[0]["min_value"]
+    assert min_value.endswith("…")
+    assert len(min_value) == 81
 
 
-def test_all_null_column_has_none_example_value(
+def test_all_null_column_has_none_min_max_values(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -495,26 +549,8 @@ def test_all_null_column_has_none_example_value(
 
     columns = _run_explore_and_get_columns(client, str(path))
 
-    assert columns[0]["example_value"] is None
-
-
-def test_example_value_uses_first_non_null_beyond_initial_rows(
-    explore_execution_context,
-) -> None:
-    from haute.routes._explore_service import _build_column_stats
-
-    lf = pl.DataFrame(
-        {"value": [None] * 25 + ["late"]},
-        schema={"value": pl.Utf8},
-    ).lazy()
-
-    stats = _build_column_stats(
-        lf,
-        lf.collect_schema(),
-        execution_context=explore_execution_context,
-    )
-
-    assert stats[0].example_value == "late"
+    assert columns[0]["min_value"] is None
+    assert columns[0]["max_value"] is None
 
 
 def test_column_order_matches_schema(client: TestClient, tmp_path: Path) -> None:
@@ -614,6 +650,282 @@ def test_build_explore_frame_stats_includes_row_count(explore_execution_context)
     assert [s.name for s in frame_stats.columns] == ["value"]
 
 
+def test_build_frame_stats_includes_numeric_profile_fields(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "premium": [-10, 0, 25, None],
+            "region": ["north", "south", "north", "west"],
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    by_name = {column.name: column for column in frame_stats.columns}
+    assert by_name["premium"].min_value == "-10"
+    assert by_name["premium"].kind == "Numeric"
+    assert by_name["premium"].p25_value == "-5"
+    assert by_name["premium"].median_value == "0"
+    assert by_name["premium"].mean_value == "5"
+    assert by_name["premium"].p75_value == "12.5"
+    assert by_name["premium"].max_value == "25"
+    assert by_name["premium"].std_value == "18.0278"
+    assert by_name["premium"].zero_count == 1
+    assert by_name["premium"].negative_count == 1
+    assert by_name["region"].min_value == "north"
+    assert by_name["region"].kind == "Text"
+    assert by_name["region"].max_value == "west"
+    assert by_name["region"].mean_value is None
+    assert by_name["region"].std_value is None
+    assert by_name["region"].zero_count is None
+
+
+def test_build_frame_stats_formats_boolean_min_max_to_match_value_counts(
+    explore_execution_context,
+) -> None:
+    """Boolean min/max must share the lowercase casing of value_counts.
+
+    A Boolean column appears in both the Schema card (min/max) and the
+    Categorical card (value counts). If min/max rendered ``str(True)`` while
+    value counts cast to String ("true"), the same column would read
+    inconsistently across cards.
+    """
+
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"renewal": [True, False, True]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [column] = frame_stats.columns
+    assert column.kind == "Boolean"
+    assert column.min_value == "false"
+    assert column.max_value == "true"
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert {item.value for item in profile.values} == {"true", "false"}
+
+
+def test_build_frame_stats_keeps_all_null_numeric_profiles(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {"all_null": [None, None], "single_value": [None, 10.0]},
+        schema={"all_null": pl.Float64, "single_value": pl.Float64},
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    by_name = {column.name: column for column in frame_stats.columns}
+    assert by_name["all_null"].min_value is None
+    assert by_name["all_null"].p25_value is None
+    assert by_name["all_null"].median_value is None
+    assert by_name["all_null"].mean_value is None
+    assert by_name["all_null"].p75_value is None
+    assert by_name["all_null"].max_value is None
+    assert by_name["all_null"].std_value is None
+    assert by_name["all_null"].zero_count == 0
+    assert by_name["all_null"].negative_count == 0
+    assert by_name["single_value"].mean_value == "10"
+    assert by_name["single_value"].std_value is None
+
+
+def test_build_frame_stats_includes_backend_overview_summary(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    row_count = 100
+    lf = pl.DataFrame(
+        {
+            "policy_id": [f"p{i:03d}" for i in range(row_count)],
+            "premium": list(range(-1, row_count - 1)),
+            "region": [
+                None if i < 25 else ("north" if i % 2 == 0 else "south") for i in range(row_count)
+            ],
+            "constant": ["same"] * row_count,
+            "loss_ratio": [0] * row_count,
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    summary = frame_stats.overview_summary
+    assert [issue.label for issue in summary.data_quality.issues] == [
+        "1 column with missing values",
+        "1 constant / single-value column",
+        "1 numeric column with negatives",
+        "1 mostly-zero numeric column",
+    ]
+    assert summary.data_quality.issues[0].detail == "region worst at 25%"
+    assert summary.data_quality.issue_count == 4
+
+
+def test_build_frame_stats_includes_bounded_categorical_value_counts(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "premium": [10, 20, 30, 40],
+            "region": ["north", "south", "north", None],
+            "renewal": [True, False, True, True],
+            "inception_date": [date(2024, 1, 1), date(2024, 1, 1), date(2024, 2, 1), None],
+            "empty_segment": pl.Series("empty_segment", [None, None, None, None], dtype=pl.String),
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    profiles = {
+        profile.field: profile for profile in frame_stats.overview_summary.categorical_summary
+    }
+    assert set(profiles) == {"region", "renewal", "inception_date", "empty_segment"}
+    assert profiles["region"].distinct_count == 3
+    assert profiles["region"].expandable is True
+    assert profiles["region"].values_truncated is False
+    assert [(item.value, item.count) for item in profiles["region"].values] == [
+        ("north", 2),
+        ("south", 1),
+        (None, 1),
+    ]
+    assert profiles["renewal"].expandable is True
+    assert [(item.value, item.count) for item in profiles["renewal"].values] == [
+        ("true", 3),
+        ("false", 1),
+    ]
+    assert [(item.value, item.count) for item in profiles["inception_date"].values] == [
+        ("2024-01-01", 2),
+        ("2024-02-01", 1),
+        (None, 1),
+    ]
+    assert [(item.value, item.count) for item in profiles["empty_segment"].values] == [
+        (None, 4),
+    ]
+
+
+def test_build_frame_stats_expands_high_cardinality_categorical_columns_with_top_50_values(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "policy_id": (
+                ["p000"] * 3 + ["p001"] * 2 + ["p002"] + [f"p{i:03d}" for i in range(3, 53)]
+            )
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.field == "policy_id"
+    assert profile.distinct_count == 53
+    assert profile.expandable is True
+    assert profile.values_truncated is True
+    assert len(profile.values) == 50
+    assert [(item.value, item.count) for item in profile.values[:3]] == [
+        ("p000", 3),
+        ("p001", 2),
+        ("p002", 1),
+    ]
+    assert [item.value for item in profile.values[-2:]] == ["p048", "p049"]
+    assert "p050" not in {item.value for item in profile.values}
+
+
+def test_build_frame_stats_returns_all_values_for_exactly_50_categorical_groups(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"segment": [f"s{i:03d}" for i in range(50)]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.field == "segment"
+    assert profile.distinct_count == 50
+    assert profile.expandable is True
+    assert profile.values_truncated is False
+    assert len(profile.values) == 50
+    assert [item.value for item in profile.values[:3]] == ["s000", "s001", "s002"]
+    assert profile.values[-1].value == "s049"
+
+
+def test_build_frame_stats_keeps_unsupported_categorical_profiles_unexpanded(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"codes": [["a"], ["b"], ["a"], None]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.field == "codes"
+    assert profile.distinct_count == 3
+    assert profile.expandable is False
+    assert profile.values_truncated is False
+    assert profile.values == []
+
+
+def test_build_frame_stats_categorical_value_counts_handle_count_column_name(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"count": ["one", "two", "one"]}).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    [profile] = frame_stats.overview_summary.categorical_summary
+    assert profile.field == "count"
+    assert [(item.value, item.count) for item in profile.values] == [("one", 2), ("two", 1)]
+
+
 def test_build_column_stats_happy_path(explore_execution_context) -> None:
     from haute.routes._explore_service import _build_column_stats
 
@@ -633,41 +945,14 @@ def test_build_column_stats_happy_path(explore_execution_context) -> None:
 
     assert [s.name for s in stats] == ["id", "name", "score"]
     assert [s.dtype for s in stats] == ["Int64", "String", "Float64"]
+    assert [s.kind for s in stats] == ["Numeric", "Text", "Numeric"]
     assert [s.null_count for s in stats] == [0, 1, 0]
     assert [s.distinct_count for s in stats] == [3, 3, 3]
-    assert [s.example_value for s in stats] == ["1", "alpha", "1.5"]
+    assert [s.min_value for s in stats] == ["1", "alpha", "1.5"]
+    assert [s.max_value for s in stats] == ["3", "beta", "3.5"]
 
 
-def test_build_column_stats_normalises_list_and_array_examples(
-    explore_execution_context,
-) -> None:
-    from haute.routes._explore_service import _build_column_stats
-
-    lf = pl.DataFrame(
-        {
-            "list_value": [[1, 2], None],
-            "array_value": pl.Series(
-                "array_value",
-                [[3, 4], None],
-                dtype=pl.Array(pl.Int64, 2),
-            ),
-        }
-    ).lazy()
-
-    stats = _build_column_stats(
-        lf,
-        lf.collect_schema(),
-        execution_context=explore_execution_context,
-    )
-
-    by_name = {s.name: s for s in stats}
-    assert by_name["list_value"].example_value == "[1, 2]"
-    assert by_name["array_value"].example_value == "[3, 4]"
-    assert "Series:" not in by_name["list_value"].example_value
-    assert "Series:" not in by_name["array_value"].example_value
-
-
-def test_build_explore_frame_stats_uses_one_streaming_collect(
+def test_build_explore_frame_stats_uses_one_streaming_collect_without_categorical_counts(
     explore_execution_context,
     monkeypatch,
 ) -> None:
@@ -681,7 +966,7 @@ def test_build_explore_frame_stats_uses_one_streaming_collect(
         return original_streaming_collect(*args, **kwargs)
 
     monkeypatch.setattr(service_mod, "streaming_collect", counted_streaming_collect)
-    lf = pl.DataFrame({"value": [None, "a", "b"]}).lazy()
+    lf = pl.DataFrame({"value": [None, 1.0, 2.0]}).lazy()
 
     frame_stats = service_mod._build_frame_stats(
         lf,
@@ -690,58 +975,91 @@ def test_build_explore_frame_stats_uses_one_streaming_collect(
     )
 
     assert frame_stats.row_count == 3
-    assert frame_stats.columns[0].example_value == "a"
     assert len(calls) == 1
 
 
-def test_build_column_stats_finds_first_non_null_beyond_initial_rows(
+def test_build_explore_frame_stats_uses_single_batched_collect_for_bounded_value_counts(
     explore_execution_context,
+    monkeypatch,
 ) -> None:
-    from haute.routes._explore_service import _build_column_stats
+    from haute.routes import _explore_service as service_mod
 
+    calls = []
+    original_streaming_collect = service_mod.streaming_collect
+
+    def counted_streaming_collect(*args, **kwargs):
+        calls.append(args[0])
+        return original_streaming_collect(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "streaming_collect", counted_streaming_collect)
     lf = pl.DataFrame(
-        {"value": [None] * 25 + ["eventual_value"]},
-        schema={"value": pl.Utf8},
+        {
+            "value": [None, "a", "b"],
+            "channel": ["web", "broker", "web"],
+        }
     ).lazy()
 
-    stats = _build_column_stats(
+    frame_stats = service_mod._build_frame_stats(
         lf,
         lf.collect_schema(),
         execution_context=explore_execution_context,
     )
 
-    assert stats[0].example_value == "eventual_value"
-
-
-def test_build_column_stats_formats_nested_examples_as_compact_values(
-    explore_execution_context,
-) -> None:
-    from haute.routes._explore_service import _build_column_stats
-
-    lf = (
-        pl.DataFrame(
-            {
-                "list_col": [[1, 2], [3, 4]],
-                "array_col": [[5, 6], [7, 8]],
-                "struct_col": [{"x": 1}, {"x": 2}],
-            }
-        )
-        .with_columns(pl.col("array_col").cast(pl.Array(pl.Int64, 2)))
-        .lazy()
-    )
-
-    stats = _build_column_stats(
-        lf,
-        lf.collect_schema(),
-        execution_context=explore_execution_context,
-    )
-    examples = {s.name: s.example_value for s in stats}
-
-    assert examples == {
-        "list_col": "[1, 2]",
-        "array_col": "[5, 6]",
-        "struct_col": '{"x": 1}',
+    assert frame_stats.row_count == 3
+    profiles = {
+        profile.field: profile for profile in frame_stats.overview_summary.categorical_summary
     }
+    assert [(item.value, item.count) for item in profiles["value"].values] == [
+        ("a", 1),
+        ("b", 1),
+        (None, 1),
+    ]
+    assert [(item.value, item.count) for item in profiles["channel"].values] == [
+        ("web", 2),
+        ("broker", 1),
+    ]
+    assert len(calls) == 1
+    collect_plan = calls[0].explain()
+    assert "UNION" not in collect_plan
+    assert "CACHE" not in collect_plan
+
+
+def test_build_explore_frame_stats_counts_categorical_values_without_wide_unpivot(
+    explore_execution_context,
+    monkeypatch,
+) -> None:
+    from haute.routes import _explore_service as service_mod
+
+    def fail_unpivot(*args, **kwargs):  # pragma: no cover - assertion path only
+        raise AssertionError("categorical value counts should not use wide unpivot")
+
+    monkeypatch.setattr(pl.LazyFrame, "unpivot", fail_unpivot, raising=False)
+
+    lf = pl.DataFrame(
+        {
+            "region": ["north", "south", "north", None],
+            "channel": ["web", "broker", "web", "web"],
+        }
+    ).lazy()
+
+    frame_stats = service_mod._build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    profiles = {
+        profile.field: profile for profile in frame_stats.overview_summary.categorical_summary
+    }
+    assert [(item.value, item.count) for item in profiles["region"].values] == [
+        ("north", 2),
+        ("south", 1),
+        (None, 1),
+    ]
+    assert [(item.value, item.count) for item in profiles["channel"].values] == [
+        ("web", 3),
+        ("broker", 1),
+    ]
 
 
 def test_build_frame_stats_returns_row_count_with_column_stats(

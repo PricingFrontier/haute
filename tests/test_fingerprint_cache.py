@@ -419,7 +419,7 @@ class TestGraphFingerprint:
                         nodeType=NodeType.EXPLORE,
                         config={
                             "code": "df = df.select(pl.all())",
-                            "overview": {"dataset_header": True, "schema": True},
+                            "overview": {"dataset_snapshot": True, "schema": True},
                         },
                     ),
                 ),

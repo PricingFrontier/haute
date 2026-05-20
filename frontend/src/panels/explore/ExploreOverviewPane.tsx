@@ -7,17 +7,27 @@
  *   2. >=1 toggle on, no report -> hint pointing at the "Process & cache full data" button.
  *   3. >=1 toggle on, report set -> each enabled card stacked top-to-bottom.
  *
- * Adding a new card means appending one entry to the local `cards` array —
- * the rendering, empty-state, and report-gating logic stays untouched.
+ * Adding a new card means updating the shared definition list and adding one
+ * renderer below; empty-state and report-gating logic stays untouched.
  *
- * Purely presentational — no state, no effects, all inputs via props.
+ * Purely presentational - no state, no effects, all inputs via props.
  */
 
 import type { JSX } from "react"
 import type { ExploreCacheReport } from "../../api/types"
 import type { SimpleNode } from "../editors"
-import DatasetHeaderCard from "./DatasetHeaderCard"
+import {
+  CategoricalSummaryCard,
+  DataQualityCard,
+  DatasetSnapshotCard,
+  NumericSummaryCard,
+} from "./ExploreSummaryCards"
 import SchemaTableCard from "./SchemaTableCard"
+import {
+  OVERVIEW_CARD_DEFINITIONS,
+  isOverviewCardEnabled,
+  type OverviewCardKey,
+} from "./overviewCardDefinitions"
 import { readOverview } from "./overviewConfig"
 
 interface ExploreOverviewPaneProps {
@@ -25,10 +35,12 @@ interface ExploreOverviewPaneProps {
   report: ExploreCacheReport | null
 }
 
-interface OverviewCard {
-  key: string
-  enabled: boolean
-  render: (report: ExploreCacheReport) => JSX.Element
+const CARD_RENDERERS: Record<OverviewCardKey, (report: ExploreCacheReport) => JSX.Element> = {
+  dataset_snapshot: (report) => <DatasetSnapshotCard report={report} />,
+  schema: (report) => <SchemaTableCard report={report} />,
+  numeric_summary: (report) => <NumericSummaryCard report={report} />,
+  categorical_summary: (report) => <CategoricalSummaryCard report={report} />,
+  data_quality: (report) => <DataQualityCard report={report} />,
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {
@@ -48,20 +60,9 @@ function EmptyState({ title, body }: { title: string; body: string }) {
 
 export default function ExploreOverviewPane({ node, report }: ExploreOverviewPaneProps) {
   const overview = readOverview(node.data.config ?? {})
-
-  const cards: OverviewCard[] = [
-    {
-      key: "dataset_header",
-      enabled: overview.dataset_header ?? false,
-      render: (r) => <DatasetHeaderCard report={r} />,
-    },
-    {
-      key: "schema",
-      enabled: overview.schema ?? false,
-      render: (r) => <SchemaTableCard report={r} />,
-    },
-  ]
-  const enabledCards = cards.filter((c) => c.enabled)
+  const enabledCards = OVERVIEW_CARD_DEFINITIONS.filter((definition) =>
+    isOverviewCardEnabled(overview, definition),
+  )
 
   if (enabledCards.length === 0) {
     return (
@@ -98,7 +99,7 @@ export default function ExploreOverviewPane({ node, report }: ExploreOverviewPan
     >
       <div className="p-3 space-y-3">
         {enabledCards.map((card) => (
-          <div key={card.key}>{card.render(report)}</div>
+          <div key={card.key}>{CARD_RENDERERS[card.key](report)}</div>
         ))}
       </div>
     </div>

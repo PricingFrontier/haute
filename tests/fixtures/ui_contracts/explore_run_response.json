@@ -12,6 +12,13 @@
     "row_count": 150,
     "column_count": 3,
     "columns": [],
+    "overview_summary": {
+      "data_quality": {
+        "issue_count": 0,
+        "issues": []
+      },
+      "categorical_summary": []
+    },
     "generated_at": 1760000000.0,
     "execution_metrics": null
   }

@@ -1,7 +1,7 @@
 """Round-trip tests for the Explore node's ``overview`` config block.
 
 Builds a minimal graph containing a ``dataSource`` and an ``explore`` node
-carrying ``config={"overview": {"dataset_header": True}}``, runs it through
+carrying ``config={"overview": {"dataset_snapshot": True}}``, runs it through
 ``graph_to_code`` and back through the real ``parse_pipeline_source``, and
 asserts the overview config survives end-to-end.
 
@@ -54,7 +54,7 @@ def _explore_graph(overview: dict) -> PipelineGraph:
 
 def test_overview_config_round_trips_through_codegen_and_parse(tmp_path: Path) -> None:
     """Explore overview block must survive ``graph_to_code`` -> parse."""
-    graph = _explore_graph({"dataset_header": True})
+    graph = _explore_graph({"dataset_snapshot": True})
 
     code = graph_to_code(graph, pipeline_name="round_trip_overview")
     _write_configs(graph, tmp_path)
@@ -68,7 +68,7 @@ def test_overview_config_round_trips_through_codegen_and_parse(tmp_path: Path) -
     node_map = {n.id: n for n in parsed.nodes}
     explore_node = node_map["inspect_claims"]
     assert explore_node.data.nodeType == "explore"
-    assert explore_node.data.config.get("overview") == {"dataset_header": True}
+    assert explore_node.data.config.get("overview") == {"dataset_snapshot": True}
 
 
 def test_schema_overview_config_round_trips_through_codegen_and_parse(tmp_path: Path) -> None:
@@ -91,8 +91,8 @@ def test_schema_overview_config_round_trips_through_codegen_and_parse(tmp_path: 
 
 
 def test_both_overview_toggles_round_trip(tmp_path: Path) -> None:
-    """Both ``dataset_header`` and ``schema`` must survive a full round-trip."""
-    graph = _explore_graph({"dataset_header": True, "schema": True})
+    """Both ``dataset_snapshot`` and ``schema`` must survive a full round-trip."""
+    graph = _explore_graph({"dataset_snapshot": True, "schema": True})
 
     code = graph_to_code(graph, pipeline_name="round_trip_overview_both")
     _write_configs(graph, tmp_path)
@@ -107,7 +107,7 @@ def test_both_overview_toggles_round_trip(tmp_path: Path) -> None:
     explore_node = node_map["inspect_claims"]
     assert explore_node.data.nodeType == "explore"
     assert explore_node.data.config.get("overview") == {
-        "dataset_header": True,
+        "dataset_snapshot": True,
         "schema": True,
     }
 
@@ -120,7 +120,7 @@ def test_explicit_false_overview_values_round_trip(tmp_path: Path) -> None:
     must parse correctly and survive a re-codegen without being collapsed
     or converted into a missing key.
     """
-    graph = _explore_graph({"dataset_header": False, "schema": True})
+    graph = _explore_graph({"dataset_snapshot": False, "schema": True})
 
     code = graph_to_code(graph, pipeline_name="round_trip_overview_false")
     _write_configs(graph, tmp_path)
@@ -135,7 +135,7 @@ def test_explicit_false_overview_values_round_trip(tmp_path: Path) -> None:
     explore_node = node_map["inspect_claims"]
     assert explore_node.data.nodeType == "explore"
     assert explore_node.data.config.get("overview") == {
-        "dataset_header": False,
+        "dataset_snapshot": False,
         "schema": True,
     }
 

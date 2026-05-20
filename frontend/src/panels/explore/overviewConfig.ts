@@ -1,9 +1,12 @@
-export type OverviewConfig = {
-  dataset_header?: boolean
-  schema?: boolean
-}
+import {
+  OVERVIEW_CONFIG_KEYS,
+  type OverviewConfig,
+  type OverviewConfigKey,
+} from "./overviewCardDefinitions"
 
-function readBool(raw: Record<string, unknown>, key: string): boolean | undefined {
+export type { OverviewConfig } from "./overviewCardDefinitions"
+
+function readBool(raw: Record<string, unknown>, key: OverviewConfigKey): boolean | undefined {
   const value = raw[key]
   return typeof value === "boolean" ? value : undefined
 }
@@ -13,9 +16,9 @@ export function readOverview(config: Record<string, unknown>): OverviewConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
   const rec = raw as Record<string, unknown>
   const result: OverviewConfig = {}
-  const datasetHeader = readBool(rec, "dataset_header")
-  if (datasetHeader !== undefined) result.dataset_header = datasetHeader
-  const schema = readBool(rec, "schema")
-  if (schema !== undefined) result.schema = schema
+  for (const key of OVERVIEW_CONFIG_KEYS) {
+    const value = readBool(rec, key)
+    if (value !== undefined) result[key] = value
+  }
   return result
 }

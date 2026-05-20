@@ -205,7 +205,10 @@ class ExploreOverviewConfig(TypedDict, total=False):
     decorator kwarg (``@pipeline.explore(overview={...})``).
     """
 
-    dataset_header: bool
+    dataset_snapshot: bool
+    data_quality: bool
+    numeric_summary: bool
+    categorical_summary: bool
     schema: bool
 
 

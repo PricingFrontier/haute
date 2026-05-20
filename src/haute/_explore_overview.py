@@ -9,7 +9,10 @@ from haute.errors import ConfigError
 
 EXPLORE_OVERVIEW_TOGGLE_KEYS: frozenset[str] = frozenset(
     {
-        "dataset_header",
+        "dataset_snapshot",
+        "data_quality",
+        "numeric_summary",
+        "categorical_summary",
         "schema",
     }
 )
@@ -50,8 +53,8 @@ def validate_explore_overview(value: Any, *, context: str) -> dict[str, Any]:
             actual_type=type(value).__name__,
         )
 
-    overview = dict(value)
-    for key, item in overview.items():
+    overview: dict[str, Any] = {}
+    for key, item in value.items():
         if not isinstance(key, str):
             raise ConfigError(
                 "Explore overview config keys must be strings.",
@@ -66,9 +69,7 @@ def validate_explore_overview(value: Any, *, context: str) -> dict[str, Any]:
                 key=key,
                 actual_type=type(item).__name__,
             )
-        if key not in EXPLORE_OVERVIEW_TOGGLE_KEYS and not _is_round_trippable_overview_value(
-            item
-        ):
+        if key not in EXPLORE_OVERVIEW_TOGGLE_KEYS and not _is_round_trippable_overview_value(item):
             raise ConfigError(
                 "Explore unknown overview values must be simple literals "
                 "that can round-trip through codegen.",
@@ -76,4 +77,5 @@ def validate_explore_overview(value: Any, *, context: str) -> dict[str, Any]:
                 key=key,
                 actual_type=type(item).__name__,
             )
+        overview[key] = item
     return overview

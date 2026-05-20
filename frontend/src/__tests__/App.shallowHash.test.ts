@@ -198,7 +198,7 @@ describe("shallowNodeDataHash — input-key sensitivity", () => {
       ...exploreBase,
       config: {
         code: "df = df.select(pl.all())",
-        overview: { dataset_header: true, schema: true },
+        overview: { dataset_snapshot: true, schema: true },
       },
     }
     const codeChanged = {

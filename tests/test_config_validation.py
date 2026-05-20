@@ -460,7 +460,16 @@ class TestBuildNodeConfigProducesValidKeys:
                 ["df"],
             )
 
-    @pytest.mark.parametrize("key", ["dataset_header", "schema"])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "dataset_snapshot",
+            "data_quality",
+            "numeric_summary",
+            "categorical_summary",
+            "schema",
+        ],
+    )
     @pytest.mark.parametrize("value", ["true", 1, None])
     def test_explore_overview_known_keys_must_be_boolean(self, key, value):
         """Known overview-card toggles must be real booleans, not truthy values."""
@@ -482,7 +491,7 @@ class TestBuildNodeConfigProducesValidKeys:
             NodeType.EXPLORE,
             {
                 "overview": {
-                    "dataset_header": True,
+                    "dataset_snapshot": True,
                     "custom_card": {
                         "label": "Loss ratio",
                         "columns": ["premium", "claims"],
@@ -497,7 +506,7 @@ class TestBuildNodeConfigProducesValidKeys:
         )
 
         assert config["overview"] == {
-            "dataset_header": True,
+            "dataset_snapshot": True,
             "custom_card": {
                 "label": "Loss ratio",
                 "columns": ["premium", "claims"],
@@ -552,18 +561,34 @@ class TestSelectedColumnsUniversal:
             "overview": ExploreOverviewConfig,
         }
         overview_hints = get_type_hints(ExploreOverviewConfig)
-        assert overview_hints == {"dataset_header": bool, "schema": bool}
+        assert overview_hints == {
+            "dataset_snapshot": bool,
+            "data_quality": bool,
+            "numeric_summary": bool,
+            "categorical_summary": bool,
+            "schema": bool,
+        }
         assert warn_unrecognized_config_keys(NodeType.EXPLORE, {}) == []
         assert warn_unrecognized_config_keys(NodeType.EXPLORE, {"code": "df = df.head(10)"}) == []
         # Overview block is a recognised key on explore nodes.
         assert (
             warn_unrecognized_config_keys(
-                NodeType.EXPLORE, {"overview": {"dataset_header": True}}
+                NodeType.EXPLORE, {"overview": {"dataset_snapshot": True}}
             )
             == []
         )
         assert (
-            warn_unrecognized_config_keys(NodeType.EXPLORE, {"overview": {"schema": True}}) == []
+            warn_unrecognized_config_keys(
+                NodeType.EXPLORE,
+                {
+                    "overview": {
+                        "schema": True,
+                        "numeric_summary": True,
+                        "categorical_summary": True,
+                    }
+                },
+            )
+            == []
         )
 
 
