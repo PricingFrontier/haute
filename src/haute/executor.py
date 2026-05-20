@@ -477,13 +477,17 @@ def _estimate_preview_cache_entry_bytes(entry: dict[str, Any]) -> int:
     Polars exposes a deterministic retained-size estimate for those
     frames, and unexpected payload shapes fail loudly so accounting
     regressions cannot hide behind a default weight.
+
+    Multi-port emit (MULTI_FRAME_PLAN commit 4): an apiInput source can
+    return ``dict[port_name, DataFrame]`` rather than a single DataFrame.
+    The dict's values are accounted individually so the whole bundle's
+    retained size lands in the cache budget.
     """
     outputs = entry.get("eager_outputs", {})
     if not isinstance(outputs, dict):
         raise TypeError("preview cache entry eager_outputs must be a dict")
 
-    total = 0
-    for node_id, value in outputs.items():
+    def _size_of_frame(value: Any, node_id: str) -> int:
         if not isinstance(value, pl.DataFrame):
             raise TypeError(
                 "preview cache size accounting expected Polars DataFrame "
@@ -494,7 +498,15 @@ def _estimate_preview_cache_entry_bytes(entry: dict[str, Any]) -> int:
             raise ValueError(
                 f"Polars estimated_size for node {node_id!r} returned invalid value {size!r}"
             )
-        total += size
+        return size
+
+    total = 0
+    for node_id, value in outputs.items():
+        if isinstance(value, dict):
+            for port_label, port_frame in value.items():
+                total += _size_of_frame(port_frame, f"{node_id}.{port_label}")
+        else:
+            total += _size_of_frame(value, node_id)
     return total
 
 
@@ -1136,6 +1148,14 @@ def execute_graph(
                 )
                 continue
             df = eager_outputs.get(nid)
+            # Multi-port emit (commit 4): an apiInput with 2+ emit-true
+            # tables stores ``dict[port_name, DataFrame]`` in
+            # eager_outputs. For preview-display purposes, use the first
+            # port's frame as a representative — a richer per-port view
+            # belongs in the apiInput editor's preview (commit 5+).
+            if isinstance(df, dict):
+                first_port = next(iter(df.values()), None)
+                df = first_port  # may still be None if dict was empty
             columns, avail_col_infos = _column_infos_for_node(nid, df)
             node_warnings = _node_schema_warnings(nid, avail_col_infos)
             if df is None:

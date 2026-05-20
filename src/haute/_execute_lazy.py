@@ -39,6 +39,42 @@ from haute.errors import ContractMismatchError, SchemaMismatchError
 logger = get_logger(component="execute")
 
 
+def _pick_source_frame(
+    source_output: Any,
+    edge: GraphEdge,
+) -> _Frame:
+    """Pick the right frame from a source's output for *edge*.
+
+    Multi-port sources (e.g. an apiInput with 2+ emit-true tables, commit 4)
+    return a ``dict[port_name, LazyFrame]`` rather than a bare LazyFrame.
+    The executor walks each outgoing edge from such a source and picks the
+    frame the edge's ``sourceHandle`` names — that's the structural pick
+    that makes per-port routing work.
+
+    Single-port sources keep returning a bare LazyFrame; ``sourceHandle``
+    is ignored (passthrough).
+
+    Raises ``ValueError`` for a multi-port source with a null
+    ``sourceHandle`` (edge wasn't wired to a specific port). Raises
+    ``KeyError`` for an edge whose ``sourceHandle`` doesn't match any port
+    the source actually emits.
+    """
+    if isinstance(source_output, dict):
+        sh = edge.sourceHandle
+        if sh is None:
+            raise ValueError(
+                f"Edge from multi-port node {edge.source!r} has no sourceHandle. "
+                f"Expected one of: {sorted(source_output.keys())}.",
+            )
+        if sh not in source_output:
+            raise KeyError(
+                f"Edge from {edge.source!r} references port {sh!r}, "
+                f"but the source emits: {sorted(source_output.keys())}.",
+            )
+        return source_output[sh]
+    return source_output
+
+
 def _build_input_kwargs(
     incoming_edges: list[GraphEdge],
     input_frames: list[_Frame],
@@ -1109,7 +1145,12 @@ def _execute_lazy(
                     f"Node '{nid}' is missing input(s) from: {missing}. "
                     "Upstream node(s) may have failed or not been registered."
                 )
-            input_lfs = [lazy_outputs[pid] for pid in input_ids]
+            # Resolve each incoming edge's frame via ``_pick_source_frame``
+            # so a multi-port source (an apiInput emitting a per-port dict,
+            # commit 4) routes the right frame to each edge based on
+            # ``edge.sourceHandle``. Single-port sources pass through.
+            incoming_edges = incoming_edges_by_target.get(nid, [])
+            input_lfs = [_pick_source_frame(lazy_outputs[e.source], e) for e in incoming_edges]
             if not input_lfs:
                 raise ValueError(f"No input data available for node '{nid}'")
 
@@ -1170,6 +1211,18 @@ def _execute_lazy(
 
         if isinstance(lf, pl.DataFrame):
             lf = lf.lazy()
+
+        # Multi-port emit: a source (currently only apiInput when v2 has
+        # 2+ emit-true tables) may return a ``dict[port_name, LazyFrame]``.
+        # The dict is stored in lazy_outputs[nid] and consumers pick a
+        # frame from it per-edge via ``_pick_source_frame``. Single-frame
+        # post-processing (selected_columns / column_renames / output
+        # contract check) is bypassed because those transformations are
+        # per-frame, not per-bundle. They'd apply naturally to whichever
+        # frame the consumer picks if the consumer chooses to layer them
+        # on top.
+        if isinstance(lf, dict):
+            return lf, is_source, node
 
         # Apply selected_columns filter first (uses pre-rename names),
         # then column renames on the surviving columns.
@@ -1731,17 +1784,24 @@ def _execute_eager_core(
                 # -> sink should compute src's plan once, not twice.
                 # Parents with exactly one consumer skip the hint — it's
                 # cheap but non-zero overhead and adds no value there.
+                # Eager path: resolve each incoming edge's frame via
+                # ``_pick_source_frame`` so multi-port sources (apiInput
+                # emitting a per-port dict) route per-edge by
+                # ``edge.sourceHandle``. Single-port sources pass through.
                 input_lfs = []
-                for pid in input_ids:
+                incoming_edges_for_node = incoming_edges_by_target.get(nid, [])
+                for edge in incoming_edges_for_node:
+                    pid = edge.source
                     if pid not in runtime_outputs:
                         continue
                     parent_frame = runtime_outputs[pid]
                     if parent_frame is None:
                         continue
+                    picked = _pick_source_frame(parent_frame, edge)
                     parent_lf = (
-                        parent_frame
-                        if isinstance(parent_frame, pl.LazyFrame)
-                        else parent_frame.lazy()
+                        picked
+                        if isinstance(picked, pl.LazyFrame)
+                        else picked.lazy()
                     )
                     if children_count.get(pid, 0) > 1:
                         parent_lf = parent_lf.cache()
@@ -1766,6 +1826,38 @@ def _execute_eager_core(
                     _assert_simple_join_key_dtypes_compatible(node, input_ids, input_lfs)
 
                 result = fn(*input_lfs)
+
+            # Multi-port emit: a source may return ``dict[port_name, frame]``.
+            # Materialise each port's LazyFrame to DataFrame so the preview
+            # cache's size accounting (which assumes DataFrame-valued
+            # outputs) works on each port. Downstream edges pick per-edge
+            # via ``_pick_source_frame`` from the runtime_outputs dict.
+            if isinstance(result, dict):
+                materialised: dict[str, pl.DataFrame] = {}
+                for port_label, port_frame in result.items():
+                    if isinstance(port_frame, pl.LazyFrame):
+                        port_df = port_frame.collect()
+                    elif isinstance(port_frame, pl.DataFrame):
+                        port_df = port_frame
+                    else:
+                        raise TypeError(
+                            f"Node '{nid}' multi-port output for port "
+                            f"{port_label!r} is not a Polars frame "
+                            f"(got {type(port_frame).__name__}).",
+                        )
+                    materialised[port_label] = port_df
+                # Store DataFrames for cache accounting; downstream
+                # _pick_source_frame + _to_lazy_if_needed will lazify when
+                # consumers need a LazyFrame.
+                runtime_outputs[nid] = materialised
+                eager_outputs[nid] = materialised
+                t1 = time.perf_counter()
+                timings[nid] = round(t1 - t0, 6)
+                available_columns[nid] = []
+                output_columns[nid] = []
+                if execution_context is not None:
+                    execution_context.checkpoint(label="after_node", node_id=nid)
+                continue
 
             if not isinstance(result, (pl.LazyFrame, pl.DataFrame)):
                 raise TypeError(

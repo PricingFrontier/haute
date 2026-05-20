@@ -412,14 +412,104 @@ def _explore_columns(config: dict[str, Any]) -> ColumnContract:
     return OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
 
 
+def _make_api_source_v2(
+    data_path: str,
+    config: dict[str, Any],
+) -> Callable[..., Any]:
+    """Build the runtime source function for a v2 apiInput.
+
+    Behaviour at call time:
+
+    - 0 emit-true tables → raise a clear RuntimeError (the editor's
+      empty-state message; the user has to tick at least one ``emit``
+      before previewing).
+    - 1 emit-true table → return a bare LazyFrame (single-port shorthand;
+      existing edges with null sourceHandle keep binding to this node via
+      MULTI_FRAME_PLAN §4b's source-label fallback).
+    - 2+ emit-true tables → return a ``dict[port_label, LazyFrame]``. The
+      executor's edge-resolution picks one frame per outgoing edge using
+      ``edge.sourceHandle``.
+
+    The cache directory is the dual-cache ``working/<hash>/`` layer (commit
+    3's per-port shred output). If the cache isn't valid, raise with the
+    "click Cache as Parquet" message — same UX shape as the v1 path. No
+    auto-build in this commit; that's intentional ergonomic discipline
+    (see DUAL_CACHE.md §4 — caching is an explicit user action).
+    """
+    from haute._api_input_schema import validate_v2_schema
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import (
+        is_per_port_cache_valid,
+        load_per_port_cache,
+    )
+
+    # Validate at build time so a malformed config fails before any
+    # data is fetched. Keeps the runtime branch lean.
+    validate_v2_schema(config)
+    emit_labels: list[str] = [
+        t["label"]
+        for t in config.get("tables", []) or []
+        if t.get("emit")
+        and any(c.get("selected") for c in (t.get("columns") or []))
+    ]
+
+    if not emit_labels:
+        # 0 emit-true tables — return a function that fails loudly when
+        # invoked. The node still parses; the user just hasn't completed
+        # configuration yet.
+        def _api_source_v2_unconfigured() -> _Frame:
+            raise RuntimeError(
+                "API Input has no emitting tables. Open the node, tick "
+                "the 'emit' toggle on at least one table with selected "
+                "columns, then click 'Cache as Parquet' before previewing.",
+            )
+
+        return _api_source_v2_unconfigured
+
+    def _api_source_v2(
+        _data_path: str = data_path,
+        _config: dict[str, Any] = config,
+        _emit_labels: list[str] = list(emit_labels),
+    ) -> _Frame | dict[str, _Frame]:
+        cache_dir = _json_cache_dir(_data_path, "working")
+        if not is_per_port_cache_valid(cache_dir, _config):
+            # Fall back to the committed layer (deploy / fresh-server case).
+            committed_dir = _json_cache_dir(_data_path, "committed")
+            if not is_per_port_cache_valid(committed_dir, _config):
+                raise RuntimeError(
+                    "API Input data hasn't been cached for the current "
+                    "schema, or the cache is stale. Click 'Cache as "
+                    "Parquet' on the API Input node to (re)build.",
+                )
+            cache_dir = committed_dir
+        bundle = load_per_port_cache(cache_dir, _config)
+        # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
+        if len(_emit_labels) == 1:
+            return bundle[_emit_labels[0]]
+        # Multi-port: preserve the order from the schema so executor logs
+        # and error messages are deterministic.
+        return {label: bundle[label] for label in _emit_labels if label in bundle}
+
+    return _api_source_v2
+
+
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     path = config.get("path", "")
     flat_schema = config.get("flattenSchema")
 
-    api_source_fn: Callable[..., _Frame]
+    api_source_fn: Callable[..., Any]
     if path.lower().endswith((".json", ".jsonl")):
+        # v2 dispatch — when the apiInput config is in v2 (tables[]) shape,
+        # use the per-port shred. The emit-true table count decides whether
+        # the source returns a bare LazyFrame (single-port shorthand) or a
+        # dict[port_name, LazyFrame] (multi-port, edges pick by sourceHandle
+        # at the executor's edge-resolution layer per MULTI_FRAME_PLAN §4b).
+        from haute._api_input_schema import is_v2_shape as _is_v2_shape
+
+        if _is_v2_shape(config):
+            return ctx.func_name, _make_api_source_v2(path, config), True
 
         def _api_source_json(
             _path: str = path,
