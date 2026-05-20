@@ -1346,6 +1346,57 @@ def _read_cache_meta(cache_dir: Path) -> dict[str, object] | None:
     return cast(dict[str, object], payload)
 
 
+def _maybe_meta_mtime_ms(p: Path) -> int:
+    """Return the integer ms-precision mtime of *p*, or 0 if absent.
+
+    Used by :func:`cache_state_signature_for_graph` to compose the
+    preview-cache fingerprint key without raising on missing files.
+    """
+    try:
+        return int(p.stat().st_mtime * 1000)
+    except OSError:
+        return 0
+
+
+def cache_state_signature_for_graph(graph: Any) -> str:
+    """Deterministic string capturing the JSON-cache state for every apiInput
+    node in *graph*. Used as an extra fingerprint key so a JSON-cache mutation
+    (build, delete, mirror to committed) invalidates affected preview-cache
+    entries without thrashing unrelated ones.
+
+    Per apiInput in the graph the signature contains: the node id, a short
+    data-file-path hash, and the ms-precision mtimes of the working and
+    committed layers' ``meta.json`` sidecars. A missing sidecar contributes
+    ``0``. Entries are sorted by node id for stability.
+
+    Returns ``""`` when the graph has no apiInputs; the caller should pass
+    the empty string verbatim or skip including it in the key.
+    """
+    from haute._types import NodeType
+
+    parts: list[str] = []
+    for node in sorted(graph.nodes, key=lambda n: n.id):
+        if node.data.nodeType != NodeType.API_INPUT:
+            continue
+        data_path = node.data.config.get("path")
+        if not isinstance(data_path, str) or not data_path:
+            continue
+        try:
+            cache_hash = _path_hash(data_path)
+        except (OSError, ValueError):
+            continue
+        working_mtime = _maybe_meta_mtime_ms(
+            _json_cache_meta_path(_json_cache_dir(data_path, _LAYER_WORKING)),
+        )
+        committed_mtime = _maybe_meta_mtime_ms(
+            _json_cache_meta_path(_json_cache_dir(data_path, _LAYER_COMMITTED)),
+        )
+        parts.append(f"{node.id}={cache_hash[:8]}:{working_mtime}:{committed_mtime}")
+    if not parts:
+        return ""
+    return "json_cache=" + "|".join(parts)
+
+
 def _write_cache_meta(
     cache_dir: Path,
     *,

@@ -48,6 +48,7 @@ from haute._cache import (
 )
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
+from haute._json_flatten import cache_state_signature_for_graph
 from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
@@ -856,9 +857,20 @@ def execute_graph(
             else None
         ),
     )
+    # Include the JSON-cache state of every apiInput in the fingerprint so
+    # a build/clear/mirror operation invalidates affected preview entries
+    # without thrashing unrelated ones.  Empty when the graph has no
+    # apiInputs; non-empty graphs add one extra_key whose presence is
+    # itself stable across calls.
+    cache_state_signature = cache_state_signature_for_graph(graph)
+    extra_keys = [
+        f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}",
+    ]
+    if cache_state_signature:
+        extra_keys.append(cache_state_signature)
     fp = graph_fingerprint(
         graph,
-        (f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}"),
+        *extra_keys,
         memo=fingerprint_memo,
     )
 
