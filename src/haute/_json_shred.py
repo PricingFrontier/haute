@@ -483,6 +483,99 @@ def is_per_port_cache_valid(
     return True
 
 
+def infer_v2_schema_from_data(
+    data_path: str | Path,
+    *,
+    sample_size: int = 100,
+) -> dict[str, Any]:
+    """Sniff the v2 schema mapping from the first *sample_size* records of *data_path*.
+
+    Produces a v2 config (without the apiInput's ``path`` / ``contract``
+    metadata) — the caller can stitch them in. Walks the records and
+    records (a) every internal-path depth that has at least one
+    inner-array iteration, as a candidate table, and (b) the leaf keys
+    that appear under each table's depth, with inferred types from the
+    observed values.
+
+    Each emitted table:
+    - ``path``: ``"$[*]"`` for the root, otherwise ``"$[*].<seg>[*].<seg>[*]"`` etc.
+    - ``label``: defaults to the path (caller can rename).
+    - ``emit``: True for the root table; False for nested tables so the
+      user opts in explicitly.
+    - ``columns``: list of ``{name, path, type, status: "Inferred",
+      selected: True, levels: None}`` for each observed leaf at that
+      depth.
+    """
+    dp = Path(data_path)
+    records = list(_iter_records(dp))[:sample_size]
+    # Map path_tuple → ordered dict of column_name → inferred type.
+    seen: dict[tuple[str, ...], dict[str, str]] = {(): {}}
+
+    def _infer_type(value: Any) -> str:
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        return "str"
+
+    def _walk(value: Any, path: tuple[str, ...]) -> None:
+        if value is None:
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk(item, path)
+            return
+        if not isinstance(value, dict):
+            return
+        cols = seen.setdefault(path, {})
+        for k, v in value.items():
+            if isinstance(v, dict) or (
+                isinstance(v, list) and v and any(isinstance(item, dict) for item in v)
+            ):
+                # Nested table — descend.
+                _walk(v, path + (k,))
+            else:
+                # Leaf at this depth.
+                if k not in cols:
+                    cols[k] = _infer_type(v)
+
+    for record in records:
+        _walk(record, ())
+
+    def _make_path(segments: tuple[str, ...]) -> str:
+        if not segments:
+            return "$[*]"
+        return "$[*]." + ".".join(f"{s}[*]" for s in segments)
+
+    tables: list[dict[str, Any]] = []
+    for path_tuple in sorted(seen.keys(), key=lambda p: (len(p), p)):
+        cols = seen[path_tuple]
+        table_path = _make_path(path_tuple)
+        tables.append(
+            {
+                "path": table_path,
+                "label": table_path,
+                "displayPath": None,
+                "emit": not path_tuple,  # only the root emits by default
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": col_name,
+                        "path": f"{table_path}.{col_name}",
+                        "type": col_type,
+                        "status": "Inferred",
+                        "selected": True,
+                        "levels": None,
+                    }
+                    for col_name, col_type in cols.items()
+                ],
+            },
+        )
+    return {"tables": tables}
+
+
 def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:
     """Return the cached ``meta.json`` payload, or ``None`` if absent / corrupt.
 

@@ -889,6 +889,24 @@ export function deleteJsonCache(
   return del(`/api/json-cache?path=${encodeURIComponent(path)}`, options)
 }
 
+/**
+ * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+ * Drives the ApiInputEditor's *Infer Tables* button.
+ *
+ * Returns a v2-shaped ``tables`` array; the caller stitches it into the
+ * apiInput's existing ``path`` + ``contract``.
+ */
+export function inferJsonCacheSchema(
+  payload: { path: string; sample_size?: number },
+  options?: { signal?: AbortSignal },
+): Promise<{ tables: Array<Record<string, unknown>> }> {
+  return post<{ tables: Array<Record<string, unknown>> }>(
+    "/api/json-cache/infer",
+    payload,
+    options,
+  )
+}
+
 // ---------------------------------------------------------------------------
 // MLflow endpoints (used by ModelScoreEditor + OptimiserApplyEditor)
 // ---------------------------------------------------------------------------

@@ -33,6 +33,8 @@ from haute.schemas import (
     JsonCacheBuildRequest,
     JsonCacheBuildResponse,
     JsonCacheCancelResponse,
+    JsonCacheInferRequest,
+    JsonCacheInferResponse,
     JsonCacheProgressResponse,
     JsonCacheStatusResponse,
 )
@@ -412,6 +414,33 @@ async def get_json_cache_status(
     if info is None:
         return JsonCacheStatusResponse(cached=False, data_path=path)
     return JsonCacheStatusResponse.model_validate({"cached": True, **info})
+
+
+@router.post("/infer", response_model=JsonCacheInferResponse)
+async def infer_json_cache_schema(body: JsonCacheInferRequest) -> JsonCacheInferResponse:
+    """Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+
+    Drives the ApiInputEditor's *Infer Tables* button. Returns a v2-shaped
+    ``tables: [...]`` array the editor stitches into the apiInput's
+    config. Only the root table is emit=true by default; nested tables
+    are off so the user opts in.
+    """
+    data_path = _resolve_data_path(body.path)
+    try:
+        from haute._json_shred import infer_v2_schema_from_data
+
+        result = infer_v2_schema_from_data(data_path, sample_size=body.sample_size)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Data file not found") from None
+    except orjson.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid JSON in data file: {e}",
+        ) from None
+    except Exception as e:
+        logger.error("json_cache_infer_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+    return JsonCacheInferResponse(tables=result.get("tables", []))
 
 
 @router.delete("", response_model=JsonCacheStatusResponse)

@@ -554,6 +554,26 @@ class JsonCacheBuildRequest(BaseModel):
     flatten_schema: dict[str, Any] | None = None
 
 
+class JsonCacheInferRequest(BaseModel):
+    """Request body for ``POST /api/json-cache/infer`` — sniff a v2 schema
+    mapping from the first records of a JSON/JSONL file. Used by the
+    ApiInputEditor's *Infer Tables* button so the user gets a sensible
+    starting structure without hand-typing column paths.
+    """
+
+    path: str
+    sample_size: int = 100
+
+
+class JsonCacheInferResponse(BaseModel):
+    """v2-shaped inference output: a list of table specs to merge into
+    the apiInput's config. Caller stitches in the apiInput's existing
+    ``path`` and ``contract`` metadata.
+    """
+
+    tables: list[dict[str, Any]]
+
+
 class JsonCacheBuildResponse(BaseModel):
     path: str
     data_path: str

@@ -450,7 +450,12 @@ export default function NodePanel({
 
     switch (nodeType) {
       case NODE_TYPES.API_INPUT:
-        return <ApiInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} />
+        // The per-node config file lives at config/quote_input/<node-id>.json
+        // (matches the backend's NODE_TYPE_TO_FOLDER convention in
+        // _config_io.py). Passed to the editor so the cache button can
+        // route the v2 vs v1 dispatch on the backend by inspecting the
+        // file's on-disk shape.
+        return <ApiInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} configPath={`config/quote_input/${node.id}.json`} />
 
       case NODE_TYPES.LIVE_SWITCH:
         return <LiveSwitchEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} accentColor={accentColor} />
