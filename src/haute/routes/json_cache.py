@@ -226,10 +226,21 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> JsonCacheBuildRespons
                 status_code=504,
                 detail=f"JSON cache build timed out ({_BUILD_TIMEOUT / 60:.0f} min limit)",
             )
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=f"Invalid v2 schema: {e}") from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Data file not found") from None
+        except orjson.JSONDecodeError as e:
+            # The data file is unparseable JSON. The schema is fine —
+            # don't tell the user their schema is broken.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid JSON in data file: {e}",
+            ) from None
+        except ValueError as e:
+            # A schema-validation error from validate_v2_schema OR
+            # parse_table_path raises ValueError. The catch is placed
+            # AFTER orjson.JSONDecodeError so data-file parse errors
+            # don't get mis-labelled as schema errors.
+            raise HTTPException(status_code=422, detail=f"Invalid v2 schema: {e}") from None
         except Exception as e:
             logger.error("json_cache_build_v2_failed", error=str(e))
             raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

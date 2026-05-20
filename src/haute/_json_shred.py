@@ -324,6 +324,27 @@ def build_per_port_cache(
 
     validate_v2_schema(v2_config)
 
+    # No-op trapdoor: if the existing meta.json's fingerprint matches the
+    # current v2 schema AND all expected per-port parquets are on disk,
+    # skip the rebuild entirely. Mirrors v1's `build_json_cache` no-op so
+    # repeated cache-button clicks don't churn the preview cache via
+    # commit 1's mtime-in-fingerprint invalidation.
+    if is_per_port_cache_valid(cd, v2_config):
+        existing_meta = read_per_port_cache_meta(cd)
+        if existing_meta is not None:
+            logger.info(
+                "json_shred_build_noop",
+                data_path=str(dp),
+                cache_dir=str(cd),
+                fingerprint=str(existing_meta.get("schema_fingerprint", ""))[:8],
+            )
+            return {
+                "schema_mode": existing_meta.get("schema_mode", "v2"),
+                "schema_fingerprint": existing_meta.get("schema_fingerprint", ""),
+                "tables": existing_meta.get("tables", []),
+                "cache_dir": str(cd),
+            }
+
     # Re-parse table-paths + columns so we can stream-write per-port
     # parquets immediately after the shred.
     emit_tables: list[tuple[str, list[_LeafSpec]]] = []

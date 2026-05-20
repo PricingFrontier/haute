@@ -60,6 +60,15 @@ def _pick_source_frame(
     the source actually emits.
     """
     if isinstance(source_output, dict):
+        if not source_output:
+            # Edge is intact; the source emitted no ports at all. Blaming
+            # the edge ("expected one of: []") would mislead — flag the
+            # source as the broken piece.
+            raise RuntimeError(
+                f"Source node {edge.source!r} emitted no ports. Check the "
+                "node's configuration: at least one emit-true table with "
+                "selected columns is required for a multi-port apiInput.",
+            )
         sh = edge.sourceHandle
         if sh is None:
             raise ValueError(

@@ -446,25 +446,43 @@ def _make_api_source_v2(
     # Validate at build time so a malformed config fails before any
     # data is fetched. Keeps the runtime branch lean.
     validate_v2_schema(config)
-    emit_labels: list[str] = [
-        t["label"]
-        for t in config.get("tables", []) or []
-        if t.get("emit")
-        and any(c.get("selected") for c in (t.get("columns") or []))
-    ]
 
-    if not emit_labels:
-        # 0 emit-true tables — return a function that fails loudly when
-        # invoked. The node still parses; the user just hasn't completed
-        # configuration yet.
-        def _api_source_v2_unconfigured() -> _Frame:
+    # Separate two distinct user-error states so the runtime message
+    # points at the actual missing step rather than treating both as
+    # "no emitting tables".
+    emit_true_tables = [t for t in config.get("tables", []) or [] if t.get("emit")]
+    emit_with_columns = [
+        t for t in emit_true_tables
+        if any(c.get("selected") for c in (t.get("columns") or []))
+    ]
+    emit_labels: list[str] = [t["label"] for t in emit_with_columns]
+
+    if not emit_true_tables:
+        def _api_source_v2_no_emit() -> _Frame:
             raise RuntimeError(
                 "API Input has no emitting tables. Open the node, tick "
-                "the 'emit' toggle on at least one table with selected "
-                "columns, then click 'Cache as Parquet' before previewing.",
+                "the 'emit' toggle on at least one table, then click "
+                "'Cache as Parquet' before previewing.",
             )
 
-        return _api_source_v2_unconfigured
+        return _api_source_v2_no_emit
+
+    if not emit_with_columns:
+        # emit:true on at least one table, but none of those tables has
+        # a selected column. This used to collapse silently to the
+        # no-emit case — adversarial review flagged it as a real user
+        # state worth its own error message.
+        _emit_labels_for_err = [t["label"] for t in emit_true_tables]
+
+        def _api_source_v2_no_columns(_labels: list[str] = _emit_labels_for_err) -> _Frame:
+            raise RuntimeError(
+                "API Input has emit-true tables but none has any selected "
+                "columns. Open the node and tick at least one column on "
+                f"the emitting table(s): {_labels}. Then click 'Cache as "
+                "Parquet' before previewing.",
+            )
+
+        return _api_source_v2_no_columns
 
     def _api_source_v2(
         _data_path: str = data_path,

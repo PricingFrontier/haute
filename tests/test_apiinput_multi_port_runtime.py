@@ -320,6 +320,60 @@ def test_multi_port_with_unknown_source_handle_raises(isolated_root) -> None:
 # ─── 7. preview-cache invalidation interacts correctly ────────────
 
 
+def test_zero_columns_on_emitting_table_distinct_error(isolated_root) -> None:
+    """emit:true with NO selected columns is its own error state — used
+    to silently collapse to the no-emit error.
+
+    Adversarial review caught this — the runtime now distinguishes
+    between "no emitting tables" and "emitting tables but no selected
+    columns" so the user sees the actual missing step.
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _single_port_config(data_path)
+    # Keep emit:true but un-select all columns.
+    config["tables"][0]["columns"][0]["selected"] = False
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+    results = execute_graph(graph, target_node_id="api")
+    assert results["api"].status == "error"
+    error_msg = (results["api"].error or "").lower()
+    # Should mention "column" specifically, not just "emit".
+    assert "column" in error_msg
+    # And should name which tables are emit-true so the user knows
+    # where to tick a column.
+    assert "policies" in error_msg
+
+
+def test_build_noop_when_fingerprint_matches(isolated_root) -> None:
+    """Second build with the same v2 config is a no-op — doesn't
+    re-shred and doesn't bump meta.json mtime, so commit 1's
+    preview-cache invalidation doesn't thrash on repeated cache-button
+    clicks.
+    """
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import build_per_port_cache as _build
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _single_port_config(data_path)
+    cache_dir = _json_cache_dir(str(data_path), "working")
+
+    _build(str(data_path), config, cache_dir)
+    meta_path = cache_dir / "meta.json"
+    first_mtime = meta_path.stat().st_mtime
+
+    # Second build with the SAME schema; meta.json mtime should be
+    # unchanged.
+    _build(str(data_path), config, cache_dir)
+    second_mtime = meta_path.stat().st_mtime
+
+    assert first_mtime == second_mtime, (
+        "no-op trapdoor failed: a fingerprint-matching rebuild "
+        "shouldn't rewrite meta.json"
+    )
+
+
 def test_apiinput_preview_invalidates_when_cache_rebuilt(isolated_root) -> None:
     """Bug-class regression for the commit 1 invalidation: a v2 apiInput
     whose cache gets rebuilt mid-session must show fresh data on the next
