@@ -1013,7 +1013,13 @@ def _execute_lazy(
     # computes schema without executing the query, so collect_schema()
     # is cheap; caching keeps repeated lookups free when the same
     # upstream feeds multiple consumers.
-    column_cache: dict[str, frozenset[str]] = {}
+    #
+    # column_cache is keyed by ``(producer_node_id, port_name_or_None)``.
+    # Multi-port apiInputs (commit 4) emit different columns per port, so
+    # consumers picking different ports of the same upstream must not
+    # collide on a parent-id-only key. ``None`` is used for single-frame
+    # outputs (the common case).
+    column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
 
     def _schema_names_of(frame: pl.LazyFrame | pl.DataFrame) -> list[str]:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
@@ -1194,20 +1200,24 @@ def _execute_lazy(
 
             if check_here and contract is not None and contract.inputs is not None:
                 upstream_col_sets: list[frozenset[str]] = []
-                for upstream_pid, upstream_lf, projected_cols in zip(
-                    input_ids,
+                for upstream_edge, upstream_lf, projected_cols in zip(
+                    incoming_edges,
                     input_lfs,
                     projected_input_columns,
                     strict=True,
                 ):
+                    # Key the cache by (parent_id, port_name) so two
+                    # consumers picking different ports of the same
+                    # multi-port source see distinct cache entries.
+                    cache_key = (upstream_edge.source, upstream_edge.sourceHandle)
                     upstream_cols: frozenset[str]
                     if projected_cols is not None:
                         upstream_cols = projected_cols
                     else:
-                        cached_cols = column_cache.get(upstream_pid)
+                        cached_cols = column_cache.get(cache_key)
                         if cached_cols is None:
                             cached_cols = _columns_of(upstream_lf)
-                            column_cache[upstream_pid] = cached_cols
+                            column_cache[cache_key] = cached_cols
                         upstream_cols = cached_cols
                     upstream_col_sets.append(upstream_cols)
                 upstream_cols = frozenset().union(*upstream_col_sets)
@@ -1230,7 +1240,12 @@ def _execute_lazy(
         # per-frame, not per-bundle. They'd apply naturally to whichever
         # frame the consumer picks if the consumer chooses to layer them
         # on top.
+        #
+        # Populate column_cache per-port so downstream consumers' contract
+        # checks find the right columns under ``(parent_id, port_name)``.
         if isinstance(lf, dict):
+            for port_name, port_frame in lf.items():
+                column_cache[(nid, port_name)] = _columns_of(port_frame)
             return lf, is_source, node
 
         # Apply selected_columns filter first (uses pre-rename names),
@@ -1249,7 +1264,7 @@ def _execute_lazy(
             and not is_passthrough_runtime
         ):
             out_cols = _columns_of(lf)
-            column_cache[nid] = out_cols
+            column_cache[(nid, None)] = out_cols
             _assert_outputs_satisfy_contract(node, contract, out_cols)
 
         return lf, is_source, node
@@ -1260,7 +1275,7 @@ def _execute_lazy(
         cached_seed = cached_seed_outputs.get(nid)
         if cached_seed is not None:
             lazy_outputs[nid] = cached_seed
-            column_cache[nid] = _columns_of(cached_seed)
+            column_cache[(nid, None)] = _columns_of(cached_seed)
             logger.info("dataframe_execution_cache_seed_hit", node_id=nid)
             if execution_context is not None:
                 execution_context.checkpoint(label="lazy_dataframe_cache_seed_hit", node_id=nid)
@@ -1326,7 +1341,7 @@ def _execute_lazy(
                             lf = cached_lf
                             cache_materialized = True
                             cache_backed_node_ids.add(nid)
-                            column_cache[nid] = _columns_of(lf)
+                            column_cache[(nid, None)] = _columns_of(lf)
                             _release_consumed_parents(nid)
                             checkpoints_since_gc += 1
                             if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
@@ -1402,7 +1417,7 @@ def _execute_lazy(
                         projected_cols=len(valid),
                     )
                     sink_lf = sink_lf.select(valid)
-                    column_cache[nid] = frozenset(valid)
+                    column_cache[(nid, None)] = frozenset(valid)
 
             with (
                 execution_context.stage("lazy_checkpoint_parquet", node_id=nid)
@@ -1696,7 +1711,11 @@ def _execute_eager_core(
     # for its consumer(s).  Polars' ``.columns`` is O(n) in the number
     # of columns, but frozenset construction dominates anyway; caching
     # keeps the contract-enforced path within the <5% budget.
-    column_cache: dict[str, frozenset[str]] = {}
+    #
+    # Same shape change as the lazy path: keyed by
+    # ``(producer_node_id, port_name_or_None)`` so multi-port consumers
+    # don't collide.
+    column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
 
     def _schema_items_of(frame: pl.LazyFrame | pl.DataFrame) -> list[tuple[str, str]]:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
@@ -1826,8 +1845,15 @@ def _execute_eager_core(
                 # node's function receives inputs — multi-input joins
                 # combine them before the contract columns are read.
                 if check_here and contract.inputs is not None:  # type: ignore[union-attr]
+                    # Key per-edge by (source, sourceHandle) so the union
+                    # picks up the right port's columns for multi-port
+                    # consumers (commit 4).
+                    edge_cache_keys = [
+                        (e.source, e.sourceHandle)
+                        for e in incoming_edges_for_node
+                    ]
                     upstream_cols: frozenset[str] = frozenset().union(
-                        *(column_cache[pid] for pid in input_ids if pid in column_cache)
+                        *(column_cache[k] for k in edge_cache_keys if k in column_cache)
                     )
                     _assert_inputs_satisfy_contract(node, contract, upstream_cols)  # type: ignore[arg-type]
 
@@ -1859,6 +1885,10 @@ def _execute_eager_core(
                 # _pick_source_frame + _to_lazy_if_needed will lazify when
                 # consumers need a LazyFrame.
                 runtime_outputs[nid] = materialised
+                # Populate column_cache per-port so consumers' contract
+                # checks find the right columns under (nid, port_label).
+                for port_label, port_df in materialised.items():
+                    column_cache[(nid, port_label)] = frozenset(port_df.columns)
                 eager_outputs[nid] = materialised
                 t1 = time.perf_counter()
                 timings[nid] = round(t1 - t0, 6)
@@ -1926,7 +1956,7 @@ def _execute_eager_core(
                 candidate_columns = [c for c in output_column_names if c in projection]
                 if len(candidate_columns) < len(output_column_names):
                     projected_columns = candidate_columns
-            column_cache[nid] = final_cols
+            column_cache[(nid, None)] = final_cols
 
             should_materialize = materialized_ids is None or nid in materialized_ids
             if should_materialize:

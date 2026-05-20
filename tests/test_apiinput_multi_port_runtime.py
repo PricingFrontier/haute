@@ -374,6 +374,57 @@ def test_build_noop_when_fingerprint_matches(isolated_root) -> None:
     )
 
 
+def test_two_consumers_different_ports_dont_collide_on_column_cache(isolated_root) -> None:
+    """Regression: ``column_cache`` was keyed by parent_node_id alone, so
+    two consumers picking different ports of the SAME multi-port source
+    collided on the same cache entry and the second consumer's
+    contract-input check saw the first port's columns.
+
+    The fix keyed the cache by ``(parent_id, sourceHandle)``. This test
+    asserts the routing still produces the right per-port frames AND that
+    each consumer sees its own port's columns.
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="c_policies",
+                data=NodeData(label="c_policies", nodeType=NodeType.POLARS, config={}),
+            ),
+            GraphNode(
+                id="c_drivers",
+                data=NodeData(label="c_drivers", nodeType=NodeType.POLARS, config={}),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_p", source="api", target="c_policies", sourceHandle="policies"),
+            GraphEdge(id="e_d", source="api", target="c_drivers", sourceHandle="drivers"),
+        ],
+    )
+
+    # Each consumer's preview must show its own port's columns + row count.
+    p_results = execute_graph(graph, target_node_id="c_policies")
+    assert p_results["c_policies"].status == "ok"
+    p_col_names = {c.name for c in p_results["c_policies"].columns}
+    assert p_col_names == {"policy_id"}, (
+        "policies port should expose only policy_id, got " + str(p_col_names)
+    )
+    assert p_results["c_policies"].row_count == 2
+
+    d_results = execute_graph(graph, target_node_id="c_drivers")
+    assert d_results["c_drivers"].status == "ok"
+    d_col_names = {c.name for c in d_results["c_drivers"].columns}
+    assert d_col_names == {"driver_id", "age_band"}, (
+        "drivers port should expose driver_id + age_band, got " + str(d_col_names)
+    )
+    assert d_results["c_drivers"].row_count == 3
+
+
 def test_apiinput_preview_invalidates_when_cache_rebuilt(isolated_root) -> None:
     """Bug-class regression for the commit 1 invalidation: a v2 apiInput
     whose cache gets rebuilt mid-session must show fresh data on the next
