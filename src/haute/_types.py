@@ -14,7 +14,7 @@ from functools import cached_property
 from typing import Any, ClassVar, Protocol, Self, TypedDict, runtime_checkable
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from haute._graph_utils import build_parents_of
 
@@ -554,6 +554,23 @@ class GraphEdge(BaseModel):
     target: str
     sourceHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
+
+    @field_validator("sourceHandle", "targetHandle", mode="before")
+    @classmethod
+    def _reject_empty_handle(cls, v: object) -> object:
+        """An edge handle is either a non-empty port name OR ``None``.
+
+        Empty string is NOT silently coerced to ``None`` — that would mask
+        the case where a port is legitimately named ``""`` (which itself is
+        invalid, but for a different reason and at a different layer).
+        See MULTI_FRAME_PLAN.md §4b for the full reasoning.
+        """
+        if isinstance(v, str) and v == "":
+            raise ValueError(
+                "Edge handle must be either a non-empty port name or null; "
+                "got empty string. Use null to signal 'no port specified'.",
+            )
+        return v
 
 
 class PipelineGraph(BaseModel):

@@ -1063,15 +1063,26 @@ class ModelScorer:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def score(self, *dfs: _Frame) -> _Frame:
+    def score(self, *dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
         """Load the model, predict, and optionally post-process.
 
         Accepts one or more upstream LazyFrames (first is the scoring input).
         Returns a LazyFrame with prediction column(s) appended.
+
+        Per MULTI_FRAME_PLAN §4b the executor binds incoming edges as
+        keyword arguments; this method accepts both forms so direct
+        callers in tests / deploy paths keep working.
         """
         categorical_levels = self._categorical_levels_for_score()
         scoring_model = self._load_scoring_model()
 
+        if dfs_by_name:
+            # Reconstruct positional tuple in declared-source order.
+            dfs: tuple[_Frame, ...] = tuple(
+                dfs_by_name[name] for name in self.source_names if name in dfs_by_name
+            )
+        else:
+            dfs = dfs_positional
         lf = dfs[0] if dfs else pl.LazyFrame()
         return _run_score_pipeline(
             scoring_model,

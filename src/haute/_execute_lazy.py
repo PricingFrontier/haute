@@ -39,6 +39,43 @@ from haute.errors import ContractMismatchError, SchemaMismatchError
 logger = get_logger(component="execute")
 
 
+def _build_input_kwargs(
+    incoming_edges: list[GraphEdge],
+    input_frames: list[_Frame],
+    *,
+    target_node_id: str,
+) -> dict[str, _Frame]:
+    """Build the kwargs dict for calling a non-source node's function.
+
+    Per MULTI_FRAME_PLAN §4b, each incoming edge's binding key is
+    ``edge.sourceHandle`` when set (non-empty string, port name on a
+    multi-port source) else ``edge.source`` (the source node id, which
+    matches the parent label in current haute; the single-port fallback
+    that preserves pre-existing parameter-by-parent-label semantics).
+
+    Empty string is rejected at :class:`GraphEdge` ingest via the
+    ``_reject_empty_handle`` validator, so it never reaches this code path.
+    """
+    if len(incoming_edges) != len(input_frames):
+        raise ValueError(
+            f"binding mismatch on node {target_node_id!r}: "
+            f"{len(incoming_edges)} incoming edges vs "
+            f"{len(input_frames)} input frames",
+        )
+    kwargs: dict[str, _Frame] = {}
+    for edge, frame in zip(incoming_edges, input_frames, strict=True):
+        key = edge.sourceHandle if edge.sourceHandle is not None else edge.source
+        if key in kwargs:
+            raise ValueError(
+                f"Duplicate parameter binding {key!r} for node "
+                f"{target_node_id!r}: two incoming edges resolve to the "
+                f"same kwarg name. Either rename a port or remove the "
+                f"redundant edge.",
+            )
+        kwargs[key] = frame
+    return kwargs
+
+
 def _resolve_graph_paths(graph: PipelineGraph) -> PipelineGraph:
     """Resolve project/pipeline-relative file paths before building node functions."""
     return execution_facade.canonical_dataframe_execution_graph(graph)
@@ -520,7 +557,9 @@ def _prepare_graph(
 ]:
     """Shared graph preparation: filter, topo-sort, and build lookups.
 
-    Returns (node_map, order, parents_of, id_to_name).
+    Returns (node_map, order, parents_of, id_to_name). Callers that need
+    the post-pruning edge list to index per-edge metadata (sourceHandle,
+    etc.) should call :func:`_prepare_graph_with_edges` instead.
     """
     prepared = projection_planner.prepare_graph(
         graph,
@@ -528,6 +567,35 @@ def _prepare_graph(
         source=source,
     )
     return prepared.node_map, prepared.order, prepared.parents_of, prepared.id_to_name
+
+
+def _prepare_graph_with_edges(
+    graph: PipelineGraph,
+    target_node_id: str | None = None,
+    source: str = "live",
+) -> tuple[
+    dict[str, GraphNode],
+    list[str],
+    dict[str, list[str]],
+    dict[str, str],
+    list[GraphEdge],
+]:
+    """Like :func:`_prepare_graph` but also returns the relevant-edges list
+    used to build ``parents_of``. The executor uses this to index incoming
+    edges per child without live-switch-pruned edges leaking in.
+    """
+    prepared = projection_planner.prepare_graph(
+        graph,
+        target_node_id,
+        source=source,
+    )
+    return (
+        prepared.node_map,
+        prepared.order,
+        prepared.parents_of,
+        prepared.id_to_name,
+        prepared.relevant_edges,
+    )
 
 
 def _execute_lazy(
@@ -597,7 +665,7 @@ def _execute_lazy(
     node_source_overrides = dict(source_by_node or {})
     if execution_context is not None:
         execution_context.checkpoint(label="lazy_start")
-    node_map, order, parents_of, id_to_name = _prepare_graph(
+    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
         graph,
         target_node_id,
         source=source,
@@ -816,6 +884,17 @@ def _execute_lazy(
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
+
+    # Per-target incoming-edge lookup, in edge-declaration order, so each
+    # node's function-parameter binding key can be derived from
+    # ``edge.sourceHandle or edge.source`` (MULTI_FRAME_PLAN §4b) without
+    # re-scanning per node. Use ``relevant_edges`` (post-pruning,
+    # ancestor-filtered) so live-switch-inactive edges don't surface here
+    # — that would mismatch ``parents_of`` and break the binding-count
+    # invariant on switch nodes.
+    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in relevant_edges:
+        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
 
     # Build executable functions — delegates to _build_funcs with
     # row_limit=None (lazy path never caps source output).
@@ -1453,7 +1532,7 @@ def _execute_eager_core(
         memory_bytes.
     """
     graph = _resolve_graph_paths(graph)
-    node_map, order, parents_of, id_to_name = _prepare_graph(
+    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
         graph,
         target_node_id,
         source=source,
@@ -1480,6 +1559,13 @@ def _execute_eager_core(
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
+
+    # Per-target incoming-edge lookup (eager path); same role as in the
+    # lazy path, see :func:`_build_input_kwargs`. Use ``relevant_edges``
+    # so live-switch pruning is honoured.
+    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in relevant_edges:
+        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
 
     # Fan-out count per node — how many direct children consume this
     # node's output.  Used to add a Polars ``.cache()`` hint when the
