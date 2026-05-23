@@ -145,12 +145,26 @@ class IsolatedWorkerCleanupError(IsolatedWorkerError):
 
 
 def process_memory_caps_supported() -> bool:
-    """Return whether this platform can enforce child address-space limits."""
+    """Return whether this platform can enforce child address-space limits.
+
+    macOS exposes ``resource.RLIMIT_AS`` and ``resource.setrlimit`` but
+    the kernel does NOT actually enforce process address-space limits —
+    any call to ``setrlimit(RLIMIT_AS, ...)`` with a finite value raises
+    ``ValueError: current limit exceeds maximum limit`` even when the
+    current limit is ``RLIM_INFINITY``. Treat macOS as unsupported so
+    the dependent code path falls back to soft enforcement (best-effort
+    only, with an explicit ``IsolatedWorkerMemoryLimitUnsupportedError``
+    when the caller requires it).
+    """
     try:
         import resource
     except ImportError:
         return False
-    return hasattr(resource, "RLIMIT_AS") and hasattr(resource, "setrlimit")
+    if not (hasattr(resource, "RLIMIT_AS") and hasattr(resource, "setrlimit")):
+        return False
+    if sys.platform == "darwin":
+        return False
+    return True
 
 
 def run_isolated_worker(

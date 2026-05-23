@@ -243,34 +243,6 @@ class TestPlainJSONIsEager:
 
 
 class TestParquetEscapeHatchExists:
-    """The docstring recommends ``read_json_flat``; that function must exist."""
+    """v1 read_json_flat removed; v2 shred contracts live in test_v2_codec_and_shred.py."""
 
-    def test_read_json_flat_is_importable(self) -> None:
-        """``haute._json_flatten.read_json_flat`` is the documented alternative."""
-        from haute._json_flatten import read_json_flat
-
-        assert callable(read_json_flat)
-
-    def test_read_json_flat_returns_lazyframe_from_parquet_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-    ) -> None:
-        """Quick smoke: read_json_flat round-trips via a parquet cache.
-
-        The cache path is what makes JSON safe for large files — so pin
-        that the recommended alternative at least does return a LazyFrame
-        from a parquet scan (not eager).
-        """
-        from haute._json_flatten import read_json_flat
-
-        monkeypatch.chdir(tmp_path)
-        path = tmp_path / "small.jsonl"
-        with path.open("w", encoding="utf-8") as fh:
-            for i in range(5):
-                fh.write(json.dumps({"i": i}) + "\n")
-
-        lf = read_json_flat(path)
-        assert isinstance(lf, pl.LazyFrame)
-        df = lf.collect()
-        assert df["i"].to_list() == [0, 1, 2, 3, 4]
+    pass

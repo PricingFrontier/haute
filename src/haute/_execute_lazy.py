@@ -1867,11 +1867,28 @@ def _execute_eager_core(
             # cache's size accounting (which assumes DataFrame-valued
             # outputs) works on each port. Downstream edges pick per-edge
             # via ``_pick_source_frame`` from the runtime_outputs dict.
+            #
+            # Use ``streaming_collect`` (not bare ``.collect()``) so the
+            # bounded-memory contract holds in profiled execution paths.
+            # `test_bounded_collect_contracts` enforces that bounded
+            # modules never call ``.collect()`` directly.
             if isinstance(result, dict):
+                _mp_collect_profile = (
+                    execution_context.profile
+                    if execution_context is not None
+                    else ExecutionProfile.PREVIEW_EAGER
+                )
+                _mp_allow_broad = (
+                    _mp_collect_profile == ExecutionProfile.PREVIEW_EAGER
+                )
                 materialised: dict[str, pl.DataFrame] = {}
                 for port_label, port_frame in result.items():
                     if isinstance(port_frame, pl.LazyFrame):
-                        port_df = port_frame.collect()
+                        port_df = streaming_collect(
+                            port_frame,
+                            profile=_mp_collect_profile,
+                            allow_broad=_mp_allow_broad,
+                        )
                     elif isinstance(port_frame, pl.DataFrame):
                         port_df = port_frame
                     else:
