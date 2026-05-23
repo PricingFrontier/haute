@@ -36,6 +36,84 @@ const zoomSelector = (s: { transform: [number, number, number] }) => {
   return "compact"
 }
 
+/** Source-Handle setup for the right edge of the node.
+ *
+ * Commit-6 multi-port: when an apiInput has 2+ `emit: true` tables, we
+ * render one labelled Handle per table (id = table label). Otherwise the
+ * legacy single Handle covers the default single-port use.
+ *
+ * Returning a JSX list rather than mutating render order keeps the call
+ * sites at the three zoom levels each a one-line switch.
+ */
+function _SourceHandles({
+  isApiInput,
+  config,
+  accent,
+}: {
+  isApiInput: boolean
+  config: Record<string, unknown> | undefined
+  accent: string
+}) {
+  if (!isApiInput) {
+    return <Handle type="source" position={Position.Right} />
+  }
+  const tables = Array.isArray((config as { tables?: unknown })?.tables)
+    ? ((config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
+    : []
+  const emitTables = tables.filter(
+    (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
+  )
+  if (emitTables.length < 2) {
+    // Single-port fallback (one or zero emit:true tables, or no tables key):
+    // preserve the legacy default Handle so existing single-port pipelines
+    // continue to work unchanged.
+    return <Handle type="source" position={Position.Right} />
+  }
+  // Multi-port: stack labelled Handles down the right edge. Each
+  // Handle's `id` is the table's label — React Flow propagates this to
+  // `onConnect.params.sourceHandle` when a user drags from it.
+  //
+  // Defence in depth per the adversarial review's S2: substitute a
+  // synthetic `port_<idx>` when the label is missing / non-string /
+  // empty / whitespace-only. Two Handles with the same id break React
+  // Flow's edge resolution — the backend's B2 sanitised-label
+  // collision check (in `validate_v2_schema`) catches this for the
+  // load-bearing case, but the frontend doesn't always re-validate
+  // before render, so we also collapse same-id duplicates here to
+  // avoid the React-Flow-internal failure mode.
+  const seenIds = new Set<string>()
+  return (
+    <>
+      {emitTables.map((table, idx) => {
+        const rawLabel = (table as { label?: unknown }).label
+        const candidate =
+          typeof rawLabel === "string" && rawLabel.trim() ? rawLabel : `port_${idx}`
+        // If a later table reuses an earlier id, fall back to a synthetic
+        // id so React Flow doesn't see duplicates (last-writer-wins on
+        // React keys breaks edge routing). The schema-validation path
+        // rejects this case before persistence; this branch only fires
+        // for the transient pre-save state.
+        const label = seenIds.has(candidate) ? `${candidate}__${idx}` : candidate
+        seenIds.add(label)
+        // Stack the dots vertically; `top` is a percentage so the
+        // Handles space evenly down the right edge regardless of node
+        // height.
+        const topPct = ((idx + 1) / (emitTables.length + 1)) * 100
+        return (
+          <Handle
+            key={label}
+            id={label}
+            type="source"
+            position={Position.Right}
+            style={{ top: `${topPct}%`, background: accent }}
+            data-testid={`api-input-port-${label}`}
+          />
+        )
+      })}
+    </>
+  )
+}
+
 function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
   const nodeType = nodeData.nodeType || NODE_TYPES.POLARS
   const Icon = nodeTypeIcons[nodeType] || PolarsIcon
@@ -47,6 +125,13 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
   const isSinkOnly = SINK_ONLY_TYPES.has(nodeType)
   const isPill = PILL_TYPES.has(nodeType)
+  const sourceHandles = !isSinkOnly ? (
+    <_SourceHandles
+      isApiInput={isDeployInput}
+      config={nodeData.config as Record<string, unknown> | undefined}
+      accent={accent}
+    />
+  ) : null
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
@@ -84,7 +169,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
             {nodeData.label}
           </div>
         </div>
-        {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+        {sourceHandles}
       </div>
     )
   }
@@ -135,7 +220,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
             {nodeData.label}
           </div>
         </div>
-        {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+        {sourceHandles}
       </div>
     )
   }
@@ -220,7 +305,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         )}
       </div>
 
-      {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+      {sourceHandles}
     </div>
   )
 }
