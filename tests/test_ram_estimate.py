@@ -894,46 +894,14 @@ class TestAvailableVramParsing:
 
 
 class TestCountSourceRowsForNode:
-    def test_api_input_json_cached(self) -> None:
-        """API_INPUT with .json path and cache hit returns row_count."""
+    def test_api_input_json_uncached_returns_none(self) -> None:
+        """API_INPUT .json with no cache returns None (v2 has no aggregate row count)."""
         node = _make_source_node(
             node_type="apiInput",
-            config={"path": "/data/test.json"},
+            config={"path": "/nonexistent/data.json"},
         )
-        with patch(
-            "haute._ram_estimate.json_cache_info",
-            return_value={"row_count": 500, "column_count": 10},
-            create=True,
-        ):
-            # Need to patch the import inside the function
-            with patch(
-                "haute._json_flatten.json_cache_info",
-                return_value={"row_count": 500, "column_count": 10},
-            ):
-                result = _count_source_rows_for_node(node)
-        assert result == 500
-
-    def test_api_input_jsonl_schema_incompatible_cache_uses_line_count(
-        self,
-        tmp_path,
-        monkeypatch,
-    ) -> None:
-        """Incompatible JSONL caches should not drive RAM row estimates."""
-        from haute._json_flatten import build_json_cache
-
-        monkeypatch.chdir(tmp_path)
-        path = tmp_path / "data.jsonl"
-        path.write_text('{"x":1,"y":2}\n{"x":3,"y":4}\n', encoding="utf-8")
-        build_json_cache(str(path), schema={"x": "int"})
-        node = _make_source_node(
-            node_type="apiInput",
-            config={
-                "path": str(path),
-                "flattenSchema": {"x": "int", "y": "int"},
-            },
-        )
-
-        assert _count_source_rows_for_node(node) == 2
+        result = _count_source_rows_for_node(node)
+        assert result is None
 
     def test_api_input_jsonl_uncached_file_exists(self, tmp_path) -> None:
         """API_INPUT .jsonl with no cache but file exists uses line count."""
@@ -943,19 +911,8 @@ class TestCountSourceRowsForNode:
             node_type="apiInput",
             config={"path": str(path)},
         )
-        with patch("haute._json_flatten.json_cache_info", return_value=None):
-            result = _count_source_rows_for_node(node)
+        result = _count_source_rows_for_node(node)
         assert result == 4
-
-    def test_api_input_json_uncached_returns_none(self) -> None:
-        """API_INPUT .json (not .jsonl) with no cache returns None."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/nonexistent/data.json"},
-        )
-        with patch("haute._json_flatten.json_cache_info", return_value=None):
-            result = _count_source_rows_for_node(node)
-        assert result is None
 
     def test_api_input_parquet_exists(self, tmp_path) -> None:
         """API_INPUT with existing parquet file reads metadata."""
@@ -1036,49 +993,22 @@ class TestCountSourceRowsForNode:
 
 
 class TestSourceMetadataForNode:
-    def test_api_input_json_cached(self) -> None:
-        """API_INPUT with .json and cache returns (rows, cols)."""
+    def test_api_input_json_returns_none(self) -> None:
+        """API_INPUT with .json path returns None (v2 has no single aggregate metadata)."""
         node = _make_source_node(
             node_type="apiInput",
             config={"path": "/data/test.json"},
         )
-        with patch(
-            "haute._json_flatten.json_cache_info",
-            return_value={"row_count": 100, "column_count": 5},
-        ):
-            result = _source_metadata_for_node(node)
-        assert result == (100, 5)
+        result = _source_metadata_for_node(node)
+        assert result is None
 
-    def test_api_input_json_schema_incompatible_cache_returns_none(
-        self,
-        tmp_path,
-        monkeypatch,
-    ) -> None:
-        """Incompatible JSON caches should not drive RAM column estimates."""
-        from haute._json_flatten import build_json_cache
-
-        monkeypatch.chdir(tmp_path)
-        path = tmp_path / "data.json"
-        path.write_text('[{"x":1,"y":2}]', encoding="utf-8")
-        build_json_cache(str(path), schema={"x": "int"})
-        node = _make_source_node(
-            node_type="apiInput",
-            config={
-                "path": str(path),
-                "flattenSchema": {"x": "int", "y": "int"},
-            },
-        )
-
-        assert _source_metadata_for_node(node) is None
-
-    def test_api_input_json_uncached_returns_none(self) -> None:
-        """API_INPUT .json with no cache returns None."""
+    def test_api_input_jsonl_returns_none(self) -> None:
+        """API_INPUT .jsonl returns None (v2 per-port cache has no single metadata)."""
         node = _make_source_node(
             node_type="apiInput",
             config={"path": "/data/test.jsonl"},
         )
-        with patch("haute._json_flatten.json_cache_info", return_value=None):
-            result = _source_metadata_for_node(node)
+        result = _source_metadata_for_node(node)
         assert result is None
 
     def test_api_input_parquet(self, tmp_path) -> None:

@@ -207,15 +207,37 @@ def _first_source(source_names: list[str]) -> str:
 def _api_input_template(path: str, config: dict) -> str:
     """Return the API input template string for the given file path.
 
-    JSON/JSONL files use ``read_json_flat``, CSV uses ``scan_csv``,
-    everything else (parquet / flat) uses ``scan_parquet``.
+    JSON/JSONL files use the v2 per-port shred (``_json_shred``), reading
+    the v2 schema from the sidecar config at runtime. CSV uses
+    ``scan_csv``, everything else (parquet / flat) uses ``scan_parquet``.
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
         body = (
             "    from pathlib import Path\n"
-            "    from haute._json_flatten import read_json_flat\n"
-            "    return read_json_flat({portable_path}, config_path={config_path_repr})"
+            "    import orjson\n"
+            "    from haute._json_flatten import _json_cache_dir\n"
+            "    from haute._json_shred import (\n"
+            "        is_per_port_cache_valid,\n"
+            "        load_per_port_cache,\n"
+            "    )\n"
+            "    _data_path = {portable_path}\n"
+            "    _config_path = Path({config_path_repr})\n"
+            "    _v2_config = orjson.loads(_config_path.read_bytes())\n"
+            "    _cache_dir = _json_cache_dir(str(_data_path), 'working')\n"
+            "    if not is_per_port_cache_valid(_cache_dir, _v2_config):\n"
+            "        _cache_dir = _json_cache_dir(str(_data_path), 'committed')\n"
+            "        if not is_per_port_cache_valid(_cache_dir, _v2_config):\n"
+            "            raise RuntimeError(\n"
+            "                \"API Input data hasn't been cached for the current schema. \"\n"
+            "                \"Click 'Cache as Parquet' on the API Input node to build it.\"\n"
+            "            )\n"
+            "    _emit_labels = [t['label'] for t in (_v2_config.get('tables') or [])\n"
+            "                    if t.get('emit') and any(c.get('selected') for c in (t.get('columns') or []))]\n"
+            "    _bundle = load_per_port_cache(_cache_dir, _v2_config)\n"
+            "    if len(_emit_labels) == 1:\n"
+            "        return _bundle[_emit_labels[0]]\n"
+            "    return {{label: _bundle[label] for label in _emit_labels if label in _bundle}}"
         )
     else:
         runtime_config = {"sourceType": "flat_file", **config}

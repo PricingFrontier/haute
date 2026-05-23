@@ -182,11 +182,9 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
         if node_type == NodeType.API_INPUT:
             path = config.get("path", "")
             if path.endswith((".json", ".jsonl")):
-                from haute._json_flatten import json_cache_info
-
-                info = json_cache_info(path, schema=config.get("flattenSchema"))
-                if info is not None:
-                    return info["row_count"]
+                # v2 per-port caches don't expose a single aggregate row
+                # count; RAM estimation falls back to JSONL line count
+                # (.json files yield None, treated as "unknown" upstream).
                 if path.endswith(".jsonl") and Path(path).exists():
                     return _jsonl_row_count(path)
                 return None
@@ -226,11 +224,10 @@ def _source_metadata_for_node(node: GraphNode) -> tuple[int, int] | None:
 
         if node_type == NodeType.API_INPUT:
             if path.endswith((".json", ".jsonl")):
-                from haute._json_flatten import json_cache_info
-
-                info = json_cache_info(path, schema=config.get("flattenSchema"))
-                if info is not None:
-                    return info["row_count"], info["column_count"]
+                # v2 per-port caches are one parquet per emit-true table,
+                # so there's no single (row_count, column_count) summary
+                # to return. Conservative None lets the caller fall back
+                # to its "unknown source size" branch.
                 return None
             if Path(path).exists():
                 return _parquet_metadata(path)

@@ -26,11 +26,14 @@ def _targets():
 
 
 def test_threshold_config_owns_all_default_mutation_targets() -> None:
+    """Post-commit-5.5: the `json-flatten-schema` mutation target was
+    dropped alongside the v1 codec module. A v2 equivalent
+    (`json-per-port-shred`) is a backlog item.
+    """
     targets = _targets()
 
     assert {target.name for target in targets} == {
         "job-store",
-        "json-flatten-schema",
         "path-resolution",
         "registry",
     }
@@ -39,7 +42,6 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
     assert all(target.test_paths for target in targets)
     assert {target.name: target.fail_over for target in targets} == {
         "job-store": 6.0,
-        "json-flatten-schema": 10.0,
         "path-resolution": 5.0,
         "registry": 0.0,
     }
@@ -80,7 +82,6 @@ def test_mutation_runner_dry_run_writes_manifest_without_cosmic_ray(tmp_path) ->
     assert manifest["mode"] == "full"
     assert {target["name"] for target in manifest["selected_targets"]} == {
         "job-store",
-        "json-flatten-schema",
         "path-resolution",
         "registry",
     }

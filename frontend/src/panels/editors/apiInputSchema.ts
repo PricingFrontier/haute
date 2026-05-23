@@ -1,20 +1,14 @@
 /**
- * v2 schema-mapping helpers for the ApiInputEditor (commit 5).
+ * v2 schema-mapping helpers for the ApiInputEditor.
  *
- * Mirrors `src/haute/_api_input_schema.py` on the backend. Identifies v2-shape
- * configs, exposes typed access to the tables/columns, and migrates v1
- * (`flattenSchema`) configs to v2 in-memory so the editor can render them
- * with the new surface without rewriting disk state until the user saves.
+ * Mirrors `src/haute/_api_input_schema.py` on the backend. Identifies
+ * v2-shape configs and exposes typed access to the tables/columns.
  *
- * Migration policy mirrors §4d of MULTI_FRAME_PLAN.md:
- * - One table at the root path (`$[*]`) with `emit: true`.
- * - v1 `flattenSchema` leaves become per-column entries; column path is
- *   `$[*].<leaf>`; column name defaults to the leaf (or to the renamed
- *   target if the v1 config had a `column_renames` entry — orphans dropped).
- * - v1 `selected_columns` lift into per-column `selected: true`.
- * - v1 `categorical_levels` lift into per-column `levels`.
- * - v1 `row_id_column` lifts into `tables[0].row_id_column` (dropped if
- *   it doesn't match any migrated column name).
+ * v1 configs on disk are treated as **empty** at runtime — there is no
+ * migration codec in the editor any more. The user opens the editor
+ * against a v1 file, sees the empty v2 surface, clicks Infer Tables,
+ * and saves. The v1 keys silently fall off when the strict v2 contract
+ * serialises (see backend Pydantic config model).
  */
 
 export type ColumnType = "int" | "float" | "str" | "bool" | "date"
@@ -45,12 +39,9 @@ export interface ApiInputConfigV2 {
   removedTables?: string[]
 }
 
-/** Tagged-union representation of a config — used by the editor's first-load
- * detection so it can render the migration banner without losing access to
- * the v1 fields it needs to preserve. */
+/** Tagged-union classification — only v2 and empty kinds. */
 export type ApiInputConfigShape =
   | { kind: "v2"; v2: ApiInputConfigV2 }
-  | { kind: "v1"; raw: Record<string, unknown> }
   | { kind: "empty"; raw: Record<string, unknown> }
 
 const ALLOWED_TYPES: ReadonlySet<ColumnType> = new Set([
@@ -62,33 +53,30 @@ const ALLOWED_TYPES: ReadonlySet<ColumnType> = new Set([
 ] as const)
 
 /**
- * Return true iff *config* is in v2 shape. Mirrors the backend's
- * `is_v2_shape`: v2 if `tables` is present AND `flattenSchema` is absent.
- * A config carrying both is corrupt — treat as v1 for safety so the
- * migration path runs.
+ * v2 shape iff `tables` is a non-empty (or at least present) array.
+ * Stray legacy keys alongside (`flattenSchema`, `column_renames`, …)
+ * are tolerated silently — the runtime reads only the v2 surface, and
+ * a strict v2 serialiser at save time drops unknown keys.
  */
 export function isV2Shape(config: Record<string, unknown> | undefined | null): boolean {
   if (!config) return false
-  const hasTables = Array.isArray((config as { tables?: unknown }).tables)
-  const hasFlatten =
-    typeof (config as { flattenSchema?: unknown }).flattenSchema === "object" &&
-    (config as { flattenSchema?: unknown }).flattenSchema !== null
-  return hasTables && !hasFlatten
+  return Array.isArray((config as { tables?: unknown }).tables)
 }
 
 /**
- * Classify a config for the editor: v2, v1 (needs migration), or empty
- * (a freshly-added apiInput with nothing on disk yet — the editor shows
- * a clean v2 surface with no tables).
+ * Classify a config for the editor: v2 or empty.
+ *
+ * Anything without a `tables[]` array — including v1 configs that only
+ * have `flattenSchema` — is treated as empty. The editor renders the
+ * v2 surface and the user clicks Infer Tables.
  */
-export function classifyConfig(config: Record<string, unknown> | undefined | null): ApiInputConfigShape {
-  if (!config || Object.keys(config).length === 0) {
-    return { kind: "empty", raw: config ?? {} }
-  }
+export function classifyConfig(
+  config: Record<string, unknown> | undefined | null,
+): ApiInputConfigShape {
   if (isV2Shape(config)) {
     return { kind: "v2", v2: readV2(config as Record<string, unknown>) }
   }
-  return { kind: "v1", raw: config }
+  return { kind: "empty", raw: config ?? {} }
 }
 
 /** Read a v2 config from a generic record. Tolerant of partial shape. */
@@ -186,61 +174,6 @@ export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
     out.removedTables = v2.removedTables
   }
   return out
-}
-
-/**
- * Convert a v1 config to v2 in-memory shape. Mirrors the backend's
- * `legacy_to_v2`. Orphan entries (renames / row_id pointing at a leaf
- * that doesn't appear in flattenSchema) are silently dropped — the
- * caller surfaces the migration banner to the user.
- */
-export function legacyToV2(config: Record<string, unknown>): ApiInputConfigV2 {
-  const flattenSchema = (config.flattenSchema as Record<string, string> | undefined) ?? {}
-  const columnRenames = (config.column_renames as Record<string, string> | undefined) ?? {}
-  const selectedColumns =
-    Array.isArray(config.selected_columns) ? (config.selected_columns as string[]) : []
-  const selectedSet = new Set(selectedColumns)
-  const categoricalLevels =
-    (config.categorical_levels as Record<string, (string | null)[]> | undefined) ?? {}
-  const rowIdColumn = typeof config.row_id_column === "string" ? config.row_id_column : null
-
-  const columns: ApiInputColumnV2[] = []
-  for (const [leafPath, leafType] of Object.entries(flattenSchema)) {
-    if (typeof leafPath !== "string" || typeof leafType !== "string") continue
-    const renameTarget = leafPath in columnRenames ? columnRenames[leafPath] : undefined
-    const name = renameTarget && renameTarget.length > 0 ? renameTarget : leafPath
-    const type = ALLOWED_TYPES.has(leafType as ColumnType) ? (leafType as ColumnType) : "str"
-    const col: ApiInputColumnV2 = {
-      name,
-      path: `$[*].${leafPath}`,
-      type,
-      status: "Confirmed",
-      selected: selectedSet.size === 0 || selectedSet.has(leafPath),
-      levels: null,
-    }
-    const levels = categoricalLevels[leafPath]
-    if (Array.isArray(levels) && levels.length > 0) {
-      col.levels = levels
-    }
-    columns.push(col)
-  }
-
-  const table: ApiInputTableV2 = {
-    path: "$[*]",
-    label: "$[*]",
-    displayPath: null,
-    emit: true,
-    columns,
-  }
-  if (rowIdColumn && columns.some((c) => c.name === rowIdColumn)) {
-    table.row_id_column = rowIdColumn
-  }
-
-  return {
-    path: typeof config.path === "string" ? config.path : "",
-    contract: typeof config.contract === "string" ? config.contract : "opaque",
-    tables: [table],
-  }
 }
 
 /** Empty v2 config — used when the editor opens against a brand-new apiInput. */

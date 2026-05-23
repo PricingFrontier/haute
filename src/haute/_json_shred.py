@@ -29,7 +29,6 @@ schema-wrote-but-data-failed race.
 from __future__ import annotations
 
 import hashlib
-import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
@@ -41,6 +40,7 @@ from haute._api_input_schema import (
     ColumnType,
     parse_column_path,
     parse_table_path,
+    sanitise_label_for_filesystem as _sanitise_label,
     validate_v2_schema,
 )
 from haute._logging import get_logger
@@ -49,26 +49,6 @@ logger = get_logger(component="json_shred")
 
 
 _META_FILENAME = "meta.json"
-
-
-# ---------------------------------------------------------------------------
-# Sanitisation and identity
-# ---------------------------------------------------------------------------
-
-
-_FILESYSTEM_SAFE = re.compile(r"[^a-zA-Z0-9_-]")
-
-
-def _sanitise_label(label: str) -> str:
-    """Filesystem-safe label, used as the parquet filename stem.
-
-    Replaces any non-(letter, digit, underscore, hyphen) with an
-    underscore. A label of ``""`` (which should never occur — the codec
-    rejects empty labels at validation) falls back to ``"_unnamed"``.
-    """
-    if not label:
-        return "_unnamed"
-    return _FILESYSTEM_SAFE.sub("_", label)
 
 
 def _v2_fingerprint(config: dict[str, Any]) -> str:

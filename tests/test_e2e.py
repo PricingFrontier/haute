@@ -34,14 +34,19 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     """Redirect the JSON parquet cache to a temp dir and pre-populate it.
 
     Without this, a stale .haute_cache/ in the working directory (from a
-    previous real-data run) can poison the fixture pipeline's api-input node
-    with columns from a completely different schema.
+    previous real-data run) can poison the fixture pipeline's api-input
+    node with columns from a completely different schema.
 
-    The fixture also pre-caches the api_input.json file as parquet so that
-    e2e tests don't hit the "JSON data has not been cached yet" error —
-    the same step a user performs by clicking "Cache as Parquet" in the GUI.
+    Under v2 (post-commit-5.5) the per-port cache replaces the v1 single
+    parquet. We pre-populate the cache via ``build_per_port_cache`` so
+    the executor's apiInput consumer (which reads from the per-port
+    cache via ``load_per_port_cache``) finds its data ready — the same
+    step a user performs by clicking "Cache as Parquet" in the GUI.
     """
+    import json
+
     import haute._json_flatten as jf
+    from haute._json_shred import build_per_port_cache
 
     cache_dir = str(tmp_path / "json_cache")
     monkeypatch.setattr(jf, "_CACHE_DIR", cache_dir)
@@ -49,13 +54,23 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     runtime_data_dir = tmp_path / "data"
     shutil.copytree(FIXTURE_DIR / "data", runtime_data_dir, dirs_exist_ok=True)
 
+    # Load the v2 config the fixture pipeline references so the
+    # per-port shred matches the user-visible schema mapping.
+    v2_config = json.loads(
+        (FIXTURE_DIR / "config/quote_input/quotes.json").read_text(),
+    )
+
     for data_path in (
         (FIXTURE_DIR / "data/api_input.json").resolve(),
         (runtime_data_dir / "api_input.json").resolve(),
     ):
-        cache_path = jf._json_cache_path(str(data_path))
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.read_json(data_path).write_parquet(cache_path)
+        port_cache_dir = jf._json_cache_dir(str(data_path), "working")
+        port_cache_dir.mkdir(parents=True, exist_ok=True)
+        build_per_port_cache(
+            data_path=str(data_path),
+            v2_config=v2_config,
+            cache_dir=port_cache_dir,
+        )
         # Mark the working layer as consulted so the dual-cache emitter
         # picks it up; otherwise it falls through to committed/ which is
         # not populated by this fixture.

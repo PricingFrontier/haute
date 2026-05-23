@@ -2,12 +2,6 @@
   "schema_version": 1,
   "targets": [
     {
-      "name": "json-flatten-schema",
-      "config": "mutation/cosmic-ray.json-flatten.toml",
-      "max_survival_rate": 10.0,
-      "rationale": "Schema inference protects nested JSON correctness and is high-risk for silent data shape regressions."
-    },
-    {
       "name": "job-store",
       "config": "mutation/cosmic-ray.job-store.toml",
       "max_survival_rate": 6.0,

@@ -232,15 +232,21 @@ class TestBuildNodeConfig:
         assert config["path"] == "d.parquet"
         assert config["sourceType"] == "flat_file"
 
-    def test_api_input_with_row_id(self):
+    def test_api_input_v2_keys_pass_through(self):
+        """Post-commit-5.5: top-level `row_id_column` decorator kwarg is no
+        longer carried into config (it lives per-table inside `tables[]`
+        in v2). The decorator-level surface for apiInput is reduced to
+        `path` plus optional `contract` and `tables`.
+        """
         config = _build_node_config(
             "apiInput",
-            {"path": "d.parquet", "api_input": True, "row_id_column": "policy_id"},
+            {"path": "d.json", "api_input": True, "contract": "opaque"},
             "",
             [],
         )
-        assert config["row_id_column"] == "policy_id"
-        assert config["path"] == "d.parquet"
+        assert config["path"] == "d.json"
+        assert config["contract"] == "opaque"
+        assert "row_id_column" not in config
 
     def test_live_switch(self):
         config = _build_node_config(

@@ -48,6 +48,15 @@ export type CacheFetchButtonProps<TStatus extends BaseCacheStatus> = {
 
   /** Called after a successful fetch or when the initial status load finds a cache. */
   onCacheReady?: (status: TStatus) => void
+
+  /** External disabled flag — when true the button renders inactive
+   * (no click handler fires, distinct visual style via the existing
+   * `disabled:opacity-40` class). Pairs with `disabledReason` for the
+   * hover tooltip.
+   */
+  disabled?: boolean
+  /** Tooltip shown when the button is disabled by `disabled=true`. */
+  disabledReason?: string
 }
 
 // ─── Component ───────────────────────────────────────────────────
@@ -62,6 +71,8 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   timestampField,
   labels,
   onCacheReady,
+  disabled: externalDisabled,
+  disabledReason,
 }: CacheFetchButtonProps<TStatus>) {
   const [cache, setCache] = useState<TStatus | null>(null)
   const [building, setBuilding] = useState(false)
@@ -142,7 +153,8 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
     <div>
       <button
         onClick={building && cancelFetchFn ? doCancel : doFetch}
-        disabled={!resourceKey || (building && !cancelFetchFn)}
+        disabled={!resourceKey || (building && !cancelFetchFn) || !!externalDisabled}
+        title={externalDisabled ? disabledReason : undefined}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
         style={{
           background: building && cancelFetchFn ? 'var(--danger-soft)' : cache?.cached ? 'var(--success-soft)' : 'var(--accent-soft)',

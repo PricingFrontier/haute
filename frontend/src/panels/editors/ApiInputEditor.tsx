@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Radio, Check, Plus, X, AlertTriangle } from "lucide-react"
+import { Radio, Check, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
@@ -18,7 +18,6 @@ import {
 import {
   classifyConfig,
   emptyV2,
-  legacyToV2,
   writeV2,
   type ApiInputConfigV2,
   type ApiInputColumnV2,
@@ -28,10 +27,14 @@ import {
 
 // ─── JsonCacheButton ──────────────────────────────────────────────
 //
-// Wraps the shared cache-button. The status check uses the v1 GET-by-path
-// shape when no schema is on disk yet (i.e. no config_path supplied),
-// and the POST-with-config_path shape otherwise (which also handles the
-// v2 dispatch on the backend per commit 3).
+// Wraps the shared cache-button. Sends the editor's in-memory v2 as
+// `volatile_schema` on every cache POST so the build uses what the user
+// is looking at, regardless of whether the on-disk config matches yet
+// (working principle 4: volatile vs persistent at the schema plane
+// mirrors PR13's data plane). When the editor has nothing to cache
+// (no schema source, or no emit:true tables) the button is rendered
+// `disabled` rather than firing a no-op POST — T9/T10 in the v1-removal
+// contract.
 
 type JsonCacheStatus = {
   cached: boolean
@@ -46,20 +49,37 @@ type JsonCacheStatus = {
 function JsonCacheButton({
   dataPath,
   configPath,
+  volatileSchema,
+  disabled,
+  disabledReason,
 }: {
   dataPath: string
   configPath?: string
+  /** The editor's in-memory v2 (`writeV2(v2)` of the live state). When
+   * defined, becomes `volatile_schema` on the cache POST so the backend
+   * builds from the user's unsaved edits. */
+  volatileSchema?: Record<string, unknown>
+  disabled?: boolean
+  disabledReason?: string
 }) {
   return (
     <CacheFetchButton<JsonCacheStatus>
       resourceKey={dataPath + "::" + (configPath ?? "")}
       getStatus={(_key) =>
         configPath
-          ? getJsonCacheStatusForSchema({ path: dataPath, config_path: configPath })
+          ? getJsonCacheStatusForSchema({
+              path: dataPath,
+              config_path: configPath,
+              volatile_schema: volatileSchema,
+            })
           : getJsonCacheStatus(dataPath)
       }
       startFetch={(_key) =>
-        buildJsonCache({ path: dataPath, config_path: configPath }).then(
+        buildJsonCache({
+          path: dataPath,
+          config_path: configPath,
+          volatile_schema: volatileSchema,
+        }).then(
           (data) => ({ cached: true, ...data }) as JsonCacheStatus,
         )
       }
@@ -73,6 +93,8 @@ function JsonCacheButton({
         notCachedHint: "Not cached yet — click to flatten/shred and cache as Parquet",
         pendingLabel: "Processing...",
       }}
+      disabled={disabled}
+      disabledReason={disabledReason}
     />
   )
 }
@@ -105,16 +127,14 @@ export default function ApiInputEditor({
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
 
-  // Classify the config. v2 → render the schema editor. v1 → show the
-  // migration banner with an explicit Migrate button. empty → render a
-  // bare v2 surface the user can populate from scratch.
+  // Classify the config. v2 → render the schema editor with its
+  // tables. empty (including any pre-v2 config with stray legacy keys)
+  // → render a bare v2 surface the user populates via Infer Tables /
+  // Add Table. No migration banner — v1 is treated as if it doesn't
+  // exist (working principle 1).
   const shape = useMemo(() => classifyConfig(config), [config])
   const v2: ApiInputConfigV2 =
-    shape.kind === "v2"
-      ? shape.v2
-      : shape.kind === "v1"
-      ? legacyToV2(shape.raw)
-      : emptyV2(currentPath)
+    shape.kind === "v2" ? shape.v2 : emptyV2(currentPath)
 
   // Helpers to push state changes back through onUpdate. Each write
   // recomposes the full v2 record-shaped object so we never have to fan
@@ -209,11 +229,6 @@ export default function ApiInputEditor({
     const next = { ...v2, tables: v2.tables.filter((_, idx) => idx !== i) }
     writeBack(next)
   }
-  const acceptMigration = () => {
-    // Materialise the migrated v2 (or empty v2 if there's nothing to
-    // migrate) onto disk. Subsequent saves now write v2.
-    writeBack(v2)
-  }
   const inferTables = async () => {
     if (!currentPath) return
     setInferring(true)
@@ -301,42 +316,8 @@ export default function ApiInputEditor({
           )}
         </div>
 
-        {/* Migration banner for v1 configs */}
-        {shape.kind === "v1" && (
-          <div
-            data-testid="api-input-migration-banner"
-            className="px-2.5 py-2 rounded-lg text-xs space-y-2"
-            style={{
-              background: "var(--warning-soft)",
-              border: "1px solid var(--warning-border)",
-              color: "var(--warning-strong)",
-            }}
-          >
-            <div className="flex items-start gap-2">
-              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-              <div>
-                This API Input uses the legacy schema mapping. Click{" "}
-                <span className="font-semibold">Migrate</span> to convert it to the new
-                multi-frame format. Existing column types and renames are preserved.
-              </div>
-            </div>
-            <button
-              data-testid="api-input-migrate-btn"
-              onClick={acceptMigration}
-              className="px-2 py-1 rounded text-[11px] font-semibold"
-              style={{
-                background: "var(--warning)",
-                color: "var(--bg)",
-              }}
-            >
-              Migrate to v2
-            </button>
-          </div>
-        )}
-
-        {/* Tables editor (v2 surface) */}
-        {(shape.kind === "v2" || shape.kind === "empty") && (
-          <div data-testid="api-input-tables">
+        {/* Tables editor (v2 surface — the only surface) */}
+        <div data-testid="api-input-tables">
             <div className="flex items-center justify-between mb-1.5">
               <label
                 className="text-[11px] font-bold uppercase tracking-[0.08em] block"
@@ -403,11 +384,31 @@ export default function ApiInputEditor({
               ))}
             </div>
           </div>
-        )}
 
-        {showCacheButton && (
-          <JsonCacheButton dataPath={currentPath!} configPath={configPath} />
-        )}
+        {showCacheButton && (() => {
+          // T9/T10: Cache button inactive when EITHER (a) no schema
+          // source (no path AND no tables) OR (b) zero emit:true
+          // tables. The CacheFetchButton renders disabled via
+          // `disabledReason` tooltip + the existing
+          // `disabled:opacity-40` class.
+          const hasSchemaSource = v2.tables.length > 0
+          const hasEmitTrue = v2.tables.some((t) => t.emit)
+          const cacheDisabled = !hasSchemaSource || !hasEmitTrue
+          const cacheReason = !hasSchemaSource
+            ? "Add at least one table (Infer Tables / Add Table) before caching."
+            : !hasEmitTrue
+            ? "Toggle at least one table's emit so it produces a port."
+            : undefined
+          return (
+            <JsonCacheButton
+              dataPath={currentPath!}
+              configPath={configPath}
+              volatileSchema={writeV2(v2)}
+              disabled={cacheDisabled}
+              disabledReason={cacheReason}
+            />
+          )
+        })()}
       </div>
 
       {loadingSchema && (

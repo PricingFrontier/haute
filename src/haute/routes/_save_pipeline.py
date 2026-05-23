@@ -113,7 +113,7 @@ class SavePipelineService:
         warnings: list[str] = []
         try:
             self._write_code(body, graph, py_path, touched)
-            self._infer_flatten_schemas(graph)
+            self._validate_api_inputs_have_schemas(graph, warnings)
             self._write_config_files(graph, touched)
             self._mirror_api_input_caches(graph)
             warnings.extend(
@@ -351,27 +351,41 @@ class SavePipelineService:
             self._stage_write(py_path, code, touched)
 
     # ------------------------------------------------------------------
-    # JSON flatten schema inference
+    # JSON apiInput schema validation (no on-disk mutation)
     # ------------------------------------------------------------------
 
-    def _infer_flatten_schemas(self, graph: PipelineGraph) -> None:
-        """Auto-infer ``flattenSchema`` for API-input nodes backed by JSON files."""
-        from haute._json_flatten import infer_schema, load_samples
+    def _validate_api_inputs_have_schemas(
+        self, graph: PipelineGraph, warnings: list[str]
+    ) -> None:
+        """Emit a non-blocking warning per JSON apiInput with no v2 ``tables[]``.
 
+        Renamed from the v1-era ``_infer_flatten_schemas``. The function
+        position is preserved (between ``_write_code`` and
+        ``_write_config_files``) but the behaviour is inverted:
+        instead of auto-writing a v1 ``flattenSchema`` to disk, this
+        appends a warning string to the save response's ``warnings``
+        list when a JSON apiInput has no ``tables[]`` — the user clicks
+        "Infer Tables" in the editor to populate it.
+
+        Per D2 / B5: empty ``tables`` is a non-blocking state. The
+        pipeline can be saved without being functional; the warning is
+        a navigational aid pointing the user at the next step.
+        """
         for node in graph.nodes:
             if node.data.nodeType != NodeType.API_INPUT:
                 continue
             cfg = node.data.config
-            path = cfg.get("path", "")
-            if not path.endswith((".json", ".jsonl")):
+            path = cfg.get("path", "") or ""
+            if not isinstance(path, str) or not path.endswith((".json", ".jsonl")):
                 continue
-            if cfg.get("flattenSchema"):
+            tables = cfg.get("tables")
+            if isinstance(tables, list) and tables:
                 continue
-            data_path = (self._root / path).resolve()
-            if data_path.is_file() and data_path.is_relative_to(self._root):
-                samples = load_samples(data_path)
-                if samples:
-                    cfg["flattenSchema"] = infer_schema(samples)
+            label = node.data.label or node.id
+            warnings.append(
+                f"API Input node {label!r} has no tables yet. "
+                "Open the node and click Infer Tables to populate the schema."
+            )
 
     # ------------------------------------------------------------------
     # Dual-cache: mirror working/ → committed/ per API Input node

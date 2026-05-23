@@ -1,17 +1,23 @@
-"""JSON cache endpoints — explicit parquet caching for large JSONL files.
+"""JSON cache endpoints — explicit parquet caching for JSON files.
 
-Two cache shapes coexist behind these endpoints:
+The route's only shape is **v2 per-port shred** (see ``haute._json_shred``):
+one parquet per emit-true ``tables[]`` entry, columns at that table's
+JSON iteration depth.
 
-- **v1 (legacy flat).** ``flattenSchema`` on disk; one ``data.parquet``
-  per cache directory; columns are index-expanded array fields. See
-  ``haute._json_flatten`` for the implementation.
-- **v2 (multi-frame).** ``tables[]`` on disk; one parquet per emit-true
-  table; columns belong to that table's iteration depth. See
-  ``haute._json_shred`` for the implementation.
+Dispatch precedence (build, status):
 
-The route dispatch reads the on-disk config file, checks
-:func:`haute._api_input_schema.is_v2_shape`, and routes to the v2 path
-when applicable. v1 is preserved verbatim until commit 10's cleanup.
+1. ``request.volatile_schema is not None`` — use the editor's in-memory
+   v2 (handover working principle 4: volatile vs persistent at the
+   schema plane mirrors PR13's data plane).
+2. Else read ``config_path`` from disk and use that v2 config.
+3. Else return 422 — no schema source.
+
+Errors raised by :func:`haute._api_input_schema.validate_v2_schema`,
+:func:`parse_table_path`, and :func:`parse_column_path` arrive as
+:class:`haute._api_input_schema.ApiInputSchemaError` and turn into a
+structured HTTP 422 with body
+``{"detail": "...", "type": "ApiInputSchemaError"}`` — the frontend
+discriminates on ``type`` rather than string-matching ``detail``.
 """
 
 from __future__ import annotations
@@ -23,8 +29,9 @@ from typing import Any
 
 import orjson
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 
-from haute._api_input_schema import is_v2_shape
+from haute._api_input_schema import ApiInputSchemaError, is_v2_shape
 from haute._logging import get_logger
 from haute._path_resolution import resolve_runtime_file_path
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, pipeline_dir
@@ -45,6 +52,42 @@ router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
 # ── Timeout constant (seconds) ───────────────────────────────────
 _BUILD_TIMEOUT = float(os.environ.get("HAUTE_BUILD_TIMEOUT", "1800"))
+
+
+def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
+    """422 response with the structured discriminator.
+
+    Frontend reads ``body.type === "ApiInputSchemaError"`` to branch
+    rather than string-matching ``body.detail``. The shape is verified
+    by T8 in ``tests/test_v1_removal_contract.py``.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": str(err),
+            "type": "ApiInputSchemaError",
+        },
+    )
+
+
+def _no_schema_source_response() -> JSONResponse:
+    """422 when neither volatile_schema nor a v2 disk config was supplied.
+
+    Same body shape as :func:`_api_input_schema_error_response` so the
+    frontend doesn't need a second discriminator for the "schema
+    missing entirely" case.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": (
+                "No v2 schema source. Either pass `volatile_schema` in the "
+                "request body, or provide `config_path` pointing at an on-disk "
+                "v2 schema-mapping file with `tables[]`."
+            ),
+            "type": "ApiInputSchemaError",
+        },
+    )
 
 
 def _resolve_data_path(path: str) -> str:
@@ -81,11 +124,15 @@ def _resolve_config_path(path: str | None) -> str | None:
 
 
 def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
-    """Read *config_path* and return its content iff it's a v2 schema mapping.
+    """Read *config_path* and return it iff it carries a v2 ``tables[]`` array.
 
-    Returns ``None`` when the file is absent, unreadable, malformed, or v1.
-    Used by the dispatch in the build / status routes; callers fall back
-    to v1 behaviour when this returns ``None``.
+    Per D9 — corrupt-mix tolerance — a config that ALSO has stray
+    pre-v2 keys (``flattenSchema``, ``column_renames``, …) is still
+    treated as v2 if ``tables`` is present. Stray keys are silently
+    ignored.
+
+    Returns ``None`` when the file is absent, unreadable, malformed,
+    or carries no ``tables`` array.
     """
     if not config_path:
         return None
@@ -103,27 +150,28 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
     return raw
 
 
+def _select_v2_config(body: JsonCacheBuildRequest) -> dict[str, Any] | None:
+    """Apply the volatile-then-disk dispatch.
+
+    Returns the v2 config dict to act on, or ``None`` if no schema
+    source was supplied. ``volatile_schema is not None`` is the explicit
+    check — an empty dict (``{}``) counts as "user provided this" and
+    falls through to validate_v2_schema for an explicit error rather
+    than silently falling back to disk.
+    """
+    if body.volatile_schema is not None:
+        return body.volatile_schema
+    config_path = _resolve_config_path(body.config_path)
+    return _read_v2_config(config_path)
+
+
 def _aggregate_v2_build_response(
     summary: dict[str, Any],
     cache_dir: Path,
     data_path: str,
     elapsed_seconds: float,
 ) -> JsonCacheBuildResponse:
-    """Collapse a v2 per-port summary into the flat build-response shape.
-
-    The wire schema (``JsonCacheBuildResponse``) is flat — single
-    ``row_count``, single ``column_count``, etc. v2 has N tables, each
-    with its own counts. We aggregate:
-
-    - ``row_count`` = sum of per-table row counts.
-    - ``column_count`` = sum of per-table column counts (each table's
-      columns are disjoint).
-    - ``columns`` = ``{f"{label}.{col_name}": "v2"}`` so consumers can
-      still discriminate per-table column identity.
-    - ``size_bytes`` = sum of per-table parquet sizes on disk.
-    - ``cached_at`` = max(parquet mtime) on disk.
-    - ``path`` = the cache directory (not a single file).
-    """
+    """Collapse a v2 per-port summary into the flat build-response shape."""
     tables = summary.get("tables", []) or []
     row_count = sum(int(t.get("row_count", 0)) for t in tables)
     column_count = sum(int(t.get("column_count", 0)) for t in tables)
@@ -140,10 +188,6 @@ def _aggregate_v2_build_response(
                 size_bytes += int(stat.st_size)
                 cached_at = max(cached_at, float(stat.st_mtime))
         for ci in range(int(table.get("column_count", 0))):
-            # Without re-reading the parquet schema we don't have column
-            # names here cheaply; for the build-response we just label by
-            # table+index. The detailed per-column dict is the status
-            # endpoint's job.
             columns[f"{label}.col{ci}"] = "v2"
     return JsonCacheBuildResponse(
         path=str(cache_dir),
@@ -193,126 +237,95 @@ def _aggregate_v2_status_response(
 
 
 @router.post("/build", response_model=JsonCacheBuildResponse)
-async def build_json_cache(body: JsonCacheBuildRequest) -> JsonCacheBuildResponse:
-    """Flatten or shred a JSON/JSONL file and cache it as parquet.
+async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
+    """Per-port shred of a JSON/JSONL file into one parquet per emit-true table.
 
-    Dispatch:
-    - v2 schema mapping on disk → per-port shred (one parquet per
-      emit-true table) via :func:`haute._json_shred.build_per_port_cache`.
-    - Otherwise → v1 flat shred via
-      :func:`haute._json_flatten.build_json_cache`.
+    Schema source: volatile_schema, else config_path's on-disk v2.
+
+    Error precedence:
+      1. Path validation — 400/403 (`_resolve_data_path`).
+      2. No schema source — 422 ApiInputSchemaError.
+      3. Schema validation failure — 422 ApiInputSchemaError.
+      4. File not found — 404 (data file doesn't exist on disk).
+      5. Internal — 500 with `_INTERNAL_ERROR_DETAIL`.
+
+    Note: schema-source check fires BEFORE file-existence so the
+    structured 422 surfaces for the common "user forgot to populate
+    tables" case. Path-traversal probes are still rejected — they hit
+    the schema-source check too (no schema → 422), which is a 4xx
+    rejection just as 404 would be.
     """
     data_path = _resolve_data_path(body.path)
-    config_path = _resolve_config_path(body.config_path)
 
-    # v2 dispatch — if the config file is on disk and is v2-shaped,
-    # bypass the v1 path entirely.
-    v2_config = _read_v2_config(config_path)
-    if v2_config is not None:
-        from haute._json_flatten import _json_cache_dir
-        from haute._json_shred import build_per_port_cache
+    v2_config = _select_v2_config(body)
+    if v2_config is None:
+        return _no_schema_source_response()
 
-        cache_dir = _json_cache_dir(data_path, "working")
-        t0 = time.monotonic()
-        try:
-            summary = await run_blocking_with_response_timeout(
-                build_per_port_cache,
-                data_path=data_path,
-                v2_config=v2_config,
-                cache_dir=cache_dir,
-                timeout=_BUILD_TIMEOUT,
-                operation="json_cache_build_v2",
-            )
-        except TimeoutError:
-            raise HTTPException(
-                status_code=504,
-                detail=f"JSON cache build timed out ({_BUILD_TIMEOUT / 60:.0f} min limit)",
-            )
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="Data file not found") from None
-        except orjson.JSONDecodeError as e:
-            # The data file is unparseable JSON. The schema is fine —
-            # don't tell the user their schema is broken.
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid JSON in data file: {e}",
-            ) from None
-        except ValueError as e:
-            # A schema-validation error from validate_v2_schema OR
-            # parse_table_path raises ValueError. The catch is placed
-            # AFTER orjson.JSONDecodeError so data-file parse errors
-            # don't get mis-labelled as schema errors.
-            raise HTTPException(status_code=422, detail=f"Invalid v2 schema: {e}") from None
-        except Exception as e:
-            logger.error("json_cache_build_v2_failed", error=str(e))
-            raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-        elapsed = time.monotonic() - t0
-        return _aggregate_v2_build_response(summary, cache_dir, data_path, elapsed)
+    if not Path(data_path).exists():
+        raise HTTPException(status_code=404, detail="Data file not found")
 
-    # v1 path — unchanged from before.
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import build_per_port_cache
+
+    cache_dir = _json_cache_dir(data_path, "working")
+    t0 = time.monotonic()
     try:
-        from haute._json_flatten import (
-            JsonCacheCancelledError,
-            JsonFlattenDataError,
-            JsonFlattenSchemaError,
-        )
-        from haute._json_flatten import (
-            build_json_cache as _build,
-        )
-
-        result = await run_blocking_with_response_timeout(
-            _build,
+        summary = await run_blocking_with_response_timeout(
+            build_per_port_cache,
             data_path=data_path,
-            schema=body.flatten_schema,
-            config_path=config_path,
+            v2_config=v2_config,
+            cache_dir=cache_dir,
             timeout=_BUILD_TIMEOUT,
-            operation="json_cache_build",
+            operation="json_cache_build_v2",
         )
-        return JsonCacheBuildResponse.model_validate(result)
     except TimeoutError:
         raise HTTPException(
             status_code=504,
             detail=f"JSON cache build timed out ({_BUILD_TIMEOUT / 60:.0f} min limit)",
         )
-    except JsonCacheCancelledError:
-        raise HTTPException(status_code=499, detail="Cache build cancelled")
-    except JsonFlattenDataError as e:
-        line = e.context.get("line")
-        detail = e.message
-        if isinstance(line, int):
-            detail = f"{detail} at line {line}"
-        raise HTTPException(status_code=400, detail=detail) from None
-    except JsonFlattenSchemaError as e:
-        raise HTTPException(status_code=422, detail=f"Invalid flatten schema: {e}") from None
-    except HTTPException:
-        raise
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Data file not found") from None
+    except orjson.JSONDecodeError as e:
+        # Data file unparseable — distinguish from schema problems.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid JSON in data file: {e}",
+        ) from None
+    except ApiInputSchemaError as e:
+        return _api_input_schema_error_response(e)
     except Exception as e:
-        logger.error("json_cache_build_failed", error=str(e))
+        logger.error("json_cache_build_v2_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+    elapsed = time.monotonic() - t0
+    return _aggregate_v2_build_response(summary, cache_dir, data_path, elapsed)
 
 
 @router.post("/cancel", response_model=JsonCacheCancelResponse)
 async def cancel_json_cache_build(body: JsonCacheBuildRequest) -> JsonCacheCancelResponse:
-    """Cancel an in-progress JSON cache build."""
-    data_path = _resolve_data_path(body.path)
-    from haute._json_flatten import cancel_json_cache
+    """Cancel an in-progress JSON cache build.
 
-    cancelled = cancel_json_cache(data_path)
-    return JsonCacheCancelResponse(cancelled=cancelled, data_path=body.path)
+    No-op until the v2 per-port build path grows a cancellation
+    mechanism. Returns ``cancelled=False`` so a UI that polls for
+    cancellation acknowledges the request without claiming success.
+
+    Path validation still fires (`_resolve_data_path`) so a malicious
+    caller can't probe filesystem with a path-traversal payload via
+    this stub endpoint.
+    """
+    _resolve_data_path(body.path)
+    return JsonCacheCancelResponse(cancelled=False, data_path=body.path)
 
 
 @router.get("/progress", response_model=JsonCacheProgressResponse)
 async def get_json_cache_progress(path: str) -> JsonCacheProgressResponse:
-    """Poll flatten progress for a file currently being cached."""
-    data_path = _resolve_data_path(path)
-    from haute._json_flatten import flatten_progress
+    """Poll progress for an in-flight cache build.
 
-    progress = flatten_progress(data_path)
-    if progress is None:
-        return JsonCacheProgressResponse(active=False)
-    return JsonCacheProgressResponse.model_validate({"active": True, **progress})
+    Stubbed to ``active=False`` until the v2 per-port build grows
+    progress reporting. Path validation still fires (`_resolve_data_path`)
+    so this stub endpoint doesn't open a path-traversal probe surface.
+    """
+    _resolve_data_path(path)
+    return JsonCacheProgressResponse(active=False)
 
 
 def _v2_status_response(
@@ -320,12 +333,7 @@ def _v2_status_response(
     v2_config: dict[str, Any],
     input_path: str,
 ) -> JsonCacheStatusResponse:
-    """Compute the status response for a v2 schema mapping.
-
-    Returns cached=False when the v2 cache isn't valid (missing, stale
-    relative to the schema, or missing required parquets). Returns the
-    aggregated cached=True payload otherwise.
-    """
+    """Compute the status response for a v2 schema mapping."""
     from haute._json_flatten import _json_cache_dir
     from haute._json_shred import (
         is_per_port_cache_valid,
@@ -342,50 +350,20 @@ def _v2_status_response(
 
 
 @router.post("/status", response_model=JsonCacheStatusResponse)
-async def post_json_cache_status(body: JsonCacheBuildRequest) -> JsonCacheStatusResponse:
-    """Check whether a JSON file has a valid cache the emitter would consume.
+async def post_json_cache_status(body: JsonCacheBuildRequest) -> Any:
+    """Status query for the v2 per-port cache.
 
-    Dispatch mirrors :func:`build_json_cache`: a v2 config on disk routes
-    through :func:`_v2_status_response`; otherwise the v1 flat-cache path
-    is consulted.
+    Dispatch mirrors :func:`build_json_cache` — volatile first, then
+    disk. No v2 schema source → 422.
     """
     data_path = _resolve_data_path(body.path)
-    config_path = _resolve_config_path(body.config_path)
-
-    v2_config = _read_v2_config(config_path)
-    if v2_config is not None:
-        return _v2_status_response(data_path, v2_config, body.path)
-
-    from haute._json_flatten import (
-        JsonFlattenSchemaError,
-        json_cache_path_if_valid,
-    )
-    from haute._polars_utils import read_parquet_metadata
-
+    v2_config = _select_v2_config(body)
+    if v2_config is None:
+        return _no_schema_source_response()
     try:
-        cache_path = json_cache_path_if_valid(
-            data_path,
-            schema=body.flatten_schema,
-            config_path=config_path,
-        )
-    except JsonFlattenSchemaError as e:
-        raise HTTPException(status_code=422, detail=f"Invalid flatten schema: {e}") from None
-    if cache_path is None:
-        return JsonCacheStatusResponse(cached=False, data_path=body.path)
-
-    meta = read_parquet_metadata(cache_path)
-    return JsonCacheStatusResponse.model_validate(
-        {
-            "cached": True,
-            "path": str(cache_path),
-            "data_path": data_path,
-            "row_count": meta["row_count"],
-            "column_count": meta["column_count"],
-            "columns": meta["columns"],
-            "size_bytes": meta["size_bytes"],
-            "cached_at": meta["mtime"],
-        }
-    )
+        return _v2_status_response(data_path, v2_config, body.path)
+    except ApiInputSchemaError as e:
+        return _api_input_schema_error_response(e)
 
 
 @router.get("/status", response_model=JsonCacheStatusResponse)
@@ -393,37 +371,27 @@ async def get_json_cache_status(
     path: str,
     config_path: str | None = None,
 ) -> JsonCacheStatusResponse:
-    """Check whether a JSON file has a valid cache.
+    """GET variant — disk-only (no volatile body on a GET).
 
-    Now accepts an optional ``config_path`` query parameter, mirroring
-    the POST variant — when supplied and v2-shaped, dispatch to the
-    v2-aware status. Without ``config_path`` (or when v1), falls back to
-    the schema-agnostic v1 check, preserving the previous behaviour for
-    callers that don't pass config.
+    Returns ``cached=False`` when there's no v2 config on disk.
     """
     data_path = _resolve_data_path(path)
     resolved_config_path = _resolve_config_path(config_path)
 
     v2_config = _read_v2_config(resolved_config_path)
-    if v2_config is not None:
-        return _v2_status_response(data_path, v2_config, path)
-
-    from haute._json_flatten import json_cache_info
-
-    info = json_cache_info(data_path)
-    if info is None:
+    if v2_config is None:
         return JsonCacheStatusResponse(cached=False, data_path=path)
-    return JsonCacheStatusResponse.model_validate({"cached": True, **info})
+    return _v2_status_response(data_path, v2_config, path)
 
 
 @router.post("/infer", response_model=JsonCacheInferResponse)
 async def infer_json_cache_schema(body: JsonCacheInferRequest) -> JsonCacheInferResponse:
     """Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
 
-    Drives the ApiInputEditor's *Infer Tables* button. Returns a v2-shaped
-    ``tables: [...]`` array the editor stitches into the apiInput's
-    config. Only the root table is emit=true by default; nested tables
-    are off so the user opts in.
+    Drives the ApiInputEditor's *Infer Tables* button. Returns a
+    v2-shaped ``tables: [...]`` array the editor stitches into the
+    apiInput's config. Only the root table is ``emit=True`` by default;
+    nested tables are off so the user opts in.
     """
     data_path = _resolve_data_path(body.path)
     try:
@@ -447,9 +415,10 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> JsonCacheInfer
 async def delete_json_cache(path: str) -> JsonCacheStatusResponse:
     """Delete the volatile (working/) cache layer for a JSON file.
 
-    Dual-cache semantics: delete operates on the working/ layer only. The
-    durable committed/ layer is untouched and remains the source of truth
-    until a subsequent save mirrors a (possibly absent) working/ into it.
+    Dual-cache semantics: delete operates on the working/ layer only.
+    The durable committed/ layer is untouched and remains the source of
+    truth until a subsequent save mirrors a (possibly absent)
+    working/ into it.
     """
     data_path = _resolve_data_path(path)
     from haute._json_flatten import clear_json_cache

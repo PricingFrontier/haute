@@ -258,7 +258,7 @@ class TestSaveSimpleGraph:
             active_source="live",
         )
 
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             result = svc.save(body)
 
         assert result.status == "saved"
@@ -290,7 +290,7 @@ class TestSaveSimpleGraph:
             source_file="test_pipe.py",
         )
 
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             result = svc.save(body)
 
         # Should be relative, not absolute
@@ -619,102 +619,95 @@ class TestSaveEndpointIntegration:
 # ---------------------------------------------------------------------------
 
 
-class TestInferFlattenSchemas:
-    def test_infers_schema_from_json_file(self, tmp_path: Path) -> None:
-        """Auto-infers flattenSchema for API input nodes backed by .json files."""
+class TestValidateApiInputsHaveSchemas:
+    """The save hook renamed from ``_infer_flatten_schemas`` to
+    ``_validate_api_inputs_have_schemas`` per the v1-removal pivot
+    (commit 5.5 / D4). Behaviour inverted: no on-disk mutation; instead
+    a warning string is appended to the save response for JSON apiInput
+    nodes whose ``tables[]`` is empty. The user clicks Infer Tables to
+    populate the schema.
+    """
+
+    def test_warns_when_json_api_input_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
-
         json_file = tmp_path / "input.json"
-        json_file.write_text('[{"a": 1, "b": {"c": 2}}, {"a": 3, "b": {"c": 4}}]')
-
+        json_file.write_text('[{"a": 1, "b": {"c": 2}}]')
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "input.json"}),
         )
-
-        svc._infer_flatten_schemas(graph)
-
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        # On-disk config NOT mutated: no flattenSchema, no tables auto-written.
         cfg = graph.nodes[0].data.config
-        assert "flattenSchema" in cfg
-        assert isinstance(cfg["flattenSchema"], dict)
+        assert "flattenSchema" not in cfg
+        assert "tables" not in cfg
+        # Warning surfaced for the empty-tables case.
+        assert any(
+            "api_input" in w and "Infer Tables" in w for w in warnings
+        ), f"expected node-label + Infer-Tables warning; got {warnings!r}"
 
     def test_skips_non_api_input_nodes(self, tmp_path: Path) -> None:
-        """Non-apiInput nodes are not processed."""
         svc = SavePipelineService(tmp_path)
-
         graph = _make_graph(
             _make_node("t1", "transform", "polars", {"path": "data.json"}),
         )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
     def test_skips_non_json_path(self, tmp_path: Path) -> None:
-        """API input nodes with non-JSON paths are skipped."""
         svc = SavePipelineService(tmp_path)
-
         graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": "data.parquet"}),
+            _make_node(
+                "api", "api_input", "apiInput", {"path": "data.parquet"}
+            ),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_skips_if_flatten_schema_already_set(self, tmp_path: Path) -> None:
-        """Does not overwrite existing flattenSchema."""
+    def test_no_warning_when_tables_populated(self, tmp_path: Path) -> None:
+        """A JSON apiInput already carrying `tables[]` is the happy path."""
         svc = SavePipelineService(tmp_path)
-
-        json_file = tmp_path / "input.json"
-        json_file.write_text('[{"a": 1}]')
-
-        existing_schema = {"a": "int"}
         graph = _make_graph(
             _make_node(
                 "api",
                 "api_input",
                 "apiInput",
-                {"path": "input.json", "flattenSchema": existing_schema},
+                {
+                    "path": "input.json",
+                    "tables": [
+                        {
+                            "path": "$[*]",
+                            "label": "root",
+                            "emit": True,
+                            "columns": [],
+                        }
+                    ],
+                },
             ),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
-        svc._infer_flatten_schemas(graph)
-        assert graph.nodes[0].data.config["flattenSchema"] == existing_schema
-
-    def test_skips_nonexistent_file(self, tmp_path: Path) -> None:
-        """Non-existent JSON files are skipped without error."""
+    def test_warns_when_jsonl_apiInput_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
-
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": "missing.json"}),
-        )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_skips_empty_path(self, tmp_path: Path) -> None:
-        """Empty path string is skipped."""
-        svc = SavePipelineService(tmp_path)
-
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": ""}),
-        )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_jsonl_extension_supported(self, tmp_path: Path) -> None:
-        """Also works for .jsonl files."""
-        svc = SavePipelineService(tmp_path)
-
-        jsonl_file = tmp_path / "input.jsonl"
-        jsonl_file.write_text('{"x": 1}\n{"x": 2}\n')
-
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "input.jsonl"}),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert any("Infer Tables" in w for w in warnings)
 
-        svc._infer_flatten_schemas(graph)
-        cfg = graph.nodes[0].data.config
-        assert "flattenSchema" in cfg
+    def test_skips_empty_path(self, tmp_path: Path) -> None:
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": ""}),
+        )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
 
 # ---------------------------------------------------------------------------

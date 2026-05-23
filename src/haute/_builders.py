@@ -515,44 +515,30 @@ def _make_api_source_v2(
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     path = config.get("path", "")
-    flat_schema = config.get("flattenSchema")
 
     api_source_fn: Callable[..., Any]
     if path.lower().endswith((".json", ".jsonl")):
-        # v2 dispatch — when the apiInput config is in v2 (tables[]) shape,
-        # use the per-port shred. The emit-true table count decides whether
-        # the source returns a bare LazyFrame (single-port shorthand) or a
-        # dict[port_name, LazyFrame] (multi-port, edges pick by sourceHandle
-        # at the executor's edge-resolution layer per MULTI_FRAME_PLAN §4b).
+        # v2 per-port shred is the only JSON apiInput codec. When the
+        # config carries `tables[]` we dispatch into the v2 source
+        # builder (emit-true count decides bare frame vs dict[label,
+        # frame]). Anything else is an editor-state error: the user must
+        # populate `tables[]` via the Infer Tables button before the
+        # pipeline can run.
         from haute._api_input_schema import is_v2_shape as _is_v2_shape
 
         if _is_v2_shape(config):
             return ctx.func_name, _make_api_source_v2(path, config), True
 
-        def _api_source_json(
-            _path: str = path,
-            _schema: dict | None = flat_schema,
-            _profile: str | None = ctx.execution_profile,
-            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        def _api_source_no_tables(
+            _label: str = ctx.func_name,
         ) -> _Frame:
-            from haute._json_flatten import json_cache_path_if_valid
-
-            cache_path = json_cache_path_if_valid(_path, schema=_schema)
-            if cache_path is not None:
-                projected = _source_scan_projection(_profile, _columns, config)
-                return read_source(
-                    cache_path,
-                    profile=_profile,
-                    columns=projected.columns,
-                    validate_columns=projected.validate_columns,
-                )
             raise RuntimeError(
-                "JSON data has not been cached yet, or the existing cache is stale "
-                "or schema-incompatible. "
-                "Click 'Cache as Parquet' on the API Input node to process it."
+                f"API Input '{_label}' has no v2 schema (tables[]). Open the "
+                "node and click 'Infer Tables' to populate the schema "
+                "mapping, then click 'Cache as Parquet'."
             )
 
-        api_source_fn = _api_source_json
+        api_source_fn = _api_source_no_tables
     else:
 
         def _api_source_flat(

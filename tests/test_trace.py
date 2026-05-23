@@ -254,29 +254,10 @@ class TestExecuteTrace:
 
     def test_row_id_from_api_input(self, tmp_path):
         """Trace discovers row_id_column from apiInput source and extracts its value."""
-        p = tmp_path / "data.json"
-        import json
-
-        p.write_text(
-            json.dumps(
-                [
-                    {"policy_id": 100, "x": 1},
-                    {"policy_id": 200, "x": 2},
-                    {"policy_id": 300, "x": 3},
-                ]
-            )
-        )
-        # Pre-cache JSON as parquet (the builder expects this). Writing
-        # directly to the working layer + marking it consulted bypasses
-        # build_json_cache's flatten step, which we want here because the
-        # test injects synthetic column data, not what the data.json would
-        # parse to.
-        from haute._json_flatten import _json_cache_path, _mark_working_consulted
-
-        cache_path = _json_cache_path(str(p))
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"policy_id": [100, 200, 300], "x": [1, 2, 3]}).write_parquet(cache_path)
-        _mark_working_consulted(str(p))
+        # Use a parquet-backed apiInput so the executor reads data directly
+        # without needing the v2 JSON cache infrastructure.
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"policy_id": [100, 200, 300], "x": [1, 2, 3]}).write_parquet(p)
 
         graph = _g(
             {

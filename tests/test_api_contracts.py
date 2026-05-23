@@ -199,6 +199,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/JsonCacheBuildResponse"},
         },
     },
+    "/api/json-cache/infer": {
+        "POST": {
+            "request_ref": "#/components/schemas/JsonCacheInferRequest",
+            "success_schema": {"$ref": "#/components/schemas/JsonCacheInferResponse"},
+        },
+    },
     "/api/json-cache/cancel": {
         "POST": {
             "request_ref": "#/components/schemas/JsonCacheBuildRequest",

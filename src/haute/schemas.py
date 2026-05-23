@@ -549,9 +549,29 @@ class CacheStatusResponse(BaseModel):
 
 
 class JsonCacheBuildRequest(BaseModel):
+    """Request body for ``POST /api/json-cache/{build,status,cancel}``.
+
+    Dispatch precedence in the route:
+      1. ``volatile_schema is not None`` — use the in-memory v2 schema
+         (the ApiInputEditor's React state, sent verbatim). This is the
+         "user has unsaved edits open" path; mirrors the dual-cache
+         model at the schema plane (handover working principle 4).
+      2. Otherwise — read ``config_path`` from disk and use that.
+      3. If both are absent, the route returns 422 (no schema source).
+
+    ``volatile_schema`` carries the same shape as the on-disk config
+    (``{tables: [...], path: ..., ...}``). Note ``is not None`` — an
+    empty ``{}`` is distinct from ``None``: ``{}`` means "user provided
+    a malformed payload", which surfaces as a 422 from
+    ``validate_v2_schema``; ``None`` means "use disk".
+    """
+
     path: str
     config_path: str | None = None
-    flatten_schema: dict[str, Any] | None = None
+    # `Any` (not `dict`) so malformed shapes from the frontend reach
+    # `validate_v2_schema` and surface as our structured 422 rather
+    # than as Pydantic's default 422 — T8 contract.
+    volatile_schema: Any = None
 
 
 class JsonCacheInferRequest(BaseModel):

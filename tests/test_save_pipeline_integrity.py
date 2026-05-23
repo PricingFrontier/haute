@@ -552,7 +552,7 @@ class TestSaveServiceTransaction:
       2. unique-sanitized-name validation
       3. source-file resolution
       4. _write_code (generates main + module .py files)
-      5. _infer_flatten_schemas
+      5. _validate_api_inputs_have_schemas
       6. _write_config_files
       7. _remove_stale_config_files
       8. _write_sidecar

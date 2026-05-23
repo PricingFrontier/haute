@@ -102,14 +102,25 @@ class TestValidKeysRegistry:
             "categorical_levels",
         ],
     )
-    @pytest.mark.parametrize("node_type", [NodeType.API_INPUT, NodeType.DATA_SOURCE])
-    def test_source_boundary_keys_present(self, node_type, key):
-        """Source dtype/deploy schema keys are first-class config keys."""
-        if key == "catalog" and node_type == NodeType.API_INPUT:
-            return
-        if key == "expected_columns" and node_type == NodeType.API_INPUT:
-            return
-        assert key in VALID_KEYS[node_type]
+    def test_data_source_boundary_keys_present(self, key):
+        """dataSource dtype/deploy schema keys are first-class config keys.
+
+        ApiInput has its OWN v2-shaped key set (tested below) — these v1
+        dtype keys are not part of the v2 apiInput contract anymore.
+        """
+        assert key in VALID_KEYS[NodeType.DATA_SOURCE]
+
+    @pytest.mark.parametrize("key", ["path", "contract", "tables", "removedTables"])
+    def test_api_input_v2_keys_present(self, key):
+        """Post-commit-5.5: apiInput config keys are v2-only (`tables[]`).
+
+        v1 dtype keys (`schema_overrides`, `dtypes`, `column_dtypes`,
+        `schema`, `flattenSchema`) are no longer recognised — the
+        runtime ignores them (D9 corrupt-mix tolerance) but the
+        validator warns so legacy pipelines surface the migration
+        prompt to the user.
+        """
+        assert key in VALID_KEYS[NodeType.API_INPUT]
 
     @pytest.mark.parametrize(
         "node_type",
@@ -117,17 +128,6 @@ class TestValidKeysRegistry:
     )
     def test_categorical_levels_key_present_on_model_boundaries(self, node_type):
         assert "categorical_levels" in VALID_KEYS[node_type]
-
-    @pytest.mark.parametrize(
-        "key",
-        ["schema_overrides", "dtypes", "column_dtypes", "schema"],
-    )
-    def test_api_input_dtype_keys_do_not_warn(self, key):
-        bad = warn_unrecognized_config_keys(
-            NodeType.API_INPUT,
-            {"path": "quotes.csv", key: {"quote_id": "String"}},
-        )
-        assert bad == []
 
 
 # ---------------------------------------------------------------------------
@@ -137,10 +137,19 @@ class TestValidKeysRegistry:
 
 class TestWarnUnrecognizedConfigKeys:
     def test_no_warning_for_valid_keys(self):
-        """Config with only valid keys should produce no warnings."""
+        """Config with only valid v2 apiInput keys produces no warnings.
+
+        Post-commit-5.5: `row_id_column` is per-table inside `tables[]`,
+        not at the top level. Top-level keys are `path`, `contract`,
+        `tables`, `removedTables`.
+        """
         bad = warn_unrecognized_config_keys(
             NodeType.API_INPUT,
-            {"path": "/data.json", "row_id_column": "id"},
+            {
+                "path": "/data.json",
+                "contract": "opaque",
+                "tables": [],
+            },
         )
         assert bad == []
 
@@ -403,21 +412,33 @@ class TestBuildNodeConfigProducesValidKeys:
         assert config["sourceType"] == "registered"
         assert "source_type" not in config, "snake_case source_type should not appear in config"
 
-    def test_api_input_preserves_declared_dtype_config(self):
-        """API-input decorators need a schema migration path for bounded CSV."""
+    def test_api_input_preserves_declared_v2_tables_config(self):
+        """API-input decorator preserves declared v2 `tables[]` shape.
+
+        Replaces the pre-commit-5.5 test that exercised `schema_overrides`
+        (a v1 dtype key, deleted). The v2 surface carries a `tables[]`
+        array — `_build_node_config` should pass it through verbatim.
+        """
         from haute._parser_helpers import _build_node_config
 
+        v2_tables = [
+            {
+                "path": "$[*]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    {"name": "quote_id", "path": "$[*].quote_id", "type": "str"},
+                ],
+            },
+        ]
         config = _build_node_config(
             NodeType.API_INPUT,
-            {
-                "path": "quotes.csv",
-                "schema_overrides": {"quote_id": "String"},
-            },
+            {"path": "quotes.json", "tables": v2_tables},
             "",
             [],
         )
 
-        assert config["schema_overrides"] == {"quote_id": "String"}
+        assert config["tables"] == v2_tables
         assert warn_unrecognized_config_keys(NodeType.API_INPUT, config) == []
 
     def test_model_score_all_keys_valid(self):

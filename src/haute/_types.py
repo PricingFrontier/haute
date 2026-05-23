@@ -80,16 +80,18 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
 
 
 class ApiInputConfig(TypedDict, total=False):
-    """Config for apiInput nodes."""
+    """Config for apiInput nodes (v2 multi-frame shape).
+
+    See `src/haute/_api_input_schema.py` for the on-the-wire codec and
+    `tables[]`/columns structure. ``tables`` is the load-bearing v2
+    surface; ``removedTables`` is an editor-side ledger of labels the
+    user deleted (so a Re-Infer doesn't resurrect them).
+    """
 
     path: str
-    row_id_column: str
-    flattenSchema: dict[str, Any]
-    schema_overrides: dict[str, Any]
-    dtypes: dict[str, Any]
-    column_dtypes: dict[str, Any]
-    schema: dict[str, Any]
-    categorical_levels: dict[str, list[str | None]]
+    contract: str
+    tables: list[dict[str, Any]]
+    removedTables: list[str]
 
 
 class DataSourceConfig(TypedDict, total=False):

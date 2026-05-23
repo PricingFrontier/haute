@@ -116,7 +116,7 @@ class TestDiskFullDuringSave:
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
-            patch("haute.routes._save_pipeline.SavePipelineService._infer_flatten_schemas"),
+            patch("haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"),
             patch("haute.routes._save_pipeline.SavePipelineService._write_config_files"),
             patch("haute.routes._save_pipeline.SavePipelineService._remove_stale_config_files"),
             patch("haute.routes._save_pipeline.save_sidecar") as mock_sidecar,
@@ -136,7 +136,7 @@ class TestDiskFullDuringSave:
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
-            patch("haute.routes._save_pipeline.SavePipelineService._infer_flatten_schemas"),
+            patch("haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"),
             patch(
                 "haute.routes._save_pipeline.SavePipelineService._write_config_files"
             ) as mock_cfg,
@@ -183,7 +183,7 @@ class TestFileLocked:
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
-            patch("haute.routes._save_pipeline.SavePipelineService._infer_flatten_schemas"),
+            patch("haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"),
             patch("haute.routes._save_pipeline.SavePipelineService._write_config_files"),
             patch("haute.routes._save_pipeline.SavePipelineService._remove_stale_config_files"),
             patch("haute.routes._save_pipeline.save_sidecar") as mock_sc,
@@ -822,7 +822,7 @@ class TestSavePipelinePartialFailureIntegration:
 
         with (
             patch.object(svc, "_write_code", side_effect=fake_write_code),
-            patch.object(svc, "_infer_flatten_schemas"),
+            patch.object(svc, "_validate_api_inputs_have_schemas"),
             patch.object(svc, "_write_config_files"),
             patch.object(svc, "_remove_stale_config_files"),
             patch(
@@ -856,7 +856,7 @@ class TestSavePipelinePartialFailureIntegration:
 
         with (
             patch.object(svc, "_write_code", side_effect=fake_write_code),
-            patch.object(svc, "_infer_flatten_schemas"),
+            patch.object(svc, "_validate_api_inputs_have_schemas"),
             patch.object(
                 svc,
                 "_write_config_files",
