@@ -306,6 +306,57 @@ class TestSaveSidecar:
         assert "sources" not in data
         assert "active_source" not in data
 
+    def test_writes_atomically_via_atomic_write_text(self, tmp_path, monkeypatch):
+        """save_sidecar must write the sidecar via ``atomic_write_text``.
+
+        Background (Bundle 5.M2 — OPUS race report scenario S2): the
+        sidecar is read by the file-watcher's reparse path and by
+        ``load_sidecar`` on every pipeline GET. If save_sidecar uses
+        a non-atomic write (``Path.write_text``), a concurrent reader
+        between the truncate and the write completion sees partial or
+        empty bytes → ``JSONDecodeError`` → positions snap to default
+        on broadcast. This is a P0 data-corruption window in the OPUS
+        race-conditions report.
+
+        Pin the contract: save_sidecar invokes
+        ``haute._file_ops.atomic_write_text`` (or routes through it),
+        not raw ``Path.write_text``. If a future refactor replaces the
+        atomic helper with another atomic-write primitive (Writer,
+        etc.) update this spy — the load-bearing property is *no
+        partial-write window for the .haute.json file*.
+        """
+        import haute.routes._helpers as helpers
+
+        calls: list[tuple[Path, str]] = []
+        original = helpers.atomic_write_text
+
+        def spy(path: Path, data: str, encoding: str = "utf-8") -> None:
+            calls.append((path, data))
+            original(path, data, encoding)
+
+        monkeypatch.setattr(helpers, "atomic_write_text", spy)
+
+        py_path = tmp_path / "pipeline.py"
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="a",
+                    position={"x": 1.0, "y": 2.0},
+                    data=NodeData(label="A", nodeType=NodeType.DATA_SOURCE),
+                ),
+            ],
+            edges=[],
+        )
+        save_sidecar(py_path, graph)
+
+        sidecar = tmp_path / "pipeline.haute.json"
+        assert sidecar.exists(), "sidecar must still be written"
+        assert calls, "atomic_write_text must have been called"
+        assert any(p == sidecar for p, _ in calls), (
+            "atomic_write_text must have been called for the sidecar path; "
+            f"got calls for {[p.name for p, _ in calls]}"
+        )
+
     def test_roundtrip(self, tmp_path):
         """save_sidecar then load_sidecar should produce consistent data."""
         py_path = tmp_path / "pipeline.py"

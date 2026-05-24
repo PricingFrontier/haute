@@ -227,30 +227,74 @@ class TestPermissionDenied:
         finally:
             os.chmod(read_only_dir, stat.S_IRWXU)
 
-    def test_save_sidecar_to_readonly_file_raises(self, tmp_path: Path) -> None:
-        """Writing a sidecar when the file is read-only raises cleanly.
+    def test_save_sidecar_to_readonly_file_succeeds_via_atomic_replace(
+        self, tmp_path: Path
+    ) -> None:
+        """A read-only TARGET FILE does not block the atomic sidecar write.
 
-        Catches: data loss where node positions silently revert.
+        Bundle 5.M2 changed save_sidecar to use ``atomic_write_text``,
+        which stages bytes to a sibling temp and ``rename()``s into
+        place. POSIX rename atomicity depends on the parent directory's
+        permission, not the target file's — so a read-only target file
+        is silently replaced. This is the universal behaviour of atomic
+        writers (git, sqlite WAL, etc.) and is the price of admission
+        for the partial-bytes safety described in
+        TestSaveSidecar.test_writes_atomically_via_atomic_write_text.
+
+        The intent the prior test encoded ("user can prevent writes via
+        file permissions") is preserved via
+        :meth:`test_save_sidecar_to_readonly_dir_raises` below — the
+        genuine permission boundary for atomic writers is the *parent
+        directory*, not the file.
         """
         py_path = tmp_path / "pipeline.py"
         py_path.write_text("# placeholder")
         sidecar = py_path.with_suffix(".haute.json")
-        sidecar.write_text("{}")
+        sidecar.write_text('{"original": true}')
         if sys.platform != "win32":
             os.chmod(sidecar, stat.S_IRUSR)
 
         graph = _simple_graph()
         try:
-            if sys.platform != "win32":
-                with pytest.raises(PermissionError):
-                    save_sidecar(py_path, graph)
-            else:
-                # On Windows, read-only flag doesn't block write_text reliably;
-                # just verify save_sidecar doesn't crash with valid inputs
-                save_sidecar(py_path, graph)
+            # No PermissionError — atomic replace bypasses the per-file
+            # permission. The sidecar now contains the new payload.
+            save_sidecar(py_path, graph)
+            content = sidecar.read_text()
+            assert '"positions"' in content, (
+                "atomic replace must produce the new sidecar payload"
+            )
+            assert '"original": true' not in content, (
+                "atomic replace must have replaced the read-only file"
+            )
         finally:
             if sys.platform != "win32":
+                # Restore writable so tmp_path cleanup doesn't choke.
                 os.chmod(sidecar, stat.S_IRWXU)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod semantics differ on Windows")
+    def test_save_sidecar_to_readonly_dir_raises(self, tmp_path: Path) -> None:
+        """A read-only PARENT DIRECTORY blocks the atomic sidecar write.
+
+        Bundle 5.M2 — the genuine permission boundary for atomic
+        writers is the parent directory: the temp file can't be created
+        (or the rename target can't be linked) if the directory is
+        read-only. This is the contract for "user wants to prevent
+        sidecar writes" — set the directory permission, not the file.
+        """
+        # Move into a subdir so we can lock that subdir without
+        # tripping tmp_path teardown.
+        project = tmp_path / "project"
+        project.mkdir()
+        py_path = project / "pipeline.py"
+        py_path.write_text("# placeholder")
+
+        os.chmod(project, stat.S_IRUSR | stat.S_IXUSR)
+        graph = _simple_graph()
+        try:
+            with pytest.raises((PermissionError, OSError)):
+                save_sidecar(py_path, graph)
+        finally:
+            os.chmod(project, stat.S_IRWXU)
 
 
 # ===================================================================

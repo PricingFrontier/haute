@@ -17,6 +17,7 @@ from typing import Any, NoReturn
 from fastapi import HTTPException, WebSocket
 from pydantic import BaseModel, Field, model_validator
 
+from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.errors import ConfigError
@@ -623,7 +624,14 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
         exclude_defaults=True,
     )
     sidecar = py_path.with_suffix(".haute.json")
-    sidecar.write_text(serialised + "\n")
+    # Bundle 5.M2 — atomic write closes the partial-bytes window OPUS
+    # race-scenario S2 surfaced: the file-watcher's reparse path and
+    # any concurrent /pipeline GET hit `load_sidecar`, which would see
+    # a half-written file if `Path.write_text` truncates then writes
+    # non-atomically. `atomic_write_text` stages to a sibling temp and
+    # renames into place — the rename is atomic on every major OS.
+    # Pinning test: TestSaveSidecar.test_writes_atomically_via_atomic_write_text.
+    atomic_write_text(sidecar, serialised + "\n")
     return warnings
 
 
