@@ -47,6 +47,7 @@ from haute.routes._helpers import (
     parse_pipeline_to_graph,
     pipeline_dir,
     raise_pipeline_not_found,
+    save_lock,
     validate_safe_path,
 )
 from haute.routes._save_pipeline import SavePipelineService
@@ -325,9 +326,15 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
 
     When the graph contains submodels, multiple files are written via
     ``graph_to_code_multi``.
+
+    Bundle 5.M1: acquires the shared ``save_lock`` (defined in
+    ``routes/_helpers.py``) so this save is serialised against any
+    concurrent ``/api/submodel/create`` or ``/api/submodel/dissolve``.
+    See the lock definition for the full rationale + scope.
     """
-    svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
-    return svc.save(body)
+    async with save_lock:
+        svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
+        return svc.save(body)
 
 
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)
