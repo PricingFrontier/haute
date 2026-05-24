@@ -127,12 +127,18 @@ class TableV2(TypedDict, total=False):
 
 
 class ApiInputV2Config(TypedDict, total=False):
-    """v2 apiInput config — on-disk shape under ``rating/config/<...>.json``."""
+    """v2 apiInput config — on-disk shape under ``rating/config/<...>.json``.
+
+    Bundle 1 sanitisation: ``removedTables`` was previously declared
+    here as a parallel to the frontend's editor-side ledger; the
+    feature was never wired and is dropped. See
+    ``haute._types.ApiInputConfig`` for the full rationale and the
+    test that pins the absence.
+    """
 
     path: str
     contract: str
     tables: list[TableV2]
-    removedTables: list[str]
 
 
 # ---------------------------------------------------------------------------

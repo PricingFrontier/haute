@@ -36,7 +36,14 @@ export interface ApiInputConfigV2 {
   path?: string
   contract?: string
   tables: ApiInputTableV2[]
-  removedTables?: string[]
+  // Bundle 1 sanitisation: `removedTables` was specified as an
+  // editor-side ledger of deleted table labels but never wired
+  // (inferTables clobbers `tables` directly). User deletion of
+  // tables MUST NOT permanently alter Infer Tables behaviour, so the
+  // field is dropped here, in writeV2 (not emitted), in readV2 (not
+  // surfaced), and in the Python TypedDicts. Legacy on-disk configs
+  // carrying it are silently ignored on read. Contract:
+  // frontend/src/__tests__/editors/apiInputSchemaSanitisation.test.ts.
 }
 
 /** Tagged-union classification — only v2 and empty kinds. */
@@ -143,9 +150,9 @@ export function readV2(config: Record<string, unknown>): ApiInputConfigV2 {
       ? ((config as { contract: string }).contract)
       : "opaque",
     tables,
-    removedTables: Array.isArray((config as { removedTables?: unknown }).removedTables)
-      ? ((config as { removedTables: string[] }).removedTables)
-      : undefined,
+    // Sanitisation contract: any `removedTables` in the raw input is
+    // silently dropped here (no surface, no error). See the comment on
+    // ApiInputConfigV2 above for the full rationale.
   }
 }
 
@@ -170,9 +177,9 @@ export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
       })),
     })),
   }
-  if (v2.removedTables && v2.removedTables.length > 0) {
-    out.removedTables = v2.removedTables
-  }
+  // Sanitisation contract: `removedTables` is never emitted, even if
+  // some upstream caller smuggled it in via an unsafe cast. See the
+  // comment on ApiInputConfigV2 above for the full rationale.
   return out
 }
 

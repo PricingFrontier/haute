@@ -110,7 +110,7 @@ class TestValidKeysRegistry:
         """
         assert key in VALID_KEYS[NodeType.DATA_SOURCE]
 
-    @pytest.mark.parametrize("key", ["path", "contract", "tables", "removedTables"])
+    @pytest.mark.parametrize("key", ["path", "contract", "tables"])
     def test_api_input_v2_keys_present(self, key):
         """Post-commit-5.5: apiInput config keys are v2-only (`tables[]`).
 
@@ -119,8 +119,29 @@ class TestValidKeysRegistry:
         runtime ignores them (D9 corrupt-mix tolerance) but the
         validator warns so legacy pipelines surface the migration
         prompt to the user.
+
+        `removedTables` was removed from the contract in the Bundle 1
+        sanitisation pass — see :meth:`test_removed_tables_not_in_api_input_valid_keys`.
         """
         assert key in VALID_KEYS[NodeType.API_INPUT]
+
+    def test_removed_tables_not_in_api_input_valid_keys(self):
+        """`removedTables` is sanitised out of the v2 contract.
+
+        The field was specified as an editor-side ledger of deleted
+        table labels (so a Re-Infer wouldn't resurrect them) but the
+        ``inferTables`` handler in ``ApiInputEditor.tsx`` clobbers
+        ``tables`` without consulting it — the feature was specified
+        and never wired. Per the Bundle 1 directive: user deletion of
+        tables should NOT permanently alter Infer Tables behaviour.
+
+        The field is dropped from TypedDicts on both sides of the wire
+        (Python `_types.ApiInputConfig`, `_api_input_schema.ApiInputV2Config`,
+        TS `ApiInputConfigV2`). Configs that carry it on disk are
+        silently ignored on read. The corresponding frontend contracts
+        live in `frontend/src/__tests__/editors/apiInputSchemaSanitisation.test.ts`.
+        """
+        assert "removedTables" not in VALID_KEYS[NodeType.API_INPUT]
 
     @pytest.mark.parametrize(
         "node_type",
@@ -141,7 +162,8 @@ class TestWarnUnrecognizedConfigKeys:
 
         Post-commit-5.5: `row_id_column` is per-table inside `tables[]`,
         not at the top level. Top-level keys are `path`, `contract`,
-        `tables`, `removedTables`.
+        `tables`. (`removedTables` was sanitised out in Bundle 1 —
+        see :class:`TestValidKeysRegistry`.)
         """
         bad = warn_unrecognized_config_keys(
             NodeType.API_INPUT,

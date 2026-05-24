@@ -84,14 +84,22 @@ class ApiInputConfig(TypedDict, total=False):
 
     See `src/haute/_api_input_schema.py` for the on-the-wire codec and
     `tables[]`/columns structure. ``tables`` is the load-bearing v2
-    surface; ``removedTables`` is an editor-side ledger of labels the
-    user deleted (so a Re-Infer doesn't resurrect them).
+    surface.
+
+    Bundle 1 sanitisation: ``removedTables`` was previously declared
+    here as "an editor-side ledger of labels the user deleted so a
+    Re-Infer doesn't resurrect them", but the `inferTables` handler in
+    ``ApiInputEditor.tsx`` clobbers ``tables`` without consulting it —
+    the feature was specified and never wired. User deletion of tables
+    should NOT permanently alter Infer Tables behaviour. The field is
+    sanitised out; legacy on-disk configs that carry it are silently
+    ignored on read. See ``tests/test_config_validation.py`` →
+    ``test_removed_tables_not_in_api_input_valid_keys``.
     """
 
     path: str
     contract: str
     tables: list[dict[str, Any]]
-    removedTables: list[str]
 
 
 class DataSourceConfig(TypedDict, total=False):
