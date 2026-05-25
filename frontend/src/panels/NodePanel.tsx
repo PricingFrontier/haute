@@ -377,6 +377,14 @@ export default function NodePanel({
   useEffect(() => { configRef.current = config }, [config])
   useEffect(() => { nodeRef.current = node }, [node])
 
+  // Bundle 3b — dismissal state for the stale-columns banner.
+  // Stored as the warning-signature the user dismissed, so the banner
+  // reappears whenever the warning content (columns / statuses / count)
+  // changes.  Reset on node switch so dismissals don't bleed across
+  // nodes while the panel stays mounted.
+  const [dismissedStaleWarningSig, setDismissedStaleWarningSig] = useState<string | null>(null)
+  useEffect(() => { setDismissedStaleWarningSig(null) }, [node?.id])
+
   const handleConfigUpdate = useCallback((keyOrUpdates: string | Record<string, unknown>, value?: unknown) => {
     const currentNode = nodeRef.current
     if (!currentNode || !onUpdateNode) return
@@ -713,18 +721,47 @@ export default function NodePanel({
         />
       )}
 
-      {/* Schema warnings for non-instance nodes */}
+      {/* Schema warnings for non-instance nodes.  Bundle 3b: dismiss
+          (×) + Refresh-and-check controls.  Suppressed when the current
+          warning signature matches the user's last dismissal. */}
       {!isInstance && !showExplorePanes && (() => {
         const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
         if (warnings.length === 0) return null
+        const sig = warnings.map((w) => `${w.column}|${w.status}`).join(',')
+        if (sig === dismissedStaleWarningSig) return null
         return (
           <div className="px-4 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
             <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
-              <div className="flex items-center gap-1.5">
-                <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
-                <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
-                  Stale columns ({warnings.length})
-                </span>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
+                  <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
+                    Stale columns ({warnings.length})
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => {
+                      setDismissedStaleWarningSig(sig)
+                      onRefreshPreview?.()
+                    }}
+                    className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
+                    style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
+                    title="Re-run preview and re-check schema warnings"
+                  >
+                    <RefreshCw size={11} />
+                    Refresh and check
+                  </button>
+                  <button
+                    onClick={() => setDismissedStaleWarningSig(sig)}
+                    className="p-1 rounded shrink-0 transition-colors hover:opacity-[0.85]"
+                    style={{ color: 'var(--warning-strong)' }}
+                    title="Dismiss"
+                    aria-label="Dismiss"
+                  >
+                    <X size={12} strokeWidth={2.5} />
+                  </button>
+                </div>
               </div>
               <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
                 These columns are referenced in config but not found in the upstream schema:

@@ -316,6 +316,36 @@ export default function ApiInputEditor({
           )}
         </div>
 
+        {/* Bundle 3b — cache button positioned ABOVE the Tables editor.
+            Contextual rationale: the cache action operates on the data
+            file selected just above; placing the affordance there
+            groups it with the data source and leaves the schema editor
+            (Tables) as the primary authoring surface below. */}
+        {showCacheButton && (() => {
+          // T9/T10: Cache button inactive when EITHER (a) no schema
+          // source (no path AND no tables) OR (b) zero emit:true
+          // tables. The CacheFetchButton renders disabled via
+          // `disabledReason` tooltip + the existing
+          // `disabled:opacity-40` class.
+          const hasSchemaSource = v2.tables.length > 0
+          const hasEmitTrue = v2.tables.some((t) => t.emit)
+          const cacheDisabled = !hasSchemaSource || !hasEmitTrue
+          const cacheReason = !hasSchemaSource
+            ? "Add at least one table (Infer Tables / Add Table) before caching."
+            : !hasEmitTrue
+            ? "Toggle at least one table's emit so it produces a port."
+            : undefined
+          return (
+            <JsonCacheButton
+              dataPath={currentPath!}
+              configPath={configPath}
+              volatileSchema={writeV2(v2)}
+              disabled={cacheDisabled}
+              disabledReason={cacheReason}
+            />
+          )
+        })()}
+
         {/* Tables editor (v2 surface — the only surface) */}
         <div data-testid="api-input-tables">
             <div className="flex items-center justify-between mb-1.5">
@@ -384,31 +414,6 @@ export default function ApiInputEditor({
               ))}
             </div>
           </div>
-
-        {showCacheButton && (() => {
-          // T9/T10: Cache button inactive when EITHER (a) no schema
-          // source (no path AND no tables) OR (b) zero emit:true
-          // tables. The CacheFetchButton renders disabled via
-          // `disabledReason` tooltip + the existing
-          // `disabled:opacity-40` class.
-          const hasSchemaSource = v2.tables.length > 0
-          const hasEmitTrue = v2.tables.some((t) => t.emit)
-          const cacheDisabled = !hasSchemaSource || !hasEmitTrue
-          const cacheReason = !hasSchemaSource
-            ? "Add at least one table (Infer Tables / Add Table) before caching."
-            : !hasEmitTrue
-            ? "Toggle at least one table's emit so it produces a port."
-            : undefined
-          return (
-            <JsonCacheButton
-              dataPath={currentPath!}
-              configPath={configPath}
-              volatileSchema={writeV2(v2)}
-              disabled={cacheDisabled}
-              disabledReason={cacheReason}
-            />
-          )
-        })()}
       </div>
 
       {loadingSchema && (
