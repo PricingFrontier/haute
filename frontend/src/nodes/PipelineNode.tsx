@@ -191,8 +191,11 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
-  // Header bar border-radius: matches inner edge of container (outer radius minus border)
-  const headerRadius = isPill ? "15px 15px 0 0" : "11px 11px 0 0"
+  // Header bar border-radius: matches inner edge of container (outer radius minus
+  // 3px border).  Container is rounded-xl (12px) → inner 9px, or rounded-2xl
+  // (16px, pill) → inner 13px.  Previous values (11 / 15) assumed a 1px border
+  // and showed as "whiskers" poking past the container corners at high zoom.
+  const headerRadius = isPill ? "13px 13px 0 0" : "9px 9px 0 0"
 
   // Medium mode: header bar + label, no extra badges
   if (zoomLevel === "medium") {

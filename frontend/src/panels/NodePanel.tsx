@@ -54,7 +54,20 @@ type NodePanelProps = {
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
 // modelling and explore nodes are sink-only (no outputs).
+//
+// Bundle 3a — API_INPUT was added here as part of the v2-consolidation
+// decision. The v2-native column-filter surface is the per-column
+// `selected: bool` inside `tables[].columns[]` (in the Schema panel).
+// The legacy `Columns` tab wrote the universal-but-apiInput-illegitimate
+// keys `selected_columns` / `column_renames` via `GroupedColumnsTab`
+// and let the user double-author the same intent. Removing the tab
+// here removes the only UI write path for those keys on apiInput;
+// any residual values on disk are stripped at load time by Bundle 2.a
+// (`_normalise_loaded_config` in `src/haute/_config_io.py`) and at
+// write time by Bundle 2.α. Contract pinning test:
+// `src/__tests__/editors/apiInputBundle3aContract.test.tsx`.
 const NO_COLUMNS_TAB = new Set<string>([
+  NODE_TYPES.API_INPUT,
   NODE_TYPES.OUTPUT,
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.MODELLING,
@@ -450,12 +463,20 @@ export default function NodePanel({
 
     switch (nodeType) {
       case NODE_TYPES.API_INPUT:
-        // The per-node config file lives at config/quote_input/<node-id>.json
-        // (matches the backend's NODE_TYPE_TO_FOLDER convention in
-        // _config_io.py). Passed to the editor so the cache button can
-        // route the v2 vs v1 dispatch on the backend by inspecting the
-        // file's on-disk shape.
-        return <ApiInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} configPath={`config/quote_input/${node.id}.json`} />
+        // Bundle 3a — the per-node config file lives at
+        // config/quote_input/<sanitised_label>.json on disk. The
+        // backend's canonical scheme uses `_sanitize_func_name(label)`
+        // (`_config_io.py:320-321`) as the filename. The frontend
+        // previously sent `${node.id}.json` here, which the cache-
+        // status GET routed to a path the backend never wrote → silent
+        // `cached=false` response → cache button looked unresponsive.
+        // Using `sanitizeName(label)` (the frontend twin of
+        // `_sanitize_func_name`, defined in `frontend/src/utils/sanitizeName.ts`)
+        // brings the two sides into agreement. Collision uniqueness
+        // for labels-that-sanitise-to-the-same-string is already
+        // enforced at save time via `_validate_unique_sanitized_names`
+        // (`_save_pipeline.py:165-184`) → HTTP 400, no silent clobber.
+        return <ApiInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} configPath={`config/quote_input/${sanitizeName(node.data.label)}.json`} />
 
       case NODE_TYPES.LIVE_SWITCH:
         return <LiveSwitchEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} accentColor={accentColor} />
