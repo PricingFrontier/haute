@@ -720,18 +720,37 @@ _preview_cache = FingerprintCache(
 )
 
 
-def _extract_column_refs(config: dict[str, Any]) -> set[str]:
+def _extract_column_refs(
+    config: dict[str, Any],
+    *,
+    node_type: NodeType | None = None,
+) -> set[str]:
     """Extract column names referenced in a node's config.
 
     Only includes columns that are READ from upstream (not created/output columns).
     Returns an empty set for configs with no column references.
+
+    Bundle 2 executor guard — when ``node_type`` is :data:`NodeType.API_INPUT`,
+    the ``selected_columns`` scoop is skipped. v2 apiInput has no
+    concept of a flat ``selected_columns`` list; the per-column
+    ``selected`` boolean inside ``tables[].columns[]`` is the v2-native
+    column-filter surface. Even if a legacy key leaks into config
+    (which Bundle 2.a's load-time strip is supposed to prevent), this
+    guard ensures the executor's stale-column diff never acts on it
+    for apiInput. Defence-in-depth against any future code path that
+    reintroduces the key without going through the persistence layer.
+    Caller at ``_node_schema_warnings`` passes ``node_type`` from
+    ``node.data.nodeType``. Contract pinning test:
+    tests/test_strict_v2_contract.py::TestExtractColumnRefsNodeTypeGuard.
     """
     refs: set[str] = set()
 
-    # selected_columns: list[str] — on any node type
-    for col in config.get("selected_columns", []) or []:
-        if isinstance(col, str) and col:
-            refs.add(col)
+    # selected_columns: list[str] — on any node type EXCEPT apiInput,
+    # where the v2 spec has no place for it. See guard above.
+    if node_type != NodeType.API_INPUT:
+        for col in config.get("selected_columns", []) or []:
+            if isinstance(col, str) and col:
+                refs.add(col)
 
     # target, weight, offset: str — on modelling nodes
     for key in ("target", "weight", "offset"):
@@ -1124,7 +1143,13 @@ def execute_graph(
             available: list[ColumnInfo],
         ) -> list[SchemaWarning]:
             node_data = node_map[node_id].data
-            config_refs = _extract_column_refs(node_data.config)
+            # Bundle 2 executor guard — pass node_type so the
+            # selected_columns scoop is skipped for apiInput nodes
+            # (v2 has no spec for it; per-column `selected` bool in
+            # tables[].columns[] is the v2-native surface).
+            config_refs = _extract_column_refs(
+                node_data.config, node_type=node_data.nodeType
+            )
             node_warnings = list(schema_warnings.get(node_id, []))
             if config_refs and available:
                 available_names = {c.name for c in available}

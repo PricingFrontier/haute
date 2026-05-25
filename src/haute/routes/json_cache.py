@@ -127,9 +127,17 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
     """Read *config_path* and return it iff it carries a v2 ``tables[]`` array.
 
     Per D9 — corrupt-mix tolerance — a config that ALSO has stray
-    pre-v2 keys (``flattenSchema``, ``column_renames``, …) is still
-    treated as v2 if ``tables`` is present. Stray keys are silently
-    ignored.
+    pre-v2 keys (``flattenSchema``, ``column_renames``, ``selected_columns``)
+    is still treated as v2 if ``tables`` is present.
+
+    Bundle 2.a — those stray legacy keys are now **stripped** from the
+    returned dict (promoted from "silently ignored" to "silently
+    stripped"). The strip mirrors the one applied by
+    ``_normalise_loaded_config`` for the parser load path; both funnels
+    that materialise a disk-resident apiInput config into an in-memory
+    dict must agree, otherwise the cache-build path and the executor
+    would see different shapes. Contract pinning test:
+    tests/test_strict_v2_contract.py::TestReadV2ConfigStripsLegacyKeys.
 
     Returns ``None`` when the file is absent, unreadable, malformed,
     or carries no ``tables`` array.
@@ -147,7 +155,11 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
         return None
     if not is_v2_shape(raw):
         return None
-    return raw
+    # Bundle 2.a — strip legacy apiInput-only keys. Imported lazily to
+    # keep this route module's import surface minimal.
+    from haute._config_io import _API_INPUT_LEGACY_KEYS_TO_STRIP
+
+    return {k: v for k, v in raw.items() if k not in _API_INPUT_LEGACY_KEYS_TO_STRIP}
 
 
 def _select_v2_config(body: JsonCacheBuildRequest) -> dict[str, Any] | None:
