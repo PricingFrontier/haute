@@ -1,5 +1,5 @@
-import { memo } from "react"
-import { Handle, Position, useStore, type NodeProps } from "@xyflow/react"
+import { memo, useEffect, useMemo } from "react"
+import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { Radio, Link2 } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
@@ -114,7 +114,7 @@ function _SourceHandles({
   )
 }
 
-function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
+function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
   const nodeType = nodeData.nodeType || NODE_TYPES.POLARS
   const Icon = nodeTypeIcons[nodeType] || PolarsIcon
   const accent = nodeTypeColors[nodeType] || nodeTypeColors[NODE_TYPES.POLARS]
@@ -125,6 +125,46 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
   const isSinkOnly = SINK_ONLY_TYPES.has(nodeType)
   const isPill = PILL_TYPES.has(nodeType)
+
+  // Bundle 3c — emit-table labels for the right-edge handles.  Source
+  // of truth shared between (a) `_SourceHandles` which renders the
+  // Handles, (b) the body label list, and (c) the
+  // `useUpdateNodeInternals` effect that nudges React Flow to re-measure
+  // when the topology changes.  Logic mirrors `_SourceHandles`: only
+  // emit:true tables count; missing/blank labels fall back to
+  // `port_<idx>`; duplicates are disambiguated with `__<idx>` suffix.
+  const emitTableLabels = useMemo<string[]>(() => {
+    if (!isDeployInput) return []
+    const tables = Array.isArray((nodeData.config as { tables?: unknown })?.tables)
+      ? ((nodeData.config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
+      : []
+    const emit = tables.filter(
+      (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
+    )
+    const seen = new Set<string>()
+    const out: string[] = []
+    emit.forEach((t, idx) => {
+      const raw = (t as { label?: unknown }).label
+      const candidate =
+        typeof raw === "string" && raw.trim() ? raw : `port_${idx}`
+      const label = seen.has(candidate) ? `${candidate}__${idx}` : candidate
+      seen.add(label)
+      out.push(label)
+    })
+    return out
+  }, [isDeployInput, nodeData.config])
+
+  // Pipe-joined signature is a stable value-equality proxy for the
+  // labels array; useEffect's value-equality on strings means it
+  // refires only when the labels actually change, not on every parent
+  // re-render that produces a fresh `nodeData.config` reference with
+  // unchanged emit topology (e.g. a column edit inside a table).
+  const emitTablesSig = emitTableLabels.join("|")
+  const updateNodeInternals = useUpdateNodeInternals()
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, emitTablesSig, updateNodeInternals])
+
   const sourceHandles = !isSinkOnly ? (
     <_SourceHandles
       isApiInput={isDeployInput}
@@ -132,6 +172,10 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
       accent={accent}
     />
   ) : null
+  // 2+ emit tables = multi-port; render the visual port-to-label
+  // mapping on the body.  0/1 emit = single-port fallback (Handle is
+  // unambiguous; no labels needed).
+  const showBodyLabels = isDeployInput && emitTableLabels.length >= 2
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
@@ -288,24 +332,47 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         )}
       </div>
 
-      {/* Body */}
+      {/* Body — Bundle 3c: when this is a multi-port apiInput, the
+          right-aligned label column visually maps each emit table to
+          its handle on the right edge, in the same top-to-bottom order
+          the Handles are stacked.  Hidden for 0/1 emit (single-port
+          fallback is unambiguous) and for all non-apiInput types. */}
       <div className="px-3 py-2">
-        <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-          {nodeData.label}
-        </div>
-        {traceActive && traceValue !== undefined && (
-          <div
-            className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
-            style={{
-              background: `${accent}18`,
-              color: accent,
-              border: `1px solid ${accent}30`,
-              maxWidth: "100%",
-            }}
-          >
-            {formatValueCompact(traceValue)}
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
+              {nodeData.label}
+            </div>
+            {traceActive && traceValue !== undefined && (
+              <div
+                className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
+                style={{
+                  background: `${accent}18`,
+                  color: accent,
+                  border: `1px solid ${accent}30`,
+                  maxWidth: "100%",
+                }}
+              >
+                {formatValueCompact(traceValue)}
+              </div>
+            )}
           </div>
-        )}
+          {showBodyLabels && (
+            <div className="flex flex-col gap-0.5 shrink-0 text-right">
+              {emitTableLabels.map((label) => (
+                <span
+                  key={label}
+                  data-testid={`api-input-body-label-${label}`}
+                  className="text-[10px] font-mono leading-tight truncate max-w-[100px]"
+                  style={{ color: "var(--text-muted)" }}
+                  title={label}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {sourceHandles}
