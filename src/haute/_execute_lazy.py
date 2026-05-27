@@ -1720,9 +1720,7 @@ def _execute_eager_core(
     # Value can be a single frame, None on failure, OR a per-port dict
     # (multi-port apiInput emits ``dict[port_label, DataFrame]`` — see
     # the ``materialised`` assignment in the dict-emit branch below).
-    eager_outputs: dict[
-        str, pl.DataFrame | dict[str, pl.DataFrame] | None
-    ] = {}
+    eager_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None] = {}
     runtime_outputs: dict[
         str,
         pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | None,
