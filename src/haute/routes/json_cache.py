@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import orjson
 from fastapi import APIRouter, HTTPException
@@ -172,7 +172,11 @@ def _select_v2_config(body: JsonCacheBuildRequest) -> dict[str, Any] | None:
     than silently falling back to disk.
     """
     if body.volatile_schema is not None:
-        return body.volatile_schema
+        # `body.volatile_schema` is typed `Any` at the Pydantic boundary
+        # (see schemas.py — intentional, so malformed shapes flow through
+        # to `validate_v2_schema`'s structured 422 rather than Pydantic's
+        # default 422). Cast here narrows for mypy without runtime change.
+        return cast(dict[str, Any], body.volatile_schema)
     config_path = _resolve_config_path(body.config_path)
     return _read_v2_config(config_path)
 

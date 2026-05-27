@@ -1147,9 +1147,7 @@ def execute_graph(
             # selected_columns scoop is skipped for apiInput nodes
             # (v2 has no spec for it; per-column `selected` bool in
             # tables[].columns[] is the v2-native surface).
-            config_refs = _extract_column_refs(
-                node_data.config, node_type=node_data.nodeType
-            )
+            config_refs = _extract_column_refs(node_data.config, node_type=node_data.nodeType)
             node_warnings = list(schema_warnings.get(node_id, []))
             if config_refs and available:
                 available_names = {c.name for c in available}
@@ -1267,7 +1265,9 @@ def _eager_execute(
     materialize_column_limits_by_node: dict[str, int] | None = None,
     execution_context: ExecutionContext | None = None,
 ) -> tuple[
-    dict[str, pl.DataFrame | None],
+    # Mirrors EagerResult.outputs — may carry per-port dict for multi-port
+    # apiInput sources.
+    dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None],
     list[str],
     dict[str, str],
     dict[str, float],

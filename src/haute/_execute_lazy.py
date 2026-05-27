@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import polars as pl
 
@@ -44,6 +44,15 @@ def _pick_source_frame(
     edge: GraphEdge,
 ) -> _Frame:
     """Pick the right frame from a source's output for *edge*.
+
+    May actually return a ``dict[str, _Frame]`` when the source is a
+    multi-port single-edge case (sourceHandle is None, source_output is
+    the whole bundle). The signature stays narrowed to ``_Frame`` because
+    every downstream caller in this module passes the result through
+    isinstance/narrowing before LazyFrame-only operations — see the
+    ``isinstance(lf, dict)`` branches in ``_build_lazy_node`` and the
+    eager path. ``# type: ignore`` on the dict-return sites captures
+    this contract.
 
     Multi-port sources (e.g. an apiInput with 2+ emit-true tables, commit 4)
     return a ``dict[port_name, LazyFrame]`` rather than a bare LazyFrame.
@@ -80,8 +89,10 @@ def _pick_source_frame(
                 f"Edge from {edge.source!r} references port {sh!r}, "
                 f"but the source emits: {sorted(source_output.keys())}.",
             )
-        return source_output[sh]
-    return source_output
+        # source_output is `Any` (dict-of-frames); narrowing to `_Frame`
+        # is correct at runtime — see function docstring.
+        return cast(_Frame, source_output[sh])
+    return cast(_Frame, source_output)
 
 
 def _build_input_kwargs(
@@ -1136,6 +1147,11 @@ def _execute_lazy(
         }
 
     def _build_lazy_node(nid: str) -> tuple[_Frame, bool, GraphNode]:
+        # May actually return ``(dict[str, _Frame], bool, GraphNode)`` for
+        # multi-port apiInput sources. Signature stays narrowed because every
+        # consumer in this function passes the result through
+        # ``isinstance(lf, dict)`` narrowing before LazyFrame-only operations.
+        # ``# type: ignore[return-value]`` on the dict-return site captures it.
         nonlocal public_projection_plan
 
         fn, is_source = funcs[nid]
@@ -1246,7 +1262,9 @@ def _execute_lazy(
         if isinstance(lf, dict):
             for port_name, port_frame in lf.items():
                 column_cache[(nid, port_name)] = _columns_of(port_frame)
-            return lf, is_source, node
+            # Multi-port apiInput: returning a dict-of-frames in the
+            # ``_Frame`` slot is the runtime contract; see function docstring.
+            return lf, is_source, node  # type: ignore[return-value]
 
         # Apply selected_columns filter first (uses pre-rename names),
         # then column renames on the surviving columns.
@@ -1543,7 +1561,10 @@ def _extract_error_line(exc: Exception) -> int | None:
 class EagerResult(NamedTuple):
     """Result of eager graph execution."""
 
-    outputs: dict[str, pl.DataFrame | None]
+    # ``outputs`` may carry a ``dict[port_label, DataFrame]`` for
+    # multi-port apiInput sources; non-apiInput nodes always emit a
+    # single ``DataFrame`` or ``None`` on failure.
+    outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None]
     order: list[str]
     parents_of: dict[str, list[str]]
     node_map: dict[str, GraphNode]
@@ -1696,8 +1717,16 @@ def _execute_eager_core(
         execution_profile=execution_context.profile if execution_context is not None else None,
     )
 
-    eager_outputs: dict[str, pl.DataFrame | None] = {}
-    runtime_outputs: dict[str, pl.LazyFrame | pl.DataFrame | None] = {}
+    # Value can be a single frame, None on failure, OR a per-port dict
+    # (multi-port apiInput emits ``dict[port_label, DataFrame]`` — see
+    # the ``materialised`` assignment in the dict-emit branch below).
+    eager_outputs: dict[
+        str, pl.DataFrame | dict[str, pl.DataFrame] | None
+    ] = {}
+    runtime_outputs: dict[
+        str,
+        pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | None,
+    ] = {}
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
     timings: dict[str, float] = {}
@@ -1826,11 +1855,7 @@ def _execute_eager_core(
                     if parent_frame is None:
                         continue
                     picked = _pick_source_frame(parent_frame, edge)
-                    parent_lf = (
-                        picked
-                        if isinstance(picked, pl.LazyFrame)
-                        else picked.lazy()
-                    )
+                    parent_lf = picked if isinstance(picked, pl.LazyFrame) else picked.lazy()
                     if children_count.get(pid, 0) > 1:
                         parent_lf = parent_lf.cache()
                     input_lfs.append(parent_lf)
@@ -1848,10 +1873,7 @@ def _execute_eager_core(
                     # Key per-edge by (source, sourceHandle) so the union
                     # picks up the right port's columns for multi-port
                     # consumers (commit 4).
-                    edge_cache_keys = [
-                        (e.source, e.sourceHandle)
-                        for e in incoming_edges_for_node
-                    ]
+                    edge_cache_keys = [(e.source, e.sourceHandle) for e in incoming_edges_for_node]
                     upstream_cols: frozenset[str] = frozenset().union(
                         *(column_cache[k] for k in edge_cache_keys if k in column_cache)
                     )
@@ -1878,9 +1900,7 @@ def _execute_eager_core(
                     if execution_context is not None
                     else ExecutionProfile.PREVIEW_EAGER
                 )
-                _mp_allow_broad = (
-                    _mp_collect_profile == ExecutionProfile.PREVIEW_EAGER
-                )
+                _mp_allow_broad = _mp_collect_profile == ExecutionProfile.PREVIEW_EAGER
                 materialised: dict[str, pl.DataFrame] = {}
                 for port_label, port_frame in result.items():
                     if isinstance(port_frame, pl.LazyFrame):

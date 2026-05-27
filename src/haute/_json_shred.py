@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import orjson
 import polars as pl
@@ -40,8 +40,10 @@ from haute._api_input_schema import (
     ColumnType,
     parse_column_path,
     parse_table_path,
-    sanitise_label_for_filesystem as _sanitise_label,
     validate_v2_schema,
+)
+from haute._api_input_schema import (
+    sanitise_label_for_filesystem as _sanitise_label,
 )
 from haute._logging import get_logger
 
@@ -234,7 +236,10 @@ def shred_to_buffers(
 # ---------------------------------------------------------------------------
 
 
-_POLARS_TYPE_MAP: dict[ColumnType, pl.DataType] = {
+# Values are Polars DataType *classes*, not instances. Polars's Schema /
+# DataFrame constructors accept either; we keep the classes here so the
+# table is constant-folded and cheap to look up.
+_POLARS_TYPE_MAP: dict[ColumnType, type[pl.DataType]] = {
     "int": pl.Int64,
     "float": pl.Float64,
     "str": pl.String,
@@ -254,8 +259,11 @@ def _buffer_to_frame(
     with the right schema so downstream readers see a consistent shape.
     Missing column values are ``None``.
     """
-    schema: dict[str, pl.DataType] = {
-        col_name: _POLARS_TYPE_MAP.get(col_type, pl.String)  # type: ignore[arg-type]
+    # ``col_type`` is `str` at the call site (from `_LeafSpec`), not
+    # narrowed to ColumnType — runtime invariant is it's one of the
+    # five values; cast suppresses mypy's overload check.
+    schema: dict[str, type[pl.DataType]] = {
+        col_name: _POLARS_TYPE_MAP.get(cast(ColumnType, col_type), pl.String)
         for col_name, _leaf, col_type in col_specs
     }
     columns: dict[str, list[Any]] = {col_name: [] for col_name, _leaf, _t in col_specs}
