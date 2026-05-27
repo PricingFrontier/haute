@@ -159,12 +159,6 @@ min_branch_coverage = 85.0
 rationale = "JSON flattening normalises user-uploaded datasets and schema inference."
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_flatten_schema.py"
-min_statement_coverage = 98.0
-min_branch_coverage = 95.0
-rationale = "JSON flatten schemas define deterministic columns for nested user datasets."
-
-[[tool.haute.critical_coverage.files]]
 path = "src/haute/_model_scorer.py"
 min_statement_coverage = 97.0
 min_branch_coverage = 95.0

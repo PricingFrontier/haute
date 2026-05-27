@@ -16,7 +16,6 @@
  * Step 2 (preview auto-loads on first file select) is documented as a
  * known failure today via `expect.soft` and an `annotations` entry.
  */
-import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 

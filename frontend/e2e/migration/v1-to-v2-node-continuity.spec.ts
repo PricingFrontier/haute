@@ -29,8 +29,7 @@
  * a literal v1→v2 transition) is out of scope here — the v1 surface is
  * being deleted, so there is no v1 baseline to capture in the same run.
  */
-import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { expect, test } from "@playwright/test"
@@ -44,7 +43,6 @@ const quotesConfigPath = resolve(
   "quote_input",
   "quotes.json",
 )
-const cacheDirCandidate = resolve(e2eProjectRoot, ".haute_cache")
 
 test.describe.configure({ mode: "serial" })
 
