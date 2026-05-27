@@ -19,5 +19,19 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Honour the leading-underscore "intentionally unused" convention
+      // for both function args (e.g. `(_key) => ...` callbacks that
+      // satisfy a typed interface but ignore the value) and locals
+      // (e.g. `function _init(_arg?: unknown) { ... }` stub functions).
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
+    },
   },
 ])

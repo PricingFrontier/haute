@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import polars as pl
 
@@ -37,6 +37,99 @@ from haute._types import (
 from haute.errors import ContractMismatchError, SchemaMismatchError
 
 logger = get_logger(component="execute")
+
+
+def _pick_source_frame(
+    source_output: Any,
+    edge: GraphEdge,
+) -> _Frame:
+    """Pick the right frame from a source's output for *edge*.
+
+    May actually return a ``dict[str, _Frame]`` when the source is a
+    multi-port single-edge case (sourceHandle is None, source_output is
+    the whole bundle). The signature stays narrowed to ``_Frame`` because
+    every downstream caller in this module passes the result through
+    isinstance/narrowing before LazyFrame-only operations — see the
+    ``isinstance(lf, dict)`` branches in ``_build_lazy_node`` and the
+    eager path. ``# type: ignore`` on the dict-return sites captures
+    this contract.
+
+    Multi-port sources (e.g. an apiInput with 2+ emit-true tables, commit 4)
+    return a ``dict[port_name, LazyFrame]`` rather than a bare LazyFrame.
+    The executor walks each outgoing edge from such a source and picks the
+    frame the edge's ``sourceHandle`` names — that's the structural pick
+    that makes per-port routing work.
+
+    Single-port sources keep returning a bare LazyFrame; ``sourceHandle``
+    is ignored (passthrough).
+
+    Raises ``ValueError`` for a multi-port source with a null
+    ``sourceHandle`` (edge wasn't wired to a specific port). Raises
+    ``KeyError`` for an edge whose ``sourceHandle`` doesn't match any port
+    the source actually emits.
+    """
+    if isinstance(source_output, dict):
+        if not source_output:
+            # Edge is intact; the source emitted no ports at all. Blaming
+            # the edge ("expected one of: []") would mislead — flag the
+            # source as the broken piece.
+            raise RuntimeError(
+                f"Source node {edge.source!r} emitted no ports. Check the "
+                "node's configuration: at least one emit-true table with "
+                "selected columns is required for a multi-port apiInput.",
+            )
+        sh = edge.sourceHandle
+        if sh is None:
+            raise ValueError(
+                f"Edge from multi-port node {edge.source!r} has no sourceHandle. "
+                f"Expected one of: {sorted(source_output.keys())}.",
+            )
+        if sh not in source_output:
+            raise KeyError(
+                f"Edge from {edge.source!r} references port {sh!r}, "
+                f"but the source emits: {sorted(source_output.keys())}.",
+            )
+        # source_output is `Any` (dict-of-frames); narrowing to `_Frame`
+        # is correct at runtime — see function docstring.
+        return cast(_Frame, source_output[sh])
+    return cast(_Frame, source_output)
+
+
+def _build_input_kwargs(
+    incoming_edges: list[GraphEdge],
+    input_frames: list[_Frame],
+    *,
+    target_node_id: str,
+) -> dict[str, _Frame]:
+    """Build the kwargs dict for calling a non-source node's function.
+
+    Per MULTI_FRAME_PLAN §4b, each incoming edge's binding key is
+    ``edge.sourceHandle`` when set (non-empty string, port name on a
+    multi-port source) else ``edge.source`` (the source node id, which
+    matches the parent label in current haute; the single-port fallback
+    that preserves pre-existing parameter-by-parent-label semantics).
+
+    Empty string is rejected at :class:`GraphEdge` ingest via the
+    ``_reject_empty_handle`` validator, so it never reaches this code path.
+    """
+    if len(incoming_edges) != len(input_frames):
+        raise ValueError(
+            f"binding mismatch on node {target_node_id!r}: "
+            f"{len(incoming_edges)} incoming edges vs "
+            f"{len(input_frames)} input frames",
+        )
+    kwargs: dict[str, _Frame] = {}
+    for edge, frame in zip(incoming_edges, input_frames, strict=True):
+        key = edge.sourceHandle if edge.sourceHandle is not None else edge.source
+        if key in kwargs:
+            raise ValueError(
+                f"Duplicate parameter binding {key!r} for node "
+                f"{target_node_id!r}: two incoming edges resolve to the "
+                f"same kwarg name. Either rename a port or remove the "
+                f"redundant edge.",
+            )
+        kwargs[key] = frame
+    return kwargs
 
 
 def _resolve_graph_paths(graph: PipelineGraph) -> PipelineGraph:
@@ -520,7 +613,9 @@ def _prepare_graph(
 ]:
     """Shared graph preparation: filter, topo-sort, and build lookups.
 
-    Returns (node_map, order, parents_of, id_to_name).
+    Returns (node_map, order, parents_of, id_to_name). Callers that need
+    the post-pruning edge list to index per-edge metadata (sourceHandle,
+    etc.) should call :func:`_prepare_graph_with_edges` instead.
     """
     prepared = projection_planner.prepare_graph(
         graph,
@@ -528,6 +623,35 @@ def _prepare_graph(
         source=source,
     )
     return prepared.node_map, prepared.order, prepared.parents_of, prepared.id_to_name
+
+
+def _prepare_graph_with_edges(
+    graph: PipelineGraph,
+    target_node_id: str | None = None,
+    source: str = "live",
+) -> tuple[
+    dict[str, GraphNode],
+    list[str],
+    dict[str, list[str]],
+    dict[str, str],
+    list[GraphEdge],
+]:
+    """Like :func:`_prepare_graph` but also returns the relevant-edges list
+    used to build ``parents_of``. The executor uses this to index incoming
+    edges per child without live-switch-pruned edges leaking in.
+    """
+    prepared = projection_planner.prepare_graph(
+        graph,
+        target_node_id,
+        source=source,
+    )
+    return (
+        prepared.node_map,
+        prepared.order,
+        prepared.parents_of,
+        prepared.id_to_name,
+        prepared.relevant_edges,
+    )
 
 
 def _execute_lazy(
@@ -597,7 +721,7 @@ def _execute_lazy(
     node_source_overrides = dict(source_by_node or {})
     if execution_context is not None:
         execution_context.checkpoint(label="lazy_start")
-    node_map, order, parents_of, id_to_name = _prepare_graph(
+    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
         graph,
         target_node_id,
         source=source,
@@ -817,6 +941,17 @@ def _execute_lazy(
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
 
+    # Per-target incoming-edge lookup, in edge-declaration order, so each
+    # node's function-parameter binding key can be derived from
+    # ``edge.sourceHandle or edge.source`` (MULTI_FRAME_PLAN §4b) without
+    # re-scanning per node. Use ``relevant_edges`` (post-pruning,
+    # ancestor-filtered) so live-switch-inactive edges don't surface here
+    # — that would mismatch ``parents_of`` and break the binding-count
+    # invariant on switch nodes.
+    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in relevant_edges:
+        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+
     # Build executable functions — delegates to _build_funcs with
     # row_limit=None (lazy path never caps source output).
     with (
@@ -889,7 +1024,13 @@ def _execute_lazy(
     # computes schema without executing the query, so collect_schema()
     # is cheap; caching keeps repeated lookups free when the same
     # upstream feeds multiple consumers.
-    column_cache: dict[str, frozenset[str]] = {}
+    #
+    # column_cache is keyed by ``(producer_node_id, port_name_or_None)``.
+    # Multi-port apiInputs (commit 4) emit different columns per port, so
+    # consumers picking different ports of the same upstream must not
+    # collide on a parent-id-only key. ``None`` is used for single-frame
+    # outputs (the common case).
+    column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
 
     def _schema_names_of(frame: pl.LazyFrame | pl.DataFrame) -> list[str]:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
@@ -1006,6 +1147,11 @@ def _execute_lazy(
         }
 
     def _build_lazy_node(nid: str) -> tuple[_Frame, bool, GraphNode]:
+        # May actually return ``(dict[str, _Frame], bool, GraphNode)`` for
+        # multi-port apiInput sources. Signature stays narrowed because every
+        # consumer in this function passes the result through
+        # ``isinstance(lf, dict)`` narrowing before LazyFrame-only operations.
+        # ``# type: ignore[return-value]`` on the dict-return site captures it.
         nonlocal public_projection_plan
 
         fn, is_source = funcs[nid]
@@ -1030,7 +1176,12 @@ def _execute_lazy(
                     f"Node '{nid}' is missing input(s) from: {missing}. "
                     "Upstream node(s) may have failed or not been registered."
                 )
-            input_lfs = [lazy_outputs[pid] for pid in input_ids]
+            # Resolve each incoming edge's frame via ``_pick_source_frame``
+            # so a multi-port source (an apiInput emitting a per-port dict,
+            # commit 4) routes the right frame to each edge based on
+            # ``edge.sourceHandle``. Single-port sources pass through.
+            incoming_edges = incoming_edges_by_target.get(nid, [])
+            input_lfs = [_pick_source_frame(lazy_outputs[e.source], e) for e in incoming_edges]
             if not input_lfs:
                 raise ValueError(f"No input data available for node '{nid}'")
 
@@ -1065,20 +1216,24 @@ def _execute_lazy(
 
             if check_here and contract is not None and contract.inputs is not None:
                 upstream_col_sets: list[frozenset[str]] = []
-                for upstream_pid, upstream_lf, projected_cols in zip(
-                    input_ids,
+                for upstream_edge, upstream_lf, projected_cols in zip(
+                    incoming_edges,
                     input_lfs,
                     projected_input_columns,
                     strict=True,
                 ):
+                    # Key the cache by (parent_id, port_name) so two
+                    # consumers picking different ports of the same
+                    # multi-port source see distinct cache entries.
+                    cache_key = (upstream_edge.source, upstream_edge.sourceHandle)
                     upstream_cols: frozenset[str]
                     if projected_cols is not None:
                         upstream_cols = projected_cols
                     else:
-                        cached_cols = column_cache.get(upstream_pid)
+                        cached_cols = column_cache.get(cache_key)
                         if cached_cols is None:
                             cached_cols = _columns_of(upstream_lf)
-                            column_cache[upstream_pid] = cached_cols
+                            column_cache[cache_key] = cached_cols
                         upstream_cols = cached_cols
                     upstream_col_sets.append(upstream_cols)
                 upstream_cols = frozenset().union(*upstream_col_sets)
@@ -1091,6 +1246,25 @@ def _execute_lazy(
 
         if isinstance(lf, pl.DataFrame):
             lf = lf.lazy()
+
+        # Multi-port emit: a source (currently only apiInput when v2 has
+        # 2+ emit-true tables) may return a ``dict[port_name, LazyFrame]``.
+        # The dict is stored in lazy_outputs[nid] and consumers pick a
+        # frame from it per-edge via ``_pick_source_frame``. Single-frame
+        # post-processing (selected_columns / column_renames / output
+        # contract check) is bypassed because those transformations are
+        # per-frame, not per-bundle. They'd apply naturally to whichever
+        # frame the consumer picks if the consumer chooses to layer them
+        # on top.
+        #
+        # Populate column_cache per-port so downstream consumers' contract
+        # checks find the right columns under ``(parent_id, port_name)``.
+        if isinstance(lf, dict):
+            for port_name, port_frame in lf.items():
+                column_cache[(nid, port_name)] = _columns_of(port_frame)
+            # Multi-port apiInput: returning a dict-of-frames in the
+            # ``_Frame`` slot is the runtime contract; see function docstring.
+            return lf, is_source, node  # type: ignore[return-value]
 
         # Apply selected_columns filter first (uses pre-rename names),
         # then column renames on the surviving columns.
@@ -1108,7 +1282,7 @@ def _execute_lazy(
             and not is_passthrough_runtime
         ):
             out_cols = _columns_of(lf)
-            column_cache[nid] = out_cols
+            column_cache[(nid, None)] = out_cols
             _assert_outputs_satisfy_contract(node, contract, out_cols)
 
         return lf, is_source, node
@@ -1119,7 +1293,7 @@ def _execute_lazy(
         cached_seed = cached_seed_outputs.get(nid)
         if cached_seed is not None:
             lazy_outputs[nid] = cached_seed
-            column_cache[nid] = _columns_of(cached_seed)
+            column_cache[(nid, None)] = _columns_of(cached_seed)
             logger.info("dataframe_execution_cache_seed_hit", node_id=nid)
             if execution_context is not None:
                 execution_context.checkpoint(label="lazy_dataframe_cache_seed_hit", node_id=nid)
@@ -1185,7 +1359,7 @@ def _execute_lazy(
                             lf = cached_lf
                             cache_materialized = True
                             cache_backed_node_ids.add(nid)
-                            column_cache[nid] = _columns_of(lf)
+                            column_cache[(nid, None)] = _columns_of(lf)
                             _release_consumed_parents(nid)
                             checkpoints_since_gc += 1
                             if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
@@ -1261,7 +1435,7 @@ def _execute_lazy(
                         projected_cols=len(valid),
                     )
                     sink_lf = sink_lf.select(valid)
-                    column_cache[nid] = frozenset(valid)
+                    column_cache[(nid, None)] = frozenset(valid)
 
             with (
                 execution_context.stage("lazy_checkpoint_parquet", node_id=nid)
@@ -1387,7 +1561,10 @@ def _extract_error_line(exc: Exception) -> int | None:
 class EagerResult(NamedTuple):
     """Result of eager graph execution."""
 
-    outputs: dict[str, pl.DataFrame | None]
+    # ``outputs`` may carry a ``dict[port_label, DataFrame]`` for
+    # multi-port apiInput sources; non-apiInput nodes always emit a
+    # single ``DataFrame`` or ``None`` on failure.
+    outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None]
     order: list[str]
     parents_of: dict[str, list[str]]
     node_map: dict[str, GraphNode]
@@ -1453,7 +1630,7 @@ def _execute_eager_core(
         memory_bytes.
     """
     graph = _resolve_graph_paths(graph)
-    node_map, order, parents_of, id_to_name = _prepare_graph(
+    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(
         graph,
         target_node_id,
         source=source,
@@ -1480,6 +1657,13 @@ def _execute_eager_core(
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
+
+    # Per-target incoming-edge lookup (eager path); same role as in the
+    # lazy path, see :func:`_build_input_kwargs`. Use ``relevant_edges``
+    # so live-switch pruning is honoured.
+    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in relevant_edges:
+        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
 
     # Fan-out count per node — how many direct children consume this
     # node's output.  Used to add a Polars ``.cache()`` hint when the
@@ -1533,8 +1717,14 @@ def _execute_eager_core(
         execution_profile=execution_context.profile if execution_context is not None else None,
     )
 
-    eager_outputs: dict[str, pl.DataFrame | None] = {}
-    runtime_outputs: dict[str, pl.LazyFrame | pl.DataFrame | None] = {}
+    # Value can be a single frame, None on failure, OR a per-port dict
+    # (multi-port apiInput emits ``dict[port_label, DataFrame]`` — see
+    # the ``materialised`` assignment in the dict-emit branch below).
+    eager_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None] = {}
+    runtime_outputs: dict[
+        str,
+        pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | None,
+    ] = {}
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
     timings: dict[str, float] = {}
@@ -1548,7 +1738,11 @@ def _execute_eager_core(
     # for its consumer(s).  Polars' ``.columns`` is O(n) in the number
     # of columns, but frozenset construction dominates anyway; caching
     # keeps the contract-enforced path within the <5% budget.
-    column_cache: dict[str, frozenset[str]] = {}
+    #
+    # Same shape change as the lazy path: keyed by
+    # ``(producer_node_id, port_name_or_None)`` so multi-port consumers
+    # don't collide.
+    column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
 
     def _schema_items_of(frame: pl.LazyFrame | pl.DataFrame) -> list[tuple[str, str]]:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
@@ -1645,18 +1839,21 @@ def _execute_eager_core(
                 # -> sink should compute src's plan once, not twice.
                 # Parents with exactly one consumer skip the hint — it's
                 # cheap but non-zero overhead and adds no value there.
+                # Eager path: resolve each incoming edge's frame via
+                # ``_pick_source_frame`` so multi-port sources (apiInput
+                # emitting a per-port dict) route per-edge by
+                # ``edge.sourceHandle``. Single-port sources pass through.
                 input_lfs = []
-                for pid in input_ids:
+                incoming_edges_for_node = incoming_edges_by_target.get(nid, [])
+                for edge in incoming_edges_for_node:
+                    pid = edge.source
                     if pid not in runtime_outputs:
                         continue
                     parent_frame = runtime_outputs[pid]
                     if parent_frame is None:
                         continue
-                    parent_lf = (
-                        parent_frame
-                        if isinstance(parent_frame, pl.LazyFrame)
-                        else parent_frame.lazy()
-                    )
+                    picked = _pick_source_frame(parent_frame, edge)
+                    parent_lf = picked if isinstance(picked, pl.LazyFrame) else picked.lazy()
                     if children_count.get(pid, 0) > 1:
                         parent_lf = parent_lf.cache()
                     input_lfs.append(parent_lf)
@@ -1671,8 +1868,12 @@ def _execute_eager_core(
                 # node's function receives inputs — multi-input joins
                 # combine them before the contract columns are read.
                 if check_here and contract.inputs is not None:  # type: ignore[union-attr]
+                    # Key per-edge by (source, sourceHandle) so the union
+                    # picks up the right port's columns for multi-port
+                    # consumers (commit 4).
+                    edge_cache_keys = [(e.source, e.sourceHandle) for e in incoming_edges_for_node]
                     upstream_cols: frozenset[str] = frozenset().union(
-                        *(column_cache[pid] for pid in input_ids if pid in column_cache)
+                        *(column_cache[k] for k in edge_cache_keys if k in column_cache)
                     )
                     _assert_inputs_satisfy_contract(node, contract, upstream_cols)  # type: ignore[arg-type]
 
@@ -1680,6 +1881,57 @@ def _execute_eager_core(
                     _assert_simple_join_key_dtypes_compatible(node, input_ids, input_lfs)
 
                 result = fn(*input_lfs)
+
+            # Multi-port emit: a source may return ``dict[port_name, frame]``.
+            # Materialise each port's LazyFrame to DataFrame so the preview
+            # cache's size accounting (which assumes DataFrame-valued
+            # outputs) works on each port. Downstream edges pick per-edge
+            # via ``_pick_source_frame`` from the runtime_outputs dict.
+            #
+            # Use ``streaming_collect`` (not bare ``.collect()``) so the
+            # bounded-memory contract holds in profiled execution paths.
+            # `test_bounded_collect_contracts` enforces that bounded
+            # modules never call ``.collect()`` directly.
+            if isinstance(result, dict):
+                _mp_collect_profile = (
+                    execution_context.profile
+                    if execution_context is not None
+                    else ExecutionProfile.PREVIEW_EAGER
+                )
+                _mp_allow_broad = _mp_collect_profile == ExecutionProfile.PREVIEW_EAGER
+                materialised: dict[str, pl.DataFrame] = {}
+                for port_label, port_frame in result.items():
+                    if isinstance(port_frame, pl.LazyFrame):
+                        port_df = streaming_collect(
+                            port_frame,
+                            profile=_mp_collect_profile,
+                            allow_broad=_mp_allow_broad,
+                        )
+                    elif isinstance(port_frame, pl.DataFrame):
+                        port_df = port_frame
+                    else:
+                        raise TypeError(
+                            f"Node '{nid}' multi-port output for port "
+                            f"{port_label!r} is not a Polars frame "
+                            f"(got {type(port_frame).__name__}).",
+                        )
+                    materialised[port_label] = port_df
+                # Store DataFrames for cache accounting; downstream
+                # _pick_source_frame + _to_lazy_if_needed will lazify when
+                # consumers need a LazyFrame.
+                runtime_outputs[nid] = materialised
+                # Populate column_cache per-port so consumers' contract
+                # checks find the right columns under (nid, port_label).
+                for port_label, port_df in materialised.items():
+                    column_cache[(nid, port_label)] = frozenset(port_df.columns)
+                eager_outputs[nid] = materialised
+                t1 = time.perf_counter()
+                timings[nid] = round(t1 - t0, 6)
+                available_columns[nid] = []
+                output_columns[nid] = []
+                if execution_context is not None:
+                    execution_context.checkpoint(label="after_node", node_id=nid)
+                continue
 
             if not isinstance(result, (pl.LazyFrame, pl.DataFrame)):
                 raise TypeError(
@@ -1739,7 +1991,7 @@ def _execute_eager_core(
                 candidate_columns = [c for c in output_column_names if c in projection]
                 if len(candidate_columns) < len(output_column_names):
                     projected_columns = candidate_columns
-            column_cache[nid] = final_cols
+            column_cache[(nid, None)] = final_cols
 
             should_materialize = materialized_ids is None or nid in materialized_ids
             if should_materialize:

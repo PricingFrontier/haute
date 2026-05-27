@@ -1,5 +1,5 @@
-import { memo } from "react"
-import { Handle, Position, useStore, type NodeProps } from "@xyflow/react"
+import { memo, useEffect, useMemo } from "react"
+import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { Radio, Link2 } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
@@ -36,7 +36,85 @@ const zoomSelector = (s: { transform: [number, number, number] }) => {
   return "compact"
 }
 
-function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
+/** Source-Handle setup for the right edge of the node.
+ *
+ * Commit-6 multi-port: when an apiInput has 2+ `emit: true` tables, we
+ * render one labelled Handle per table (id = table label). Otherwise the
+ * legacy single Handle covers the default single-port use.
+ *
+ * Returning a JSX list rather than mutating render order keeps the call
+ * sites at the three zoom levels each a one-line switch.
+ */
+function _SourceHandles({
+  isApiInput,
+  config,
+  accent,
+}: {
+  isApiInput: boolean
+  config: Record<string, unknown> | undefined
+  accent: string
+}) {
+  if (!isApiInput) {
+    return <Handle type="source" position={Position.Right} />
+  }
+  const tables = Array.isArray((config as { tables?: unknown })?.tables)
+    ? ((config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
+    : []
+  const emitTables = tables.filter(
+    (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
+  )
+  if (emitTables.length < 2) {
+    // Single-port fallback (one or zero emit:true tables, or no tables key):
+    // preserve the legacy default Handle so existing single-port pipelines
+    // continue to work unchanged.
+    return <Handle type="source" position={Position.Right} />
+  }
+  // Multi-port: stack labelled Handles down the right edge. Each
+  // Handle's `id` is the table's label — React Flow propagates this to
+  // `onConnect.params.sourceHandle` when a user drags from it.
+  //
+  // Defence in depth per the adversarial review's S2: substitute a
+  // synthetic `port_<idx>` when the label is missing / non-string /
+  // empty / whitespace-only. Two Handles with the same id break React
+  // Flow's edge resolution — the backend's B2 sanitised-label
+  // collision check (in `validate_v2_schema`) catches this for the
+  // load-bearing case, but the frontend doesn't always re-validate
+  // before render, so we also collapse same-id duplicates here to
+  // avoid the React-Flow-internal failure mode.
+  const seenIds = new Set<string>()
+  return (
+    <>
+      {emitTables.map((table, idx) => {
+        const rawLabel = (table as { label?: unknown }).label
+        const candidate =
+          typeof rawLabel === "string" && rawLabel.trim() ? rawLabel : `port_${idx}`
+        // If a later table reuses an earlier id, fall back to a synthetic
+        // id so React Flow doesn't see duplicates (last-writer-wins on
+        // React keys breaks edge routing). The schema-validation path
+        // rejects this case before persistence; this branch only fires
+        // for the transient pre-save state.
+        const label = seenIds.has(candidate) ? `${candidate}__${idx}` : candidate
+        seenIds.add(label)
+        // Stack the dots vertically; `top` is a percentage so the
+        // Handles space evenly down the right edge regardless of node
+        // height.
+        const topPct = ((idx + 1) / (emitTables.length + 1)) * 100
+        return (
+          <Handle
+            key={label}
+            id={label}
+            type="source"
+            position={Position.Right}
+            style={{ top: `${topPct}%`, background: accent }}
+            data-testid={`api-input-port-${label}`}
+          />
+        )
+      })}
+    </>
+  )
+}
+
+function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
   const nodeType = nodeData.nodeType || NODE_TYPES.POLARS
   const Icon = nodeTypeIcons[nodeType] || PolarsIcon
   const accent = nodeTypeColors[nodeType] || nodeTypeColors[NODE_TYPES.POLARS]
@@ -47,6 +125,57 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
   const isSinkOnly = SINK_ONLY_TYPES.has(nodeType)
   const isPill = PILL_TYPES.has(nodeType)
+
+  // Bundle 3c — emit-table labels for the right-edge handles.  Source
+  // of truth shared between (a) `_SourceHandles` which renders the
+  // Handles, (b) the body label list, and (c) the
+  // `useUpdateNodeInternals` effect that nudges React Flow to re-measure
+  // when the topology changes.  Logic mirrors `_SourceHandles`: only
+  // emit:true tables count; missing/blank labels fall back to
+  // `port_<idx>`; duplicates are disambiguated with `__<idx>` suffix.
+  const emitTableLabels = useMemo<string[]>(() => {
+    if (!isDeployInput) return []
+    const tables = Array.isArray((nodeData.config as { tables?: unknown })?.tables)
+      ? ((nodeData.config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
+      : []
+    const emit = tables.filter(
+      (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
+    )
+    const seen = new Set<string>()
+    const out: string[] = []
+    emit.forEach((t, idx) => {
+      const raw = (t as { label?: unknown }).label
+      const candidate =
+        typeof raw === "string" && raw.trim() ? raw : `port_${idx}`
+      const label = seen.has(candidate) ? `${candidate}__${idx}` : candidate
+      seen.add(label)
+      out.push(label)
+    })
+    return out
+  }, [isDeployInput, nodeData.config])
+
+  // Pipe-joined signature is a stable value-equality proxy for the
+  // labels array; useEffect's value-equality on strings means it
+  // refires only when the labels actually change, not on every parent
+  // re-render that produces a fresh `nodeData.config` reference with
+  // unchanged emit topology (e.g. a column edit inside a table).
+  const emitTablesSig = emitTableLabels.join("|")
+  const updateNodeInternals = useUpdateNodeInternals()
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, emitTablesSig, updateNodeInternals])
+
+  const sourceHandles = !isSinkOnly ? (
+    <_SourceHandles
+      isApiInput={isDeployInput}
+      config={nodeData.config as Record<string, unknown> | undefined}
+      accent={accent}
+    />
+  ) : null
+  // 2+ emit tables = multi-port; render the visual port-to-label
+  // mapping on the body.  0/1 emit = single-port fallback (Handle is
+  // unambiguous; no labels needed).
+  const showBodyLabels = isDeployInput && emitTableLabels.length >= 2
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
@@ -84,7 +213,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
             {nodeData.label}
           </div>
         </div>
-        {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+        {sourceHandles}
       </div>
     )
   }
@@ -106,8 +235,11 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
-  // Header bar border-radius: matches inner edge of container (outer radius minus border)
-  const headerRadius = isPill ? "15px 15px 0 0" : "11px 11px 0 0"
+  // Header bar border-radius: matches inner edge of container (outer radius minus
+  // 3px border).  Container is rounded-xl (12px) → inner 9px, or rounded-2xl
+  // (16px, pill) → inner 13px.  Previous values (11 / 15) assumed a 1px border
+  // and showed as "whiskers" poking past the container corners at high zoom.
+  const headerRadius = isPill ? "13px 13px 0 0" : "9px 9px 0 0"
 
   // Medium mode: header bar + label, no extra badges
   if (zoomLevel === "medium") {
@@ -135,7 +267,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
             {nodeData.label}
           </div>
         </div>
-        {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+        {sourceHandles}
       </div>
     )
   }
@@ -200,27 +332,50 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         )}
       </div>
 
-      {/* Body */}
+      {/* Body — Bundle 3c: when this is a multi-port apiInput, the
+          right-aligned label column visually maps each emit table to
+          its handle on the right edge, in the same top-to-bottom order
+          the Handles are stacked.  Hidden for 0/1 emit (single-port
+          fallback is unambiguous) and for all non-apiInput types. */}
       <div className="px-3 py-2">
-        <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-          {nodeData.label}
-        </div>
-        {traceActive && traceValue !== undefined && (
-          <div
-            className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
-            style={{
-              background: `${accent}18`,
-              color: accent,
-              border: `1px solid ${accent}30`,
-              maxWidth: "100%",
-            }}
-          >
-            {formatValueCompact(traceValue)}
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
+              {nodeData.label}
+            </div>
+            {traceActive && traceValue !== undefined && (
+              <div
+                className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
+                style={{
+                  background: `${accent}18`,
+                  color: accent,
+                  border: `1px solid ${accent}30`,
+                  maxWidth: "100%",
+                }}
+              >
+                {formatValueCompact(traceValue)}
+              </div>
+            )}
           </div>
-        )}
+          {showBodyLabels && (
+            <div className="flex flex-col gap-0.5 shrink-0 text-right">
+              {emitTableLabels.map((label) => (
+                <span
+                  key={label}
+                  data-testid={`api-input-body-label-${label}`}
+                  className="text-[10px] font-mono leading-tight truncate max-w-[100px]"
+                  style={{ color: "var(--text-muted)" }}
+                  title={label}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {!isSinkOnly && <Handle type="source" position={Position.Right} />}
+      {sourceHandles}
     </div>
   )
 }

@@ -638,41 +638,62 @@ class TestRatingTableRowCount:
 
 class TestConfigRoundtrip:
     @given(
+        # Bundle 2.α — keys must be in the per-node-type allowlist or in
+        # _UNIVERSAL_KEYS to survive `_prepare_config_for_sidecar`.
+        # Using universal keys ensures the property holds across any
+        # node_type. The keys below all appear in _UNIVERSAL_KEYS:
+        # `selected_columns` (list[str]), `column_renames` (dict[str,str]),
+        # `contract` (str). Strategy avoids leading underscores in
+        # nested string values because `_strip_internal_keys` recurses
+        # and strips `_*` keys at every level — those would not
+        # roundtrip (by design).
         config=st.fixed_dictionaries(
             {
-                "key_str": st.text(
-                    alphabet=string.ascii_letters + string.digits + " _-",
+                "selected_columns": st.lists(
+                    st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    max_size=5,
+                ),
+                "column_renames": st.dictionaries(
+                    keys=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    values=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    max_size=5,
+                ),
+                "contract": st.text(
+                    alphabet=string.ascii_letters + string.digits + "-",
                     min_size=0,
                     max_size=20,
                 ),
-                "key_int": st.integers(min_value=-1000, max_value=1000),
-                "key_float": st.floats(allow_nan=False, allow_infinity=False),
-                "key_bool": st.booleans(),
-                "key_list": st.lists(st.integers(), max_size=5),
             }
         ),
     )
     @settings(max_examples=80)
     def test_config_roundtrip_preserves_data(self, config, tmp_path_factory):
-        """load(save(config)) == config for valid config dicts."""
+        """load(save(config)) == config for allowlisted config keys.
+
+        Bundle 2.α restricted the roundtrip contract: keys outside
+        `VALID_KEYS[node_type]` are dropped at write time. The
+        roundtrip property now applies only to allowlisted keys
+        (TypedDict-declared keys + `_UNIVERSAL_KEYS`).
+        """
         from haute._config_io import load_node_config, save_node_config
         from haute.graph_utils import NodeType
 
         base_dir = tmp_path_factory.mktemp("cfg")
+        # OUTPUT has a config folder and no per-type compactor —
+        # BANDING and RATING_STEP have compactors that strip universal
+        # keys, POLARS has no folder (transforms store code inline).
+        # OUTPUT is the cleanest target for testing the pure JSON+α
+        # roundtrip of universal keys.
         rel = save_node_config(
-            NodeType.BANDING,
+            NodeType.OUTPUT,
             "test_node",
             config,
             base_dir,
         )
         loaded = load_node_config(rel, base_dir=base_dir)
-        # JSON roundtrip: int keys stay int, float may lose precision
         for k, v in config.items():
             assert k in loaded, f"Key {k!r} missing after roundtrip"
-            if isinstance(v, float):
-                assert abs(loaded[k] - v) < 1e-10, f"Float drift for {k}"
-            else:
-                assert loaded[k] == v, f"Value mismatch for {k}: {v!r} vs {loaded[k]!r}"
+            assert loaded[k] == v, f"Value mismatch for {k}: {v!r} vs {loaded[k]!r}"
 
 
 # ---------------------------------------------------------------------------

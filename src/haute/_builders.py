@@ -23,7 +23,7 @@ import haute.projection as projection
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
-from haute._io import load_external_object, read_data_source, read_source
+from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
 from haute._rating import (
     _apply_banding,
@@ -386,9 +386,20 @@ def _passthrough_columns(_config: dict[str, Any]) -> ColumnContract:
     return (set(), set())
 
 
-def _passthrough_fn(*dfs: _Frame) -> _Frame:
-    """Shared passthrough: return the first input or an empty LazyFrame."""
-    return dfs[0] if dfs else pl.LazyFrame()
+def _passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+    """Shared passthrough: return the first incoming frame or an empty LazyFrame.
+
+    Per MULTI_FRAME_PLAN §4b the executor binds incoming edges to the
+    consumer function as keyword arguments keyed by ``sourceHandle or
+    source_node_label``. The function also accepts positional args so
+    direct callers (tests that drive the builder-produced function
+    in isolation) keep working. When both forms are supplied the keyword
+    form takes precedence; ``next(iter(dfs_by_name.values()))`` preserves
+    the edge-declaration order the executor inserts into the dict.
+    """
+    if dfs_by_name:
+        return next(iter(dfs_by_name.values()))
+    return dfs_positional[0] if dfs_positional else pl.LazyFrame()
 
 
 def _explore_fn(df: _Frame) -> _Frame:
@@ -401,39 +412,133 @@ def _explore_columns(config: dict[str, Any]) -> ColumnContract:
     return OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
 
 
+def _make_api_source_v2(
+    data_path: str,
+    config: dict[str, Any],
+) -> Callable[..., Any]:
+    """Build the runtime source function for a v2 apiInput.
+
+    Behaviour at call time:
+
+    - 0 emit-true tables → raise a clear RuntimeError (the editor's
+      empty-state message; the user has to tick at least one ``emit``
+      before previewing).
+    - 1 emit-true table → return a bare LazyFrame (single-port shorthand;
+      existing edges with null sourceHandle keep binding to this node via
+      MULTI_FRAME_PLAN §4b's source-label fallback).
+    - 2+ emit-true tables → return a ``dict[port_label, LazyFrame]``. The
+      executor's edge-resolution picks one frame per outgoing edge using
+      ``edge.sourceHandle``.
+
+    The cache directory is the dual-cache ``working/<hash>/`` layer (commit
+    3's per-port shred output). If the cache isn't valid, raise with the
+    "click Cache as Parquet" message — same UX shape as the v1 path. No
+    auto-build in this commit; that's intentional ergonomic discipline
+    (see DUAL_CACHE.md §4 — caching is an explicit user action).
+    """
+    from haute._api_input_schema import validate_v2_schema
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import (
+        is_per_port_cache_valid,
+        load_per_port_cache,
+    )
+
+    # Validate at build time so a malformed config fails before any
+    # data is fetched. Keeps the runtime branch lean.
+    validate_v2_schema(config)
+
+    # Separate two distinct user-error states so the runtime message
+    # points at the actual missing step rather than treating both as
+    # "no emitting tables".
+    emit_true_tables = [t for t in config.get("tables", []) or [] if t.get("emit")]
+    emit_with_columns = [
+        t for t in emit_true_tables if any(c.get("selected") for c in (t.get("columns") or []))
+    ]
+    emit_labels: list[str] = [t["label"] for t in emit_with_columns]
+
+    if not emit_true_tables:
+
+        def _api_source_v2_no_emit() -> _Frame:
+            raise RuntimeError(
+                "API Input has no emitting tables. Open the node, tick "
+                "the 'emit' toggle on at least one table, then click "
+                "'Cache as Parquet' before previewing.",
+            )
+
+        return _api_source_v2_no_emit
+
+    if not emit_with_columns:
+        # emit:true on at least one table, but none of those tables has
+        # a selected column. This used to collapse silently to the
+        # no-emit case — adversarial review flagged it as a real user
+        # state worth its own error message.
+        _emit_labels_for_err = [t["label"] for t in emit_true_tables]
+
+        def _api_source_v2_no_columns(_labels: list[str] = _emit_labels_for_err) -> _Frame:
+            raise RuntimeError(
+                "API Input has emit-true tables but none has any selected "
+                "columns. Open the node and tick at least one column on "
+                f"the emitting table(s): {_labels}. Then click 'Cache as "
+                "Parquet' before previewing.",
+            )
+
+        return _api_source_v2_no_columns
+
+    def _api_source_v2(
+        _data_path: str = data_path,
+        _config: dict[str, Any] = config,
+        _emit_labels: list[str] = list(emit_labels),
+    ) -> _Frame | dict[str, _Frame]:
+        cache_dir = _json_cache_dir(_data_path, "working")
+        if not is_per_port_cache_valid(cache_dir, _config):
+            # Fall back to the committed layer (deploy / fresh-server case).
+            committed_dir = _json_cache_dir(_data_path, "committed")
+            if not is_per_port_cache_valid(committed_dir, _config):
+                raise RuntimeError(
+                    "API Input data hasn't been cached for the current "
+                    "schema, or the cache is stale. Click 'Cache as "
+                    "Parquet' on the API Input node to (re)build.",
+                )
+            cache_dir = committed_dir
+        bundle = load_per_port_cache(cache_dir, _config)
+        # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
+        if len(_emit_labels) == 1:
+            return bundle[_emit_labels[0]]
+        # Multi-port: preserve the order from the schema so executor logs
+        # and error messages are deterministic.
+        return {label: bundle[label] for label in _emit_labels if label in bundle}
+
+    return _api_source_v2
+
+
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     path = config.get("path", "")
-    flat_schema = config.get("flattenSchema")
 
-    api_source_fn: Callable[..., _Frame]
+    api_source_fn: Callable[..., Any]
     if path.lower().endswith((".json", ".jsonl")):
+        # v2 per-port shred is the only JSON apiInput codec. When the
+        # config carries `tables[]` we dispatch into the v2 source
+        # builder (emit-true count decides bare frame vs dict[label,
+        # frame]). Anything else is an editor-state error: the user must
+        # populate `tables[]` via the Infer Tables button before the
+        # pipeline can run.
+        from haute._api_input_schema import is_v2_shape as _is_v2_shape
 
-        def _api_source_json(
-            _path: str = path,
-            _schema: dict | None = flat_schema,
-            _profile: str | None = ctx.execution_profile,
-            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        if _is_v2_shape(config):
+            return ctx.func_name, _make_api_source_v2(path, config), True
+
+        def _api_source_no_tables(
+            _label: str = ctx.func_name,
         ) -> _Frame:
-            from haute._json_flatten import json_cache_path_if_valid
-
-            cache_path = json_cache_path_if_valid(_path, schema=_schema)
-            if cache_path is not None:
-                projected = _source_scan_projection(_profile, _columns, config)
-                return read_source(
-                    cache_path,
-                    profile=_profile,
-                    columns=projected.columns,
-                    validate_columns=projected.validate_columns,
-                )
             raise RuntimeError(
-                "JSON data has not been cached yet, or the existing cache is stale "
-                "or schema-incompatible. "
-                "Click 'Cache as Parquet' on the API Input node to process it."
+                f"API Input '{_label}' has no v2 schema (tables[]). Open the "
+                "node and click 'Infer Tables' to populate the schema "
+                "mapping, then click 'Cache as Parquet'."
             )
 
-        api_source_fn = _api_source_json
+        api_source_fn = _api_source_no_tables
     else:
 
         def _api_source_flat(
@@ -582,7 +687,14 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     input_names = list(ctx.source_names)
     _source = ctx.source or "live"
 
-    def switch_fn(*dfs: _Frame) -> _Frame:
+    def switch_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        # Build a positional view in declared-source order so existing
+        # logic that picks by index still works. The wrapper accepts
+        # both kwarg (executor) and positional (direct test caller) forms.
+        if dfs_by_name:
+            dfs = tuple(dfs_by_name[name] for name in input_names if name in dfs_by_name)
+        else:
+            dfs = dfs_positional
         # Find the input mapped to the active source
         for inp, scn in input_scenario_map.items():
             if scn == _source:
@@ -657,9 +769,13 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _preamble_ext = dict(ctx.preamble_ns) if ctx.preamble_ns else {}
     if code:
 
-        def external_fn(*dfs: _Frame) -> _Frame:
+        def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
             ens = {"obj": load_external_object(path, file_type, model_class)}
             ens.update(_preamble_ext)
+            if dfs_by_name:
+                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            else:
+                dfs = dfs_positional
             return _exec_user_code(
                 code,
                 _src_names,
@@ -679,8 +795,11 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     fields = config.get("fields", []) or []
 
-    def output_fn(*dfs: _Frame) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
+    def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            lf = next(iter(dfs_by_name.values()))
+        else:
+            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         if fields:
             lf = lf.select(fields)
         return lf
@@ -699,10 +818,17 @@ def _banding_columns(config: dict[str, Any]) -> ColumnContract:
 def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     factors = _normalise_banding_factors(config)
+    # Capture immutable copy at builder-time so a later mutation of the
+    # original ``factors`` list can't leak into a built function. Previously
+    # achieved via a default-arg trick that doesn't compose with **kwargs.
+    _factors_captured: tuple[dict[str, Any], ...] = tuple(dict(f) for f in factors)
 
-    def banding_fn(*dfs: _Frame, _factors: tuple = tuple(dict(f) for f in factors)) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
-        for f in _factors:
+    def banding_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            lf = next(iter(dfs_by_name.values()))
+        else:
+            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
+        for f in _factors_captured:
             col = f.get("column", "")
             out = f.get("outputColumn", "")
             rules = f.get("rules", []) or []
@@ -754,16 +880,18 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
-    def rating_fn(
-        *dfs: _Frame,
-        _tables: list = list(tables),
-        _combined_outputs: list[dict[str, Any]] = list(combined_outputs),
-        _code: str = code,
-    ) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
-        lf = _apply_rating_step_outputs(lf, _tables, _combined_outputs)
-        if _code:
-            lf = _exec_user_code(_code, ["df"], (lf,), extra_ns=_preamble)
+    _tables_captured: list = list(tables)
+    _combined_outputs_captured: list[dict[str, Any]] = list(combined_outputs)
+    _code_captured: str = code
+
+    def rating_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            lf = next(iter(dfs_by_name.values()))
+        else:
+            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
+        lf = _apply_rating_step_outputs(lf, _tables_captured, _combined_outputs_captured)
+        if _code_captured:
+            lf = _exec_user_code(_code_captured, ["df"], (lf,), extra_ns=_preamble)
         return lf
 
     return ctx.func_name, rating_fn, False
@@ -804,36 +932,33 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
-    def scenario_expand_fn(
-        *dfs: _Frame,
-        _cn: str = _col_name,
-        _mn: float = _min_val,
-        _mx: float = _max_val,
-        _st: int = _steps,
-        _sc: str = _step_col,
-    ) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
-        scenario_exprs = [pl.lit(list(range(_st))).alias(_sc)]
-        explode_cols = [_sc]
-        if _cn:
+    def scenario_expand_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            lf = next(iter(dfs_by_name.values()))
+        else:
+            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
+        scenario_exprs = [pl.lit(list(range(_steps))).alias(_step_col)]
+        explode_cols = [_step_col]
+        if _col_name:
             import numpy as np
 
-            vals = np.linspace(_mn, _mx, _st)
+            vals = np.linspace(_min_val, _max_val, _steps)
             # Float32 to match Rust QuoteGrid schema (price-contour ingests f32)
-            scenario_exprs.append(pl.lit(vals.astype("float32").tolist()).alias(_cn))
-            explode_cols.append(_cn)
-        cast_exprs = [pl.col(_sc).cast(pl.Int32)]
-        if _cn:
-            cast_exprs.append(pl.col(_cn).cast(pl.Float32))
+            scenario_exprs.append(pl.lit(vals.astype("float32").tolist()).alias(_col_name))
+            explode_cols.append(_col_name)
+        cast_exprs = [pl.col(_step_col).cast(pl.Int32)]
+        if _col_name:
+            cast_exprs.append(pl.col(_col_name).cast(pl.Float32))
         return lf.with_columns(scenario_exprs).explode(explode_cols).with_columns(cast_exprs)
 
     if not code:
         return ctx.func_name, scenario_expand_fn, False
 
-    def scenario_expand_with_code(
-        *dfs: _Frame,
-    ) -> _Frame:
-        expanded = scenario_expand_fn(*dfs)
+    def scenario_expand_with_code(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            expanded = scenario_expand_fn(**dfs_by_name)
+        else:
+            expanded = scenario_expand_fn(*dfs_positional)
         return _exec_user_code(code, ["df"], (expanded,), extra_ns=_preamble)
 
     return ctx.func_name, scenario_expand_with_code, False
@@ -850,13 +975,22 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         if target_name in ctx.source_names:
             idx = ctx.source_names.index(target_name)
 
-            def _optimiser_select(*dfs: _Frame, _i: int = idx) -> _Frame:
-                if len(dfs) <= _i:
+            _i_captured = idx
+            _src_names_captured = list(ctx.source_names)
+
+            def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+                if dfs_by_name:
+                    dfs = tuple(
+                        dfs_by_name[name] for name in _src_names_captured if name in dfs_by_name
+                    )
+                else:
+                    dfs = dfs_positional
+                if len(dfs) <= _i_captured:
                     raise ValueError(
-                        f"Optimiser expected input at index {_i} but only "
+                        f"Optimiser expected input at index {_i_captured} but only "
                         f"received {len(dfs)} input(s)",
                     )
-                return dfs[_i]
+                return dfs[_i_captured]
 
             return ctx.func_name, _optimiser_select, False
     return ctx.func_name, _passthrough_fn, False
@@ -925,19 +1059,24 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if not _has_file and not _has_mlflow:
         return ctx.func_name, _passthrough_fn, False
 
-    def optimiser_apply_fn(
-        *dfs: _Frame,
-        _path: str = _artifact_path,
-        _vcol: str = _version_col,
-        _st: str = _source_type,
-        _rid: str = _run_id,
-        _rm: str = _registered_model,
-        _ver: str = _opt_version,
-        _opt_col: str = _optimised_value_col,
-        _rb_input: str = _ratebook_input,
-        _src_names: list[str] = _source_names,
-        _src_ids: list[str] = _source_ids,
-    ) -> _Frame:
+    def optimiser_apply_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        # Closure-captured to mirror the previous default-arg snapshot pattern.
+        _path = _artifact_path
+        _vcol = _version_col
+        _st = _source_type
+        _rid = _run_id
+        _rm = _registered_model
+        _ver = _opt_version
+        _opt_col = _optimised_value_col
+        _rb_input = _ratebook_input
+        _src_names = _source_names
+        _src_ids = _source_ids
+        # Reconstruct positional tuple in declared-source order for the
+        # downstream helper that still consumes positionals.
+        if dfs_by_name:
+            dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+        else:
+            dfs = dfs_positional
         if _st in ("run", "registered"):
             from haute._optimiser_io import load_mlflow_optimiser_artifact
 
@@ -1145,7 +1284,11 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     if code:
 
-        def transform_fn(*dfs: _Frame) -> _Frame:
+        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+            if dfs_by_name:
+                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            else:
+                dfs = dfs_positional
             return _exec_user_code(
                 code,
                 _src_names,

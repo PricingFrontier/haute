@@ -109,11 +109,21 @@ class SavePipelineService:
         self._validate_unique_sanitized_names(graph)
         py_path = self._resolve_source_file(body.source_file)
 
+        # Bundle 6 sub-task C — capture the pre-save view of what config
+        # files haute owns, derived from the on-disk pipeline graph
+        # BEFORE this save overwrites it.  This is the diff baseline
+        # consumed by `_remove_stale_config_files` later in this method.
+        # Files NOT in this baseline (manual edits, files from other
+        # tools, residue from older haute versions) are not haute's to
+        # delete — see `notes-haute/security/SECURITY.md` §3
+        # "Stable-layer file ownership".
+        self._prev_config_files = self._compute_disk_prev_config_files(py_path)
+
         touched: list[_TouchedFile] = []
         warnings: list[str] = []
         try:
             self._write_code(body, graph, py_path, touched)
-            self._infer_flatten_schemas(graph)
+            self._validate_api_inputs_have_schemas(graph, warnings)
             self._write_config_files(graph, touched)
             self._mirror_api_input_caches(graph)
             warnings.extend(
@@ -351,27 +361,39 @@ class SavePipelineService:
             self._stage_write(py_path, code, touched)
 
     # ------------------------------------------------------------------
-    # JSON flatten schema inference
+    # JSON apiInput schema validation (no on-disk mutation)
     # ------------------------------------------------------------------
 
-    def _infer_flatten_schemas(self, graph: PipelineGraph) -> None:
-        """Auto-infer ``flattenSchema`` for API-input nodes backed by JSON files."""
-        from haute._json_flatten import infer_schema, load_samples
+    def _validate_api_inputs_have_schemas(self, graph: PipelineGraph, warnings: list[str]) -> None:
+        """Emit a non-blocking warning per JSON apiInput with no v2 ``tables[]``.
 
+        Renamed from the v1-era ``_infer_flatten_schemas``. The function
+        position is preserved (between ``_write_code`` and
+        ``_write_config_files``) but the behaviour is inverted:
+        instead of auto-writing a v1 ``flattenSchema`` to disk, this
+        appends a warning string to the save response's ``warnings``
+        list when a JSON apiInput has no ``tables[]`` — the user clicks
+        "Infer Tables" in the editor to populate it.
+
+        Per D2 / B5: empty ``tables`` is a non-blocking state. The
+        pipeline can be saved without being functional; the warning is
+        a navigational aid pointing the user at the next step.
+        """
         for node in graph.nodes:
             if node.data.nodeType != NodeType.API_INPUT:
                 continue
             cfg = node.data.config
-            path = cfg.get("path", "")
-            if not path.endswith((".json", ".jsonl")):
+            path = cfg.get("path", "") or ""
+            if not isinstance(path, str) or not path.endswith((".json", ".jsonl")):
                 continue
-            if cfg.get("flattenSchema"):
+            tables = cfg.get("tables")
+            if isinstance(tables, list) and tables:
                 continue
-            data_path = (self._root / path).resolve()
-            if data_path.is_file() and data_path.is_relative_to(self._root):
-                samples = load_samples(data_path)
-                if samples:
-                    cfg["flattenSchema"] = infer_schema(samples)
+            label = node.data.label or node.id
+            warnings.append(
+                f"API Input node {label!r} has no tables yet. "
+                "Open the node and click Infer Tables to populate the schema."
+            )
 
     # ------------------------------------------------------------------
     # Dual-cache: mirror working/ → committed/ per API Input node
@@ -437,7 +459,9 @@ class SavePipelineService:
         if touched is None:
             touched = []
 
-        self._prev_config_files = getattr(self, "_last_config_files", None)
+        # `_prev_config_files` is set at the top of `save()` from the
+        # on-disk graph, not rotated from the previous `_last`.  See
+        # `_compute_disk_prev_config_files` for rationale.
         self._last_config_files = collect_node_configs(graph)
         self._protected_config_files: set[str] = set(config_load_errors(graph))
         for rel_path, json_content in self._last_config_files.items():
@@ -449,36 +473,25 @@ class SavePipelineService:
     def _remove_stale_config_files(self, graph: PipelineGraph) -> None:
         """Delete config JSON files that THIS pipeline previously owned but no longer needs.
 
-        Only removes files in the diff (prev - current) to avoid destroying
-        other pipelines' configs in multi-pipeline projects.
+        Only removes files in the diff (prev - current).  Prev is the
+        set of configs the on-disk pipeline graph referenced before this
+        save ran (computed at the top of `save()` via
+        `_compute_disk_prev_config_files`).  This preserves files that
+        haute did not write — manual edits, files from other tools, or
+        residue from older haute versions we don't recognise — per the
+        Bundle 6 trust model (`notes-haute/security/SECURITY.md` §3
+        "Stable-layer file ownership").
+
+        Before Bundle 6 sub-task C, a missing `_prev_config_files`
+        triggered a full-scan fallback that deleted any unknown JSON in
+        every `config/<type>/` folder — actively violating the trust
+        model.  That fallback is gone; the safe answer when we can't
+        compute prev (no .py yet, .py unparseable) is to delete nothing
+        and let the user clean up via the file tree if desired.
         """
-        prev = getattr(self, "_prev_config_files", None)
+        prev = getattr(self, "_prev_config_files", {}) or {}
         current = getattr(self, "_last_config_files", {})
-
         protected: set[str] = getattr(self, "_protected_config_files", set())
-
-        if prev is None:
-            # First save — fall back to full-scan cleanup so current
-            # stale files from manual edits or other tools are removed.
-            from haute._config_io import NODE_TYPE_TO_FOLDER
-
-            config_dir = self._pipeline_root / "config"
-            if not config_dir.is_dir():
-                return
-            for folder in NODE_TYPE_TO_FOLDER.values():
-                folder_path = config_dir / folder
-                if not folder_path.is_dir():
-                    continue
-                for json_file in folder_path.glob("*.json"):
-                    rel = json_file.relative_to(self._pipeline_root).as_posix()
-                    if rel not in current and rel not in protected:
-                        json_file.unlink()
-                        logger.info("stale_config_removed", path=rel)
-                if not any(folder_path.iterdir()):
-                    folder_path.rmdir()
-            if config_dir.is_dir() and not any(config_dir.iterdir()):
-                config_dir.rmdir()
-            return
 
         stale = set(prev) - set(current) - protected
         if not stale:
@@ -498,6 +511,49 @@ class SavePipelineService:
         config_dir = self._pipeline_root / "config"
         if config_dir.is_dir() and not any(config_dir.iterdir()):
             config_dir.rmdir()
+
+    def _compute_disk_prev_config_files(self, py_path: Path) -> dict[str, str]:
+        """Return the rel-path → JSON map for configs the on-disk graph
+        references, used as the stale-cleanup diff baseline.
+
+        Bundle 6 sub-task C — this is THE source of truth for "what
+        does haute currently own on disk".  It's computed at the top of
+        `save()` before any writes start, so it captures the graph
+        haute previously persisted (rather than the new graph the save
+        is about to write).
+
+        Returns an empty mapping when:
+          - the .py file doesn't exist yet (truly first save of a brand
+            new pipeline — nothing on disk to own);
+          - the .py file can't be parsed (mid-edit corruption, encoding
+            issue, etc. — we have no evidence of ownership, so the
+            safe answer is "delete nothing").
+
+        Both cases produce ``stale = {} - current = {}``, so
+        `_remove_stale_config_files` deletes nothing.  Hand-added
+        configs, configs from other tools, and configs from older
+        haute versions are preserved by virtue of never appearing in
+        any parsed graph's reference set.
+        """
+        from haute._config_io import collect_node_configs
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        if not py_path.is_file():
+            return {}
+        try:
+            disk_graph = parse_pipeline_to_graph(py_path)
+        except Exception as exc:
+            logger.warning(
+                "stale_cleanup_baseline_unavailable",
+                path=str(py_path),
+                error=str(exc),
+                detail=(
+                    "on-disk pipeline could not be parsed; stale-config "
+                    "cleanup will preserve all unknown files this save"
+                ),
+            )
+            return {}
+        return collect_node_configs(disk_graph)
 
     # ------------------------------------------------------------------
     # Sidecar persistence

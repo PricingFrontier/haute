@@ -289,7 +289,10 @@ class TestExtractConnectCalls:
         source = 'pipeline.connect("a", "b")\npipeline.connect("b", "c")'
         tree = ast.parse(source)
         pairs = _extract_connect_calls(tree)
-        assert pairs == [("a", "b"), ("b", "c")]
+        # Each entry is now a 3-tuple (src, tgt, source_port) per
+        # commit-6 port-aware codegen. Bare connect calls report
+        # source_port as None.
+        assert pairs == [("a", "b", None), ("b", "c", None)]
 
     def test_no_connect_calls(self):
         source = "x = 1"
@@ -299,7 +302,7 @@ class TestExtractConnectCalls:
     def test_custom_receiver(self):
         source = 'submodel.connect("x", "y")'
         tree = ast.parse(source)
-        assert _extract_connect_calls(tree, receiver="submodel") == [("x", "y")]
+        assert _extract_connect_calls(tree, receiver="submodel") == [("x", "y", None)]
         assert _extract_connect_calls(tree, receiver="pipeline") == []
 
     def test_non_literal_args_become_ast_dump_strings(self):
@@ -340,7 +343,7 @@ class TestExtractConnectCalls:
         source = 'pipeline.connect("a", "b")\npipeline.connect("c", "d")'
         tree = ast.parse(source)
         pairs = _extract_connect_calls(tree, receiver="pipeline")
-        assert pairs == [("a", "b"), ("c", "d")]
+        assert pairs == [("a", "b", None), ("c", "d", None)]
 
     def test_chained_receiver_with_custom_receiver(self):
         """module.submodel.connect() should be rejected for receiver='submodel'."""

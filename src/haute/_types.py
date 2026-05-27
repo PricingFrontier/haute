@@ -14,7 +14,7 @@ from functools import cached_property
 from typing import Any, ClassVar, Protocol, Self, TypedDict, runtime_checkable
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from haute._graph_utils import build_parents_of
 
@@ -80,16 +80,26 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
 
 
 class ApiInputConfig(TypedDict, total=False):
-    """Config for apiInput nodes."""
+    """Config for apiInput nodes (v2 multi-frame shape).
+
+    See `src/haute/_api_input_schema.py` for the on-the-wire codec and
+    `tables[]`/columns structure. ``tables`` is the load-bearing v2
+    surface.
+
+    Bundle 1 sanitisation: ``removedTables`` was previously declared
+    here as "an editor-side ledger of labels the user deleted so a
+    Re-Infer doesn't resurrect them", but the `inferTables` handler in
+    ``ApiInputEditor.tsx`` clobbers ``tables`` without consulting it —
+    the feature was specified and never wired. User deletion of tables
+    should NOT permanently alter Infer Tables behaviour. The field is
+    sanitised out; legacy on-disk configs that carry it are silently
+    ignored on read. See ``tests/test_config_validation.py`` →
+    ``test_removed_tables_not_in_api_input_valid_keys``.
+    """
 
     path: str
-    row_id_column: str
-    flattenSchema: dict[str, Any]
-    schema_overrides: dict[str, Any]
-    dtypes: dict[str, Any]
-    column_dtypes: dict[str, Any]
-    schema: dict[str, Any]
-    categorical_levels: dict[str, list[str | None]]
+    contract: str
+    tables: list[dict[str, Any]]
 
 
 class DataSourceConfig(TypedDict, total=False):
@@ -570,6 +580,23 @@ class GraphEdge(BaseModel):
     target: str
     sourceHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
+
+    @field_validator("sourceHandle", "targetHandle", mode="before")
+    @classmethod
+    def _reject_empty_handle(cls, v: object) -> object:
+        """An edge handle is either a non-empty port name OR ``None``.
+
+        Empty string is NOT silently coerced to ``None`` — that would mask
+        the case where a port is legitimately named ``""`` (which itself is
+        invalid, but for a different reason and at a different layer).
+        See MULTI_FRAME_PLAN.md §4b for the full reasoning.
+        """
+        if isinstance(v, str) and v == "":
+            raise ValueError(
+                "Edge handle must be either a non-empty port name or null; "
+                "got empty string. Use null to signal 'no port specified'.",
+            )
+        return v
 
 
 class PipelineGraph(BaseModel):

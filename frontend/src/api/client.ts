@@ -848,7 +848,7 @@ export function deleteCache(
 // ---------------------------------------------------------------------------
 
 export function buildJsonCache(
-  payload: { path: string; config_path?: string; flatten_schema?: Record<string, unknown> },
+  payload: { path: string; config_path?: string; volatile_schema?: Record<string, unknown> },
   options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<JsonCacheBuildResponse> {
   return post<unknown>("/api/json-cache/build", payload, { timeout: 1_800_000, ...options }).then(parseJsonCacheBuildResponse)
@@ -876,7 +876,7 @@ export function getJsonCacheStatus(
 }
 
 export function getJsonCacheStatusForSchema(
-  payload: { path: string; config_path?: string; flatten_schema?: Record<string, unknown> },
+  payload: { path: string; config_path?: string; volatile_schema?: Record<string, unknown> },
   options?: { signal?: AbortSignal },
 ): Promise<JsonCacheStatusResponse> {
   return post<unknown>("/api/json-cache/status", payload, options).then(parseJsonCacheStatusResponse)
@@ -887,6 +887,24 @@ export function deleteJsonCache(
   options?: { signal?: AbortSignal },
 ): Promise<{ cached: boolean; data_path: string }> {
   return del(`/api/json-cache?path=${encodeURIComponent(path)}`, options)
+}
+
+/**
+ * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+ * Drives the ApiInputEditor's *Infer Tables* button.
+ *
+ * Returns a v2-shaped ``tables`` array; the caller stitches it into the
+ * apiInput's existing ``path`` + ``contract``.
+ */
+export function inferJsonCacheSchema(
+  payload: { path: string; sample_size?: number },
+  options?: { signal?: AbortSignal },
+): Promise<{ tables: Array<Record<string, unknown>> }> {
+  return post<{ tables: Array<Record<string, unknown>> }>(
+    "/api/json-cache/infer",
+    payload,
+    options,
+  )
 }
 
 // ---------------------------------------------------------------------------

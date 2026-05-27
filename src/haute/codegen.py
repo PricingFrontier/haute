@@ -565,7 +565,7 @@ def _generate_pipeline_lines(
     sorted_nodes: list[GraphNode],
     id_to_func: dict[str, str],
     node_sources: dict[str, list[str]],
-    connect_pairs: list[tuple[str, str]],
+    connect_pairs: list[tuple[str, str, str | None]],
     node_source_ids: dict[str, list[str]] | None = None,
     preserved_blocks: list[str] | None = None,
     submodel_imports: list[str] | None = None,
@@ -650,18 +650,39 @@ def _generate_pipeline_lines(
         lines.append("")
 
     # Connect calls --------------------------------------------------------
+    # Each pair carries an optional source_port. When present (non-empty
+    # string), emit the multi-port form
+    # `pipeline.connect("a", "b", source_port="p")`. Otherwise emit the
+    # single-port bare form. Per MULTI_FRAME_PLAN.md §6.
+    #
+    # Use ``json.dumps`` for the port literal so user-controlled labels
+    # containing quotes / backslashes / non-ASCII characters survive
+    # round-trip without producing invalid Python (the adversarial
+    # review's C2 finding — bare f-string interpolation breaks on
+    # ``label = 'a"b'``). Func names are codegen-derived sanitised
+    # identifiers so the bare-string form is safe for those.
+    import json as _json
+
+    def _format_connect(src_func: str, tgt_func: str, port: str | None) -> str:
+        if port:
+            return (
+                f'{obj_name}.connect("{src_func}", "{tgt_func}", source_port={_json.dumps(port)})'
+            )
+        return f'{obj_name}.connect("{src_func}", "{tgt_func}")'
+
     if connect_pairs:
         lines.append("")
         lines.append("# Wire nodes together - edges define data flow")
         if dedup_connects:
-            seen: set[tuple[str, str]] = set()
-            for src_func, tgt_func in connect_pairs:
-                if (src_func, tgt_func) not in seen:
-                    seen.add((src_func, tgt_func))
-                    lines.append(f'{obj_name}.connect("{src_func}", "{tgt_func}")')
+            seen: set[tuple[str, str, str | None]] = set()
+            for src_func, tgt_func, port in connect_pairs:
+                key = (src_func, tgt_func, port)
+                if key not in seen:
+                    seen.add(key)
+                    lines.append(_format_connect(src_func, tgt_func, port))
         else:
-            for src_func, tgt_func in connect_pairs:
-                lines.append(f'{obj_name}.connect("{src_func}", "{tgt_func}")')
+            for src_func, tgt_func, port in connect_pairs:
+                lines.append(_format_connect(src_func, tgt_func, port))
         lines.append("")
 
     return lines
@@ -756,9 +777,16 @@ def graph_to_code_multi(
 
         all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
 
-        # Build connect pairs from edges
+        # Build connect pairs from edges. Each pair is
+        # (src_func, tgt_func, source_port) where source_port is the
+        # edge's `sourceHandle` if set, otherwise None (single-port).
         connect_pairs = [
-            (id_to_func.get(e.source, e.source), id_to_func.get(e.target, e.target)) for e in edges
+            (
+                id_to_func.get(e.source, e.source),
+                id_to_func.get(e.target, e.target),
+                e.sourceHandle or None,
+            )
+            for e in edges
         ]
 
         lines = _generate_pipeline_lines(
@@ -881,9 +909,15 @@ def graph_to_code_multi(
                     known_children=sorted(sm_child_ids),
                 )
 
-        # Build connect pairs from internal edges
+        # Build connect pairs from internal edges. Same triple shape as
+        # the root-level construction — sourceHandle threads through so
+        # submodel-internal multi-port edges (if any) survive a save.
         sm_connect_pairs = [
-            (sm_id_to_func.get(e.source, e.source), sm_id_to_func.get(e.target, e.target))
+            (
+                sm_id_to_func.get(e.source, e.source),
+                sm_id_to_func.get(e.target, e.target),
+                e.sourceHandle or None,
+            )
             for e in sm_edges
         ]
 
@@ -989,8 +1023,15 @@ def graph_to_code_multi(
         root_node_sources.setdefault(actual_tgt, []).append(src_name)
         root_node_source_ids.setdefault(actual_tgt, []).append(edge.source)
 
-    # Build connect pairs for ALL edges (cross-boundary use real node names)
-    root_connect_pairs: list[tuple[str, str]] = []
+    # Build connect pairs for ALL edges (cross-boundary use real node names).
+    # Triple shape: (src_func, tgt_func, source_port).
+    # When the edge originates at a submodel boundary, the sourceHandle
+    # carries the `out__<child_id>` marker (resolved above into the
+    # child's func name) — no user-facing port name to forward, so the
+    # third element is None. For non-boundary edges, the edge's
+    # sourceHandle is the user-facing port string (or None for
+    # single-port).
+    root_connect_pairs: list[tuple[str, str, str | None]] = []
     for edge in edges:
         src = edge.source
         tgt = edge.target
@@ -1015,7 +1056,15 @@ def graph_to_code_multi(
 
         src_func = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
         tgt_func = root_id_to_func.get(actual_tgt, _sanitize_func_name(actual_tgt))
-        root_connect_pairs.append((src_func, tgt_func))
+        # Submodel-boundary `out__<id>` handles aren't user-facing port
+        # names; only forward sourceHandle as source_port when it's not
+        # a submodel-boundary edge (i.e. the source isn't a submodel
+        # placeholder node). Per the adversarial review's S1: gating on
+        # the prefix alone would also silently drop a regular apiInput
+        # table labelled e.g. "out__claims".
+        is_submodel_boundary = src in submodel_node_ids
+        source_port = edge.sourceHandle if edge.sourceHandle and not is_submodel_boundary else None
+        root_connect_pairs.append((src_func, tgt_func, source_port))
 
     # Submodel import lines
     sm_imports = []

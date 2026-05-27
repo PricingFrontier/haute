@@ -227,9 +227,14 @@ def _extract_function_bodies(
 def _extract_connect_calls(
     tree: ast.Module,
     receiver: str = "pipeline",
-) -> list[tuple[str, str]]:
-    """Find all <receiver>.connect("src", "tgt") calls at module level."""
-    connects: list[tuple[str, str]] = []
+) -> list[tuple[str, str, str | None]]:
+    """Find all <receiver>.connect(...) calls at module level.
+
+    Returns ``(src, tgt, source_port)`` triples — ``source_port`` is the
+    ``source_port="..."`` keyword if present (commit 6 port-aware edges),
+    or ``None`` for the single-port bare two-arg form.
+    """
+    connects: list[tuple[str, str, str | None]] = []
 
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, ast.Expr):
@@ -249,8 +254,15 @@ def _extract_connect_calls(
         if len(args) >= 2:
             src = _eval_ast_literal(args[0])
             tgt = _eval_ast_literal(args[1])
-            if isinstance(src, str) and isinstance(tgt, str):
-                connects.append((src, tgt))
+            if not (isinstance(src, str) and isinstance(tgt, str)):
+                continue
+            source_port: str | None = None
+            for kw in call.keywords:
+                if kw.arg == "source_port":
+                    val = _eval_ast_literal(kw.value)
+                    if isinstance(val, str) and val:
+                        source_port = val
+            connects.append((src, tgt, source_port))
 
     return connects
 

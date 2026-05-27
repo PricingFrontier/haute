@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import patch
 
 import polars as pl
@@ -1992,127 +1991,7 @@ def _api_input_node(nid: str, path: str, config_extra: dict | None = None) -> _n
 
 
 class TestApiInputLargeFileGating:
-    def test_large_file_no_cache_raises_error(self, tmp_path, monkeypatch):
-        """Large JSONL files without a cache should produce a descriptive error."""
-        from haute._json_flatten import _LARGE_FILE_THRESHOLD
-
-        monkeypatch.chdir(tmp_path)
-
-        # Create a "large" JSONL file that exceeds the threshold
-        data_file = tmp_path / "large.jsonl"
-        # Write enough valid JSONL lines to exceed threshold
-        line = json.dumps({"x": "a" * 1000}) + "\n"
-        lines_needed = (_LARGE_FILE_THRESHOLD // len(line)) + 1
-        data_file.write_text(line * lines_needed)
-        assert data_file.stat().st_size >= _LARGE_FILE_THRESHOLD
-
-        node = _api_input_node("api", str(data_file))
-        _, fn, is_source = _build_node_fn(node)
-        assert is_source is True
-
-        with pytest.raises(RuntimeError, match="not been cached yet"):
-            fn()
-
-    def test_large_file_with_cache_succeeds(self, tmp_path, monkeypatch):
-        """Large JSONL files with a valid cache should use the cache directly."""
-        from haute._json_flatten import (
-            _LARGE_FILE_THRESHOLD,
-            _json_cache_path,
-            _mark_working_consulted,
-        )
-
-        monkeypatch.chdir(tmp_path)
-
-        # Create a "large" JSONL file
-        data_file = tmp_path / "large.jsonl"
-        line = json.dumps({"x": 1}) + "\n"
-        lines_needed = (_LARGE_FILE_THRESHOLD // len(line)) + 1
-        data_file.write_text(line * lines_needed)
-        assert data_file.stat().st_size >= _LARGE_FILE_THRESHOLD
-
-        # Pre-build the cache manually. Mark working/ as consulted so the
-        # dual-cache emitter picks it up (cache was not built via the
-        # public build_json_cache path).
-        cache_path = _json_cache_path(str(data_file))
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"x": [1, 2, 3]}).write_parquet(cache_path)
-        _mark_working_consulted(str(data_file))
-
-        node = _api_input_node("api", str(data_file))
-        _, fn, _ = _build_node_fn(node)
-        result = fn()
-        df = result.collect()
-        assert df["x"].to_list() == [1, 2, 3]
-
-    def test_cache_with_matching_flatten_schema_succeeds(self, tmp_path, monkeypatch):
-        """Schema-aware caches can be consumed by preview when fingerprints match."""
-        from haute._json_flatten import read_json_flat
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"x": 1, "y": 2}\n')
-
-        read_json_flat(str(data_file), schema={"x": "int"}).collect()
-
-        node = _api_input_node(
-            "api",
-            str(data_file),
-            {"flattenSchema": {"x": "int"}},
-        )
-        _, fn, _ = _build_node_fn(node)
-
-        assert fn().collect().columns == ["x"]
-
-    def test_cache_with_mismatched_flatten_schema_raises(self, tmp_path, monkeypatch):
-        """Preview must not silently scan a cache built for another schema."""
-        from haute._json_flatten import read_json_flat
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"x": 1, "y": 2}\n')
-
-        read_json_flat(str(data_file), schema={"x": "int"}).collect()
-
-        node = _api_input_node(
-            "api",
-            str(data_file),
-            {"flattenSchema": {"x": "int", "y": "int"}},
-        )
-        _, fn, _ = _build_node_fn(node)
-
-        with pytest.raises(RuntimeError, match="stale"):
-            fn()
-
-    def test_stale_cache_raises_instead_of_scanning_old_rows(self, tmp_path, monkeypatch):
-        """Preview must reject caches older than the source JSON."""
-        from haute._json_flatten import _json_cache_path, read_json_flat
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "data.jsonl"
-        data_file.write_text('{"x": 1}\n')
-        read_json_flat(str(data_file)).collect()
-
-        cache_path = _json_cache_path(str(data_file))
-        os.utime(cache_path, (315532800.0, 315532800.0))
-        data_file.write_text('{"x": 2}\n')
-
-        node = _api_input_node("api", str(data_file))
-        _, fn, _ = _build_node_fn(node)
-
-        with pytest.raises(RuntimeError, match="stale"):
-            fn()
-
-    def test_uncached_file_raises(self, tmp_path, monkeypatch):
-        """Any uncached JSONL file should raise, regardless of size."""
-        monkeypatch.chdir(tmp_path)
-
-        data_file = tmp_path / "small.jsonl"
-        data_file.write_text('{"x": 10}\n{"x": 20}\n')
-
-        node = _api_input_node("api", str(data_file))
-        _, fn, _ = _build_node_fn(node)
-        with pytest.raises(RuntimeError, match="not been cached"):
-            fn()
+    pass  # v1 cache tests removed; v2 contracts live in test_v2_codec_and_shred.py
 
 
 # ---------------------------------------------------------------------------

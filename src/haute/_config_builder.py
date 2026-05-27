@@ -79,9 +79,16 @@ def _build_node_config(
     config: dict[str, Any] = {}
     if node_type == NodeType.API_INPUT:
         config["path"] = decorator_kwargs.get("path", "")
-        if decorator_kwargs.get("row_id_column"):
-            config["row_id_column"] = decorator_kwargs["row_id_column"]
-        _copy_config_keys(config, decorator_kwargs, SOURCE_DTYPE_CONFIG_KEYS)
+        # v2 apiInput surface: `tables[]` is the schema mapping (in the
+        # sidecar JSON, typically loaded by ``_resolve_node_config``).
+        # `row_id_column` is now per-table inside `tables[]`. The
+        # v1 dtype keys (`schema_overrides`, `dtypes`, `column_dtypes`,
+        # `schema`) are deleted with the v1 codec — do NOT copy them
+        # into config (they'd otherwise warn at validation time).
+        if isinstance(decorator_kwargs.get("tables"), list):
+            config["tables"] = decorator_kwargs["tables"]
+        if isinstance(decorator_kwargs.get("contract"), str):
+            config["contract"] = decorator_kwargs["contract"]
     elif node_type == NodeType.DATA_SOURCE:
         config["path"] = decorator_kwargs.get("path", "")
         if "table" in decorator_kwargs:

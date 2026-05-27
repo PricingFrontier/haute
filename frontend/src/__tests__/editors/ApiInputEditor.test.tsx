@@ -34,6 +34,8 @@ const mockGetJsonCacheStatus = vi.fn()
 const mockGetJsonCacheStatusForSchema = vi.fn()
 const mockGetJsonCacheProgress = vi.fn()
 const mockDeleteJsonCache = vi.fn()
+const mockCancelJsonCache = vi.fn()
+const mockInferJsonCacheSchema = vi.fn()
 
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
@@ -42,6 +44,8 @@ vi.mock("../../api/client", () => ({
   getJsonCacheStatus: (...args: unknown[]) => mockGetJsonCacheStatus(...args),
   getJsonCacheStatusForSchema: (...args: unknown[]) => mockGetJsonCacheStatusForSchema(...args),
   deleteJsonCache: (...args: unknown[]) => mockDeleteJsonCache(...args),
+  cancelJsonCache: (...args: unknown[]) => mockCancelJsonCache(...args),
+  inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {
     status: number
     detail?: string
@@ -66,6 +70,8 @@ beforeEach(() => {
   mockGetJsonCacheStatusForSchema.mockReset().mockResolvedValue({ cached: false })
   mockGetJsonCacheProgress.mockReset().mockResolvedValue({ active: false })
   mockDeleteJsonCache.mockReset()
+  mockCancelJsonCache.mockReset()
+  mockInferJsonCacheSchema.mockReset()
 })
 
 const DEFAULT_PROPS = {
@@ -128,7 +134,19 @@ describe("ApiInputEditor", () => {
       cached_at: 0,
     })
 
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
+    // Need at least one emit:true table — the Cache button is disabled
+    // when there's no schema source or no emit-true table (T9/T10).
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [
+            { path: "$[*]", label: "policies", emit: true, columns: [] },
+          ],
+        }}
+      />,
+    )
 
     // Click the cache button
     await act(async () => {
@@ -147,8 +165,11 @@ describe("ApiInputEditor", () => {
     })
   })
 
-  it("JsonCacheButton: sends flattenSchema in status and build requests", async () => {
-    const flattenSchema = { x: "int" }
+  it("JsonCacheButton: sends config_path in status and build requests when provided", async () => {
+    // v2 dispatch on the backend reads the on-disk config file; the editor
+    // passes config_path so the cache button can name it. The previous
+    // flatten_schema-inline path is gone — the backend reads the v2 schema
+    // from the file at config_path.
     mockGetJsonCacheStatusForSchema.mockResolvedValue({ cached: false })
     mockBuildJsonCache.mockResolvedValue({
       cached: true,
@@ -162,15 +183,23 @@ describe("ApiInputEditor", () => {
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
-        config={{ path: "data/input.json", flattenSchema }}
+        config={{
+          path: "data/input.json",
+          tables: [
+            { path: "$[*]", label: "policies", emit: true, columns: [] },
+          ],
+        }}
+        configPath="rating/config/quote_input/api_input.json"
       />,
     )
 
     await waitFor(() => {
-      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledWith({
-        path: "data/input.json",
-        flatten_schema: flattenSchema,
-      })
+      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: "data/input.json",
+          config_path: "rating/config/quote_input/api_input.json",
+        }),
+      )
     })
     expect(mockGetJsonCacheStatus).not.toHaveBeenCalled()
 
@@ -179,10 +208,17 @@ describe("ApiInputEditor", () => {
     })
 
     await waitFor(() => {
-      expect(mockBuildJsonCache).toHaveBeenCalledWith({
-        path: "data/input.json",
-        flatten_schema: flattenSchema,
-      })
+      // After v1 removal: cache POST now also carries `volatile_schema`
+      // — the editor's in-memory v2. Use objectContaining so the test
+      // doesn't pin the full shape of writeV2's output.
+      expect(mockBuildJsonCache).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: "data/input.json",
+          config_path: "rating/config/quote_input/api_input.json",
+        }),
+      )
+      const payload = mockBuildJsonCache.mock.calls[0][0] as Record<string, unknown>
+      expect(payload).toHaveProperty("volatile_schema")
     })
   })
 
@@ -190,7 +226,19 @@ describe("ApiInputEditor", () => {
     mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
     mockBuildJsonCache.mockRejectedValue(new Error("Failed to build cache"))
 
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
+    // Cache button is disabled with no emit:true table; give it one
+    // so the click path fires and the error bubbles up.
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [
+            { path: "$[*]", label: "policies", emit: true, columns: [] },
+          ],
+        }}
+      />,
+    )
 
     await act(async () => {
       fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
@@ -220,6 +268,127 @@ describe("ApiInputEditor", () => {
   it("shows SchemaPreview component", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} />)
     expect(screen.getByTestId("schema-preview")).toBeTruthy()
+  })
+
+  // ─── v2 schema surface ──────────────────────────────────────
+
+  it("renders the v2 tables section when config is v2-shaped", () => {
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{ path: "data/input.json", tables: [] }}
+      />,
+    )
+    expect(screen.getByTestId("api-input-tables")).toBeTruthy()
+    expect(screen.getByText(/No tables yet/)).toBeTruthy()
+  })
+
+  it("Add Table creates a root table with emit=true", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{ path: "data/input.json", tables: [] }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      tables: expect.arrayContaining([
+        expect.objectContaining({ path: "$[*]", emit: true }),
+      ]),
+    }))
+  })
+
+  it("ticking a table's emit toggle pushes the change back", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{
+          path: "data/input.json",
+          tables: [
+            {
+              path: "$[*]",
+              label: "policies",
+              emit: false,
+              columns: [],
+            },
+          ],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("api-input-table-0-emit"))
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      tables: expect.arrayContaining([
+        expect.objectContaining({ emit: true }),
+      ]),
+    }))
+  })
+
+  it("Add Column appends a column with selected=true and type=str", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{
+          path: "data/input.json",
+          tables: [
+            { path: "$[*]", label: "policies", emit: true, columns: [] },
+          ],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("api-input-table-0-add-col"))
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    const newCols = lastCall.tables[0].columns
+    expect(newCols).toHaveLength(1)
+    expect(newCols[0].selected).toBe(true)
+    expect(newCols[0].type).toBe("str")
+  })
+
+  it("Infer Tables calls the route and writes the result via onUpdate", async () => {
+    mockInferJsonCacheSchema.mockResolvedValue({
+      tables: [
+        {
+          path: "$[*]",
+          label: "policies",
+          emit: true,
+          columns: [
+            { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
+          ],
+        },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: false,
+          columns: [
+            { name: "driver_id", path: "$[*].drivers[*].driver_id", type: "int", status: "Inferred", selected: true },
+          ],
+        },
+      ],
+    })
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{ path: "data/input.json", tables: [] }}
+      />,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    })
+    await waitFor(() => {
+      expect(mockInferJsonCacheSchema).toHaveBeenCalledWith({ path: "data/input.json" })
+    })
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalled()
+      const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+      expect(arg.tables.length).toBe(2)
+    })
   })
 
 })

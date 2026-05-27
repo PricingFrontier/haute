@@ -48,6 +48,7 @@ from haute._cache import (
 )
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
+from haute._json_flatten import cache_state_signature_for_graph
 from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
@@ -476,13 +477,17 @@ def _estimate_preview_cache_entry_bytes(entry: dict[str, Any]) -> int:
     Polars exposes a deterministic retained-size estimate for those
     frames, and unexpected payload shapes fail loudly so accounting
     regressions cannot hide behind a default weight.
+
+    Multi-port emit (MULTI_FRAME_PLAN commit 4): an apiInput source can
+    return ``dict[port_name, DataFrame]`` rather than a single DataFrame.
+    The dict's values are accounted individually so the whole bundle's
+    retained size lands in the cache budget.
     """
     outputs = entry.get("eager_outputs", {})
     if not isinstance(outputs, dict):
         raise TypeError("preview cache entry eager_outputs must be a dict")
 
-    total = 0
-    for node_id, value in outputs.items():
+    def _size_of_frame(value: Any, node_id: str) -> int:
         if not isinstance(value, pl.DataFrame):
             raise TypeError(
                 "preview cache size accounting expected Polars DataFrame "
@@ -493,7 +498,15 @@ def _estimate_preview_cache_entry_bytes(entry: dict[str, Any]) -> int:
             raise ValueError(
                 f"Polars estimated_size for node {node_id!r} returned invalid value {size!r}"
             )
-        total += size
+        return size
+
+    total = 0
+    for node_id, value in outputs.items():
+        if isinstance(value, dict):
+            for port_label, port_frame in value.items():
+                total += _size_of_frame(port_frame, f"{node_id}.{port_label}")
+        else:
+            total += _size_of_frame(value, node_id)
     return total
 
 
@@ -707,18 +720,37 @@ _preview_cache = FingerprintCache(
 )
 
 
-def _extract_column_refs(config: dict[str, Any]) -> set[str]:
+def _extract_column_refs(
+    config: dict[str, Any],
+    *,
+    node_type: NodeType | None = None,
+) -> set[str]:
     """Extract column names referenced in a node's config.
 
     Only includes columns that are READ from upstream (not created/output columns).
     Returns an empty set for configs with no column references.
+
+    Bundle 2 executor guard — when ``node_type`` is :data:`NodeType.API_INPUT`,
+    the ``selected_columns`` scoop is skipped. v2 apiInput has no
+    concept of a flat ``selected_columns`` list; the per-column
+    ``selected`` boolean inside ``tables[].columns[]`` is the v2-native
+    column-filter surface. Even if a legacy key leaks into config
+    (which Bundle 2.a's load-time strip is supposed to prevent), this
+    guard ensures the executor's stale-column diff never acts on it
+    for apiInput. Defence-in-depth against any future code path that
+    reintroduces the key without going through the persistence layer.
+    Caller at ``_node_schema_warnings`` passes ``node_type`` from
+    ``node.data.nodeType``. Contract pinning test:
+    tests/test_strict_v2_contract.py::TestExtractColumnRefsNodeTypeGuard.
     """
     refs: set[str] = set()
 
-    # selected_columns: list[str] — on any node type
-    for col in config.get("selected_columns", []) or []:
-        if isinstance(col, str) and col:
-            refs.add(col)
+    # selected_columns: list[str] — on any node type EXCEPT apiInput,
+    # where the v2 spec has no place for it. See guard above.
+    if node_type != NodeType.API_INPUT:
+        for col in config.get("selected_columns", []) or []:
+            if isinstance(col, str) and col:
+                refs.add(col)
 
     # target, weight, offset: str — on modelling nodes
     for key in ("target", "weight", "offset"):
@@ -856,9 +888,20 @@ def execute_graph(
             else None
         ),
     )
+    # Include the JSON-cache state of every apiInput in the fingerprint so
+    # a build/clear/mirror operation invalidates affected preview entries
+    # without thrashing unrelated ones.  Empty when the graph has no
+    # apiInputs; non-empty graphs add one extra_key whose presence is
+    # itself stable across calls.
+    cache_state_signature = cache_state_signature_for_graph(graph)
+    extra_keys = [
+        f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}",
+    ]
+    if cache_state_signature:
+        extra_keys.append(cache_state_signature)
     fp = graph_fingerprint(
         graph,
-        (f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}"),
+        *extra_keys,
         memo=fingerprint_memo,
     )
 
@@ -1100,7 +1143,11 @@ def execute_graph(
             available: list[ColumnInfo],
         ) -> list[SchemaWarning]:
             node_data = node_map[node_id].data
-            config_refs = _extract_column_refs(node_data.config)
+            # Bundle 2 executor guard — pass node_type so the
+            # selected_columns scoop is skipped for apiInput nodes
+            # (v2 has no spec for it; per-column `selected` bool in
+            # tables[].columns[] is the v2-native surface).
+            config_refs = _extract_column_refs(node_data.config, node_type=node_data.nodeType)
             node_warnings = list(schema_warnings.get(node_id, []))
             if config_refs and available:
                 available_names = {c.name for c in available}
@@ -1124,6 +1171,14 @@ def execute_graph(
                 )
                 continue
             df = eager_outputs.get(nid)
+            # Multi-port emit (commit 4): an apiInput with 2+ emit-true
+            # tables stores ``dict[port_name, DataFrame]`` in
+            # eager_outputs. For preview-display purposes, use the first
+            # port's frame as a representative — a richer per-port view
+            # belongs in the apiInput editor's preview (commit 5+).
+            if isinstance(df, dict):
+                first_port = next(iter(df.values()), None)
+                df = first_port  # may still be None if dict was empty
             columns, avail_col_infos = _column_infos_for_node(nid, df)
             node_warnings = _node_schema_warnings(nid, avail_col_infos)
             if df is None:
@@ -1210,7 +1265,9 @@ def _eager_execute(
     materialize_column_limits_by_node: dict[str, int] | None = None,
     execution_context: ExecutionContext | None = None,
 ) -> tuple[
-    dict[str, pl.DataFrame | None],
+    # Mirrors EagerResult.outputs — may carry per-port dict for multi-port
+    # apiInput sources.
+    dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None],
     list[str],
     dict[str, str],
     dict[str, float],

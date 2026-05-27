@@ -55,7 +55,20 @@ type NodePanelProps = {
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
 // modelling and explore nodes are sink-only (no outputs).
+//
+// Bundle 3a — API_INPUT was added here as part of the v2-consolidation
+// decision. The v2-native column-filter surface is the per-column
+// `selected: bool` inside `tables[].columns[]` (in the Schema panel).
+// The legacy `Columns` tab wrote the universal-but-apiInput-illegitimate
+// keys `selected_columns` / `column_renames` via `GroupedColumnsTab`
+// and let the user double-author the same intent. Removing the tab
+// here removes the only UI write path for those keys on apiInput;
+// any residual values on disk are stripped at load time by Bundle 2.a
+// (`_normalise_loaded_config` in `src/haute/_config_io.py`) and at
+// write time by Bundle 2.α. Contract pinning test:
+// `src/__tests__/editors/apiInputBundle3aContract.test.tsx`.
 const NO_COLUMNS_TAB = new Set<string>([
+  NODE_TYPES.API_INPUT,
   NODE_TYPES.OUTPUT,
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.MODELLING,
@@ -365,6 +378,14 @@ export default function NodePanel({
   useEffect(() => { configRef.current = config }, [config])
   useEffect(() => { nodeRef.current = node }, [node])
 
+  // Bundle 3b — dismissal state for the stale-columns banner.
+  // Stored as the warning-signature the user dismissed, so the banner
+  // reappears whenever the warning content (columns / statuses / count)
+  // changes.  Reset on node switch so dismissals don't bleed across
+  // nodes while the panel stays mounted.
+  const [dismissedStaleWarningSig, setDismissedStaleWarningSig] = useState<string | null>(null)
+  useEffect(() => { setDismissedStaleWarningSig(null) }, [node?.id])
+
   const handleConfigUpdate = useCallback((keyOrUpdates: string | Record<string, unknown>, value?: unknown) => {
     const currentNode = nodeRef.current
     if (!currentNode || !onUpdateNode) return
@@ -451,7 +472,20 @@ export default function NodePanel({
 
     switch (nodeType) {
       case NODE_TYPES.API_INPUT:
-        return <ApiInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} />
+        // Bundle 3a — the per-node config file lives at
+        // config/quote_input/<sanitised_label>.json on disk. The
+        // backend's canonical scheme uses `_sanitize_func_name(label)`
+        // (`_config_io.py:320-321`) as the filename. The frontend
+        // previously sent `${node.id}.json` here, which the cache-
+        // status GET routed to a path the backend never wrote → silent
+        // `cached=false` response → cache button looked unresponsive.
+        // Using `sanitizeName(label)` (the frontend twin of
+        // `_sanitize_func_name`, defined in `frontend/src/utils/sanitizeName.ts`)
+        // brings the two sides into agreement. Collision uniqueness
+        // for labels-that-sanitise-to-the-same-string is already
+        // enforced at save time via `_validate_unique_sanitized_names`
+        // (`_save_pipeline.py:165-184`) → HTTP 400, no silent clobber.
+        return <ApiInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} configPath={`config/quote_input/${sanitizeName(node.data.label)}.json`} />
 
       case NODE_TYPES.LIVE_SWITCH:
         return <LiveSwitchEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} accentColor={accentColor} />
@@ -692,18 +726,47 @@ export default function NodePanel({
         />
       )}
 
-      {/* Schema warnings for non-instance nodes */}
+      {/* Schema warnings for non-instance nodes.  Bundle 3b: dismiss
+          (×) + Refresh-and-check controls.  Suppressed when the current
+          warning signature matches the user's last dismissal. */}
       {!isInstance && !showExplorePanes && (() => {
         const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
         if (warnings.length === 0) return null
+        const sig = warnings.map((w) => `${w.column}|${w.status}`).join(',')
+        if (sig === dismissedStaleWarningSig) return null
         return (
           <div className="px-4 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
             <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
-              <div className="flex items-center gap-1.5">
-                <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
-                <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
-                  Stale columns ({warnings.length})
-                </span>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
+                  <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
+                    Stale columns ({warnings.length})
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => {
+                      setDismissedStaleWarningSig(sig)
+                      onRefreshPreview?.()
+                    }}
+                    className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
+                    style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
+                    title="Re-run preview and re-check schema warnings"
+                  >
+                    <RefreshCw size={11} />
+                    Refresh and check
+                  </button>
+                  <button
+                    onClick={() => setDismissedStaleWarningSig(sig)}
+                    className="p-1 rounded shrink-0 transition-colors hover:opacity-[0.85]"
+                    style={{ color: 'var(--warning-strong)' }}
+                    title="Dismiss"
+                    aria-label="Dismiss"
+                  >
+                    <X size={12} strokeWidth={2.5} />
+                  </button>
+                </div>
               </div>
               <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
                 These columns are referenced in config but not found in the upstream schema:

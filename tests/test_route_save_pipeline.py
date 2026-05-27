@@ -18,7 +18,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import make_edge as _make_edge
@@ -258,7 +258,7 @@ class TestSaveSimpleGraph:
             active_source="live",
         )
 
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             result = svc.save(body)
 
         assert result.status == "saved"
@@ -290,7 +290,7 @@ class TestSaveSimpleGraph:
             source_file="test_pipe.py",
         )
 
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             result = svc.save(body)
 
         # Should be relative, not absolute
@@ -399,21 +399,39 @@ class TestWriteCodeMultiFile:
 
 
 class TestRemoveStaleConfigFiles:
+    """Diff-based cleanup contract.
+
+    Bundle 6 sub-task C reworked this code path: `_prev_config_files`
+    is computed by `save()` from the on-disk graph BEFORE any writes,
+    and `_remove_stale_config_files` consumes that pre-computed prev
+    via plain diff (`stale = prev - current - protected`).  The
+    previous full-scan fallback that deleted unknown files when prev
+    was empty has been removed because it actively violated the trust
+    model (`notes-haute/security/SECURITY.md` §3).
+
+    These unit tests exercise `_remove_stale_config_files` in
+    isolation by setting `_prev_config_files` directly.  End-to-end
+    coverage of the "compute prev from disk" path lives in
+    `tests/test_bundle6_trust_model_cleanup.py`.
+    """
+
     def test_removes_stale_config_file(self, tmp_path: Path) -> None:
-        """Config files not corresponding to any node should be deleted."""
+        """A file in prev but not current is deleted (the diff target)."""
         svc = SavePipelineService(tmp_path)
 
-        # Create a config file that won't be in the graph
-        stale_dir = tmp_path / "config" / "factors"
+        stale_dir = tmp_path / "config" / "banding"
         stale_dir.mkdir(parents=True)
         stale_file = stale_dir / "old_banding.json"
         stale_file.write_text("{}")
 
-        graph = _make_graph()  # No banding nodes
-        svc._write_config_files(graph)  # Populates _last_config_files (empty for no-config nodes)
+        # Simulate "prev save wrote this file" — it's now in haute's
+        # ownership claim and therefore eligible for deletion when
+        # the current graph drops the corresponding node.
+        svc._prev_config_files = {"config/banding/old_banding.json": "{}"}
+        svc._last_config_files = {}
+        svc._protected_config_files = set()
 
-        with patch("haute._config_io.NODE_TYPE_TO_FOLDER", {NodeType.BANDING: "factors"}):
-            svc._remove_stale_config_files(graph)
+        svc._remove_stale_config_files(_make_graph())
 
         assert not stale_file.exists()
 
@@ -434,7 +452,7 @@ class TestRemoveStaleConfigFiles:
         assert fresh_file.exists()
 
     def test_removes_empty_folder(self, tmp_path: Path) -> None:
-        """Empty config type folders are removed after stale file deletion."""
+        """Empty config-type folders are removed after the last file leaves."""
         svc = SavePipelineService(tmp_path)
 
         config_dir = tmp_path / "config" / "banding"
@@ -442,52 +460,73 @@ class TestRemoveStaleConfigFiles:
         stale_file = config_dir / "old.json"
         stale_file.write_text("{}")
 
-        graph = _make_graph()
-        svc._write_config_files(graph)  # No banding nodes → empty config files
+        # The stale file IS in haute's prev (haute wrote it on a
+        # previous save).  Removing it leaves the folder empty,
+        # which should be cleaned up too.
+        svc._prev_config_files = {"config/banding/old.json": "{}"}
+        svc._last_config_files = {}
+        svc._protected_config_files = set()
 
-        with patch("haute._config_io.NODE_TYPE_TO_FOLDER", {NodeType.BANDING: "banding"}):
-            svc._remove_stale_config_files(graph)
+        svc._remove_stale_config_files(_make_graph())
 
         assert not config_dir.exists()
         # Config dir itself should be cleaned up too
         assert not (tmp_path / "config").exists()
 
     def test_no_config_dir_noop(self, tmp_path: Path) -> None:
-        """If config/ doesn't exist, _remove_stale_config_files is a no-op."""
+        """If config/ doesn't exist and prev is empty, the method is a no-op."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph()
         svc._write_config_files(graph)
-
-        with patch("haute._config_io.NODE_TYPE_TO_FOLDER", {NodeType.BANDING: "banding"}):
-            # Should not raise
-            svc._remove_stale_config_files(graph)
+        # _prev_config_files unset → treated as empty → diff is empty → no-op.
+        svc._remove_stale_config_files(graph)
 
     def test_mixed_stale_and_fresh(self, tmp_path: Path) -> None:
-        """Only stale files are removed; fresh files remain."""
+        """Diff cleanup is selective: stale (prev∖current) removed,
+        fresh (∈current) and unknown (∉prev) both preserved.
+
+        The "unknown preserved" half of this contract is what
+        distinguishes the new behaviour from the dropped full-scan
+        fallback; see SECURITY.md §3 for the trust-model rationale.
+        """
         svc = SavePipelineService(tmp_path)
 
-        # Build a graph with one banding node that produces
-        # config/banding/current_banding.json via _write_config_files
+        # Active node → fresh config (written by _write_config_files).
         graph = _make_graph(
             _make_node("b1", "current_banding", "banding", {"bands": []}),
         )
         svc._write_config_files(graph)
 
         config_dir = tmp_path / "config" / "banding"
-        assert config_dir.exists(), "_write_config_files should create the banding dir"
-
         fresh = config_dir / "current_banding.json"
-        assert fresh.exists(), "Config for current_banding should exist"
+        assert fresh.exists()
 
-        # Plant an extra stale file that doesn't correspond to any node
-        stale = config_dir / "old_banding.json"
-        stale.write_text("{}")
+        # Two extra files on disk: one haute previously wrote (in
+        # prev → eligible for diff deletion), one unknown (not in
+        # prev → preserved).
+        stale_known = config_dir / "old_banding.json"
+        stale_known.write_text("{}")
+        unknown_orphan = config_dir / "manual_orphan.json"
+        unknown_orphan.write_text(json.dumps({"manual": True}))
+
+        svc._prev_config_files = {
+            "config/banding/current_banding.json": "{}",
+            "config/banding/old_banding.json": "{}",
+            # NOTE: manual_orphan deliberately absent from prev.
+        }
+        svc._protected_config_files = set()
 
         svc._remove_stale_config_files(graph)
 
-        assert not stale.exists()
-        assert fresh.exists()
-        # Folder still exists because fresh file remains
+        assert fresh.exists(), "Active node's config was wrongly deleted"
+        assert not stale_known.exists(), (
+            "Diff cleanup failed: a file in prev∖current should be deleted"
+        )
+        assert unknown_orphan.exists(), (
+            "Trust-model violation: a file NOT in prev (manual edit, other "
+            "tool, older haute version) must be preserved — haute can only "
+            "delete files it previously claimed ownership of via writing them"
+        )
         assert config_dir.exists()
 
 
@@ -619,102 +658,93 @@ class TestSaveEndpointIntegration:
 # ---------------------------------------------------------------------------
 
 
-class TestInferFlattenSchemas:
-    def test_infers_schema_from_json_file(self, tmp_path: Path) -> None:
-        """Auto-infers flattenSchema for API input nodes backed by .json files."""
+class TestValidateApiInputsHaveSchemas:
+    """The save hook renamed from ``_infer_flatten_schemas`` to
+    ``_validate_api_inputs_have_schemas`` per the v1-removal pivot
+    (commit 5.5 / D4). Behaviour inverted: no on-disk mutation; instead
+    a warning string is appended to the save response for JSON apiInput
+    nodes whose ``tables[]`` is empty. The user clicks Infer Tables to
+    populate the schema.
+    """
+
+    def test_warns_when_json_api_input_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
-
         json_file = tmp_path / "input.json"
-        json_file.write_text('[{"a": 1, "b": {"c": 2}}, {"a": 3, "b": {"c": 4}}]')
-
+        json_file.write_text('[{"a": 1, "b": {"c": 2}}]')
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "input.json"}),
         )
-
-        svc._infer_flatten_schemas(graph)
-
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        # On-disk config NOT mutated: no flattenSchema, no tables auto-written.
         cfg = graph.nodes[0].data.config
-        assert "flattenSchema" in cfg
-        assert isinstance(cfg["flattenSchema"], dict)
+        assert "flattenSchema" not in cfg
+        assert "tables" not in cfg
+        # Warning surfaced for the empty-tables case.
+        assert any("api_input" in w and "Infer Tables" in w for w in warnings), (
+            f"expected node-label + Infer-Tables warning; got {warnings!r}"
+        )
 
     def test_skips_non_api_input_nodes(self, tmp_path: Path) -> None:
-        """Non-apiInput nodes are not processed."""
         svc = SavePipelineService(tmp_path)
-
         graph = _make_graph(
             _make_node("t1", "transform", "polars", {"path": "data.json"}),
         )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
     def test_skips_non_json_path(self, tmp_path: Path) -> None:
-        """API input nodes with non-JSON paths are skipped."""
         svc = SavePipelineService(tmp_path)
-
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "data.parquet"}),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_skips_if_flatten_schema_already_set(self, tmp_path: Path) -> None:
-        """Does not overwrite existing flattenSchema."""
+    def test_no_warning_when_tables_populated(self, tmp_path: Path) -> None:
+        """A JSON apiInput already carrying `tables[]` is the happy path."""
         svc = SavePipelineService(tmp_path)
-
-        json_file = tmp_path / "input.json"
-        json_file.write_text('[{"a": 1}]')
-
-        existing_schema = {"a": "int"}
         graph = _make_graph(
             _make_node(
                 "api",
                 "api_input",
                 "apiInput",
-                {"path": "input.json", "flattenSchema": existing_schema},
+                {
+                    "path": "input.json",
+                    "tables": [
+                        {
+                            "path": "$[*]",
+                            "label": "root",
+                            "emit": True,
+                            "columns": [],
+                        }
+                    ],
+                },
             ),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
-        svc._infer_flatten_schemas(graph)
-        assert graph.nodes[0].data.config["flattenSchema"] == existing_schema
-
-    def test_skips_nonexistent_file(self, tmp_path: Path) -> None:
-        """Non-existent JSON files are skipped without error."""
+    def test_warns_when_jsonl_api_input_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
-
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": "missing.json"}),
-        )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_skips_empty_path(self, tmp_path: Path) -> None:
-        """Empty path string is skipped."""
-        svc = SavePipelineService(tmp_path)
-
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": ""}),
-        )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_jsonl_extension_supported(self, tmp_path: Path) -> None:
-        """Also works for .jsonl files."""
-        svc = SavePipelineService(tmp_path)
-
-        jsonl_file = tmp_path / "input.jsonl"
-        jsonl_file.write_text('{"x": 1}\n{"x": 2}\n')
-
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "input.jsonl"}),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert any("Infer Tables" in w for w in warnings)
 
-        svc._infer_flatten_schemas(graph)
-        cfg = graph.nodes[0].data.config
-        assert "flattenSchema" in cfg
+    def test_skips_empty_path(self, tmp_path: Path) -> None:
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": ""}),
+        )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -726,23 +756,32 @@ class TestRemoveStaleConfigDiffPath:
     """Tests for the second-save path where prev config files exist."""
 
     def test_second_save_removes_diff(self, tmp_path: Path) -> None:
-        """On second save, only files in (prev - current) are removed."""
+        """On second save, only files in (prev - current) are removed.
+
+        Bundle 6 sub-task C: `_prev_config_files` is no longer rotated
+        from the prior `_last_config_files` within the same
+        `SavePipelineService` instance — it's snapshotted from the
+        on-disk graph at the top of `save()`.  This unit test sets it
+        directly to simulate the second-save case; end-to-end coverage
+        of the disk-snapshot path lives in
+        `tests/test_bundle6_trust_model_cleanup.py`.
+        """
         svc = SavePipelineService(tmp_path)
 
-        # First save: graph with banding node
+        # First save: graph with banding node.
         graph1 = _make_graph(
             _make_node("b1", "first_banding", "banding", {"bands": []}),
         )
         svc._write_config_files(graph1)
-        svc._remove_stale_config_files(graph1)
-
         first_config = tmp_path / "config" / "banding" / "first_banding.json"
         assert first_config.exists()
 
-        # Second save: graph with different banding node
+        # Second save: graph with different banding node.  Simulate the
+        # disk snapshot: prev = what the first save wrote (first_banding).
         graph2 = _make_graph(
             _make_node("b2", "second_banding", "banding", {"bands": []}),
         )
+        svc._prev_config_files = {"config/banding/first_banding.json": "{}"}
         svc._write_config_files(graph2)
         svc._remove_stale_config_files(graph2)
 

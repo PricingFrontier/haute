@@ -37,6 +37,10 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # Bundle 5.M2 — atomic sidecar write means the readonly-DIR check
+    # only fires on POSIX (Windows chmod differs); the test is skipped
+    # on win32 by design. See TestPermissionDenied.
+    "716bebf07ce4f9f3",
     "efaa6262fa369b7b",
     "531fb2f9161337c8",
     "b1a877eb33f7ed72",
@@ -62,7 +66,8 @@ _EXPECTED_DEBT_IDS = {
     "c87e80ef52f08568",
     "50a51dcce3b28cae",
     "fea0501479ba2a0e",
-    "0bc154a7e1745baa",
+    # "0bc154a7e1745baa" removed — debt site lived in a v1-codec test that
+    # was deleted as part of commit 5.5 (v1 removal).
     "4328a90240a0dbba",
     "55b3c4a50777661d",
     "3c5baaf0a02d232d",

@@ -278,6 +278,11 @@ class PreparedGraph(NamedTuple):
     order: list[str]
     parents_of: dict[str, list[str]]
     id_to_name: dict[str, str]
+    # The post-pruning, ancestor-filtered edge list used to build
+    # ``parents_of``. Exposed so callers (notably the executor's
+    # port-aware binding) can index incoming edges per child without
+    # re-deriving the prune set themselves.
+    relevant_edges: list[GraphEdge]
 
 
 _STRICT_PROJECTION_PROFILES = frozenset(
@@ -1646,6 +1651,7 @@ def prepare_graph(
         order=order,
         parents_of=parents_of,
         id_to_name=id_to_name,
+        relevant_edges=relevant_edges,
     )
 
 

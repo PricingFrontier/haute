@@ -5,7 +5,7 @@ Covers:
   - D15: _build_manifest wrappers removed, dead code removed
   - D16: find_typed_node helper in routes/_helpers.py
   - D19: compile_node_code shared via conftest
-  - A9:  Exception hierarchy (PreambleError, GitError, JsonCacheCancelledError)
+  - A9:  Exception hierarchy (PreambleError, GitError, ApiInputSchemaError)
   - A13: Dispatch table parity (codegen vs executor)
 """
 
@@ -43,11 +43,11 @@ class TestExceptionHierarchy:
 
         assert issubclass(GitGuardrailError, HauteError)
 
-    def test_json_cache_cancelled_error_inherits_from_haute_error(self) -> None:
-        from haute._json_flatten import JsonCacheCancelledError
+    def test_api_input_schema_error_inherits_from_haute_error(self) -> None:
+        from haute._api_input_schema import ApiInputSchemaError
 
-        assert issubclass(JsonCacheCancelledError, HauteError)
-        exc = JsonCacheCancelledError("cancelled")
+        assert issubclass(ApiInputSchemaError, HauteError)
+        exc = ApiInputSchemaError("bad schema")
         assert isinstance(exc, HauteError)
 
     def test_preamble_error_preserves_source_line(self) -> None:
@@ -59,11 +59,11 @@ class TestExceptionHierarchy:
 
     def test_catch_all_haute_errors(self) -> None:
         """Catching HauteError should catch all subclasses."""
+        from haute._api_input_schema import ApiInputSchemaError
         from haute._git import GitError
-        from haute._json_flatten import JsonCacheCancelledError
         from haute.executor import PreambleError
 
-        for exc_cls in (PreambleError, GitError, JsonCacheCancelledError):
+        for exc_cls in (PreambleError, GitError, ApiInputSchemaError):
             with pytest.raises(HauteError):
                 raise exc_cls("test")
 

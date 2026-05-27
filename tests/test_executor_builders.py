@@ -7,8 +7,6 @@ existing test_executor.py.
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 import polars as pl
@@ -702,112 +700,6 @@ class TestBuildApiInput:
             label="My Input (v2)",
         )
         assert func_name.isidentifier()
-
-    def test_json_source_rejects_stale_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """JSON API inputs must not scan an older parquet cache."""
-        from haute._json_flatten import build_json_cache
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "input.json"
-        schema = {"x": "int"}
-        data_file.write_text(json.dumps([{"x": 1}]), encoding="utf-8")
-        result = build_json_cache(str(data_file), schema=schema)
-
-        # Force the cache older than its source regardless of filesystem
-        # timestamp resolution.  NTFS rejects timestamps before 1980.
-        old_ts = 315532800.0
-        os.utime(result["path"], (old_ts, old_ts))
-
-        _, fn, _ = _build(
-            "apiInput",
-            {"path": str(data_file), "flattenSchema": schema},
-        )
-
-        with pytest.raises(RuntimeError, match="cache.*stale|not been cached"):
-            fn().collect()
-
-    def test_json_source_rejects_schema_incompatible_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """JSON API inputs must honor the cache schema sidecar."""
-        from haute._json_flatten import build_json_cache
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "input.json"
-        data_file.write_text(json.dumps([{"x": 1, "y": 2}]), encoding="utf-8")
-        build_json_cache(str(data_file), schema={"x": "int"})
-
-        _, fn, _ = _build(
-            "apiInput",
-            {
-                "path": str(data_file),
-                "flattenSchema": {"x": "int", "y": "int"},
-            },
-        )
-
-        with pytest.raises(RuntimeError, match="schema|Refresh Cache|Cache as Parquet"):
-            fn().collect()
-
-    def test_json_source_accepts_schema_compatible_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Compatible cache metadata should still be scanned lazily."""
-        from haute._json_flatten import build_json_cache
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "input.json"
-        schema = {"x": "int", "y": "int"}
-        data_file.write_text(json.dumps([{"x": 1, "y": 2}]), encoding="utf-8")
-        build_json_cache(str(data_file), schema=schema)
-
-        _, fn, _ = _build(
-            "apiInput",
-            {"path": str(data_file), "flattenSchema": schema},
-        )
-
-        df = fn().collect()
-        assert df.to_dicts() == [{"x": 1, "y": 2}]
-
-    def test_json_cache_projection_missing_required_column_fails_loudly(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from haute._json_flatten import build_json_cache
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "input.json"
-        schema = {"x": "int"}
-        data_file.write_text(json.dumps([{"x": 1}]), encoding="utf-8")
-        build_json_cache(str(data_file), schema=schema)
-
-        node = _n(
-            {
-                "id": "api",
-                "data": {
-                    "label": "api",
-                    "nodeType": "apiInput",
-                    "config": {"path": str(data_file), "flattenSchema": schema},
-                },
-            }
-        )
-
-        _, fn, _ = _build_node_fn(
-            node,
-            required_output_columns=frozenset({"missing"}),
-            execution_profile=ExecutionProfile.LAZY_SINK.value,
-        )
-
-        with pytest.raises(SchemaMismatchError, match="Source projection references"):
-            fn()
 
     def test_source_projection_maps_renamed_output_columns_to_physical_columns(
         self,

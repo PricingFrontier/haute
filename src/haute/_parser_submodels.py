@@ -103,7 +103,7 @@ def merge_submodels(
     parent_graph: PipelineGraph,
     submodel_graphs: dict[str, PipelineGraph],
     submodel_files: dict[str, str],
-    parent_edges: list[tuple[str, str]],
+    parent_edges: (list[tuple[str, str, str | None]] | list[tuple[str, str]]),
     *,
     flatten: bool = False,
 ) -> PipelineGraph:
@@ -131,12 +131,33 @@ def merge_submodels(
     # _build_edges drops edges where one endpoint is a submodel child node
     # (because it only knows about main-file nodes).  Reconstruct those
     # cross-boundary edges from the raw parent_edges tuples.
+    #
+    # Each parent_edges entry is a triple (src, tgt, source_port) per the
+    # commit-6 codegen change; submodel cross-boundary edges don't carry
+    # a user-facing port name (the `out__<id>` markers live on
+    # sourceHandle on the GraphEdge serialisation, not in connect()).
+    # We preserve `source_port` as `sourceHandle` so an apiInput edge
+    # crossing into a submodel surfaces with the right port.
     existing_pairs = {(e.source, e.target) for e in parent_edge_list}
-    for src, tgt in parent_edges:
+    for edge_tuple in parent_edges:
+        # Tolerate both pre-commit-6 2-tuples and the new 3-tuples
+        # (commit-6 codegen extends connect calls with `source_port`).
+        if len(edge_tuple) == 3:
+            src, tgt, source_port = edge_tuple
+        else:
+            src, tgt = edge_tuple
+            source_port = None
         if (src, tgt) in existing_pairs:
             continue
         if src in all_child_ids or tgt in all_child_ids:
-            parent_edge_list.append(GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt))
+            parent_edge_list.append(
+                GraphEdge(
+                    id=f"e_{src}_{tgt}",
+                    source=src,
+                    target=tgt,
+                    sourceHandle=source_port,
+                )
+            )
             existing_pairs.add((src, tgt))
 
     # Hierarchical mode: create submodel placeholder nodes

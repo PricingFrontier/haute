@@ -17,6 +17,7 @@ from typing import Any, NoReturn
 from fastapi import HTTPException, WebSocket
 from pydantic import BaseModel, Field, model_validator
 
+from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.errors import ConfigError
@@ -241,6 +242,31 @@ _SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debou
 _SELF_WRITE_RETENTION = 60.0
 _self_write_paths: dict[str, float] = {}
 _self_write_lock = threading.Lock()
+
+
+# Bundle 5.M1 — single-writer guarantee across all save-shaped endpoints.
+# OPUS race-conditions scenarios S1 (concurrent /pipeline/save stale-cleanup
+# clobber) and S4 (codegen-vs-sidecar split mid-save) both stem from two
+# saves interleaving. The lock is acquired by:
+#   - routes/pipeline.py::save_pipeline    (/api/pipeline/save)
+#   - routes/submodel.py::create_submodel  (/api/submodel/create)
+#   - routes/submodel.py::dissolve_submodel (/api/submodel/dissolve)
+# all of which touch the project's .py / .haute.json / config sidecars.
+#
+# Scope: global (per-process). Per-pipeline keying would be sharper but
+# the single-user threat model has effectively no contention; the global
+# lock is the cheaper, well-trodden pattern (matches `_pipeline_index_lock`,
+# `_self_write_lock`, `ws_clients_lock` above).
+#
+# Caveat: the current routes call SavePipelineService.save() synchronously
+# inside async route handlers, so the event loop is blocked during save —
+# concurrent in-process saves are *already* serialised by virtue of
+# event-loop-blocking. The lock is defence-in-depth: it survives any future
+# refactor that moves the save body to `asyncio.to_thread` / threadpool, and
+# any future endpoint that adds explicit `await` mid-save. It does NOT
+# protect against multiple uvicorn worker processes — out of scope under
+# the single-user trust model.
+save_lock: asyncio.Lock = asyncio.Lock()
 
 
 def _self_write_key(path: str | Path) -> str:
@@ -623,7 +649,14 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
         exclude_defaults=True,
     )
     sidecar = py_path.with_suffix(".haute.json")
-    sidecar.write_text(serialised + "\n")
+    # Bundle 5.M2 — atomic write closes the partial-bytes window OPUS
+    # race-scenario S2 surfaced: the file-watcher's reparse path and
+    # any concurrent /pipeline GET hit `load_sidecar`, which would see
+    # a half-written file if `Path.write_text` truncates then writes
+    # non-atomically. `atomic_write_text` stages to a sibling temp and
+    # renames into place — the rename is atomic on every major OS.
+    # Pinning test: TestSaveSidecar.test_writes_atomically_via_atomic_write_text.
+    atomic_write_text(sidecar, serialised + "\n")
     return warnings
 
 
