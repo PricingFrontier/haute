@@ -54,9 +54,7 @@ class TestBuildJsonCache:
         body = resp.json()
         assert body.get("type") == "ApiInputSchemaError"
 
-    def test_build_timeout_returns_504(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_build_timeout_returns_504(self, client: TestClient, tmp_path: Path) -> None:
         """Build exceeding timeout returns 504."""
         data_file = tmp_path / "data.jsonl"
         data_file.write_text('{"a":1}\n', encoding="utf-8")
@@ -86,9 +84,7 @@ class TestBuildJsonCache:
         assert resp.status_code == 504
         assert "timed out" in resp.json()["detail"]
 
-    def test_build_missing_file_returns_404(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_build_missing_file_returns_404(self, client: TestClient, tmp_path: Path) -> None:
         """Non-existent data file returns 404 (requires a valid haute.toml project)."""
         # Route path resolution requires a project root (haute.toml).
         (tmp_path / "haute.toml").write_text(
@@ -151,9 +147,7 @@ class TestJsonCacheStatus:
         body = resp.json()
         assert body.get("type") == "ApiInputSchemaError"
 
-    def test_get_status_missing_config_returns_uncached(
-        self, client: TestClient
-    ) -> None:
+    def test_get_status_missing_config_returns_uncached(self, client: TestClient) -> None:
         """GET status for a file with no on-disk v2 config returns cached=False."""
         resp = client.get("/api/json-cache/status", params={"path": "data.jsonl"})
         assert resp.status_code == 200

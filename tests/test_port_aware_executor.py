@@ -39,7 +39,6 @@ from haute._execute_lazy import (
 )
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
-
 # ─── 1. Pydantic validator rejects "" handles ─────────────────────
 
 

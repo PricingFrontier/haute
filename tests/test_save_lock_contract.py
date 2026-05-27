@@ -51,9 +51,7 @@ def test_save_lock_is_acquired_inside_pipeline_save_route() -> None:
     import ast
     from pathlib import Path as _Path
 
-    src = _Path(
-        "src/haute/routes/pipeline.py"
-    ).read_text(encoding="utf-8")
+    src = _Path("src/haute/routes/pipeline.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
 
     found = False
@@ -78,9 +76,7 @@ def test_save_lock_is_acquired_inside_submodel_routes(route_name: str) -> None:
     import ast
     from pathlib import Path as _Path
 
-    src = _Path(
-        "src/haute/routes/submodel.py"
-    ).read_text(encoding="utf-8")
+    src = _Path("src/haute/routes/submodel.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
 
     found = False
@@ -142,6 +138,5 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
         await ac.post("/api/pipeline/save", json=payload)
 
     assert locked_observations == [True], (
-        "save_lock.locked() must return True during svc.save; "
-        f"got {locked_observations}"
+        f"save_lock.locked() must return True during svc.save; got {locked_observations}"
     )

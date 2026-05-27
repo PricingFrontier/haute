@@ -231,8 +231,7 @@ def parse_column_path(column_path: str, table_path: str) -> str:
         )
     if not tail.startswith("."):
         raise ApiInputSchemaError(
-            "v2 column path doesn't sit cleanly under table path "
-            "(missing dot separator)",
+            "v2 column path doesn't sit cleanly under table path (missing dot separator)",
             column_path=column_path,
             table_path=table_path,
         )
@@ -335,20 +334,17 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
             cname = col.get("name")
             if not isinstance(cname, str) or not cname:
                 raise ApiInputSchemaError(
-                    f"v2 tables[{ti}].columns[{ci}].name is missing "
-                    "or not a non-empty string",
+                    f"v2 tables[{ti}].columns[{ci}].name is missing or not a non-empty string",
                 )
             if cname in seen_col_names:
                 raise ApiInputSchemaError(
-                    f"v2 tables[{ti}] (label={label!r}) has duplicate "
-                    f"column name {cname!r}",
+                    f"v2 tables[{ti}] (label={label!r}) has duplicate column name {cname!r}",
                 )
             seen_col_names.add(cname)
             cpath = col.get("path")
             if not isinstance(cpath, str) or not cpath:
                 raise ApiInputSchemaError(
-                    f"v2 tables[{ti}].columns[{ci}].path is missing "
-                    "or not a non-empty string",
+                    f"v2 tables[{ti}].columns[{ci}].path is missing or not a non-empty string",
                 )
             parse_column_path(cpath, path)  # raises if it doesn't sit under the table path
 
@@ -379,8 +375,7 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
         if row_id_column is not None:
             if not isinstance(row_id_column, str) or not row_id_column:
                 raise ApiInputSchemaError(
-                    f"v2 tables[{ti}].row_id_column must be null or a "
-                    "non-empty string",
+                    f"v2 tables[{ti}].row_id_column must be null or a non-empty string",
                 )
             if row_id_column not in seen_col_names:
                 raise ApiInputSchemaError(

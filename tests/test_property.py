@@ -650,18 +650,12 @@ class TestConfigRoundtrip:
         config=st.fixed_dictionaries(
             {
                 "selected_columns": st.lists(
-                    st.from_regex(
-                        r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True
-                    ),
+                    st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
                     max_size=5,
                 ),
                 "column_renames": st.dictionaries(
-                    keys=st.from_regex(
-                        r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True
-                    ),
-                    values=st.from_regex(
-                        r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True
-                    ),
+                    keys=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    values=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
                     max_size=5,
                 ),
                 "contract": st.text(

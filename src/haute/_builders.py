@@ -23,7 +23,7 @@ import haute.projection as projection
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
-from haute._io import load_external_object, read_data_source, read_source
+from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
 from haute._rating import (
     _apply_banding,
@@ -452,12 +452,12 @@ def _make_api_source_v2(
     # "no emitting tables".
     emit_true_tables = [t for t in config.get("tables", []) or [] if t.get("emit")]
     emit_with_columns = [
-        t for t in emit_true_tables
-        if any(c.get("selected") for c in (t.get("columns") or []))
+        t for t in emit_true_tables if any(c.get("selected") for c in (t.get("columns") or []))
     ]
     emit_labels: list[str] = [t["label"] for t in emit_with_columns]
 
     if not emit_true_tables:
+
         def _api_source_v2_no_emit() -> _Frame:
             raise RuntimeError(
                 "API Input has no emitting tables. Open the node, tick "
@@ -981,9 +981,7 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
                 if dfs_by_name:
                     dfs = tuple(
-                        dfs_by_name[name]
-                        for name in _src_names_captured
-                        if name in dfs_by_name
+                        dfs_by_name[name] for name in _src_names_captured if name in dfs_by_name
                     )
                 else:
                     dfs = dfs_positional

@@ -21,10 +21,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-import polars as pl
 import pytest
 
-from haute._json_flatten import _json_cache_dir, clear_json_cache
+from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -369,8 +368,7 @@ def test_build_noop_when_fingerprint_matches(isolated_root) -> None:
     second_mtime = meta_path.stat().st_mtime
 
     assert first_mtime == second_mtime, (
-        "no-op trapdoor failed: a fingerprint-matching rebuild "
-        "shouldn't rewrite meta.json"
+        "no-op trapdoor failed: a fingerprint-matching rebuild shouldn't rewrite meta.json"
     )
 
 
@@ -411,8 +409,8 @@ def test_two_consumers_different_ports_dont_collide_on_column_cache(isolated_roo
     p_results = execute_graph(graph, target_node_id="c_policies")
     assert p_results["c_policies"].status == "ok"
     p_col_names = {c.name for c in p_results["c_policies"].columns}
-    assert p_col_names == {"policy_id"}, (
-        "policies port should expose only policy_id, got " + str(p_col_names)
+    assert p_col_names == {"policy_id"}, "policies port should expose only policy_id, got " + str(
+        p_col_names
     )
     assert p_results["c_policies"].row_count == 2
 

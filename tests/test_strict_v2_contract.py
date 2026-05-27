@@ -48,7 +48,6 @@ from haute._config_validation import VALID_KEYS
 from haute._types import NodeType
 from haute.executor import _extract_column_refs
 
-
 # ---------------------------------------------------------------------------
 # α — write-time allowlist
 # ---------------------------------------------------------------------------
@@ -129,9 +128,7 @@ class TestPrepareConfigForSidecarAllowlist:
         out = _prepare_config_for_sidecar(NodeType.API_INPUT, config)
         assert not any(k.startswith("_") for k in out)
 
-    def test_drop_emits_warning_event(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_drop_emits_warning_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Dropped keys are logged at WARNING level for observability.
 
         We spy on the module logger directly rather than going through
@@ -244,9 +241,7 @@ class TestNormaliseLoadedConfigApiInputStrip:
         assert out["selected_columns"] == ["quote_id", "premium"]
         assert out["column_renames"] == {"old": "new"}
 
-    def test_load_node_config_strips_legacy_keys_round_trip(
-        self, tmp_path: Any
-    ) -> None:
+    def test_load_node_config_strips_legacy_keys_round_trip(self, tmp_path: Any) -> None:
         """End-to-end: a v1-residue file on disk loads as a clean v2 dict.
 
         Pins the integration: file with leaked legacy keys + v2 tables

@@ -67,9 +67,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
                 node_count=len(body.node_ids or []),
                 exc_info=True,
             )
-            raise HTTPException(
-                status_code=400, detail=_INTERNAL_ERROR_DETAIL
-            ) from None
+            raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL) from None
 
         if not body.source_file:
             raise HTTPException(

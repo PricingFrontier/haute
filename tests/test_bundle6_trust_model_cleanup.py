@@ -44,7 +44,6 @@ import pytest
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.schemas import SavePipelineRequest
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -54,9 +53,7 @@ from haute.schemas import SavePipelineRequest
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Clean temp project root with a minimal pipeline shell."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "main.py").write_text(
-        'import haute\npipeline = haute.Pipeline("main")\n'
-    )
+    (tmp_path / "main.py").write_text('import haute\npipeline = haute.Pipeline("main")\n')
     return tmp_path
 
 
@@ -100,9 +97,7 @@ class TestSaveDoesNotDeleteUnknownConfigs:
     previously wrote (as evidenced by the on-disk pipeline graph that
     referenced them)."""
 
-    def test_first_save_preserves_orphan_in_a_managed_folder(
-        self, project_root: Path
-    ) -> None:
+    def test_first_save_preserves_orphan_in_a_managed_folder(self, project_root: Path) -> None:
         """A user (or external tool) hand-added a config file in a haute-
         managed folder before the first save of this pipeline.  The save
         must preserve it: haute never wrote it, so it's not haute's to
@@ -172,10 +167,14 @@ class TestSaveDoesNotDeleteUnknownConfigs:
 
         # First save: graph has node_a + node_b → two configs written.
         svc1 = SavePipelineService(project_root)
-        svc1.save(_make_request([
-            _make_scenario_expander_node("node_a"),
-            _make_scenario_expander_node("node_b"),
-        ]))
+        svc1.save(
+            _make_request(
+                [
+                    _make_scenario_expander_node("node_a"),
+                    _make_scenario_expander_node("node_b"),
+                ]
+            )
+        )
 
         node_a_config = project_root / "config" / "expander" / "node_a.json"
         node_b_config = project_root / "config" / "expander" / "node_b.json"
@@ -194,9 +193,7 @@ class TestSaveDoesNotDeleteUnknownConfigs:
             "(it was haute-written; haute knows it's no longer needed)."
         )
 
-    def test_unparseable_pipeline_results_in_no_deletes(
-        self, project_root: Path
-    ) -> None:
+    def test_unparseable_pipeline_results_in_no_deletes(self, project_root: Path) -> None:
         """If the on-disk pipeline file can't be parsed (mid-edit
         corruption, encoding issue, etc.), the save can't compute a
         baseline of "what haute previously owned" — so nothing should

@@ -100,9 +100,7 @@ def _extract_decorated_nodes(
 
 def _build_edges(
     raw_nodes: list[dict],
-    explicit_connect_pairs: (
-        list[tuple[str, str, str | None]] | list[tuple[str, str]]
-    ),
+    explicit_connect_pairs: (list[tuple[str, str, str | None]] | list[tuple[str, str]]),
 ) -> list[GraphEdge]:
     """Build GraphEdge models from explicit connect() calls and implicit param-name matching.
 

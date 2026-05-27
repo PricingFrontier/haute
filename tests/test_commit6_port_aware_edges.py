@@ -63,9 +63,9 @@ def test_codegen_emits_source_port_kwarg_when_sourcehandle_is_set() -> None:
 
     graph = _minimal_graph_with_sourcehandle("policies")
     code = graph_to_code(graph, pipeline_name="t")
-    assert (
-        'pipeline.connect("quotes", "processing", source_port="policies")' in code
-    ), f"expected source_port kwarg in generated code; got:\n{code}"
+    assert 'pipeline.connect("quotes", "processing", source_port="policies")' in code, (
+        f"expected source_port kwarg in generated code; got:\n{code}"
+    )
 
 
 def test_codegen_emits_bare_connect_when_sourcehandle_is_none() -> None:
@@ -78,8 +78,7 @@ def test_codegen_emits_bare_connect_when_sourcehandle_is_none() -> None:
         f"expected bare connect form; got:\n{code}"
     )
     assert "source_port" not in code, (
-        "single-port edge must not emit source_port kwarg; "
-        f"got:\n{code}"
+        f"single-port edge must not emit source_port kwarg; got:\n{code}"
     )
 
 
@@ -99,11 +98,7 @@ def test_parser_round_trips_source_port_kwarg(tmp_path) -> None:
     py_path = tmp_path / "t.py"
     py_path.write_text(code)
     parsed = parse_pipeline_file(py_path)
-    matching = [
-        e
-        for e in parsed.edges
-        if e.source == "quotes" and e.target == "processing"
-    ]
+    matching = [e for e in parsed.edges if e.source == "quotes" and e.target == "processing"]
     assert len(matching) == 1
     assert matching[0].sourceHandle == "policies", (
         f"sourceHandle must round-trip; got {matching[0].sourceHandle!r}"
@@ -120,11 +115,7 @@ def test_parser_round_trips_bare_connect_to_null_sourcehandle(tmp_path) -> None:
     py_path = tmp_path / "t.py"
     py_path.write_text(code)
     parsed = parse_pipeline_file(py_path)
-    matching = [
-        e
-        for e in parsed.edges
-        if e.source == "quotes" and e.target == "processing"
-    ]
+    matching = [e for e in parsed.edges if e.source == "quotes" and e.target == "processing"]
     assert len(matching) == 1
     assert matching[0].sourceHandle is None
 
@@ -146,11 +137,7 @@ def test_parser_round_trips_source_port_with_special_chars(tmp_path) -> None:
         py_path = tmp_path / "t.py"
         py_path.write_text(code)
         parsed = parse_pipeline_file(py_path)
-        matching = [
-            e
-            for e in parsed.edges
-            if e.source == "quotes" and e.target == "processing"
-        ]
+        matching = [e for e in parsed.edges if e.source == "quotes" and e.target == "processing"]
         assert len(matching) == 1
         assert matching[0].sourceHandle == tricky, (
             f"sourceHandle must round-trip {tricky!r} verbatim; "

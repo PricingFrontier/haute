@@ -36,7 +36,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ─── Backend fixtures ────────────────────────────────────────────────
 
 
@@ -56,7 +55,10 @@ def _write_quotes_json(tmp_path: Path) -> Path:
     data_path.write_text(
         json.dumps(
             [
-                {"quote_id": "q1", "drivers": [{"id": "d1", "name": "Alice"}, {"id": "d2", "name": "Bob"}]},
+                {
+                    "quote_id": "q1",
+                    "drivers": [{"id": "d1", "name": "Alice"}, {"id": "d2", "name": "Bob"}],
+                },
                 {"quote_id": "q2", "drivers": [{"id": "d3", "name": "Carol"}]},
             ]
         ),
@@ -109,7 +111,7 @@ def _v2_config_two_tables(data_relpath: str) -> dict:
 # ─── T1 — save fresh apiInput → no auto-written schema ────────────────
 
 
-def test_T1_save_fresh_api_input_does_not_auto_write_flatten_schema(
+def test_t1_save_fresh_api_input_does_not_auto_write_flatten_schema(
     client: TestClient, tmp_path: Path
 ) -> None:
     """Saving an apiInput with no schema on disk must NOT auto-inject `flattenSchema`.
@@ -122,7 +124,7 @@ def test_T1_save_fresh_api_input_does_not_auto_write_flatten_schema(
     Asserts at the persistent boundary (the on-disk JSON), not at the
     call argument, per AGENTS.md §UI Test Assertions principle 1.
     """
-    data_path = _write_quotes_json(tmp_path)
+    _data_path = _write_quotes_json(tmp_path)
     rel_data = "data/quotes.json"
 
     save_body = {
@@ -154,8 +156,7 @@ def test_T1_save_fresh_api_input_does_not_auto_write_flatten_schema(
 
     # Negative invariant: no v1 surface was synthesised at save time.
     assert "flattenSchema" not in persisted, (
-        "save must not auto-inject flattenSchema; "
-        f"got persisted={persisted!r}"
+        f"save must not auto-inject flattenSchema; got persisted={persisted!r}"
     )
     # Positive invariant: only the user-provided keys remain.
     assert persisted == {"path": rel_data}
@@ -164,7 +165,7 @@ def test_T1_save_fresh_api_input_does_not_auto_write_flatten_schema(
 # ─── T3 — JsonCacheBuildRequest.volatile_schema exists ────────────────
 
 
-def test_T3_json_cache_build_request_accepts_volatile_schema() -> None:
+def test_t3_json_cache_build_request_accepts_volatile_schema() -> None:
     """`JsonCacheBuildRequest` exposes `volatile_schema: dict | None = None`.
 
     Today: the Pydantic model has `flatten_schema` (v1 inline) but no
@@ -180,9 +181,7 @@ def test_T3_json_cache_build_request_accepts_volatile_schema() -> None:
     assert "volatile_schema" in fields, "volatile_schema field must exist"
     assert fields["volatile_schema"].default is None
     # Model accepts the field with a dict value.
-    instance = JsonCacheBuildRequest(
-        path="data.json", volatile_schema={"tables": []}
-    )
+    instance = JsonCacheBuildRequest(path="data.json", volatile_schema={"tables": []})
     assert instance.volatile_schema == {"tables": []}
     # And accepts None (the default fallback to disk-read path).
     instance_none = JsonCacheBuildRequest(path="data.json")
@@ -192,7 +191,7 @@ def test_T3_json_cache_build_request_accepts_volatile_schema() -> None:
 # ─── T4 — /api/json-cache/build dispatch on volatile_schema vs disk ───
 
 
-def test_T4_cache_build_uses_volatile_schema_when_present(
+def test_t4_cache_build_uses_volatile_schema_when_present(
     client: TestClient, tmp_path: Path
 ) -> None:
     """When `volatile_schema is not None`, route uses it over disk config.
@@ -207,7 +206,7 @@ def test_T4_cache_build_uses_volatile_schema_when_present(
     that differs from the on-disk config; the cache built should match
     volatile_schema's tables, not the disk's.
     """
-    data_path = _write_quotes_json(tmp_path)
+    _data_path = _write_quotes_json(tmp_path)
     rel_data = "data/quotes.json"
 
     # Write a v2 config to disk with ONLY the root table.
@@ -218,9 +217,7 @@ def test_T4_cache_build_uses_volatile_schema_when_present(
                 "path": "$[*]",
                 "label": "quotes_disk",
                 "emit": True,
-                "columns": [
-                    {"name": "quote_id", "path": "$[*].quote_id", "type": "str"}
-                ],
+                "columns": [{"name": "quote_id", "path": "$[*].quote_id", "type": "str"}],
             }
         ],
     }
@@ -249,16 +246,15 @@ def test_T4_cache_build_uses_volatile_schema_when_present(
     cache_dir = tmp_path / ".haute_cache"
     parquets = list(cache_dir.rglob("*.parquet"))
     assert len(parquets) == 2, (
-        f"volatile_schema dispatch should produce 2 parquets; "
-        f"got {[p.name for p in parquets]}"
+        f"volatile_schema dispatch should produce 2 parquets; got {[p.name for p in parquets]}"
     )
 
 
-def test_T4_cache_build_falls_back_to_disk_when_volatile_is_none(
+def test_t4_cache_build_falls_back_to_disk_when_volatile_is_none(
     client: TestClient, tmp_path: Path
 ) -> None:
     """When `volatile_schema is None`, route reads config_path from disk."""
-    data_path = _write_quotes_json(tmp_path)
+    _data_path = _write_quotes_json(tmp_path)
     rel_data = "data/quotes.json"
 
     # Write a v2 config to disk with two tables.
@@ -282,21 +278,20 @@ def test_T4_cache_build_falls_back_to_disk_when_volatile_is_none(
     cache_dir = tmp_path / ".haute_cache"
     parquets = list(cache_dir.rglob("*.parquet"))
     assert len(parquets) == 2, (
-        f"disk dispatch should produce 2 parquets; "
-        f"got {[p.name for p in parquets]}"
+        f"disk dispatch should produce 2 parquets; got {[p.name for p in parquets]}"
     )
 
 
 # ─── T6 — multi-port emit:true ───────────────────────────────────────
 
 
-def test_T6_multiple_emit_true_tables_produce_one_parquet_each(
+def test_t6_multiple_emit_true_tables_produce_one_parquet_each(
     client: TestClient, tmp_path: Path
 ) -> None:
     """Two emit:true tables → two parquets; columns match their table spec."""
     import polars as pl
 
-    data_path = _write_quotes_json(tmp_path)
+    _data_path = _write_quotes_json(tmp_path)
     rel_data = "data/quotes.json"
     cfg = _v2_config_two_tables(rel_data)
 
@@ -327,9 +322,7 @@ def test_T6_multiple_emit_true_tables_produce_one_parquet_each(
 # ─── T7 — parquet footer kv_metadata carries v2 schema ────────────────
 
 
-def test_T7_parquet_footer_carries_per_table_v2_schema(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_t7_parquet_footer_carries_per_table_v2_schema(client: TestClient, tmp_path: Path) -> None:
     """Each emit:true parquet's footer carries its per-table v2 schema slice.
 
     The handover requires the on-disk parquet to embed enough schema
@@ -339,7 +332,7 @@ def test_T7_parquet_footer_carries_per_table_v2_schema(
     """
     import pyarrow.parquet as pq
 
-    data_path = _write_quotes_json(tmp_path)
+    _data_path = _write_quotes_json(tmp_path)
     rel_data = "data/quotes.json"
     cfg = _v2_config_two_tables(rel_data)
 
@@ -363,8 +356,7 @@ def test_T7_parquet_footer_carries_per_table_v2_schema(
     kv = arrow_schema.metadata or {}
     payload_bytes = kv.get(b"haute_per_frame_schema")
     assert payload_bytes is not None, (
-        f"parquet footer must carry b'haute_per_frame_schema'; "
-        f"got keys={list(kv)!r}"
+        f"parquet footer must carry b'haute_per_frame_schema'; got keys={list(kv)!r}"
     )
     payload = json.loads(payload_bytes)
     assert payload.get("port_label") == "drivers"
@@ -377,7 +369,7 @@ def test_T7_parquet_footer_carries_per_table_v2_schema(
 # ─── T8 — malformed volatile_schema → 422 + structured body ───────────
 
 
-def test_T8_malformed_volatile_schema_returns_structured_422(
+def test_t8_malformed_volatile_schema_returns_structured_422(
     client: TestClient, tmp_path: Path
 ) -> None:
     """Malformed `volatile_schema` -> 422 with {detail, type:"ApiInputSchemaError"}.
@@ -423,13 +415,11 @@ def test_T8_malformed_volatile_schema_returns_structured_422(
             json={"path": rel_data, "volatile_schema": bad},
         )
         assert resp.status_code == 422, (
-            f"malformed volatile_schema must 422; got {resp.status_code} "
-            f"for {bad!r}"
+            f"malformed volatile_schema must 422; got {resp.status_code} for {bad!r}"
         )
         body = resp.json()
         assert body.get("type") == "ApiInputSchemaError", (
-            f"422 body must carry type=ApiInputSchemaError discriminator; "
-            f"got body={body!r}"
+            f"422 body must carry type=ApiInputSchemaError discriminator; got body={body!r}"
         )
         assert isinstance(body.get("detail"), str) and body["detail"], (
             f"422 body must have non-empty detail string; got body={body!r}"
@@ -439,7 +429,7 @@ def test_T8_malformed_volatile_schema_returns_structured_422(
 # ─── T13 — validate_v2_schema rejects unknown col.type ───────────────
 
 
-def test_T13_validate_v2_schema_rejects_unknown_col_type() -> None:
+def test_t13_validate_v2_schema_rejects_unknown_col_type() -> None:
     """`validate_v2_schema` raises ApiInputSchemaError on unknown col.type.
 
     Today: `_json_shred.py:278` silently downgrades unknown types to
@@ -468,7 +458,7 @@ def test_T13_validate_v2_schema_rejects_unknown_col_type() -> None:
 # ─── T14 — sanitised-label collision rejected ────────────────────────
 
 
-def test_T14_validate_v2_schema_rejects_sanitised_label_collision() -> None:
+def test_t14_validate_v2_schema_rejects_sanitised_label_collision() -> None:
     """Two table labels sanitising to the same parquet filename → reject.
 
     Today: `build_per_port_cache` silently overwrites the parquet — the
@@ -505,7 +495,7 @@ def test_T14_validate_v2_schema_rejects_sanitised_label_collision() -> None:
 # ─── T15 — validator + path parsers raise ApiInputSchemaError ────────
 
 
-def test_T15_validate_v2_schema_raises_api_input_schema_error() -> None:
+def test_t15_validate_v2_schema_raises_api_input_schema_error() -> None:
     """validate_v2_schema raises ApiInputSchemaError(HauteError), not ValueError.
 
     The bare ValueError contract is the current source of the json_cache
@@ -522,7 +512,7 @@ def test_T15_validate_v2_schema_raises_api_input_schema_error() -> None:
         validate_v2_schema({"tables": "not a list"})
 
 
-def test_T15_parse_table_path_raises_api_input_schema_error() -> None:
+def test_t15_parse_table_path_raises_api_input_schema_error() -> None:
     """`parse_table_path` raises ApiInputSchemaError on malformed input."""
     from haute._api_input_schema import ApiInputSchemaError, parse_table_path
 
@@ -530,7 +520,7 @@ def test_T15_parse_table_path_raises_api_input_schema_error() -> None:
         parse_table_path("drivers[*]")  # missing $[*] prefix
 
 
-def test_T15_parse_column_path_raises_api_input_schema_error() -> None:
+def test_t15_parse_column_path_raises_api_input_schema_error() -> None:
     """`parse_column_path` raises ApiInputSchemaError on malformed input."""
     from haute._api_input_schema import ApiInputSchemaError, parse_column_path
 
@@ -541,7 +531,7 @@ def test_T15_parse_column_path_raises_api_input_schema_error() -> None:
 # ─── T16 — corrupt-mix (tables + flattenSchema) tolerated ────────────
 
 
-def test_T16_corrupt_mix_uses_tables_ignores_flatten_schema(
+def test_t16_corrupt_mix_uses_tables_ignores_flatten_schema(
     client: TestClient, tmp_path: Path
 ) -> None:
     """Config file with BOTH tables[] AND flattenSchema → use tables, no error.
@@ -579,7 +569,7 @@ def test_T16_corrupt_mix_uses_tables_ignores_flatten_schema(
 # ─── T17 — save empty tables → warnings ───────────────────────────────
 
 
-def test_T17_save_empty_tables_emits_save_response_warning(
+def test_t17_save_empty_tables_emits_save_response_warning(
     client: TestClient, tmp_path: Path
 ) -> None:
     """JSON apiInput with empty tables[] → SavePipelineResponse.warnings non-empty.
@@ -589,7 +579,7 @@ def test_T17_save_empty_tables_emits_save_response_warning(
     hint via the warning ledger. Message must reference the node label
     and "Infer Tables" so the user knows what to click.
     """
-    data_path = _write_quotes_json(tmp_path)
+    _data_path = _write_quotes_json(tmp_path)
     rel_data = "data/quotes.json"
 
     save_body = {
@@ -628,7 +618,7 @@ def test_T17_save_empty_tables_emits_save_response_warning(
 # ─── T18 — legacy_to_v2 import raises ImportError ────────────────────
 
 
-def test_T18_legacy_to_v2_import_raises() -> None:
+def test_t18_legacy_to_v2_import_raises() -> None:
     """`from haute._api_input_schema import legacy_to_v2` → ImportError.
 
     Negative test: confirms the v1→v2 migration codec is deleted. The
@@ -641,7 +631,7 @@ def test_T18_legacy_to_v2_import_raises() -> None:
 # ─── T19 — no flattenSchema literal under tests/fixtures/ ────────────
 
 
-def test_T19_no_flatten_schema_in_tests_fixtures() -> None:
+def test_t19_no_flatten_schema_in_tests_fixtures() -> None:
     """No file under `tests/fixtures/` contains the literal "flattenSchema".
 
     Regression guard: prevents accidentally re-introducing v1 fixtures
@@ -671,7 +661,7 @@ def test_T19_no_flatten_schema_in_tests_fixtures() -> None:
 # ─── T20 — _json_flatten_schema module import raises ─────────────────
 
 
-def test_T20_json_flatten_schema_module_import_raises() -> None:
+def test_t20_json_flatten_schema_module_import_raises() -> None:
     """`from haute import _json_flatten_schema` → ImportError.
 
     Negative test: the entire v1 flatten-schema module is deleted. The

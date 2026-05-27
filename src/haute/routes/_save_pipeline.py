@@ -364,9 +364,7 @@ class SavePipelineService:
     # JSON apiInput schema validation (no on-disk mutation)
     # ------------------------------------------------------------------
 
-    def _validate_api_inputs_have_schemas(
-        self, graph: PipelineGraph, warnings: list[str]
-    ) -> None:
+    def _validate_api_inputs_have_schemas(self, graph: PipelineGraph, warnings: list[str]) -> None:
         """Emit a non-blocking warning per JSON apiInput with no v2 ``tables[]``.
 
         Renamed from the v1-era ``_infer_flatten_schemas``. The function

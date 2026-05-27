@@ -280,14 +280,10 @@ def _augment_starter_pipeline() -> None:
     # via Infer Tables, plus the nested-JSON data fixture.
     quote_input_dir = E2E_PROJECT_DIR / "rating" / "config" / "quote_input"
     quote_input_dir.mkdir(parents=True, exist_ok=True)
-    (quote_input_dir / "quotes.json").write_text(
-        _QUOTES_API_INPUT_CONFIG, encoding="utf-8"
-    )
+    (quote_input_dir / "quotes.json").write_text(_QUOTES_API_INPUT_CONFIG, encoding="utf-8")
     quotes_data_dir = E2E_PROJECT_DIR / "data" / "quotes"
     quotes_data_dir.mkdir(parents=True, exist_ok=True)
-    (quotes_data_dir / "sample_quote.json").write_text(
-        _QUOTES_SAMPLE_DATA, encoding="utf-8"
-    )
+    (quotes_data_dir / "sample_quote.json").write_text(_QUOTES_SAMPLE_DATA, encoding="utf-8")
 
 
 def _scaffold_e2e_project() -> None:

@@ -18,7 +18,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import make_edge as _make_edge
@@ -681,9 +681,9 @@ class TestValidateApiInputsHaveSchemas:
         assert "flattenSchema" not in cfg
         assert "tables" not in cfg
         # Warning surfaced for the empty-tables case.
-        assert any(
-            "api_input" in w and "Infer Tables" in w for w in warnings
-        ), f"expected node-label + Infer-Tables warning; got {warnings!r}"
+        assert any("api_input" in w and "Infer Tables" in w for w in warnings), (
+            f"expected node-label + Infer-Tables warning; got {warnings!r}"
+        )
 
     def test_skips_non_api_input_nodes(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
@@ -697,9 +697,7 @@ class TestValidateApiInputsHaveSchemas:
     def test_skips_non_json_path(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
-            _make_node(
-                "api", "api_input", "apiInput", {"path": "data.parquet"}
-            ),
+            _make_node("api", "api_input", "apiInput", {"path": "data.parquet"}),
         )
         warnings: list[str] = []
         svc._validate_api_inputs_have_schemas(graph, warnings)
@@ -730,7 +728,7 @@ class TestValidateApiInputsHaveSchemas:
         svc._validate_api_inputs_have_schemas(graph, warnings)
         assert warnings == []
 
-    def test_warns_when_jsonl_apiInput_has_no_tables(self, tmp_path: Path) -> None:
+    def test_warns_when_jsonl_api_input_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "input.jsonl"}),

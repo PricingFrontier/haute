@@ -116,7 +116,9 @@ class TestDiskFullDuringSave:
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
-            patch("haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"),
+            patch(
+                "haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"
+            ),
             patch("haute.routes._save_pipeline.SavePipelineService._write_config_files"),
             patch("haute.routes._save_pipeline.SavePipelineService._remove_stale_config_files"),
             patch("haute.routes._save_pipeline.save_sidecar") as mock_sidecar,
@@ -136,7 +138,9 @@ class TestDiskFullDuringSave:
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
-            patch("haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"),
+            patch(
+                "haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"
+            ),
             patch(
                 "haute.routes._save_pipeline.SavePipelineService._write_config_files"
             ) as mock_cfg,
@@ -183,7 +187,9 @@ class TestFileLocked:
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
-            patch("haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"),
+            patch(
+                "haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"
+            ),
             patch("haute.routes._save_pipeline.SavePipelineService._write_config_files"),
             patch("haute.routes._save_pipeline.SavePipelineService._remove_stale_config_files"),
             patch("haute.routes._save_pipeline.save_sidecar") as mock_sc,
@@ -260,9 +266,7 @@ class TestPermissionDenied:
             # permission. The sidecar now contains the new payload.
             save_sidecar(py_path, graph)
             content = sidecar.read_text()
-            assert '"positions"' in content, (
-                "atomic replace must produce the new sidecar payload"
-            )
+            assert '"positions"' in content, "atomic replace must produce the new sidecar payload"
             assert '"original": true' not in content, (
                 "atomic replace must have replaced the read-only file"
             )

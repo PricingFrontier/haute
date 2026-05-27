@@ -666,9 +666,7 @@ def _generate_pipeline_lines(
     def _format_connect(src_func: str, tgt_func: str, port: str | None) -> str:
         if port:
             return (
-                f"{obj_name}.connect("
-                f'"{src_func}", "{tgt_func}", '
-                f"source_port={_json.dumps(port)})"
+                f'{obj_name}.connect("{src_func}", "{tgt_func}", source_port={_json.dumps(port)})'
             )
         return f'{obj_name}.connect("{src_func}", "{tgt_func}")'
 
@@ -1065,9 +1063,7 @@ def graph_to_code_multi(
         # the prefix alone would also silently drop a regular apiInput
         # table labelled e.g. "out__claims".
         is_submodel_boundary = src in submodel_node_ids
-        source_port = (
-            edge.sourceHandle if edge.sourceHandle and not is_submodel_boundary else None
-        )
+        source_port = edge.sourceHandle if edge.sourceHandle and not is_submodel_boundary else None
         root_connect_pairs.append((src_func, tgt_func, source_port))
 
     # Submodel import lines

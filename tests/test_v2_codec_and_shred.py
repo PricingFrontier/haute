@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 import orjson
-import polars as pl
 import pytest
 
 from haute._api_input_schema import (
@@ -38,7 +37,6 @@ from haute._json_shred import (
     read_per_port_cache_meta,
     shred_to_buffers,
 )
-
 
 # ─── Path helpers ─────────────────────────────────────────────────
 
@@ -70,10 +68,13 @@ def test_parse_column_path_simple() -> None:
 
 
 def test_parse_column_path_nested_dotted() -> None:
-    assert parse_column_path(
-        "$[*].drivers[*].profile.age",
-        "$[*].drivers[*]",
-    ) == "profile.age"
+    assert (
+        parse_column_path(
+            "$[*].drivers[*].profile.age",
+            "$[*].drivers[*]",
+        )
+        == "profile.age"
+    )
 
 
 def test_parse_column_path_rejects_unrelated() -> None:

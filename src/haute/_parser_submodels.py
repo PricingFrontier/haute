@@ -103,9 +103,7 @@ def merge_submodels(
     parent_graph: PipelineGraph,
     submodel_graphs: dict[str, PipelineGraph],
     submodel_files: dict[str, str],
-    parent_edges: (
-        list[tuple[str, str, str | None]] | list[tuple[str, str]]
-    ),
+    parent_edges: (list[tuple[str, str, str | None]] | list[tuple[str, str]]),
     *,
     flatten: bool = False,
 ) -> PipelineGraph:
