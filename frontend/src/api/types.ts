@@ -395,6 +395,55 @@ export interface TrainStatusResponse {
 // Explore types
 // ---------------------------------------------------------------------------
 
+/** Per-column statistics surfaced in the Schema overview card. */
+export type ExploreColumnKind = "Numeric" | "Text" | "Temporal" | "Boolean" | "Nested" | "Other"
+
+export interface ExploreColumnStat {
+  name: string
+  dtype: string
+  kind: ExploreColumnKind
+  null_count: number
+  distinct_count: number | null
+  min_value?: string | null
+  p25_value?: string | null
+  median_value?: string | null
+  mean_value?: string | null
+  p75_value?: string | null
+  max_value?: string | null
+  std_value?: string | null
+  zero_count?: number | null
+  negative_count?: number | null
+}
+
+export interface ExploreDataQualityIssue {
+  severity: "warning" | "danger"
+  label: string
+  detail: string
+}
+
+export interface ExploreDataQualitySummary {
+  issue_count: number
+  issues: ExploreDataQualityIssue[]
+}
+
+export interface ExploreDistinctValueCount {
+  value: string | null
+  count: number
+}
+
+export interface ExploreCategoricalColumnProfile {
+  field: string
+  distinct_count: number | null
+  expandable: boolean
+  values_truncated: boolean
+  values: ExploreDistinctValueCount[]
+}
+
+export interface ExploreOverviewSummary {
+  data_quality: ExploreDataQualitySummary
+  categorical_summary: ExploreCategoricalColumnProfile[]
+}
+
 /** Lightweight descriptor of a materialised Explore cache entry. */
 export interface ExploreCacheReport {
   status: "ok"
@@ -405,6 +454,8 @@ export interface ExploreCacheReport {
   row_count: number
   column_count: number
   generated_at: number
+  columns: ExploreColumnStat[]
+  overview_summary: ExploreOverviewSummary
   execution_metrics?: ExecutionMetrics | null
 }
 

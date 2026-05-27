@@ -121,7 +121,7 @@ def age_veh_banding(policies: pl.LazyFrame) -> pl.LazyFrame:
     return policies
 
 
-@pipeline.explore(contract="opaque")
+@pipeline.explore(overview={'categorical_summary': True}, contract="opaque")
 def Explore_7(policies: pl.LazyFrame) -> pl.LazyFrame:
     """"""
     return policies

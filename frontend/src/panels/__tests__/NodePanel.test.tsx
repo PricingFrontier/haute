@@ -25,6 +25,7 @@ vi.mock("../LazyNodeEditors", () => ({
     exploreCodeEditorProps.push(props)
     return <div data-testid="ExploreCodeEditor" />
   },
+  ExploreOverviewConfig: () => <div data-testid="explore-overview-config" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => {
     bandingEditorProps.push(props)
@@ -344,6 +345,27 @@ describe("NodePanel", () => {
 
     expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
     expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+  })
+
+  it("renders the dataset-header toggle when the Explore Overview pane is selected", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: {},
+      },
+    })
+    renderPanel({ node: exploreNode })
+
+    // Default pane is "Polars Code"; switch to Overview.
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
+
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-overview-config")).toBeInTheDocument()
+    // Sanity: the Code editor is no longer mounted while Overview is active.
+    expect(screen.queryByTestId("ExploreCodeEditor")).not.toBeInTheDocument()
   })
 
   it("keeps Explore pane selection separate per Explore node", () => {

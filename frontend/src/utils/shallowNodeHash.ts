@@ -16,10 +16,12 @@
 
 const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
 type InputKey = (typeof INPUT_KEYS)[number]
+const EXPLORE_NODE_TYPE = "explore"
 
 // Structural edits replace data/config objects; WeakMaps keep visual churn cheap
 // without retaining old graph payloads after React releases them.
 const objectInputHashCache = new WeakMap<object, string>()
+const exploreConfigInputHashCache = new WeakMap<object, string>()
 const nodeDataHashCache = new WeakMap<Record<string, unknown>, string>()
 
 function stringifyInputValue(key: InputKey, value: unknown): string {
@@ -38,13 +40,44 @@ function stringifyInputValue(key: InputKey, value: unknown): string {
   return String(value)
 }
 
+function stringifyExploreConfig(value: unknown): string {
+  if (value === undefined) return ""
+  if (value === null || typeof value !== "object") return String(value)
+
+  const cached = exploreConfigInputHashCache.get(value)
+  if (cached !== undefined) return cached
+
+  const dataConfig = Array.isArray(value)
+    ? value
+    : (() => {
+        const { overview: _overview, ...rest } = value as Record<string, unknown>
+        void _overview
+        return rest
+      })()
+  const serialized = JSON.stringify(dataConfig)
+  if (serialized === undefined) {
+    throw new TypeError(`Cannot hash object-valued node input "config"`)
+  }
+  exploreConfigInputHashCache.set(value, serialized)
+  return serialized
+}
+
+function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): string {
+  if (key === "config" && data.nodeType === EXPLORE_NODE_TYPE) {
+    return stringifyExploreConfig(data[key])
+  }
+  return stringifyInputValue(key, data[key])
+}
+
 /**
  * Shallow hash of a node's data — only input-identity keys contribute.
  *
  * Primitive-valued keys (label, nodeType, code, func_name, description)
  * are String()-coerced; the ``config`` object (nested rules / code /
  * scoring parameters) is JSON.stringify()'d because its content genuinely
- * matters.  Result-only keys (_columns, _availableColumns, _schemaWarnings,
+ * matters. Explore ``config.overview`` is presentation-only and is ignored
+ * so toggling overview cards does not invalidate cached Explore data.
+ * Result-only keys (_columns, _availableColumns, _schemaWarnings,
  * _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue,
  * _traceMotionDisabled) are ignored.
  *
@@ -58,7 +91,7 @@ export function shallowNodeDataHash(data: Record<string, unknown>): string {
 
   const parts: string[] = []
   for (const key of INPUT_KEYS) {
-    parts.push(stringifyInputValue(key, data[key]))
+    parts.push(stringifyNodeInputValue(data, key))
   }
   const hash = parts.join("\u0001")
   nodeDataHashCache.set(data, hash)

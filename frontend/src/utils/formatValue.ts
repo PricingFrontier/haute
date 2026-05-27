@@ -27,6 +27,12 @@ export function formatFixed(value: unknown, digits: number): string {
     : 'N/A'
 }
 
+/** Format a null-count / row-count ratio as a 1-dp percentage, or null when the row count is 0. */
+export function formatNullPct(nullCount: number, rowCount: number): string | null {
+  if (rowCount === 0) return null
+  return `${((nullCount / rowCount) * 100).toFixed(1)}%`
+}
+
 export function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(0)}s`
   const mins = Math.floor(seconds / 60)

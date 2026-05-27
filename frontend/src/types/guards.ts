@@ -20,6 +20,12 @@ import type {
   ExecutionMetrics,
   ExecutionStageMetrics,
   ExploreCacheReport,
+  ExploreCategoricalColumnProfile,
+  ExploreColumnStat,
+  ExploreDataQualityIssue,
+  ExploreDataQualitySummary,
+  ExploreDistinctValueCount,
+  ExploreOverviewSummary,
   ExploreRunResponse,
   ExploreStatusResponse,
   FetchProgressResponse,
@@ -207,6 +213,24 @@ function optionalNullableNumber(
   if (value === undefined) return defaultValue
   if (value === null) return null
   return expectNumber(parser, value, `field \`${key}\``)
+}
+
+function expectNullableString(
+  parser: string,
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === null || typeof value === "string") return value
+  throw new Error(`${parser}: expected ${field} to be a string or null, got ${value === undefined ? "missing" : typeName(value)}`)
+}
+
+function expectNullableNumber(
+  parser: string,
+  value: unknown,
+  field: string,
+): number | null {
+  if (value === null) return null
+  return expectNumber(parser, value, field)
 }
 
 function expectArray(
@@ -1087,6 +1111,94 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
 // ---------------------------------------------------------------------------
 
 const EXPLORE_RUN_STATUSES = ["started", "running", "completed"] as const
+const EXPLORE_COLUMN_KINDS = ["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"] as const
+
+function parseExploreColumnStat(value: unknown, field: string): ExploreColumnStat {
+  const parser = "parseExploreColumnStat"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    name: expectString(parser, obj.name, `${field}.name`),
+    dtype: expectString(parser, obj.dtype, `${field}.dtype`),
+    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, EXPLORE_COLUMN_KINDS),
+    null_count: expectNumber(parser, obj.null_count, `${field}.null_count`),
+    distinct_count: expectNullableNumber(parser, obj.distinct_count, `${field}.distinct_count`),
+    min_value: optionalNullableString(parser, obj, "min_value"),
+    p25_value: optionalNullableString(parser, obj, "p25_value"),
+    median_value: optionalNullableString(parser, obj, "median_value"),
+    mean_value: optionalNullableString(parser, obj, "mean_value"),
+    p75_value: optionalNullableString(parser, obj, "p75_value"),
+    max_value: optionalNullableString(parser, obj, "max_value"),
+    std_value: optionalNullableString(parser, obj, "std_value"),
+    zero_count: optionalNullableNumber(parser, obj, "zero_count"),
+    negative_count: optionalNullableNumber(parser, obj, "negative_count"),
+  }
+}
+
+function parseExploreDataQualityIssue(
+  value: unknown,
+  field: string,
+): ExploreDataQualityIssue {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    severity: expectStringLiteral(parser, obj.severity, `${field}.severity`, ["warning", "danger"] as const),
+    label: expectString(parser, obj.label, `${field}.label`),
+    detail: expectString(parser, obj.detail, `${field}.detail`),
+  }
+}
+
+function parseExploreDataQualitySummary(
+  value: unknown,
+  field: string,
+): ExploreDataQualitySummary {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    issue_count: expectNumber(parser, obj.issue_count, `${field}.issue_count`),
+    issues: parseArray(parser, obj.issues, `${field}.issues`, parseExploreDataQualityIssue),
+  }
+}
+
+function parseExploreDistinctValueCount(
+  value: unknown,
+  field: string,
+): ExploreDistinctValueCount {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    value: expectNullableString(parser, obj.value, `${field}.value`),
+    count: expectNumber(parser, obj.count, `${field}.count`),
+  }
+}
+
+function parseExploreCategoricalColumnProfile(
+  value: unknown,
+  field: string,
+): ExploreCategoricalColumnProfile {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    field: expectString(parser, obj.field, `${field}.field`),
+    distinct_count: expectNullableNumber(parser, obj.distinct_count, `${field}.distinct_count`),
+    expandable: expectBoolean(parser, obj.expandable, `${field}.expandable`),
+    values_truncated: optionalBoolean(parser, obj, "values_truncated"),
+    values: parseArray(parser, obj.values, `${field}.values`, parseExploreDistinctValueCount),
+  }
+}
+
+function parseExploreOverviewSummary(value: unknown, field: string): ExploreOverviewSummary {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    data_quality: parseExploreDataQualitySummary(obj.data_quality, `${field}.data_quality`),
+    categorical_summary: parseArray(
+      parser,
+      obj.categorical_summary,
+      `${field}.categorical_summary`,
+      parseExploreCategoricalColumnProfile,
+    ),
+  }
+}
 
 export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
   const obj = expectPlainObject("parseExploreCacheReport", value)
@@ -1094,15 +1206,17 @@ export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
     status: expectStringLiteral("parseExploreCacheReport", obj.status, "field `status`", ["ok"] as const),
     node_id: expectString("parseExploreCacheReport", obj.node_id, "field `node_id`"),
     upstream_node_id: expectString("parseExploreCacheReport", obj.upstream_node_id, "field `upstream_node_id`"),
-    source: optionalString("parseExploreCacheReport", obj, "source", "live"),
+    source: expectString("parseExploreCacheReport", obj.source, "field `source`"),
     dataframe_cache_key: expectString(
       "parseExploreCacheReport",
       obj.dataframe_cache_key,
       "field `dataframe_cache_key`",
     ),
-    row_count: optionalNumber("parseExploreCacheReport", obj, "row_count"),
-    column_count: optionalNumber("parseExploreCacheReport", obj, "column_count"),
-    generated_at: optionalNumber("parseExploreCacheReport", obj, "generated_at"),
+    row_count: expectNumber("parseExploreCacheReport", obj.row_count, "field `row_count`"),
+    column_count: expectNumber("parseExploreCacheReport", obj.column_count, "field `column_count`"),
+    generated_at: expectNumber("parseExploreCacheReport", obj.generated_at, "field `generated_at`"),
+    columns: parseArray("parseExploreCacheReport", obj.columns, "field `columns`", parseExploreColumnStat),
+    overview_summary: parseExploreOverviewSummary(obj.overview_summary, "field `overview_summary`"),
     execution_metrics: optionalExecutionMetrics("parseExploreCacheReport", obj, "execution_metrics"),
   }
 }

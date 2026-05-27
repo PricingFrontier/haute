@@ -7,6 +7,7 @@ import {
   DataSourceEditor,
   TransformEditor,
   ExploreCodeEditor,
+  ExploreOverviewConfig,
   ModelScoreEditor,
   BandingEditor,
   RatingStepEditor,
@@ -523,7 +524,11 @@ export default function NodePanel({
             aria-labelledby={`explore-${activeExplorePaneMeta.key}-tab`}
             data-testid={`explore-${activeExplorePaneMeta.key}-pane`}
             className="h-full"
-          />
+          >
+            {activeExplorePane === "overview" && (
+              <ExploreOverviewConfig config={config} onUpdate={handleConfigUpdate} />
+            )}
+          </div>
         )
 
       case NODE_TYPES.EXTERNAL_FILE:

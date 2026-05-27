@@ -89,6 +89,11 @@ function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): Explore
     row_count: 1000,
     column_count: 8,
     generated_at: 1710000000,
+    columns: [],
+    overview_summary: {
+      data_quality: { issue_count: 0, issues: [] },
+      categorical_summary: [],
+    },
     ...overrides,
   }
 }
