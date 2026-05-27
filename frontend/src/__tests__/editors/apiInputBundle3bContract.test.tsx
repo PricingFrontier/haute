@@ -36,7 +36,7 @@
  *    near the data source it operates on.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 
 import NodePanel from "../../panels/NodePanel"
 import { GraphProvider } from "../../panels/GraphContext"

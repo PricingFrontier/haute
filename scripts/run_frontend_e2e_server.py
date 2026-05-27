@@ -153,6 +153,63 @@ def quotes() -> pl.LazyFrame:
 # separate test covers the file-pick → preview-auto-load gap.
 _QUOTES_API_INPUT_CONFIG = '{\n  "path": "data/quotes/sample_quote.json"\n}\n'
 
+# Inline sample data for the apiInput e2e fixture.  Earlier versions of
+# this harness tried to `shutil.copy2` from a developer-local file at the
+# repo root, but `data/` is gitignored on this project — on CI the source
+# file doesn't exist and the harness fell over at the subsequent
+# `git add -f` step.  Inlining keeps the harness self-contained.  The
+# shape exercises the multi-table v2 Infer-Tables path via two nested
+# structs (`proposer`, `vehicle`), which infer turns into child tables.
+# That yields one root table plus two children — enough to satisfy the
+# spec's "≥ 2 tables, arrays as child tables" assertion.
+#
+# Arrays of structs and primitive arrays are intentionally OMITTED.
+# Two pre-existing v2-codec issues currently bite both:
+#   - Primitive arrays (e.g. `tags: ["a", "b"]`) get inferred as `str`
+#     columns at root; the shred pipeline then rejects the list payload
+#     at Series-build time.
+#   - Arrays of structs get a child table inferred AND a string-typed
+#     column at root for the same path; same Series-build rejection.
+# Both are tracked separately from this PR; the fixture is shaped to
+# avoid exercising them.
+_QUOTES_SAMPLE_DATA = """[
+  {
+    "quote_id": "q_001",
+    "quote_version": 1,
+    "channel": "direct",
+    "premium_amount": 543.21,
+    "is_renewal": false,
+    "proposer": {
+      "first_name": "Ada",
+      "date_of_birth": "1985-03-12",
+      "licence_held_years": 12
+    },
+    "vehicle": {
+      "make": "Tesla",
+      "model": "Model 3",
+      "year_of_registration": 2022
+    }
+  },
+  {
+    "quote_id": "q_002",
+    "quote_version": 1,
+    "channel": "aggregator",
+    "premium_amount": 712.0,
+    "is_renewal": true,
+    "proposer": {
+      "first_name": "Beatrice",
+      "date_of_birth": "1978-07-05",
+      "licence_held_years": 20
+    },
+    "vehicle": {
+      "make": "Ford",
+      "model": "Focus",
+      "year_of_registration": 2018
+    }
+  }
+]
+"""
+
 
 def _assert_under_repo(path: Path) -> None:
     repo_root = REPO_ROOT.resolve()
@@ -228,9 +285,9 @@ def _augment_starter_pipeline() -> None:
     )
     quotes_data_dir = E2E_PROJECT_DIR / "data" / "quotes"
     quotes_data_dir.mkdir(parents=True, exist_ok=True)
-    src_sample = REPO_ROOT / "data" / "quotes" / "sample_quote.json"
-    if src_sample.exists():
-        shutil.copy2(src_sample, quotes_data_dir / "sample_quote.json")
+    (quotes_data_dir / "sample_quote.json").write_text(
+        _QUOTES_SAMPLE_DATA, encoding="utf-8"
+    )
 
 
 def _scaffold_e2e_project() -> None:
