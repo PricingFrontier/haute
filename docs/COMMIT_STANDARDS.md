@@ -476,7 +476,7 @@ uv run ruff check src/ && uv run mypy src/haute/ && uv run pytest tests/ -q
 
 If you only touched frontend TypeScript:
 ```bash
-cd frontend && npx tsc -b --noEmit && npx eslint . && npm test
+cd frontend && npm run typecheck && npm run lint && npm test
 ```
 
 If you added a new test file:
@@ -490,11 +490,11 @@ cd frontend && npm test -- src/__tests__/your_new_file.test.ts  # frontend
 
 | CI failure | Local command to catch it | Root cause |
 |-----------|-------------------------|-----------|
-| `error TS2591: Cannot find name 'require'` | `npx tsc -b --noEmit` | Used `require()` instead of `import` in a `.ts` file |
-| `error TS6133: declared but never read` | `npx tsc -b --noEmit` | Unused import or variable |
-| `@typescript-eslint/no-explicit-any` | `npx eslint .` | Used `any` type — use a specific type or `unknown` |
-| `react-hooks/refs` | `npx eslint .` | Passed a ref to JSX via `createElement` — use JSX syntax or callback refs |
-| `prefer-const` | `npx eslint .` | Used `let` for a variable that's never reassigned |
+| `error TS2591: Cannot find name 'require'` | `npm run typecheck` | Used `require()` instead of `import` in a `.ts` file |
+| `error TS6133: declared but never read` | `npm run typecheck` | Unused import or variable |
+| `@typescript-eslint/no-explicit-any` | `npm run lint` | Used `any` type — use a specific type or `unknown` |
+| `react-hooks/refs` | `npm run lint` | Passed a ref to JSX via `createElement` — use JSX syntax or callback refs |
+| `prefer-const` | `npm run lint` | Used `let` for a variable that's never reassigned |
 | `FAILED ... DID NOT RAISE` | `uv run pytest tests/test_file.py -v` | Test expects an exception on one platform but not another |
 | `xfail(strict=True) XPASS` | `uv run pytest tests/test_file.py -v` | Race condition test passed unexpectedly — use `strict=False` |
 | `coverage fail_under=85` | `uv run pytest --cov=src/haute --cov-fail-under=85` | New code without tests, or test file not discovered |
