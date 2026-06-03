@@ -179,7 +179,7 @@ jobs:
         working-directory: .
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium firefox
+      - run: ./node_modules/.bin/playwright install --with-deps chromium firefox
       - run: npm run test:e2e
 
       - name: Upload Playwright artifacts

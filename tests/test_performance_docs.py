@@ -96,7 +96,7 @@ def test_performance_workflow_runs_heavy_frontend_perf_lanes_outside_pr_ci() -> 
 
     assert "npm run analyze:bundle" in workflow
     assert "npm run test:e2e:benchmark" in workflow
-    assert "npx playwright install --with-deps chromium" in workflow
+    assert "./node_modules/.bin/playwright install --with-deps chromium" in workflow
     assert "frontend-performance-${{ github.run_id }}" in workflow
 
 

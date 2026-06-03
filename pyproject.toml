@@ -27,23 +27,23 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.34.0",
-    "websockets>=14.0",
-    "pydantic>=2.10.0",
-    "polars>=1.39.2",
-    "click>=8.1.0",
-    "python-multipart>=0.0.18",
-    "python-dotenv>=1.0.0",
-    "libcst>=1.8.6",
-    "watchfiles>=1.1.1",
-    "catboost>=1.2.8",
-    "structlog>=24.1.0",
-    "orjson>=3.9.0",
-    "price-contour>=0.4.1",
-    "rustystats>=0.7.0",
-    "xxhash>=3.0.0",
-    "packaging>=24.0",
+    "fastapi>=0.129.0,<0.130",
+    "uvicorn[standard]>=0.40.0,<0.41",
+    "websockets>=16.0,<17",
+    "pydantic>=2.12.5,<3",
+    "polars>=1.39.2,<2",
+    "click>=8.3.1,<9",
+    "python-multipart>=0.0.22,<0.1",
+    "python-dotenv>=1.2.1,<2",
+    "libcst>=1.8.6,<2",
+    "watchfiles>=1.1.1,<2",
+    "catboost>=1.2.10,<2",
+    "structlog>=25.5.0,<26",
+    "orjson>=3.11.7,<4",
+    "price-contour>=0.4.1,<0.5",
+    "rustystats>=0.7.0,<0.8",
+    "xxhash>=3.6.0,<4",
+    "packaging>=25.0,<26",
 ]
 
 [project.urls]
@@ -53,26 +53,26 @@ Documentation = "https://haute.dev"
 
 [project.optional-dependencies]
 databricks = [
-    "mlflow>=2.15.0",
-    "databricks-sdk>=0.30.0",
-    "databricks-sql-connector>=3.0.0",
+    "mlflow>=3.10.0,<4",
+    "databricks-sdk>=0.88.0,<0.89",
+    "databricks-sql-connector>=4.2.5,<5",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=6.0",
-    "pytest-timeout>=2.3.1",
-    "pytest-xdist>=3.6.0",
-    "httpx>=0.27.0",
-    "ruff>=0.8.0",
-    "mypy>=1.11.0",
-    "mkdocs>=1.6.0",
-    "mkdocs-material>=9.5.0",
-    "mkdocstrings[python]>=0.27.0",
+    "pytest==9.0.2",
+    "pytest-asyncio==1.3.0",
+    "pytest-cov==7.0.0",
+    "pytest-timeout==2.4.0",
+    "pytest-xdist==3.8.0",
+    "httpx==0.28.1",
+    "ruff==0.15.0",
+    "mypy==1.19.1",
+    "mkdocs==1.6.1",
+    "mkdocs-material==9.7.1",
+    "mkdocstrings[python]==1.0.3",
     "haute[databricks]",
-    "hypothesis>=6.151.9",
+    "hypothesis==6.151.9",
 ]
 
 [project.scripts]
